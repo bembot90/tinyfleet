@@ -1,0 +1,37 @@
+[package]
+name = "fleet-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "fleet_core"
+path = "src/lib.rs"
+
+# What a dependent's DEV-dependency turns on to reach `test_support` — the
+# applying fake store and the board over it. Off by default and never a normal
+# dependency's: under resolver 2 a dev-dependency's features do not reach a
+# non-dev build, so a shipped binary carries none of it.
+[features]
+test-support = []
+
+# The same three the controller carries, no new crate, at the workspace's
+# versions. This crate depends on no other member of the workspace, and on the
+# controller least of all: the boundary between pack-and-project work and the
+# process table is kept in the type system rather than in discipline, and a test
+# in the cli crate refuses the edge.
+#
+# toml: a pack manifest, an order and the shadow registry are all
+# TOML, and this crate is their reader.
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+
+# THIS CRATE, ON ITSELF, WITH THE FEATURE ON. The module above is reached by
+# `tests/*.rs`, and an integration test links the library as an ordinary
+# dependent does — so `cfg(test)` alone would leave it invisible to the suites
+# that use it. The controller needs no such row because only its own unit tests
+# read its `test_support`.
+[dev-dependencies]
+fleet-core = { path = ".", features = ["test-support"] }

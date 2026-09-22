@@ -1,0 +1,50 @@
+# The workspace root. Members are listed explicitly and never by glob: with
+# every member named here, no crate under this directory can be absorbed by a
+# manifest that did not name it, which is the guard no member's own manifest
+# needs to carry.
+[workspace]
+members = ["controller", "core", "cli"]
+resolver = "2"
+
+# The pins live once. Members read the same names, and a pin in two places is a
+# pin that drifts; each member takes one with `.workspace = true` and the reason
+# it needs it stays in that member's own manifest.
+#
+# toml is exact-pinned and now holds BOTH halves: `parse` for the manifests,
+# orders and the shadow registry this workspace reads, and `display`
+# for `packs.lock`, the one document it writes. Those four are what 1.1.5 turns
+# on by default; naming them with default-features off is what keeps a feature a
+# later default adds from entering unread. `debug`, `fast_hash`,
+# `preserve_order` and `unbounded` stay off.
+#
+# clap and anyhow are fleet-cli's alone: the argument surface and the one exit
+# mapping live in the binary, and no library member takes either. console,
+# indicatif and dialoguer are fleet-cli's on the same rule and for the same
+# reason — a library crate never prints — and all three enter through the one ui
+# module (cli/src/ui.rs). Each is named with default features off and only
+# the features that module uses: dialoguer's `editor` and `password` are
+# defaults the prompts do not want, and each would pull a crate of its own.
+[workspace.dependencies]
+anyhow = "1"
+console = { version = "0.16", default-features = false }
+dialoguer = { version = "0.12", default-features = false }
+indicatif = { version = "0.18", default-features = false }
+clap = { version = "4", default-features = false, features = [
+    "std",
+    "derive",
+    "help",
+    "usage",
+    "error-context",
+] }
+serde = { version = "1", features = ["derive"] }
+# float_roundtrip: the step writer parses a workflow's `--result` and stores the
+# value re-serialized, and the default parser can land a decimal literal on the
+# neighbouring double — so a replayed number would differ from the one the
+# first run saw by an ulp. Correctly rounded parsing is what keeps the two equal.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+toml = { version = "=1.1.5", default-features = false, features = [
+    "display",
+    "parse",
+    "serde",
+    "std",
+] }

@@ -1,0 +1,521 @@
+#!/usr/bin/env python3
+"""soak — run one nextest filter N times under the run wrapper, tabulate
+verdict, wall and load per run.
+
+The repeat-runner: three flight 13 beads each ask "how often, over N runs, at
+what load" and the tree held no instrument that could answer — suite-profile
+reads one junit report after the fact and cannot select an arm or repeat it.
+
+    soak -E '<filter>' --runs N [--threads T] [--profile P]
+    soak --self-test
+
+Each iteration runs `cd fleet && tools/dolt-test-server cargo nextest run
+--workspace -E '<filter>'` once, under the same TT_FLEET_TEST_OK=1 carve-out
+the Makefile's fleet-test recipe requires (Alberto's ruling
+2026-09-14) — soak bypasses that recipe (no fmt/anchors/clippy, no budget
+verdict) but not its gate, because it is still a measurement run of the same
+disabled suite. Before each iteration the box's 1-minute load is read the way
+the fleet-test recipe's before-line does (uptime), pasted into that run's row.
+
+VERDICT COMES FROM NEXTEST'S OWN PER-TEST STATUS TOKEN, never from counting
+"failed" in the Summary line: a TIMEOUT test's Summary reads "...1 timed
+out..." and never contains the word "failed", and a LEAK test's Summary reads
+"...1 passed (1 leaky)...", also with no "failed" — a grep for FAIL alone
+reports both as clean (a captured run already showed exactly this shape; the
+fixtures self-test reproduces both verbatim, captured bytes from a real run).
+The five tokens nextest prints, one per test, ANSI-coloured, of the shape
+`    <TOKEN> [   0.012s] (1/1) <binary> <test name>`: PASS, FAIL, TIMEOUT,
+LEAK, SIGKILL. nextest-version is pinned at fleet/.config/nextest.toml to
+0.9.111; the token shapes here are read from that release's console output.
+
+A run whose filter selects nothing, or whose output carries no parseable
+Summary at all (a build or config failure before nextest starts), is nextest
+ITSELF failing to run — never tabulated as a verdict. soak stops at the first
+one of those and exits 2 naming it, rather than repeating a command that
+cannot answer the question N times.
+
+A run whose verdict is not PASS NAMES THE ARM that carried it, in the table's
+last column and in the JSON row: a table of counts cannot be read against an
+arm, and the filter that produced the run selects more arms than the one that
+broke. Several arms at the same worst verdict render as the first plus a
+`+N more` count, and the JSON row's `arms` carries all of them.
+
+Exit codes: 0 every run PASS; 1 at least one run's verdict was FAIL, TIMEOUT,
+LEAK or SIGKILL (a leak is not a clean pass — soak exists partly to catch one);
+2 nextest itself could not run (no match, or no Summary parsed), or --self-test
+disagreeing. Table then one JSON line, so a delivery note can quote the table
+and a later tool can read the JSON.
+
+Conventions: brain/harness/tools.md.
+"""
+
+import argparse
+import json
+import os
+import re
+import statistics
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ME = "soak"
+NEXTEST_VERSION_PINNED = "0.9.111"  # fleet/.config/nextest.toml — the release the token shapes below were read from
+FLEET_DIR = Path(__file__).resolve().parents[1]
+DOLT_TEST_SERVER = FLEET_DIR / "tools" / "dolt-test-server"
+
+VERDICTS = ("PASS", "FAIL", "TIMEOUT", "LEAK", "SIGKILL")
+# Worst-first, for the rare filter that selects more than one test: the run's
+# one verdict is the worst any matched test carried.
+SEVERITY = {"SIGKILL": 5, "TIMEOUT": 4, "FAIL": 3, "LEAK": 2, "PASS": 1}
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+# `    PASS [   0.012s] (  1/111) fleet-core::policy the_test_name` — nextest
+# right-aligns the running index to the total's width, so the parenthesised
+# group must tolerate leading spaces on either number. TERMINATING lines
+# (`(───────)` instead of `(n/n)`) still never match; they are not a final verdict.
+TOKEN_RE = re.compile(
+    r"^\s*(PASS|FAIL|TIMEOUT|LEAK|SIGKILL)\s+\[\s*[\d.]+s\]\s+\(\s*\d+/\d+\)\s+(\S+)\s+(.+?)\s*$"
+)
+# `     Summary [   0.016s] 1 test run: 0 passed, 1 failed, 924 skipped`
+SUMMARY_RE = re.compile(r"Summary\s+\[\s*[\d.]+s\]\s+(\d+)\s+tests?\s+run:\s*(.*?)\s*$")
+
+# --- fixtures, captured bytes from a real run on this box, nextest 0.9.111 ---
+# Not synthesised: each block below is `soak-<verdict>.out`'s Starting/token/
+# Summary lines, unmodified, so a reviewer editing one token here is editing
+# the same text nextest itself printed.
+
+FIXTURE_PASS = (
+    "\x1b[32;1m    Starting\x1b[0m \x1b[1m1\x1b[0m test across \x1b[1m63\x1b[0m binaries (\x1b[1m924\x1b[0m tests \x1b[33;1mskipped\x1b[0m)\n"
+    "\x1b[32;1m        PASS\x1b[0m [   0.025s] (1/1) \x1b[35;1mfleet-core::policy\x1b[0m \x1b[34;1mthe_census_names_only_the_five_tables\x1b[0m\n"
+    "\x1b[32;1m     Summary\x1b[0m [   0.032s] \x1b[1m1\x1b[0m test run: \x1b[1m1\x1b[0m \x1b[32;1mpassed\x1b[0m, \x1b[1m924\x1b[0m \x1b[33;1mskipped\x1b[0m\n"
+)
+FIXTURE_FAIL = (
+    "\x1b[32;1m    Starting\x1b[0m \x1b[1m1\x1b[0m test across \x1b[1m63\x1b[0m binaries (\x1b[1m924\x1b[0m tests \x1b[33;1mskipped\x1b[0m)\n"
+    "\x1b[31;1m        FAIL\x1b[0m [   0.012s] (1/1) \x1b[35;1mfleet-core::zz_scratch_soak\x1b[0m \x1b[34;1mscratch_soak_panics\x1b[0m\n"
+    "\x1b[31;1m     Summary\x1b[0m [   0.016s] \x1b[1m1\x1b[0m test run: \x1b[1m0\x1b[0m \x1b[32;1mpassed\x1b[0m, \x1b[1m1\x1b[0m \x1b[31;1mfailed\x1b[0m, \x1b[1m924\x1b[0m \x1b[33;1mskipped\x1b[0m\n"
+    "\x1b[31;1m        FAIL\x1b[0m [   0.012s] (1/1) \x1b[35;1mfleet-core::zz_scratch_soak\x1b[0m \x1b[34;1mscratch_soak_panics\x1b[0m\n"
+    "error: test run failed\n"
+)
+FIXTURE_TIMEOUT = (
+    "\x1b[32;1m    Starting\x1b[0m \x1b[1m1\x1b[0m test across \x1b[1m63\x1b[0m binaries (\x1b[1m924\x1b[0m tests \x1b[33;1mskipped\x1b[0m)\n"
+    "\x1b[31;1m TERMINATING\x1b[0m [>  5.000s] (───────) \x1b[35;1mfleet-core::zz_scratch_soak\x1b[0m \x1b[34;1mscratch_soak_sleeps\x1b[0m\n"
+    "\x1b[31;1m     TIMEOUT\x1b[0m [   5.002s] (1/1) \x1b[35;1mfleet-core::zz_scratch_soak\x1b[0m \x1b[34;1mscratch_soak_sleeps\x1b[0m\n"
+    "\x1b[31;1m     Summary\x1b[0m [   5.008s] \x1b[1m1\x1b[0m test run: \x1b[1m0\x1b[0m \x1b[32;1mpassed\x1b[0m, \x1b[1m1\x1b[0m \x1b[31;1mtimed out\x1b[0m, \x1b[1m924\x1b[0m \x1b[33;1mskipped\x1b[0m\n"
+    "\x1b[31;1m     TIMEOUT\x1b[0m [   5.002s] (1/1) \x1b[35;1mfleet-core::zz_scratch_soak\x1b[0m \x1b[34;1mscratch_soak_sleeps\x1b[0m\n"
+    "error: test run failed\n"
+)
+FIXTURE_LEAK = (
+    "\x1b[32;1m    Starting\x1b[0m \x1b[1m1\x1b[0m test across \x1b[1m63\x1b[0m binaries (\x1b[1m924\x1b[0m tests \x1b[33;1mskipped\x1b[0m)\n"
+    "\x1b[33;1m        LEAK\x1b[0m [   1.007s] (1/1) \x1b[35;1mfleet-core::zz_scratch_soak\x1b[0m \x1b[34;1mscratch_soak_leaks\x1b[0m\n"
+    "\x1b[32;1m     Summary\x1b[0m [   1.014s] \x1b[1m1\x1b[0m test run: \x1b[1m1\x1b[0m \x1b[32;1mpassed\x1b[0m (\x1b[1m1\x1b[0m \x1b[33;1mleaky\x1b[0m), \x1b[1m924\x1b[0m \x1b[33;1mskipped\x1b[0m\n"
+)
+FIXTURE_SIGKILL = (
+    "\x1b[32;1m    Starting\x1b[0m \x1b[1m1\x1b[0m test across \x1b[1m63\x1b[0m binaries (\x1b[1m924\x1b[0m tests \x1b[33;1mskipped\x1b[0m)\n"
+    "\x1b[31;1m     SIGKILL\x1b[0m [   0.018s] (1/1) \x1b[35;1mfleet-core::zz_scratch_soak\x1b[0m \x1b[34;1mscratch_soak_sigkill\x1b[0m\n"
+    "\x1b[31;1m     Summary\x1b[0m [   0.024s] \x1b[1m1\x1b[0m test run: \x1b[1m0\x1b[0m \x1b[32;1mpassed\x1b[0m, \x1b[1m1\x1b[0m \x1b[31;1mfailed\x1b[0m, \x1b[1m924\x1b[0m \x1b[33;1mskipped\x1b[0m\n"
+    "\x1b[31;1m     SIGKILL\x1b[0m [   0.018s] (1/1) \x1b[35;1mfleet-core::zz_scratch_soak\x1b[0m \x1b[34;1mscratch_soak_sigkill\x1b[0m\n"
+    "error: test run failed\n"
+)
+FIXTURE_NOMATCH = (
+    "\x1b[32;1m    Starting\x1b[0m \x1b[1m0\x1b[0m tests across \x1b[1m63\x1b[0m binaries (\x1b[1m925\x1b[0m tests \x1b[33;1mskipped\x1b[0m)\n"
+    "\x1b[33;1m     Summary\x1b[0m [   0.001s] \x1b[1m0\x1b[0m tests run: \x1b[1m0\x1b[0m \x1b[32;1mpassed\x1b[0m, \x1b[1m925\x1b[0m \x1b[33;1mskipped\x1b[0m\n"
+    "error: no tests to run\n"
+    "(hint: use `--no-tests` to customize)\n"
+)
+FIXTURE_UNREADABLE = (
+    "error: spawned process is never `wait()`ed on\n"
+    "error: could not compile `fleet-core` (test \"zz_scratch_soak\") due to 1 previous error\n"
+)
+# A real 91-test run (fleet-controller's unit tests, nextest 0.9.111), trimmed
+# to the Starting line, four representative PASS lines and the Summary — index
+# 1 and 9 carry a right-aligned leading space inside the parentheses (a
+# two-digit total pads a one-digit index), index 10 and 91 do not. Captured,
+# not hand-written: every line below is byte-for-byte what nextest printed.
+FIXTURE_MULTIDIGIT = (
+    "\x1b[32;1m    Starting\x1b[0m \x1b[1m91\x1b[0m tests across \x1b[1m1\x1b[0m binary (\x1b[1m61\x1b[0m binaries \x1b[33;1mskipped\x1b[0m)\n"
+    "\x1b[32;1m        PASS\x1b[0m [   0.090s] ( 1/91) \x1b[35;1mfleet-controller\x1b[0m \x1b[36madapter::claude_code::tests\x1b[0m\x1b[36m::\x1b[0m\x1b[34;1man_unreadable_or_zero_seam_is_the_default_and_never_a_zero_deadline\x1b[0m\n"
+    "\x1b[32;1m        PASS\x1b[0m [   0.114s] ( 9/91) \x1b[35;1mfleet-controller\x1b[0m \x1b[36madapter::claude_code::tests\x1b[0m\x1b[36m::\x1b[0m\x1b[34;1ma_blank_credential_seam_is_empty_and_a_named_one_is_trimmed\x1b[0m\n"
+    "\x1b[32;1m        PASS\x1b[0m [   0.039s] (10/91) \x1b[35;1mfleet-controller\x1b[0m \x1b[36mclock::tests\x1b[0m\x1b[36m::\x1b[0m\x1b[34;1mseconds_within_a_day_are_split_into_hours_minutes_seconds\x1b[0m\n"
+    "\x1b[32;1m        PASS\x1b[0m [   2.971s] (91/91) \x1b[35;1mfleet-controller\x1b[0m \x1b[36mevents::tests\x1b[0m\x1b[36m::\x1b[0m\x1b[34;1mtwo_writers_racing_on_one_stream_never_share_a_sequence\x1b[0m\n"
+    "\x1b[32;1m     Summary\x1b[0m [   3.173s] \x1b[1m91\x1b[0m tests run: \x1b[1m91\x1b[0m \x1b[32;1mpassed\x1b[0m, \x1b[1m0\x1b[0m \x1b[33;1mskipped\x1b[0m\n"
+)
+# A real 11-arm run (a scratch binary shaped to leak, nextest 0.9.111) where TWO arms
+# leaked, trimmed to the Starting line, both LEAK lines and the Summary — the
+# shape that decides whether a row names one arm or all of them. One index is
+# padded (` 1/11`), one is not (`10/11`). Captured, not hand-written.
+FIXTURE_TWOLEAK = (
+    "\x1b[32;1m    Starting\x1b[0m \x1b[1m11\x1b[0m tests across \x1b[1m1\x1b[0m binary (\x1b[1m1\x1b[0m test and \x1b[1m63\x1b[0m binaries \x1b[33;1mskipped\x1b[0m)\n"
+    "\x1b[33;1m        LEAK\x1b[0m [   1.022s] ( 1/11) \x1b[35;1mfleet-core::zz_scratch_soak\x1b[0m \x1b[34;1mscratch_soak_leaks\x1b[0m\n"
+    "\x1b[33;1m        LEAK\x1b[0m [   2.223s] (10/11) \x1b[35;1mfleet-core::zz_scratch_soak\x1b[0m \x1b[34;1mscratch_soak_slow_b\x1b[0m\n"
+    "\x1b[32;1m     Summary\x1b[0m [   2.235s] \x1b[1m11\x1b[0m tests run: \x1b[1m11\x1b[0m \x1b[32;1mpassed\x1b[0m (\x1b[1m2\x1b[0m \x1b[33;1mleaky\x1b[0m), \x1b[1m1\x1b[0m \x1b[33;1mskipped\x1b[0m\n"
+)
+
+
+class NextestCouldNotRun(Exception):
+    """The filter selected nothing, or nextest printed no parseable Summary.
+    Callers stop repeating and exit 2 — a command that cannot answer the
+    question once will not answer it N times."""
+
+
+def strip_ansi(text):
+    return ANSI_RE.sub("", text)
+
+
+def parse_tokens(text):
+    """{(binary, name): (token, seconds)} for every final-verdict line. A
+    duplicate line (nextest reprints the failing line after the Summary)
+    overwrites with the same value, so it never double-counts."""
+    tokens = {}
+    for line in text.splitlines():
+        m = TOKEN_RE.match(line)
+        if m:
+            token, binary, name = m.group(1), m.group(2), m.group(3)
+            secs = float(re.search(r"\[\s*([\d.]+)s\]", line).group(1))
+            tokens[(binary, name)] = (token, secs)
+    return tokens
+
+
+def parse_summary(text):
+    """(tests_run, detail_text) from the LAST Summary line, or None when
+    nextest printed no Summary at all (a build or config failure)."""
+    found = None
+    for line in text.splitlines():
+        m = SUMMARY_RE.search(line)
+        if m:
+            found = (int(m.group(1)), m.group(2).strip())
+    return found
+
+
+def classify(raw_text):
+    """One run's (verdict, wall_seconds, tests_matched, summary_detail, arms)
+    read from nextest's own output — never from a count of the word "failed".
+    `arms` names every arm carrying the run's verdict, in nextest's own print
+    order, and is empty for a PASS run: a name nobody should act on is worse
+    than no name.
+    Raises NextestCouldNotRun when the filter matched nothing or no Summary
+    line parsed at all.
+    """
+    text = strip_ansi(raw_text)
+    summary = parse_summary(text)
+    if summary is None:
+        raise NextestCouldNotRun(
+            "nextest printed no Summary line (a build or config failure before the run started)"
+        )
+    tests_run, detail = summary
+    if tests_run == 0:
+        raise NextestCouldNotRun("the filter matched 0 tests (Summary: %s)" % detail)
+    tokens = parse_tokens(text)
+    if not tokens:
+        raise NextestCouldNotRun(
+            "Summary reports %d test(s) run but no per-test status token was found" % tests_run
+        )
+    verdict = max((t[0] for t in tokens.values()), key=lambda tok: SEVERITY[tok])
+    wall = max(v[1] for v in tokens.values())
+    arms = (
+        []
+        if verdict == "PASS"
+        else ["%s %s" % (binary, name) for (binary, name), t in tokens.items() if t[0] == verdict]
+    )
+    return verdict, wall, len(tokens), detail, arms
+
+
+# --- the run loop -------------------------------------------------------------
+
+
+def read_load():
+    """The box's 1-minute load the way the fleet-test recipe's before-line
+    reads it (Makefile: `uptime | sed 's/.*load average[s]*: *//' | ...`).
+    None when uptime is absent or unparseable — printed as such, never as 0."""
+    try:
+        out = subprocess.run(["uptime"], capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    m = re.search(r"load averages?:\s*([\d.]+)", out)
+    return float(m.group(1)) if m else None
+
+
+def run_once(filt, threads, profile):
+    """Run the filter once under the wrapper from fleet/. Returns (raw_output,
+    rc). Never raises for a nonzero nextest exit — that is a verdict, read by
+    the caller through classify()."""
+    cmd = [str(DOLT_TEST_SERVER), "cargo", "nextest", "run", "--workspace", "-E", filt]
+    if threads:
+        cmd += ["--test-threads", str(threads)]
+    if profile:
+        cmd += ["--profile", profile]
+    proc = subprocess.run(cmd, cwd=str(FLEET_DIR), capture_output=True, text=True)
+    return (proc.stdout or "") + "\n" + (proc.stderr or ""), proc.returncode
+
+
+def soak(filt, runs, threads, profile):
+    rows = []
+    for i in range(1, runs + 1):
+        load = read_load()
+        t0 = time.monotonic()
+        raw, rc = run_once(filt, threads, profile)
+        elapsed = time.monotonic() - t0
+        try:
+            verdict, wall, tests, detail, arms = classify(raw)
+        except NextestCouldNotRun as err:
+            print("%s: run %d — nextest could not run: %s" % (ME, i, err), file=sys.stderr)
+            tail = "\n".join(strip_ansi(raw).splitlines()[-15:])
+            print(tail, file=sys.stderr)
+            return rows, 2, str(err)
+        rows.append(
+            {
+                "run": i,
+                "verdict": verdict,
+                "arm": arms[0] if arms else None,
+                "arms": arms,
+                "wall_s": round(wall, 3),
+                "wrapper_wall_s": round(elapsed, 3),
+                "load": load,
+                "tests": tests,
+                "summary": detail,
+                "rc": rc,
+            }
+        )
+    return rows, None, None
+
+
+def arm_cell(row):
+    """The arm column for one row: the first arm at the run's verdict, plus a
+    count when more than one carried it. Never truncated — an arm name is
+    copied into a filter, and a clipped one is not."""
+    arms = row.get("arms") or []
+    if not arms:
+        return ""
+    if len(arms) == 1:
+        return arms[0]
+    return "%s  (+%d more)" % (arms[0], len(arms) - 1)
+
+
+def render(filt, runs, threads, profile, rows, error):
+    out = []
+    header = "%s — %s — %d run%s" % (ME, filt, runs, "" if runs == 1 else "s")
+    if threads:
+        header += ", threads %d" % threads
+    if profile:
+        header += ", profile %s" % profile
+    out.append(header)
+    if rows:
+        out.append("  run  verdict    wall(s)  load    arm")
+        for row in rows:
+            load_s = "%6.2f" % row["load"] if row["load"] is not None else "  n/a "
+            out.append(
+                (
+                    "  %3d  %-8s  %7.3f  %s  %s"
+                    % (row["run"], row["verdict"], row["wall_s"], load_s, arm_cell(row))
+                ).rstrip()
+            )
+        out.append("")
+        counts = {v: 0 for v in VERDICTS}
+        for row in rows:
+            counts[row["verdict"]] += 1
+        out.append("verdicts: " + ", ".join("%d %s" % (counts[v], v) for v in VERDICTS))
+        walls = [row["wall_s"] for row in rows]
+        out.append(
+            "wall(s): min %.3f  median %.3f  max %.3f"
+            % (min(walls), statistics.median(walls), max(walls))
+        )
+    if error:
+        out.append("%s: stopped after %d run(s) — %s" % (ME, len(rows), error))
+    return "\n".join(out)
+
+
+def to_json(filt, runs, threads, profile, rows, exit_code, error):
+    counts = {v: 0 for v in VERDICTS}
+    for row in rows:
+        counts[row["verdict"]] += 1
+    walls = [row["wall_s"] for row in rows]
+    payload = {
+        "tool": ME,
+        "filter": filt,
+        "runs": runs,
+        "threads": threads,
+        "profile": profile,
+        "rows": rows,
+        "verdicts": counts,
+        "wall_s": (
+            {"min": min(walls), "median": statistics.median(walls), "max": max(walls)}
+            if walls
+            else None
+        ),
+        "error": error,
+        "exit": exit_code,
+    }
+    return json.dumps(payload, sort_keys=True)
+
+
+# --- self-test ------------------------------------------------------------
+
+
+def self_test():
+    checks = []
+
+    def check(name, got, want):
+        checks.append((name, got == want, "%r != %r" % (got, want)))
+
+    verdict, wall, tests, detail, arms = classify(FIXTURE_PASS)
+    check("PASS verdict", verdict, "PASS")
+    check("PASS wall", wall, 0.025)
+    check("PASS tests", tests, 1)
+    check("PASS names no arm", arms, [])
+
+    verdict, wall, tests, detail, arms = classify(FIXTURE_FAIL)
+    check("FAIL verdict", verdict, "FAIL")
+    check("FAIL wall", wall, 0.012)
+    check("FAIL arm", arms, ["fleet-core::zz_scratch_soak scratch_soak_panics"])
+
+    verdict, wall, tests, detail, arms = classify(FIXTURE_TIMEOUT)
+    check("TIMEOUT verdict", verdict, "TIMEOUT")
+    check("TIMEOUT wall", wall, 5.002)
+    check("TIMEOUT arm", arms, ["fleet-core::zz_scratch_soak scratch_soak_sleeps"])
+    checks.append(
+        (
+            "TIMEOUT Summary carries no FAIL line",
+            "fail" not in detail.lower(),
+            "Summary detail %r carries the word fail" % detail,
+        )
+    )
+
+    verdict, wall, tests, detail, arms = classify(FIXTURE_LEAK)
+    check("LEAK verdict", verdict, "LEAK")
+    check("LEAK wall", wall, 1.007)
+    check("LEAK arm", arms, ["fleet-core::zz_scratch_soak scratch_soak_leaks"])
+    checks.append(
+        (
+            "LEAK Summary carries no FAIL line",
+            "fail" not in detail.lower(),
+            "Summary detail %r carries the word fail" % detail,
+        )
+    )
+
+    verdict, wall, tests, detail, arms = classify(FIXTURE_SIGKILL)
+    check("SIGKILL verdict", verdict, "SIGKILL")
+    check("SIGKILL wall", wall, 0.018)
+    check("SIGKILL arm", arms, ["fleet-core::zz_scratch_soak scratch_soak_sigkill"])
+
+    # A multi-digit total: two of the four captured lines carry a padded
+    # index (` 1/91`, ` 9/91`) and two do not (`10/91`, `91/91`). "tests" is
+    # 4 only if TOKEN_RE matched all four — a regex that drops the padded
+    # pair back to `\(\d+/\d+\)` would read 2 here, not 4.
+    verdict, wall, tests, detail, arms = classify(FIXTURE_MULTIDIGIT)
+    check("MULTIDIGIT verdict", verdict, "PASS")
+    check("MULTIDIGIT wall", wall, 2.971)
+    check("MULTIDIGIT tests (padded and unpadded indices both parsed)", tests, 4)
+    check("MULTIDIGIT names no arm", arms, [])
+
+    try:
+        classify(FIXTURE_NOMATCH)
+        checks.append(("NOMATCH raises", False, "classify() returned instead of raising"))
+    except NextestCouldNotRun as err:
+        checks.append(("NOMATCH raises", "0 tests" in str(err), "wrong reason: %r" % str(err)))
+
+    try:
+        classify(FIXTURE_UNREADABLE)
+        checks.append(("UNREADABLE raises", False, "classify() returned instead of raising"))
+    except NextestCouldNotRun as err:
+        checks.append(
+            ("UNREADABLE raises", "no Summary" in str(err), "wrong reason: %r" % str(err))
+        )
+
+    # A filter matching two arms at once: the row's one verdict is the worse
+    # of the two (SIGKILL over PASS), proving the worst-of selection.
+    mixed = FIXTURE_PASS.rstrip("\n") + "\n" + FIXTURE_SIGKILL.split("\n", 1)[1]
+    verdict, wall, tests, detail, arms = classify(mixed)
+    check("mixed run takes the worst verdict", verdict, "SIGKILL")
+    check("mixed run counts both tests", tests, 2)
+    check(
+        "mixed run names the arm that carried the worst verdict, not the passing one",
+        arms,
+        ["fleet-core::zz_scratch_soak scratch_soak_sigkill"],
+    )
+
+    # Two arms at the one worst verdict: `arms` holds both in nextest's print
+    # order and the cell names the first with a count of the rest.
+    verdict, wall, tests, detail, arms = classify(FIXTURE_TWOLEAK)
+    check("TWOLEAK verdict", verdict, "LEAK")
+    check(
+        "TWOLEAK names both leaking arms in print order",
+        arms,
+        [
+            "fleet-core::zz_scratch_soak scratch_soak_leaks",
+            "fleet-core::zz_scratch_soak scratch_soak_slow_b",
+        ],
+    )
+    check(
+        "TWOLEAK cell names the first arm and counts the rest",
+        arm_cell({"arms": arms}),
+        "fleet-core::zz_scratch_soak scratch_soak_leaks  (+1 more)",
+    )
+    check("a PASS row's cell is empty", arm_cell({"arms": []}), "")
+
+    load_line = "9:39  up 18 days, 16:53, 4 users, load averages: 12.35 10.19 10.63\n"
+    checks.append(
+        ("load reader pattern matches macOS uptime", re.search(r"load averages?:\s*([\d.]+)", load_line) is not None, load_line)
+    )
+    linux_line = "load average: 0.52, 0.58, 0.59\n"
+    checks.append(
+        (
+            "load reader pattern matches linux uptime",
+            re.search(r"load averages?:\s*([\d.]+)", linux_line) is not None,
+            linux_line,
+        )
+    )
+
+    bad = [(name, why) for name, ok, why in checks if not ok]
+    for name, why in bad:
+        print("%s: self-test %s disagrees: %s" % (ME, name, why))
+    if bad:
+        return 1
+    print("%s: self-test ok — %d checks over five verdict fixtures plus nomatch/unreadable/mixed/multidigit/twoleak" % (ME, len(checks)))
+    return 0
+
+
+# --- cli --------------------------------------------------------------------
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog=ME, add_help=True)
+    parser.add_argument("-E", "--filter", dest="filt", help="nextest filterset, e.g. \"test(=name)\"")
+    parser.add_argument("--runs", type=int, help="how many times to run the filter")
+    parser.add_argument("--threads", type=int, default=None, help="--test-threads passed to nextest")
+    parser.add_argument("--profile", default=None, help="nextest profile (fleet/.config/nextest.toml)")
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args(argv)
+
+    if args.self_test:
+        return self_test()
+
+    if not args.filt or not args.runs:
+        parser.error("-E/--filter and --runs are required unless --self-test")
+    if args.runs < 1:
+        parser.error("--runs must be at least 1")
+
+    if os.environ.get("TT_FLEET_TEST_OK") != "1":
+        print(
+            "%s: refusing — this runs the fleet suite the Makefile's fleet-test target "
+            "disables until its test phase is at or under 60s (Alberto's "
+            "ruling 2026-09-14); set TT_FLEET_TEST_OK=1 for a measurement run" % ME,
+            file=sys.stderr,
+        )
+        return 2
+
+    rows, err_exit, error = soak(args.filt, args.runs, args.threads, args.profile)
+    print(render(args.filt, args.runs, args.threads, args.profile, rows, error))
+
+    if err_exit is not None:
+        exit_code = err_exit
+    else:
+        bad = sum(1 for row in rows if row["verdict"] != "PASS")
+        exit_code = 1 if bad else 0
+        print("%s: %d/%d runs passed — exit %d" % (ME, args.runs - bad, args.runs, exit_code))
+
+    print(to_json(args.filt, args.runs, args.threads, args.profile, rows, exit_code, error))
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

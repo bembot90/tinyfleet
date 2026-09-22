@@ -1,0 +1,8 @@
+{
+  "name": "fleet",
+  "version": "0.1.0",
+  "description": "The fleet binary, its guards and its session prime, wired into a Claude Code session.",
+  "author": {
+    "name": "the fleet maintainers"
+  }
+}

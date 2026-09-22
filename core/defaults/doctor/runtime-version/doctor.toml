@@ -1,0 +1,17 @@
+description = "Whether the runtime a pack pins in its [runtime] table is the one on PATH, at the version it pins."
+run = "run.sh"
+
+# No name key: the directory is the name, which is the shape the reference's
+# packs use.
+#
+# THE SHAPE, not an instance. The binary's defaults carry no manifest at all,
+# and a pack that carries no workflows declares no [runtime] table — so this
+# entry reports "nothing pinned" for either and does its work in the
+# feature-layer pack that copies it and pins a runtime.
+#
+# What it is for: the binary knows one thing about a workflow's language, and that is
+# the table. It substitutes the placeholders and execs the bundle and run lines
+# with no idea what they mean, so a runtime that is absent, or at a version the
+# pack was never measured against, is a fleet whose every workflow run fails at
+# the exec with nothing on the record saying why. This entry is where it says
+# so, before a run is opened rather than after one is lost.

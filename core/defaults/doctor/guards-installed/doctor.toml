@@ -1,0 +1,9 @@
+description = "Each guard class's checks, and whether the targets they need are configured."
+run = "run.sh"
+
+# No name key: the directory is the name, which is the shape the reference's
+# packs use.
+#
+# A guard whose targets are not configured refuses nothing, which is a state a
+# fleet can be in for a long time without noticing: nothing is refused and
+# nothing says why. This entry is where it says so.

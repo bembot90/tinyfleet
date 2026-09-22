@@ -1,0 +1,367 @@
+#!/usr/bin/env python3
+"""rig-env-check — no rig reaches the running fleet or the real agent binary.
+
+A suite run inside a flight this fleet's own controller is flying inherits that
+controller's environment. An arm that spawns the built binary without naming
+the roots reads the RUNNING machine directory; one that names no agent binary
+execs whatever `claude` the process PATH finds, under the account the operator
+is logged in as. Neither is a test failure — the damage lands outside the suite
+entirely — so nothing in the suite can catch it and this reads the source.
+
+Three checks.
+
+ONE, the spawn path. Every function under the scanned trees that names the
+built binary must carry the env block — itself, or through a function in the
+same file that does. The call graph is followed inside a file only, which is
+where every rig's own env applier lives.
+
+TWO, the in-process path. A file that drives the poll loop in this process sets
+the same roots on the process rather than on a child, and must carry the block
+too.
+
+THREE, the block lives in ONE file. No other file under the scanned trees may
+name any of the five variables in a call that puts one in an environment. Prose
+about them is not a finding; a `.env("HOME", …)` is.
+
+The scanned set EXCLUDES the helper by path and this file by tree — the helper
+is the one file allowed to spell the names, and this file is not under the
+scanned trees at all. Neither exclusion is a pattern over content.
+
+Exit 0 when every check passes, 1 when any fails, 2 when the check could not be
+run at all.
+"""
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+# The trees read. This file lives under fleet/tools, which is none of them: the
+# scan cannot reach its own source, so no admission for it is owed.
+TREES = ("fleet/cli/tests", "fleet/core/tests", "fleet/controller/tests")
+
+# The one file allowed to name the variables, excluded from checks ONE and
+# THREE by this path and not by anything it contains.
+HELPER = "fleet/controller/tests/common/hermetic.rs"
+
+# What the helper owes, each exactly once: a green from a scan that read a
+# helper missing one of these would be a green over a block with a hole in it.
+NAMES = ("FLEET_DIR", "FLEET_HOME", "HOME", "FLEET_CLAUDE_BIN", "FLEET_TEST_HERMETIC")
+
+# The built binary handed to a process constructor. TWO forms, and the arm's
+# reach is exactly these two: `Command::new`, and the rig helper that wraps the
+# binary in a pseudo-terminal. A THIRD way to start a process would be invisible
+# here and has to be added — which is why the summary prints the count it
+# matched and the run fails when that count is zero.
+SPAWNERS = ("Command::new", "pty_command")
+BINARY = 'env!("CARGO_BIN_EXE_fleet")'
+
+# The loop driven in this process, which reads the process's own environment.
+IN_PROCESS_ANCHORS = ("run::observe_seamed", "run::Observer::start", "run::observe_with")
+
+# The block applied. Four shapes and no more: on a command with the rig's own
+# roots, on a command with the empty root an arm that owns no scratch takes, and
+# as the pairs a rig holding the environment itself sets — either list, since
+# the in-process one is the same block plus the agent's config directory.
+APPLIED = (
+    ".hermetic(",
+    ".hermetic_nowhere(",
+    "hermetic::vars(",
+    "hermetic::in_process_vars(",
+)
+
+# A name put into an environment, as against a name merely written about.
+PUT_RE = re.compile(
+    r"(?:\.env|\.env_remove|env\.set|set_var|remove_var)\s*\(\s*\"(" + "|".join(NAMES) + r")\""
+)
+
+FN_RE = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)")
+CALL_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+failures = []
+
+
+def fail(where, message):
+    failures.append(f"rig-env-check: {where}: {message}")
+
+
+def repo_root():
+    out = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True
+    )
+    if out.returncode != 0:
+        sys.exit("rig-env-check: not inside a git checkout — nothing to read")
+    return Path(out.stdout.strip())
+
+
+def tracked(root, prefix):
+    """The tracked files under prefix. git, not a walk: a build writes a
+    target/ directory the ignore file covers and a walk would read."""
+    out = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "--", prefix], capture_output=True, text=True
+    )
+    if out.returncode != 0:
+        sys.exit(f"rig-env-check: git ls-files {prefix} failed")
+    return [p for p in out.stdout.splitlines() if p.endswith(".rs")]
+
+
+def mask(text, keep_strings):
+    """The same text with comments blanked, and string bodies too when the
+    caller does not want them — newline for newline, so every offset and line
+    number still names what it named.
+
+    Written rather than regexed because a test file is mostly string literals
+    with braces in them, and a brace counted inside one closes a function that
+    is still open."""
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                out.append(" ")
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            depth = 1
+            out.append("  ")
+            i += 2
+            while i < n and depth:
+                if text.startswith("/*", i):
+                    depth += 1
+                    out.append("  ")
+                    i += 2
+                elif text.startswith("*/", i):
+                    depth -= 1
+                    out.append("  ")
+                    i += 2
+                else:
+                    out.append("\n" if text[i] == "\n" else " ")
+                    i += 1
+            continue
+        if c == "r" and i + 1 < n and text[i + 1] in "#\"":
+            j = i + 1
+            hashes = 0
+            while j < n and text[j] == "#":
+                hashes += 1
+                j += 1
+            if j < n and text[j] == '"':
+                close = '"' + "#" * hashes
+                end = text.find(close, j + 1)
+                end = n if end < 0 else end + len(close)
+                body = text[i:end]
+                out.append(body if keep_strings else blank(body))
+                i = end
+                continue
+        if c == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    j += 1
+                    break
+                j += 1
+            body = text[i:j]
+            out.append(body if keep_strings else blank(body))
+            i = j
+            continue
+        if c == "'" and i + 1 < n:
+            # A lifetime is not a character literal, and neither opens a string.
+            j = i + 1
+            if text[j] == "\\":
+                j += 2
+                if j < n and text[j] == "'":
+                    out.append("'" + " " * (j - i - 1) + "'")
+                    i = j + 1
+                    continue
+            elif j + 1 < n and text[j + 1] == "'":
+                out.append("' '")
+                i = j + 2
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def blank(body):
+    return "".join("\n" if ch == "\n" else " " for ch in body)
+
+
+def fn_spans(masked):
+    """(name, start, end) per `fn` in the file, by brace matching the masked
+    text. Spans nest, and the innermost one containing an offset is the
+    function that offset is written in."""
+    spans = []
+    for m in FN_RE.finditer(masked):
+        brace = masked.find("{", m.end())
+        if brace < 0:
+            continue
+        # A `where` clause or a return type can carry no brace before the body
+        # here, and a declaration with no body (a trait signature) would run on
+        # to the next function's — so a `;` before the brace ends the search.
+        semi = masked.find(";", m.end())
+        if 0 <= semi < brace:
+            continue
+        depth, i, n = 0, brace, len(masked)
+        while i < n:
+            if masked[i] == "{":
+                depth += 1
+            elif masked[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    spans.append((m.group(1), m.start(), i + 1))
+                    break
+            i += 1
+    return spans
+
+
+def line_of(text, offset):
+    return text.count("\n", 0, offset) + 1
+
+
+def spawn_sites(text):
+    """Every place the built binary is handed to one of the two constructors.
+
+    A use of the binary's PATH that goes to neither — a `PathBuf::from` taking
+    its directory, a stub script the rig writes with the path in it — starts no
+    process here and is not one of these. The script a rig writes is reached
+    through a spawn that IS one, and carries that spawn's environment."""
+    for spawner in SPAWNERS:
+        needle = spawner + "("
+        start = 0
+        while True:
+            at = text.find(needle, start)
+            if at < 0:
+                break
+            start = at + len(needle)
+            rest = text[start:start + 64].lstrip()
+            if rest.startswith("&"):
+                rest = rest[1:].lstrip()
+            if rest.startswith(BINARY):
+                yield at
+
+
+def check_spawns(path, text, masked):
+    spans = fn_spans(masked)
+    by_name = {}
+    for name, start, end in spans:
+        by_name.setdefault(name, []).append((start, end))
+
+    def body(start, end):
+        return text[start:end]
+
+    applies_directly = {
+        (start, end) for _, start, end in spans if any(a in body(start, end) for a in APPLIED)
+    }
+    # A function applies the block when it calls one that does. Followed to a
+    # fixpoint inside this file, which is where every rig's applier lives.
+    applies = set(applies_directly)
+    changed = True
+    while changed:
+        changed = False
+        for name, start, end in spans:
+            if (start, end) in applies:
+                continue
+            called = {c for c in CALL_RE.findall(body(start, end)) if c != name}
+            if any((s, e) in applies for c in called for (s, e) in by_name.get(c, ())):
+                applies.add((start, end))
+                changed = True
+
+    found = 0
+    for at in spawn_sites(text):
+        found += 1
+        enclosing = [(s, e) for _, s, e in spans if s <= at < e]
+        if not enclosing:
+            fail(path, f"line {line_of(text, at)} spawns the built binary outside any function")
+            continue
+        innermost = min(enclosing, key=lambda se: se[1] - se[0])
+        if innermost not in applies:
+            name = next(n for n, s, e in spans if (s, e) == innermost)
+            fail(
+                path,
+                f"line {line_of(text, at)}: `{name}` spawns the built binary and "
+                f"neither it nor anything it calls in this file carries the env block "
+                f"— see {HELPER}",
+            )
+    return found
+
+
+def check_in_process(path, text):
+    if not any(a in text for a in IN_PROCESS_ANCHORS):
+        return 0
+    if not any(a in text for a in APPLIED):
+        fail(
+            path,
+            "drives the poll loop in this process and carries no env block, so the "
+            f"loop reads the running fleet's own roots — see {HELPER}",
+        )
+    return 1
+
+
+def check_names(path, masked_no_strings_kept):
+    found = 0
+    for m in PUT_RE.finditer(masked_no_strings_kept):
+        found += 1
+        fail(
+            path,
+            f"line {line_of(masked_no_strings_kept, m.start())} puts `{m.group(1)}` into an "
+            f"environment by hand; the block is {HELPER}'s alone",
+        )
+    return found
+
+
+def check_helper(root):
+    """The positive control. A scan whose helper had lost a name would pass
+    every check above by finding nothing, so the helper is read too."""
+    path = root / HELPER
+    if not path.is_file():
+        fail(HELPER, "the helper is not there — every check above would pass by finding nothing")
+        return
+    text = path.read_text(encoding="utf-8")
+    for name in NAMES:
+        spelled = text.count(f'"{name}"')
+        if spelled != 1:
+            fail(HELPER, f"spells \"{name}\" {spelled} times, not once")
+
+
+def main():
+    root = repo_root()
+    paths = [p for tree in TREES for p in tracked(root, tree) if p != HELPER]
+    if not paths:
+        sys.exit("rig-env-check: no tracked file under the scanned trees — nothing to check")
+
+    spawns = loops = puts = 0
+    for path in paths:
+        try:
+            text = (root / path).read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        masked = mask(text, keep_strings=False)
+        spawns += check_spawns(path, text, masked)
+        loops += check_in_process(path, text)
+        puts += check_names(path, mask(text, keep_strings=True))
+
+    check_helper(root)
+
+    # The second positive control: a scan that matched no spawn at all read
+    # nothing, and its silence would say nothing about the tree.
+    if spawns == 0:
+        fail("the scan", f"matched {BINARY} at neither constructor — it read nothing")
+
+    if failures:
+        for line in failures:
+            print(line)
+        print(f"rig-env-check: {len(failures)} finding(s)")
+        return 1
+
+    print(
+        f"rig-env-check: ok — {len(paths)} file(s), {spawns} spawn(s) of the built binary, "
+        f"{loops} in-process driver(s), {puts} hand-set root(s), block in {HELPER}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,53 @@
+[package]
+name = "fleet-controller"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The lib name is the crate's import path, and it is not the binary's name: the
+# binary is the cli crate's, so nothing here shares a name with it.
+[lib]
+name = "fleet_controller"
+path = "src/lib.rs"
+
+# What a dependent's DEV-dependency turns on to reach `test_support` — the fake
+# clock a suite drives a wait with. Off by default and never a normal
+# dependency's: under resolver 2 a dev-dependency's features do not reach a
+# non-dev build, so the shipped binary carries none of it.
+[features]
+test-support = []
+
+# Any crate, each with a work item that says why (Q1 of the controller PRD, as
+# re-ruled 2026-09-07). The work item that adds each of these is the observe
+# slice; it cannot be named here, because the boundary check forbids this
+# directory from naming the surrounding project.
+#
+# serde/serde_json: config.json, the projection and the event stream are JSON,
+# and all three are external contracts other programs read.
+# toml: fleet.toml is policy and this binary is its reader — observe reads
+# policy and never writes one. The versions are the workspace's.
+#
+# jiff: an order's `cron` trigger matches five fields against LOCAL wall-clock,
+# and the standard library reads no time zone at all — it offers UTC and
+# nothing else, so a controller without a zone database fires a nightly duty at
+# the wrong hour for most of the world and at a shifting hour under daylight
+# saving. Exact-pinned and not the workspace's, because it is one member's
+# only. Default features off: the local-zone read wants `std`, `tz-system` (the
+# zone this machine is set to) and `tzdb-zoneinfo` (the system database the two
+# target platforms both ship); the bundled database, the fat transition tables
+# and the concatenated Android format are all left out.
+[dependencies]
+jiff = { version = "=0.2.35", default-features = false, features = [
+    "std",
+    "tz-system",
+    "tzdb-zoneinfo",
+] }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+
+# This crate's own suites reach `test_support` the same way a dependent's do:
+# through a dev-dependency that turns the feature on. `cfg(test)` is not set for
+# the library an INTEGRATION test links against, so the feature is the only door.
+[dev-dependencies]
+fleet-controller = { path = ".", features = ["test-support"] }

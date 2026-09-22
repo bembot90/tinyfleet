@@ -1,0 +1,591 @@
+// The seven verbs against a fake fleet binary on FLEET_BIN — a script that
+// answers every verb from a canned envelope and hands `event …` to the real
+// binary — so each arm reads the argv the verb spawned, the step it recorded
+// with the envelope's data as its result, and the exit the wrapper takes.
+//
+// The stream lines a verb's re-run reads — a park, a resolved gate, an item's
+// landing, a child run's close — are appended by the arm itself in the stored
+// shape, the way `rig.ts` seeds the opening line.
+
+import { assert, assertEquals, assertMatch } from "jsr:@std/assert@1";
+import { GATES_DIR, replay, type Run, Waiting } from "./mod.ts";
+import {
+  closes,
+  lines,
+  type Scratch,
+  scratch as bare,
+  starts,
+} from "./testdata/rig.ts";
+import { append } from "./testdata/stream.ts";
+
+const here = import.meta.dirname!;
+
+interface Faked extends Scratch {
+  fake: string;
+}
+
+/** The scratch rig with the fake binary in front of the real one. */
+async function scratch(): Promise<Faked> {
+  const s = await bare();
+  const fake = `${s.root}/fake`;
+  await Deno.mkdir(fake);
+  const script = `${s.root}/fake-fleet`;
+  await Deno.writeTextFile(
+    script,
+    `#!/bin/sh\nexec ${JSON.stringify(Deno.execPath())} run --allow-all ${
+      JSON.stringify(`${here}/testdata/fake_fleet.ts`)
+    } ${JSON.stringify(fake)} ${JSON.stringify(s.env.bin)} "$@"\n`,
+  );
+  await Deno.chmod(script, 0o755);
+  return { ...s, fake, env: { ...s.env, bin: script } };
+}
+
+function envelope(verb: string, data: unknown): string {
+  return `${JSON.stringify({ ok: true, verb, data })}\n`;
+}
+
+function refusal(verb: string, code: string, why: string): string {
+  return `${JSON.stringify({ ok: false, verb, refusal: { code, why } })}\n`;
+}
+
+async function can(
+  s: Faked,
+  verb: string,
+  canned: {
+    stdout: string;
+    code?: number;
+    append?: { type: string; payload: Record<string, unknown> }[];
+    cwd?: string;
+  },
+): Promise<void> {
+  await Deno.writeTextFile(
+    `${s.fake}/${verb}.json`,
+    JSON.stringify({ code: 0, ...canned }),
+  );
+}
+
+/** Every argv the fake answered, in call order. */
+async function calls(s: Faked): Promise<string[][]> {
+  try {
+    const body = await Deno.readTextFile(`${s.fake}/calls.jsonl`);
+    return body.split("\n").filter((l) => l !== "").map((l) => JSON.parse(l));
+  } catch {
+    return [];
+  }
+}
+
+/** One verb's arm: the workflow run twice, the argv the fake saw, the step's
+ * recorded result equal to the envelope's data, and no second call on the
+ * replay. */
+async function oneStep<T>(
+  s: Faked,
+  name: string,
+  data: T,
+  call: (run: Run) => Promise<T>,
+): Promise<string[][]> {
+  const got: T[] = [];
+  const fn = async (run: Run) => {
+    got.push(await call(run));
+  };
+  assertEquals(await replay(fn, s.env, "{}"), { code: 0 });
+  assertEquals(got, [data], "the verb returns the envelope's data");
+  const recorded = closes(await lines(s));
+  assertEquals(recorded.length, 1);
+  assertEquals(recorded[0].payload.n, 1);
+  assertEquals(recorded[0].payload.name, name);
+  assertEquals(
+    recorded[0].payload.result,
+    data,
+    "the step's result is the data",
+  );
+  const seen = await calls(s);
+  assertEquals(seen.length, 1, "one spawn of the binary for the verb");
+
+  assertEquals(await replay(fn, s.env, "{}"), { code: 0 });
+  assertEquals(got, [data, data], "the replay returns the recorded data");
+  assertEquals((await calls(s)).length, 1, "the replay spawns nothing");
+  return seen;
+}
+
+Deno.test("AC1 spawn — fleet dispatch <item> --by <run> --json, the seat in the step's result; a reviewer or a model is refused", async () => {
+  const s = await scratch();
+  const data = { item: "it-1", state: "dispatched", seat: "tr-1" };
+  await can(s, "dispatch", { stdout: envelope("dispatch", data) });
+  const seen = await oneStep(
+    s,
+    "spawn it-1",
+    data,
+    (run) => run.spawn({ role: "builder", item: "it-1" }),
+  );
+  assertEquals(seen, [["dispatch", "it-1", "--by", s.env.runId, "--json"]]);
+
+  const t = await scratch();
+  await can(t, "dispatch", { stdout: envelope("dispatch", data) });
+  const modelled = await replay(
+    (run) => run.spawn({ role: "builder", item: "it-1", model: "a-model" }),
+    t.env,
+    "{}",
+  );
+  assertEquals(modelled.code, 1);
+  assertMatch(
+    String((modelled as { reason: unknown }).reason),
+    /pins no model/,
+  );
+  const reviewer = await replay(
+    (run) => run.spawn({ role: "reviewer" as "builder", item: "it-1" }),
+    t.env,
+    "{}",
+  );
+  assertEquals(reviewer.code, 1);
+  assertMatch(
+    String((reviewer as { reason: unknown }).reason),
+    /no verb cuts a reviewer/,
+  );
+  assertEquals(await calls(t), [], "neither refusal spawned the binary");
+});
+
+Deno.test("AC1 deliver — fleet deliver --item <item> --note <file> --by <run> --json, the commit in the step's result", async () => {
+  const s = await scratch();
+  const data = { item: "it-1", state: "delivered", commit: "0123abc" };
+  await can(s, "deliver", { stdout: envelope("deliver", data) });
+  const note = `${s.env.runDir}/note.md`;
+  const seen = await oneStep(
+    s,
+    "deliver it-1",
+    data,
+    (run) => run.deliver("it-1", note),
+  );
+  assertEquals(seen, [[
+    "deliver",
+    "--item",
+    "it-1",
+    "--note",
+    note,
+    "--by",
+    s.env.runId,
+    "--json",
+  ]]);
+});
+
+Deno.test("AC1 review — accepted is --land and { returned } is --return <file>, each the state its verdict moved the item to", async () => {
+  const s = await scratch();
+  const accepted = { item: "it-1", state: "reviewed" };
+  await can(s, "review", { stdout: envelope("review", accepted) });
+  await oneStep(
+    s,
+    "review it-1",
+    accepted,
+    (run) => run.review("it-1", "accepted"),
+  );
+  assertEquals((await calls(s))[0], [
+    "review",
+    "it-1",
+    "--land",
+    "--by",
+    s.env.runId,
+    "--json",
+  ]);
+
+  const t = await scratch();
+  const returned = { item: "it-2", state: "returned" };
+  await can(t, "review", { stdout: envelope("review", returned) });
+  const findings = `${t.env.runDir}/findings.md`;
+  await oneStep(
+    t,
+    "review it-2",
+    returned,
+    (run) => run.review("it-2", { returned: findings }),
+  );
+  assertEquals((await calls(t))[0], [
+    "review",
+    "it-2",
+    "--return",
+    findings,
+    "--by",
+    t.env.runId,
+    "--json",
+  ]);
+});
+
+Deno.test("AC1 land — fleet land <item> <sha> --by <run> --json, the landed sha in the step's result", async () => {
+  const s = await scratch();
+  const data = { item: "it-1", state: "landed", sha: "fedcba9" };
+  await can(s, "land", { stdout: envelope("land", data) });
+  const seen = await oneStep(
+    s,
+    "land it-1",
+    data,
+    (run) => run.land("it-1", "abc1234"),
+  );
+  assertEquals(seen, [[
+    "land",
+    "it-1",
+    "abc1234",
+    "--by",
+    s.env.runId,
+    "--json",
+  ]]);
+});
+
+Deno.test("AC2 gate — the question note, fleet ask on the run's record item, exit 2 with the gate id, one ask across the re-runs, then the letter", async () => {
+  const s = await scratch();
+  const runId = s.env.runId;
+  await can(s, "ask", {
+    stdout: envelope("ask", { item: runId, state: "parked", gate: "gate-7" }),
+    append: [{
+      type: "item.parked",
+      payload: {
+        item: runId,
+        reason: "ask",
+        branch: "",
+        commit: "",
+        gate: "gate-7",
+      },
+    }],
+  });
+  const letters: string[] = [];
+  const fn = async (run: Run) => {
+    await run.step("count", () => 1);
+    letters.push(await run.gate("Ship the report?", ["A. yes", "B. hold"]));
+  };
+
+  assertEquals(await replay(fn, s.env, "{}"), { code: 2, waiting: "gate-7" });
+  const note = `${s.env.runDir}/${GATES_DIR}/1.md`;
+  assertEquals(
+    await Deno.readTextFile(note),
+    "QUESTION Ship the report?\nA. yes\nB. hold\n",
+    "the note is in the question grammar",
+  );
+  assertEquals(await calls(s), [[
+    "ask",
+    "--item",
+    runId,
+    "--note",
+    note,
+    "--by",
+    runId,
+    "--json",
+  ]]);
+  let all = await lines(s);
+  assertEquals(
+    closes(all).map((l) => l.payload.n),
+    [1],
+    "the gate is started and not closed",
+  );
+  assertEquals(starts(all).map((l) => l.payload.n), [1, 2]);
+
+  // The stream has not moved past the park: the re-run waits on the same gate
+  // and asks nothing — the park on the stream is the record it reads.
+  assertEquals(await replay(fn, s.env, "{}"), { code: 2, waiting: "gate-7" });
+  assertEquals((await calls(s)).length, 1, "the re-run does not ask twice");
+
+  await append(s.env.stream, "gate.resolved", "a-person", {
+    item: runId,
+    gate: "gate-7",
+    letter: "B",
+  });
+  assertEquals(await replay(fn, s.env, "{}"), { code: 0 });
+  assertEquals(letters, ["B"]);
+  assertEquals((await calls(s)).length, 1);
+  all = await lines(s);
+  const gate = closes(all)[1];
+  assertEquals(gate.payload.name, "gate Ship the report?");
+  assertEquals(gate.payload.result, "B", "the step closes with the letter");
+
+  assertEquals(await replay(fn, s.env, "{}"), { code: 0 });
+  assertEquals(letters, ["B", "B"], "and replays it");
+  assertEquals(closes(await lines(s)).length, 2);
+});
+
+Deno.test("AC3 until — Waiting names exactly the outstanding items, in the order given, and closes when the last event lands", async () => {
+  const s = await scratch();
+  const items = ["it-a", "it-b", "it-c"];
+  let got: Record<string, unknown> | undefined;
+  const fn = async (run: Run) => {
+    got = await run.until(items, "landed");
+  };
+
+  assertEquals(await replay(fn, s.env, "{}"), {
+    code: 2,
+    waiting: ["it-a", "it-b", "it-c"],
+  });
+  await append(s.env.stream, "item.landed", "kite", {
+    item: "it-b",
+    sha: "b0b",
+    base: "0",
+    squash_of: "x",
+  });
+  await append(s.env.stream, "item.delivered", "wren", {
+    item: "it-a",
+    commit: "a0a",
+    branch: "w",
+    base: "0",
+  });
+  assertEquals(
+    await replay(fn, s.env, "{}"),
+    { code: 2, waiting: ["it-a", "it-c"] },
+    "a delivery is not a landing",
+  );
+  await append(s.env.stream, "item.landed", "kite", {
+    item: "it-c",
+    sha: "c0c",
+  });
+  assertEquals(await replay(fn, s.env, "{}"), { code: 2, waiting: ["it-a"] });
+  await append(s.env.stream, "item.landed", "kite", {
+    item: "it-a",
+    sha: "a0a",
+  });
+  assertEquals(await replay(fn, s.env, "{}"), { code: 0 });
+  assertEquals(Object.keys(got!), items);
+  assertEquals((got!["it-b"] as { sha: string }).sha, "b0b");
+  const recorded = closes(await lines(s));
+  assertEquals(recorded.map((l) => l.payload.name), [
+    "until landed it-a it-b it-c",
+  ]);
+  assertEquals(recorded[0].payload.result, got);
+  assertEquals(await calls(s), [], "until reads the stream and spawns no verb");
+
+  const t = await scratch();
+  const unknown = await replay(
+    (run) => run.until(items, "shipped" as "landed"),
+    t.env,
+    "{}",
+  );
+  assertEquals(unknown.code, 1);
+  assertMatch(
+    String((unknown as { reason: unknown }).reason),
+    /no item event is named item\.shipped/,
+  );
+});
+
+Deno.test("AC1 start — fleet run <name> --by <run> --input k=v, Waiting on the child's run id, one run across the re-runs, then { run } on run.closed; a failed child is exit 1", async () => {
+  const s = await scratch();
+  const runId = s.env.runId;
+  await can(s, "run", {
+    stdout: "fleet-run-child — deadbeef\nfleet-run-child — waiting\n",
+    append: [
+      {
+        type: "run.started",
+        payload: {
+          run: "fleet-run-child",
+          hash: "deadbeef",
+          workflow: "child",
+        },
+      },
+      {
+        type: "run.waiting",
+        payload: { run: "fleet-run-child", wake: { until: "x" }, seq: 3 },
+      },
+    ],
+  });
+  let got: { run: string } | undefined;
+  const fn = async (run: Run) => {
+    got = await run.start("child", { city: "Lisbon", n: 2 });
+  };
+
+  assertEquals(await replay(fn, s.env, "{}"), {
+    code: 2,
+    waiting: "fleet-run-child",
+  });
+  assertEquals(await calls(s), [[
+    "run",
+    "child",
+    "--by",
+    runId,
+    "--input",
+    "city=Lisbon",
+    "--input",
+    "n=2",
+  ]]);
+  assertEquals(await replay(fn, s.env, "{}"), {
+    code: 2,
+    waiting: "fleet-run-child",
+  });
+  assertEquals(
+    (await calls(s)).length,
+    1,
+    "the re-run does not start a second child",
+  );
+
+  await append(s.env.stream, "run.closed", "fleet-run-child", {
+    run: "fleet-run-child",
+  });
+  assertEquals(await replay(fn, s.env, "{}"), { code: 0 });
+  assertEquals(got, { run: "fleet-run-child" });
+  const recorded = closes(await lines(s));
+  assertEquals(recorded.map((l) => l.payload.name), ["start child"]);
+  assertEquals(recorded[0].payload.result, { run: "fleet-run-child" });
+
+  const t = await scratch();
+  await can(t, "run", {
+    stdout: "fleet-run-bad — deadbeef\nfleet-run-bad — failed\n",
+    code: 1,
+    append: [
+      {
+        type: "run.started",
+        payload: { run: "fleet-run-bad", hash: "deadbeef", workflow: "child" },
+      },
+      {
+        type: "run.failed",
+        payload: { run: "fleet-run-bad", reason: "the child said no" },
+      },
+    ],
+  });
+  const failed = await replay((run) => run.start("child"), t.env, "{}");
+  assertEquals(failed.code, 1);
+  assertMatch(String((failed as { reason: unknown }).reason), /exited 1/);
+  const again = await replay((run) => run.start("child"), t.env, "{}");
+  assertEquals(again.code, 1, "the re-run reads run.failed and starts nothing");
+  assertMatch(
+    String((again as { reason: unknown }).reason),
+    /run fleet-run-bad failed: "the child said no"/,
+  );
+  assertEquals((await calls(t)).length, 1);
+});
+
+Deno.test("AC4 refusal — a refusal envelope on land is exit 1 with the refusal's code in the reason, the step started and not closed", async () => {
+  const s = await scratch();
+  await can(s, "land", {
+    stdout: refusal("land", "refused", "the trunk moved under the landing"),
+    code: 1,
+  });
+  const outcome = await replay(
+    async (run) => {
+      await run.step("count", () => 1);
+      await run.land("it-1", "abc1234");
+    },
+    s.env,
+    "{}",
+  );
+  assertEquals(outcome, {
+    code: 1,
+    reason: {
+      verb: "land",
+      code: "refused",
+      why: "the trunk moved under the landing",
+    },
+  });
+  const all = await lines(s);
+  assertEquals(closes(all).map((l) => l.payload.n), [1]);
+  assertEquals(starts(all).map((l) => l.payload.n), [1, 2]);
+
+  // The same through the wrapper as a process: exit 1, the code on the last line.
+  const t = await scratch();
+  await can(t, "land", {
+    stdout: refusal("land", "refused", "the trunk moved under the landing"),
+    code: 1,
+  });
+  const child = await new Deno.Command(Deno.execPath(), {
+    args: [
+      "run",
+      "--allow-read",
+      "--allow-write",
+      "--allow-run",
+      "--allow-env",
+      `${here}/testdata/lands.ts`,
+    ],
+    cwd: t.env.runDir,
+    env: {
+      FLEET_RUN_ID: t.env.runId,
+      FLEET_STREAM: t.env.stream,
+      FLEET_STREAM_SEQ: "1",
+      FLEET_RUN_DIR: t.env.runDir,
+      FLEET_BIN: t.env.bin,
+      FLEET_PROJECT: t.project,
+      FLEET_DIR: t.machine,
+    },
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  const printed = new TextDecoder().decode(child.stdout).split("\n").filter((
+    l,
+  ) => l !== "");
+  assertEquals(child.code, 1, new TextDecoder().decode(child.stderr));
+  assertEquals(
+    JSON.parse(printed[printed.length - 1]),
+    {
+      reason: {
+        verb: "land",
+        code: "refused",
+        why: "the trunk moved under the landing",
+      },
+    },
+  );
+
+  // A step whose exec throws Waiting from inside a verb is still the wrapper's
+  // exit 2: the refusal path and the waiting path do not share a class.
+  assert(!(new Waiting("x") instanceof Error));
+});
+
+/** The wrapper as a process from the RUN DIRECTORY, the way core starts a
+ * run's child: `spawns.ts` under `deno run` with the six names and FLEET_DIR
+ * in its environment, the fake binary in front. */
+async function fromTheRunDirectory(
+  s: Faked,
+): Promise<{ code: number; last: string; stderr: string }> {
+  const child = await new Deno.Command(Deno.execPath(), {
+    args: [
+      "run",
+      "--allow-read",
+      "--allow-write",
+      "--allow-run",
+      "--allow-env",
+      `${here}/testdata/spawns.ts`,
+    ],
+    cwd: s.env.runDir,
+    env: {
+      FLEET_RUN_ID: s.env.runId,
+      FLEET_STREAM: s.env.stream,
+      FLEET_STREAM_SEQ: "1",
+      FLEET_RUN_DIR: s.env.runDir,
+      FLEET_BIN: s.env.bin,
+      FLEET_PROJECT: s.project,
+      FLEET_DIR: s.machine,
+    },
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  const printed = new TextDecoder().decode(child.stdout).split("\n").filter((
+    l,
+  ) => l !== "");
+  return {
+    code: child.code,
+    last: printed[printed.length - 1] ?? "",
+    stderr: new TextDecoder().decode(child.stderr),
+  };
+}
+
+Deno.test("a verb runs from the project root under a run-directory cwd: the fake binary, canned to refuse any other cwd, answers dispatch from FLEET_PROJECT while the wrapper's own cwd is the run directory", async () => {
+  const s = await scratch();
+  const data = { item: "it-1", state: "dispatched", seat: "tr-1" };
+  await can(s, "dispatch", {
+    stdout: envelope("dispatch", data),
+    cwd: s.project,
+  });
+  const ran = await fromTheRunDirectory(s);
+  assertEquals(ran.code, 0, `${ran.last}\n${ran.stderr}`);
+  const recorded = closes(await lines(s));
+  assertEquals(recorded.map((l) => l.payload.name), ["spawn it-1"]);
+  assertEquals(recorded[0].payload.result, data);
+  assertEquals(await calls(s), [
+    ["dispatch", "it-1", "--by", s.env.runId, "--json"],
+  ]);
+
+  // The control: the same fake canned to expect the run directory instead
+  // refuses, which is the fake's cwd check observed firing — so the green
+  // above is the verb's cwd and not a check that never ran.
+  const t = await scratch();
+  await can(t, "dispatch", {
+    stdout: envelope("dispatch", data),
+    cwd: t.env.runDir,
+  });
+  const refused = await fromTheRunDirectory(t);
+  assertEquals(refused.code, 1, refused.stderr);
+  assertMatch(
+    JSON.parse(refused.last).reason,
+    /exited 71: fake fleet: dispatch ran from .*, not the project root .*/,
+  );
+  assertEquals(closes(await lines(t)).length, 0, "the step never closed");
+});

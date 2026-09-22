@@ -1,0 +1,9 @@
+[pack]
+name = "tiny"
+version = "0.1.0"
+schema = 3
+description = "The opinion: how this fleet designs, builds, reviews and holds itself."
+
+[imports.ts]
+source = "../ts"
+version = "0.1.0"

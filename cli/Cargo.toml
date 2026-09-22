@@ -1,0 +1,51 @@
+[package]
+name = "fleet-cli"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# One binary, and it is named fleet: the package name carries the -cli suffix so
+# no crate in the workspace shares a name with the binary a user installs.
+[[bin]]
+name = "fleet"
+path = "src/main.rs"
+
+# This crate is the one binary and depends on both halves: fleet-core for the
+# pack-and-project verbs, fleet-controller for the service ones. The edge runs
+# this way only — neither of those depends on the other.
+[dependencies]
+fleet-controller = { path = "../controller" }
+fleet-core = { path = "../core" }
+
+# serde_json is the claude adapter's: the payload a pre-tool hook is handed and
+# the document it reads a refusal out of are JSON and are one provider's
+# contract, which is why they sit in this crate rather than in fleet-core
+# (Alberto's provider-neutral ruling, 2026-09-08). It is the workspace's own
+# version and no new crate enters the tree. tests/workspace.rs reads
+# `cargo metadata` through the same dependency.
+serde_json.workspace = true
+
+# clap owns the argument surface and anyhow owns the errors, in this crate only:
+# the cli PRD gives every command one dispatch with one arm per family and one
+# exit vocabulary, and both are shapes a binary holds. A library member that took
+# either would be deciding how a caller's process ends.
+anyhow.workspace = true
+clap.workspace = true
+
+# The three presentation crates, in this crate only and behind src/ui.rs: console
+# styles the status lines, indicatif draws the bar and the spinner on stderr, and
+# dialoguer asks the questions `create` will ask. A library member that took any
+# of them would be deciding what a caller's terminal looks like.
+console.workspace = true
+dialoguer.workspace = true
+indicatif.workspace = true
+
+# The controller again, with `test-support` on: the fake clock this crate's own
+# suite drives a wait against. A dev-dependency, so under resolver 2 the feature
+# reaches the test targets and never the binary a release build produces.
+#
+# fleet-core the same way, for the applying fake store the flight engine's own
+# arm opens through its store seam.
+[dev-dependencies]
+fleet-controller = { path = "../controller", features = ["test-support"] }
+fleet-core = { path = "../core", features = ["test-support"] }

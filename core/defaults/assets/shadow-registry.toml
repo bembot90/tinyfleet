@@ -1,0 +1,82 @@
+# Every file a pack on top of the binary's defaults may replace, with one line
+# saying what it is for. Anything this file does not list is the defaults' own
+# implementation: a pack that needs one of those changed files an issue rather
+# than a copy of the file.
+#
+# The guards themselves are not here and cannot be: they are compiled into the
+# one binary, and what a pack may replace is the WIRING — which classes a
+# provider runs, in which order — and the health check that reports on them.
+
+schema = 1
+
+[[shadow]]
+path = "overlay/per-provider/claude/hooks.json"
+purpose = "which guard classes this provider's sessions run before a shell call, and in what order"
+
+[[shadow]]
+path = "overlay/per-provider/claude/permissions.json"
+purpose = "the permission rules a transient seat's session comes up under, with {suite} and {worktree} rendered at the spawn"
+
+[[shadow]]
+path = "doctor/guards-installed/doctor.toml"
+purpose = "the guard health check's own name and description"
+
+[[shadow]]
+path = "doctor/guards-installed/run.sh"
+purpose = "what the guard health check runs and which status it reports"
+
+[[shadow]]
+path = "doctor/isolation-pair/doctor.toml"
+purpose = "the isolation probe's own name and description"
+
+[[shadow]]
+path = "doctor/isolation-pair/run.sh"
+purpose = "which knobs a provider's isolation is measured through, and which status the pair reports"
+
+[[shadow]]
+path = "doctor/runtime-version/doctor.toml"
+purpose = "the runtime check's own name and description"
+
+[[shadow]]
+path = "doctor/runtime-version/run.sh"
+purpose = "how a pack's pinned runtime is asked for its version and which readings count as holding — the shape the defaults ship against no [runtime] table of their own, for the feature-layer pack that pins one to replace"
+
+[[shadow]]
+path = "assets/brief.md"
+purpose = "the first turn a dispatched seat reads, and the contract it works under"
+
+[[shadow]]
+path = "assets/review-brief.md"
+purpose = "the first turn a spawned reviewer reads, carrying the delivery, the size line, the item and the one verdict it may write"
+
+[[shadow]]
+path = "assets/dispatch-note.md"
+purpose = "the one line an order writes on an item, and the words a reader greps for"
+
+[[shadow]]
+path = "assets/delivery-note.md"
+purpose = "the note a delivery renders, with the machine-read lines a reviewer parses"
+
+[[shadow]]
+path = "assets/verdict.md"
+purpose = "the two shapes a review writes, and the markers a reader tells them from a delivery by"
+
+[[shadow]]
+path = "assets/landing-note.md"
+purpose = "the note a landing renders, with the one line a script reads the landed sha and the suite off"
+
+[[shadow]]
+path = "assets/park-note.md"
+purpose = "the note a park renders, carrying the question, the branch, the commit and the gate the answer resolves, and the RESUME section a resumed seat's brief carries"
+
+[[shadow]]
+path = "assets/question-note.md"
+purpose = "the grammar a seat's blocking question is written in: the marker, the question and one lettered option per line"
+
+[[shadow]]
+path = "assets/answer-note.md"
+purpose = "the note an answer renders, carrying the gate it resolved, the letter a person chose and what they said beyond it"
+
+[[shadow]]
+path = "assets/rules.md"
+purpose = "the every-turn rules, the exit table, and what each verb writes"

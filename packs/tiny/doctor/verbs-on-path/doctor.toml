@@ -1,0 +1,8 @@
+description = "Which copy of the fleet binary this session's shell resolves, and what version it is."
+run = "run.sh"
+
+# A session can hold several checkouts at once, each with a build of its own, and
+# nothing in a shell says which one a bare command word reaches. A seat that
+# measured against one copy and reported against another has measured nothing, so
+# this entry prints the resolved path beside the version rather than either
+# alone.

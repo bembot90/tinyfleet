@@ -1,0 +1,60 @@
+# The smallest policy `fleet observe` runs on. Point a machine directory's
+# `config.json` at a copy of this with its `fleet_toml` key.
+
+[controller]
+# Seconds between polls.
+poll_seconds = 5
+
+# Where a seat is told it is heavy. A fraction of the agent's context window,
+# which is the agent's to change — so a release that only moves window sizes
+# makes this number wrong with nothing reporting it.
+rest_threshold_tokens = 700000
+
+# How long a dispatch is given to be answered by a sighting before the seat is
+# eligible again. A start that has not shown up yet is not a seat that needs
+# another one.
+arrival_window_seconds = 45
+
+# How long a start is watched for an immediate failure, and how long one nudge
+# turn may run.
+start_watch_seconds = 5
+nudge_timeout_seconds = 90
+
+# The model a start names when the seat's own row does not. Mandatory on every
+# start: a start with no model comes up on the cheapest model available.
+default_model = "claude-opus-5"
+
+# The permission posture a start asks for — one for a named seat, one for a
+# spawned (transient) row. The pinned CLI accepts auto, dontAsk, acceptEdits,
+# bypassPermissions, manual and plan.
+posture = "auto"
+transient_posture = "dontAsk"
+
+# The models measured to honour a requested posture, matched BY PREFIX. A row
+# whose start would ask for `auto` on a model outside this list is dropped at
+# config read, because the downgrade is silent everywhere an instrument looks.
+auto_capable_models = ["claude-opus-5", "claude-fable-5", "claude-sonnet-5"]
+
+# The first turn a woken session is started with. `{seat}` is the seat
+# directory.
+first_turn = "/wake {seat}"
+
+# The model one nudge turn runs on: one sentence to one session, so the cheapest
+# model the fleet keeps rather than the seat's own.
+nudge_model = "claude-haiku-4-5-20251001"
+
+[substrate.claude_code]
+# The agent release this fleet's measurements are pinned to — the most recent
+# one ../brain/lessons/claude-code.md re-measured against, not the release every
+# entry there was taken on. The projection publishes it beside the version the
+# binary reports this poll; a spread between them is a flag to re-measure.
+version = "2.1.261"
+
+# Whether the provider's two isolation knobs still scope a spawned seat's
+# configuration directory WITHOUT logging it out — `holds` or `broken`. Written
+# by a person from the `isolation-pair` doctor entry the binary's defaults ship,
+# at every move of the version above, and by no check: a policy file edited by
+# a check is one
+# nobody can read as a record of what a person confirmed. `broken` is a fleet
+# whose spawned seats come up logged out and whose every first turn fails.
+isolation_pair = "holds"

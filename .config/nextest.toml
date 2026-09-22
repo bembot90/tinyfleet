@@ -1,0 +1,80 @@
+nextest-version = "0.9.111"
+
+# fail-fast off for the reason backend/.config/nextest.toml states: a gate is
+# asked which arms failed, and a run cancelled at the first red answers a
+# different question. No setup scripts — the per-run dolt server is the
+# Makefile's wrapper (the per-run dolt server), not nextest's.
+#
+# slow-timeout bounds every arm: past two periods the arm is killed and reported
+# red BY NAME, where before nothing bounded it and one arm held a lane for 4920 s
+# (the flight-suite hang bead; this is its profile half, and the fixture half —
+# the fly bounded, the child killed on drop — stays on that bead). leak-timeout
+# bounds a child an arm leaves behind. THE PERIOD IS MEASURED, NEVER ASSUMED: it
+# is the slowest green arm of the last clean baseline rounded up (75.9 s on
+# 2026-09-17 at four threads, the slowest of three judged runs whose three
+# readings were 75.904 s, 68.135 s and 64.740 s; a 30 s period set before any
+# measurement killed 141 arms at exactly 60 s), and each slice of the
+# under-one-minute plan lowers it to what it measured. The 2 s cap the plan's
+# last step asked for is NOT what this baseline supports and is not set here —
+# at 1 s x 2 every one of those three arms dies green. No bead id here: the
+# boundary check refuses the surrounding project's name anywhere under fleet/.
+#
+# default-filter excludes the ring lane — the end-to-end binaries named ring_*,
+# which spawn the shipped binary against real repositories and are the suite's
+# long arms. They are selected BY BINARY and never by a list of arm names: an
+# arm added to a ring_ file is in the lane by construction, where a name list
+# goes stale silently. The budget this profile's junit report is held to is a
+# statement about this population and not about the ring's.
+[profile.default]
+fail-fast = false
+slow-timeout = { period = "80s", terminate-after = 2, grace-period = "5s" }
+leak-timeout = "1s"
+default-filter = 'not binary(/^ring_/)'
+
+# The junit report is the instrument: fleet/tools/suite-profile reads every
+# arm's seconds and the run's test-phase time from it, and the fleet-test
+# target holds that time to the budget in the project's fleet.toml. Written
+# under this profile's store directory, target/nextest/default/, gitignored.
+[profile.default.junit]
+path = "junit.xml"
+
+# The ring lane: the end-to-end arms, run serially and judged by nothing. One
+# test thread because the lane's cost is a property of how it is SCHEDULED — the
+# cheapest flight arm measured 90.650 s alone against 168.384 s inside the
+# four-thread suite — so serial is cheaper per arm here than sharing the box.
+#
+# slow-timeout is WRITTEN OUT rather than inherited, and that is the point of it:
+# the default period is lowered by each slice of the suite's under-one-minute
+# plan, and the ring's arms are the ones that plan is moving the net away from.
+# The two periods parted company the day the default's was set from its own
+# baseline, which is what writing the key out was for. The value is the ring's
+# own measurement — the slowest ring arm ran 611 s green under this 660 s
+# ceiling.
+#
+# Its junit report lands under this profile's own store directory,
+# target/nextest/ring/, so the budget's instrument — which reads the default
+# profile's — never sees an arm from this lane.
+[profile.ring]
+default-filter = 'binary(/^ring_/)'
+test-threads = 1
+slow-timeout = { period = "330s", terminate-after = 2, grace-period = "5s" }
+
+[profile.ring.junit]
+path = "junit.xml"
+
+# A measurement profile, and the only thing it changes is the leak grace. A
+# LEAK's dependence on that grace cannot be read from a filterset — the grace
+# is not a property of the arms — so the pair is read by running the same
+# filter in one window under this profile and under the default. Every other
+# setting is inherited from [profile.default], which is how nextest resolves a
+# profile. Nothing gates on this profile; tools/soak --profile and
+# tools/leakwatch --profile name it.
+#
+# default-filter is restated here for that reason and not against it: inherited,
+# the default profile's exclusion would take the ring binaries away from the
+# instrument that exists to watch long arms, which is the population most likely
+# to leak. all() is nextest's own default value for the key. The 1 s side of the
+# pair for a ring arm is the ring profile, not the default one.
+[profile.leak5]
+leak-timeout = "5s"
+default-filter = 'all()'

@@ -1,0 +1,734 @@
+#!/usr/bin/env python3
+"""leakwatch — run a nextest filter and, at the instant a test process exits,
+take an lsof over that test's own process group, so a LEAK verdict can be read
+against the processes that were alive inside the leak grace.
+
+nextest reports LEAK when a test's output pipe is still open a leak-timeout
+after the test process exits, and it offers no hook at that boundary: the LEAK
+line is printed once the grace has already expired. The question a LEAK asks —
+WHICH process still holds the pipe — therefore has no instrument in the tree,
+and tools/soak answers a different one (how often, at what load, on which arm).
+
+The shape that works rests on one fact about how nextest runs a test: each test
+process is its own process group leader (pgid == pid), so every child it leaves
+behind carries that pgid. `lsof -g <test pid>` is therefore exactly "over the
+test's process group", and a survivor in it is exactly a candidate holder.
+
+    leakwatch -E '<filter>' [--runs N] [--poll-ms 50] [--profile P]
+              [--grace-s S] [--max-lsof N] [--stop-on-leak]
+    leakwatch --self-test
+
+Per run, one thread runs two cadences:
+
+  * every --poll-ms it reads the box's process table (pid, pgid, args) and
+    registers every live test process, named by the `--exact <arm>` nextest
+    passes it;
+  * every 2 ms it asks kill(pid, 0) of each registered arm, which forks
+    nothing, so the exit instant is caught to the millisecond rather than to
+    the tick. kill answers "gone" once nextest has reaped the child, which is
+    also when nextest starts the grace.
+
+On that instant `lsof -g <pid>` runs, and twice more inside the grace, each
+reading stamped with its offset from the exit. The run's verdict is read with
+soak's own classifier, so a LEAK names its arm and that arm's watch record can
+be printed against it.
+
+WHAT A CLEAN READING MEANS, AND WHAT IT DOES NOT. "No survivor in the group" is
+a finding only if the poller saw the arm at all: an arm shorter than one tick is
+never registered, and its silence says nothing. Every report therefore prints
+coverage — arms registered over tests run — and a run whose leaking arm was
+never registered reads NO HOLDER only when the census clears the whole box for
+the grace, and CANDIDATE HOLDER otherwise. And the group is not the whole box:
+a child that called setsid, or a process that inherited the pipe without ever
+being in the group, is outside `lsof -g` and is NOT ruled out by any reading
+here. What is ruled out is the ordinary shape — a child a test left behind.
+
+Exit codes: 0 no run leaked; 1 at least one run leaked and its record is
+printed; 2 nextest itself could not run, or --self-test disagreeing.
+
+Conventions: brain/harness/tools.md.
+"""
+
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+ME = "leakwatch"
+FLEET_DIR = Path(__file__).resolve().parents[1]
+TOOLS_DIR = FLEET_DIR / "tools"
+DOLT_TEST_SERVER = TOOLS_DIR / "dolt-test-server"
+SOAK = TOOLS_DIR / "soak"
+
+# `<...>/target/debug/deps/brief-6e324e2d5294999c --exact <arm> --nocapture` —
+# the argv nextest gives a test process. The hash is part of the binary name
+# and is kept: two binaries of the same crate differ only by it.
+ARM_RE = re.compile(r"/deps/([^/\s]+)\s+--exact\s+(\S+)")
+PS_LINE_RE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(.*)$")
+PS_CMD = ["ps", "-Ao", "pid=,pgid=,args="]
+
+KILL_POLL_S = 0.002
+LSOF_OFFSETS = (0.0, 0.35, 0.8)  # fractions of the grace
+# lsof over a group whose leader is gone walks the whole process table, so it is
+# neither free nor safe to fire per arm: a 21-arm filter at three offsets each is
+# 63 concurrent whole-box scans, which on this box took the 1-minute load from 5
+# to 165 and starved the very run being measured. One at a time, and a cap.
+DEFAULT_MAX_LSOF = 6
+
+
+def load_soak():
+    """soak has no .py suffix and is the classifier of record: a second parser
+    for nextest's tokens would be a second thing to keep true."""
+    loader = importlib.machinery.SourceFileLoader("soak_mod", str(SOAK))
+    spec = importlib.util.spec_from_loader("soak_mod", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def ps_snapshot():
+    """[(pid, pgid, args)] for every process on the box."""
+    try:
+        out = subprocess.run(PS_CMD, capture_output=True, text=True).stdout
+    except OSError:
+        return []
+    procs = []
+    for line in out.splitlines():
+        m = PS_LINE_RE.match(line)
+        if m:
+            procs.append((int(m.group(1)), int(m.group(2)), m.group(3)))
+    return procs
+
+
+def alive(pid):
+    """kill(pid, 0) sends no signal and forks nothing. False once the child has
+    been reaped, which is the moment nextest's grace starts."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def lsof_group(pgid, timeout=10):
+    """lsof over one process group. Returns (rc, lines). rc 1 with no lines is
+    lsof's own "nothing matched", which is the reading we are usually after."""
+    try:
+        p = subprocess.run(
+            ["lsof", "-g", str(pgid), "-n", "-P"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None, []
+    lines = [ln for ln in p.stdout.splitlines() if ln.strip()]
+    return p.returncode, lines
+
+
+def pipe_holders(lines, exclude_pids=()):
+    """The lsof rows naming a pipe, minus the pids asked to be excluded. lsof's
+    TYPE column is PIPE on macOS and FIFO on linux; both are counted."""
+    out = []
+    for ln in lines[1:]:
+        cols = ln.split()
+        if len(cols) < 5:
+            continue
+        try:
+            pid = int(cols[1])
+        except ValueError:
+            continue
+        if pid in exclude_pids:
+            continue
+        if any(c in ("PIPE", "FIFO") for c in cols[3:6]):
+            out.append(ln)
+    return out
+
+
+class ArmWatch:
+    """One test process, from the tick that first saw it to the end of its
+    grace."""
+
+    def __init__(self, pid, binary, name, seen_at):
+        self.pid = pid
+        self.binary = binary
+        self.name = name
+        self.first_seen = seen_at
+        self.last_seen = seen_at
+        self.exit_at = None
+        self.ticks = []  # (offset_from_exit, [survivor pids])
+        self.lsofs = []  # (offset_from_exit, rc, line_count, holder_lines)
+
+    @property
+    def label(self):
+        crate = self.binary.rsplit("-", 1)[0]
+        return "%s %s" % (crate, self.name)
+
+
+class Orphan:
+    """A process whose process group leader is gone — which, given that nextest
+    makes every test process its own group leader, is exactly the shape of a
+    child a test left behind. Registered without ever having seen the arm, so
+    an arm too short to sample still cannot hide its leavings."""
+
+    def __init__(self, pid, pgid, args, seen_at):
+        self.pid = pid
+        self.pgid = pgid
+        self.args = args
+        self.first_seen = seen_at
+        self.last_seen = seen_at
+        self.sightings = 1
+        self.lsof = None  # (offset, rc, rows, pipe rows)
+
+
+class Watcher(threading.Thread):
+    """The poll thread. Owns every reading taken while nextest runs."""
+
+    def __init__(
+        self,
+        t0,
+        poll_s,
+        grace_s,
+        baseline_pids=(),
+        max_lsof=DEFAULT_MAX_LSOF,
+        own_pgid=None,
+    ):
+        super().__init__(daemon=True)
+        self.t0 = t0
+        self.poll_s = poll_s
+        self.grace_s = grace_s
+        self.max_lsof = max_lsof
+        self.lsof_lock = threading.Lock()
+        self.lsof_fired = 0
+        self.lsof_suppressed = 0
+        # Every pid alive before nextest started. A desktop carries orphaned
+        # groups of its own — an editor's crash handler, a daemon, an emulator —
+        # and none of them can be this run's leavings.
+        self.baseline_pids = set(baseline_pids)
+        # The wrapper tree runs in this session's own process group, and that
+        # group's leader is long gone in any detached run — so every cargo,
+        # dolt and kill of the run would read as an orphan. It is the run's
+        # own shell, never a test's leavings.
+        self.own_pgid = own_pgid
+        self.orphans_own_group = 0
+        self.stop_flag = threading.Event()
+        self.arms = {}  # pid -> ArmWatch
+        self.orphans = {}  # pid -> Orphan
+        self.orphans_preexisting = 0
+        self.ps_ticks = 0
+        self.first_grace_read = False
+
+    def _register(self, snap, now):
+        for pid, pgid, args in snap:
+            m = ARM_RE.search(args)
+            if not m:
+                continue
+            if pid in self.arms:
+                self.arms[pid].last_seen = now
+            else:
+                self.arms[pid] = ArmWatch(pid, m.group(1), m.group(2), now)
+
+    def _register_orphans(self, snap, now):
+        live = {pid for pid, _, _ in snap}
+        for pid, pgid, args in snap:
+            if pgid == pid or pgid in live or pgid <= 1:
+                continue
+            if pid in self.baseline_pids:
+                self.orphans_preexisting += 1
+                continue
+            if self.own_pgid is not None and pgid == self.own_pgid:
+                self.orphans_own_group += 1
+                continue
+            known = self.orphans.get(pid)
+            if known is not None:
+                known.last_seen = now
+                known.sightings += 1
+                if known.sightings == 2 and known.lsof is None:
+                    self._fire_orphan_lsof(known, now)
+                continue
+            self.orphans[pid] = Orphan(pid, pgid, args, now)
+
+    def _budget(self):
+        """True when one more whole-box lsof is affordable. Counted, so the
+        report can say how many readings were declined rather than implying the
+        ones printed are all there were."""
+        if self.lsof_fired >= self.max_lsof:
+            self.lsof_suppressed += 1
+            return False
+        self.lsof_fired += 1
+        return True
+
+    def _fire_orphan_lsof(self, orphan, now):
+        if not self._budget():
+            return
+
+        def work():
+            with self.lsof_lock:
+                rc, lines = lsof_group(orphan.pgid)
+            orphan.lsof = (now - self.t0, rc, len(lines), pipe_holders(lines))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _survivors(self, snap, pgid):
+        return [pid for pid, g, _ in snap if g == pgid and pid != pgid]
+
+    def _fire_lsof(self, arm, offset):
+        if not self._budget():
+            return
+
+        def work():
+            with self.lsof_lock:
+                rc, lines = lsof_group(arm.pid)
+            arm.lsofs.append((offset, rc, len(lines), pipe_holders(lines, (arm.pid,))))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def run(self):
+        next_ps = 0.0
+        snap = []
+        pending = {}  # pid -> [offsets not yet fired]
+        while not self.stop_flag.is_set():
+            now = time.monotonic()
+            if now >= next_ps:
+                snap = ps_snapshot()
+                self.ps_ticks += 1
+                self._register(snap, now - self.t0)
+                self._register_orphans(snap, now)
+                next_ps = now + self.poll_s
+                for arm in self.arms.values():
+                    if arm.exit_at is not None and now - arm.exit_at <= self.grace_s + 0.3:
+                        arm.ticks.append(
+                            (now - arm.exit_at, self._survivors(snap, arm.pid))
+                        )
+            for arm in list(self.arms.values()):
+                if arm.exit_at is None:
+                    if not alive(arm.pid):
+                        arm.exit_at = now
+                        pending[arm.pid] = [f * self.grace_s for f in LSOF_OFFSETS]
+                    continue
+                due = pending.get(arm.pid)
+                if not due:
+                    continue
+                off = now - arm.exit_at
+                if off < due[0]:
+                    continue
+                due.pop(0)
+                # An lsof is spent only where the process table already says
+                # there is something to look at, or once per run so that every
+                # run carries a reading taken inside a grace. Firing it for
+                # every arm at every offset is what melted the box.
+                has_survivor = bool(arm.ticks and arm.ticks[-1][1])
+                if has_survivor or not self.first_grace_read:
+                    self.first_grace_read = True
+                    self._fire_lsof(arm, off)
+            time.sleep(KILL_POLL_S)
+
+
+def read_load():
+    try:
+        out = subprocess.run(["uptime"], capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    m = re.search(r"load averages?:\s*([\d.]+)", out)
+    return float(m.group(1)) if m else None
+
+
+def run_once(filt, profile, poll_s, grace_s, max_lsof):
+    cmd = [str(DOLT_TEST_SERVER), "cargo", "nextest", "run", "--workspace", "-E", filt]
+    if profile:
+        cmd += ["--profile", profile]
+    t0 = time.monotonic()
+    load = read_load()
+    baseline = {pid for pid, _, _ in ps_snapshot()}
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(FLEET_DIR),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    watcher = Watcher(
+        t0,
+        poll_s,
+        grace_s,
+        baseline,
+        max_lsof,
+        os.getpgid(proc.pid),
+    )
+    watcher.start()
+    lines = []
+    for line in proc.stdout:
+        lines.append((time.monotonic() - t0, line.rstrip("\n")))
+    proc.wait()
+    time.sleep(max(grace_s, 0.5))  # let the last in-grace lsof land
+    watcher.stop_flag.set()
+    watcher.join(timeout=5)
+    return watcher, lines, load, time.monotonic() - t0
+
+
+def in_grace(orphan, t0, token_at, grace_s):
+    """True when a sighting of this process overlaps the grace that ended at the
+    verdict line. A process seen only after the line cannot have held the pipe
+    through it; one seen only before the grace opened cannot either."""
+    first = orphan.first_seen - t0
+    last = orphan.last_seen - t0
+    return first <= token_at and last >= token_at - grace_s
+
+
+def leak_line_offset(lines, arm_name):
+    for off, text in lines:
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", text)
+        if "LEAK" in plain and arm_name in plain:
+            return off
+    return None
+
+
+def report(soak_mod, filt, idx, runs, watcher, lines, load, wall, grace_s):
+    raw = "\n".join(text for _, text in lines)
+    try:
+        verdict, arm_wall, tests, detail, leaking = soak_mod.classify(raw)
+    except soak_mod.NextestCouldNotRun as err:
+        print("%s: run %d — nextest could not run: %s" % (ME, idx, err), file=sys.stderr)
+        return None
+
+    # classify()'s wall is the slowest arm of the run, which for a LEAK run is
+    # almost never the arm that leaked. The leaking arm's own token time is the
+    # number that says whether it sat out the whole grace.
+    per_arm = {
+        "%s %s" % (binary, name): secs
+        for (binary, name), (_tok, secs) in soak_mod.parse_tokens(
+            soak_mod.strip_ansi(raw)
+        ).items()
+    }
+    seen = len(watcher.arms)
+    out = []
+    out.append("%s — %s — run %d/%d" % (ME, filt, idx, runs))
+    out.append(
+        "  verdict %-8s arm-wall %6.3fs  wrapper %6.1fs  load %s  tests %d  arms registered %d/%d  ps ticks %d  lsof %d fired/%d declined"
+        % (
+            verdict,
+            arm_wall,
+            wall,
+            ("%.2f" % load) if load is not None else "n/a",
+            tests,
+            seen,
+            tests,
+            watcher.ps_ticks,
+            watcher.lsof_fired,
+            watcher.lsof_suppressed,
+        )
+    )
+    if verdict == "PASS":
+        print("\n".join(out))
+        return verdict
+
+    out.append(
+        "  processes orphaned into a TEST's process group, new since this run "
+        "started: %d (excluded: %d sightings predating the run, %d in the "
+        "wrapper's own group)"
+        % (
+            len(watcher.orphans),
+            watcher.orphans_preexisting,
+            watcher.orphans_own_group,
+        )
+    )
+    for orphan in sorted(watcher.orphans.values(), key=lambda o: o.first_seen):
+        out.append(
+            "    pid %d in dead group %d, +%.3fs..+%.3fs: %s"
+            % (
+                orphan.pid,
+                orphan.pgid,
+                orphan.first_seen - watcher.t0,
+                orphan.last_seen - watcher.t0,
+                orphan.args[:160],
+            )
+        )
+        if orphan.lsof:
+            off, rc, rows, pipes = orphan.lsof
+            out.append(
+                "      lsof -g %d at +%.3fs: rc %s, %d row(s), %d pipe row(s)"
+                % (orphan.pgid, off, rc, rows, len(pipes))
+            )
+            for h in pipes:
+                out.append("        %s" % h)
+
+    for name in leaking:
+        short = name.split(" ", 1)[1] if " " in name else name
+        out.append(
+            "  %s arm: %s — its own token reads [%s]"
+            % (
+                verdict,
+                name,
+                ("%.3fs" % per_arm[name]) if name in per_arm else "not parsed",
+            )
+        )
+        token_at = leak_line_offset(lines, short)
+        overlapping = []
+        if token_at is not None:
+            out.append("    nextest printed the %s line at +%.3fs" % (verdict, token_at))
+            for orphan in sorted(watcher.orphans.values(), key=lambda o: o.first_seen):
+                hit = in_grace(orphan, watcher.t0, token_at, grace_s)
+                if hit:
+                    overlapping.append(orphan)
+                out.append(
+                    "      census: pid %d (dead group %d) seen %+.3fs..%+.3fs "
+                    "relative to that line — %s the %.1fs grace before it"
+                    % (
+                        orphan.pid,
+                        orphan.pgid,
+                        (orphan.first_seen - watcher.t0) - token_at,
+                        (orphan.last_seen - watcher.t0) - token_at,
+                        "INSIDE" if hit else "outside",
+                        grace_s,
+                    )
+                )
+        watch = next((a for a in watcher.arms.values() if a.name == short), None)
+        if watch is None:
+            if token_at is None:
+                out.append(
+                    "    UNREADABLE — the poller never registered this arm's process "
+                    "and the %s line carries no offset; this run says nothing"
+                    % verdict
+                )
+            elif overlapping:
+                out.append(
+                    "    CANDIDATE HOLDER — the poller never registered this arm's "
+                    "process (it lived under one %.0f ms tick), so its own group is "
+                    "not claimed either way, but %d process(es) above were orphaned "
+                    "into a test's group INSIDE the grace"
+                    % (watcher.poll_s * 1000, len(overlapping))
+                )
+            else:
+                out.append(
+                    "    NO HOLDER — the poller never registered this arm's own "
+                    "process (it lived under one %.0f ms tick), so nothing is claimed "
+                    "about that group by name; but across the %d ticks of this run no "
+                    "process NEW since it started was in ANY orphaned test process "
+                    "group inside the %.1fs grace, and a child left holding a test's "
+                    "pipe is in one — the positive control names such a child by pid "
+                    "and command from this same reading"
+                    % (watcher.poll_s * 1000, watcher.ps_ticks, grace_s)
+                )
+            continue
+        out.append(
+            "    pid %d, first seen +%.3fs, exited +%.3fs after run start"
+            % (watch.pid, watch.first_seen, (watch.exit_at - watcher.t0))
+        )
+        if not watch.ticks and not watch.lsofs:
+            out.append("    no reading taken inside the grace")
+        for off, survivors in watch.ticks:
+            out.append(
+                "    +%.3fs  ps: %d process(es) in group %d%s"
+                % (
+                    off,
+                    len(survivors),
+                    watch.pid,
+                    (" — pids %s" % survivors) if survivors else "",
+                )
+            )
+        for off, rc, count, holders in sorted(watch.lsofs):
+            out.append(
+                "    +%.3fs  lsof -g %d: rc %s, %d row(s), %d pipe row(s)%s"
+                % (off, watch.pid, rc, count, len(holders), "" if not holders else ":")
+            )
+            for h in holders:
+                out.append("        %s" % h)
+        lo = leak_line_offset(lines, short)
+        if lo is not None:
+            out.append("    nextest printed the %s line at +%.3fs" % (verdict, lo))
+        held = any(h for _, _, _, h in watch.lsofs)
+        anyproc = any(s for _, s in watch.ticks) or any(c for _, _, c, _ in watch.lsofs)
+        if held or anyproc:
+            out.append("    HOLDER PRESENT — see the rows above")
+        else:
+            out.append(
+                "    NO HOLDER — no process was in the arm's process group at any "
+                "reading inside the %.0fs grace, and lsof over that group matched nothing"
+                % grace_s
+            )
+    print("\n".join(out))
+    return verdict
+
+
+def self_test():
+    checks = []
+
+    def check(name, got, want):
+        checks.append((name, got == want, "%r != %r" % (got, want)))
+
+    args = (
+        "/Volumes/x/fleet/target/debug/deps/brief-6e324e2d5294999c "
+        "--exact a_dispatch_with_no_seat_yet_says_so_where_the_seat_goes --nocapture"
+    )
+    m = ARM_RE.search(args)
+    check("arm regex finds the binary", m.group(1), "brief-6e324e2d5294999c")
+    check(
+        "arm regex finds the name",
+        m.group(2),
+        "a_dispatch_with_no_seat_yet_says_so_where_the_seat_goes",
+    )
+    check("a plain nextest process is not an arm", ARM_RE.search("cargo nextest run"), None)
+
+    line = "  37308   37308 /x/deps/brief-abc --exact foo --nocapture"
+    m = PS_LINE_RE.match(line)
+    check("ps line pid", int(m.group(1)), 37308)
+    check("ps line pgid", int(m.group(2)), 37308)
+
+    w = ArmWatch(1, "brief-6e324e2d5294999c", "foo", 0.0)
+    check("label drops the hash", w.label, "brief foo")
+
+    header = "COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME"
+    rows = [
+        header,
+        "sleep   40100 me     1u   PIPE 0x1234      16384      ->0xabcd",
+        "sleep   40100 me    cwd    DIR 1,17         640   12345 /tmp",
+        "brief   37308 me     1u   PIPE 0x1234      16384      ->0xabcd",
+    ]
+    check("pipe rows found", len(pipe_holders(rows)), 2)
+    check("the arm's own pipe row is excluded", len(pipe_holders(rows, (37308,))), 1)
+    check("a non-pipe row is not a holder", pipe_holders([header, rows[2]]), [])
+
+    lines = [(0.1, "x"), (1.6, "\x1b[33;1m        LEAK\x1b[0m [   1.049s] ( 1/21) b foo")]
+    check("LEAK line offset", leak_line_offset(lines, "foo"), 1.6)
+    check("a name not in the output has no offset", leak_line_offset(lines, "bar"), None)
+
+    # The orphan census, on a synthetic process table: pid 400's group leader
+    # 55 is gone and pid 400 predates the run, so it is excluded; pid 500's
+    # leader 66 is gone and pid 500 is new, so it is the leaving of this run.
+    # pid 600 leads its own group and pid 700's leader is alive.
+    snap = [
+        (400, 55, "an editor's crash handler"),
+        (500, 66, "sleep 30"),
+        (600, 600, "a group leader"),
+        (700, 600, "a live child"),
+    ]
+    w = Watcher(0.0, 1.0, 1.0, baseline_pids={400})
+    w._register_orphans(snap, 1.0)
+    check("only the run's own orphan is registered", sorted(w.orphans), [500])
+    check("the orphan's dead group is kept", w.orphans[500].pgid, 66)
+    check("a pre-existing orphan is counted, not registered", w.orphans_preexisting, 1)
+    w2 = Watcher(0.0, 1.0, 1.0, baseline_pids=())
+    w2._register_orphans(snap, 1.0)
+    check("without a baseline the desktop's own orphan reads as one", sorted(w2.orphans), [400, 500])
+    w2b = Watcher(0.0, 1.0, 1.0, baseline_pids=(), own_pgid=66)
+    w2b._register_orphans(snap, 1.0)
+    check("the wrapper's own dead group is not a test's leavings", sorted(w2b.orphans), [400])
+    check("and is counted", w2b.orphans_own_group, 1)
+
+    w3 = Watcher(0.0, 1.0, 1.0)
+    w3._register(
+        [(37308, 37308, "/x/target/debug/deps/brief-abc --exact foo --nocapture")], 0.5
+    )
+    check("an arm is registered from one tick", sorted(w3.arms), [37308])
+    check("and named", w3.arms[37308].name, "foo")
+
+    # The grace that ended at a line printed at +10.0s with a 1 s grace is
+    # 9.0..10.0. A sighting after the line, or ending before the grace opened,
+    # is outside it.
+    def orphan_at(first, last):
+        o = Orphan(1, 2, "x", first)
+        o.last_seen = last
+        return o
+
+    check("a sighting spanning the grace is inside", in_grace(orphan_at(9.5, 9.6), 0.0, 10.0, 1.0), True)
+    check("a sighting after the line is outside", in_grace(orphan_at(10.4, 12.0), 0.0, 10.0, 1.0), False)
+    check("a sighting ending before the grace opened is outside", in_grace(orphan_at(2.0, 8.9), 0.0, 10.0, 1.0), False)
+    check("a sighting straddling the grace's start is inside", in_grace(orphan_at(2.0, 9.2), 0.0, 10.0, 1.0), True)
+
+    soak_mod = load_soak()
+    check("soak imports and exposes classify", callable(soak_mod.classify), True)
+    # nextest's tokens arrive ANSI-coloured and soak's TOKEN_RE reads plain
+    # text, so a per-arm lookup built from unstripped output silently finds
+    # nothing — which prints as a missing time, not as an error.
+    check(
+        "per-arm times need the ANSI stripped first",
+        len(soak_mod.parse_tokens(soak_mod.FIXTURE_LEAK)),
+        0,
+    )
+    check(
+        "and are there once it is",
+        soak_mod.parse_tokens(soak_mod.strip_ansi(soak_mod.FIXTURE_LEAK))[
+            ("fleet-core::zz_scratch_soak", "scratch_soak_leaks")
+        ][1],
+        1.007,
+    )
+    verdict, _, _, _, arms = soak_mod.classify(soak_mod.FIXTURE_LEAK)
+    check("the borrowed classifier still reads a LEAK", verdict, "LEAK")
+    check(
+        "and still names its arm",
+        arms,
+        ["fleet-core::zz_scratch_soak scratch_soak_leaks"],
+    )
+
+    bad = [(n, w) for n, ok, w in checks if not ok]
+    for n, w in bad:
+        print("%s: self-test %s disagrees: %s" % (ME, n, w))
+    if bad:
+        return 1
+    print("%s: self-test ok — %d checks" % (ME, len(checks)))
+    return 0
+
+
+def main(argv):
+    p = argparse.ArgumentParser(prog=ME, add_help=True)
+    p.add_argument("-E", "--filter", dest="filt")
+    p.add_argument("--runs", type=int, default=1)
+    p.add_argument("--poll-ms", type=int, default=50)
+    p.add_argument("--grace-s", type=float, default=1.0, help="the profile's leak-timeout")
+    p.add_argument("--profile", default=None)
+    p.add_argument(
+        "--max-lsof",
+        type=int,
+        default=DEFAULT_MAX_LSOF,
+        help="whole-box lsof scans one run may spend; they are serialised",
+    )
+    p.add_argument("--stop-on-leak", action="store_true")
+    p.add_argument("--self-test", action="store_true")
+    args = p.parse_args(argv)
+
+    if args.self_test:
+        return self_test()
+    if not args.filt:
+        p.error("-E/--filter is required unless --self-test")
+    if os.environ.get("TT_FLEET_TEST_OK") != "1":
+        print(
+            "%s: refusing — this runs the fleet suite the Makefile's fleet-test target "
+            "disables until its test phase is at or under 60s; set TT_FLEET_TEST_OK=1 "
+            "for a measurement run" % ME,
+            file=sys.stderr,
+        )
+        return 2
+
+    soak_mod = load_soak()
+    leaked = 0
+    for i in range(1, args.runs + 1):
+        watcher, lines, load, wall = run_once(
+            args.filt,
+            args.profile,
+            args.poll_ms / 1000.0,
+            args.grace_s,
+            args.max_lsof,
+        )
+        verdict = report(soak_mod, args.filt, i, args.runs, watcher, lines, load, wall, args.grace_s)
+        if verdict is None:
+            return 2
+        if verdict != "PASS":
+            leaked += 1
+            if args.stop_on_leak:
+                break
+    print("%s: %d run(s) with a non-PASS verdict" % (ME, leaked))
+    return 1 if leaked else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

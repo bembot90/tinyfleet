@@ -1,0 +1,128 @@
+# One routine, and every other form it could have taken, in comments.
+#
+# A routine is ONE FLAT FILE named `<name>.toml` under an `orders/` directory —
+# the fleet install's, an installed pack's, or a project's. The stem is the
+# routine's name and is lower-case letters, digits and dashes. The controller's own
+# tick reads every one of them; there is no second daemon and no per-routine
+# service job.
+#
+# Two tables and no third: `[order]`, which says WHEN, and one
+# `[action.<kind>]`, which says WHAT. A key this reader does not know is a
+# defect, never an ignored line — a misspelled key would be a duty that silently
+# never runs. `fleet routine list` prints a DEFECT row for a file that is not an
+# routine, with the key it refused.
+#
+# Durations are an integer and one of s/m/h/d: 30s, 15m, 6h, 1d.
+
+[order]
+# One non-empty line. It is what a person reads beside the name.
+description = "sweep the branches nothing is holding open"
+
+# One of cron, cooldown, condition. Each reads ITS OWN parameter and no other:
+# an `interval` on a cron routine is a plan its author believes in and nothing
+# reads, so it is refused rather than dropped.
+trigger = "cron"
+
+# cron: five fields — minute hour day-of-month month day-of-week — matched
+# against LOCAL wall-clock, truncated to the minute. A field is `*`, `*/N`, one
+# integer, or a comma-separated list of integers; 0 and 7 are both Sunday. A
+# RANGE is refused with the list that replaces it, because a schedule read
+# leniently fires at a minute nobody wrote.
+schedule = "0 3 * * *"
+
+# The action's own bound. Default 300s.
+timeout = "300s"
+
+# Default true. A disabled routine is NOT-DUE and never could-not-tell: nothing
+# about it was unreadable.
+enabled = true
+
+# --- the other two triggers -------------------------------------------------
+#
+# cooldown: fires when it has never fired, and again once `interval` has passed
+# since the last firing.
+#
+#   trigger = "cooldown"
+#   interval = "6h"
+#
+# condition: runs `check` under `sh -c` in the order's project root and reads
+# its exit — 0 due, anything else not due, and three answers that are NEITHER:
+# a check that outran `check_timeout`, one that could not be started, and one
+# that exited a status `check_unknown_exit` names. Those are COULD-NOT-TELL, a
+# third answer never rounded into "not due". 0 in that list is refused, because
+# 0 is the exit that means due, and an empty list is refused too. `poll` is how
+# often the check runs — a check on every tick is a load, not a reading.
+#
+#   trigger = "condition"
+#   check = "tools/sweep --all >/dev/null 2>&1; case $? in 1) exit 0 ;; 2) exit 2 ;; *) exit 1 ;; esac"
+#   check_timeout = "60s"
+#   check_unknown_exit = [2]
+#   poll = "1h"
+
+# --- the action -------------------------------------------------------------
+#
+# EXACTLY ONE, with one exception below. Every child an action starts carries
+# the constructed search path with this controller's own directory in front of
+# it, so a routine that calls a fleet verb by name reaches this binary, and
+# `FLEET_DIR` naming the machine directory.
+
+[action.exec]
+# Run under `sh -c` in the order's project root, with both streams on a file
+# under the machine directory's routines logs. Exit 0 is `ran`, anything else is
+# `failed` with the status and the log.
+command = "tools/sweep --all"
+
+# --- the other three actions ------------------------------------------------
+#
+# nudge: ring a live seat with one sentence and the authority behind it. The
+# seat must name a row of this machine's seat list, and the roster this tick
+# read must show it live — otherwise the outcome is `absent`, or
+# `could-not-tell` when the roster itself was unreadable.
+#
+#   [action.nudge]
+#   seat = "builder-1"
+#   text = "the nightly sweep found something; take a look"
+#   authority = "the operator"
+#
+# item: file one item on the project's work graph. Every item a routine files
+# carries the label `routine:<name>`, which is what makes "did this routine already
+# file one" answerable by anything other than the process that filed it.
+# `dedupe = "open"` reads that label back and files nothing while an open item
+# already carries it — right for a watcher that reports the same finding until
+# somebody fixes it, and wrong for a duty whose every firing is its own event.
+#
+#   [action.item]
+#   title = "the nightly sweep found branches nothing is holding open"
+#   description = "Run the sweep from the primary and read each row."
+#   type = "task"
+#   priority = 3
+#   assignee = "builder-1"
+#   labels = ["lane:autonomous"]
+#   dedupe = "open"
+#
+# run: open a run of one workflow through `fleet run`, with the inputs pinned
+# as the file gives them — one `--input key=value` per row of the table, in key
+# order — and the routine named as the runner. The routine's `fired` and
+# `completed` wrap the run's `started` and `closed` on the stream, and the
+# terminal event carries the run id as `run`. The verb's exit is the outcome:
+# 0 `ran`, 1 `failed`, 3 `could-not-tell`.
+#
+#   [action.run]
+#   workflow = "takeoff"
+#
+#   [action.run.inputs]
+#   board = "main"
+#
+# THE ONE PAIR ALLOWED is a nudge beside an item whose `when` is `absent`: a
+# ring that finds no live seat leaves the duty on the work graph instead of
+# nowhere, and the item's own outcome becomes the routine's.
+#
+#   [action.nudge]
+#   seat = "builder-1"
+#   text = "the nightly sweep found something; take a look"
+#   authority = "the operator"
+#
+#   [action.item]
+#   title = "the nightly sweep found something and no seat was up"
+#   when = "absent"
+#   dedupe = "open"

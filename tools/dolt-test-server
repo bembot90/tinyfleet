@@ -1,0 +1,221 @@
+#!/bin/sh
+#
+# dolt-test-server — one dolt sql-server for one fleet suite run.
+#
+#   fleet/tools/dolt-test-server <command> [arg ...]
+#
+# Runs <command> with FLEET_TEST_DOLT_PORT holding the port of a throwaway dolt
+# sql-server started here and stopped when the command returns, whatever its
+# status. Every rig's `bd init` reads that variable and puts its scratch board on
+# that server; with the variable unset a rig falls back to bd's embedded engine,
+# so one binary under a bare `cargo test` still runs.
+#
+# It also initialises the run's BOARDS once — see "the run's boards" below — and
+# names them in FLEET_TEST_BD_BOARDS, so a rig copies a board instead of running
+# `bd init` of its own. The count of inits a run actually ran is the last line
+# this script prints.
+#
+# The engine is the cost the suite is paying: the verb-driving binaries make five
+# to ten bd calls per arm, so the engine those calls land on sets the suite's
+# floor. Which engine is cheaper is a reading and not a property — it moves with
+# the box's load, because a served call crosses to a process competing for the
+# same cores while an embedded one runs inside the caller. The reading here, on
+# this box on 2026-09-16, bd 1.2.2, ten `bd list` calls per arm at 1-minute load
+# 21 to 27: at least 2.1 s per call served against at least 0.36 s embedded — the
+# served side the slower one at that load. Retake both arms, and name the load
+# you took them at, before planning against either number.
+#
+# THE FLEET'S LIVE BOARD is a dolt sql-server on port 3307 holding every seat's
+# work graph, which is also bd's default server port. This script never becomes
+# that server: a probe answering 3307 is refused with exit 2 rather than started,
+# and the rigs refuse the same port again on their own.
+#
+# Exit codes: 2 for a refusal or a server that will not come up, otherwise the
+# command's own status, passed through unchanged.
+#
+# Reach: cleanup is a trap, so a SIGKILL of THIS script leaves the server behind.
+# A SIGKILL of the command it runs does not — that is the case the trap covers.
+# `tools/dolt-orphans` names a survivor of the uncovered case.
+#
+# Conventions: brain/harness/tools.md.
+
+set -eu
+
+ME=$(basename "$0")
+
+# bd's default server port, which on this box is the live board.
+LIVE_PORT=3307
+
+# How long the server is given to accept connections, in tenths of a second.
+READY_TRIES=100
+
+usage() {
+	echo "usage: $ME <command> [arg ...]" >&2
+	exit 2
+}
+
+[ "$#" -gt 0 ] || usage
+
+# --- the port ----------------------------------------------------------------
+#
+# Bind 0, read what the kernel gave, release. The window between the release and
+# dolt's bind is a race nothing closes; a loser is a server that fails to start,
+# which is reported below rather than silently tolerated.
+probe_port() {
+	python3 -c 'import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()'
+}
+
+port_open() {
+	python3 -c 'import socket, sys
+s = socket.socket()
+s.settimeout(0.5)
+sys.exit(0 if s.connect_ex(("127.0.0.1", int(sys.argv[1]))) == 0 else 1)' "$1"
+}
+
+# Testing only: forces the probe's answer so the 3307 refusal below can be proved
+# against this script rather than against a copy of it. Never set in a real run.
+PORT=${FLEET_TEST_DOLT_FORCE_PORT:-}
+[ -n "$PORT" ] || PORT=$(probe_port)
+
+case "$PORT" in
+'' | *[!0-9]*)
+	echo "$ME: the port probe answered '$PORT', which is not a port" >&2
+	exit 2
+	;;
+esac
+
+if [ "$PORT" = "$LIVE_PORT" ]; then
+	echo "$ME: the probe answered $LIVE_PORT, which is the fleet's live board on this box; refusing to start a test server there" >&2
+	exit 2
+fi
+
+# --- the server --------------------------------------------------------------
+
+command -v dolt >/dev/null 2>&1 || {
+	echo "$ME: dolt is not on PATH; running on bd's embedded engine instead" >&2
+	RC=0
+	"$@" || RC=$?
+	exit "$RC"
+}
+
+RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fleet-test-dolt.XXXXXX")
+DATA_DIR=$RUN_DIR/data
+LOG=$RUN_DIR/server.log
+SERVER_PID=''
+mkdir -p "$DATA_DIR"
+
+stop_server() {
+	[ -n "$SERVER_PID" ] || return 0
+	kill "$SERVER_PID" 2>/dev/null || true
+	_i=0
+	while [ "$_i" -lt 40 ] && kill -0 "$SERVER_PID" 2>/dev/null; do
+		sleep 0.1
+		_i=$((_i + 1))
+	done
+	kill -9 "$SERVER_PID" 2>/dev/null || true
+	wait "$SERVER_PID" 2>/dev/null || true
+	SERVER_PID=''
+}
+
+cleanup() {
+	stop_server
+	rm -rf "$RUN_DIR"
+}
+
+trap '_rc=$?; cleanup; exit "$_rc"' EXIT
+trap '_rc=$?; cleanup; exit "$_rc"' INT TERM
+
+dolt sql-server -H 127.0.0.1 -P "$PORT" --data-dir "$DATA_DIR" >"$LOG" 2>&1 &
+SERVER_PID=$!
+
+READY=''
+_i=0
+while [ "$_i" -lt "$READY_TRIES" ]; do
+	if port_open "$PORT"; then
+		READY=1
+		break
+	fi
+	kill -0 "$SERVER_PID" 2>/dev/null || break
+	sleep 0.1
+	_i=$((_i + 1))
+done
+
+if [ -z "$READY" ]; then
+	echo "$ME: the test dolt sql-server on port $PORT never accepted a connection" >&2
+	cat "$LOG" >&2 2>/dev/null || true
+	exit 2
+fi
+
+# --- the run's boards --------------------------------------------------------
+#
+# ONE `bd init` for the run instead of one per arm. A board here is initialised
+# once and a rig COPIES it into its own root, so the rows sit on the one
+# database while `fleet.toml` and the packs directory stay the rig's own.
+#
+# `shared` is the board every rig takes. The numbered ones are for the rigs
+# whose subject is a WHOLE-BOARD reading — the size of the ready set, the open
+# flights a cap is measured against — which another rig's rows would move. WHICH
+# rig takes which is the `SOLO` table in fleet/core/tests/common/board.rs; the
+# count here only has to cover it, and a label past what is made falls back to a
+# `bd init` of its own rather than onto the shared board.
+SOLO_BOARDS=2
+
+BOARDS=$RUN_DIR/boards
+INIT_LOG=$RUN_DIR/bd-init.log
+BOARD_LOG=$RUN_DIR/bd-init.out
+: >"$INIT_LOG"
+: >"$BOARD_LOG"
+
+# Exported whether or not a board is made below, so a rig that runs its own
+# `bd init` is counted beside the ones made here.
+FLEET_TEST_BD_INIT_LOG=$INIT_LOG
+export FLEET_TEST_BD_INIT_LOG
+
+make_board() {
+	mkdir -p "$BOARDS/$1"
+	echo "dolt-test-server $1" >>"$INIT_LOG"
+	(
+		cd "$BOARDS/$1" &&
+			bd init --prefix fx --quiet \
+				--server --server-host 127.0.0.1 --server-port "$PORT" \
+				--database "fx_run_$1" >>"$BOARD_LOG" 2>&1
+	)
+}
+
+MADE=0
+if ! command -v bd >/dev/null 2>&1; then
+	echo "$ME: bd is not on PATH; every rig makes its own board" >&2
+elif make_board shared; then
+	MADE=1
+	_i=1
+	while [ "$_i" -le "$SOLO_BOARDS" ]; do
+		if make_board "solo$_i"; then
+			MADE=$((MADE + 1))
+		else
+			echo "$ME: the run's solo$_i board could not be initialised; the rig that takes it runs its own bd init instead" >&2
+			tail -5 "$BOARD_LOG" >&2
+		fi
+		_i=$((_i + 1))
+	done
+	FLEET_TEST_BD_BOARDS=$BOARDS
+	export FLEET_TEST_BD_BOARDS
+else
+	echo "$ME: the run's shared board could not be initialised; every rig runs its own bd init instead" >&2
+	tail -5 "$BOARD_LOG" >&2
+fi
+
+# --- the command -------------------------------------------------------------
+
+FLEET_TEST_DOLT_PORT=$PORT
+export FLEET_TEST_DOLT_PORT
+
+RC=0
+"$@" || RC=$?
+
+INITS=$(awk 'END { print NR }' "$INIT_LOG")
+echo "$ME: bd init ×$INITS this run — $MADE board(s) made here, the rest are rigs that ran their own" >&2
+exit "$RC"

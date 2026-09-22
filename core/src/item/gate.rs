@@ -1,0 +1,698 @@
+//! `fleet ask` and `fleet answer` — the seat's blocking question and the reply
+//! that settles it, over the store's own gate (flights PRD R19 to R22, S4; cli
+//! PRD § `fleet ask`, § `fleet answer`).
+//!
+//! ONE OBJECT AND ONE EVENT. A park is the store's gate on the item plus
+//! `item.parked`, whoever raised it, so one listing shows everything owed and
+//! one verb answers any of it. Neither verb here rings anybody: `ask` leaves a
+//! seat about to be retired, and `answer` dispatches nothing.
+//!
+//! THE REFUSALS COME BEFORE THE COMMIT, as they do in `deliver`. Everything
+//! `ask` can answer from the record and the note — the item the seat holds, the
+//! trunk, a note the grammar does not read — is asked while nothing has been
+//! written, so a refusal leaves the seat's worktree exactly where it stood.
+//!
+//! WHAT `ask` COMMITS IS EVERYTHING (decision D1). A question asked mid-work
+//! must lose nothing and the seat is retired the moment the flight reads the
+//! park, so the staged set, the unstaged modification and the untracked file go
+//! onto the branch together. A tree with nothing to commit parks on HEAD.
+//!
+//! A RUN'S RECORD IS PARKED WITHOUT GIT. The paragraph above is a SEAT's park:
+//! a worktree, a work branch and a tree to commit. A run's record has none of
+//! the three — the git wiring resolves to the project root, which is whoever's
+//! checkout the run was started inside — so `ask` on one reads no branch,
+//! stages nothing and commits nothing, and its park names [`RUN_BRANCH`] where
+//! a seat's names its branch. Everything after the commit is the same act.
+//!
+//! THE QUESTION IS CARRIED TWICE AND WRITTEN ONCE. Its whole text is the gate's
+//! reason, which is what a person meets on the store's gate list, and the same
+//! text sits under the park note's four lines MOVED OFF COLUMN ZERO — so no
+//! line a seat wrote inside its question can end the region it is written in.
+
+use std::io::Write;
+use std::path::Path;
+
+use crate::item::brief::Packs;
+use crate::item::deliver::held_item;
+use crate::item::review::last_verdict;
+use crate::item::run;
+use crate::item::{
+    control_token, label_value, last_answer, last_marker_at, last_park, marker_block, opens_with,
+    render, Events, Git, Project, Stop, ANSWER_MARKERS, GATE_RESOLVED, ITEM_PARKED, PARK_MARKERS,
+    TRUNK_BRANCH, VERDICT_MARKERS,
+};
+use crate::store::{Item, Store, StoreError};
+
+/// The park-note grammar, in core's pack and shadowable like every other asset.
+pub const PARK_NOTE: &str = "assets/park-note.md";
+
+/// What a reading nobody could take is written as, on the park note and in the
+/// payload beside it. A blank line and an unread one are the same bytes and not
+/// the same fact.
+pub const UNREAD: &str = "(none)";
+
+/// What a run's record parks on where a seat's park names its work branch. It
+/// is not [`UNREAD`]: a branch nobody could read and an item that has no branch
+/// at all are two different facts, and a reader cutting a worktree from a park
+/// must meet the second as a value and not as a missing one.
+pub const RUN_BRANCH: &str = "(run)";
+
+/// The key the run's own hash sits under in the record's `run` object, written
+/// by [`run::run`] at the open.
+const HASH: &str = "hash";
+
+/// The two grammars this pair reads, both of them slots in the pack.
+pub const QUESTION_NOTE: &str = "assets/question-note.md";
+pub const ANSWER_NOTE: &str = "assets/answer-note.md";
+
+/// The one a question opens on. It is the SEAT's marker and not a note's: the
+/// text lives inside a park region rather than opening one of its own.
+pub const QUESTION_MARKERS: [&str; 1] = ["QUESTION"];
+
+/// The section a resumed seat's brief carries, whose block is in the park note's
+/// own template (flights PRD R22, decision D2).
+pub const RESUME_SECTION: &str = "RESUME";
+
+/// What the park note's reason reads as for each of the two parks this slice
+/// raises: a seat's own question, and a gate the item declared before takeoff.
+pub const ASK: &str = "ask";
+pub const DECLARED: &str = "gate";
+
+/// The three labels the park note and the answer note carry their values under.
+pub const BRANCH: &str = "branch";
+pub const COMMIT: &str = "commit";
+pub const GATE: &str = "gate";
+pub const LETTER: &str = "letter";
+pub const TEXT: &str = "text";
+
+// ---- the question ------------------------------------------------------------
+
+/// The question, as its arguments.
+pub struct Question<'a> {
+    /// The item, where the seat holds more than one and named it.
+    pub item: Option<&'a str>,
+    /// The seat asking.
+    pub by: &'a str,
+    /// The note the seat wrote, in the pack's question grammar.
+    pub note: &'a Path,
+    /// The clock, taken by the caller: core reads none.
+    pub at: &'a str,
+}
+
+/// Everything the pair acts through. `git` and `project` are the question's; the
+/// answer is a person's act on the record and touches no worktree.
+pub struct Wiring<'a> {
+    pub store: &'a dyn Store,
+    pub git: &'a dyn Git,
+    pub packs: &'a Packs,
+    pub project: &'a Project,
+    pub events: &'a dyn Events,
+}
+
+/// The park made, for a caller that wants to say what happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Asked {
+    pub item: String,
+    pub gate: String,
+    pub branch: String,
+    pub commit: String,
+    /// The park note as it was written.
+    pub note: String,
+}
+
+pub fn ask(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result<Asked, Stop> {
+    let item = held_item(wiring.store, question.by, question.item)?;
+    // WHICH OF THE TWO PARKS THIS IS, off the record the store already answers:
+    // the run label is the only mark that tells a run's record from every other
+    // item, and a run's park touches no git at all.
+    let record = wiring.store.show(&item).map_err(unreadable)?;
+    let of_a_run = record.labels.iter().any(|label| label == run::LABEL);
+
+    let branch = if of_a_run {
+        RUN_BRANCH.to_string()
+    } else {
+        let branch = wiring.git.current_branch().map_err(Stop::could_not_tell)?;
+        if branch == TRUNK_BRANCH {
+            return Err(Stop::refused(format!(
+                "the worktree at {} is on `{branch}` — a park records the branch the work is on, \
+                 and the trunk is nobody's work branch",
+                wiring.project.root.display()
+            )));
+        }
+        branch
+    };
+
+    let written = read_note(question.note)?;
+    grammar_holds(&wiring.packs.read(QUESTION_NOTE)?, &written)?;
+
+    // (a) THE COMMIT, AND EVERYTHING IN IT. `add_all` first, then the index:
+    // a tree that answers nothing staged after it is a tree with nothing to
+    // commit, and the park records HEAD rather than a commit of no changes.
+    // A run's record stands on the hash its open pinned instead.
+    let commit = if of_a_run {
+        run_hash(&record)
+    } else {
+        wiring.git.add_all().map_err(Stop::could_not_tell)?;
+        let staged = wiring.git.staged().map_err(Stop::could_not_tell)?;
+        if staged.is_empty() {
+            wiring.git.head().map_err(Stop::could_not_tell)?
+        } else {
+            wiring
+                .git
+                .commit(&format!(
+                    "{item}: parked — {} asked a question at {}",
+                    question.by, question.at
+                ))
+                .map_err(Stop::could_not_tell)?
+        }
+    };
+
+    // (b) THE GATE, whose id comes off the command's own answer.
+    let gate = wiring
+        .store
+        .gate(&item, &written, question.by)
+        .map_err(|e| parked(&item, &commit, &format!("the gate was not raised: {e}")))?;
+
+    // (c) THE PARK NOTE, read back as the last park region.
+    let note = park_note(wiring.packs, &item, ASK, &branch, &commit, &gate, &written)?;
+    wiring.store.note(&item, &note, question.by).map_err(|e| {
+        gated(
+            &item,
+            &commit,
+            &gate,
+            &format!("the park note did not land: {e}"),
+        )
+    })?;
+    read_back(&item, &note, wiring)?;
+
+    // (d) THE EVENT, after the note and its read-back.
+    wiring
+        .events
+        .append(
+            ITEM_PARKED,
+            question.by,
+            serde_json::json!({
+                "item": item,
+                "reason": ASK,
+                "branch": branch,
+                "commit": commit,
+                "gate": gate,
+            }),
+        )
+        .map_err(|e| {
+            gated(
+                &item,
+                &commit,
+                &gate,
+                &format!("{ITEM_PARKED} did not reach the stream: {e}"),
+            )
+        })?;
+
+    let _ = writeln!(out, "{gate}");
+    Ok(Asked {
+        item,
+        gate,
+        branch,
+        commit,
+        note,
+    })
+}
+
+/// The hash a run is pinned to, off its record's own `run` object, which is
+/// what a run stands on where a seat stands on a commit. A record whose open
+/// never wrote the object reads [`UNREAD`] rather than refusing: the question
+/// is the point of the park and the hash is context beside it.
+fn run_hash(record: &Item) -> String {
+    record
+        .run
+        .as_ref()
+        .and_then(|object| object.get(HASH))
+        .and_then(|value| value.as_str())
+        .unwrap_or(UNREAD)
+        .to_string()
+}
+
+fn read_note(path: &Path) -> Result<String, Stop> {
+    std::fs::read_to_string(path).map_err(|e| {
+        Stop::usage(format!(
+            "the note at {} could not be read: {e} — `--note <file>` names the question the seat \
+             wrote",
+            path.display()
+        ))
+    })
+}
+
+/// The note the seat handed in, against the pack's grammar: the marker it opens
+/// on, and at least one lettered option.
+fn grammar_holds(template: &str, written: &str) -> Result<Vec<(char, String)>, Stop> {
+    let Some(first) = written.lines().find(|line| !line.trim().is_empty()) else {
+        return Err(Stop::usage(
+            "the note is empty — a question is the one thing a person is being asked".to_string(),
+        ));
+    };
+    if !opens_with(first, &QUESTION_MARKERS) {
+        return Err(Stop::usage(format!(
+            "the note opens on `{first}` — it opens on `{}` at column zero, which \
+             `{QUESTION_NOTE}` names, or no reader can anchor on it",
+            QUESTION_MARKERS[0]
+        )));
+    }
+    let options = options_in(written);
+    if options.is_empty() {
+        return Err(Stop::usage(format!(
+            "the note names no lettered option — `{QUESTION_NOTE}` names one per line as a \
+             capital letter, a period and the text, and a question with none is a conversation:\n{}",
+            marker_block(template, QUESTION_MARKERS[0]).unwrap_or_default()
+        )));
+    }
+    Ok(options)
+}
+
+/// Every lettered option a text names, in its order.
+///
+/// The lines are TRIMMED before they are read, because the same function reads
+/// a question as the seat wrote it and the same question moved off column zero
+/// inside a park region.
+pub fn options_in(text: &str) -> Vec<(char, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            let mut letters = line.chars();
+            let letter = letters.next()?;
+            if !letter.is_ascii_uppercase() || letters.next()? != '.' {
+                return None;
+            }
+            let said = line.get(2..)?.trim();
+            (!said.is_empty()).then(|| (letter, said.to_string()))
+        })
+        .collect()
+}
+
+/// The four lines the pack's park grammar names, with the question beneath them.
+fn park_note(
+    packs: &Packs,
+    item: &str,
+    reason: &str,
+    branch: &str,
+    commit: &str,
+    gate: &str,
+    question: &str,
+) -> Result<String, Stop> {
+    let template = packs.read(PARK_NOTE)?;
+    let block = marker_block(&template, PARK_MARKERS[0]).ok_or_else(|| {
+        Stop::could_not_tell(format!(
+            "`{PARK_NOTE}` carries no `{}` block — the pack's park grammar names one",
+            PARK_MARKERS[0]
+        ))
+    })?;
+    let head = render(
+        &block,
+        &[
+            ("item", item),
+            ("reason", reason),
+            ("branch", branch),
+            ("commit", commit),
+            ("gate", gate),
+        ],
+    )
+    .map_err(|name| {
+        Stop::could_not_tell(format!(
+            "`{PARK_NOTE}` writes `{{{name}}}`, which is not a placeholder this verb resolves"
+        ))
+    })?;
+    Ok(format!("{head}\n{}", off_column_zero(question)))
+}
+
+/// Every line of a text moved off column zero, so no line of it can end the
+/// region it is written inside.
+fn off_column_zero(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            if line.trim().is_empty() {
+                String::new()
+            } else {
+                format!("  {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_end()
+        .to_string()
+}
+
+/// One read, asserting the park region against the note that was written — plus
+/// a token nothing wrote.
+fn read_back(item: &str, note: &str, wiring: &Wiring) -> Result<(), Stop> {
+    let read = wiring.store.show(item).map_err(unreadable)?;
+    let seen = read.notes.as_deref().and_then(last_park);
+    if seen.as_deref().map(normalised) != Some(normalised(note)) {
+        return Err(Stop::could_not_tell(format!(
+            "{item} read back with its last park ==\n{}\n  wanted:\n{note}",
+            seen.as_deref().unwrap_or("(absent)")
+        )));
+    }
+    let control = control_token();
+    if read.document.contains(control) {
+        return Err(Stop::could_not_tell(format!(
+            "the read-back on {item} carries {control}, which nothing wrote — the read is not \
+             reading this item"
+        )));
+    }
+    Ok(())
+}
+
+// ---- the answer --------------------------------------------------------------
+
+/// A person's reply, as its arguments.
+pub struct Reply<'a> {
+    pub item: &'a str,
+    /// The option's letter, as the person typed it.
+    pub letter: &'a str,
+    /// What they said beyond the letter, where the options did not carry it.
+    pub text: Option<&'a str>,
+    /// Who answered.
+    pub by: &'a str,
+}
+
+/// The answer written, for a caller that wants to say what happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Replied {
+    pub item: String,
+    pub gate: String,
+    pub letter: String,
+    pub note: String,
+}
+
+pub fn answer(out: &mut dyn Write, reply: &Reply, wiring: &Wiring) -> Result<Replied, Stop> {
+    let read = wiring.store.show(reply.item).map_err(unreadable)?;
+    let notes = read.notes.unwrap_or_default();
+    let Some(park) = last_park(&notes) else {
+        return Err(Stop::refused(format!(
+            "{} carries no park — an answer settles a question somebody asked, and this item has \
+             none",
+            reply.item
+        )));
+    };
+    let Some(gate) = label_value(&park, GATE) else {
+        return Err(Stop::refused(format!(
+            "{}'s last park names no `{GATE}:` — there is no object for an answer to resolve",
+            reply.item
+        )));
+    };
+
+    // THE OPEN LIST IS FILTERED BY THE PARK'S OWN GATE ID and by nothing else:
+    // the listing answers which gates are open and never which item each one
+    // blocks, so the item's own record is what ties the two together.
+    let open = wiring.store.open_gates().map_err(unreadable)?;
+    if !open.contains(&gate) {
+        return Err(Stop::refused(format!(
+            "{}'s gate {gate} is not one the store lists open — it has been answered already, or \
+             resolved by hand",
+            reply.item
+        )));
+    }
+
+    let letter = one_letter(reply.letter)?;
+    let options = options_in(&park);
+    let named = options
+        .iter()
+        .find(|(carried, _)| *carried == letter)
+        .map(|(_, said)| said.clone());
+    if named.is_none() && reply.text.is_none() {
+        return Err(Stop::usage(format!(
+            "the question on {} names no option `{letter}` — its options are {}, and a letter \
+             outside them needs `--text <text>` saying what was decided",
+            reply.item,
+            if options.is_empty() {
+                "none".to_string()
+            } else {
+                options
+                    .iter()
+                    .map(|(carried, _)| carried.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        )));
+    }
+
+    let note = answer_note(wiring.packs, &gate, reply.by, letter, reply.text)?;
+    wiring
+        .store
+        .note(reply.item, &note, reply.by)
+        .map_err(unreadable)?;
+    let seen = wiring
+        .store
+        .show(reply.item)
+        .map_err(unreadable)?
+        .notes
+        .as_deref()
+        .and_then(last_answer);
+    if seen.as_deref().map(normalised) != Some(normalised(&note)) {
+        return Err(Stop::could_not_tell(format!(
+            "{} read back with its last answer ==\n{}\n  wanted:\n{note}",
+            reply.item,
+            seen.as_deref().unwrap_or("(absent)")
+        )));
+    }
+
+    wiring
+        .store
+        .resolve_gate(&gate, reply.by)
+        .map_err(unreadable)?;
+    let still = wiring.store.open_gates().map_err(unreadable)?;
+    if still.contains(&gate) {
+        return Err(Stop::could_not_tell(format!(
+            "{gate} is still on the store's open list after it was resolved — the answer on {} \
+             STANDS and the item is still blocked",
+            reply.item
+        )));
+    }
+
+    wiring
+        .events
+        .append(
+            GATE_RESOLVED,
+            reply.by,
+            serde_json::json!({
+                "item": reply.item,
+                "gate": gate,
+                "letter": letter.to_string(),
+            }),
+        )
+        .map_err(|e| {
+            Stop::could_not_tell(format!(
+                "{GATE_RESOLVED} did not reach the stream: {e}\n  the answer on {} STANDS and \
+                 {gate} is resolved",
+                reply.item
+            ))
+        })?;
+
+    let _ = writeln!(out, "{} answered {letter} — {gate} resolved", reply.item);
+    Ok(Replied {
+        item: reply.item.to_string(),
+        gate,
+        letter: letter.to_string(),
+        note,
+    })
+}
+
+fn one_letter(given: &str) -> Result<char, Stop> {
+    let trimmed = given.trim();
+    let mut chars = trimmed.chars();
+    match (chars.next(), chars.next()) {
+        (Some(letter), None) if letter.is_ascii_alphabetic() => Ok(letter.to_ascii_uppercase()),
+        _ => Err(Stop::usage(format!(
+            "`{given}` is not a letter — an answer names one of the question's options by the \
+             letter it carries"
+        ))),
+    }
+}
+
+fn answer_note(
+    packs: &Packs,
+    gate: &str,
+    by: &str,
+    letter: char,
+    text: Option<&str>,
+) -> Result<String, Stop> {
+    let template = packs.read(ANSWER_NOTE)?;
+    let block = marker_block(&template, ANSWER_MARKERS[0]).ok_or_else(|| {
+        Stop::could_not_tell(format!(
+            "`{ANSWER_NOTE}` carries no `{}` block — the pack's answer grammar names one",
+            ANSWER_MARKERS[0]
+        ))
+    })?;
+    render(
+        &block,
+        &[
+            ("gate", gate),
+            ("by", by),
+            ("letter", &letter.to_string()),
+            ("text", text.unwrap_or(UNREAD)),
+        ],
+    )
+    .map_err(|name| {
+        Stop::could_not_tell(format!(
+            "`{ANSWER_NOTE}` writes `{{{name}}}`, which is not a placeholder this verb resolves"
+        ))
+    })
+}
+
+// ---- the resume (R22) --------------------------------------------------------
+
+/// What an answered park hands the next takeoff: where to cut the seat, and
+/// what to tell it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resume {
+    pub branch: String,
+    pub commit: String,
+    pub letter: String,
+    pub question: String,
+    /// Each option as one rendered line, in the question's own order.
+    pub options: Vec<String>,
+    /// The letter with the option it named and whatever was said beyond it.
+    pub answer: String,
+}
+
+/// The park this item is resuming from: its last one, where a person's answer
+/// stands AFTER it.
+///
+/// The two are told apart by which came last and not by their content, so a
+/// park raised again after an answer is not an answered park.
+pub fn resume_of(notes: &str) -> Option<Resume> {
+    let parked = last_marker_at(notes, &PARK_MARKERS)?;
+    let answered = last_marker_at(notes, &ANSWER_MARKERS)?;
+    if answered < parked {
+        return None;
+    }
+    let park = last_park(notes)?;
+    let reply = last_answer(notes)?;
+    let letter = label_value(&reply, LETTER)?;
+    let said = label_value(&reply, TEXT).filter(|text| text != UNREAD);
+    let options = options_in(&park);
+    let named = options
+        .iter()
+        .find(|(carried, _)| carried.to_string() == letter)
+        .map(|(_, text)| text.clone());
+    Some(Resume {
+        branch: label_value(&park, BRANCH)?,
+        commit: label_value(&park, COMMIT)?,
+        answer: match (named, said) {
+            (Some(option), Some(said)) => format!("{letter}. {option} — {said}"),
+            (Some(option), None) => format!("{letter}. {option}"),
+            (None, Some(said)) => format!("{letter} — {said}"),
+            (None, None) => letter.clone(),
+        },
+        letter,
+        question: question_in(&park),
+        options: options
+            .iter()
+            .map(|(carried, said)| format!("{carried}. {said}"))
+            .collect(),
+    })
+}
+
+/// The question a park region carries, with its marker stripped.
+fn question_in(park: &str) -> String {
+    park.lines()
+        .map(str::trim_start)
+        .find(|line| opens_with(line, &QUESTION_MARKERS))
+        .map(|line| line[QUESTION_MARKERS[0].len()..].trim().to_string())
+        .unwrap_or_else(|| UNREAD.to_string())
+}
+
+/// The section a resumed seat reads above its item, from the park note's own
+/// template (decision D2).
+pub fn resume_section(packs: &Packs, item: &str, resume: &Resume) -> Result<String, Stop> {
+    let template = packs.read(PARK_NOTE)?;
+    let block = marker_block(&template, RESUME_SECTION).ok_or_else(|| {
+        Stop::could_not_tell(format!(
+            "`{PARK_NOTE}` carries no `{RESUME_SECTION}` block — the pack's park grammar names one"
+        ))
+    })?;
+    render(
+        &block,
+        &[
+            ("item", item),
+            ("commit", &resume.commit),
+            ("branch", &resume.branch),
+            ("question", &resume.question),
+            ("options", &resume.options.join("\n")),
+            ("answer", &resume.answer),
+        ],
+    )
+    .map_err(|name| {
+        Stop::could_not_tell(format!(
+            "`{PARK_NOTE}` writes `{{{name}}}`, which is not a placeholder this verb resolves"
+        ))
+    })
+}
+
+/// The commit a resumed item lands at WITH NO SEAT: its park is answered and
+/// its last verdict is an ACCEPTED naming the commit that park recorded
+/// (flights PRD R22).
+///
+/// A verdict that stands over the work a park preserved is a verdict nothing
+/// has invalidated — the commit is the same one — so what the item is owed is
+/// the landing and not another builder.
+pub fn accepted_over_the_park(notes: &str) -> Option<String> {
+    let resume = resume_of(notes)?;
+    let verdict = last_verdict(notes)?;
+    let first = verdict.lines().next()?;
+    if !opens_with(first, &[VERDICT_MARKERS[0]]) || !first.contains(&resume.commit) {
+        return None;
+    }
+    Some(resume.commit)
+}
+
+/// Whether a person has already answered a park this item took for this reason.
+///
+/// The guard a DECLARED gate is read against (R23): a step parks its item once,
+/// and an item resumed past its own gate must not meet it again on the flight
+/// that resumed it.
+pub fn answered_at(notes: &str, reason: &str) -> bool {
+    let lines: Vec<&str> = notes.lines().collect();
+    let Some(parked) = lines
+        .iter()
+        .rposition(|line| opens_with(line, &PARK_MARKERS) && line.trim_end().ends_with(reason))
+    else {
+        return false;
+    };
+    lines[parked + 1..]
+        .iter()
+        .any(|line| opens_with(line, &ANSWER_MARKERS))
+}
+
+// ---- the stops ---------------------------------------------------------------
+
+/// Whitespace normalised to single spaces, because the store keeps a note with
+/// the wrapping it was written with and the comparison is about the words.
+fn normalised(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn unreadable(e: StoreError) -> Stop {
+    match e {
+        StoreError::Missing(why) => Stop::refused(why),
+        StoreError::Unreadable(why) => Stop::could_not_tell(why),
+    }
+}
+
+/// A failure after the commit and before the gate. The commit is real and the
+/// message says so, because a caller that read this as "nothing happened" would
+/// ask twice.
+fn parked(item: &str, commit: &str, why: &str) -> Stop {
+    Stop::could_not_tell(format!(
+        "{why}\n  the commit {commit} STANDS on the work branch and {item} carries no park"
+    ))
+}
+
+/// A failure after the gate. The gate is on the store's list and a person will
+/// meet it there, so the message names it rather than leaving one nobody can
+/// tie to an item.
+fn gated(item: &str, commit: &str, gate: &str, why: &str) -> Stop {
+    Stop::could_not_tell(format!(
+        "{why}\n  the commit {commit} STANDS on the work branch and the gate {gate} STANDS on \
+         {item}"
+    ))
+}

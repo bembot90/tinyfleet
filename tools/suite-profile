@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""suite-profile — where the fleet suite's seconds go, read from nextest's junit report.
+
+The suite is throughput-bound on total arm-time: at ten workers a run cannot go
+under the arm-time sum divided by ten, so the number every slice of the
+under-one-minute plan is measured on is its own binary's arm-time sum, and the
+number the gate is held to is the run's test-phase time. Both are in the junit
+report nextest writes when the profile asks for one (fleet/.config/nextest.toml),
+and nowhere else in a form a script can read: the console Summary line is
+coloured and counts tests, not seconds per arm.
+
+    suite-profile [--report PATH] [--top N] [--json]
+    suite-profile --budget SECONDS [--load-before N] [--load-ceiling N] [--report PATH]
+    suite-profile --self-test
+
+Default: the ranked table — the top N arms by time as binary::arm, every
+binary's arm count and arm-time sum sorted by sum, the total arm-time, the
+test-phase time, and the slowest green arm. --json emits the same as one
+object. --budget exits 1 with one line naming the test-phase time and the
+budget when the phase is over it, 0 otherwise — the ceiling the fleet-test
+target reads after nextest exits 0. --self-test runs the reader over a built-in
+three-arm report and exits 0 on the expected ranking, 1 on any other.
+
+--load-before is the reading condition: the box's 1-minute load taken before
+nextest started. At or above --load-ceiling the run is NOT JUDGED and the exit
+is 0 whichever side of the budget the phase falls, because contention on a box
+many workers share can only lengthen a run, so the number is not a statement
+about the code. Absent, every run is judged. The ceiling the gate uses is a
+policy value the caller passes; DEFAULT_LOAD_CEILING is what this script assumes
+when the caller names none.
+
+Exit codes: 0; 1 for a budget exceeded or a self-test that disagrees; 2 for a
+missing or unparseable report, which is a reading nobody may round to a number.
+"""
+
+import argparse
+import json
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+ME = "suite-profile"
+# Every budget line is read by a human looking at a make target's output, so it
+# names the target and not this script.
+GATE = "fleet-test"
+# The reading condition's ceiling when the caller names none. The gate's own
+# value is policy and arrives on --load-ceiling from the recipe.
+DEFAULT_LOAD_CEILING = 5.0
+# nextest writes the report under its store directory for the profile it ran.
+DEFAULT_REPORT = Path(__file__).resolve().parents[1] / "target" / "nextest" / "default" / "junit.xml"
+
+FIXTURE = """<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="fixture" tests="3" failures="1" errors="0" time="7.5">
+  <testsuite name="crate-a::fast" tests="2" failures="0" errors="0">
+    <testcase name="quick" classname="crate-a::fast" time="0.25"/>
+    <testcase name="quicker" classname="crate-a::fast" time="0.05"/>
+  </testsuite>
+  <testsuite name="crate-b::slow" tests="1" failures="1" errors="0">
+    <testcase name="waits" classname="crate-b::slow" time="6.0">
+      <failure message="timed out"/>
+    </testcase>
+  </testsuite>
+</testsuites>
+"""
+
+
+class Unreadable(Exception):
+    """The report is absent or not a junit document. Callers exit 2."""
+
+
+def read(path_or_text, is_text=False):
+    """Every arm as (binary, name, seconds, status) plus the run's test-phase
+    seconds, or None when the report carries no run-level time."""
+    try:
+        root = ET.fromstring(path_or_text) if is_text else ET.parse(str(path_or_text)).getroot()
+    except (OSError, ET.ParseError) as err:
+        raise Unreadable("%s: %s" % (path_or_text if not is_text else "<text>", err))
+    arms = []
+    for suite in root.iter("testsuite"):
+        for case in suite.iter("testcase"):
+            binary = case.get("classname") or suite.get("name") or "?"
+            name = case.get("name") or "?"
+            try:
+                seconds = float(case.get("time") or 0.0)
+            except ValueError:
+                raise Unreadable("arm %s::%s carries a non-numeric time %r" % (binary, name, case.get("time")))
+            if case.find("failure") is not None or case.find("error") is not None:
+                status = "red"
+            elif case.find("skipped") is not None:
+                status = "skipped"
+            else:
+                status = "green"
+            arms.append((binary, name, seconds, status))
+    if not arms:
+        raise Unreadable("the report holds no testcase element")
+    phase = None
+    if root.tag == "testsuites" and root.get("time") is not None:
+        try:
+            phase = float(root.get("time"))
+        except ValueError:
+            raise Unreadable("testsuites time is not a number: %r" % root.get("time"))
+    return arms, phase
+
+
+def profile(arms, phase, top):
+    by_binary = {}
+    for binary, _name, seconds, _status in arms:
+        count, total = by_binary.get(binary, (0, 0.0))
+        by_binary[binary] = (count + 1, total + seconds)
+    ranked = sorted(arms, key=lambda a: a[2], reverse=True)
+    greens = [a for a in arms if a[3] == "green"]
+    slowest_green = max(greens, key=lambda a: a[2]) if greens else None
+    return {
+        "arms": len(arms),
+        "red": sum(1 for a in arms if a[3] == "red"),
+        "skipped": sum(1 for a in arms if a[3] == "skipped"),
+        "arm_time_seconds": round(sum(a[2] for a in arms), 3),
+        "test_phase_seconds": phase,
+        "slowest_green": None if slowest_green is None else {
+            "arm": "%s::%s" % (slowest_green[0], slowest_green[1]),
+            "seconds": round(slowest_green[2], 3),
+        },
+        "top": [{"arm": "%s::%s" % (b, n), "seconds": round(s, 3), "status": st}
+                for b, n, s, st in ranked[:top]],
+        "binaries": [{"binary": b, "arms": c, "seconds": round(t, 3)}
+                     for b, (c, t) in sorted(by_binary.items(), key=lambda kv: kv[1][1], reverse=True)],
+    }
+
+
+def judge(phase, budget, load_before, ceiling):
+    """The budget verdict as (line, exit code).
+
+    A run whose load-before is at or above the ceiling is NOT JUDGED at 0 on
+    either side of the budget: the reading condition did not hold, so the phase
+    time is not evidence about the tree.
+    """
+    if load_before is not None and load_before >= ceiling:
+        return ("%s: NOT JUDGED — test phase %.1fs against the budget %gs at load %g "
+                "before the run (the reading condition is load under %g)"
+                % (GATE, phase, budget, load_before, ceiling), 0)
+    if phase > budget:
+        return ("%s: test phase %.1fs over the budget %gs" % (GATE, phase, budget), 1)
+    return ("%s: test phase %.1fs within the budget %gs" % (GATE, phase, budget), 0)
+
+
+def render(p):
+    out = []
+    out.append("%s — %d arms (%d red, %d skipped), arm-time %.1f s, test-phase %s"
+               % (ME, p["arms"], p["red"], p["skipped"], p["arm_time_seconds"],
+                  "NOT IN REPORT" if p["test_phase_seconds"] is None else "%.3f s" % p["test_phase_seconds"]))
+    if p["slowest_green"]:
+        out.append("slowest green arm: %s  %.3f s" % (p["slowest_green"]["arm"], p["slowest_green"]["seconds"]))
+    out.append("")
+    out.append("TOP %d ARMS BY TIME" % len(p["top"]))
+    for row in p["top"]:
+        out.append("  %9.3f s  %-7s %s" % (row["seconds"], row["status"], row["arm"]))
+    out.append("")
+    out.append("BINARIES BY ARM-TIME SUM")
+    for row in p["binaries"]:
+        out.append("  %9.3f s  %4d arms  %s" % (row["seconds"], row["arms"], row["binary"]))
+    return "\n".join(out)
+
+
+def self_test():
+    arms, phase = read(FIXTURE, is_text=True)
+    p = profile(arms, phase, top=3)
+    want_top = ["crate-b::slow::waits", "crate-a::fast::quick", "crate-a::fast::quicker"]
+    got_top = [r["arm"] for r in p["top"]]
+    checks = [
+        ("ranking", got_top == want_top, "%r != %r" % (got_top, want_top)),
+        ("arm-time", p["arm_time_seconds"] == 6.3, "%r != 6.3" % p["arm_time_seconds"]),
+        ("test-phase", p["test_phase_seconds"] == 7.5, "%r != 7.5" % p["test_phase_seconds"]),
+        ("binaries", [b["binary"] for b in p["binaries"]] == ["crate-b::slow", "crate-a::fast"], "%r" % p["binaries"]),
+        ("red count", p["red"] == 1, "%r != 1" % p["red"]),
+        ("slowest green", p["slowest_green"]["arm"] == "crate-a::fast::quick", "%r" % p["slowest_green"]),
+    ]
+    over = judge(7.5, 1.0, None, 5.0)
+    within = judge(7.5, 9.0, None, 5.0)
+    quiet = judge(7.5, 1.0, 4.9, 5.0)
+    loaded = judge(7.5, 1.0, 5.0, 5.0)
+    loaded_within = judge(7.5, 9.0, 9.1, 5.0)
+    want_loaded = ("fleet-test: NOT JUDGED — test phase 7.5s against the budget 1s at "
+                   "load 5 before the run (the reading condition is load under 5)")
+    checks += [
+        ("budget over", over == ("fleet-test: test phase 7.5s over the budget 1s", 1), "%r" % (over,)),
+        ("budget within", within == ("fleet-test: test phase 7.5s within the budget 9s", 0), "%r" % (within,)),
+        ("load under the ceiling judges", quiet == over, "%r != %r" % (quiet, over)),
+        ("load at the ceiling is not judged", loaded == (want_loaded, 0), "%r" % (loaded,)),
+        ("not judged either side of the budget",
+         loaded_within[1] == 0 and "NOT JUDGED" in loaded_within[0], "%r" % (loaded_within,)),
+    ]
+    bad = [(name, why) for name, ok, why in checks if not ok]
+    for name, why in bad:
+        print("%s: self-test %s disagrees: %s" % (ME, name, why))
+    if bad:
+        return 1
+    print("%s: self-test ok — %d checks over the three-arm fixture" % (ME, len(checks)))
+    return 0
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog=ME, add_help=True)
+    ap.add_argument("--report", default=str(DEFAULT_REPORT))
+    ap.add_argument("--top", type=int, default=40)
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--budget", type=float, default=None,
+                    help="exit 1 when the test-phase time exceeds this many seconds")
+    ap.add_argument("--load-before", type=float, default=None,
+                    help="the box's 1-minute load before the run; at or above the "
+                         "ceiling the budget verdict is NOT JUDGED at exit 0")
+    ap.add_argument("--load-ceiling", type=float, default=DEFAULT_LOAD_CEILING,
+                    help="the reading condition's ceiling (default %g)" % DEFAULT_LOAD_CEILING)
+    ap.add_argument("--self-test", action="store_true")
+    args = ap.parse_args(argv)
+    if args.self_test:
+        return self_test()
+    try:
+        arms, phase = read(Path(args.report))
+    except Unreadable as err:
+        sys.stderr.write("%s: %s\n" % (ME, err))
+        return 2
+    if args.budget is not None:
+        if phase is None:
+            sys.stderr.write("%s: the report carries no test-phase time; the budget cannot be read against it\n" % ME)
+            return 2
+        line, rc = judge(phase, args.budget, args.load_before, args.load_ceiling)
+        print(line)
+        return rc
+    p = profile(arms, phase, args.top)
+    print(json.dumps(p, indent=2) if args.json else render(p))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

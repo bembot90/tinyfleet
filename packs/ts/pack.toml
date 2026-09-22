@@ -1,0 +1,16 @@
+[pack]
+name = "ts"
+version = "0.1.0"
+schema = 3
+description = "The TypeScript layer: Deno pinned as the workflow runtime, and the home of the SDK."
+
+# The one table core reads about a workflow's language. The bundle line's
+# output flag is this pack's to own and not core's: `deno bundle` is marked
+# experimental in the Deno 2 reference, so its spelling may move with the pin.
+[runtime]
+name    = "deno"
+version = "2.9.7"
+bundle  = "deno bundle -o {bundle} {entry}"
+# --allow-env takes variable NAMES, so the grant lists the seven the SDK reads;
+# a wildcard is undocumented for the pin and would glob under core's `sh -c`.
+run     = "deno run --allow-run={fleet} --allow-read={run_dir} --allow-write={run_dir} --allow-env=FLEET_DIR,FLEET_RUN_ID,FLEET_STREAM,FLEET_STREAM_SEQ,FLEET_RUN_DIR,FLEET_BIN,FLEET_PROJECT {bundle}"

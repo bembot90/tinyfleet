@@ -1,0 +1,13 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "fleet guard shell-trap" },
+          { "type": "command", "command": "fleet guard record" }
+        ]
+      }
+    ]
+  }
+}

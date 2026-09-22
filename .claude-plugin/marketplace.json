@@ -1,0 +1,14 @@
+{
+  "name": "fleet",
+  "owner": {
+    "name": "the fleet maintainers"
+  },
+  "description": "The directory marketplace this checkout publishes: one plugin, fleet, sourced from this directory.",
+  "plugins": [
+    {
+      "name": "fleet",
+      "source": "./",
+      "description": "The fleet binary, its guards and its session prime, wired into a Claude Code session."
+    }
+  ]
+}

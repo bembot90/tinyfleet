@@ -1,0 +1,41 @@
+#!/bin/sh
+# The plugin's entry point. This directory is on the Bash tool's PATH in an
+# enabled session, and a hook reaches the same file through CLAUDE_PLUGIN_ROOT.
+#
+# Every binary is resolved by an EXPLICIT PATH and never by a bare name: a
+# service environment holds neither a package manager's prefix nor the user's
+# local bin (fleet/brain/lessons/claude-code.md D1), so a bare `fleet` here
+# would find nothing under the process that starts a session.
+set -u
+
+root=$(cd -- "$(dirname -- "$0")/.." 2>/dev/null && pwd -P)
+if [ -z "${root}" ]; then
+	echo "fleet: the plugin root cannot be resolved from $0" >&2
+	exit 127
+fi
+
+# FLEET_BIN is the seam an installed copy sets: the plugin cache carries no
+# target directory, so the binary it runs is named from outside.
+if [ -n "${FLEET_BIN-}" ]; then
+	case "${FLEET_BIN}" in
+	/*) ;;
+	*)
+		echo "fleet: FLEET_BIN names \`${FLEET_BIN}\`, which is not an absolute path" >&2
+		exit 127
+		;;
+	esac
+	if [ ! -x "${FLEET_BIN}" ]; then
+		echo "fleet: FLEET_BIN names \`${FLEET_BIN}\`, which is not an executable file" >&2
+		exit 127
+	fi
+	exec "${FLEET_BIN}" "$@"
+fi
+
+for candidate in "${root}/target/release/fleet" "${root}/target/debug/fleet"; do
+	if [ -x "${candidate}" ]; then
+		exec "${candidate}" "$@"
+	fi
+done
+
+echo "fleet: no built binary under ${root}/target — run cargo build --release in ${root}, or set FLEET_BIN" >&2
+exit 127
