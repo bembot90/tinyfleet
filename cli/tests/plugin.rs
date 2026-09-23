@@ -663,6 +663,46 @@ fn the_rules_file_follows_line_one_verbatim() {
     assert_eq!(rest, rules, "the rules follow line 1 byte for byte");
 }
 
+/// fleet-4fw: an installed pack whose import is not installed is named on line
+/// 1, with the line that adds it read off the importer's own line in the lock —
+/// the session that meets it is told before any run is refused.
+#[test]
+fn line_one_names_an_import_that_is_not_installed_and_the_line_that_adds_it() {
+    let s = Scratch::new("absent-import");
+    s.shipped_defaults();
+    let cwd = s.dir("cwd");
+    let fleet_dir = s.dir("fleet-dir");
+    let fleet_toml = s.write("fleet-root/fleet.toml", "");
+    s.write("fleet-dir/config.json", &config_json(&fleet_toml, ""));
+    s.pack(
+        "tiny",
+        "tiny",
+        "\n[imports.ts]\nsource = \"../ts\"\nversion = \"0.1.0\"\n",
+    );
+    fleet_core::lock::write(
+        &fleet_dir.join(fleet_core::lock::LOCK),
+        &[fleet_core::lock::Entry {
+            source: "https://example.invalid/o/fleet//packs/tiny".into(),
+            name: Some("tiny".into()),
+            version: "v1".into(),
+            commit: "0".repeat(40),
+            fetched: "2026-09-23T00:00:00Z".into(),
+            tree: None,
+        }],
+    )
+    .expect("the lock is written");
+
+    let first = line_one(&prime(&cwd, &fleet_dir, &[]));
+    assert!(
+        first.contains(
+            "packs: tiny (`tiny` imports `ts`, which is not installed — \
+             `fleet pack add https://example.invalid/o/fleet//packs/ts --version v1` adds it); \
+             guards:"
+        ),
+        "{first}"
+    );
+}
+
 /// Three claims in one fixture, each of which a plausible wrong reading gets
 /// wrong: the pack NAMES come from the manifests and not the directories (the
 /// directory order here is the reverse of the name order, so a listing that

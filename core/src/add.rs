@@ -17,6 +17,9 @@ use crate::lock;
 use crate::pack;
 use crate::resolve;
 
+/// The verb a missing import's line names, as a person types it.
+const VERB: &str = "fleet pack add";
+
 /// The prefix that pins a version to an exact commit. Anything else is a tag or
 /// a branch name, resolved by git at fetch time and recorded as what it was.
 pub const SHA: &str = "sha:";
@@ -32,6 +35,17 @@ const SCRATCH: &str = ".fleet-add";
 pub struct Source {
     pub repo: String,
     pub subdir: Option<String>,
+}
+
+/// The form a person types and the lock keys on: the repository, then `//` and
+/// the subdirectory when there is one.
+impl fmt::Display for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.subdir {
+            None => write!(f, "{}", self.repo),
+            Some(subdir) => write!(f, "{}//{subdir}", self.repo),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +73,55 @@ pub struct Installed {
     pub name: String,
     pub root: PathBuf,
     pub entry: lock::Entry,
+    /// The packs this one imports that the same checkout held and nothing
+    /// installed answered: installed with it, out of the same clone, so each is
+    /// pinned at the same commit. Empty on each of these.
+    pub imports: Vec<Installed>,
+    /// The imports that are neither installed nor in the same checkout. The
+    /// pack installs without them — the packs may be added in any order — and
+    /// the caller names each.
+    pub missing: Vec<Missing>,
+}
+
+/// An import an installed pack declares and no installed pack answers.
+///
+/// A LEGAL STATE and never a refusal: the layering is the imports', never the
+/// installs', so a fleet may take the importer first. What it costs is the
+/// runtime or the files the import would have carried, which is why every
+/// reader that meets one names it with the line that answers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Missing {
+    pub importer: String,
+    pub import: String,
+    /// The source as the importer's manifest declares it.
+    pub source: String,
+    /// The `fleet pack add` that installs it, read against the importer's own
+    /// source; none where there is no source to read it against, or where the
+    /// importer's checkout was seen not to hold it.
+    pub line: Option<String>,
+}
+
+impl fmt::Display for Missing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "`{}` imports `{}`, which is not installed",
+            self.importer, self.import
+        )?;
+        match &self.line {
+            Some(line) => write!(f, " — `{line}` adds it"),
+            None => write!(f, " — its manifest names the source `{}`", self.source),
+        }
+    }
+}
+
+/// Where an import's declared source points, read against its importer's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Located {
+    /// A directory of the importer's own repository: one clone serves both.
+    Inside(Source),
+    /// Another repository, as a source a person could type.
+    Elsewhere(String),
 }
 
 /// Any one of these leaves the packs directory and the lock as they were.
@@ -88,6 +151,12 @@ pub enum Refusal {
     AlreadyInstalled {
         name: String,
         root: String,
+    },
+    ImportName {
+        importer: String,
+        import: String,
+        source: String,
+        found: String,
     },
     Layering(String),
     Install(String),
@@ -142,6 +211,16 @@ impl fmt::Display for Refusal {
                 f,
                 "a pack named `{name}` is already installed at `{root}` — \
                  remove it before adding another"
+            ),
+            Refusal::ImportName {
+                importer,
+                import,
+                source,
+                found,
+            } => write!(
+                f,
+                "`{importer}` imports `{import}` from `{source}`, and the pack there calls \
+                 itself `{found}` — an import is answered by the pack of its own name"
             ),
             Refusal::Layering(r) => write!(f, "{r}"),
             Refusal::Install(e) => {
@@ -224,14 +303,133 @@ pub fn parse_version(raw: &str) -> Result<Version, Refusal> {
     Ok(Version::Named(raw.to_string()))
 }
 
-/// Fetch one pack, check it against what is installed, move it in and pin it.
+/// Where `declared` points, read against the source of the pack declaring it.
+///
+/// A source with a scheme, an absolute path or an scp-style `host:path` is
+/// another repository as it stands. A relative one is a path from the
+/// importer's own directory: while it stays inside the repository it names a
+/// subdirectory of the same checkout, and the `..`s that climb past the
+/// repository's root climb its URL or path instead, which is how a sibling
+/// repository reads.
+pub fn locate_import(importer: &Source, declared: &str) -> Located {
+    let declared = declared.trim();
+    if is_absolute(declared) {
+        return Located::Elsewhere(declared.to_string());
+    }
+    let mut inside: Vec<&str> = importer
+        .subdir
+        .as_deref()
+        .map(|s| s.split('/').filter(|p| !p.is_empty()).collect())
+        .unwrap_or_default();
+    let mut climbed = 0;
+    let mut after: Vec<&str> = Vec::new();
+    for part in declared.split('/') {
+        match part {
+            "" | "." => {}
+            ".." if !after.is_empty() => {
+                after.pop();
+            }
+            ".." if climbed == 0 && !inside.is_empty() => {
+                inside.pop();
+            }
+            ".." => climbed += 1,
+            _ if climbed > 0 => after.push(part),
+            _ => inside.push(part),
+        }
+    }
+    if climbed == 0 {
+        return Located::Inside(Source {
+            repo: importer.repo.clone(),
+            subdir: (!inside.is_empty()).then(|| inside.join("/")),
+        });
+    }
+    let mut repo = importer.repo.trim_end_matches('/').to_string();
+    for _ in 0..climbed {
+        match repo.rfind('/') {
+            Some(at) if at >= scheme_end(&repo) => repo.truncate(at),
+            _ => break,
+        }
+    }
+    for part in after {
+        repo.push('/');
+        repo.push_str(part);
+    }
+    Located::Elsewhere(repo)
+}
+
+/// A source that names its own repository whatever it is read against.
+fn is_absolute(source: &str) -> bool {
+    if scheme_end(source) > 0 || source.starts_with('/') || source.starts_with('~') {
+        return true;
+    }
+    // scp-style `user@host:path`: a colon before the first slash.
+    match (source.find(':'), source.find('/')) {
+        (Some(colon), Some(slash)) => colon < slash,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+/// The line that adds `import`, declared by a pack that came from `source` at
+/// `version`. Inside the same repository it is the importer's own version,
+/// which is the checkout the import was read beside; elsewhere it is the
+/// version the manifest declares, the only one there is.
+fn line_for(source: &Source, version: &str, import: &pack::Import) -> String {
+    match locate_import(source, &import.source) {
+        Located::Inside(at) => format!("{VERB} {at} --version {version}"),
+        Located::Elsewhere(at) => format!("{VERB} {at} --version {}", import.version),
+    }
+}
+
+/// Every import an installed pack declares that no installed pack answers,
+/// importer by importer in layer order, with the line that adds each read off
+/// the importer's own line in the lock.
+///
+/// A pack the lock does not carry — placed by hand, or by a lock that predates
+/// the name key — is still named, without a line.
+pub fn missing_imports(layers: &[resolve::Layer], lock_path: &Path) -> Vec<Missing> {
+    let pinned = lock::read(lock_path).unwrap_or_default();
+    let names: std::collections::BTreeSet<&str> =
+        layers.iter().map(|layer| layer.name.as_str()).collect();
+    let mut missing = Vec::new();
+    for layer in layers.iter().filter(|layer| !layer.defaults) {
+        let Some(manifest) = std::fs::read_to_string(layer.root.join(pack::MANIFEST))
+            .ok()
+            .and_then(|text| pack::parse_manifest(&text).ok())
+        else {
+            continue;
+        };
+        let at = pinned
+            .iter()
+            .find(|entry| entry.name.as_deref() == Some(layer.name.as_str()))
+            .and_then(|entry| Some((parse_source(&entry.source).ok()?, entry.version.clone())));
+        for import in &manifest.imports {
+            if names.contains(import.name.as_str()) {
+                continue;
+            }
+            missing.push(Missing {
+                importer: layer.name.clone(),
+                import: import.name.clone(),
+                source: import.source.clone(),
+                line: at
+                    .as_ref()
+                    .map(|(source, version)| line_for(source, version, import)),
+            });
+        }
+    }
+    missing
+}
+
+/// Fetch one pack, check it against what is installed, move it in and pin it —
+/// with every import the same checkout holds that nothing installed answers.
 ///
 /// `fetched` is the caller's own UTC stamp: this crate reads no clock, the same
 /// way it resolves no machine directory.
 ///
 /// Nothing is written outside `packs_dir` and `lock_path`, and a refusal at any
 /// step leaves both as they were — the fetch lands in a scratch directory that
-/// is removed on every path out.
+/// is removed on every path out, and the pack and its imports go in together
+/// or not at all.
 pub fn add(
     packs_dir: &Path,
     defaults_dir: &Path,
@@ -268,55 +466,140 @@ pub fn add(
         }
     };
 
-    let name = check_format(&candidate)?;
-    let destination = packs_dir.join(&name);
-    if destination.exists() {
-        return Err(vec![Refusal::AlreadyInstalled {
-            name,
-            root: destination.display().to_string(),
-        }]);
+    let manifest = check_format(&candidate)?;
+    let name = manifest.name.clone();
+    let mut going = vec![(name.clone(), candidate.clone(), source_as_given)];
+
+    // The imports the same checkout holds come in with it, out of this clone;
+    // the rest are named. An import already installed is already answered.
+    let installed: std::collections::BTreeSet<String> = resolve::installed(packs_dir)
+        .into_iter()
+        .map(|layer| layer.name)
+        .collect();
+    let mut missing = Vec::new();
+    for import in &manifest.imports {
+        if installed.contains(&import.name) {
+            continue;
+        }
+        let not_here = |line: Option<String>| Missing {
+            importer: name.clone(),
+            import: import.name.clone(),
+            source: import.source.clone(),
+            line,
+        };
+        let at = match locate_import(&parsed, &import.source) {
+            Located::Inside(at) => at,
+            Located::Elsewhere(_) => {
+                missing.push(not_here(Some(line_for(&parsed, &version_as_given, import))));
+                continue;
+            }
+        };
+        let root = match &at.subdir {
+            None => scratch.root.clone(),
+            Some(subdir) => scratch.root.join(subdir),
+        };
+        // A directory that holds the importer is not a pack beside it, and
+        // one with no manifest is no pack at all.
+        if candidate.starts_with(&root) || !root.join(pack::MANIFEST).is_file() {
+            missing.push(not_here(None));
+            continue;
+        }
+        let found = check_format(&root)?.name;
+        if found != import.name {
+            return Err(vec![Refusal::ImportName {
+                importer: name.clone(),
+                import: import.name.clone(),
+                source: import.source.clone(),
+                found,
+            }]);
+        }
+        going.push((found, root, at.to_string()));
     }
-    check_layering(packs_dir, defaults_dir, &name, &candidate)?;
 
-    std::fs::rename(&candidate, &destination).map_err(|e| vec![Refusal::Install(e.to_string())])?;
+    for (name, _, _) in &going {
+        let destination = packs_dir.join(name);
+        if destination.exists() {
+            return Err(vec![Refusal::AlreadyInstalled {
+                name: name.clone(),
+                root: destination.display().to_string(),
+            }]);
+        }
+    }
+    let laid: Vec<(&str, &Path)> = going
+        .iter()
+        .map(|(name, root, _)| (name.as_str(), root.as_path()))
+        .collect();
+    check_layering(packs_dir, defaults_dir, &laid)?;
 
-    // No tree hash: this pack came from a repository and its commit already
-    // says which bytes it is. The key belongs to the pack that has no commit.
-    let entry = lock::Entry {
-        source: source_as_given,
-        name: Some(name.clone()),
-        version: version_as_given,
-        commit,
-        fetched: fetched.to_string(),
-        tree: None,
-    };
-    if let Err(refusal) = pin(lock_path, &entry) {
-        let _ = std::fs::remove_dir_all(&destination);
+    // The imports move first: one the checkout holds inside the importer's
+    // own directory would otherwise move with it.
+    let mut moved: Vec<PathBuf> = Vec::new();
+    for (name, root, _) in going.iter().rev() {
+        let destination = packs_dir.join(name);
+        if let Err(e) = std::fs::rename(root, &destination) {
+            for done in &moved {
+                let _ = std::fs::remove_dir_all(done);
+            }
+            return Err(vec![Refusal::Install(e.to_string())]);
+        }
+        moved.push(destination);
+    }
+
+    // No tree hash: these packs came from a repository and its commit already
+    // says which bytes they are. The key belongs to the pack that has no commit.
+    let entries: Vec<lock::Entry> = going
+        .iter()
+        .map(|(name, _, source)| lock::Entry {
+            source: source.clone(),
+            name: Some(name.clone()),
+            version: version_as_given.clone(),
+            commit: commit.clone(),
+            fetched: fetched.to_string(),
+            tree: None,
+        })
+        .collect();
+    if let Err(refusal) = pin(lock_path, &entries) {
+        for done in &moved {
+            let _ = std::fs::remove_dir_all(done);
+        }
         return Err(vec![refusal]);
     }
 
-    Ok(Installed {
-        name,
-        root: destination,
-        entry,
-    })
+    let mut all = entries.into_iter().map(|entry| {
+        let name = entry.name.clone().unwrap_or_default();
+        Installed {
+            root: packs_dir.join(&name),
+            name,
+            entry,
+            imports: Vec::new(),
+            missing: Vec::new(),
+        }
+    });
+    let mut added = all.next().expect("the pack itself is always going");
+    added.imports = all.collect();
+    added.missing = missing;
+    Ok(added)
 }
 
-/// Write the pin and read it back. The read is what the verb exits 0 on: a write
-/// that reported success and left nothing readable — a lock path that swallows
-/// its bytes, a filesystem that lied — is the case a returned `Ok` cannot rule
-/// out, and the only one this catches.
-fn pin(lock_path: &Path, entry: &lock::Entry) -> Result<(), Refusal> {
-    lock::append(lock_path, entry).map_err(Refusal::Lock)?;
-    match lock::holds(lock_path, entry) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(Refusal::LockDidNotLand(entry.source.clone())),
-        Err(e) => Err(Refusal::Lock(e)),
+/// Write the pins in one document and read each back. The read is what the
+/// verb exits 0 on: a write that reported success and left nothing readable — a
+/// lock path that swallows its bytes, a filesystem that lied — is the case a
+/// returned `Ok` cannot rule out, and the only one this catches.
+fn pin(lock_path: &Path, entries: &[lock::Entry]) -> Result<(), Refusal> {
+    lock::append_all(lock_path, entries).map_err(Refusal::Lock)?;
+    for entry in entries {
+        match lock::holds(lock_path, entry) {
+            Ok(true) => {}
+            Ok(false) => return Err(Refusal::LockDidNotLand(entry.source.clone())),
+            Err(e) => return Err(Refusal::Lock(e)),
+        }
     }
+    Ok(())
 }
 
-/// The candidate's own format, and the name the rest of the verb calls it by.
-fn check_format(candidate: &Path) -> Result<String, Vec<Refusal>> {
+/// The candidate's own format, and its manifest, whose name the rest of the
+/// verb calls it by.
+fn check_format(candidate: &Path) -> Result<pack::Manifest, Vec<Refusal>> {
     let report = pack::check(candidate);
     let name = report
         .manifest
@@ -338,10 +621,12 @@ fn check_format(candidate: &Path) -> Result<String, Vec<Refusal>> {
     if name.is_empty() || Path::new(&name).components().count() != 1 || name.starts_with('.') {
         return Err(vec![Refusal::PackName(name)]);
     }
-    Ok(name)
+    // A report with no defects read a manifest; one without is named as the
+    // pack with no name it is.
+    report.manifest.ok_or_else(|| vec![Refusal::PackName(name)])
 }
 
-/// The candidate among everything already installed, laid as the resolver lays
+/// The candidates among everything already installed, laid as the resolver lays
 /// them: every pack above what it imports, the binary's defaults last.
 ///
 /// The layering is the imports', never the installs': a candidate an installed
@@ -351,11 +636,12 @@ fn check_format(candidate: &Path) -> Result<String, Vec<Refusal>> {
 fn check_layering(
     packs_dir: &Path,
     defaults_dir: &Path,
-    name: &str,
-    candidate: &Path,
+    candidates: &[(&str, &Path)],
 ) -> Result<(), Vec<Refusal>> {
     let mut packs = resolve::installed(packs_dir);
-    packs.push(resolve::Layer::new(name, candidate));
+    for (name, root) in candidates {
+        packs.push(resolve::Layer::new(*name, *root));
+    }
     let layering = |refusals: Vec<resolve::Refusal>| -> Vec<Refusal> {
         refusals
             .into_iter()

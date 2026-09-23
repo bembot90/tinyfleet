@@ -193,9 +193,15 @@ pub fn write(path: &Path, entries: &[Entry]) -> Result<(), LockError> {
 /// re-add of the same source moves its pin rather than growing a second table
 /// the reader would have to choose between.
 pub fn append(path: &Path, entry: &Entry) -> Result<(), LockError> {
+    append_all(path, std::slice::from_ref(entry))
+}
+
+/// The same for several entries in one write, so a pack and the imports that
+/// came in with it are pinned together or not at all.
+pub fn append_all(path: &Path, added: &[Entry]) -> Result<(), LockError> {
     let mut entries = read(path)?;
-    entries.retain(|e| e.source != entry.source);
-    entries.push(entry.clone());
+    entries.retain(|e| added.iter().all(|a| a.source != e.source));
+    entries.extend(added.iter().cloned());
     write(path, &entries)
 }
 

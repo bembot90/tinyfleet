@@ -40,12 +40,14 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
+use crate::add;
 use crate::item::brief::Packs;
 use crate::item::pins;
 use crate::item::{
     control_token, read_table, Events, Project, Stop, RUN_CLOSED, RUN_COULD_NOT_TELL, RUN_FAILED,
     RUN_STARTED, RUN_WAITING,
 };
+use crate::lock;
 use crate::pack::{self, Runtime};
 use crate::policy;
 use crate::resolve::Layer;
@@ -278,7 +280,7 @@ pub fn run(out: &mut dyn Write, order: &Order, wiring: &Wiring) -> Result<Ran, S
     let open = open_runs(wiring)?;
     refuse_at_the_cap(&open, wiring)?;
     let resolved = resolve_workflow(order.workflow, wiring)?;
-    let pinned = read_the_runtime(&resolved, wiring)?;
+    let pinned = read_the_runtime(&resolved, wiring, order.machine_dir)?;
     let path = child_path_for(&pinned, wiring.child_path);
     the_doctor_is_green(&resolved, &pinned, &path, wiring)?;
     let policy_bytes = std::fs::read(wiring.policy_file).map_err(|e| {
@@ -440,7 +442,7 @@ pub fn rerun(out: &mut dyn Write, again: &Again, wiring: &Wiring) -> Result<Ende
         relative,
         pack,
     };
-    let pinned = read_the_runtime(&resolved, wiring)?;
+    let pinned = read_the_runtime(&resolved, wiring, again.machine_dir)?;
     let path = child_path_for(&pinned, wiring.child_path);
 
     // The two `Order` fields a re-run does not carry. The workflow is the pinned
@@ -673,7 +675,17 @@ fn manifest_of(layer: &Layer) -> Result<pack::Manifest, Stop> {
 /// pin beneath it is that import's business. Beneath a carrier with none, two
 /// declaring imports are a refusal naming both, never the higher one: core is
 /// not the one to choose between two languages a pack asked for at once.
-fn read_the_runtime(resolved: &Resolved, wiring: &Wiring) -> Result<Pinned, Stop> {
+///
+/// NONE AT ALL, where an import the carrier declares is not installed, names
+/// that import and the line that adds it (fleet-4fw): the missing pack is the
+/// likeliest carrier of the table, and the person reading the refusal is the
+/// one who can add it. `machine_dir` is where the lock that line is read off
+/// lives.
+fn read_the_runtime(
+    resolved: &Resolved,
+    wiring: &Wiring,
+    machine_dir: &Path,
+) -> Result<Pinned, Stop> {
     let own = manifest_of(&resolved.pack)?;
     if let Some(runtime) = own.runtime {
         return Ok(Pinned {
@@ -714,16 +726,37 @@ fn read_the_runtime(resolved: &Resolved, wiring: &Wiring) -> Result<Pinned, Stop
         }
     }
     match declaring.len() {
-        0 => Err(Stop::refused(format!(
-            "`{}` carries `{}` and declares no [runtime] table, and no pack it imports declares \
-             one — core knows one thing about a workflow's language and that table is it, so \
-             there is no command to bundle this file with",
-            resolved.pack.name, resolved.relative
-        ))),
+        0 => {
+            let unanswered: Vec<String> =
+                add::missing_imports(layers, &machine_dir.join(lock::LOCK))
+                    .into_iter()
+                    .filter(|missing| {
+                        missing.importer == resolved.pack.name
+                            || imported.contains(&missing.importer)
+                    })
+                    .map(|missing| missing.to_string())
+                    .collect();
+            if unanswered.is_empty() {
+                Err(Stop::refused(format!(
+                    "`{}` carries `{}` and declares no [runtime] table, and no pack it imports \
+                     declares one — that table is the one thing fleet reads about a workflow's \
+                     language, so there is no command to bundle this file with",
+                    resolved.pack.name, resolved.relative
+                )))
+            } else {
+                Err(Stop::refused(format!(
+                    "`{}` carries `{}` and declares no [runtime] table, and no installed pack it \
+                     imports declares one: {}",
+                    resolved.pack.name,
+                    resolved.relative,
+                    unanswered.join("; ")
+                )))
+            }
+        }
         1 => Ok(declaring.remove(0)),
         _ => Err(Stop::refused(format!(
             "`{}` carries `{}` and declares no [runtime] table, and {} packs it imports each \
-             declare one — {} — so the file has two runtimes and core is not the one to choose",
+             declare one — {} — so the file has two runtimes and fleet does not choose between them",
             resolved.pack.name,
             resolved.relative,
             declaring.len(),

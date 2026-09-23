@@ -136,6 +136,15 @@ repository and the path to the pack inside it:
 
     fleet pack add <checkout>//packs/tiny --version <tag, branch or sha:…>
 
+Tiny imports `ts`, the pack that pins Deno as the workflow runtime, and the
+same checkout holds it at `packs/ts`, so that one line installs both: ts comes
+out of the same clone, pinned at the same commit and keyed in `packs.lock` on
+`<checkout>//packs/ts`. An import that lives in another repository is not
+fetched. `pack add` names it on stderr with the `fleet pack add` line that
+installs it, and still exits 0. Until it is added, `fleet prime`'s first line
+and `fleet run`'s refusal for a workflow with no runtime both name it with
+that same line.
+
 `fleet prime` then names the installed packs on its first line, top first —
 `none installed` until one is added, and never the defaults, which are the
 binary's — and prints the resolved rules file beneath it.

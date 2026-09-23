@@ -821,6 +821,18 @@ fn pack_add(
                 ),
                 Some(&installed.root.display().to_string()),
             );
+            for import in &installed.imports {
+                ui.status(
+                    Stream::Out,
+                    Tone::Good,
+                    "added",
+                    &format!(
+                        "{} {} at {}, which {} imports",
+                        import.name, import.entry.version, import.entry.commit, installed.name
+                    ),
+                    Some(&import.root.display().to_string()),
+                );
+            }
             ui.status(
                 Stream::Out,
                 Tone::Good,
@@ -828,6 +840,18 @@ fn pack_add(
                 &format!("in {}", lock_path.display()),
                 None,
             );
+            // Installed without them, and said where the next read of this
+            // fleet — a run, a session's prime — would otherwise be the first
+            // to find out.
+            for missing in &installed.missing {
+                ui.status(
+                    Stream::Err,
+                    Tone::Flat,
+                    "fleet pack add:",
+                    &missing.to_string(),
+                    None,
+                );
+            }
             Ok(Exit::Done)
         }
         Err(refusals) => {

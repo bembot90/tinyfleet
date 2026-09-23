@@ -816,3 +816,346 @@ fn a_version_the_repository_does_not_carry_refuses_naming_the_step() {
     );
     assert_eq!(machine.installed(), Vec::<String>::new());
 }
+
+// ------------------------------------------ fleet-4fw: the packs a pack imports
+
+/// A checkout shaped as this workspace ships its packs: tiny under `packs/tiny`
+/// importing ts from `../ts`, and ts beside it.
+fn a_checkout_of_tiny_and_ts(label: &str) -> (common::Fixture, String) {
+    repo(
+        label,
+        &[
+            ("packs/tiny/pack.toml", &manifest_importing("tiny", &["ts"])),
+            ("packs/tiny/skills/review/SKILL.md", "# review\n"),
+            ("packs/ts/pack.toml", &manifest("ts")),
+            (
+                "packs/ts/doctor/deno-version/doctor.toml",
+                "name = \"deno-version\"\n",
+            ),
+        ],
+    )
+}
+
+/// The demo's first flight, as fleet-4fw found it: tiny added alone. The import
+/// the same checkout holds comes in with it, out of the same clone, so it is
+/// pinned at the same commit and keyed on the source a person would have typed
+/// for it.
+#[test]
+fn an_import_the_same_checkout_holds_is_installed_with_its_importer() {
+    let (checkout, sha) = a_checkout_of_tiny_and_ts("with-tiny");
+    let machine = Machine::new("with-machine");
+    let tiny = format!("{}//packs/tiny", source_of(&checkout));
+
+    let added = add::add(
+        &machine.packs(),
+        &machine.defaults(),
+        &machine.lock(),
+        &tiny,
+        "v1",
+        WHEN,
+    )
+    .unwrap_or_else(|r| panic!("tiny installs: {}", lines(&r)));
+
+    assert_eq!(added.name, "tiny");
+    let imports: Vec<&str> = added.imports.iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(imports, vec!["ts"], "the import came in with it");
+    assert!(added.missing.is_empty(), "{:?}", added.missing);
+    assert_eq!(machine.installed(), vec!["tiny", "ts"]);
+    assert!(machine
+        .packs()
+        .join("ts/doctor/deno-version/doctor.toml")
+        .is_file());
+
+    let ts = format!("{}//packs/ts", source_of(&checkout));
+    let mut pinned = lock::read(&machine.lock()).expect("the lock parses");
+    pinned.sort_by(|a, b| a.source.cmp(&b.source));
+    assert_eq!(
+        pinned,
+        vec![
+            lock::Entry {
+                source: tiny,
+                name: Some("tiny".into()),
+                version: "v1".into(),
+                commit: sha.clone(),
+                fetched: WHEN.into(),
+                tree: None,
+            },
+            lock::Entry {
+                source: ts,
+                name: Some("ts".into()),
+                version: "v1".into(),
+                commit: sha,
+                fetched: WHEN.into(),
+                tree: None,
+            },
+        ]
+    );
+    resolve::resolve(
+        &resolve::layers(&machine.packs(), &machine.defaults()).expect("the two order"),
+    )
+    .expect("and the layering resolves");
+}
+
+/// An import already installed is the import answered: the add fetches only the
+/// pack it was given, whichever order the two came in.
+#[test]
+fn an_import_already_installed_is_not_installed_again() {
+    let (checkout, _) = a_checkout_of_tiny_and_ts("already-tiny");
+    let machine = Machine::new("already-machine");
+
+    for subdir in ["ts", "tiny"] {
+        let added = add::add(
+            &machine.packs(),
+            &machine.defaults(),
+            &machine.lock(),
+            &format!("{}//packs/{subdir}", source_of(&checkout)),
+            "v1",
+            WHEN,
+        )
+        .unwrap_or_else(|r| panic!("{subdir} installs: {}", lines(&r)));
+        assert!(added.imports.is_empty(), "{:?}", added.imports);
+        assert!(added.missing.is_empty(), "{:?}", added.missing);
+    }
+    assert_eq!(machine.installed(), vec!["tiny", "ts"]);
+    assert_eq!(lock::read(&machine.lock()).expect("parses").len(), 2);
+}
+
+/// An import outside the checkout is not fetched — its version is the
+/// manifest's, which no add has checked is a ref — so the pack installs without
+/// it, and the add names it with the exact line that adds it, read against the
+/// importer's own source.
+#[test]
+fn an_import_outside_the_checkout_is_named_with_the_line_that_adds_it() {
+    let (tiny_src, _) = repo(
+        "outside-tiny",
+        &[("pack.toml", &manifest_importing("tiny", &["ts"]))],
+    );
+    let machine = Machine::new("outside-machine");
+
+    let added = add::add(
+        &machine.packs(),
+        &machine.defaults(),
+        &machine.lock(),
+        &source_of(&tiny_src),
+        "v1",
+        WHEN,
+    )
+    .unwrap_or_else(|r| panic!("tiny installs: {}", lines(&r)));
+
+    assert!(added.imports.is_empty());
+    let sibling = tiny_src.root.parent().expect("a parent").join("ts");
+    let line = format!("fleet pack add {} --version 0.1.0", sibling.display());
+    assert_eq!(
+        added.missing,
+        vec![add::Missing {
+            importer: "tiny".into(),
+            import: "ts".into(),
+            source: "../ts".into(),
+            line: Some(line.clone()),
+        }]
+    );
+    let said = added.missing[0].to_string();
+    assert!(
+        said.contains("`tiny` imports `ts`, which is not installed") && said.contains(&line),
+        "{said}"
+    );
+    assert_eq!(machine.installed(), vec!["tiny"]);
+
+    // What run and prime read later: the same line, from the installed packs
+    // and the lock alone.
+    assert_eq!(
+        add::missing_imports(&resolve::installed(&machine.packs()), &machine.lock()),
+        added.missing
+    );
+}
+
+/// A checkout that does not hold the import it declares: the pack still
+/// installs, and the import is named without a line, because the only one there
+/// is to give would name a directory that is not there.
+#[test]
+fn an_import_the_checkout_does_not_hold_is_named_without_a_line() {
+    let (checkout, _) = repo(
+        "nothere-tiny",
+        &[("packs/tiny/pack.toml", &manifest_importing("tiny", &["ts"]))],
+    );
+    let machine = Machine::new("nothere-machine");
+
+    let added = add::add(
+        &machine.packs(),
+        &machine.defaults(),
+        &machine.lock(),
+        &format!("{}//packs/tiny", source_of(&checkout)),
+        "v1",
+        WHEN,
+    )
+    .unwrap_or_else(|r| panic!("tiny installs: {}", lines(&r)));
+
+    assert_eq!(added.missing.len(), 1, "{:?}", added.missing);
+    assert_eq!(added.missing[0].line, None);
+    assert!(
+        added.missing[0]
+            .to_string()
+            .contains("`tiny` imports `ts`, which is not installed"),
+        "{}",
+        added.missing[0]
+    );
+    assert_eq!(machine.installed(), vec!["tiny"]);
+}
+
+/// The import's own manifest calls it something else: installing it would leave
+/// the import still unanswered under a second name, so the add refuses whole.
+#[test]
+fn an_import_that_calls_itself_another_name_refuses_and_leaves_nothing() {
+    let (checkout, _) = repo(
+        "misnamed-tiny",
+        &[
+            ("packs/tiny/pack.toml", &manifest_importing("tiny", &["ts"])),
+            ("packs/ts/pack.toml", &manifest("typescript")),
+        ],
+    );
+    let machine = Machine::new("misnamed-machine");
+
+    let refused = add::add(
+        &machine.packs(),
+        &machine.defaults(),
+        &machine.lock(),
+        &format!("{}//packs/tiny", source_of(&checkout)),
+        "v1",
+        WHEN,
+    )
+    .expect_err("an import under another name is a refusal");
+
+    assert!(
+        lines(&refused).contains(
+            "`tiny` imports `ts` from `../ts`, and the pack there calls itself `typescript`"
+        ),
+        "{}",
+        lines(&refused)
+    );
+    assert_eq!(machine.installed(), Vec::<String>::new());
+    assert!(!machine.lock().exists());
+}
+
+/// The import comes in under the same layering check as its importer, and a
+/// refusal of either leaves neither.
+#[test]
+fn an_import_the_layering_refuses_leaves_neither_pack() {
+    let (checkout, _) = repo(
+        "deep-tiny",
+        &[
+            ("packs/tiny/pack.toml", &manifest_importing("tiny", &["ts"])),
+            ("packs/ts/pack.toml", &manifest_importing("ts", &["deno"])),
+        ],
+    );
+    let machine = Machine::new("deep-machine");
+
+    let refused = add::add(
+        &machine.packs(),
+        &machine.defaults(),
+        &machine.lock(),
+        &format!("{}//packs/tiny", source_of(&checkout)),
+        "v1",
+        WHEN,
+    )
+    .expect_err("a transitive import is a refusal");
+
+    assert!(
+        lines(&refused).contains("layer `ts` declares its own import `deno`"),
+        "{}",
+        lines(&refused)
+    );
+    assert_eq!(machine.installed(), Vec::<String>::new());
+    assert!(!machine.lock().exists());
+}
+
+/// A pack placed by hand has no lock line to read a source from: its missing
+/// import is still named, without a line.
+#[test]
+fn a_missing_import_of_a_pack_the_lock_does_not_hold_is_named_without_a_line() {
+    let machine = Machine::new("byhand-machine");
+    std::fs::create_dir_all(machine.packs().join("tiny")).expect("the pack dir");
+    std::fs::write(
+        machine.packs().join("tiny/pack.toml"),
+        manifest_importing("tiny", &["ts"]),
+    )
+    .expect("the manifest");
+
+    let missing = add::missing_imports(&resolve::installed(&machine.packs()), &machine.lock());
+    assert_eq!(
+        missing,
+        vec![add::Missing {
+            importer: "tiny".into(),
+            import: "ts".into(),
+            source: "../ts".into(),
+            line: None,
+        }]
+    );
+}
+
+#[test]
+fn an_import_source_is_read_against_its_importers_source() {
+    let at = |repo: &str, subdir: Option<&str>| Source {
+        repo: repo.into(),
+        subdir: subdir.map(String::from),
+    };
+    let tiny = at("https://example.invalid/o/fleet", Some("packs/tiny"));
+    let root = at("https://example.invalid/o/tiny", None);
+
+    let cases: [(&Source, &str, add::Located); 8] = [
+        (
+            &tiny,
+            "../ts",
+            add::Located::Inside(at("https://example.invalid/o/fleet", Some("packs/ts"))),
+        ),
+        (
+            &tiny,
+            "./vendor/ts",
+            add::Located::Inside(at(
+                "https://example.invalid/o/fleet",
+                Some("packs/tiny/vendor/ts"),
+            )),
+        ),
+        (
+            &tiny,
+            "../..",
+            add::Located::Inside(at("https://example.invalid/o/fleet", None)),
+        ),
+        (
+            &tiny,
+            "../../../ts",
+            add::Located::Elsewhere("https://example.invalid/o/ts".into()),
+        ),
+        (
+            &root,
+            "../ts",
+            add::Located::Elsewhere("https://example.invalid/o/ts".into()),
+        ),
+        (
+            &tiny,
+            "https://example.invalid/p/ts//packs/ts",
+            add::Located::Elsewhere("https://example.invalid/p/ts//packs/ts".into()),
+        ),
+        (
+            &tiny,
+            "/srv/packs/ts",
+            add::Located::Elsewhere("/srv/packs/ts".into()),
+        ),
+        (
+            &tiny,
+            "git@example.invalid:o/ts.git",
+            add::Located::Elsewhere("git@example.invalid:o/ts.git".into()),
+        ),
+    ];
+    for (importer, declared, want) in cases {
+        assert_eq!(
+            add::locate_import(importer, declared),
+            want,
+            "{declared} against {importer}"
+        );
+    }
+    assert_eq!(
+        tiny.to_string(),
+        "https://example.invalid/o/fleet//packs/tiny"
+    );
+    assert_eq!(root.to_string(), "https://example.invalid/o/tiny");
+}

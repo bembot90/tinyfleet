@@ -7,8 +7,10 @@
 //! in their own words and the next part still prints.
 
 use fleet_controller::{config, platform};
+use fleet_core::add;
 use fleet_core::defaults;
 use fleet_core::guard;
+use fleet_core::lock;
 use fleet_core::resolve::{self, Layer};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -54,7 +56,7 @@ pub fn command() -> Exit {
     let layering = layers(&machine_dir.join("packs"), &machine_dir.join(defaults::DIR));
     println!(
         "fleet {version} — packs: {}; guards: {}",
-        packs_of(&layering),
+        packs_of(&layering, &machine_dir.join(lock::LOCK)),
         guards_of(&policy),
     );
 
@@ -134,7 +136,10 @@ fn layers(packs_dir: &Path, defaults_dir: &Path) -> Layering {
     }
 }
 
-fn packs_of(layering: &Layering) -> String {
+/// The installed names, and after them every import one of them declares that
+/// nothing installed answers, with the line that adds it (fleet-4fw): a session
+/// is told here, at its start, rather than by the first run it opens.
+fn packs_of(layering: &Layering, lock_path: &Path) -> String {
     match layering {
         Layering::Refused(why) => format!("could not be resolved — {why}"),
         Layering::Resolved { layers, .. } => {
@@ -144,9 +149,16 @@ fn packs_of(layering: &Layering) -> String {
                 .map(|layer| layer.name.as_str())
                 .collect();
             if installed.is_empty() {
-                "none installed".to_string()
-            } else {
+                return "none installed".to_string();
+            }
+            let missing: Vec<String> = add::missing_imports(layers, lock_path)
+                .iter()
+                .map(|missing| missing.to_string())
+                .collect();
+            if missing.is_empty() {
                 installed.join(", ")
+            } else {
+                format!("{} ({})", installed.join(", "), missing.join("; "))
             }
         }
     }

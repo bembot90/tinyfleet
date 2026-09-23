@@ -86,6 +86,8 @@ struct Pack {
     /// the version given, or none. The layering sorts them beneath the
     /// scratch pack, which is where a run looks for a pin the carrier lacks.
     imports: Vec<(&'static str, Option<&'static str>)>,
+    /// Packs declared in the scratch pack's `[imports]` and not installed.
+    absent: Vec<&'static str>,
     /// The manifest's `[config.<key>]` declarations, appended verbatim.
     settings: &'static str,
 }
@@ -96,6 +98,7 @@ impl Pack {
             runtime: Some(version),
             workflows: vec![(ONE, String::from(WORKFLOW))],
             imports: Vec::new(),
+            absent: Vec::new(),
             settings: "",
         }
     }
@@ -105,6 +108,7 @@ impl Pack {
             runtime: None,
             workflows: vec![(ONE, String::from(WORKFLOW))],
             imports: Vec::new(),
+            absent: Vec::new(),
             settings: "",
         }
     }
@@ -123,6 +127,7 @@ impl Pack {
                 .map(|(row, body)| (*row, format!("#!/bin/sh\n{body}\n")))
                 .collect(),
             imports: Vec::new(),
+            absent: Vec::new(),
             settings: "",
         }
     }
@@ -131,6 +136,12 @@ impl Pack {
     /// `version`, or pins none.
     fn importing(mut self, name: &'static str, version: Option<&'static str>) -> Pack {
         self.imports.push((name, version));
+        self
+    }
+
+    /// The same pack, importing one more pack that is not installed.
+    fn importing_absent(mut self, name: &'static str) -> Pack {
+        self.absent.push(name);
         self
     }
 
@@ -205,7 +216,12 @@ impl Rig {
             "[pack]\nname = \"scratch\"\nversion = \"0.1.0\"\nschema = 3\n\
              description = \"a scratch pack\"\n",
         );
-        for (name, _) in &pack.imports {
+        for name in pack
+            .imports
+            .iter()
+            .map(|(name, _)| name)
+            .chain(&pack.absent)
+        {
             manifest.push_str(&format!(
                 "\n[imports.{name}]\nsource = \"../{name}\"\nversion = \"0.1.0\"\n"
             ));
@@ -669,6 +685,43 @@ fn a_pack_with_no_runtime_table_refuses_by_name_and_writes_nothing() {
         &rig,
         &["run", &rig.workflow(ONE), "--by", BY],
         "declares no [runtime] table",
+    );
+}
+
+/// fleet-4fw: the carrier's runtime would come from a pack it imports, and that
+/// pack is not installed. The refusal names the import and the line that adds
+/// it, read off the carrier's own line in the lock.
+#[test]
+fn a_carrier_whose_import_is_not_installed_refuses_naming_the_line_that_adds_it() {
+    let rig = Rig::new(
+        "absent-import",
+        &Pack::without_a_runtime().importing_absent("ts"),
+        &cap_that_is_not_the_subject(),
+    );
+    fleet_core::lock::write(
+        &rig.machine.join(fleet_core::lock::LOCK),
+        &[fleet_core::lock::Entry {
+            source: "https://example.invalid/o/fleet//packs/scratch".into(),
+            name: Some("scratch".into()),
+            version: "main".into(),
+            commit: "0".repeat(40),
+            fetched: "2026-09-23T00:00:00Z".into(),
+            tree: None,
+        }],
+    )
+    .expect("the lock is written");
+    let said = refuses(
+        &rig,
+        &["run", &rig.workflow(ONE), "--by", BY],
+        "`scratch` imports `ts`, which is not installed",
+    );
+    assert!(
+        said.contains("fleet pack add https://example.invalid/o/fleet//packs/ts --version main"),
+        "the refusal names the line that adds it: {said}"
+    );
+    assert!(
+        !said.contains("core"),
+        "the binary's bottom layer is not `core` on a person's surface: {said}"
     );
 }
 

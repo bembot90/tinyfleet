@@ -75,18 +75,30 @@ impl Drop for Temp {
 /// git configuration is kept out so a global hooks path or a missing identity
 /// cannot decide whether the fixture builds.
 fn a_pack_repo(label: &str) -> Temp {
-    let repo = Temp::new(label);
-    std::fs::write(
-        repo.path("pack.toml"),
-        "[pack]\nname = \"neighborly\"\nversion = \"0.1.0\"\nschema = 3\n",
+    a_repo(
+        label,
+        &[
+            (
+                "pack.toml",
+                "[pack]\nname = \"neighborly\"\nversion = \"0.1.0\"\nschema = 3\n",
+            ),
+            ("skills/greet/SKILL.md", "# greet\n"),
+        ],
     )
-    .expect("the manifest is written");
-    std::fs::create_dir_all(repo.path("skills/greet")).expect("the skill directory is created");
-    std::fs::write(repo.path("skills/greet/SKILL.md"), "# greet\n").expect("the skill is written");
+}
+
+/// A local repository holding the files given, committed and tagged `v1`.
+fn a_repo(label: &str, files: &[(&str, &str)]) -> Temp {
+    let repo = Temp::new(label);
+    for (relative, body) in files {
+        let path = repo.path(relative);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("the directory is made");
+        std::fs::write(&path, body).expect("the file is written");
+    }
 
     for args in [
         vec!["init", "--quiet", "-b", "main"],
-        vec!["add", "--", "pack.toml", "skills/greet/SKILL.md"],
+        vec!["add", "--all"],
         vec!["commit", "--quiet", "--no-gpg-sign", "-m", "the pack"],
         vec!["tag", "v1"],
     ] {
@@ -225,6 +237,88 @@ fn no_source_and_no_version_are_usage_errors_and_not_refusals() {
     assert_eq!(out.status.code(), Some(2));
     assert!(
         stderr(&out).contains("a value is required for '--version <VERSION>'"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// fleet-4fw: tiny added alone brings ts, which the same checkout holds, and
+/// says so on its output.
+#[test]
+fn an_import_the_same_checkout_holds_is_added_and_reported() {
+    const TINY: &str = "[pack]\nname = \"tiny\"\nversion = \"0.1.0\"\nschema = 3\n\n\
+                        [imports.ts]\nsource = \"../ts\"\nversion = \"0.1.0\"\n";
+    let repo = a_repo(
+        "import-repo",
+        &[
+            ("packs/tiny/pack.toml", TINY),
+            (
+                "packs/ts/pack.toml",
+                "[pack]\nname = \"ts\"\nversion = \"0.1.0\"\nschema = 3\n",
+            ),
+        ],
+    );
+    let machine = Temp::new("import-machine");
+    machine.defaults();
+
+    let out = run(&[
+        "pack",
+        "add",
+        &format!("{}//packs/tiny", repo.root.to_string_lossy()),
+        "--version",
+        "v1",
+        "--packs-dir",
+        &machine.arg("packs"),
+        "--lock",
+        &machine.arg("packs.lock"),
+    ]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let said = stdout(&out);
+    assert!(said.contains("added tiny v1 at"), "{said}");
+    assert!(
+        said.contains("added ts v1 at") && said.contains("which tiny imports"),
+        "the import is named as added, and why: {said}"
+    );
+    assert!(machine.path("packs/ts/pack.toml").is_file());
+}
+
+/// fleet-4fw: an import from another repository is not fetched, and the add
+/// says so on stderr with the line that adds it, still exiting 0.
+#[test]
+fn an_import_from_elsewhere_is_named_with_the_line_that_adds_it() {
+    let repo = a_repo(
+        "elsewhere-repo",
+        &[(
+            "pack.toml",
+            "[pack]\nname = \"tiny\"\nversion = \"0.1.0\"\nschema = 3\n\n\
+             [imports.ts]\nsource = \"https://example.invalid/o/ts\"\nversion = \"v0.1.0\"\n",
+        )],
+    );
+    let machine = Temp::new("elsewhere-machine");
+    machine.defaults();
+
+    let out = run(&[
+        "pack",
+        "add",
+        &repo.root.to_string_lossy(),
+        "--version",
+        "v1",
+        "--packs-dir",
+        &machine.arg("packs"),
+        "--lock",
+        &machine.arg("packs.lock"),
+    ]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("added tiny v1 at"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        stderr(&out).contains(
+            "`tiny` imports `ts`, which is not installed — \
+             `fleet pack add https://example.invalid/o/ts --version v0.1.0` adds it"
+        ),
         "{}",
         stderr(&out)
     );
