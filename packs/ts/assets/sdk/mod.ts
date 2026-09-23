@@ -210,7 +210,8 @@ export interface Run {
    * outstanding ones; then each item's event payload. */
   until(items: string[], state: ItemState): Promise<Record<string, unknown>>;
   /** A child run: `fleet run <name> --input k=v …`, then `{ run }` once its
-   * `run.closed` is on the stream, else Waiting on the child's run id. */
+   * `run.closed` is on the stream, a failure once its `run.failed` or its
+   * `run.cancelled` is, else Waiting on the child's run id. */
   start(
     name: string,
     inputs?: Record<string, unknown>,
@@ -226,6 +227,7 @@ const GATE_RESOLVED = "gate.resolved";
 const RUN_STARTED = "run.started";
 const RUN_CLOSED = "run.closed";
 const RUN_FAILED = "run.failed";
+const RUN_CANCELLED = "run.cancelled";
 
 /** Where a gate's question note goes under the run directory. */
 export const GATES_DIR = "gates";
@@ -517,6 +519,17 @@ class Handle implements Run {
         throw new Error(
           `start: run ${child} failed: ${
             JSON.stringify(failed.payload.reason)
+          }`,
+        );
+      }
+      // A CANCEL IS AN ENDING: nothing executes a cancelled child again, so a
+      // parent that kept waiting on it would wait for good.
+      const cancelled = (await this.tail({ type: RUN_CANCELLED }))
+        .find((r) => r.payload.run === child);
+      if (cancelled !== undefined) {
+        throw new Error(
+          `start: run ${child} was cancelled${
+            cancelled.actor === null ? "" : ` by ${cancelled.actor}`
           }`,
         );
       }

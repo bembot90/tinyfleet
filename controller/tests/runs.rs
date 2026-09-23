@@ -535,6 +535,40 @@ fn a_run_waiting_on_a_child_run_is_woken_only_by_that_child_s_end() {
     );
 }
 
+/// A CANCEL IS A CHILD'S END TOO: a run stopped on a child that a person
+/// cancelled is woken by the child's `run.cancelled`, and a cancel of some
+/// other run does not wake it.
+///
+/// Nothing executes a cancelled run again, so a parent that slept through the
+/// cancel would wait for good on a child that is never ending any other way —
+/// holding its own record, and a `[core.run] max_open` slot, as it did.
+#[test]
+fn a_run_waiting_on_a_child_is_woken_by_that_child_s_cancel_and_no_other() {
+    let scratch = Scratch::new("wake-child-cancel");
+    let stream = scratch.stream();
+    a_run_line(&stream, runs::RUN_STARTED, "c1");
+    a_run_waiting_with(&stream, "p1", serde_json::json!("c1"));
+    let stub = Stub::with(&stream, &[Ends::Closed]);
+
+    a_run_line(&stream, runs::RUN_STARTED, "other");
+    a_run_line(&stream, runs::RUN_CANCELLED, "other");
+    let passed = pass(&stub, &stream, 2);
+    assert!(
+        stub.reruns.borrow().is_empty(),
+        "another run's cancel woke the parent: {:?}",
+        stub.reruns.borrow()
+    );
+    passed.expect("the pass runs");
+
+    a_run_line(&stream, runs::RUN_CANCELLED, "c1");
+    pass(&stub, &stream, 2).expect("the pass runs");
+    assert_eq!(
+        *stub.reruns.borrow(),
+        vec!["p1".to_string()],
+        "c1 was cancelled, so p1 ran again"
+    );
+}
+
 /// A run whose gate was answered after the ask and before its process exited
 /// is woken by that answer, though the answer sits at or below the position
 /// the wait recorded — and once the re-run has moved it on, it is not woken
@@ -999,6 +1033,70 @@ fn the_park_retires_the_runs_seats_as_an_ending_does() {
         vec![("s3".to_string(), "r6".to_string())]
     );
     assert_eq!(of_kind(&stream, runs::RUN_CLEANED)[0].payload["count"], 1);
+}
+
+// ---- the cancel ----------------------------------------------------------------
+
+/// A CANCELLED RUN IS ENDED FOR GOOD: the pass never executes it again — not
+/// when the stream moves past its wait, and not when an execution that was
+/// under way when it was cancelled writes a wait of its own after the cancel —
+/// and it retires the seats the run spawned, once, as it does for a run that
+/// closed.
+#[test]
+fn a_cancelled_run_is_never_executed_again_and_its_seats_are_retired() {
+    let scratch = Scratch::new("cancel");
+    let stream = scratch.stream();
+    EventLog::open(&stream)
+        .append(
+            events::SESSION_SPAWNED,
+            "s4",
+            serde_json::json!({ "worktree": "/w", "run": "r9" }),
+        )
+        .expect("the spawn lands");
+    a_waiting_run(&stream, "r9");
+    EventLog::open(&stream)
+        .append(
+            runs::RUN_CANCELLED,
+            "a-person",
+            serde_json::json!({ "run": "r9" }),
+        )
+        .expect("the cancel lands");
+    a_line_from_elsewhere(&stream);
+
+    // An empty script: a re-run asked for is a refusal the pass reports.
+    let stub = Stub::with(&stream, &[]);
+    pass(&stub, &stream, 2).expect("the pass asks for no re-run");
+    assert!(
+        stub.reruns.borrow().is_empty(),
+        "a cancelled run is not re-run"
+    );
+    assert_eq!(
+        *stub.retires.borrow(),
+        vec![("s4".to_string(), "r9".to_string())],
+        "its seat is let go"
+    );
+    let cleaned = of_kind(&stream, runs::RUN_CLEANED);
+    assert_eq!(cleaned.len(), 1);
+    assert_eq!(cleaned[0].payload["run"], "r9");
+    assert_eq!(cleaned[0].payload["count"], 1);
+
+    // The execution that was under way at the cancel ends on a wait, and the
+    // stream moves past it: the cancel still stands.
+    let at_exit = EventLog::open(&stream).seq();
+    EventLog::open(&stream)
+        .append(
+            runs::RUN_WAITING,
+            "a-runner",
+            serde_json::json!({ "run": "r9", "wake": { "for": "a line" }, "seq": at_exit }),
+        )
+        .expect("the late wait lands");
+    a_line_from_elsewhere(&stream);
+    pass(&stub, &stream, 2).expect("the pass asks for no re-run");
+    assert!(
+        stub.reruns.borrow().is_empty(),
+        "a line written after the cancel does not reopen the run"
+    );
+    assert_eq!(count(&stream, runs::RUN_CLEANED), 1, "cleaned once");
 }
 
 // ---- the refusals --------------------------------------------------------------

@@ -757,6 +757,67 @@ fn a_failure_and_a_wait_the_sdk_printed_read_as_text_on_the_page() {
     assert!(wait.ends_with(" for fx-gate"), "{wait}");
 }
 
+/// A run parked at the crash cap and then cancelled is off the page: it is not
+/// listed as parked, and the gate the cancel resolved is not counted among the
+/// ones a park raised and nobody answered — the count is of gates a person
+/// still owes an answer, and a cancelled run is owed none.
+///
+/// THE LINES ARE THE ONES `fleet cancel` WRITES: `run.cancelled`, then one
+/// `gate.resolved` per gate it resolved, carrying no letter because nobody
+/// chose one.
+#[test]
+fn a_cancelled_run_is_neither_listed_parked_nor_counted_as_owed_an_answer() {
+    let rig = Rig::new("runs-cancelled");
+    rig.publish(&document(
+        &rig.policy_file(),
+        &fleet_controller::clock::now_stamp(),
+        vec![seat("builder-1")],
+    ));
+    let now = fleet_controller::clock::now_stamp();
+    let now = now.as_str();
+    stream(
+        &rig,
+        &[
+            started(now, "fx-gone"),
+            line(
+                now,
+                fleet_core::item::RUN_COULD_NOT_TELL,
+                serde_json::json!({ "run": "fx-gone", "exit": 7, "read": null }),
+            ),
+            parked(now, "fx-gone", "fx-gate-gone"),
+            line(
+                now,
+                fleet_core::item::RUN_CANCELLED,
+                serde_json::json!({ "run": "fx-gone" }),
+            ),
+            line(
+                now,
+                fleet_core::item::GATE_RESOLVED,
+                serde_json::json!({ "item": "fx-gone", "gate": "fx-gate-gone", "letter": null }),
+            ),
+        ],
+    );
+
+    let out = rig.run(&["status"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let page = stdout(&out);
+    let section = runs_section(&page);
+    assert!(
+        section.starts_with(
+            "runs  0 failed in the last 24 hours, 0 parked, 0 could not tell, 0 waiting, 0 open\n"
+        ),
+        "{section}"
+    );
+    assert!(
+        !section.contains("fx-gone"),
+        "a cancelled run is not listed: {section}"
+    );
+    assert!(
+        page.contains("\ngates  0 raised by a park and not answered\n"),
+        "{page}"
+    );
+}
+
 /// AC1, the quiet page: no stream at all is a fleet nobody has run anything on,
 /// which is every count at zero and no row — never a could-not-tell.
 #[test]

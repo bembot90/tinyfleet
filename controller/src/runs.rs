@@ -36,7 +36,7 @@ use std::path::Path;
 /// `fleet_core::item::run::ENV_RUN_ID` to one string.
 pub const ENV_RUN_ID: &str = "FLEET_RUN_ID";
 
-/// The five kinds of the run lifecycle this pass folds, and the one it writes.
+/// The six kinds of the run lifecycle this pass folds, and the one it writes.
 /// Spelled here for the same reason [`ENV_RUN_ID`] is, and pinned to core's in
 /// the same place.
 pub const RUN_STARTED: &str = "run.started";
@@ -44,6 +44,7 @@ pub const RUN_CLOSED: &str = "run.closed";
 pub const RUN_FAILED: &str = "run.failed";
 pub const RUN_WAITING: &str = "run.waiting";
 pub const RUN_COULD_NOT_TELL: &str = "run.could_not_tell";
+pub const RUN_CANCELLED: &str = "run.cancelled";
 pub const RUN_CLEANED: &str = "run.cleaned";
 
 /// The kind a park announces on, spelled here beside the six above.
@@ -96,7 +97,8 @@ pub trait Runs {
     fn rerun(&self, run: &str) -> Result<(), String>;
 
     /// Raise a gate on the run's record and say why, answering with the gate's
-    /// own id.
+    /// own id — with the park note beside it that `fleet answer` resolves the
+    /// gate through, or the gate is one nobody can answer.
     fn gate(&self, run: &str, reason: &str) -> Result<String, String>;
 
     /// Retire one seat the run spawned, through the transient retire path. The
@@ -139,6 +141,11 @@ struct Folded {
     /// nobody is executing — so a pass reading the cap alone raises a gate on
     /// every poll for as long as the record stands.
     parked: bool,
+    /// Whether a `run.cancelled` stands for this run. A THIRD LATCH: a cancel
+    /// stops no process, so an execution under way when it landed still writes
+    /// its row of the exit table after it — and a pass reading the last line
+    /// alone would take that row for the run's standing and execute it again.
+    cancelled: bool,
     /// The seats `session.spawned` named this run on, in the order the stream
     /// met them.
     spawned: BTreeSet<String>,
@@ -168,6 +175,14 @@ pub fn tick(pass: &mut Pass) -> Result<(), String> {
         let Some((kind, at)) = &state.last else {
             continue;
         };
+        // CANCELLED IS AN ENDING, and the same cleanup every ending gets —
+        // whatever line the run's last execution wrote after it.
+        if state.cancelled {
+            if let Err(why) = clean(pass, run, state) {
+                refusals.push(format!("{run}: {why}"));
+            }
+            continue;
+        }
         match kind.as_str() {
             RUN_WAITING if could_wake(&stream, head, *at, state) => {
                 if let Err(why) = pass.runs.rerun(run) {
@@ -214,7 +229,8 @@ fn fold(stream: &[Record]) -> BTreeMap<String, Folded> {
     let mut runs: BTreeMap<String, Folded> = BTreeMap::new();
     for record in stream {
         match record.kind.as_str() {
-            RUN_STARTED | RUN_CLOSED | RUN_FAILED | RUN_WAITING | RUN_COULD_NOT_TELL => {
+            RUN_STARTED | RUN_CLOSED | RUN_FAILED | RUN_WAITING | RUN_COULD_NOT_TELL
+            | RUN_CANCELLED => {
                 let Some(id) = payload_str(record, "run") else {
                     continue;
                 };
@@ -239,6 +255,9 @@ fn fold(stream: &[Record]) -> BTreeMap<String, Folded> {
                 };
                 if record.kind == RUN_COULD_NOT_TELL {
                     state.crashes += 1;
+                }
+                if record.kind == RUN_CANCELLED {
+                    state.cancelled = true;
                 }
             }
             RUN_CLEANED => {
@@ -298,6 +317,8 @@ pub enum Standing {
     Parked,
     Failed,
     Closed,
+    /// `run.cancelled` stands, whatever an execution under way wrote after it.
+    Cancelled,
 }
 
 /// One run as a reader outside the pass is told it.
@@ -332,6 +353,7 @@ pub fn readings(stream: &[Record]) -> Vec<Reading> {
         .filter_map(|(run, state)| {
             let (kind, _) = state.last?;
             let standing = match kind.as_str() {
+                _ if state.cancelled => Standing::Cancelled,
                 RUN_STARTED => Standing::Open,
                 RUN_WAITING => Standing::Waiting,
                 RUN_COULD_NOT_TELL if state.parked => Standing::Parked,
@@ -435,7 +457,7 @@ fn wake_of(record: &Record) -> Wake {
 /// answered. Waking on it wherever it is loops on nothing: the re-run replays
 /// past the answered gate or the ended child, so the run's last line is no
 /// longer this wait. `start` returns on the child's close and fails on its
-/// failure, and both are a re-run's to read.
+/// failure or its cancel, and each is a re-run's to read.
 ///
 /// AN ID IS A GATE'S OR A RUN'S ONLY WHERE THE STREAM SAYS SO: a gate that was
 /// asked or answered, or a run that was started. An id the stream knows as
@@ -465,7 +487,7 @@ fn could_wake(stream: &[Record], head: u64, at: u64, state: &Folded) -> bool {
             }
             stream.iter().any(|record| match record.kind.as_str() {
                 GATE_RESOLVED => names(record, "gate"),
-                RUN_CLOSED | RUN_FAILED => names(record, "run"),
+                RUN_CLOSED | RUN_FAILED | RUN_CANCELLED => names(record, "run"),
                 _ => false,
             })
         }

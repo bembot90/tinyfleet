@@ -517,7 +517,8 @@ fn routines_section(out: &mut dyn Write, routines: &[RoutineRow]) -> std::io::Re
 /// The runs a person has to know about, in the order they answer them: the
 /// failures inside the window, the parks, the executions nothing could
 /// classify, the waits, and the runs still executing. A closed run is not
-/// listed; a failure before the window is counted and not listed. Then the
+/// listed, nor a cancelled one, which a person ended themselves; a failure
+/// before the window is counted and not listed. Then the
 /// gates the stream holds standing, runs' and items' alike, because a park is
 /// what the morning's first read is of.
 fn runs_section(out: &mut dyn Write, read: &Result<RunsRead, String>) -> std::io::Result<()> {
@@ -613,6 +614,7 @@ fn run_row(reading: &Reading, gates: &BTreeSet<String>) -> String {
         Standing::Waiting => format!("waiting since {} for {}", reading.stamp, said("wake")),
         Standing::Open => format!("open since {}", reading.stamp),
         Standing::Closed => format!("closed at {}", reading.stamp),
+        Standing::Cancelled => format!("cancelled, last line at {}", reading.stamp),
     };
     format!(
         "{}  {}  {what}",

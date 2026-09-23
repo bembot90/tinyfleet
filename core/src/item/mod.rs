@@ -114,6 +114,14 @@ pub const RUN_FAILED: &str = "run.failed";
 pub const RUN_WAITING: &str = "run.waiting";
 pub const RUN_COULD_NOT_TELL: &str = "run.could_not_tell";
 
+/// The one a PERSON's `fleet cancel` writes: the run ended by hand, its record
+/// closed with it.
+///
+/// NOT A ROW OF THE EXIT TABLE. No process answered it — a cancel stops none —
+/// so it ends the run whatever an execution under way writes after it, and a
+/// fold that meets it reads the run as ended for good.
+pub const RUN_CANCELLED: &str = "run.cancelled";
+
 /// The one the CONTROLLER writes when a run's seats are let go.
 ///
 /// Named here beside the five above because it is the same lifecycle's
@@ -223,6 +231,10 @@ pub fn payload_keys(kind: &str) -> Option<&'static [&'static str]> {
         // `read` is the last line as it stood — the two readings that say why
         // no other row fitted.
         RUN_COULD_NOT_TELL => &["run", "exit", "read"],
+        // The id alone, as the close's: the gates the cancel resolved each
+        // have a `gate.resolved` of their own, and a list here would be a
+        // second copy of them.
+        RUN_CANCELLED => &["run"],
         // `count` is how many seats were retired, and it is the whole payload
         // beside the id: which seats they were is on each one's own
         // `session.retired`, and a list here would be a second copy of it.

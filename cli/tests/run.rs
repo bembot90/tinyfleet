@@ -90,6 +90,9 @@ struct Pack {
     absent: Vec<&'static str>,
     /// The manifest's `[config.<key>]` declarations, appended verbatim.
     settings: &'static str,
+    /// Whether the pack's bundle command exits non-zero and writes nothing,
+    /// which is the one refusal a run meets AFTER its record is filed.
+    bundle_fails: bool,
 }
 
 impl Pack {
@@ -100,6 +103,7 @@ impl Pack {
             imports: Vec::new(),
             absent: Vec::new(),
             settings: "",
+            bundle_fails: false,
         }
     }
 
@@ -110,6 +114,7 @@ impl Pack {
             imports: Vec::new(),
             absent: Vec::new(),
             settings: "",
+            bundle_fails: false,
         }
     }
 
@@ -129,6 +134,7 @@ impl Pack {
             imports: Vec::new(),
             absent: Vec::new(),
             settings: "",
+            bundle_fails: false,
         }
     }
 
@@ -148,6 +154,12 @@ impl Pack {
     /// The same pack, declaring the settings `fleet.toml` may set for it.
     fn declaring(mut self, settings: &'static str) -> Pack {
         self.settings = settings;
+        self
+    }
+
+    /// The same pack, whose bundle command refuses.
+    fn whose_bundle_fails(mut self) -> Pack {
+        self.bundle_fails = true;
         self
     }
 }
@@ -196,7 +208,14 @@ impl Rig {
 
         let scratch = rig.machine.join("packs/scratch");
         let bundler = scratch.join("assets/bundle.sh");
-        write(&bundler, "#!/bin/sh\nset -eu\ncp \"$1\" \"$2\"\n");
+        if pack.bundle_fails {
+            write(
+                &bundler,
+                "#!/bin/sh\necho 'the bundler would not bundle' >&2\nexit 7\n",
+            );
+        } else {
+            write(&bundler, "#!/bin/sh\nset -eu\ncp \"$1\" \"$2\"\n");
+        }
         executable(&bundler);
         for (row, body) in &pack.workflows {
             write(
@@ -888,6 +907,63 @@ fn the_open_run_cap_refuses_naming_the_open_runs_and_writes_nothing() {
         "`[core.run] max_open` is 1",
     );
     assert!(said.contains(&id), "the refusal names the open run: {said}");
+}
+
+/// The run directory's one entry, which is the record a run filed: the
+/// directory is named by the id the store answered, and it is made before the
+/// bundle command runs.
+fn the_one_run_directory(rig: &Rig) -> String {
+    let names: Vec<String> = std::fs::read_dir(rig.machine.join(workflow_run::RUNS))
+        .expect("the runs directory was made")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names.len(), 1, "one run was filed: {names:?}");
+    names.into_iter().next().expect("the one name")
+}
+
+/// A BUNDLE THAT FAILS CLOSES THE RECORD FILED FOR IT, says so on the stream and
+/// names it. The bundle is the one refusal a run meets after its record is
+/// filed — the record is what names the directory the bundle is written into —
+/// and a record left open there is one no stream line names: `status` does not
+/// list it, the controller neither re-runs nor cleans it, and it holds a
+/// `[core.run] max_open` slot for good.
+#[test]
+fn a_bundle_that_fails_closes_the_record_filed_for_it_and_names_it() {
+    let rig = Rig::new(
+        "bundle-fails",
+        &Pack::pinned_at(VERSION).whose_bundle_fails(),
+        &cap_that_is_not_the_subject(),
+    );
+
+    let out = rig.run(&["run", &rig.workflow(ONE), "--by", BY]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let id = the_one_run_directory(&rig);
+    let said = stderr(&out);
+    assert!(
+        said.contains("the bundler would not bundle"),
+        "the refusal is the bundle command's: {said}"
+    );
+    // The bundle line's own path carries the id, so the record is looked for
+    // AS the record and not as a substring of that path.
+    assert!(
+        said.contains(&format!("the record {id} ")),
+        "and it names the record: {said}"
+    );
+
+    assert!(
+        !is_open(&rig, &id),
+        "the record leaves the open set the cap is measured against"
+    );
+    let failed = only(&rig, WHOLE_STREAM, fleet_core::item::RUN_FAILED);
+    assert_eq!(failed["payload"]["run"].as_str(), Some(id.as_str()));
+    assert!(
+        failed["payload"]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("the bundler would not bundle")),
+        "the reason is the refusal the verb printed: {failed}"
+    );
+    none_of(&rig, WHOLE_STREAM, fleet_core::item::RUN_STARTED);
 }
 
 // ---- AC1: the exit table ------------------------------------------------------
@@ -1634,4 +1710,268 @@ fn a_rerun_reads_the_settings_the_run_was_opened_with_and_not_the_edited_file() 
         Some("avast"),
         "a run opened after the edit reads the edited file"
     );
+}
+
+// ---- the cancel ----------------------------------------------------------------
+
+/// The same wiring the controller's run pass hands core's re-run, over this
+/// rig's project and its policy file as it stands.
+fn rerun_in_this_process(
+    rig: &Rig,
+    id: &str,
+) -> Result<workflow_run::Ended, fleet_core::item::Stop> {
+    let store = fleet_core::store::Bd::at(&rig.project);
+    let packs = fleet_core::item::brief::Packs::under(
+        &rig.machine.join("packs"),
+        &rig.machine.join(fleet_core::defaults::DIR),
+    )
+    .unwrap_or_else(|stop| panic!("the layers resolve: {}", stop.message));
+    let policy_file = rig.project.join("fleet.toml");
+    let table = fleet_core::item::table_at(&policy_file);
+    let project = fleet_core::item::Project {
+        root: rig.project.clone(),
+        name: String::from("project"),
+        gates: table.clone(),
+        guards: table,
+    };
+    let stream = Stream(rig.machine.join("events.jsonl"));
+    workflow_run::rerun(
+        &mut Vec::new(),
+        &workflow_run::Again {
+            run: id,
+            by: "controller",
+            at: "2026-09-23T00:00:00Z",
+            machine_dir: &rig.machine,
+            fleet_bin: Path::new(env!("CARGO_BIN_EXE_fleet")),
+        },
+        &workflow_run::Wiring {
+            store: &store,
+            project: &project,
+            packs: &packs,
+            policy_file: &policy_file,
+            events: &stream,
+            stream: &stream,
+            child_path: "",
+        },
+    )
+}
+
+/// The ids of every gate the store still lists open.
+fn open_gates(rig: &Rig) -> Vec<String> {
+    use fleet_core::store::Store;
+    fleet_core::store::Bd::at(&rig.project)
+        .open_gates()
+        .expect("the store lists its gates")
+}
+
+/// `fleet cancel` on a waiting run: the record is closed, `run.cancelled` names
+/// it, and the run is never executed again — not even where the re-run the
+/// controller's pass calls is asked for it outright, because a closed record
+/// is refused before anything is executed.
+#[test]
+fn a_cancelled_waiting_run_is_closed_announced_and_never_executed_again() {
+    let rig = Rig::new(
+        "cancel-wait",
+        &Pack::running(WAITS),
+        &cap_that_is_not_the_subject(),
+    );
+    let out = rig.run(&["run", &rig.workflow(ONE), "--by", BY]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let (id, _) = started_line(&out);
+    assert!(is_open(&rig, &id), "a waiting run holds its record open");
+
+    let from = rig.stream_length();
+    let out = rig.run(&["cancel", &id, "--by", "a-person"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), format!("{id} — cancelled"));
+    assert!(
+        !is_open(&rig, &id),
+        "the record leaves the open set `[core.run] max_open` counts"
+    );
+    assert!(
+        rig.document(&id)["close_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("cancelled")),
+        "and says why it closed: {}",
+        rig.document(&id)
+    );
+    let cancelled = only(&rig, from, fleet_core::item::RUN_CANCELLED);
+    assert_eq!(cancelled["payload"]["run"].as_str(), Some(id.as_str()));
+    assert_eq!(cancelled["actor"].as_str(), Some("a-person"));
+    let keys: Vec<&str> = cancelled["payload"]
+        .as_object()
+        .expect("the payload is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        Some(keys.as_slice()),
+        fleet_core::item::payload_keys(fleet_core::item::RUN_CANCELLED),
+        "the payload carries the keys its kind declares"
+    );
+    none_of(&rig, from, fleet_core::item::GATE_RESOLVED);
+
+    let from = rig.stream_length();
+    let stop = rerun_in_this_process(&rig, &id).expect_err("a closed run is not executed");
+    assert_eq!(stop.code, 1, "{}", stop.message);
+    assert!(
+        stop.message.contains(&format!("{id} is closed")),
+        "refused as closed, before anything is read off the directory: {}",
+        stop.message
+    );
+    none_of(&rig, from, fleet_core::item::RUN_STARTED);
+}
+
+/// One run parked on a real store the way the controller's run pass leaves one
+/// at `[core.run] max_crashes`: a workflow nothing could classify, then the gate
+/// on its record. `noted` is the park the seam makes now, gate and note; unset,
+/// it is the bare gate the seam raised before the note existed.
+fn a_run_parked_at_the_cap(rig: &Rig, noted: bool) -> (String, String) {
+    use fleet_core::store::Store;
+    let out = rig.run(&["run", &rig.workflow(ONE), "--by", BY]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    let (id, _) = started_line(&out);
+    let store = fleet_core::store::Bd::at(&rig.project);
+    let gate = if noted {
+        let packs = fleet_core::item::brief::Packs::under(
+            &rig.machine.join("packs"),
+            &rig.machine.join(fleet_core::defaults::DIR),
+        )
+        .unwrap_or_else(|stop| panic!("the layers resolve: {}", stop.message));
+        fleet_core::item::gate::park_at_the_cap(
+            &fleet_core::item::gate::Capped {
+                run: &id,
+                reason: "executed 3 time(s) and nothing could classify the last one",
+                directory: &rig.machine.join(workflow_run::RUNS).join(&id),
+                by: "controller",
+            },
+            &store,
+            &packs,
+        )
+        .unwrap_or_else(|stop| panic!("the park is made: {}", stop.message))
+    } else {
+        store
+            .gate(&id, "a park from before the note", "controller")
+            .expect("the bare gate is raised")
+    };
+    (id, gate)
+}
+
+/// The crash cap's park, answered through the shipped binary on a real store:
+/// `fleet answer` finds the park the note names, resolves the gate the store
+/// raised, and says so on the stream.
+#[test]
+fn a_run_parked_at_the_crash_cap_answers_through_fleet_answer() {
+    let rig = Rig::new(
+        "answer-park",
+        &Pack::running(STRANGE),
+        &cap_that_is_not_the_subject(),
+    );
+    let (id, gate) = a_run_parked_at_the_cap(&rig, true);
+    assert!(open_gates(&rig).contains(&gate), "{gate} stands");
+
+    let from = rig.stream_length();
+    let out = rig.run(&["answer", &id, "B", "--by", "a-person"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let answered = only(&rig, from, fleet_core::item::GATE_RESOLVED);
+    assert_eq!(answered["payload"]["item"].as_str(), Some(id.as_str()));
+    assert_eq!(answered["payload"]["gate"].as_str(), Some(gate.as_str()));
+    assert!(!open_gates(&rig).contains(&gate), "the gate is resolved");
+}
+
+/// `fleet cancel` on a parked run resolves the gate standing on its record and
+/// closes it — here the bare gate a park raised before its note existed, which
+/// `fleet answer` cannot reach and which kept the record's close blocked. The
+/// gates are the store's own answer, so a noted park's gate is found the same
+/// way.
+#[test]
+fn a_cancel_resolves_the_gate_on_a_parked_runs_record_and_closes_it() {
+    let rig = Rig::new(
+        "cancel-park",
+        &Pack::running(STRANGE),
+        &cap_that_is_not_the_subject(),
+    );
+    let (id, bare) = a_run_parked_at_the_cap(&rig, false);
+    assert!(open_gates(&rig).contains(&bare), "{bare} stands");
+
+    let from = rig.stream_length();
+    let out = rig.run(&["cancel", &id, "--by", "a-person"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out).trim(),
+        format!("{id} — cancelled, gate {bare} resolved"),
+        "the line names the gate it resolved"
+    );
+    assert!(
+        !open_gates(&rig).contains(&bare),
+        "the bare gate is resolved"
+    );
+    assert!(!is_open(&rig, &id), "and the record is closed");
+    only(&rig, from, fleet_core::item::RUN_CANCELLED);
+    let resolved = only(&rig, from, fleet_core::item::GATE_RESOLVED);
+    assert_eq!(resolved["payload"]["item"].as_str(), Some(id.as_str()));
+    assert_eq!(resolved["payload"]["gate"].as_str(), Some(bare.as_str()));
+    assert!(
+        resolved["payload"]["letter"].is_null(),
+        "nobody chose a letter: {resolved}"
+    );
+}
+
+/// The refusals, each exit 1 on the record as it stands and each leaving it so:
+/// an id the store does not hold, an item that is not a run's record, and a run
+/// already closed. No name to act as is usage, exit 2.
+#[test]
+fn a_cancel_refuses_what_is_not_an_open_run() {
+    let rig = Rig::new(
+        "cancel-refuses",
+        &Pack::running(WAITS),
+        &cap_that_is_not_the_subject(),
+    );
+
+    refuses(
+        &rig,
+        &["cancel", "fx-nothing-here", "--by", BY],
+        "fx-nothing-here",
+    );
+
+    let made = Command::new("bd")
+        .arg("-C")
+        .arg(&rig.project)
+        .args([
+            "create",
+            "an item that is not a run",
+            "--type",
+            "task",
+            "--json",
+        ])
+        .output()
+        .expect("bd runs");
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    let item: serde_json::Value =
+        serde_json::from_slice(&made.stdout).expect("bd create answers JSON");
+    let item = item["id"].as_str().expect("an id").to_string();
+    let said = refuses(&rig, &["cancel", &item, "--by", BY], &item);
+    assert!(said.contains("not a run"), "{said}");
+    assert!(is_open(&rig, &item), "the item is untouched");
+
+    let out = rig.run(&["run", &rig.workflow(ONE), "--by", BY]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let (id, _) = started_line(&out);
+    let out = rig.run(&["cancel", &id, "--by", BY]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let from = rig.stream_length();
+    let said = refuses(&rig, &["cancel", &id, "--by", BY], "closed");
+    assert!(said.contains(&id), "{said}");
+    none_of(&rig, from, fleet_core::item::RUN_CANCELLED);
+
+    let out = rig.run_with(
+        &["cancel", &id],
+        &[("FLEET_ACTOR", ""), ("BEADS_ACTOR", "")],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("--by"), "{}", stderr(&out));
 }

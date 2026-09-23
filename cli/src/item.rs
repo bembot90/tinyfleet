@@ -213,6 +213,53 @@ pub struct RunArgs {
     pub packs_dir: Option<PathBuf>,
 }
 
+/// What `cancel` takes: the run, and who is ending it.
+#[derive(clap::Args)]
+pub struct CancelArgs {
+    /// the run's id, which is its record's
+    pub run: String,
+    /// who is cancelling it; else FLEET_ACTOR or BEADS_ACTOR
+    #[arg(long, value_name = "NAME")]
+    pub by: Option<String>,
+    /// where the packs are installed
+    #[arg(long = "packs-dir", value_name = "DIR")]
+    pub packs_dir: Option<PathBuf>,
+}
+
+/// The cancel verb: the project resolved, then core's cancel over its store and
+/// the machine's stream.
+pub fn cancel_command(args: &CancelArgs) -> Exit {
+    let Some(by) = args.by.clone().or_else(actor) else {
+        eprintln!(
+            "fleet cancel: no name — pass --by <name>, or set FLEET_ACTOR or BEADS_ACTOR. A \
+             cancel names who ended the run."
+        );
+        return Exit::Usage;
+    };
+    let cancelled = resolve_at(args.packs_dir.clone()).and_then(|here| {
+        let store = Bd::at(&here.project.root);
+        let events = StreamEvents {
+            path: here.machine_dir.join(EVENTS),
+        };
+        workflow_run::cancel(
+            &mut std::io::stdout(),
+            &workflow_run::Cancel {
+                run: &args.run,
+                by: &by,
+            },
+            &store,
+            &events,
+        )
+    });
+    match cancelled {
+        Ok(_) => Exit::Done,
+        Err(stop) => {
+            eprintln!("fleet cancel: {}", stop.message);
+            stop_exit(stop.code)
+        }
+    }
+}
+
 /// The run verb: the pairs parsed, then core, then the outcome read into this
 /// cli's own exit table.
 ///

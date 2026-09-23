@@ -221,7 +221,8 @@ doctor, and the open runs at [core.run] max_open, default four.
 Then it files the run's record item, opens runs/<id>/ under the machine
 directory, pins the inputs and the policy in force, runs the pack's bundle
 command into the directory, and hashes all three onto the record and onto
-run.started.
+run.started. A refusal there — a bundle command that exits non-zero — closes
+the record it filed as failed, with run.failed naming it.
 
 Then it runs the pack's run command with the pinned inputs as JSON on
 stdin and FLEET_RUN_ID, FLEET_STREAM, FLEET_STREAM_SEQ, FLEET_RUN_DIR,
@@ -241,6 +242,23 @@ exit. Any other exit, a signal, or a last line that is not JSON is
 run.could_not_tell with what was read. A closed or failed run is closed
 on the record; a waiting one stays open.")]
     Run(item::RunArgs),
+
+    /// cancel a run: resolve its gates, close its record, let its seats go
+    #[command(long_about = "\
+cancel a run: every gate standing on its record resolved, the record closed as
+cancelled, and run.cancelled on the stream, with one gate.resolved per gate —
+one act, for a run nothing else will end: parked at [core.run] max_crashes,
+waiting on a wake that will not come, or gone without a row of the exit
+table. The record is what [core.run] max_open counts, so a cancel frees its
+slot.
+
+The controller's next poll retires the seats the run spawned, as it does for
+a run that closed, and never executes the run again. It stops no process: an
+execution under way when the run is cancelled runs to its end, and nothing
+acts on what it says.
+
+It refuses an id that is not a run's record and a run already closed.")]
+    Cancel(item::CancelArgs),
 
     /// print the projection: the roster, the context and the rules
     #[command(long_about = "\
@@ -560,6 +578,7 @@ fn dispatch() -> Result<Exit> {
         Family::Review(args) => Ok(item::review_command(&args)),
         Family::Land(args) => Ok(item::land_command(&ui, &args)),
         Family::Run(args) => Ok(item::run_command(&args)),
+        Family::Cancel(args) => Ok(item::cancel_command(&args)),
         Family::Status(args) => Ok(status::status_command(&args)),
         Family::Guard { class, check } => guard_command(&ui, class, check),
         Family::Prime => Ok(prime::command()),

@@ -73,10 +73,13 @@ pub const QUESTION_MARKERS: [&str; 1] = ["QUESTION"];
 /// own template (flights PRD R22, decision D2).
 pub const RESUME_SECTION: &str = "RESUME";
 
-/// What the park note's reason reads as for each of the two parks this slice
-/// raises: a seat's own question, and a gate the item declared before takeoff.
+/// What the park note's reason reads as for each of the parks raised here: a
+/// seat's own question, a gate the item declared before takeoff, and a run the
+/// controller stopped executing at `[core.run] max_crashes`, named by the key
+/// that stopped it.
 pub const ASK: &str = "ask";
 pub const DECLARED: &str = "gate";
+pub const CAPPED: &str = "max_crashes";
 
 /// The three labels the park note and the answer note carry their values under.
 pub const BRANCH: &str = "branch";
@@ -183,7 +186,7 @@ pub fn ask(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result<
             &format!("the park note did not land: {e}"),
         )
     })?;
-    read_back(&item, &note, wiring)?;
+    read_back(&item, &note, wiring.store)?;
 
     // (d) THE EVENT, after the note and its read-back.
     wiring
@@ -342,8 +345,8 @@ fn off_column_zero(text: &str) -> String {
 
 /// One read, asserting the park region against the note that was written — plus
 /// a token nothing wrote.
-fn read_back(item: &str, note: &str, wiring: &Wiring) -> Result<(), Stop> {
-    let read = wiring.store.show(item).map_err(unreadable)?;
+fn read_back(item: &str, note: &str, store: &dyn Store) -> Result<(), Stop> {
+    let read = store.show(item).map_err(unreadable)?;
     let seen = read.notes.as_deref().and_then(last_park);
     if seen.as_deref().map(normalised) != Some(normalised(note)) {
         return Err(Stop::could_not_tell(format!(
@@ -359,6 +362,99 @@ fn read_back(item: &str, note: &str, wiring: &Wiring) -> Result<(), Stop> {
         )));
     }
     Ok(())
+}
+
+// ---- the crash cap -----------------------------------------------------------
+
+/// A run's record parked at `[core.run] max_crashes`, as its arguments.
+pub struct Capped<'a> {
+    pub run: &'a str,
+    /// Why, as the controller's run pass words it: how many executions nothing
+    /// could classify, and the cap.
+    pub reason: &'a str,
+    /// The run's own directory, where the logs a person reads before
+    /// answering are.
+    pub directory: &'a Path,
+    pub by: &'a str,
+}
+
+/// The gate on a run's record at `[core.run] max_crashes` and the park note
+/// that names it, answered as the gate's own id.
+///
+/// THE SAME PARK `ask` MAKES ON A RUN'S RECORD, with the question written here
+/// rather than by a seat: the gate carries the whole question as its reason,
+/// and the note carries the four lines [`answer`] reads the gate off. A gate
+/// with no note beside it is the one park `fleet answer` refuses — "carries no
+/// park" — and its open gate blocks the record's close too, so the run it
+/// stopped held a `[core.run] max_open` slot for good.
+///
+/// NO EVENT. `item.parked` is the controller's own line and its latch: the
+/// pass writes it once this answers, so a park that stopped half way here is
+/// asked for again on the next poll rather than announced.
+///
+/// A FAILURE AFTER THE GATE WITHDRAWS IT. The next poll raises a gate of its
+/// own, and one left behind with no note naming it is exactly the unanswerable
+/// gate this park exists not to leave.
+pub fn park_at_the_cap(capped: &Capped, store: &dyn Store, packs: &Packs) -> Result<String, Stop> {
+    let record = store.show(capped.run).map_err(unreadable)?;
+    let question = cap_question(capped);
+    let gate = store.gate(capped.run, &question, capped.by).map_err(|e| {
+        Stop::could_not_tell(format!(
+            "the gate was not raised: {e}\n  {} carries no park",
+            capped.run
+        ))
+    })?;
+    let noted = park_note(
+        packs,
+        capped.run,
+        CAPPED,
+        RUN_BRANCH,
+        &run_hash(&record),
+        &gate,
+        &question,
+    )
+    .and_then(|note| {
+        store
+            .note(capped.run, &note, capped.by)
+            .map_err(|e| Stop::could_not_tell(format!("the park note did not land: {e}")))?;
+        read_back(capped.run, &note, store)
+    });
+    noted.map(|()| gate.clone()).map_err(|stop| {
+        let withdrawn = match store.resolve_gate(&gate, capped.by) {
+            Ok(()) => format!("the gate {gate} is withdrawn and the next poll parks it again"),
+            Err(e) => format!(
+                "the gate {gate} STANDS on {} with no park naming it, and withdrawing it failed: \
+                 {e}",
+                capped.run
+            ),
+        };
+        Stop {
+            code: stop.code,
+            message: format!("{}\n  {withdrawn}", stop.message),
+        }
+    })
+}
+
+/// The question a crash-cap park asks, in the question grammar: the pass's own
+/// reading on the marker line, where the logs are, and one lettered option per
+/// thing a person can do about it.
+///
+/// THE OPTIONS SAY WHAT EACH ONE DOES. An answer resolves the gate and does
+/// nothing else — nothing executes a parked run again — so the letter records
+/// the decision and the cancel verb is what acts on the first of them.
+fn cap_question(capped: &Capped) -> String {
+    let run = capped.run;
+    format!(
+        "{} {} — nothing executes it again.\n\
+         Its stdout.log and stderr.log are in {}.\n\
+         A. cancel it: `fleet cancel {run}` closes its record and resolves this gate, with or \
+         without an answer\n\
+         B. keep it for now: this answer resolves the gate, and the record stays open, holding a \
+         `[core.run] max_open` slot, until it is cancelled\n",
+        QUESTION_MARKERS[0],
+        capped.reason,
+        capped.directory.display()
+    )
 }
 
 // ---- the answer --------------------------------------------------------------

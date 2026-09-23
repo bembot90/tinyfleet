@@ -443,6 +443,39 @@ Deno.test("AC1 start — fleet run <name> --by <run> --input k=v, Waiting on the
   assertEquals((await calls(t)).length, 1);
 });
 
+Deno.test("start — a child a person cancelled fails the step naming it cancelled, and the re-run starts no second child", async () => {
+  const s = await scratch();
+  await can(s, "run", {
+    stdout: "fleet-run-gone — deadbeef\nfleet-run-gone — waiting\n",
+    append: [
+      {
+        type: "run.started",
+        payload: { run: "fleet-run-gone", hash: "deadbeef", workflow: "child" },
+      },
+      {
+        type: "run.waiting",
+        payload: { run: "fleet-run-gone", wake: { until: "x" }, seq: 3 },
+      },
+    ],
+  });
+  const fn = (run: Run) => run.start("child");
+  assertEquals(await replay(fn, s.env, "{}"), {
+    code: 2,
+    waiting: "fleet-run-gone",
+  });
+
+  await append(s.env.stream, "run.cancelled", "a-person", {
+    run: "fleet-run-gone",
+  });
+  const cancelled = await replay(fn, s.env, "{}");
+  assertEquals(cancelled.code, 1, "a cancelled child ends the parent's wait");
+  assertMatch(
+    String((cancelled as { reason: unknown }).reason),
+    /run fleet-run-gone was cancelled/,
+  );
+  assertEquals((await calls(s)).length, 1, "and no second child is started");
+});
+
 Deno.test("AC4 refusal — a refusal envelope on land is exit 1 with the refusal's code in the reason, the step started and not closed", async () => {
   const s = await scratch();
   await can(s, "land", {

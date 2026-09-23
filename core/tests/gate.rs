@@ -1021,6 +1021,119 @@ fn no_park_and_a_gate_already_resolved_are_both_refused() {
     assert_eq!(before, scratch.json(&item), "the item is byte-identical");
 }
 
+// ---- the crash cap's park ----------------------------------------------------
+
+/// The reason the controller's run pass hands the park, in its own words.
+const CAPPED_REASON: &str = "fx-capped has been executed 3 time(s) and nothing could classify \
+                             the last one — `[core.run] max_crashes` is 2";
+
+/// A run's record the way a run's open files it: the run label, and the hash
+/// the open pinned.
+fn a_runs_record(scratch: &Board, title: &str) -> String {
+    let run = an_item(&scratch.store, title);
+    scratch.label(&run, run::LABEL);
+    scratch.set_metadata(
+        &run,
+        &format!(r#"{{"run": {{"hash": "{RUN_HASH}", "workflow": "takeoff"}}}}"#),
+    );
+    run
+}
+
+/// A run parked at `[core.run] max_crashes` is ANSWERABLE: the park carries the
+/// PARKED note `fleet answer` reads — the run's branch, the hash its open
+/// pinned, the gate the store raised, and a question with lettered options —
+/// so the answer resolves the gate the cap raised and the record is no longer
+/// blocked by it.
+///
+/// THE ONE PARK THAT HAD NO NOTE. A gate raised with nothing on the record
+/// naming it is a question `fleet answer` refuses as "carries no park", and the
+/// open gate blocks the record's close as well, so the run held its
+/// `[core.run] max_open` slot for good.
+#[test]
+fn a_run_parked_at_the_crash_cap_is_answered_like_any_other_park() {
+    let scratch = &store();
+    let run = a_runs_record(scratch, "a run nothing could classify");
+    let directory = scratch.root.join("runs").join(&run);
+
+    let gate_id = gate::park_at_the_cap(
+        &gate::Capped {
+            run: &run,
+            reason: CAPPED_REASON,
+            directory: &directory,
+            by: "controller",
+        },
+        &scratch.store,
+        &packs(scratch),
+    )
+    .expect("the park is made");
+
+    // (a) THE ANSWER, which is what a person meets first.
+    let events = StubEvents::default();
+    let replied = answer_with(
+        &run,
+        "B",
+        None,
+        "a-person",
+        &Seams {
+            store: &scratch.store,
+            git: &StubGit::holding_work(),
+            project: &project(scratch),
+            packs: &packs(scratch),
+            events: &events,
+        },
+    )
+    .unwrap_or_else(|stop| panic!("the crash cap's park is answerable: {}", stop.message));
+    assert_eq!(
+        replied.gate, gate_id,
+        "the answer resolves the gate the cap raised"
+    );
+    assert!(
+        !scratch
+            .store
+            .open_gates()
+            .expect("the open list answers")
+            .contains(&gate_id),
+        "and the store lists it open no longer"
+    );
+    let (_, payload) = events.one(GATE_RESOLVED);
+    assert_eq!(payload["item"], serde_json::json!(run));
+
+    // (b) THE PARK IT ANSWERED: a run's, standing on the hash its open pinned.
+    let park = last_park(&notes_of(&scratch.store, &run)).expect("the record carries a park");
+    for line in [
+        format!("{} {run} — {}", PARK_MARKERS[0], gate::CAPPED),
+        format!("branch:  {}", gate::RUN_BRANCH),
+        format!("commit:  {RUN_HASH}"),
+        format!("gate:    {gate_id}"),
+    ] {
+        assert!(park.contains(&line), "the park carries `{line}`:\n{park}");
+    }
+    assert!(
+        park.contains(CAPPED_REASON),
+        "the question is the pass's own reading:\n{park}"
+    );
+    assert!(
+        park.contains(&directory.display().to_string()),
+        "and says where the logs are:\n{park}"
+    );
+    assert!(
+        park.contains(&format!("`fleet cancel {run}`")),
+        "and names the verb that ends the run:\n{park}"
+    );
+    let raised = scratch.store.raised();
+    assert_eq!(raised.len(), 1, "one gate: {raised:?}");
+    let letters: Vec<char> = gate::options_in(&raised[0].1)
+        .into_iter()
+        .map(|(letter, _)| letter)
+        .collect();
+    assert_eq!(
+        letters,
+        vec!['A', 'B'],
+        "the gate's reason is the whole question, options and all, as a seat's is: {}",
+        raised[0].1
+    );
+}
+
 // ---- R22: what the resume reads off the record -------------------------------
 
 #[test]

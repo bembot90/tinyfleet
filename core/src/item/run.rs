@@ -44,8 +44,8 @@ use crate::add;
 use crate::item::brief::Packs;
 use crate::item::pins;
 use crate::item::{
-    control_token, read_table, Events, Project, Stop, RUN_CLOSED, RUN_COULD_NOT_TELL, RUN_FAILED,
-    RUN_STARTED, RUN_WAITING,
+    control_token, read_table, Events, Project, Stop, GATE_RESOLVED, RUN_CANCELLED, RUN_CLOSED,
+    RUN_COULD_NOT_TELL, RUN_FAILED, RUN_STARTED, RUN_WAITING,
 };
 use crate::lock;
 use crate::pack::{self, Runtime};
@@ -95,6 +95,9 @@ pub const OBJECT: &str = "run";
 
 /// The title the record carries between the create and the retitle.
 pub const UNTITLED: &str = "a run being filed";
+
+/// The store's own word for a record that is closed.
+const CLOSED: &str = "closed";
 
 /// Runs open at once where `[core.run] max_open` names no number.
 pub const MAX_OPEN: u64 = 4;
@@ -298,24 +301,21 @@ pub fn run(out: &mut dyn Write, order: &Order, wiring: &Wiring) -> Result<Ran, S
     let id = file_the_record(order, &resolved, wiring)?;
 
     // (c) THE PINS, then the bundle the pack writes, then the hash over both.
+    // A refusal from here to `run.started` is a run that never started, and
+    // the record filed for it is closed on the way out.
     let directory = order.machine_dir.join(RUNS).join(&id);
-    std::fs::create_dir_all(&directory).map_err(|e| {
-        Stop::could_not_tell(format!(
-            "the run directory {} could not be made: {e}",
-            directory.display()
-        ))
-    })?;
-    pins::write_files(
-        &directory,
-        &[
-            (INPUTS.to_string(), inputs.into_bytes()),
-            (POLICY.to_string(), policy_bytes),
-        ],
-    )?;
-    bundle(&directory, &resolved, &pinned, order, &path)?;
-    let hash = pins::hash_of(&directory, &hashed_files())?;
+    let pinning = Pinning {
+        id: &id,
+        directory: &directory,
+        inputs,
+        policy_bytes,
+        resolved: &resolved,
+        pinned: &pinned,
+        path: &path,
+    };
+    let hash = pin_and_bundle(pinning, order, wiring)
+        .map_err(|stop| never_started(&id, stop, order.by, wiring))?;
 
-    write_the_pins(&id, &hash, &resolved, order, wiring)?;
     wiring
         .events
         .append(
@@ -381,6 +381,14 @@ pub struct Again<'a> {
 /// counting that kind on the stream counts executions and not opens.
 pub fn rerun(out: &mut dyn Write, again: &Again, wiring: &Wiring) -> Result<Ended, Stop> {
     let record = read(wiring.store, again.run)?;
+    // A CLOSED RECORD IS AN ENDED RUN, however it came to be closed — a cancel,
+    // or a person's own close — and whatever the stream last said about it.
+    if record.status == CLOSED {
+        return Err(Stop::refused(format!(
+            "{} is closed — a closed run is not executed again",
+            again.run
+        )));
+    }
     let object = record.run.ok_or_else(|| {
         Stop::refused(format!(
             "{} carries no `run` object — a re-run is over a run this fleet opened, and the \
@@ -492,6 +500,144 @@ pub fn rerun(out: &mut dyn Write, again: &Again, wiring: &Wiring) -> Result<Ende
 /// flight's briefs are its list's.
 pub fn hashed_files() -> Vec<String> {
     vec![INPUTS.to_string(), POLICY.to_string(), BUNDLE.to_string()]
+}
+
+// ---- the cancel ----------------------------------------------------------------
+
+/// One run to be cancelled, as its arguments.
+pub struct Cancel<'a> {
+    pub run: &'a str,
+    /// Who is cancelling it.
+    pub by: &'a str,
+}
+
+/// The run cancelled, and the gates the cancel resolved on its record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cancelled {
+    pub run: String,
+    pub gates: Vec<String>,
+}
+
+/// A run ended by hand: every gate standing on its record resolved, the record
+/// closed as cancelled, then [`RUN_CANCELLED`] and one [`GATE_RESOLVED`] per
+/// gate on the stream.
+///
+/// THE WAY OUT FOR A RUN NOTHING ELSE ENDS. A run whose process died before it
+/// wrote a row of the exit table, one parked at `[core.run] max_crashes`, one
+/// waiting on a wake that will never come: each holds its record open, and the
+/// open records are what `[core.run] max_open` counts.
+///
+/// THE GATES ARE THE STORE'S ANSWER, not a park note's: the record's own open
+/// dependencies that the store lists as open gates. A park written before its
+/// note existed raised a gate nothing on the record names, and it blocks the
+/// close exactly as a noted one does.
+///
+/// IT STOPS NO PROCESS AND RETIRES NO SEAT. A run holds no process between its
+/// executions, and one under way when the cancel lands runs to its end; the
+/// controller's run pass reads [`RUN_CANCELLED`] as an ending — it executes the
+/// run no more, whatever that execution writes after it — and retires the seats
+/// the run spawned with the cleanup every ending gets.
+///
+/// THE STORE'S WRITES, THEN THE STREAM'S, and [`RUN_CANCELLED`] ahead of the
+/// gates' lines: a pass that read a resolved gate before the cancel that
+/// resolved it would be reading a run still standing.
+pub fn cancel(
+    out: &mut dyn Write,
+    cancel: &Cancel,
+    store: &dyn Store,
+    events: &dyn Events,
+) -> Result<Cancelled, Stop> {
+    let run = cancel.run;
+    let record = store.show(run).map_err(|e| match e {
+        StoreError::Missing(why) => Stop::refused(format!(
+            "{run} is not an item this project's store holds — {why}"
+        )),
+        StoreError::Unreadable(why) => {
+            Stop::could_not_tell(format!("{run} could not be read: {why}"))
+        }
+    })?;
+    if !record.labels.iter().any(|label| label == LABEL) {
+        return Err(Stop::refused(format!(
+            "{run} is not a run's record — it carries no `{LABEL}` label, and `fleet cancel` ends \
+             runs and nothing else"
+        )));
+    }
+    if record.status == CLOSED {
+        return Err(Stop::refused(format!(
+            "{run} is closed already — the run has ended and there is nothing to cancel"
+        )));
+    }
+
+    let open = store
+        .open_gates()
+        .map_err(|e| Stop::could_not_tell(format!("the store's gates could not be read: {e}")))?;
+    let gates: Vec<String> = record
+        .blockers
+        .iter()
+        .filter(|blocker| open.contains(blocker))
+        .cloned()
+        .collect();
+    for gate in &gates {
+        store.resolve_gate(gate, cancel.by).map_err(|e| {
+            Stop::could_not_tell(format!(
+                "{gate} on {run} was not resolved: {e}\n  {run} is NOT cancelled"
+            ))
+        })?;
+    }
+
+    store
+        .close(run, "the run cancelled", cancel.by)
+        .map_err(|e| {
+            Stop::could_not_tell(format!(
+                "{run}'s record did not close: {e}\n  {} resolved and {run} is NOT cancelled",
+                named_gates(&gates)
+            ))
+        })?;
+    let read_back = read(store, run)?;
+    if read_back.status != CLOSED {
+        return Err(disagrees(run, "status", CLOSED, &read_back.status));
+    }
+
+    let written = |e: String| {
+        Stop::could_not_tell(format!(
+            "{run} is cancelled and its lines did not all reach the stream: {e}\n  the record \
+             is CLOSED and {} resolved",
+            named_gates(&gates)
+        ))
+    };
+    events
+        .append(RUN_CANCELLED, cancel.by, serde_json::json!({ "run": run }))
+        .map_err(written)?;
+    for gate in &gates {
+        events
+            .append(
+                GATE_RESOLVED,
+                cancel.by,
+                serde_json::json!({ "item": run, "gate": gate, "letter": serde_json::Value::Null }),
+            )
+            .map_err(written)?;
+    }
+
+    let line = if gates.is_empty() {
+        format!("{run} — cancelled")
+    } else {
+        format!("{run} — cancelled, {} resolved", named_gates(&gates))
+    };
+    writeln!(out, "{line}")
+        .map_err(|e| Stop::could_not_tell(format!("the cancel line could not be written: {e}")))?;
+    Ok(Cancelled {
+        run: run.to_string(),
+        gates,
+    })
+}
+
+/// The gates a cancel resolved, named as the line about them names them.
+fn named_gates(gates: &[String]) -> String {
+    match gates {
+        [] => String::from("no gate"),
+        [one] => format!("gate {one}"),
+        many => format!("gates {}", many.join(", ")),
+    }
 }
 
 // ---- (a) the reads -----------------------------------------------------------
@@ -1079,6 +1225,87 @@ fn write_the_pins(
         )));
     }
     Ok(())
+}
+
+/// What the pins, the bundle and the hash are made of, for the one run whose
+/// record is already filed.
+struct Pinning<'a> {
+    id: &'a str,
+    directory: &'a Path,
+    inputs: String,
+    policy_bytes: Vec<u8>,
+    resolved: &'a Resolved,
+    pinned: &'a Pinned,
+    path: &'a str,
+}
+
+/// The directory, the two pins, the bundle the pack writes, the hash over all
+/// three, and the hash on the record — answered as the hash.
+fn pin_and_bundle(pinning: Pinning, order: &Order, wiring: &Wiring) -> Result<String, Stop> {
+    let directory = pinning.directory;
+    std::fs::create_dir_all(directory).map_err(|e| {
+        Stop::could_not_tell(format!(
+            "the run directory {} could not be made: {e}",
+            directory.display()
+        ))
+    })?;
+    pins::write_files(
+        directory,
+        &[
+            (INPUTS.to_string(), pinning.inputs.into_bytes()),
+            (POLICY.to_string(), pinning.policy_bytes),
+        ],
+    )?;
+    bundle(
+        directory,
+        pinning.resolved,
+        pinning.pinned,
+        order,
+        pinning.path,
+    )?;
+    let hash = pins::hash_of(directory, &hashed_files())?;
+    write_the_pins(pinning.id, &hash, pinning.resolved, order, wiring)?;
+    Ok(hash)
+}
+
+/// A run whose record was filed and which never started, closed as failed with
+/// the refusal as its reason — and the refusal handed back naming the record
+/// either way.
+///
+/// THE RECORD IS WHAT THE CAP COUNTS. A refusal between the record and
+/// `run.started` — a bundle command that exits non-zero is the one a person
+/// meets — would otherwise leave an open record no stream line names: `status`
+/// does not list it, the controller neither re-runs nor cleans it, and it holds
+/// one of `[core.run] max_open`'s slots for good.
+///
+/// THE CLOSE, THEN THE EVENT, as the back half's polarity has it: `run.failed`
+/// over a record still open would announce an end the store does not hold. The
+/// refusal keeps its own exit, because what went wrong is still what it says.
+fn never_started(id: &str, stop: Stop, by: &str, wiring: &Wiring) -> Stop {
+    let fate = match wiring
+        .store
+        .close(id, "the run failed before it started", by)
+    {
+        Err(e) => format!(
+            "the record {id} filed for this run STANDS open, and its close did not land: {e} — \
+             `fleet cancel {id}` closes it"
+        ),
+        Ok(()) => match wiring.events.append(
+            RUN_FAILED,
+            by,
+            serde_json::json!({ "run": id, "reason": stop.message }),
+        ) {
+            Ok(()) => format!("the record {id} filed for this run is closed as failed"),
+            Err(e) => format!(
+                "the record {id} filed for this run is closed as failed, and {RUN_FAILED} did \
+                 not reach the stream: {e}"
+            ),
+        },
+    };
+    Stop {
+        code: stop.code,
+        message: format!("{}\n  {fate}", stop.message),
+    }
 }
 
 // ---- the two children ---------------------------------------------------------
