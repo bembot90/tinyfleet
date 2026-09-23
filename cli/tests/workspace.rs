@@ -149,7 +149,7 @@ fn the_dependency_list_core_was_read_from_is_populated() {
 /// The run lifecycle's vocabulary is spelled in two crates and is one fact.
 ///
 /// The controller crate depends on no other member of this workspace, so the
-/// six kinds its run pass folds and writes, and the environment variable a run's
+/// kinds its run pass folds and writes, and the environment variable a run's
 /// children carry, are spelled there as well as in core. This is the one member
 /// that can see both, which makes it the place the two spellings are held to one
 /// string — a kind spelled twice is two kinds, and a fold that met the second
@@ -167,6 +167,7 @@ fn the_run_vocabulary_is_one_string_in_both_crates() {
         (runs::RUN_COULD_NOT_TELL, item::RUN_COULD_NOT_TELL),
         (runs::RUN_CLEANED, item::RUN_CLEANED),
         (runs::ITEM_PARKED, item::ITEM_PARKED),
+        (runs::GATE_RESOLVED, item::GATE_RESOLVED),
         (runs::ENV_RUN_ID, item::run::ENV_RUN_ID),
     ] {
         assert_eq!(

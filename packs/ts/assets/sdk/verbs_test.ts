@@ -505,11 +505,9 @@ Deno.test("AC4 refusal — a refusal envelope on land is exit 1 with the refusal
   assertEquals(
     JSON.parse(printed[printed.length - 1]),
     {
-      reason: {
-        verb: "land",
-        code: "refused",
-        why: "the trunk moved under the landing",
-      },
+      verb: "land",
+      code: "refused",
+      why: "the trunk moved under the landing",
     },
   );
 
@@ -584,7 +582,7 @@ Deno.test("a verb runs from the project root under a run-directory cwd: the fake
   const refused = await fromTheRunDirectory(t);
   assertEquals(refused.code, 1, refused.stderr);
   assertMatch(
-    JSON.parse(refused.last).reason,
+    JSON.parse(refused.last),
     /exited 71: fake fleet: dispatch ran from .*, not the project root .*/,
   );
   assertEquals(closes(await lines(t)).length, 0, "the step never closed");

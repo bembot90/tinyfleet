@@ -55,6 +55,9 @@ enum Ends {
     Closed,
     /// Waiting, recording the stream's position as the child left it.
     Waiting,
+    /// Waiting on the id given — a gate or a child the stream may or may not
+    /// know — as `gate` and `start` throw it.
+    WaitingOn(&'static str),
     CouldNotTell,
 }
 
@@ -111,6 +114,10 @@ impl Runs for Stub {
             Ends::Waiting => (
                 runs::RUN_WAITING,
                 serde_json::json!({ "run": run, "wake": { "for": "a line" }, "seq": at_exit }),
+            ),
+            Ends::WaitingOn(id) => (
+                runs::RUN_WAITING,
+                serde_json::json!({ "run": run, "wake": id, "seq": at_exit }),
             ),
             Ends::CouldNotTell => (
                 runs::RUN_COULD_NOT_TELL,
@@ -200,9 +207,9 @@ fn a_line_from_elsewhere(stream: &Path) {
 }
 
 /// The stream as one run that has been opened and has stopped on the wake it is
-/// handed — the wrapper's `{"waiting": <condition>}`, whole, as the back half
-/// stores it. A `null` stands for the payload that carries no wake key at all:
-/// `get` answers the same for both.
+/// handed — the condition the wrapper printed, as the back half stores it. A
+/// `null` stands for the payload that carries no wake key at all: `get` answers
+/// the same for both.
 fn a_run_waiting_with(stream: &Path, run: &str, wake: serde_json::Value) {
     let mut log = EventLog::open(stream);
     log.append(
@@ -225,6 +232,63 @@ fn an_item_moved(stream: &Path, kind: &str, item: &str) {
     EventLog::open(stream)
         .append(kind, "s1", serde_json::json!({ "item": item }))
         .expect("the line lands");
+}
+
+/// A gate asked on a run's own record, announced as `fleet ask` announces it:
+/// `item.parked` naming the run as the item and the gate it raised. The SDK's
+/// `gate` asks first and waits after, so the ask is on the stream below the
+/// wait that names the gate.
+fn a_gate_asked(stream: &Path, run: &str, gate: &str) {
+    EventLog::open(stream)
+        .append(
+            runs::ITEM_PARKED,
+            run,
+            serde_json::json!({
+                "item": run, "reason": "ask", "branch": null, "commit": null, "gate": gate,
+            }),
+        )
+        .expect("the ask lands");
+}
+
+/// A person's answer to a gate.
+fn a_gate_answered(stream: &Path, item: &str, gate: &str) {
+    EventLog::open(stream)
+        .append(
+            runs::GATE_RESOLVED,
+            "alberto",
+            serde_json::json!({ "item": item, "gate": gate, "letter": "a" }),
+        )
+        .expect("the answer lands");
+}
+
+/// One lifecycle line of a run nobody is waiting on, or of a child.
+fn a_run_line(stream: &Path, kind: &str, run: &str) {
+    EventLog::open(stream)
+        .append(kind, "a-runner", serde_json::json!({ "run": run }))
+        .expect("the line lands");
+}
+
+/// The stream as one run that stopped on `wake`, with what `between` writes
+/// landing after its start and before its exit — so those lines sit at or
+/// below the position the wait records, as a line that lands while the
+/// process is still on its way out does. The position is read at exit, as
+/// `read_the_exit` reads it.
+fn a_run_waiting_after(
+    stream: &Path,
+    run: &str,
+    wake: serde_json::Value,
+    between: impl FnOnce(&Path),
+) {
+    a_run_line(stream, runs::RUN_STARTED, run);
+    between(stream);
+    let at_exit = EventLog::open(stream).seq();
+    EventLog::open(stream)
+        .append(
+            runs::RUN_WAITING,
+            "a-runner",
+            serde_json::json!({ "run": run, "wake": wake, "seq": at_exit }),
+        )
+        .expect("the wait lands");
 }
 
 // ---- AC1: the waiting run re-runs, and not before ------------------------------
@@ -311,7 +375,7 @@ fn a_re_run_that_waits_again_is_not_woken_by_its_own_line() {
 fn a_waiting_run_is_woken_only_by_a_line_for_an_item_its_wake_names() {
     let scratch = Scratch::new("wake-match");
     let stream = scratch.stream();
-    a_run_waiting_with(&stream, "r1", serde_json::json!({ "waiting": ["x"] }));
+    a_run_waiting_with(&stream, "r1", serde_json::json!(["x"]));
     // One execution in the script: a second re-run refuses, so an arm that
     // over-woke would be reported as well as counted.
     let stub = Stub::with(&stream, &[Ends::Closed]);
@@ -336,22 +400,27 @@ fn a_waiting_run_is_woken_only_by_a_line_for_an_item_its_wake_names() {
     assert_eq!(count(&stream, runs::RUN_STARTED), 2);
 }
 
-/// A wake that names no items re-runs on any move: the behaviour that stood
-/// before the match, kept for every shape the match cannot read.
+/// A wake the pass cannot read re-runs on any move: the behaviour that stood
+/// before the match, kept for every shape the match does not know.
 ///
-/// THE THREE SHAPES ARE THE POINT — a payload with no wake, a gate's id, and a
-/// list with nothing in it. A match that refused any of them would hold a run
+/// THE FOUR SHAPES ARE THE POINT — a payload with no wake, a list with nothing
+/// in it, an object a workflow threw itself, and an id no gate and no run on
+/// the stream carries. A match that refused any of them would hold a run
 /// waiting for a line that is never coming.
 #[test]
-fn a_waiting_run_whose_wake_names_no_items_is_woken_by_any_line() {
+fn a_waiting_run_whose_wake_the_pass_cannot_read_is_woken_by_any_line() {
     let scratch = Scratch::new("wake-fallback");
     let stream = scratch.stream();
     a_run_waiting_with(&stream, "r-none", serde_json::Value::Null);
-    a_run_waiting_with(&stream, "r-gate", serde_json::json!({ "waiting": "g1" }));
-    a_run_waiting_with(&stream, "r-empty", serde_json::json!({ "waiting": [] }));
-    let stub = Stub::with(&stream, &[Ends::Closed, Ends::Closed, Ends::Closed]);
+    a_run_waiting_with(&stream, "r-empty", serde_json::json!([]));
+    a_run_waiting_with(&stream, "r-own", serde_json::json!({ "for": "a line" }));
+    a_run_waiting_with(&stream, "r-word", serde_json::json!("tomorrow"));
+    let stub = Stub::with(
+        &stream,
+        &[Ends::Closed, Ends::Closed, Ends::Closed, Ends::Closed],
+    );
 
-    // A line for an item none of the three ever named.
+    // A line for an item none of the four ever named.
     an_item_moved(&stream, "item.delivered", "z");
     pass(&stub, &stream, 2).expect("the pass runs");
 
@@ -361,10 +430,232 @@ fn a_waiting_run_whose_wake_names_no_items_is_woken_by_any_line() {
         woken,
         vec![
             "r-empty".to_string(),
-            "r-gate".to_string(),
-            "r-none".to_string()
+            "r-none".to_string(),
+            "r-own".to_string(),
+            "r-word".to_string()
         ]
     );
+}
+
+/// A run stopped on a gate is woken by that gate's answer and by nothing else —
+/// not by a seat's line, not by an item's, not by another gate's answer, and
+/// not by the lines another waiting run's re-run writes.
+///
+/// THE LAST OF THOSE IS THE ARM. Two runs waiting on gates, each re-run on any
+/// move, keep each other running: the first one's re-run writes `run.started`,
+/// a `step.started` and a `run.waiting`, which is a move for the second, whose
+/// re-run is a move for the first — one child execution per run per poll, and
+/// another `step.started` on the stream each time, for as long as nobody
+/// answers. A kill-and-resume on a takeoff stopped at its gate is exactly that
+/// run.
+#[test]
+fn a_run_waiting_on_a_gate_is_woken_only_by_that_gate_s_answer() {
+    let scratch = Scratch::new("wake-gate");
+    let stream = scratch.stream();
+    a_gate_asked(&stream, "r1", "g1");
+    a_run_waiting_with(&stream, "r1", serde_json::json!("g1"));
+    a_gate_asked(&stream, "r2", "g2");
+    a_run_waiting_with(&stream, "r2", serde_json::json!("g2"));
+    // One execution in the script: a second re-run refuses, so a pass that
+    // over-woke is reported as well as counted.
+    let stub = Stub::with(&stream, &[Ends::Closed]);
+
+    a_line_from_elsewhere(&stream);
+    an_item_moved(&stream, "item.delivered", "g1");
+    a_gate_answered(&stream, "it-9", "g9");
+    let passed = pass(&stub, &stream, 2);
+    assert!(
+        stub.reruns.borrow().is_empty(),
+        "nothing it is waiting for has moved, and it was executed: {:?}",
+        stub.reruns.borrow()
+    );
+    passed.expect("the pass runs");
+
+    a_gate_answered(&stream, "r1", "g1");
+    pass(&stub, &stream, 2).expect("the pass runs");
+    assert_eq!(
+        *stub.reruns.borrow(),
+        vec!["r1".to_string()],
+        "its gate was answered, so it ran again, and the other did not"
+    );
+
+    // The re-run's own lines are on the stream now, above where r2 stopped.
+    let passed = pass(&stub, &stream, 2);
+    assert_eq!(
+        *stub.reruns.borrow(),
+        vec!["r1".to_string()],
+        "another run's execution is not an answer to r2's gate"
+    );
+    passed.expect("the pass runs");
+}
+
+/// A run stopped on a child it started is woken by that child's end — its
+/// `run.closed` or its `run.failed` — and not by the child's own start, not by
+/// another run's end, and not by anybody else's line.
+///
+/// BOTH ENDS WAKE IT: the SDK's `start` returns on the child's close and fails
+/// the parent on the child's failure, and a parent that slept through the
+/// failure would wait on a child that is never running again.
+#[test]
+fn a_run_waiting_on_a_child_run_is_woken_only_by_that_child_s_end() {
+    let scratch = Scratch::new("wake-child");
+    let stream = scratch.stream();
+    a_run_line(&stream, runs::RUN_STARTED, "c1");
+    a_run_waiting_with(&stream, "p1", serde_json::json!("c1"));
+    a_run_line(&stream, runs::RUN_STARTED, "c2");
+    a_run_waiting_with(&stream, "p2", serde_json::json!("c2"));
+    let stub = Stub::with(&stream, &[Ends::Closed, Ends::Closed]);
+
+    a_line_from_elsewhere(&stream);
+    a_run_line(&stream, runs::RUN_STARTED, "c1");
+    a_run_line(&stream, runs::RUN_STARTED, "other");
+    a_run_line(&stream, runs::RUN_CLOSED, "other");
+    let passed = pass(&stub, &stream, 2);
+    assert!(
+        stub.reruns.borrow().is_empty(),
+        "neither child has ended, and a parent was executed: {:?}",
+        stub.reruns.borrow()
+    );
+    passed.expect("the pass runs");
+
+    a_run_line(&stream, runs::RUN_CLOSED, "c1");
+    pass(&stub, &stream, 2).expect("the pass runs");
+    assert_eq!(
+        *stub.reruns.borrow(),
+        vec!["p1".to_string()],
+        "c1 closed, so p1 ran again, and p2 did not"
+    );
+
+    a_run_line(&stream, runs::RUN_FAILED, "c2");
+    pass(&stub, &stream, 2).expect("the pass runs");
+    assert_eq!(
+        *stub.reruns.borrow(),
+        vec!["p1".to_string(), "p2".to_string()],
+        "c2 failed, so p2 ran again"
+    );
+}
+
+/// A run whose gate was answered after the ask and before its process exited
+/// is woken by that answer, though the answer sits at or below the position
+/// the wait recorded — and once the re-run has moved it on, it is not woken
+/// again.
+///
+/// THE POSITION IS READ AT EXIT. `gate` asks, finds no answer and throws; the
+/// wrapper prints and the process exits, and only then does the back half
+/// read the stream's position for `run.waiting`. An answer that lands in that
+/// gap is below the position, so a match that looked only above it would hold
+/// the run on a gate that is already answered — and with nothing else
+/// written, the stream would never move past it for any match to look at.
+///
+/// ONCE, AND NOT EVERY POLL: the answer stays on the stream, and what stops it
+/// waking the run again is that the fold reads the run's latest `run.waiting`,
+/// which after the re-run names another gate.
+#[test]
+fn a_gate_answered_before_the_run_exited_still_wakes_it_and_only_once() {
+    let scratch = Scratch::new("wake-gate-early");
+    let stream = scratch.stream();
+    a_run_waiting_after(&stream, "r1", serde_json::json!("g1"), |stream| {
+        a_gate_asked(stream, "r1", "g1");
+        a_gate_answered(stream, "r1", "g1");
+    });
+    a_run_waiting_after(&stream, "r2", serde_json::json!("g2"), |stream| {
+        a_gate_asked(stream, "r2", "g2");
+        a_gate_answered(stream, "it-9", "g3");
+    });
+    // The re-run replays past the answered gate and stops on the next one.
+    let stub = Stub::with(&stream, &[Ends::WaitingOn("g4")]);
+
+    let passed = pass(&stub, &stream, 2);
+    assert_eq!(
+        *stub.reruns.borrow(),
+        vec!["r1".to_string()],
+        "r1's gate was answered before it exited, and r2's never was"
+    );
+    passed.expect("the pass runs");
+
+    a_gate_asked(&stream, "r1", "g4");
+    a_line_from_elsewhere(&stream);
+    for _ in 0..2 {
+        let passed = pass(&stub, &stream, 2);
+        assert_eq!(
+            *stub.reruns.borrow(),
+            vec!["r1".to_string()],
+            "g1's answer woke r1 once; r1 now waits on g4, which nobody answered"
+        );
+        passed.expect("the pass runs");
+    }
+}
+
+/// A run whose child ended after the start and before the parent's process
+/// exited is woken by that end, though it sits at or below the position the
+/// wait recorded — and another run's end, in the same gap, wakes nothing.
+///
+/// The child's reading of the arm above: `start` reads no `run.closed` and no
+/// `run.failed` for its child, throws, and the child ends while the parent is
+/// still on its way out.
+#[test]
+fn a_child_that_ended_before_its_parent_exited_still_wakes_the_parent() {
+    let scratch = Scratch::new("wake-child-early");
+    let stream = scratch.stream();
+    a_run_waiting_after(&stream, "p1", serde_json::json!("c1"), |stream| {
+        a_run_line(stream, runs::RUN_STARTED, "c1");
+        a_run_line(stream, runs::RUN_CLOSED, "c1");
+    });
+    a_run_waiting_after(&stream, "p2", serde_json::json!("c2"), |stream| {
+        a_run_line(stream, runs::RUN_STARTED, "c2");
+        a_run_line(stream, runs::RUN_STARTED, "other");
+        a_run_line(stream, runs::RUN_FAILED, "other");
+    });
+    let stub = Stub::with(&stream, &[Ends::Closed]);
+
+    let passed = pass(&stub, &stream, 2);
+    assert_eq!(
+        *stub.reruns.borrow(),
+        vec!["p1".to_string()],
+        "c1 closed before p1 exited, and c2 has not ended"
+    );
+    passed.expect("the pass runs");
+
+    let passed = pass(&stub, &stream, 2);
+    assert_eq!(
+        *stub.reruns.borrow(),
+        vec!["p1".to_string()],
+        "p1 closed on its re-run, and nothing else moved"
+    );
+    passed.expect("the pass runs");
+}
+
+/// A wake still wrapped as `{"waiting": <condition>}` is read as the condition
+/// inside it, on both shapes the match knows.
+///
+/// A RUN'S BUNDLE IS PINNED in its directory and every re-run executes that
+/// same file, so a run bundled by an SDK that printed the wrapper keeps printing
+/// it for as long as it waits. Read whole, both waits below would fall to the
+/// fallback and wake on any move.
+#[test]
+fn a_wake_still_wrapped_by_a_pinned_bundle_is_read_as_the_condition_inside() {
+    let scratch = Scratch::new("wake-wrapped");
+    let stream = scratch.stream();
+    a_run_waiting_with(&stream, "r-items", serde_json::json!({ "waiting": ["x"] }));
+    a_gate_asked(&stream, "r-gate", "g1");
+    a_run_waiting_with(&stream, "r-gate", serde_json::json!({ "waiting": "g1" }));
+    let stub = Stub::with(&stream, &[Ends::Closed, Ends::Closed]);
+
+    a_line_from_elsewhere(&stream);
+    let passed = pass(&stub, &stream, 2);
+    assert!(
+        stub.reruns.borrow().is_empty(),
+        "a seat's line is neither wait's condition: {:?}",
+        stub.reruns.borrow()
+    );
+    passed.expect("the pass runs");
+
+    an_item_moved(&stream, "item.delivered", "x");
+    a_gate_answered(&stream, "r-gate", "g1");
+    pass(&stub, &stream, 2).expect("the pass runs");
+    let mut woken = stub.reruns.borrow().clone();
+    woken.sort();
+    assert_eq!(woken, vec!["r-gate".to_string(), "r-items".to_string()]);
 }
 
 /// The re-run is at most once per pass, and a run that has ended is not

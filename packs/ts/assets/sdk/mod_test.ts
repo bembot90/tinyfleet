@@ -313,14 +313,15 @@ async function process(
   };
 }
 
+// THE LAST LINE IS THE CONDITION OR THE REASON ALONE, never wrapped: core
+// stores that line whole as the event's `wake` or `reason`, so a wrapper
+// printed here is a second one on the stream, and `fleet status` prints a
+// failure as `{"reason":"…"}` where it should print the text.
 Deno.test("the process wrapper: the wake condition on stdout's last line and exit 2, then exit 0 on the re-run, and exit 1 with the reason", async () => {
   const s = await scratch();
   const waiting = await process(s, "{}");
   assertEquals(waiting.code, 2, waiting.stdout);
-  assertEquals(
-    waiting.last,
-    JSON.stringify({ waiting: { until: "answered" } }),
-  );
+  assertEquals(waiting.last, JSON.stringify({ until: "answered" }));
   assert(
     waiting.stdout.startsWith("a line before the last one\n"),
     "earlier lines stay above it",
@@ -344,12 +345,9 @@ Deno.test("the process wrapper: the wake condition on stdout's last line and exi
   await Deno.writeTextFile(`${t.env.runDir}/answered`, "");
   const failed = await process(t, JSON.stringify({ inputs: { boom: "yes" } }));
   assertEquals(failed.code, 1, failed.stdout);
-  assertEquals(failed.last, JSON.stringify({ reason: "boom: yes" }));
+  assertEquals(failed.last, JSON.stringify("boom: yes"));
 
   const unset = await process(t, "{}", { FLEET_RUN_ID: "" });
   assertEquals(unset.code, 1, unset.stdout);
-  assertEquals(
-    unset.last,
-    JSON.stringify({ reason: "FLEET_RUN_ID is not set" }),
-  );
+  assertEquals(unset.last, JSON.stringify("FLEET_RUN_ID is not set"));
 });

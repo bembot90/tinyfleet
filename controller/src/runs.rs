@@ -49,6 +49,10 @@ pub const RUN_CLEANED: &str = "run.cleaned";
 /// The kind a park announces on, spelled here beside the six above.
 pub const ITEM_PARKED: &str = "item.parked";
 
+/// The kind an answer to a gate announces on: what a run waiting on the SDK's
+/// `gate` is woken by. Spelled here for the same reason.
+pub const GATE_RESOLVED: &str = "gate.resolved";
+
 /// The item kinds a `run.waiting` that names items can be woken by: one per
 /// state the SDK's `until` accepts (`ITEM_STATES` in
 /// `fleet/packs/ts/assets/sdk/mod.ts`), which is the only step whose wake names
@@ -121,10 +125,9 @@ struct Folded {
     last: Option<(String, u64)>,
     /// The position `run.waiting` recorded, where the last event is one.
     recorded: u64,
-    /// The items the last `run.waiting` named on its wake, where the wake is
-    /// the shape `until` throws. `None` is every other wake and no wake at all,
-    /// and it re-runs on any move.
-    wake: Option<Vec<String>>,
+    /// What the last `run.waiting` named on its wake, as far as the pass can
+    /// read it.
+    wake: Wake,
     /// How many executions of this run ended on `run.could_not_tell`.
     crashes: u64,
     /// Whether a `run.cleaned` already stands for this run — the latch that
@@ -166,19 +169,7 @@ pub fn tick(pass: &mut Pass) -> Result<(), String> {
             continue;
         };
         match kind.as_str() {
-            // THE RUN'S OWN ANNOUNCEMENT DOES NOT WAKE IT. The position on the
-            // payload is the stream as the child left it, and the `run.waiting`
-            // line is appended ABOVE that position — so a comparison against the
-            // payload alone is true the instant it is written, and every waiting
-            // run would be re-run on the next poll whatever the stream did. The
-            // higher of the two is the line that says "somebody else wrote
-            // something".
-            // AND WHAT MOVED HAS TO BE WHAT IT IS WAITING FOR. Without the
-            // second half every line any seat writes while a run waits — a
-            // delivery elsewhere, a rest, another run's steps — costs one child
-            // execution of the whole workflow that ends waiting in the same
-            // place.
-            RUN_WAITING if head > state.recorded.max(*at) && could_wake(&stream, state) => {
+            RUN_WAITING if could_wake(&stream, head, *at, state) => {
                 if let Err(why) = pass.runs.rerun(run) {
                     refusals.push(format!("{run}: {why}"));
                 }
@@ -241,10 +232,10 @@ fn fold(stream: &[Record]) -> BTreeMap<String, Folded> {
                             .get("seq")
                             .and_then(serde_json::Value::as_u64)
                             .unwrap_or(0),
-                        wake_items(record),
+                        wake_of(record),
                     )
                 } else {
-                    (0, None)
+                    (0, Wake::Any)
                 };
                 if record.kind == RUN_COULD_NOT_TELL {
                     state.crashes += 1;
@@ -361,42 +352,124 @@ pub fn readings(stream: &[Record]) -> Vec<Reading> {
         .collect()
 }
 
-/// The items a `run.waiting` names, where its wake is the one the SDK's `until`
-/// throws: the wrapper prints `{"waiting": <condition>}` and `until`'s condition
-/// is the list of items still outstanding.
-///
-/// EVERY OTHER SHAPE IS `None` AND NOT A REFUSAL — a gate's id, a child run's
-/// id, a wake a workflow threw itself, an empty list nothing could satisfy, a
-/// payload with no wake at all. `None` is the behaviour that stands: re-run on
-/// any move.
-fn wake_items(record: &Record) -> Option<Vec<String>> {
-    let waiting = record.payload.get("wake")?.get("waiting")?.as_array()?;
-    let items: Vec<String> = waiting
-        .iter()
-        .filter_map(|value| value.as_str().map(str::to_string))
-        .collect();
-    (!items.is_empty() && items.len() == waiting.len()).then_some(items)
+/// What a waiting run is waiting for, read off the wake its `run.waiting`
+/// carries: the condition the SDK's wrapper printed, which the back half stores
+/// as it was printed.
+#[derive(Default)]
+enum Wake {
+    /// The items `until` still has outstanding.
+    Items(Vec<String>),
+    /// One id: the gate `gate` asked, or the child run `start` opened. The two
+    /// verbs throw the id alone, and nothing in the wake says which it is — the
+    /// stream does, and [`could_wake`] asks it.
+    Id(String),
+    /// Every other shape, and no wake at all: re-run on any move.
+    #[default]
+    Any,
 }
 
-/// Whether a line the waiting run has not seen could satisfy what it named.
+/// The wake a `run.waiting` carries, as a [`Wake`].
 ///
-/// THE WINDOW OPENS AT THE POSITION THE CHILD READ, not at the `run.waiting`
-/// line above it: the back half takes the stream's position and appends after
-/// it, so a line that landed in that gap is one the child never saw and is
-/// exactly the one a narrower window would lose the run's wake to.
+/// EVERY SHAPE THE MATCH DOES NOT KNOW IS `Any` AND NOT A REFUSAL — a wake a
+/// workflow threw itself, an empty list nothing could satisfy, a list holding
+/// something other than ids, a payload with no wake at all. `Any` is the
+/// behaviour that stood before the match: re-run on any move.
 ///
-/// THE STATE IS NOT COMPARED, only the item: an `until` names one state and the
-/// item's other states are cheap to admit, where reading the state from the wake
-/// the payload does not carry would be a guess.
-fn could_wake(stream: &[Record], state: &Folded) -> bool {
-    let Some(items) = &state.wake else {
-        return true;
+/// A WAKE STILL WRAPPED AS `{"waiting": <condition>}` IS READ AS THE CONDITION
+/// INSIDE IT. The SDK printed that wrapper once, and a run's bundle is pinned in
+/// its directory, so a run bundled then prints it on every re-run for as long
+/// as it waits — and read whole it would fall to `Any`.
+fn wake_of(record: &Record) -> Wake {
+    let Some(wake) = record.payload.get("wake") else {
+        return Wake::Any;
     };
-    stream.iter().any(|record| {
-        record.seq > state.recorded
-            && ITEM_WAKE_KINDS.contains(&record.kind.as_str())
-            && payload_str(record, "item").is_some_and(|item| items.contains(&item))
-    })
+    let condition = match wake.as_object() {
+        Some(wrapped) if wrapped.len() == 1 => wrapped.get("waiting").unwrap_or(wake),
+        _ => wake,
+    };
+    match condition {
+        serde_json::Value::String(id) if !id.is_empty() => Wake::Id(id.clone()),
+        serde_json::Value::Array(waiting) => {
+            let items: Vec<String> = waiting
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect();
+            if !items.is_empty() && items.len() == waiting.len() {
+                Wake::Items(items)
+            } else {
+                Wake::Any
+            }
+        }
+        _ => Wake::Any,
+    }
+}
+
+/// Whether the waiting run is to be executed again: `at` is the sequence its
+/// `run.waiting` line took and `head` the stream's last.
+///
+/// THE RUN'S OWN ANNOUNCEMENT DOES NOT WAKE IT. The position on the payload is
+/// the stream as the child left it, and the `run.waiting` line is appended
+/// ABOVE that position — so a comparison against the payload alone is true the
+/// instant it is written, and every waiting run would be re-run on the next
+/// poll whatever the stream did. The higher of the two is the line that says
+/// "somebody else wrote something".
+///
+/// AND WHAT MOVED HAS TO BE WHAT IT IS WAITING FOR. Without that every line any
+/// seat writes while a run waits — a delivery elsewhere, a rest, another run's
+/// steps — costs one child execution of the whole workflow that ends waiting in
+/// the same place.
+///
+/// THE ITEMS' WINDOW OPENS AT THE RECORDED POSITION, not at the `run.waiting`
+/// line above it: the back half takes the stream's position and appends after
+/// it, so a line that landed in that gap is one a narrower window would lose
+/// the run's wake to. The state is not compared, only the item: an `until`
+/// names one state and the item's other states are cheap to admit, where
+/// reading the state from the wake the payload does not carry would be a
+/// guess.
+///
+/// A GATE WAKES ON ITS ANSWER AND A CHILD ON EITHER END, WHEREVER ON THE STREAM
+/// IT SITS. The recorded position is read when the process exits, after `gate`
+/// or `start` read the stream and threw, so an answer or an end that landed in
+/// between sits at or below it — and a match that looked only above it, or
+/// waited for the stream to move, would hold the run on a gate already
+/// answered. Waking on it wherever it is loops on nothing: the re-run replays
+/// past the answered gate or the ended child, so the run's last line is no
+/// longer this wait. `start` returns on the child's close and fails on its
+/// failure, and both are a re-run's to read.
+///
+/// AN ID IS A GATE'S OR A RUN'S ONLY WHERE THE STREAM SAYS SO: a gate that was
+/// asked or answered, or a run that was started. An id the stream knows as
+/// neither is a word a workflow threw itself, and a match on it would hold the
+/// run waiting for a line that is never coming — so it wakes on any move.
+fn could_wake(stream: &[Record], head: u64, at: u64, state: &Folded) -> bool {
+    let moved = head > state.recorded.max(at);
+    match &state.wake {
+        Wake::Any => moved,
+        Wake::Items(items) => {
+            moved
+                && stream.iter().any(|record| {
+                    record.seq > state.recorded
+                        && ITEM_WAKE_KINDS.contains(&record.kind.as_str())
+                        && payload_str(record, "item").is_some_and(|item| items.contains(&item))
+                })
+        }
+        Wake::Id(id) => {
+            let names = |record: &Record, key: &str| payload_str(record, key).as_ref() == Some(id);
+            let known = stream.iter().any(|record| match record.kind.as_str() {
+                ITEM_PARKED | GATE_RESOLVED => names(record, "gate"),
+                RUN_STARTED => names(record, "run"),
+                _ => false,
+            });
+            if !known {
+                return moved;
+            }
+            stream.iter().any(|record| match record.kind.as_str() {
+                GATE_RESOLVED => names(record, "gate"),
+                RUN_CLOSED | RUN_FAILED => names(record, "run"),
+                _ => false,
+            })
+        }
+    }
 }
 
 /// The gate on the run's record and the `item.parked` that announces it.

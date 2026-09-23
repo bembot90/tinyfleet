@@ -27,9 +27,9 @@ What it holds today:
   through `fleet event step`, runs the step and records it. `now`, `random`
   and `input` are steps. A result over 64 KiB goes to `steps/<n>.json` in
   the run directory with its sha256 on the event. A `Waiting` thrown from a
-  step is exit 2 with `{"waiting": …}` on stdout's last line; any other
-  throw is exit 1 with `{"reason": …}`; a name mismatch at n is exit 1 with
-  `replay diverged at step n`. Under `assets/` for the reason this file is.
+  step is exit 2 with its condition, as JSON, on stdout's last line; any
+  other throw is exit 1 with its reason there the same way; a name mismatch
+  at n is exit 1 with `replay diverged at step n`. Under `assets/` for the reason this file is.
   Its suite is `assets/sdk/mod_test.ts`, under Deno's own runner: `make
   fleet-ts-test`, a test-tools row of its own beside fleet-test.
 
@@ -42,8 +42,8 @@ returns what the first run was told and spawns nothing. Every act is
 attributed `--by` the run id — the run's child starts with a cleared
 environment, and the run is the one name every act under it can carry. A
 refusal envelope (`ok: false`) is a thrown `Refusal` carrying the verb, the
-refusal code and its why; the wrapper turns it into exit 1 with
-`{"reason": {"verb", "code", "why"}}` on stdout's last line.
+refusal code and its why; the wrapper turns it into exit 1 with the reason
+`{"verb", "code", "why"}` on stdout's last line.
 
 Two verbs leave something open across a Waiting exit and must not repeat it
 on the re-run: a gate's ask and a start's child run. Each finds its own record

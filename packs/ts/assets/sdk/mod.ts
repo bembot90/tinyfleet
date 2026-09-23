@@ -11,10 +11,11 @@
 // sees the values the first run saw.
 //
 // Waiting is an exit and not a sleep: a step that cannot close yet throws
-// `Waiting` with its condition, the wrapper prints `{"waiting": <condition>}`
-// as stdout's last line and exits 2, and the controller re-runs the bundle
-// when the stream moves past the position it recorded. Replay carries the
-// re-run back to the same step.
+// `Waiting` with its condition, the wrapper prints the condition as stdout's
+// last line and exits 2, and the controller re-runs the bundle once a line
+// the condition names reaches the stream — any line, for a condition it
+// cannot read. Replay carries the re-run back to the same step. Any other
+// throw prints its reason the same way and exits 1.
 //
 // The stream is reached through the fleet binary alone: `fleet event step`
 // writes the pair and `fleet event tail --json` reads it back. The wrapper
@@ -281,11 +282,15 @@ export async function workflow(
   } catch (thrown) {
     outcome = { code: 1, reason: reasonOf(thrown) };
   }
+  // THE CONDITION AND THE REASON ALONE, not wrapped: core stores the last line
+  // whole as the event's `wake` or `reason`, so a key added here is a second
+  // wrapper on the stream and a status row that prints `{"reason":…}` where
+  // the text belongs. A condition of undefined prints null, as a reason does.
   if (outcome.code === 2) {
-    console.log(JSON.stringify({ waiting: outcome.waiting }));
+    console.log(JSON.stringify(outcome.waiting ?? null));
   }
   if (outcome.code === 1) {
-    console.log(JSON.stringify({ reason: outcome.reason }));
+    console.log(JSON.stringify(outcome.reason ?? null));
   }
   Deno.exit(outcome.code);
 }

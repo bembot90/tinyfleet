@@ -708,6 +708,55 @@ fn the_runs_section_reads_every_standing_off_the_stream() {
     );
 }
 
+/// A failure and a wait the SDK printed read as text on the page: the reason as
+/// the words the workflow threw, and the wake as the gate it is waiting on.
+///
+/// THE PAYLOADS ARE THE SDK'S OWN LAST LINES as the back half stores them — a
+/// thrown `Error`'s message is a JSON string, and so is the gate id `gate`
+/// waits on. The row that printed `{"reason":"…"}` was the wrapper's key
+/// stored inside the event's own, and this arm holds the other half of that
+/// fix: a reason that is text is printed as the text.
+#[test]
+fn a_failure_and_a_wait_the_sdk_printed_read_as_text_on_the_page() {
+    let rig = Rig::new("runs-text");
+    rig.publish(&document(
+        &rig.policy_file(),
+        &fleet_controller::clock::now_stamp(),
+        vec![seat("builder-1")],
+    ));
+    let now = fleet_controller::clock::now_stamp();
+    let now = now.as_str();
+    stream(
+        &rig,
+        &[
+            started(now, "fx-fail"),
+            line(
+                now,
+                fleet_core::item::RUN_FAILED,
+                serde_json::json!({ "run": "fx-fail", "reason": "takeoff: no `items` input" }),
+            ),
+            started(now, "fx-wait"),
+            parked(now, "fx-wait", "fx-gate"),
+            line(
+                now,
+                fleet_core::item::RUN_WAITING,
+                serde_json::json!({ "run": "fx-wait", "wake": "fx-gate", "seq": 3 }),
+            ),
+        ],
+    );
+
+    let out = rig.run(&["status"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let section = runs_section(&stdout(&out));
+    let failed = row_of(&section, "fx-fail");
+    assert!(
+        failed.ends_with(" — takeoff: no `items` input"),
+        "the reason is the text, bare: {failed}"
+    );
+    let wait = row_of(&section, "fx-wait");
+    assert!(wait.ends_with(" for fx-gate"), "{wait}");
+}
+
 /// AC1, the quiet page: no stream at all is a fleet nobody has run anything on,
 /// which is every count at zero and no row — never a could-not-tell.
 #[test]

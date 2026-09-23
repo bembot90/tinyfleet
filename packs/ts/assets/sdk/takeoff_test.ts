@@ -610,7 +610,7 @@ Deno.test("AC1 the bundle — takeoff bundled by the pack's bundle line and run 
 
   assertEquals(
     [ran.code, last],
-    [2, JSON.stringify({ waiting: "gate-1" })],
+    [2, JSON.stringify("gate-1")],
     `the bundled workflow ended ${ran.code} on \`${last}\`\n${stderr}`,
   );
   assertEquals(
