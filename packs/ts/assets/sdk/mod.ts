@@ -163,6 +163,15 @@ export interface Run {
   /** One pinned input, as a step: `inputs.<key>` of the document, null when
    * the run pinned none under that key. */
   input(key: string): Promise<unknown>;
+  /** One setting of the pack that carries this workflow: the value fleet.toml
+   * sets under `[packs.<name>]`, else the default the pack's manifest
+   * declares, else undefined. Read off `config` in the pinned document, which
+   * core resolved and pinned when the run was opened, so a re-run reads the
+   * value the first run read whatever fleet.toml says since.
+   *
+   * NOT A STEP: the document is pinned and hashed with the bundle, so there is
+   * nothing a step would add, and a recorded result cannot carry undefined. */
+  config(key: string): unknown;
   /** A builder on an item: `fleet dispatch <item> --json`, which cuts a
    * transient seat, orders it and rings it — unless the item's delivery is
    * already on the stream at or below the position this execution started
@@ -336,6 +345,14 @@ class Handle implements Run {
       const value = (inputs as Record<string, unknown>)[key];
       return value === undefined ? null : value;
     });
+  }
+
+  config(key: string): unknown {
+    const config = this.document.config;
+    if (config === null || typeof config !== "object") return undefined;
+    return Object.hasOwn(config, key)
+      ? (config as Record<string, unknown>)[key]
+      : undefined;
   }
 
   spawn(order: Spawn): Promise<Dispatched | string> {

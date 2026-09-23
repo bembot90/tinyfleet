@@ -118,6 +118,7 @@ pub mod registry;
 pub mod remove;
 pub mod resolve;
 pub mod seat;
+pub mod settings;
 pub mod store;
 
 /// What a suite drives these verbs with — the applying fake store and the board

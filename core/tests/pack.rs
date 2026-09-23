@@ -693,6 +693,198 @@ fn the_ts_pack_pins_deno_and_its_doctor_check_resolves_it_from_path_then_the_ins
     assert!(said.contains("is not the pinned 2.9.7"), "{said}");
 }
 
+// ---- the config table ---------------------------------------------------------
+
+fn with_config(body: &str) -> Result<pack::Manifest, Vec<Defect>> {
+    pack::parse_manifest(&format!(
+        "[pack]\nname = \"tiny\"\nversion = \"0.1.0\"\nschema = 3\n{body}"
+    ))
+}
+
+/// Both spellings of a dotted name read as the one setting, a default and a
+/// type are kept, and a declaration may carry neither — only the description
+/// is required.
+#[test]
+fn a_config_declaration_parses_in_either_spelling_with_its_default_and_type() {
+    let manifest = with_config(
+        "\n[config.\"takeoff.test\"]\ndescription = \"the builder's suite\"\n\
+         \n[config.takeoff.touched]\ndescription = \"the diff's suite\"\ntype = \"string\"\n\
+         default = \"make test-touched\"\n\
+         \n[config.retries]\ndescription = \"how many\"\ntype = \"integer\"\ndefault = 3\n",
+    )
+    .expect("a well-formed declaration is a real manifest");
+
+    let keys: Vec<&str> = manifest.config.iter().map(|s| s.key.as_str()).collect();
+    assert_eq!(
+        keys,
+        vec!["retries", "takeoff.test", "takeoff.touched"],
+        "the quoted name and the dotted table path are one name each, sorted"
+    );
+    let touched = &manifest.config[2];
+    assert_eq!(touched.description, "the diff's suite");
+    assert_eq!(touched.kind.as_deref(), Some("string"));
+    assert_eq!(
+        touched.default.as_ref().and_then(toml::Value::as_str),
+        Some("make test-touched")
+    );
+    let test = &manifest.config[1];
+    assert_eq!(test.kind, None, "the type is optional");
+    assert_eq!(test.default, None, "and so is the default");
+    assert!(
+        test.admits(&toml::Value::Integer(1)),
+        "an untyped declaration admits any value"
+    );
+    assert!(!touched.admits(&toml::Value::Integer(1)));
+    assert!(touched.admits(&toml::Value::String("x".into())));
+    assert_eq!(
+        manifest.config[0]
+            .default
+            .as_ref()
+            .and_then(toml::Value::as_integer),
+        Some(3)
+    );
+
+    // The control: the table is optional, and a manifest without it declares
+    // nothing.
+    assert!(with_config("").expect("no table").config.is_empty());
+}
+
+/// Every malformed declaration refuses the manifest naming the setting and what
+/// is wrong with it — one case per rule, each on its own, so a rule that never
+/// fires cannot hide behind another that does.
+#[test]
+fn a_malformed_config_declaration_is_refused_naming_the_setting() {
+    let cases: Vec<(&str, Defect)> = vec![
+        (
+            "[config.\"takeoff.test\"]\ntype = \"string\"\n",
+            Defect::MissingManifestKey("config.takeoff.test.description".into()),
+        ),
+        (
+            "[config.empty]\n",
+            Defect::MissingManifestKey("config.empty.description".into()),
+        ),
+        (
+            "[config.test]\ndescription = \"x\"\nrequired = true\n",
+            Defect::UnknownSettingKey {
+                key: "test".into(),
+                field: "required".into(),
+            },
+        ),
+        (
+            "[config.test]\ndescription = \"x\"\ntype = \"path\"\n",
+            Defect::SettingType {
+                key: "test".into(),
+                kind: "path".into(),
+            },
+        ),
+        (
+            "[config.test]\ndescription = \"x\"\ntype = \"string\"\ndefault = 3\n",
+            Defect::SettingDefault {
+                key: "test".into(),
+                kind: "string".into(),
+            },
+        ),
+        (
+            "[config.test]\ndescription = 7\n",
+            Defect::ManifestKeyType {
+                key: "config.test.description".into(),
+                want: "a string",
+            },
+        ),
+        (
+            "[config]\ntest = \"a bare value\"\n",
+            Defect::ManifestKeyType {
+                key: "config.test".into(),
+                want: "a table",
+            },
+        ),
+        (
+            "[config.\"take off\"]\ndescription = \"x\"\n",
+            Defect::SettingName("take off".into()),
+        ),
+        (
+            "[config.takeoff]\ndescription = \"x\"\n\
+             [config.\"takeoff.test\"]\ndescription = \"y\"\n",
+            Defect::SettingOverlap {
+                key: "takeoff".into(),
+                other: "takeoff.test".into(),
+            },
+        ),
+        (
+            "[config.\"takeoff.test\"]\ndescription = \"x\"\n\
+             [config.takeoff.test]\ndescription = \"y\"\n",
+            Defect::SettingOverlap {
+                key: "takeoff.test".into(),
+                other: "takeoff.test".into(),
+            },
+        ),
+    ];
+    for (body, expected) in cases {
+        let found = with_config(&format!("\n{body}"))
+            .expect_err(&format!("a malformed declaration is a defect: {body}"));
+        assert_eq!(found, vec![expected.clone()], "{body}");
+        assert!(
+            !found[0].to_string().is_empty(),
+            "every defect prints as one line: {expected:?}"
+        );
+    }
+
+    // The table itself as a bare value, which has to sit above `[pack]` to be
+    // a top-level key at all.
+    assert_eq!(
+        pack::parse_manifest(
+            "config = 3\n[pack]\nname = \"tiny\"\nversion = \"0.1.0\"\nschema = 3\n"
+        ),
+        Err(vec![Defect::ManifestKeyType {
+            key: "config".into(),
+            want: "a table",
+        }])
+    );
+
+    // The overlap and the duplicate print as themselves, and both name the
+    // settings they are about.
+    let overlap = Defect::SettingOverlap {
+        key: "takeoff".into(),
+        other: "takeoff.test".into(),
+    }
+    .to_string();
+    assert!(
+        overlap.contains("[config.takeoff]") && overlap.contains("[config.takeoff.test]"),
+        "{overlap}"
+    );
+    let twice = Defect::SettingOverlap {
+        key: "takeoff.test".into(),
+        other: "takeoff.test".into(),
+    }
+    .to_string();
+    assert_eq!(twice, "[config.takeoff.test] is declared twice");
+}
+
+/// The doctrine pack declares the two commands its takeoff reads, each with a
+/// one-line description a person reads before setting it.
+#[test]
+fn the_doctrine_pack_declares_the_two_takeoff_settings() {
+    let manifest = pack::check(&bundled_tiny())
+        .manifest
+        .expect("the doctrine pack carries a manifest");
+    let keys: Vec<&str> = manifest.config.iter().map(|s| s.key.as_str()).collect();
+    assert_eq!(keys, vec!["takeoff.test", "takeoff.touched"]);
+    for setting in &manifest.config {
+        assert!(
+            !setting.description.trim().is_empty() && !setting.description.contains('\n'),
+            "{} carries a one-line description: {:?}",
+            setting.key,
+            setting.description
+        );
+        assert_eq!(
+            setting.kind.as_deref(),
+            Some("string"),
+            "{} is a command",
+            setting.key
+        );
+    }
+}
+
 mod lessons {
     use super::*;
     use fleet_core::pack::Manifest;

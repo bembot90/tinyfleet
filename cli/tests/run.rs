@@ -86,6 +86,8 @@ struct Pack {
     /// the version given, or none. The layering sorts them beneath the
     /// scratch pack, which is where a run looks for a pin the carrier lacks.
     imports: Vec<(&'static str, Option<&'static str>)>,
+    /// The manifest's `[config.<key>]` declarations, appended verbatim.
+    settings: &'static str,
 }
 
 impl Pack {
@@ -94,6 +96,7 @@ impl Pack {
             runtime: Some(version),
             workflows: vec![(ONE, String::from(WORKFLOW))],
             imports: Vec::new(),
+            settings: "",
         }
     }
 
@@ -102,6 +105,7 @@ impl Pack {
             runtime: None,
             workflows: vec![(ONE, String::from(WORKFLOW))],
             imports: Vec::new(),
+            settings: "",
         }
     }
 
@@ -119,6 +123,7 @@ impl Pack {
                 .map(|(row, body)| (*row, format!("#!/bin/sh\n{body}\n")))
                 .collect(),
             imports: Vec::new(),
+            settings: "",
         }
     }
 
@@ -126,6 +131,12 @@ impl Pack {
     /// `version`, or pins none.
     fn importing(mut self, name: &'static str, version: Option<&'static str>) -> Pack {
         self.imports.push((name, version));
+        self
+    }
+
+    /// The same pack, declaring the settings `fleet.toml` may set for it.
+    fn declaring(mut self, settings: &'static str) -> Pack {
+        self.settings = settings;
         self
     }
 }
@@ -202,6 +213,7 @@ impl Rig {
         if let Some(version) = pack.runtime {
             manifest.push_str(&runtime_table(version));
         }
+        manifest.push_str(pack.settings);
         write(&scratch.join("pack.toml"), &manifest);
         for (name, version) in &pack.imports {
             let mut imported = format!(
@@ -1312,5 +1324,236 @@ fn a_silent_exit_of_one_is_could_not_tell_with_nothing_read() {
     assert!(
         unread["payload"]["read"].is_null(),
         "nothing read is null and not an empty reason: {unread}"
+    );
+}
+
+// ---- the pack's settings: [packs.<name>] ----------------------------------------
+
+/// Three settings the scratch pack declares, in both of the spellings a
+/// declaration may take: one quoted whole, two as a dotted table path. One is
+/// set by the fleet, one falls to its default, and one has neither.
+const DECLARED: &str = "\n[config.\"greeting.word\"]\n\
+     description = \"the word the scratch workflow greets with\"\n\
+     type = \"string\"\n\
+     \n[config.greeting.times]\n\
+     description = \"how many times it greets\"\n\
+     type = \"integer\"\n\
+     default = 2\n\
+     \n[config.unset]\n\
+     description = \"declared, with no default, and set by nobody\"\n";
+
+/// A workflow that echoes the document it was handed and then waits, so the
+/// same run can be executed again.
+const ECHOES_AND_WAITS: &str = "echo \"stdin=$(cat)\"\n\
+     echo '{\"for\":\"a delivery\"}'\n\
+     exit 2";
+
+/// The policy the settings arms run under: the cap that is not the subject, and
+/// one `[packs.<name>]` section.
+fn policy_setting(section: &str) -> String {
+    format!("{}\n{section}", cap_that_is_not_the_subject())
+}
+
+/// The document the run child was handed on stdin, off its own log.
+fn handed(directory: &Path) -> serde_json::Value {
+    let said = std::fs::read_to_string(directory.join(workflow_run::STDOUT_LOG))
+        .expect("the log is readable");
+    let line = said
+        .lines()
+        .find_map(|line| line.strip_prefix("stdin="))
+        .unwrap_or_else(|| panic!("the workflow echoed its stdin: {said}"));
+    serde_json::from_str(line)
+        .unwrap_or_else(|e| panic!("stdin is one JSON document ({e}): {line}"))
+}
+
+/// A value `fleet.toml` sets for a declared key reaches the workflow on the
+/// channel its inputs ride, beside the default of a key it does not set; a key
+/// with neither is absent, which is what `run.config` answers undefined for.
+/// The same table is pinned in the run directory's inputs file.
+#[test]
+fn a_declared_setting_reaches_the_workflow_beside_its_declared_default() {
+    let rig = Rig::new(
+        "settings",
+        &Pack::running(ECHOES_AND_WAITS).declaring(DECLARED),
+        &policy_setting("[packs.scratch]\ngreeting.word = \"ahoy\"\n"),
+    );
+    let out = rig.run(&["run", &rig.workflow(ONE), "--by", BY]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let (id, _) = started_line(&out);
+    let directory = rig.machine.join(workflow_run::RUNS).join(&id);
+
+    let document = handed(&directory);
+    let config = &document["config"];
+    assert_eq!(
+        config["greeting.word"].as_str(),
+        Some("ahoy"),
+        "the value the fleet set: {document}"
+    );
+    assert_eq!(
+        config["greeting.times"].as_i64(),
+        Some(2),
+        "the default the pack declared, where the fleet set none: {document}"
+    );
+    assert!(
+        config.get("unset").is_none(),
+        "a key with no value and no default is absent: {document}"
+    );
+
+    let pinned = fleet_core::item::read_table(&directory.join(workflow_run::INPUTS))
+        .expect("the inputs parse as TOML");
+    assert_eq!(
+        pinned["config"]["greeting.word"].as_str(),
+        Some("ahoy"),
+        "the settings are pinned with the inputs: {pinned}"
+    );
+}
+
+/// A key the installed pack does not declare is refused before anything is
+/// written, naming the key and the pack.
+#[test]
+fn an_undeclared_setting_refuses_naming_the_key_and_the_pack_and_writes_nothing() {
+    let rig = Rig::new(
+        "undeclared",
+        &Pack::running(ECHOES_AND_WAITS).declaring(DECLARED),
+        &policy_setting("[packs.scratch]\ngreeting.wrod = \"ahoy\"\n"),
+    );
+    let said = refuses(
+        &rig,
+        &["run", &rig.workflow(ONE), "--by", BY],
+        "greeting.wrod",
+    );
+    assert!(
+        said.contains("`scratch`"),
+        "the refusal names the pack: {said}"
+    );
+    assert!(
+        said.contains("greeting.word"),
+        "and what the pack does declare: {said}"
+    );
+}
+
+/// A section for a pack that is not installed is refused the same way, naming
+/// the section — over an installed pack that declares no settings at all, so
+/// what refuses is the section and never a declaration.
+#[test]
+fn a_section_for_a_pack_not_installed_refuses_naming_it_and_writes_nothing() {
+    let rig = Rig::new(
+        "uninstalled",
+        &Pack::running(ECHOES_AND_WAITS),
+        &policy_setting("[packs.absent]\ngreeting.word = \"ahoy\"\n"),
+    );
+    let said = refuses(
+        &rig,
+        &["run", &rig.workflow(ONE), "--by", BY],
+        "[packs.absent]",
+    );
+    assert!(
+        said.contains("scratch"),
+        "the refusal names the packs that are installed: {said}"
+    );
+}
+
+/// The stream a re-run in this process appends to: the same file, through the
+/// same log type, the binary's own writer uses.
+struct Stream(PathBuf);
+
+impl fleet_core::item::Events for Stream {
+    fn append(&self, kind: &str, actor: &str, payload: serde_json::Value) -> Result<(), String> {
+        fleet_controller::events::EventLog::open(&self.0)
+            .append(kind, actor, payload)
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl workflow_run::Stream for Stream {
+    fn path(&self) -> PathBuf {
+        self.0.clone()
+    }
+
+    fn seq(&self) -> u64 {
+        fleet_controller::events::EventLog::open(&self.0).seq()
+    }
+}
+
+/// A run is pinned to the settings it was opened with: a re-run after
+/// `fleet.toml` changed hands the workflow the first value, while a fresh run
+/// over the same file reads the new one — the control that says the edit was
+/// readable and it is the pin that held.
+///
+/// THE RE-RUN IS CORE'S OWN ENTRY, called in this process as the controller's
+/// run pass calls it, with the edited file as the policy in force.
+#[test]
+fn a_rerun_reads_the_settings_the_run_was_opened_with_and_not_the_edited_file() {
+    let rig = Rig::new(
+        "pinned-settings",
+        &Pack::running(ECHOES_AND_WAITS).declaring(DECLARED),
+        &policy_setting("[packs.scratch]\ngreeting.word = \"ahoy\"\n"),
+    );
+    let out = rig.run(&["run", &rig.workflow(ONE), "--by", BY]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(outcome_line(&out), "waiting");
+    let (id, _) = started_line(&out);
+    let directory = rig.machine.join(workflow_run::RUNS).join(&id);
+    assert_eq!(
+        handed(&directory)["config"]["greeting.word"].as_str(),
+        Some("ahoy")
+    );
+
+    let policy_file = rig.project.join("fleet.toml");
+    write(
+        &policy_file,
+        &policy_setting("[packs.scratch]\ngreeting.word = \"avast\"\n"),
+    );
+
+    let store = fleet_core::store::Bd::at(&rig.project);
+    let packs = fleet_core::item::brief::Packs::under(
+        &rig.machine.join("packs"),
+        &rig.machine.join(fleet_core::defaults::DIR),
+    )
+    .unwrap_or_else(|stop| panic!("the layers resolve: {}", stop.message));
+    let table = fleet_core::item::table_at(&policy_file);
+    let project = fleet_core::item::Project {
+        root: rig.project.clone(),
+        name: String::from("project"),
+        gates: table.clone(),
+        guards: table,
+    };
+    let stream = Stream(rig.machine.join("events.jsonl"));
+    let mut said = Vec::new();
+    let ended = workflow_run::rerun(
+        &mut said,
+        &workflow_run::Again {
+            run: &id,
+            by: BY,
+            at: "2026-09-22T00:00:00Z",
+            machine_dir: &rig.machine,
+            fleet_bin: Path::new(env!("CARGO_BIN_EXE_fleet")),
+        },
+        &workflow_run::Wiring {
+            store: &store,
+            project: &project,
+            packs: &packs,
+            policy_file: &policy_file,
+            events: &stream,
+            stream: &stream,
+            child_path: "",
+        },
+    )
+    .unwrap_or_else(|stop| panic!("the re-run executes: {}", stop.message));
+    assert_eq!(ended, workflow_run::Ended::Waiting);
+    assert_eq!(
+        handed(&directory)["config"]["greeting.word"].as_str(),
+        Some("ahoy"),
+        "the re-run is handed the value the run was opened with"
+    );
+
+    let fresh = rig.run(&["run", &rig.workflow(ONE), "--by", BY]);
+    assert_eq!(fresh.status.code(), Some(0), "{}", stderr(&fresh));
+    let (fresh_id, _) = started_line(&fresh);
+    assert_eq!(
+        handed(&rig.machine.join(workflow_run::RUNS).join(&fresh_id))["config"]["greeting.word"]
+            .as_str(),
+        Some("avast"),
+        "a run opened after the edit reads the edited file"
     );
 }

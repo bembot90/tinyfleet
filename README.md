@@ -140,6 +140,28 @@ repository and the path to the pack inside it:
 `none installed` until one is added, and never the defaults, which are the
 binary's — and prints the resolved rules file beneath it.
 
+A pack's settings are set in `fleet.toml`, under the pack's name, and only the
+keys the pack declares. A pack declares each one in its `pack.toml` with a
+one-line description, and optionally a type and a default:
+
+```toml
+# pack.toml
+[config."takeoff.test"]
+description = "The command takeoff hands fleet land to run on the rebased tree before each landing."
+type = "string"
+
+# fleet.toml
+[packs.tiny]
+takeoff.test = "cargo nextest run --workspace"
+```
+
+`fleet run` refuses a key the installed pack does not declare, a value of the
+wrong type, and a section for a pack that is not installed, naming the key and
+the pack. A workflow reads a setting with `run.config("takeoff.test")`: the value
+set here, else the declared default, else `undefined`, as pinned when the run
+was opened. tiny declares `takeoff.test` and `takeoff.touched`, and `fleet pack
+check` refuses a malformed declaration by name.
+
 ### Driving it from a checkout
 
     cargo build                       # in this directory, so target/debug/fleet exists

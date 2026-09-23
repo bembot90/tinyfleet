@@ -20,6 +20,14 @@
 //! exits, so what a run holds between its runs is its record, its directory
 //! and its events — never a process somebody has to find again.
 //!
+//! THE CARRIER'S SETTINGS RIDE THE INPUTS FILE, under `config`: the values
+//! `[packs.<name>]` sets for the pack that carries the workflow, over the
+//! defaults its manifest declares ([`crate::settings`]). They are pinned there
+//! rather than in a fourth file so the hash already covers them, the document
+//! the workflow is handed on stdin already carries them, and a run directory
+//! written before they existed hashes as it always did. A re-run reads them off
+//! that file and never off `fleet.toml`.
+//!
 //! WRITE ORDER is the record, then the directory, then the pins, then the
 //! event, as `plan`'s and `fly`'s are, and the back half keeps the polarity:
 //! the logs, then the record's close, then the event. A crash between them
@@ -41,6 +49,7 @@ use crate::item::{
 use crate::pack::{self, Runtime};
 use crate::policy;
 use crate::resolve::Layer;
+use crate::settings;
 use crate::store::{Item, NewItem, Store, StoreError};
 
 /// Where the run directories go, under the machine directory.
@@ -48,10 +57,15 @@ pub const RUNS: &str = "runs";
 
 /// The three names inside one, and the order the hash reads them in. `BUNDLE`
 /// is the one the pack's own bundle command writes; the other two are pinned
-/// here before that child runs.
+/// here before that child runs, and `INPUTS` carries the carrier's resolved
+/// settings under [`CONFIG`] beside the inputs themselves.
 pub const INPUTS: &str = "inputs.toml";
 pub const POLICY: &str = "policy.toml";
 pub const BUNDLE: &str = "bundle";
+
+/// The key the inputs file pins the carrier's settings under, and the key the
+/// document on the workflow's stdin carries them under.
+pub const CONFIG: &str = "config";
 
 /// The slot a workflow name resolves through, overlay first.
 pub const WORKFLOWS: &str = "workflows";
@@ -269,7 +283,8 @@ pub fn run(out: &mut dyn Write, order: &Order, wiring: &Wiring) -> Result<Ran, S
             wiring.policy_file.display()
         ))
     })?;
-    let inputs = render_inputs(order, &resolved)?;
+    let config = read_the_settings(&policy_bytes, &resolved, wiring)?;
+    let inputs = render_inputs(order, &resolved, config)?;
 
     // (b) THE RECORD, which is what names the directory: the store names what
     // it files, so the id this run is titled by does not exist until the create
@@ -853,12 +868,51 @@ fn the_doctor_is_green(
     )))
 }
 
-/// The inputs as the file the run is pinned against.
+/// The settings the carrier's workflow reads: `[packs]` judged whole against
+/// every installed pack, then the carrier's own resolved table.
+///
+/// READ OFF THE BYTES THAT ARE PINNED and not off the project's parsed table,
+/// so the policy snapshot in the run directory and the settings beside the
+/// inputs are one reading of one file. A file that does not parse is
+/// could-not-tell rather than no settings: reading it as empty would pin the
+/// defaults over values the person wrote.
+fn read_the_settings(
+    policy: &[u8],
+    resolved: &Resolved,
+    wiring: &Wiring,
+) -> Result<toml::Table, Stop> {
+    let table = std::str::from_utf8(policy)
+        .map_err(|e| e.to_string())
+        .and_then(|text| text.parse::<toml::Table>().map_err(|e| e.to_string()))
+        .map_err(|e| {
+            Stop::could_not_tell(format!(
+                "the policy in force at {} does not parse, so the settings its [{}] table sets \
+                 cannot be read: {e}",
+                wiring.policy_file.display(),
+                settings::TABLE
+            ))
+        })?;
+    let mut every = settings::resolve(&table, &wiring.packs.layers).map_err(|found| {
+        Stop::refused(format!(
+            "`{}` is not opened — {}",
+            resolved.name,
+            found
+                .iter()
+                .map(|refusal| refusal.to_string())
+                .collect::<Vec<_>>()
+                .join("\n  ")
+        ))
+    })?;
+    Ok(every.remove(&resolved.pack.name).unwrap_or_default())
+}
+
+/// The inputs as the file the run is pinned against, with the carrier's
+/// settings beside them.
 ///
 /// A key given twice is a refusal and not a last-one-wins: a run is a function
 /// of its pinned inputs, and a caller that named one key two ways has not said
 /// which run it wants.
-fn render_inputs(order: &Order, resolved: &Resolved) -> Result<String, Stop> {
+fn render_inputs(order: &Order, resolved: &Resolved, config: toml::Table) -> Result<String, Stop> {
     let mut table = toml::map::Map::new();
     for (key, value) in order.inputs {
         if table.contains_key(key) {
@@ -890,6 +944,7 @@ fn render_inputs(order: &Order, resolved: &Resolved) -> Result<String, Stop> {
         toml::Value::String(order.at.to_string()),
     );
     snapshot.insert(String::from("inputs"), toml::Value::Table(table));
+    snapshot.insert(String::from(CONFIG), toml::Value::Table(config));
     toml::to_string(&toml::Value::Table(snapshot))
         .map_err(|e| Stop::could_not_tell(format!("the inputs do not render as TOML: {e}")))
 }

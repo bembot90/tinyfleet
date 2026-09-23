@@ -43,8 +43,44 @@ pub const AGENT_FORMS: [&str; 2] = ["agent.toml", "prompt.template.md"];
 pub const PLACEHOLDERS: [&str; 5] = ["entry", "bundle", "run_dir", "fleet", "inputs"];
 
 const PACK_KEYS: [&str; 4] = ["name", "version", "schema", "description"];
-const TOP_TABLES: [&str; 4] = ["pack", "imports", "named_session", "runtime"];
+const TOP_TABLES: [&str; 5] = ["pack", "imports", "named_session", "runtime", "config"];
 const RUNTIME_KEYS: [&str; 4] = ["name", "version", "bundle", "run"];
+
+/// The three keys a `[config.<key>]` declaration may hold. `description` is
+/// required: a setting nobody can read the purpose of is one a person sets by
+/// guessing.
+pub const SETTING_KEYS: [&str; 3] = ["description", "default", "type"];
+
+/// The value types a declaration may name, spelled as TOML's own type names so
+/// a value is judged by comparing one word. A declaration naming none takes
+/// whatever value `fleet.toml` writes.
+pub const SETTING_TYPES: [&str; 5] = ["string", "integer", "float", "boolean", "array"];
+
+/// One setting the pack declares, which a fleet sets under `[packs.<name>]` in
+/// its `fleet.toml` and a workflow the pack carries reads by the same name.
+///
+/// THE NAME IS DOTTED, and a declaration may spell it either way TOML allows —
+/// `[config."takeoff.test"]` or `[config.takeoff.test]` — because both read as
+/// the one setting `takeoff.test`, which is how `fleet.toml` writes it
+/// (`takeoff.test = "…"` under the pack's section) and how a workflow asks for it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Setting {
+    pub key: String,
+    pub description: String,
+    /// What a workflow reads where the fleet sets nothing.
+    pub default: Option<toml::Value>,
+    /// One of [`SETTING_TYPES`], or none.
+    pub kind: Option<String>,
+}
+
+impl Setting {
+    /// Whether a value `fleet.toml` writes is one this declaration accepts.
+    pub fn admits(&self, value: &toml::Value) -> bool {
+        self.kind
+            .as_deref()
+            .is_none_or(|kind| value.type_str() == kind)
+    }
+}
 
 /// One import declared by the manifest, keyed by import name.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +114,7 @@ pub struct Runtime {
     pub run: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Manifest {
     pub name: String,
     pub version: String,
@@ -89,6 +125,8 @@ pub struct Manifest {
     /// Absent on a pack that carries no workflows. This binary ships no pack;
     /// the doctrine pack in this workspace is on that side of it.
     pub runtime: Option<Runtime>,
+    /// The settings the pack declares, by name.
+    pub config: Vec<Setting>,
 }
 
 /// One thing wrong with a pack. Every variant prints as one line, because the
@@ -115,6 +153,11 @@ pub enum Defect {
     RegistrySchema(i64),
     RegistryKey(String),
     RegistryPathMissing(String),
+    SettingName(String),
+    UnknownSettingKey { key: String, field: String },
+    SettingType { key: String, kind: String },
+    SettingDefault { key: String, kind: String },
+    SettingOverlap { key: String, other: String },
 }
 
 impl fmt::Display for Defect {
@@ -175,6 +218,33 @@ impl fmt::Display for Defect {
                 "`{}` lists `{p}`, which the pack does not hold",
                 registry::REGISTRY
             ),
+            Defect::SettingName(k) => write!(
+                f,
+                "`[config.{k}]` is not a setting name — each dotted part is letters, digits, \
+                 `_` or `-`"
+            ),
+            Defect::UnknownSettingKey { key, field } => write!(
+                f,
+                "[config.{key}] holds an unknown key `{field}` — a declaration is {}",
+                SETTING_KEYS.join(", ")
+            ),
+            Defect::SettingType { key, kind } => write!(
+                f,
+                "[config.{key}]'s type `{kind}` is not one of {}",
+                SETTING_TYPES.join(", ")
+            ),
+            Defect::SettingDefault { key, kind } => write!(
+                f,
+                "[config.{key}]'s default is not of the declaration's own type, {kind}"
+            ),
+            Defect::SettingOverlap { key, other } if key == other => {
+                write!(f, "[config.{key}] is declared twice")
+            }
+            Defect::SettingOverlap { key, other } => write!(
+                f,
+                "[config.{key}] and [config.{other}] overlap — one setting's name is never the \
+                 start of another's, or a `fleet.toml` value could be read as either"
+            ),
         }
     }
 }
@@ -187,7 +257,7 @@ pub struct Slot {
     pub entries: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Report {
     pub manifest: Option<Manifest>,
     pub slots: Vec<Slot>,
@@ -337,6 +407,7 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, Vec<Defect>> {
     let imports = parse_imports(&doc, &mut defects);
     let named_sessions = parse_named_sessions(&doc, &mut defects);
     let runtime = parse_runtime(&doc, &mut defects);
+    let config = parse_config(&doc, &mut defects);
 
     if defects.is_empty() {
         Ok(Manifest {
@@ -347,6 +418,7 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, Vec<Defect>> {
             imports,
             named_sessions,
             runtime,
+            config,
         })
     } else {
         Err(defects)
@@ -435,6 +507,120 @@ fn parse_runtime(doc: &toml::Table, defects: &mut Vec<Defect>) -> Option<Runtime
         version: version?,
         bundle: bundle?,
         run: run?,
+    })
+}
+
+fn parse_config(doc: &toml::Table, defects: &mut Vec<Defect>) -> Vec<Setting> {
+    let table = match doc.get("config") {
+        Some(toml::Value::Table(t)) => t,
+        Some(_) => {
+            defects.push(Defect::ManifestKeyType {
+                key: "config".into(),
+                want: "a table",
+            });
+            return Vec::new();
+        }
+        None => return Vec::new(),
+    };
+    let mut settings = Vec::new();
+    declarations(table, "", defects, &mut settings);
+    settings.sort_by(|a, b| a.key.cmp(&b.key));
+
+    for (at, setting) in settings.iter().enumerate() {
+        for other in &settings[at + 1..] {
+            let (short, long) = (&setting.key, &other.key);
+            if short == long || long.starts_with(&format!("{short}.")) {
+                defects.push(Defect::SettingOverlap {
+                    key: short.clone(),
+                    other: long.clone(),
+                });
+            }
+        }
+    }
+    settings
+}
+
+/// A table holding any value that is not itself a table is ONE DECLARATION; a
+/// table holding only tables is a name its children are declared under. That
+/// is the rule that reads `[config.takeoff.test]` and `[config."takeoff.test"]`
+/// as the same setting, and an empty table as a declaration missing its
+/// description rather than as nothing.
+fn declarations(
+    table: &toml::Table,
+    prefix: &str,
+    defects: &mut Vec<Defect>,
+    into: &mut Vec<Setting>,
+) {
+    for (name, value) in table {
+        let key = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}.{name}")
+        };
+        let Some(entry) = value.as_table() else {
+            defects.push(Defect::ManifestKeyType {
+                key: format!("config.{key}"),
+                want: "a table",
+            });
+            continue;
+        };
+        if !entry.is_empty() && entry.values().all(toml::Value::is_table) {
+            declarations(entry, &key, defects, into);
+        } else if let Some(setting) = declaration(&key, entry, defects) {
+            into.push(setting);
+        }
+    }
+}
+
+fn declaration(key: &str, entry: &toml::Table, defects: &mut Vec<Defect>) -> Option<Setting> {
+    let before = defects.len();
+    let named = key.split('.').all(|part| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    });
+    if !named {
+        defects.push(Defect::SettingName(key.to_string()));
+    }
+    for field in entry.keys() {
+        if !SETTING_KEYS.contains(&field.as_str()) {
+            defects.push(Defect::UnknownSettingKey {
+                key: key.to_string(),
+                field: field.clone(),
+            });
+        }
+    }
+    let description = string_key(
+        entry,
+        &format!("config.{key}.description"),
+        "description",
+        defects,
+        true,
+    );
+    let kind = string_key(entry, &format!("config.{key}.type"), "type", defects, false);
+    let default = entry.get("default").cloned();
+    if let Some(kind) = &kind {
+        if !SETTING_TYPES.contains(&kind.as_str()) {
+            defects.push(Defect::SettingType {
+                key: key.to_string(),
+                kind: kind.clone(),
+            });
+        } else if default.as_ref().is_some_and(|d| d.type_str() != kind) {
+            defects.push(Defect::SettingDefault {
+                key: key.to_string(),
+                kind: kind.clone(),
+            });
+        }
+    }
+    if defects.len() > before {
+        return None;
+    }
+    Some(Setting {
+        key: key.to_string(),
+        description: description?,
+        default,
+        kind,
     })
 }
 

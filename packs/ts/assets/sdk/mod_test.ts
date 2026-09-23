@@ -211,6 +211,43 @@ Deno.test("now, random and input are steps: a re-run sees the first run's values
   );
 });
 
+Deno.test("config reads the pack's pinned settings: the set value, the resolved default, undefined for neither, and no step", async () => {
+  const s = await scratch();
+  const seen: Record<string, unknown>[] = [];
+  const reads = (run: Run) => {
+    seen.push({
+      test: run.config("takeoff.test"),
+      width: run.config("width"),
+      touched: run.config("takeoff.touched"),
+      inherited: run.config("toString"),
+    });
+  };
+  const document = JSON.stringify({
+    workflow: "w",
+    inputs: {},
+    config: { "takeoff.test": "cargo nextest run --workspace", width: 1 },
+  });
+  assertEquals(await replay(reads, s.env, document), { code: 0 });
+  assertEquals(seen[0], {
+    test: "cargo nextest run --workspace",
+    width: 1,
+    touched: undefined,
+    inherited: undefined,
+  });
+  assertEquals(
+    closes(await lines(s)),
+    [],
+    "reading a setting records no step: the document is already pinned",
+  );
+
+  // A document pinned before settings existed carries no `config` at all.
+  assertEquals(
+    await replay(reads, s.env, JSON.stringify({ workflow: "w", inputs: {} })),
+    { code: 0 },
+  );
+  assertEquals(seen[1].test, undefined);
+});
+
 Deno.test("any other throw: exit 1 with the reason; a step that threw is started and not closed", async () => {
   const s = await scratch();
   const outcome = await replay(

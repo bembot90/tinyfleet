@@ -142,7 +142,7 @@ format's own:
 
 | Slot | Holds | core ships |
 | --- | --- | --- |
-| `pack.toml` | name, version, schema, imports of other packs by source and version, always-on agents, and the optional `[runtime]` table below | its own manifest, no imports, no runtime |
+| `pack.toml` | name, version, schema, imports of other packs by source and version, always-on agents, the optional `[runtime]` table below, and the `[config.<key>]` settings a fleet may set for the pack | its own manifest, no imports, no runtime, no settings |
 | `agents/<name>/` | an agent definition and its prompt template | `architect` (the first seat: reviews, lands, helps finish setup), `builder` (transient) |
 | `skills/<name>/SKILL.md` | what a seat can be asked to do | the verbs' skills, `brief` |
 | `orders/<name>.toml` | routines — scheduled and triggered duties, the controller's format | none |
@@ -222,6 +222,53 @@ slot whose `run.sh` asks the pinned binary for its version and reads red when
 the answer is another version or there is no binary at all. Core ships the shape
 (`doctor/runtime-version/`) against no table of its own; the feature-layer pack
 that pins a runtime ships the instance by shadowing it.
+
+### A pack's settings
+
+A pack exposes settings through `fleet.toml`, and **the pack declares every
+one** (Alberto's ruling, 2026-09-23: a test command is not project policy, it
+belongs to the workflow that runs it). The declaration is a table per key in
+the manifest:
+
+```toml
+[config."takeoff.test"]
+description = "The command takeoff hands fleet land to run on the rebased tree before each landing."
+type = "string"          # optional: string, integer, float, boolean or array
+# default = "…"          # optional, and of the declared type where one is named
+```
+
+`description` is required and nothing else is: a setting nobody can read the
+purpose of is one a person sets by guessing. A dotted name may be written
+quoted, as above, or as a table path — `[config.takeoff.test]` — and both are
+the one setting `takeoff.test`. A fourth key, a type outside the five, a
+default of another type, a name part that is not letters, digits, `_` or `-`,
+and a name that is the start of another (`takeoff` beside `takeoff.test`) each
+refuse the manifest by name at `pack check`, the way a malformed `[runtime]`
+does.
+
+A person sets them under the pack's own name:
+
+```toml
+[packs.tiny]
+takeoff.test = "cargo nextest run --workspace"
+takeoff.touched = "cargo nextest run -p fleet-core"
+```
+
+**The declaration is the census.** `fleet run` judges the whole `[packs]` table
+against every installed pack before it writes anything: a key the pack does not
+declare, a value of another type than the declared one, and a section for a
+pack that is not installed each refuse the run naming the key and the pack —
+with the keys the pack does declare, or the packs that are installed — for the
+reason core's own policy reader answers an unlisted key with an error: a value
+nothing reads is a setting a person believes is in force and is not.
+
+A workflow reads one with `run.config("takeoff.test")` beside `run.input()`: the
+value `fleet.toml` sets, else the declared default, else `undefined`. It reads
+the settings of the pack that CARRIES the workflow. They are resolved once, when
+the run is opened, and **pinned under `config` in the run directory's
+`inputs.toml`** — the file the hash already covers and the document the
+workflow is handed on stdin — so a re-run reads the values the run was opened
+with and never what `fleet.toml` says since.
 
 ### The four verbs
 
@@ -404,6 +451,9 @@ else — so this key is a command and never a table.
 
 Keys a pack's guards read — a release-ref glob, a list of production targets —
 are that pack's, declared in its own table, never core's.
+
+A pack's own settings sit in the same file under `[packs.<name>]`, each one a key
+the pack's manifest declares (§ A pack's settings above).
 
 ### The shadow surface
 
