@@ -179,7 +179,7 @@ fn refuse_unless_dispatchable(order: &Order, wiring: &Wiring) -> Result<(), Stop
     let ready = wiring.store.ready()?;
     let item = read(wiring.store, order.item)?;
 
-    if !ready.iter().any(|row| row.id == order.item) {
+    if !ready.iter().any(|id| id == order.item) {
         return Err(Stop::refused(format!(
             "{} is not ready — {}",
             order.item,

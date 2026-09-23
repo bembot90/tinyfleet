@@ -100,7 +100,7 @@ struct Doctored<'a> {
 }
 
 impl Store for Doctored<'_> {
-    fn ready(&self) -> Result<Vec<fleet_core::store::Ready>, StoreError> {
+    fn ready(&self) -> Result<Vec<String>, StoreError> {
         self.inner.ready()
     }
 

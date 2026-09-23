@@ -141,7 +141,7 @@ fn an_absolute_binary_runs_where_a_bare_name_cannot() {
     );
     assert_eq!(
         by_path.expect("the shim answers a list"),
-        Vec::<fleet_core::store::Ready>::new()
+        Vec::<String>::new()
     );
 
     let argv: Vec<String> = std::fs::read_to_string(&log)
@@ -177,7 +177,7 @@ fn ready_lifts_the_row_cap() {
 
     assert_eq!(
         answered.expect("the shim answers a list"),
-        Vec::<fleet_core::store::Ready>::new()
+        Vec::<String>::new()
     );
     let argv: Vec<String> = std::fs::read_to_string(&log)
         .expect("the shim recorded its argv")

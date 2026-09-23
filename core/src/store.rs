@@ -49,35 +49,13 @@ pub struct Item {
     pub item_type: String,
     /// The item's OWN labels and no parent's, which is what the store answers.
     pub labels: Vec<String>,
-    /// `metadata.flight`, as free JSON. The keys this slice fixes are read by
-    /// name from it; a later slice reads more without moving this field.
-    pub flight: Option<serde_json::Value>,
-    /// `metadata.run`, the same way, for a run's record item. A SECOND FIELD
-    /// AND NOT A SECOND READING OF THE FIRST: the two lifecycles write one
-    /// top-level key each, which is what lets bd's top-level merge leave the
-    /// other standing.
+    /// `metadata.run`, as free JSON, for a run's record item. A top-level key
+    /// of its own, which is what lets bd's top-level merge leave the item's
+    /// other keys standing.
     pub run: Option<serde_json::Value>,
-    /// When the store says this item was filed. `plan --ready N` orders by it,
-    /// because the ready read's own order is the store's and not age's.
-    pub created_at: String,
     /// The decoded document, as text. The negative control reads this, so the
     /// control asks the SAME answer for a token nothing wrote.
     pub document: String,
-}
-
-/// One row of the ready answer.
-///
-/// It is a row and not an id because the ready answer's own order is the
-/// store's — measured on bd 1.2.2: priority ascending, then newest first
-/// within a priority — so a caller that wants the OLDEST rows sorts on a field
-/// and never takes a position in the list.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Ready {
-    pub id: String,
-    pub created_at: String,
-    /// The row's own labels, so a caller can leave a kind of item out of a
-    /// pool without a second read of every row.
-    pub labels: Vec<String>,
 }
 
 /// A new item, as the arguments a `create` takes.
@@ -141,9 +119,9 @@ impl std::fmt::Display for StoreError {
 }
 
 pub trait Store {
-    /// The rows the store calls ready: open and unblocked, in the store's own
-    /// order.
-    fn ready(&self) -> Result<Vec<Ready>, StoreError>;
+    /// The items the store calls ready, by id: open and unblocked, in the
+    /// store's own order.
+    fn ready(&self) -> Result<Vec<String>, StoreError>;
 
     fn show(&self, item: &str) -> Result<Item, StoreError>;
 
@@ -443,20 +421,14 @@ fn blockers_of(row: &serde_json::Value) -> Vec<String> {
 }
 
 impl Store for Bd {
-    fn ready(&self) -> Result<Vec<Ready>, StoreError> {
+    fn ready(&self) -> Result<Vec<String>, StoreError> {
         // `-n 0` lifts the read's row cap. The verb answers its first 100 rows
         // by default, and a truncated list reads exactly like a whole one — so
         // past a hundred ready rows a ready item would be refused as not ready.
         Ok(self
             .listed(&["ready", "--json", "-n", "0"])?
             .iter()
-            .filter_map(|row| {
-                Some(Ready {
-                    id: text_field(row, "id")?,
-                    created_at: text_field(row, "created_at").unwrap_or_default(),
-                    labels: labels_of(row),
-                })
-            })
+            .filter_map(|row| text_field(row, "id"))
             .collect())
     }
 
@@ -666,19 +638,13 @@ pub fn item_from(id: &str, row: &serde_json::Value) -> Item {
         item_type: text_field(row, "issue_type").unwrap_or_default(),
         labels: labels_of(row),
         // The same read `orders_of` makes, one key over: absent when the key
-        // is absent, so a flight that wrote nothing is told from one that
-        // wrote an empty object.
-        flight: row
-            .get("metadata")
-            .and_then(|m| m.get("flight"))
-            .filter(|held| !held.is_null())
-            .cloned(),
+        // is absent, so a run that wrote nothing is told from one that wrote
+        // an empty object.
         run: row
             .get("metadata")
             .and_then(|m| m.get("run"))
             .filter(|held| !held.is_null())
             .cloned(),
-        created_at: text_field(row, "created_at").unwrap_or_default(),
         id: text_field(row, "id").unwrap_or_else(|| id.to_string()),
         title: text_field(row, "title").unwrap_or_default(),
         status: text_field(row, "status").unwrap_or_default(),

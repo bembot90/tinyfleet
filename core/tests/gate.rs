@@ -24,7 +24,7 @@ use fleet_core::item::{
     last_answer, last_park, Change, Git, Project, Stop, ANSWER_MARKERS, GATE_RESOLVED, ITEM_PARKED,
     PARK_MARKERS,
 };
-use fleet_core::store::{Bd, Item, NewItem, Ready, Row, Store, StoreError};
+use fleet_core::store::{Bd, Item, NewItem, Row, Store, StoreError};
 use fleet_core::test_support::Board;
 
 const AT: &str = "2026-09-13T04:05:06Z";
@@ -136,7 +136,7 @@ struct Swallowing<'a> {
 }
 
 impl Store for Swallowing<'_> {
-    fn ready(&self) -> Result<Vec<Ready>, StoreError> {
+    fn ready(&self) -> Result<Vec<String>, StoreError> {
         self.inner.ready()
     }
 
@@ -442,7 +442,7 @@ fn a_clean_ask_commits_the_whole_tree_raises_the_gate_and_parks() {
     );
     let ready = bd.ready().expect("the ready read answers");
     assert!(
-        !ready.iter().any(|row| row.id == item),
+        !ready.contains(&item),
         "the gate takes the item off the ready set"
     );
 
@@ -864,8 +864,7 @@ fn an_answer_writes_the_region_resolves_the_gate_and_announces_it() {
             .store
             .ready()
             .expect("the ready read answers")
-            .iter()
-            .any(|row| row.id == item),
+            .contains(&item),
         "and the item is back in the ready set"
     );
 

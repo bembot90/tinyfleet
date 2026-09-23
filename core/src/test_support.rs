@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use crate::store::{Item, NewItem, Orders, Ready, Row, Store, StoreError};
+use crate::store::{Item, NewItem, Orders, Row, Store, StoreError};
 
 /// Names one board's directory apart from the next in the same process.
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -35,7 +35,7 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 /// differently.
 #[derive(Default)]
 pub struct FakeStore {
-    pub ready: Vec<Ready>,
+    pub ready: Vec<String>,
     /// Behind a lock because the trait's writes take `&self` and this is what
     /// they move.
     pub items: Mutex<BTreeMap<String, Item>>,
@@ -255,9 +255,6 @@ impl FakeStore {
 /// that is not an object, which is a third answer and not an absence.
 fn seeded_metadata(item: &Item) -> serde_json::Map<String, serde_json::Value> {
     let mut object = serde_json::Map::new();
-    if let Some(flight) = &item.flight {
-        object.insert(String::from("flight"), flight.clone());
-    }
     if let Some(run) = &item.run {
         object.insert(String::from("run"), run.clone());
     }
@@ -308,7 +305,6 @@ fn row_of(
     row.insert(String::from("title"), item.title.clone().into());
     row.insert(String::from("status"), item.status.clone().into());
     row.insert(String::from("issue_type"), item.item_type.clone().into());
-    row.insert(String::from("created_at"), item.created_at.clone().into());
     if let Some(assignee) = &item.assignee {
         row.insert(String::from("assignee"), assignee.clone().into());
     }
@@ -343,14 +339,14 @@ fn row_of(
 }
 
 impl Store for FakeStore {
-    /// The seeded rows, plus every item this store holds that it calls ready:
+    /// The seeded ids, plus every item this store holds that it calls ready:
     /// open, with no dependency standing and no gate raised against it. A
     /// store computes its own ready set and never holds a second copy of it.
-    fn ready(&self) -> Result<Vec<Ready>, StoreError> {
+    fn ready(&self) -> Result<Vec<String>, StoreError> {
         if let Some(refused) = self.refuse() {
             return refused;
         }
-        let mut rows = self.ready.clone();
+        let mut ids = self.ready.clone();
         let gated = self.gated();
         for item in self
             .items
@@ -360,15 +356,11 @@ impl Store for FakeStore {
         {
             let open = item.status != "closed";
             let free = item.blockers.is_empty() && !gated.contains(&item.id);
-            if open && free && !rows.iter().any(|row| row.id == item.id) {
-                rows.push(Ready {
-                    id: item.id.clone(),
-                    created_at: item.created_at.clone(),
-                    labels: item.labels.clone(),
-                });
+            if open && free && !ids.contains(&item.id) {
+                ids.push(item.id.clone());
             }
         }
-        Ok(rows)
+        Ok(ids)
     }
 
     /// The seeded list, plus every open item in this store carrying the label —
@@ -423,9 +415,6 @@ impl Store for FakeStore {
                     status: String::from("open"),
                     item_type: item.item_type.to_string(),
                     labels: item.labels.iter().map(|l| l.to_string()).collect(),
-                    // The filing order, as a stamp: a ready read ordered by age
-                    // reads this, and a constant would make two filings a tie.
-                    created_at: format!("2026-01-01T00:00:{n:02}Z"),
                     ..Item::default()
                 },
             );
@@ -649,7 +638,7 @@ impl FakeStore {
 /// A seam that takes an owned `Box<dyn Store>` leaves an arm nothing to assert
 /// on once it has answered; a clone of one of these is the same store.
 impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
-    fn ready(&self) -> Result<Vec<Ready>, StoreError> {
+    fn ready(&self) -> Result<Vec<String>, StoreError> {
         (**self).ready()
     }
     fn show(&self, item: &str) -> Result<Item, StoreError> {

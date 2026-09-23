@@ -94,10 +94,6 @@ fn create_then_show(store: &dyn Store, _: &Path, which: &str) {
         "{which}: an item nobody has assigned carries no assignee at all"
     );
     assert_eq!(read.notes, None, "{which}: and no notes");
-    assert!(
-        !read.created_at.is_empty(),
-        "{which}: the store stamps what it files"
-    );
 }
 
 fn show_of_an_absent_item(store: &dyn Store, _: &Path, which: &str) {
@@ -224,7 +220,7 @@ fn metadata_merge(store: &dyn Store, _: &Path, which: &str) {
         .set_metadata(&item, r#"{"a_prior_key":{"kept":true}}"#, BY)
         .expect("the first key lands");
     store
-        .set_metadata(&item, r#"{"flight":{"items":["fx-one"]}}"#, BY)
+        .set_metadata(&item, r#"{"run":{"items":["fx-one"]}}"#, BY)
         .expect("the second key lands");
 
     let read = store.show(&item).expect("the item reads");
@@ -234,17 +230,17 @@ fn metadata_merge(store: &dyn Store, _: &Path, which: &str) {
         read.document
     );
     assert_eq!(
-        read.flight,
+        read.run,
         Some(serde_json::json!({ "items": ["fx-one"] })),
         "{which}: and the key it wrote is there"
     );
 
     store
-        .set_metadata(&item, r#"{"flight":{"hash":"deadbeef"}}"#, BY)
+        .set_metadata(&item, r#"{"run":{"hash":"deadbeef"}}"#, BY)
         .expect("a second write of the same key lands");
     let read = store.show(&item).expect("the item reads");
     assert_eq!(
-        read.flight,
+        read.run,
         Some(serde_json::json!({ "hash": "deadbeef" })),
         "{which}: one key's own object is REPLACED, not merged into"
     );
