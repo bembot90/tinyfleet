@@ -8,7 +8,8 @@ description: Compose the next flight's list from the departure board, in board o
 A flight is a run of the takeoff workflow, and the workflow flies whatever
 list it is pinned. This is where the list comes from: the departure board,
 read top to bottom, each row through the same filters a hand has always
-applied, and the survivors printed as the two `--input` pairs the run takes.
+applied, and the survivors printed as the `--input` pairs the run takes,
+beside the test command its landings will run.
 It composes and prints; it starts nothing. The takeoff skill's pre-flight is
 where the person hears the list back and says go.
 
@@ -69,11 +70,12 @@ order, which is the person's hand, and never sort.
 ## What it prints
 
 The board block first — every row with its verdict — then the flight, then
-the queue, then the two pairs on their own lines, ready to paste:
+the queue, then the three pairs on their own lines, ready to paste:
 
 ```
 --input items=<id>,<id>,<id>
 --input policy=review=gate,width=<n>
+--input test=<command>
 ```
 
 `items` is the flight in board order, comma-separated. `policy` is the
@@ -83,11 +85,22 @@ person says otherwise, because every decision that would have gone to them
 is theirs to answer; `width` is how many items fly at once, the roster's
 width on the box and never more than `dispatch.max_busy_spawned`.
 
+`test` is the command every landing runs on its rebased tree before the
+push. Print the one `takeoff.test` sets under `[packs.tiny]` in the fleet's
+`fleet.toml`, or the one the person names — theirs wins, the way the run's
+input wins over the file. **Where neither names one, print that instead of
+the pair, in capitals:** `NOT TESTED — no test command; every landing in this
+flight will run nothing`. A flight may fly untested; it may not fly untested
+without the person having read that line before they said go. `touched`, the
+command each builder runs over its own diff, rides the same way
+(`--input touched=<command>`, else `takeoff.touched`) and prints only when
+one is named.
+
 The run is then one line, and it is the takeoff skill's pre-flight that
 runs it, after the person has heard the list back:
 
 ```
-fleet run takeoff --input items=… --input policy=…
+fleet run takeoff --input items=… --input policy=… --input test=…
 ```
 
 ## Two measurements minutes apart differ

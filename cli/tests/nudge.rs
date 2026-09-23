@@ -19,8 +19,7 @@ use common::hermetic::Hermetic;
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 const POLL_SECONDS: u64 = 5;
-const POLICY: &str = "[gates]\nsuite = \"make check\"\n\n\
-                      [controller]\nnudge_model = \"a-cheap-model\"\n\
+const POLICY: &str = "[controller]\nnudge_model = \"a-cheap-model\"\n\
                       nudge_timeout_seconds = 20\n";
 
 /// One arm's project, machine directory, seat worktree and provider stub.

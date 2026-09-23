@@ -48,7 +48,8 @@ The start-loaded half: an underspecified item is a question scheduled to
 interrupt a run that has no way to be interrupted.
 
 a. **Take the list.** The preboard skill composes it from the departure
-   board and prints the two `--input` pairs; the person may hand you ids
+   board and prints the `--input` pairs, the test command among them; the
+   person may hand you ids
    directly instead. Never infer a list from the ready pool. **If the person
    is not actually reachable right now, do not launch:** this phase spends
    their attention once so the middle never needs it.
@@ -71,10 +72,12 @@ d. **Resolve every gap now, while they are here** — a question with its
 
 e. **State the list back and wait for go.** The final list in order, every
    item you dropped and which check dropped it, the policy pair as it will
-   be pinned. Only then:
+   be pinned, and the test command every landing will run — or, where
+   neither `--input test=` nor `[packs.tiny] takeoff.test` names one, that
+   the flight lands NOT TESTED. Only then:
 
    ```sh
-   fleet run takeoff --input items=<id>,<id> --input policy=review=gate,width=<n>
+   fleet run takeoff --input items=<id>,<id> --input policy=review=gate,width=<n> --input test=<command>
    ```
 
    The run prints its id and its hash; the run directory under the machine

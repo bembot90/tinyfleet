@@ -12,7 +12,7 @@
 //!
 //! `brief` renders the first thing a dispatched seat reads: the item, its order
 //! note, the delivery-note template it will fill, the guards in force, the
-//! project's suite and the every-turn rules. Whole or not at all — every value
+//! builder's gate its dispatch was handed and the every-turn rules. Whole or not at all — every value
 //! is resolved into memory before a byte reaches stdout, because a seat that
 //! read half a contract cannot tell it read half.
 //!
@@ -53,8 +53,9 @@
 //! `land` is the reviewer's, and it lands a REVIEW: the licence to squash
 //! anything is the item's last verdict, an ACCEPTED naming the exact commit it
 //! was given. It takes a commit and never a branch name, runs from a linked
-//! worktree and never the primary, squashes onto the trunk, runs the one suite
-//! the project names (or lands on the review alone where it names none), counts
+//! worktree and never the primary, squashes onto the trunk, runs the one test
+//! command it is handed (or lands on the review alone, NOT TESTED, where it is
+//! handed none), counts
 //! the trunk's distance in the same act as the push, and reads the landed sha
 //! off the push's own range line — never off a rev-parse, which answers the tip
 //! a push that did nothing leaves behind. Every gate row reaches stdout as it is

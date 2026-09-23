@@ -30,7 +30,7 @@ const AT: &str = "2026-09-09T04:05:06Z";
 const SHA: &str = "1111111111111111111111111111111111111111";
 const TRUNK_SHA: &str = "2222222222222222222222222222222222222222";
 const BRANCH: &str = "a-seat/feat/the-work";
-const POLICY: &str = "[gates]\nsuite = \"make check\"\n\n[core]\nreviewer = \"a-reviewer\"\n";
+const POLICY: &str = "[core]\nreviewer = \"a-reviewer\"\n";
 
 // ---- the seams ---------------------------------------------------------------
 
@@ -717,7 +717,7 @@ fn a_fleet_naming_no_reviewer_refuses_before_the_commit() {
     let item = an_ordered_item(scratch, "an item with nowhere to go", seat);
     let note = a_note(scratch, "nobody", WHOLE);
     let mut nameless = project(scratch);
-    nameless.guards = "[gates]\nsuite = \"make check\"\n"
+    nameless.guards = "[gates]\nci_marker = \"printf '[skip ci]'\"\n"
         .parse()
         .expect("the policy parses");
     let git = StubGit::clean();

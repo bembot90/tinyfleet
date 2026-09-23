@@ -53,6 +53,9 @@ pub struct DispatchArgs {
     /// who is dispatching; else FLEET_ACTOR or BEADS_ACTOR
     #[arg(long, value_name = "NAME")]
     pub by: Option<String>,
+    /// the builder's gate, named in its brief
+    #[arg(long, value_name = "COMMAND")]
+    pub touched: Option<String>,
     /// print the outcome as one JSON document
     #[arg(long)]
     pub json: bool,
@@ -69,6 +72,9 @@ pub struct BriefArgs {
     /// the seat it goes to; without it, a transient one
     #[arg(long, value_name = "SEAT")]
     pub to: Option<String>,
+    /// the builder's gate, as its dispatch was handed it
+    #[arg(long, value_name = "COMMAND")]
+    pub touched: Option<String>,
     /// where the packs the brief renders from are installed
     #[arg(long = "packs-dir", value_name = "DIR")]
     pub packs_dir: Option<PathBuf>,
@@ -176,6 +182,9 @@ pub struct LandArgs {
     /// what the close says beyond the landed sha
     #[arg(long, value_name = "TEXT")]
     pub reason: Option<String>,
+    /// the command run on the rebased tree before the push
+    #[arg(long, value_name = "COMMAND")]
+    pub test: Option<String>,
     /// who is landing; else FLEET_ACTOR or BEADS_ACTOR
     #[arg(long, value_name = "NAME")]
     pub by: Option<String>,
@@ -353,6 +362,7 @@ fn run_land(
             item: &parsed.item,
             commit: &parsed.commit,
             also: &parsed.also,
+            test: parsed.test.as_deref(),
             reason: parsed.reason.as_deref(),
             by,
             at: &stamp,
@@ -779,6 +789,7 @@ fn run_dispatch(
             brief: None,
             base: None,
             model: None,
+            touched: parsed.touched.as_deref(),
         },
         &Wiring {
             store: &store,
@@ -807,6 +818,7 @@ fn run_brief(parsed: &BriefArgs, out: &mut dyn Write, err: &mut dyn Write) -> Re
         &store,
         &parsed.item,
         parsed.to.as_deref().unwrap_or(TRANSIENT),
+        parsed.touched.as_deref(),
     )
     .map(|_| ())
 }

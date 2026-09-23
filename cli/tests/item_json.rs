@@ -34,8 +34,7 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 const REVIEWER: &str = "ij-a-reviewer";
 const BY: &str = "an-architect";
-const POLICY: &str = "[gates]\nsuite = \"make check\"\n\n\
-                      [core]\nreviewer = \"ij-a-reviewer\"\n\n\
+const POLICY: &str = "[core]\nreviewer = \"ij-a-reviewer\"\n\n\
                       [controller]\nnudge_model = \"a-cheap-model\"\n\
                       nudge_timeout_seconds = 20\n";
 

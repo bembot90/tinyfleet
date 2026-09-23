@@ -271,6 +271,10 @@ pub struct Resolved {
 
 pub fn run(out: &mut dyn Write, order: &Order, wiring: &Wiring) -> Result<Ran, Stop> {
     // (a) THE READS. Nothing below writes until every one of them answered.
+    // A test command in the policy file first: the workflow a person is
+    // opening is where it is set now, and a run opened beside it would land
+    // untested while they believe otherwise.
+    wiring.project.refuse_moved()?;
     let open = open_runs(wiring)?;
     refuse_at_the_cap(&open, wiring)?;
     let resolved = resolve_workflow(order.workflow, wiring)?;

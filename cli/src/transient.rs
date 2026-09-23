@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use fleet_controller::adapter::claude_code::ClaudeCode;
 use fleet_controller::transient::{self, Machine, Refusal};
 use fleet_controller::{clock, config, platform, policy as controller, sessions};
-use fleet_core::item::brief::{Packs, NO_SUITE};
+use fleet_core::item::brief::Packs;
 use fleet_core::item::land::{self, Release};
 use fleet_core::item::{render, Spawn, SpawnOutcome, Spawner, Stop, COULD_NOT_TELL};
 use fleet_core::seat;
@@ -49,6 +49,9 @@ pub struct SpawnArgs {
     /// the commit to cut the worktree at; else the trunk
     #[arg(long, value_name = "COMMIT")]
     pub base: Option<String>,
+    /// the builder's gate the seat's rules let it run
+    #[arg(long, value_name = "COMMAND")]
+    pub touched: Option<String>,
     /// print the envelope document instead of the name
     #[arg(long)]
     pub json: bool,
@@ -111,7 +114,7 @@ pub fn spawn_command(args: &SpawnArgs) -> Exit {
         Ok(at) => at,
         Err(stop) => return stopped(SPAWN, &stop, args.json),
     };
-    let settings = match settings_of(&here) {
+    let settings = match settings_of(&here, args.touched.as_deref()) {
         Ok(settings) => settings,
         Err(stop) => return stopped(SPAWN, &stop, args.json),
     };
@@ -449,7 +452,7 @@ impl Spawner for TransientSpawner<'_> {
             Ok(at) => at,
             Err(stop) => return outcome_of(stop.code, stop.message),
         };
-        let settings = match settings_of(self.here) {
+        let settings = match settings_of(self.here, ask.touched) {
             Ok(settings) => settings,
             Err(stop) => return outcome_of(stop.code, stop.message),
         };
@@ -584,13 +587,22 @@ const CONFIG_OVERLAY: &str = "overlay/per-provider/claude/config";
 /// A layering that carries no such file REFUSES the spawn. A seat started
 /// without rules under this posture can neither edit nor commit, and it reports
 /// that as a wall of denials hours later rather than as a refusal here.
-fn settings_of(here: &Here) -> Result<String, Stop> {
+///
+/// `{touched}` is the builder's gate the caller handed in, escaped as JSON
+/// because it is written inside one of the document's strings. A spawn handed
+/// none gets NO RULE for one: the entry carrying the placeholder is taken out
+/// before the render, so the seat's rules never name a command nobody gave.
+fn settings_of(here: &Here, touched: Option<&str>) -> Result<String, Stop> {
+    here.project.refuse_moved()?;
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let template = packs.read(PERMISSIONS)?;
-    let suite = suite_of(here);
+    let (template, touched) = match touched.map(str::trim).filter(|c| !c.is_empty()) {
+        Some(command) => (template, inside_a_json_string(command)),
+        None => (without_the_touched_rule(template)?, String::new()),
+    };
     let rendered = render(
         &template,
-        &[("suite", suite.as_str()), ("worktree", transient::WORKTREE)],
+        &[("touched", &touched), ("worktree", transient::WORKTREE)],
     )
     .map_err(|name| {
         Stop::could_not_tell(format!(
@@ -598,6 +610,47 @@ fn settings_of(here: &Here) -> Result<String, Stop> {
         ))
     })?;
     with_tool_commands(rendered, &tool_commands_of(here)?)
+}
+
+/// The placeholder a permissions template writes the builder's gate under.
+const TOUCHED: &str = "{touched}";
+
+/// A command as the characters that stand for it between a JSON string's
+/// quotes.
+fn inside_a_json_string(command: &str) -> String {
+    let quoted = serde_json::Value::String(command.to_string()).to_string();
+    quoted[1..quoted.len() - 1].to_string()
+}
+
+/// The template with every allow entry that names `{touched}` taken out.
+///
+/// A template that names none is handed back UNTOUCHED rather than round-tripped
+/// through a parse, so a pack whose rules carry no builder's gate comes up under
+/// its own bytes whatever the dispatch was handed.
+fn without_the_touched_rule(template: String) -> Result<String, Stop> {
+    if !template.contains(TOUCHED) {
+        return Ok(template);
+    }
+    let mut doc: serde_json::Value = serde_json::from_str(&template).map_err(|why| {
+        Stop::could_not_tell(format!(
+            "`{PERMISSIONS}` names {TOUCHED} and is not the JSON its rule can be taken out of: \
+             {why}"
+        ))
+    })?;
+    if let Some(allow) = doc
+        .get_mut("permissions")
+        .and_then(|permissions| permissions.get_mut("allow"))
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        allow.retain(|rule| !rule.as_str().is_some_and(|rule| rule.contains(TOUCHED)));
+    }
+    let mut out = serde_json::to_string_pretty(&doc).map_err(|why| {
+        Stop::could_not_tell(format!(
+            "the seat's own settings could not be written: {why}"
+        ))
+    })?;
+    out.push('\n');
+    Ok(out)
 }
 
 /// `[gates] tool_commands`, checked entry by entry to be one command word.
@@ -686,15 +739,6 @@ fn with_tool_commands(rendered: String, words: &[String]) -> Result<String, Stop
 /// The overlay files a spawned seat's configuration directory is seeded with.
 fn config_files_of(here: &Here) -> Result<Vec<(String, String)>, Stop> {
     Packs::under(&here.packs_dir, &here.defaults_dir)?.read_under(CONFIG_OVERLAY)
-}
-
-/// `[gates] suite`, in the shape the brief reads it: a project that declares
-/// none renders the same `none` the brief's own suite block prints.
-fn suite_of(here: &Here) -> String {
-    match fleet_core::policy::read("gates", "suite", &here.project.gates) {
-        Ok(Some(value)) => value.as_str().unwrap_or(NO_SUITE).to_string(),
-        _ => NO_SUITE.to_string(),
-    }
 }
 
 /// The policy the verbs read, from the file the machine's seat list names.

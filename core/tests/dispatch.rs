@@ -24,7 +24,9 @@ use fleet_core::item::{
 };
 use fleet_core::store::{Item, Row, Store, StoreError};
 
-const POLICY: &str = "[gates]\nsuite = \"make check\"\n";
+const POLICY: &str = "[guards]\n";
+/// The builder's gate every arm's order hands over, as a workflow would.
+const TOUCHED: &str = "make check";
 const BY: &str = "lead-1";
 const AT: &str = "2026-09-08T18:46:55Z";
 
@@ -61,6 +63,8 @@ impl Ring for StubRing {
 struct StubSpawner {
     outcome: SpawnOutcome,
     calls: Mutex<Vec<PathBuf>>,
+    /// The builder's gate each spawn was asked to write a rule for.
+    touched: Mutex<Vec<Option<String>>>,
 }
 
 impl StubSpawner {
@@ -68,6 +72,7 @@ impl StubSpawner {
         StubSpawner {
             outcome,
             calls: Mutex::new(Vec::new()),
+            touched: Mutex::new(Vec::new()),
         }
     }
 }
@@ -78,6 +83,10 @@ impl Spawner for StubSpawner {
             .lock()
             .expect("not poisoned")
             .push(ask.first_turn.to_path_buf());
+        self.touched
+            .lock()
+            .expect("not poisoned")
+            .push(ask.touched.map(str::to_string));
         self.outcome.clone()
     }
 }
@@ -246,6 +255,7 @@ impl Rig {
                 brief: None,
                 base: None,
                 model: None,
+                touched: Some(TOUCHED),
             },
             &Wiring {
                 store,
@@ -725,6 +735,12 @@ mod transient {
             spawner.calls.lock().expect("not poisoned").as_slice(),
             std::slice::from_ref(&path)
         );
+        // The builder's gate the order was handed reaches the spawn, which
+        // writes the seat's rule for it.
+        assert_eq!(
+            spawner.touched.lock().expect("not poisoned").as_slice(),
+            &[Some(TOUCHED.to_string())]
+        );
         // The one event, and the base the SPAWNER answered — the commit the
         // seat's own worktree was cut at (decision D1).
         assert_eq!(rig.events.count(), 1, "exactly one event");
@@ -749,9 +765,14 @@ mod transient {
             rig.graph.store(),
             &item,
             TRANSIENT,
+            Some(TOUCHED),
         )
         .expect("the brief renders");
         assert_eq!(written, printed, "byte for byte");
+        assert!(
+            String::from_utf8_lossy(&written).contains(&format!("```\n{TOUCHED}\n```")),
+            "the brief names the builder's gate the order was handed"
+        );
     }
 
     #[test]
@@ -927,6 +948,7 @@ mod transient {
                 brief: None,
                 base: None,
                 model: None,
+                touched: Some(TOUCHED),
             },
             &Wiring {
                 store: rig.graph.store(),

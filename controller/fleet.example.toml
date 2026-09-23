@@ -58,3 +58,15 @@ version = "2.1.261"
 # nobody can read as a record of what a person confirmed. `broken` is a fleet
 # whose spawned seats come up logged out and whose every first turn fails.
 isolation_pair = "holds"
+
+# The test commands are not in this file's [gates] table, and a [gates] table
+# that sets `suite` or `touched` is refused by name. They are the workflow's:
+# `fleet land --test <command>` runs the landing's on the rebased tree, and
+# `fleet dispatch --touched <command>` hands a builder its own gate. For the
+# takeoff workflow, set them for the pack that carries it — a run's
+# `--input test=` / `--input touched=` wins over these — and with neither set
+# the flight lands NOT TESTED, and says so on every landing note:
+#
+# [packs.tiny]
+# takeoff.test = "cargo nextest run --workspace"
+# takeoff.touched = "make test-touched"

@@ -190,8 +190,10 @@ pub fn payload_keys(kind: &str) -> Option<&'static [&'static str]> {
         // `run` is the run whose record carried the landing, `null` where a
         // seat landed it in its own name. The actor is the reviewer either way
         // — a run lands AS the `[core] reviewer` — so this is the key that says
-        // what carried the act.
-        ITEM_LANDED => &["item", "sha", "base", "squash_of", "run"],
+        // what carried the act. `test` is the command the landing ran on the
+        // tree it pushed, `null` where it was handed none and landed NOT
+        // TESTED: an absent key and an untested landing are not the same fact.
+        ITEM_LANDED => &["item", "sha", "base", "squash_of", "run", "test"],
         ITEM_PARKED => &["item", "reason", "branch", "commit", "gate"],
         // `log` is where the reading it carries can be read back. It is on the
         // kind and not only on the rerun's: a pair of readings a person is
@@ -402,6 +404,9 @@ pub struct Spawn<'a> {
     /// The model this seat runs on, where the caller names one. `None` leaves
     /// the fleet's policy default.
     pub model: Option<&'a str>,
+    /// The builder's own gate, as the dispatch was handed it: the command the
+    /// seat's permission rules let it run. `None` writes no rule for one.
+    pub touched: Option<&'a str>,
 }
 
 pub trait Spawner {
@@ -412,7 +417,7 @@ pub trait Spawner {
 /// The project a verb acts inside, as the cli resolved it.
 ///
 /// `gates` and `guards` are two tables and not one because a standalone fleet
-/// keeps them in two files: the project declares its suite, and the fleet
+/// keeps them in two files: the project declares its gates, and the fleet
 /// declares which guards its seats run. An embedded fleet hands the same table
 /// twice, which is the shape its one `fleet.toml` actually has.
 pub struct Project {
@@ -420,6 +425,34 @@ pub struct Project {
     pub name: String,
     pub gates: toml::Table,
     pub guards: toml::Table,
+}
+
+impl Project {
+    /// A refusal where either file still sets a test command, naming each key
+    /// and where it is set instead ([`crate::policy::MOVED`]).
+    ///
+    /// Read by every verb that would have read one — `land`, the brief, a
+    /// spawn's rules and `run` — BEFORE it writes anything, so a fleet whose
+    /// landings a person believes are tested hears otherwise from the first
+    /// verb that lands, briefs or opens a run.
+    pub fn refuse_moved(&self) -> Result<(), Stop> {
+        let mut found = crate::policy::moved(&self.gates);
+        for also in crate::policy::moved(&self.guards) {
+            if !found.contains(&also) {
+                found.push(also);
+            }
+        }
+        if found.is_empty() {
+            return Ok(());
+        }
+        Err(Stop::refused(
+            found
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n  "),
+        ))
+    }
 }
 
 /// One policy file as a table. Core is this workspace's TOML reader, so the cli

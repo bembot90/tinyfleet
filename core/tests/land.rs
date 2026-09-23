@@ -53,11 +53,16 @@ const FILE: &str = "a/file.rs";
 /// reads the lock file reads this back.
 const AT: &str = "2026-09-13T00:00:00Z";
 
-/// A project that names a suite answering at once, a marker command that prints
-/// one word over whatever it is handed, and the reviewer a landing handed the
-/// primary resolves a worktree for. The reviewer is [`REVIEWER`], spelled out
-/// because a const carries no format, and the arm that reads it says so.
-const POLICY: &str = "[gates]\nsuite = \"exit 0\"\nci_marker = \"printf '[skip ci]'\"\n\n[core]\nreviewer = \"a-reviewer\"\n";
+/// A project with a marker command that prints one word over whatever it is
+/// handed, and the reviewer a landing handed the primary resolves a worktree
+/// for. The reviewer is [`REVIEWER`], spelled out because a const carries no
+/// format, and the arm that reads it says so.
+const POLICY: &str =
+    "[gates]\nci_marker = \"printf '[skip ci]'\"\n\n[core]\nreviewer = \"a-reviewer\"\n";
+
+/// The test command every landing below is handed unless its arm hands its
+/// own, as `fleet land --test` would be: one that answers at once.
+const TEST: &str = "exit 0";
 
 fn push_out(old: &str, new: &str) -> String {
     format!("To an-example\n   {old}..{new}  HEAD -> {TRUNK_BRANCH}\n")
@@ -718,13 +723,39 @@ fn run_loaded(
         also,
         reason,
         &project(scratch),
+        Some(TEST),
         events,
         load,
     )
 }
 
-/// The landing with the PROJECT in the arm's own hands too: the rerun's arms
-/// each need a `[gates] suite` of their own, and a wait of their own.
+/// The landing handed NO test command, over the rig's own project: the call
+/// `fleet land` makes without `--test`.
+fn run_untested(
+    scratch: &dyn Rooted,
+    store: &dyn Store,
+    git: &StubGit,
+    item: &str,
+    events: &StubEvents,
+) -> Ran {
+    run_against(
+        scratch,
+        store,
+        git,
+        item,
+        SHA,
+        &[],
+        None,
+        &project(scratch),
+        None,
+        events,
+        &lane::Unread,
+    )
+}
+
+/// The landing with the PROJECT and the TEST COMMAND in the arm's own hands
+/// too: the rerun's arms each need a command of their own and a wait of their
+/// own, and `None` is the landing handed no `--test` at all.
 #[allow(clippy::too_many_arguments)]
 fn run_against(
     scratch: &dyn Rooted,
@@ -735,11 +766,12 @@ fn run_against(
     also: &[String],
     reason: Option<&str>,
     project: &Project,
+    test: Option<&str>,
     events: &StubEvents,
     load: &dyn lane::Load,
 ) -> Ran {
     run_against_path(
-        scratch, store, git, item, commit, also, reason, project, events, load, "", REVIEWER,
+        scratch, store, git, item, commit, also, reason, project, test, events, load, "", REVIEWER,
     )
 }
 
@@ -757,6 +789,7 @@ fn run_against_path(
     also: &[String],
     reason: Option<&str>,
     project: &Project,
+    test: Option<&str>,
     events: &StubEvents,
     load: &dyn lane::Load,
     child_path: &str,
@@ -773,6 +806,7 @@ fn run_against_path(
             item,
             commit,
             also,
+            test,
             reason,
             by,
             at: AT,
@@ -923,8 +957,7 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_note_and_closes() {
             ("new", LANDED),
             ("commit", SHA),
             ("builder", BUILDER),
-            ("suite", "exit 0"),
-            ("rc", "0"),
+            ("tested", "suite: exit 0, rc 0"),
             ("gate", &gate_of(&landed.note)),
         ],
     )
@@ -1047,47 +1080,235 @@ fn the_marker_and_the_two_trailers_ride_the_commit_subject() {
     );
 }
 
-/// A project naming no suite lands on the review alone (Q2), and the first line
-/// says so rather than borrowing a zero from a run that did not happen.
+/// A landing handed no test command LANDS, on the review alone, and says NOT
+/// TESTED where nobody can miss it: the note's first line, its suite row, the
+/// row on stdout, and `item.landed`'s own `test` — never a zero borrowed from a
+/// run that did not happen.
 #[test]
-fn a_project_naming_no_suite_lands_on_the_review_alone() {
+fn a_landing_handed_no_test_lands_and_says_not_tested() {
     let scratch = Board::new("land-no-suite");
     scratch.fleet_toml("[gates]\n");
     let item = an_item(
         &scratch.store,
-        "an item in a project with no suite",
+        "an item landed with no test command",
         Some(("ACCEPTED", SHA)),
     );
     let bd = &scratch.store;
     let git = StubGit::clean();
 
     let events = StubEvents::default();
-    let ran = run_watched(&scratch, bd, &git, &item, SHA, &[], None, &events);
+    let ran = run_untested(&scratch, bd, &git, &item, &events);
     let landed = ran
         .landed
         .as_ref()
         .unwrap_or_else(|stop| panic!("{}\n{}", stop.message, ran.out));
+    assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
     // The reading is a measured absence on the stream too, in the same three
     // words the note's own row prints.
     let (_, reading) = events.one(GATE_READ);
     assert_eq!(reading["suite"], serde_json::Value::Null);
     assert_eq!(reading["rc"], serde_json::Value::Null);
     assert_eq!(reading["verdict"], serde_json::json!("none"));
+    let (_, landing) = events.one(ITEM_LANDED);
+    keys_agree(ITEM_LANDED, &landing, &[]);
+    assert_eq!(
+        landing["test"],
+        serde_json::Value::Null,
+        "item.landed records that no test ran"
+    );
+    let first = landed.note.lines().next().unwrap_or_default();
+    assert!(
+        first.starts_with(&format!("LANDED {LANDED}"))
+            && first.contains(&format!("— {}: ", land::NOT_TESTED))
+            && first.contains("no test command was handed to this landing"),
+        "the first line says NOT TESTED:\n{}",
+        landed.note
+    );
+    assert!(
+        !first.contains("rc "),
+        "and borrows no rc from a run that did not happen: {first}"
+    );
+    assert!(
+        landed.note.contains("4. suite            NOT TESTED"),
+        "and so does the row:\n{}",
+        landed.note
+    );
+    assert!(
+        ran.out.contains("4. suite            NOT TESTED"),
+        "and the row the person watching reads:\n{}",
+        ran.out
+    );
+}
+
+/// `fleet land --test <command>` runs the command it is handed ON THE LAND
+/// BRANCH — after the squash and the commit, before the push — and records the
+/// command and its rc 0 on the note's first line, the gate reading and
+/// `item.landed`.
+#[test]
+fn a_landing_handed_a_green_test_lands_and_records_the_command_and_rc_0() {
+    let scratch = Board::new("land-test-green");
+    scratch.fleet_toml(POLICY);
+    let item = an_item(
+        &scratch.store,
+        "an item landed under a green test",
+        Some(("ACCEPTED", SHA)),
+    );
+    let git = StubGit::clean();
+    let events = StubEvents::default();
+    let ran = run_against(
+        &scratch,
+        &scratch.store,
+        &git,
+        &item,
+        SHA,
+        &[],
+        None,
+        &project(&scratch),
+        Some("exit 0"),
+        &events,
+        &lane::Unread,
+    );
+    let landed = ran
+        .landed
+        .as_ref()
+        .unwrap_or_else(|stop| panic!("{}\n{}", stop.message, ran.out));
     assert!(
         landed
             .note
             .lines()
             .next()
             .unwrap_or_default()
-            .ends_with("— suite: none, rc none"),
-        "the first line reports a measured absence:\n{}",
+            .ends_with("— suite: exit 0, rc 0"),
+        "the first line records the command and its rc:\n{}",
         landed.note
     );
     assert!(
-        landed.note.contains("4. suite            NONE"),
-        "and so does the row:\n{}",
+        !landed.note.contains(land::NOT_TESTED),
+        "and a tested landing never reads like an untested one:\n{}",
         landed.note
     );
+    let (_, reading) = events.one(GATE_READ);
+    assert_eq!(reading["suite"], serde_json::json!("exit 0"));
+    assert_eq!(reading["rc"], serde_json::json!(0));
+    let (_, landing) = events.one(ITEM_LANDED);
+    assert_eq!(landing["test"], serde_json::json!("exit 0"));
+
+    // The test ran BETWEEN the commit on the land branch and the push: what it
+    // read is the tree that landed.
+    let calls = git.calls();
+    let at = |needle: &str| {
+        calls
+            .iter()
+            .position(|call| call.starts_with(needle))
+            .unwrap_or_else(|| panic!("no `{needle}` among {calls:?}"))
+    };
+    assert!(at("commit_message_file") < at("push_head"), "{calls:?}");
+    let row = ran
+        .out
+        .lines()
+        .position(|line| line.starts_with("4. suite"))
+        .expect("the suite row is printed");
+    let behind = ran
+        .out
+        .lines()
+        .position(|line| line.starts_with("5. base current"))
+        .expect("the trunk row is printed");
+    assert!(row < behind, "the test is read before the push's own gate");
+}
+
+/// `fleet land --test <command>` whose command exits non-zero — twice, the
+/// first read and its one rerun — REFUSES, and nothing moved: no push, no
+/// landing note, no close, no `item.landed`, and the land branch put back.
+#[test]
+fn a_landing_handed_a_red_test_refuses_with_nothing_moved() {
+    let scratch = Board::new("land-test-red");
+    scratch.fleet_toml(POLICY);
+    let item = an_item(
+        &scratch.store,
+        "an item whose test is red",
+        Some(("ACCEPTED", SHA)),
+    );
+    let before = scratch.json(&item);
+    let git = StubGit::clean();
+    let events = StubEvents::default();
+    let ran = run_against(
+        &scratch,
+        &scratch.store,
+        &git,
+        &item,
+        SHA,
+        &[],
+        None,
+        &project(&scratch),
+        Some("exit 1"),
+        &events,
+        &lane::Unread,
+    );
+    assert_eq!(ran.code(), Some(1), "refused on the record: {}", ran.why());
+    assert!(
+        ran.why().contains("the suite `exit 1` exited 1"),
+        "the refusal names the command and its rc: {}",
+        ran.why()
+    );
+    let calls = git.calls();
+    assert!(
+        !calls.iter().any(|call| call.starts_with("push_head")),
+        "nothing was pushed: {calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.starts_with(&format!("delete_branch land/{item}"))),
+        "the land branch is put back: {calls:?}"
+    );
+    assert_eq!(
+        scratch.json(&item),
+        before,
+        "the item is byte-identical: no note, no close"
+    );
+    assert!(
+        events
+            .all()
+            .iter()
+            .all(|(kind, _, _)| kind.as_str() != ITEM_LANDED),
+        "and no landing reached the stream"
+    );
+}
+
+/// A policy file that still sets `[gates] suite` is REFUSED before anything is
+/// read, naming the pack setting that replaces it — never read as absent and
+/// landed NOT TESTED while the person who wrote it believes it ran.
+#[test]
+fn a_policy_file_setting_gates_suite_is_refused_naming_the_pack_setting() {
+    let scratch = Board::new("land-moved-suite");
+    scratch.fleet_toml(
+        "[gates]\nsuite = \"exit 0\"\nci_marker = \"printf '[skip ci]'\"\n\n\
+         [core]\nreviewer = \"a-reviewer\"\n",
+    );
+    let item = an_item(
+        &scratch.store,
+        "an item in a fleet whose policy still sets a suite",
+        Some(("ACCEPTED", SHA)),
+    );
+    let before = scratch.json(&item);
+    let git = StubGit::clean();
+    let events = StubEvents::default();
+    let ran = run_untested(&scratch, &scratch.store, &git, &item, &events);
+    assert_eq!(ran.code(), Some(1), "refused on the record: {}", ran.why());
+    assert!(
+        ran.why().contains("[gates] suite")
+            && ran.why().contains("`takeoff.test` under [packs.tiny]")
+            && ran.why().contains("fleet land --test <command>"),
+        "the line names the key and where it is set instead: {}",
+        ran.why()
+    );
+    assert!(
+        git.calls().is_empty(),
+        "no git was asked anything: {:?}",
+        git.calls()
+    );
+    assert_eq!(scratch.json(&item), before, "the item is byte-identical");
+    assert_eq!(events.count(), 0, "and nothing reached the stream");
 }
 
 /// `--reason` rides the close beside the landed sha, and `--also` widens the
@@ -1604,11 +1825,11 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
     std::fs::write(
         &policy,
         format!(
-            "[gates]\nsuite = \"touch {SUITE_RAN}\"\nci_marker = \"printf '[skip ci]'\"\n\n\
-             [core]\nreviewer = \"{REVIEWER}\"\n"
+            "[gates]\nci_marker = \"printf '[skip ci]'\"\n\n[core]\nreviewer = \"{REVIEWER}\"\n"
         ),
     )
     .expect("the policy is written");
+    let says_where = format!("touch {SUITE_RAN}");
     let table = fleet_core::item::table_at(&policy);
     let project = Project {
         root: scratch.root().to_path_buf(),
@@ -1629,6 +1850,7 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
         &[],
         None,
         &project,
+        Some(&says_where),
         &events,
         &lane::Unread,
     );
@@ -1696,6 +1918,7 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
         &[],
         None,
         &project,
+        Some(&says_where),
         &StubEvents::default(),
         &lane::Unread,
     );
@@ -1865,26 +2088,35 @@ fn a_branch_name_is_refused_before_any_git_write() {
     );
 }
 
-/// A project naming no suite lands on the review alone, and says so on the one
-/// line a script reads (Q2) — read back off the RECORD, which is where a script
-/// finds it.
+/// A landing handed no test command lands on the review alone, and says NOT
+/// TESTED on the one line a script reads (Q2) — read back off the RECORD, which
+/// is where a script finds it.
 #[test]
-fn a_project_naming_no_suite_lands_with_suite_none() {
+fn a_landing_handed_no_test_says_not_tested_on_the_record() {
     let scratch = Board::new("land-suite-none");
     scratch.fleet_toml("[gates]\n");
     let item = an_item(
         &scratch.store,
-        "an item in a project with no suite",
+        "an item landed with no test command",
         Some(("ACCEPTED", SHA)),
     );
     let git = StubGit::clean();
 
-    let ran = run(&scratch, &scratch.store, &git, &item, SHA);
+    let ran = run_untested(
+        &scratch,
+        &scratch.store,
+        &git,
+        &item,
+        &StubEvents::default(),
+    );
     assert_eq!(ran.code(), None, "{}", ran.why());
     let notes = scratch.json(&item);
     assert!(
-        notes.contains("— suite: none, rc none"),
-        "the first line reports a measured absence:\n{notes}"
+        notes.contains(&format!(
+            "— {}: no test command was handed to this landing",
+            land::NOT_TESTED
+        )),
+        "the first line says NOT TESTED:\n{notes}"
     );
 }
 
@@ -1895,9 +2127,10 @@ fn a_project_naming_no_suite_lands_with_suite_none() {
 fn stdout_is_the_same_page_whichever_way_the_suite_was_timed() {
     // One second on the slow side, which is the smallest span the suite can be
     // timed at and still differ from the fast one — which is all this asserts.
-    // The COMMAND is one word in both, because the row prints it: a policy that
-    // named `sleep 1` in one run and `exit 0` in the other would differ on the
+    // The COMMAND is one word in both, because the row prints it: a landing
+    // handed `sleep 1` in one run and `exit 0` in the other would differ on the
     // row this arm is asserting is the same.
+    let command = format!("sh {SUITE_SCRIPT}");
     let pages: Vec<String> = ["1", "0"]
         .iter()
         .map(|sleep| {
@@ -1906,9 +2139,7 @@ fn stdout_is_the_same_page_whichever_way_the_suite_was_timed() {
             } else {
                 "land-page-fast"
             });
-            scratch.fleet_toml(&format!(
-                "[gates]\nsuite = \"sh {SUITE_SCRIPT}\"\nci_marker = \"printf '[skip ci]'\"\n"
-            ));
+            scratch.fleet_toml("[gates]\nci_marker = \"printf '[skip ci]'\"\n");
             a_sleeping_suite(&scratch, sleep);
             let item = an_item(
                 &scratch.store,
@@ -1917,7 +2148,19 @@ fn stdout_is_the_same_page_whichever_way_the_suite_was_timed() {
             );
             let git = StubGit::clean();
 
-            let ran = run(&scratch, &scratch.store, &git, &item, SHA);
+            let ran = run_against(
+                &scratch,
+                &scratch.store,
+                &git,
+                &item,
+                SHA,
+                &[],
+                None,
+                &project(&scratch),
+                Some(&command),
+                &StubEvents::default(),
+                &lane::Unread,
+            );
             assert_eq!(ran.code(), None, "{}", ran.why());
             assert_eq!(ran.err, "", "a pipe gets no bar and no chatter");
             generalised(&ran.out, &item, scratch.root())
@@ -2659,8 +2902,7 @@ fn each_reader_finds_only_its_own_region() {
             ("new", LANDED),
             ("commit", SHA),
             ("builder", BUILDER),
-            ("suite", "exit 0"),
-            ("rc", "0"),
+            ("tested", "suite: exit 0, rc 0"),
             ("gate", "1. reviewed commit PASS  read here"),
         ],
     )
@@ -2705,7 +2947,10 @@ fn a_region_is_ended_by_what_follows_it_and_never_by_its_own_kind() {
          F1 the note quotes a verdict, indented as the grammar writes it:\n\
          \x20 ACCEPTED abc — someone"
     );
-    let landed = format!("LANDED {LANDED} on {TRUNK_BRANCH} by {REVIEWER} — suite: none, rc none");
+    let landed = format!(
+        "LANDED {LANDED} on {TRUNK_BRANCH} by {REVIEWER} — NOT TESTED: no test command was \
+         handed to this landing"
+    );
 
     assert_eq!(
         last_verdict(&verdict).as_deref(),
@@ -3133,6 +3378,7 @@ fn a_lane_whose_lock_cannot_be_made_is_exit_3_with_nothing_written() {
         &[],
         None,
         &project,
+        Some(TEST),
         &StubEvents::default(),
         &lane::Unread,
     );
@@ -3236,7 +3482,7 @@ fn a_red_gate_is_rerun_once_and_a_green_second_reading_lands_with_both_rows() {
     let command = a_gate_script(scratch, "rerun-green", &[1, 0]);
     let project = project_under(
         scratch,
-        &format!("[gates]\nsuite = \"{command}\"\n"),
+        "[gates]\n",
         "[core.flight]\nrerun_wait_seconds = 1\n",
     );
     let events = StubEvents::default();
@@ -3249,6 +3495,7 @@ fn a_red_gate_is_rerun_once_and_a_green_second_reading_lands_with_both_rows() {
         &[],
         None,
         &project,
+        Some(&command),
         &events,
         &lane::Unread,
     );
@@ -3330,7 +3577,7 @@ fn a_second_red_reading_refuses_with_both_tails_and_writes_both_readings() {
     let command = a_gate_script(scratch, "rerun-red", &[1, 2]);
     let project = project_under(
         scratch,
-        &format!("[gates]\nsuite = \"{command}\"\n"),
+        "[gates]\n",
         "[core.flight]\nrerun_wait_seconds = 1\n",
     );
     let events = StubEvents::default();
@@ -3343,6 +3590,7 @@ fn a_second_red_reading_refuses_with_both_tails_and_writes_both_readings() {
         &[],
         None,
         &project,
+        Some(&command),
         &events,
         &lane::Unread,
     );
@@ -3394,7 +3642,7 @@ fn the_rerun_waits_for_the_box_to_quieten_and_the_row_says_it_did() {
     let command = a_gate_script(scratch, "rerun-wait", &[1, 0]);
     let project = project_under(
         scratch,
-        &format!("[gates]\nsuite = \"{command}\"\n"),
+        "[gates]\n",
         "[core.flight]\nrerun_wait_seconds = 30\n",
     );
     // Busy, busy, then under the ceiling: the wait has to take more than one
@@ -3414,6 +3662,7 @@ fn the_rerun_waits_for_the_box_to_quieten_and_the_row_says_it_did() {
         &[],
         None,
         &project,
+        Some(&command),
         &StubEvents::default(),
         &load,
     );
@@ -3447,7 +3696,7 @@ fn a_wait_that_expires_reruns_anyway_and_the_row_says_it_expired() {
     let command = a_gate_script(scratch, "rerun-expire", &[1, 0]);
     let project = project_under(
         scratch,
-        &format!("[gates]\nsuite = \"{command}\"\n"),
+        "[gates]\n",
         "[core.flight]\nrerun_wait_seconds = 1\n",
     );
     // A box that never quietens. The wait is a real one — a second of it — so
@@ -3463,6 +3712,7 @@ fn a_wait_that_expires_reruns_anyway_and_the_row_says_it_expired() {
         &[],
         None,
         &project,
+        Some(&command),
         &StubEvents::default(),
         &load,
     );
@@ -3680,7 +3930,7 @@ fn the_suite_runs_under_the_constructed_path_and_the_reading_names_it() {
 
     let project = project_under(
         scratch,
-        "[gates]\nsuite = \"tt-probe\"\n",
+        "[gates]\n",
         "[core.flight]\nrerun_wait_seconds = 0\n",
     );
 
@@ -3707,6 +3957,7 @@ fn the_suite_runs_under_the_constructed_path_and_the_reading_names_it() {
             &[],
             None,
             &project,
+            Some("tt-probe"),
             &green,
             &lane::Unread,
             &constructed,
@@ -3721,6 +3972,7 @@ fn the_suite_runs_under_the_constructed_path_and_the_reading_names_it() {
             &[],
             None,
             &project,
+            Some("tt-probe"),
             &red,
             &lane::Unread,
             "",
@@ -3840,6 +4092,7 @@ fn run_as(
         &[],
         None,
         &project(scratch),
+        Some(TEST),
         events,
         &lane::Unread,
         "",

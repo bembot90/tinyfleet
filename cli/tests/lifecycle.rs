@@ -72,10 +72,11 @@ fn standalone_text(name: &str, item_prefix: Option<&str>, root: &Path, worktrees
          primary = \"{root}\"\n\
          worktrees = \"{worktrees}\"\n\
          \n\
-         # Owed, and left for the person: a landing gates on the project's own\n\
-         # suite, and a suite this file guessed would gate on nothing.\n\
+         # Owed, and left for the person: a marker this file guessed would\n\
+         # skip a pipeline nobody chose to skip. The test commands are not set\n\
+         # here — a workflow hands them to the landing; for takeoff they are\n\
+         # takeoff.test and takeoff.touched under [packs.tiny] in fleet.toml.\n\
          [gates]\n\
-         # suite = \"the command a landing runs\"\n\
          # ci_marker = \"the marker a landing's commit carries\"\n",
         root = root.display(),
         worktrees = worktrees.display(),
@@ -1022,7 +1023,7 @@ fn create_standalone_declares_the_project_registers_it_and_says_so_on_the_stream
     let third = host.root.join("c-project");
     write(
         &third.join(".fleet/project.toml"),
-        "[gates]\nsuite = \"make check\"\n",
+        "[gates]\nci_marker = \"printf '[skip ci]'\"\n",
     );
     let out = host
         .command(&["create", "--standalone", "--agent", AGENT])

@@ -18,26 +18,41 @@ fn the_census_names_only_the_six_tables() {
     }
     assert_eq!(
         policy::CENSUS.len(),
-        27,
+        25,
         "the census is read, not empty — a shrunk list would satisfy the arm above saying nothing"
     );
 }
 
-/// The two gates the `[gates]` table carries, which are read by two different
-/// readers at two different moments: the seat's own, over its diff, and the
-/// landing's, over the tree.
+/// The two TEST commands are the workflow's and not the project's: neither is
+/// a pair any verb may read, and each is one [`policy::MOVED`] names with the
+/// pack setting that replaces it — so a file still setting one is refused by
+/// name rather than read as absent.
 #[test]
-fn the_gates_table_names_the_seats_gate_beside_the_landings() {
-    assert!(
-        policy::in_census("gates", "touched"),
-        "[gates] touched is the command a dispatched seat runs over its own diff"
-    );
-    assert!(
-        policy::in_census("gates", "suite"),
-        "[gates] suite is the one the landing runs over the tree"
-    );
-    // The control: neither is a spelling the reader would accept by accident.
-    assert!(!policy::in_census("gates", "touched_suite"));
+fn the_test_commands_are_not_in_the_census_and_each_names_where_it_moved() {
+    for (key, setting) in [("suite", "takeoff.test"), ("touched", "takeoff.touched")] {
+        assert!(
+            !policy::in_census("gates", key),
+            "[gates] {key} is not a pair a verb may read"
+        );
+        let config: toml::Table = format!("[gates]\n{key} = \"make check\"\n")
+            .parse()
+            .expect("the fixture config parses");
+        let found = policy::moved(&config);
+        assert_eq!(found.len(), 1, "[gates] {key} is found set: {found:?}");
+        let said = found[0].to_string();
+        assert!(
+            said.contains(&format!("[gates] {key}"))
+                && said.contains(&format!("`{setting}` under [packs.tiny]")),
+            "the line names the key and the pack setting that replaces it: {said}"
+        );
+    }
+    // The control: a [gates] table carrying neither sets neither, and the
+    // marker beside them is still a census pair.
+    let marker: toml::Table = "[gates]\nci_marker = \"printf x\"\n"
+        .parse()
+        .expect("the fixture config parses");
+    assert_eq!(policy::moved(&marker), Vec::new());
+    assert!(policy::in_census("gates", "ci_marker"));
 }
 
 /// The production-write class's six target lists, all in `[gates]`. A key the
@@ -201,7 +216,7 @@ fn a_census_key_the_config_omits_reads_as_absent_and_not_as_an_error() {
     let config: toml::Table = "[core]\nreviewer = \"reviewer\"\n"
         .parse()
         .expect("the fixture config parses");
-    assert!(policy::read("gates", "suite", &config)
+    assert!(policy::read("gates", "ci_marker", &config)
         .expect("the pair is in the census")
         .is_none());
 }

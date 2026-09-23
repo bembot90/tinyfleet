@@ -90,6 +90,17 @@ export interface Spawn {
   role: "builder";
   item: string;
   model?: string;
+  /** The builder's gate, handed to `fleet dispatch --touched`: the command
+   * its brief names for the seat to run over its own diff. Absent, the brief
+   * names the absence instead. */
+  touched?: string;
+}
+
+/** What `land` takes beyond the item and the commit. */
+export interface LandOptions {
+  /** The command `fleet land --test` runs on the rebased tree before the
+   * push. Absent, the landing runs nothing and says NOT TESTED. */
+  test?: string;
 }
 
 /** What `review` writes: the accept, or the return with its findings file. */
@@ -172,7 +183,8 @@ export interface Run {
    * NOT A STEP: the document is pinned and hashed with the bundle, so there is
    * nothing a step would add, and a recorded result cannot carry undefined. */
   config(key: string): unknown;
-  /** A builder on an item: `fleet dispatch <item> --json`, which cuts a
+  /** A builder on an item: `fleet dispatch <item> [--touched <command>]
+   * --json`, which cuts a
    * transient seat, orders it and rings it — unless the item's delivery is
    * already on the stream at or below the position this execution started
    * from, which is an item a failed run delivered and left behind: dispatch
@@ -187,8 +199,8 @@ export interface Run {
   /** `fleet review <item> --json`: `--land` for the accept, `--return <file>`
    * for the return. */
   review(item: string, verdict: Verdict): Promise<Reviewed>;
-  /** `fleet land <item> <sha> --json`. */
-  land(item: string, sha: string): Promise<Landed>;
+  /** `fleet land <item> <sha> [--test <command>] --json`. */
+  land(item: string, sha: string, options?: LandOptions): Promise<Landed>;
   /** A question for a person, asked on the run's own record item: `fleet ask
    * --json` with the lettered options, then Waiting on the gate id; the
    * answer's letter once `gate.resolved` is on the stream. */
@@ -375,7 +387,11 @@ class Handle implements Run {
       if (carried !== undefined) {
         return `${RETAKEN}${String(carried.payload.commit)}`;
       }
-      return this.verb<Dispatched>(["dispatch", order.item]);
+      return this.verb<Dispatched>([
+        "dispatch",
+        order.item,
+        ...given("--touched", order.touched),
+      ]);
     });
   }
 
@@ -395,10 +411,16 @@ class Handle implements Run {
     });
   }
 
-  land(item: string, sha: string): Promise<Landed> {
+  land(item: string, sha: string, options: LandOptions = {}): Promise<Landed> {
     return this.step(
       `land ${item}`,
-      () => this.verb<Landed>(["land", item, sha]),
+      () =>
+        this.verb<Landed>([
+          "land",
+          item,
+          sha,
+          ...given("--test", options.test),
+        ]),
     );
   }
 
@@ -555,6 +577,13 @@ class Handle implements Run {
   private fleet(args: string[]): Promise<string> {
     return fleet(this.env, args);
   }
+}
+
+/** A flag and its command, or nothing where no command was given: a blank one
+ * is none, and a verb handed `--test ""` would read a command that is not
+ * there. */
+function given(flag: string, command: string | undefined): string[] {
+  return command === undefined || command.trim() === "" ? [] : [flag, command];
 }
 
 /** Every closed step of this run, by number, off `fleet event tail --json`. */

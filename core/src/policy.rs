@@ -19,7 +19,8 @@ pub use toml::Value;
 
 /// The six tables, and no seventh. `core` and `core.flight` are the fleet's own
 /// policy, `core.run` the run lifecycle's, `guards` its opt-outs, `gates` the
-/// project's two gates and the targets a pack's guards refuse on, and `project`
+/// landing's CI marker, a seat's command words and the targets a pack's guards
+/// refuse on, and `project`
 /// the two directories a transient seat is made in.
 pub const TABLES: [&str; 6] = [
     "core",
@@ -32,7 +33,7 @@ pub const TABLES: [&str; 6] = [
 
 /// The pairs the verbs and the guards may read. `guards` is a map keyed by guard
 /// name, so its entry is the pattern every guard's row matches.
-pub const CENSUS: [(&str, &str); 27] = [
+pub const CENSUS: [(&str, &str); 25] = [
     ("core", "reviewer"),
     ("core", "max_returns"),
     // The runs open at once. It is `[core.run]` and not a second key under
@@ -67,13 +68,9 @@ pub const CENSUS: [(&str, &str); 27] = [
     ("core.flight", "lanes"),
     ("core.flight", "rerun_wait_seconds"),
     ("guards", "*.enabled"),
-    // The project's TWO gates, which are not one. `suite` is what the landing
-    // runs, once, over the whole tree; `touched` is the command a dispatched
-    // seat runs over its own diff before it delivers. A project declaring only
-    // the first leaves a seat the brief's derivation sentence and never the
-    // landing's suite.
-    ("gates", "suite"),
-    ("gates", "touched"),
+    // The marker a landing's commit carries. The two TEST commands are not in
+    // this table: they are the workflow's, handed to `land` and `dispatch` by
+    // whatever calls them, and a file that sets either is refused ([`MOVED`]).
     ("gates", "ci_marker"),
     // The command words a transient seat on this project is allowed to run,
     // rendered one `Bash(<word>:*)` rule each into the seat's own permission
@@ -107,6 +104,68 @@ pub const CENSUS: [(&str, &str); 27] = [
     // name (flights PRD R5).
     ("project", "trunk"),
 ];
+
+/// The pairs a policy file may NOT set, each with where its value is set
+/// instead.
+///
+/// A test command is the workflow's and not the project's: the workflow hands
+/// `fleet land --test` the command the landing runs on the tree that lands, and
+/// `fleet dispatch --touched` the one the builder's brief names. A file that
+/// still sets either is REFUSED rather than ignored — a key nothing reads is a
+/// gate a person believes is in force, and the landing it stood behind would
+/// go untested with nobody told.
+pub const MOVED: [(&str, &str, &str); 2] = [
+    (
+        "gates",
+        "suite",
+        "`takeoff.test` under [packs.tiny] in fleet.toml, or `--input test=<command>` on `fleet \
+         run takeoff`; a landing run by hand takes `fleet land --test <command>`",
+    ),
+    (
+        "gates",
+        "touched",
+        "`takeoff.touched` under [packs.tiny] in fleet.toml, or `--input touched=<command>` on \
+         `fleet run takeoff`; a dispatch run by hand takes `fleet dispatch --touched <command>`",
+    ),
+];
+
+/// A pair [`MOVED`] names, found set in a policy file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Moved {
+    pub table: &'static str,
+    pub key: &'static str,
+    /// Where the value is set instead, as a person reads it.
+    pub to: &'static str,
+}
+
+impl fmt::Display for Moved {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "[{}] {} is not project policy, and nothing reads it — a test command is the \
+             workflow's: set {}, and delete the key",
+            self.table, self.key, self.to
+        )
+    }
+}
+
+/// Every [`MOVED`] pair this config sets, in that table's order.
+///
+/// A key present with ANY value counts, an empty string included: the refusal
+/// is about where the setting lives, and a blank one in the old place is still
+/// a person looking for it there.
+pub fn moved(config: &toml::Table) -> Vec<Moved> {
+    MOVED
+        .iter()
+        .filter(|(table, key, _)| {
+            config
+                .get(*table)
+                .and_then(toml::Value::as_table)
+                .is_some_and(|t| t.contains_key(*key))
+        })
+        .map(|(table, key, to)| Moved { table, key, to })
+        .collect()
+}
 
 /// A pair no census row covers. The reader hands this back instead of the
 /// value it could have found, because finding it is the defect.

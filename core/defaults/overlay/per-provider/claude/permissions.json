@@ -37,7 +37,7 @@
       "Bash(cmp:*)",
       "Bash(true:*)",
       "Bash(false:*)",
-      "Bash({suite}:*)",
+      "Bash({touched}:*)",
       "Edit(/{worktree}/**)"
     ],
     "deny": [

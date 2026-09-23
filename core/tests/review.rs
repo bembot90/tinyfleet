@@ -26,7 +26,7 @@ use fleet_core::test_support::Board;
 const AT: &str = "2026-09-09T04:05:06Z";
 const SHA: &str = "3333333333333333333333333333333333333333";
 const REVIEWER: &str = "a-reviewer";
-const POLICY: &str = "[gates]\nsuite = \"make check\"\n\n[core]\nreviewer = \"a-reviewer\"\n";
+const POLICY: &str = "[core]\nreviewer = \"a-reviewer\"\n";
 
 /// The delivery every arm reads: two numbered calls, and a commit line the
 /// review takes its diff from.

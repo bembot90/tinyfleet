@@ -162,6 +162,36 @@ set here, else the declared default, else `undefined`, as pinned when the run
 was opened. tiny declares `takeoff.test` and `takeoff.touched`, and `fleet pack
 check` refuses a malformed declaration by name.
 
+### Where the test commands live
+
+A test command is the workflow's, not the project's. There is no `[gates]
+suite` and no `[gates] touched`: a `fleet.toml` or `.fleet/project.toml` that
+still sets either is refused by name — by `land`, `dispatch`, `brief`, `seat
+spawn` and `run` — with the setting that replaces it. `[gates] ci_marker`
+stays where it was.
+
+- **The landing's suite** is what `fleet land <item> <commit> --test
+  <command>` is handed. The landing runs it on the rebased land branch, under
+  the lane's lock and before the push, so what is tested is what lands; a red
+  reading is rerun once and a second red refuses with nothing pushed. Without
+  `--test` the landing runs nothing, and says so: its note's first line and its
+  suite row read `NOT TESTED`, and `item.landed` carries `test: null`.
+- **The builder's gate** is what `fleet dispatch <item> --touched <command>`
+  is handed; the brief names it where the seat reads its gate, or names the
+  absence where none was handed.
+- **takeoff** hands both: `test` from `--input test=<command>`, else
+  `takeoff.test` under `[packs.tiny]`; `touched` the same way from
+  `--input touched=` or `takeoff.touched`. The input wins. With neither test
+  command the flight still flies, and its report's first line says
+  `NOT TESTED`.
+
+```toml
+# fleet.toml
+[packs.tiny]
+takeoff.test = "cargo nextest run --workspace"
+takeoff.touched = "make test-touched"
+```
+
 ### Driving it from a checkout
 
     cargo build                       # in this directory, so target/debug/fleet exists

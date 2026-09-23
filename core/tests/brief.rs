@@ -14,9 +14,13 @@ use fleet_core::item::{table_at, Project};
 use fleet_core::store::{Bd, Item, Store};
 use fleet_core::test_support::FakeStore;
 
-/// A policy file with both readings in it: a suite the brief prints, and one
-/// guard opted out so the on/off line is read rather than assumed.
-const POLICY: &str = "[gates]\nsuite = \"make check\"\n\n[guards]\nrecord = { enabled = false }\n";
+/// A policy file with one guard opted out, so the on/off line is read rather
+/// than assumed. It names no test command: those are the dispatch's to hand
+/// in, and [`TOUCHED`] is the one every arm's render hands over.
+const POLICY: &str = "[guards]\nrecord = { enabled = false }\n";
+
+/// The builder's gate [`Rig::render`] hands the brief, as a dispatch would.
+const TOUCHED: &str = "make check";
 
 const ORDER: &str = "dispatched by lead-1 — orders given";
 const ITEM: &str = "fx-1";
@@ -76,6 +80,12 @@ impl Rig {
     }
 
     fn render(&self, store: &dyn Store, seat: &str) -> Rendered {
+        self.render_touched(store, seat, Some(TOUCHED))
+    }
+
+    /// The same render with the builder's gate in the arm's own hands, `None`
+    /// being the dispatch that was handed none.
+    fn render_touched(&self, store: &dyn Store, seat: &str, touched: Option<&str>) -> Rendered {
         let mut out: Vec<u8> = Vec::new();
         let mut err: Vec<u8> = Vec::new();
         let answer = brief::for_item(
@@ -86,6 +96,7 @@ impl Rig {
             store,
             ITEM,
             seat,
+            touched,
         );
         Rendered {
             size: answer.as_ref().ok().copied(),
@@ -205,7 +216,7 @@ fn every_placeholder_of_the_template_resolves() {
         "fx-1 · a ready item",
         "s1",
         "a-project",
-        "make check",
+        TOUCHED,
         // One line per class, iterated rather than named: the two a pack
         // wires reach this list without an edit here, and the one switched off
         // in POLICY is what makes the other three a reading.
@@ -257,23 +268,27 @@ fn every_placeholder_of_the_template_resolves() {
 #[test]
 fn the_review_brief_resolves_whole_and_the_registry_names_it() {
     let rig = Rig::new("review-brief");
-    let body = brief::review_text(
-        &rig.packs,
-        &rig.project,
-        &brief::Delivery {
-            id: ITEM,
-            text: "fx-1 · a ready item\n",
-            delivery: "DELIVERED abc1234 — a-builder\ncommit:  abc1234\n",
-            size: "size: 3 file(s), +40, -2 — tests: yes, executable: no",
-        },
-    )
-    .expect("the reviewer's brief renders whole");
+    let review = |test: Option<&str>| {
+        brief::review_text(
+            &rig.packs,
+            &rig.project,
+            &brief::Delivery {
+                id: ITEM,
+                text: "fx-1 · a ready item\n",
+                delivery: "DELIVERED abc1234 — a-builder\ncommit:  abc1234\n",
+                size: "size: 3 file(s), +40, -2 — tests: yes, executable: no",
+                test,
+            },
+        )
+        .expect("the reviewer's brief renders whole")
+    };
+    let body = review(Some("make the-whole-suite"));
 
     for wanted in [
         ITEM,
         "fx-1 · a ready item",
         "a-project",
-        "make check",
+        "make the-whole-suite",
         "size: 3 file(s), +40, -2",
         "DELIVERED abc1234",
         "fleet review fx-1 --land",
@@ -290,6 +305,14 @@ fn the_review_brief_resolves_whole_and_the_registry_names_it() {
         !body.contains("{"),
         "and nothing is left unresolved:\n{body}"
     );
+    // A review handed no test command names the absence where the command
+    // goes, and it is the landing's own NOT TESTED it names.
+    let untested = review(None);
+    assert!(
+        untested.contains(brief::NO_TEST) && untested.contains("NOT TESTED"),
+        "the reviewer's brief names the absence:\n{untested}"
+    );
+    assert!(!untested.contains("make the-whole-suite"));
 
     // The template's own placeholder list, read off the shipped file: a name
     // the renderer does not offer would be a refusal rather than a literal, so
@@ -333,20 +356,24 @@ fn placeholders(template: &str) -> Vec<String> {
     names
 }
 
-/// The gate the brief hands a dispatched seat is ITS gate — the suites its diff
-/// touches — and the project's whole suite is named as the REVIEWER's, run once
-/// at the landing.
+/// The gate the brief hands a dispatched seat is ITS gate — the command the
+/// dispatch was handed — and the project's whole suite is named as the
+/// REVIEWER's, run once at the landing.
 ///
 /// Three halves, each able to go missing on its own, so each is read: the
-/// declared command reaches the seat, the whole suite is attributed rather than
-/// handed over, and a project that declares no builder's gate gets the
-/// derivation sentence in that hole instead of the landing's command.
+/// handed command reaches the seat, the whole suite is attributed rather than
+/// handed over, and a dispatch handed no builder's gate gets the named absence
+/// — the derivation sentence — in that hole instead.
 #[test]
 fn the_brief_hands_the_seat_the_touched_gate_and_the_suite_to_the_reviewer() {
-    const DECLARED: &str =
-        "[gates]\nsuite = \"make the-whole-suite\"\ntouched = \"make the-touched-gate\"\n";
-    let rig = Rig::declaring("touched", DECLARED);
-    let body = rig.render(&store_with(Some(ORDER)), "s1").body;
+    let rig = Rig::new("touched");
+    let body = rig
+        .render_touched(
+            &store_with(Some(ORDER)),
+            "s1",
+            Some("make the-touched-gate"),
+        )
+        .body;
 
     // rules.md's own copy of the rule, which every brief carries. It is read
     // over the WHOLE page and every reading below is read over the gate section
@@ -368,41 +395,55 @@ fn the_brief_hands_the_seat_the_touched_gate_and_the_suite_to_the_reviewer() {
         );
     }
     assert!(
-        !seats.contains("make the-whole-suite"),
-        "and never the landing's suite:\n{seats}"
+        !seats.contains(brief::DERIVE_TOUCHED),
+        "and never the absence beside the command it was handed:\n{seats}"
     );
     for wanted in [
         "the **reviewer's**",
-        "`fleet land` runs it once",
-        "make the-whole-suite",
+        "`fleet land` runs the command\nit is handed, once, on the rebased tree",
     ] {
         assert!(
             reviewers.contains(wanted),
             "the reviewer's half carries `{wanted}`:\n{reviewers}"
         );
     }
+    assert!(
+        !reviewers.contains("make the-touched-gate"),
+        "and the seat's gate is never offered as the reviewer's:\n{reviewers}"
+    );
 
-    // A project that declares the landing's suite and no builder's gate: the
-    // hole is filled by the derivation sentence, and not by the suite.
-    let bare = Rig::declaring("touched-absent", POLICY);
-    let derived = bare.render(&store_with(Some(ORDER)), "s1").body;
+    // A dispatch handed no builder's gate: the hole is filled by the named
+    // absence, which says what was not handed over and what to run instead.
+    let derived = rig
+        .render_touched(&store_with(Some(ORDER)), "s1", None)
+        .body;
     let (seats, _) = gate_halves(&derived);
     assert!(
         seats.contains(brief::DERIVE_TOUCHED),
-        "an undeclared builder's gate renders the derivation sentence:\n{seats}"
+        "an absent builder's gate renders the derivation sentence:\n{seats}"
     );
     assert!(
-        !seats.contains("make check"),
-        "and never the landing's suite:\n{seats}"
+        seats.contains("no touched command was handed to this dispatch"),
+        "and the sentence names the absence:\n{seats}"
     );
+    assert!(
+        !seats.contains("make the-touched-gate") && !seats.contains(TOUCHED),
+        "and names no command:\n{seats}"
+    );
+    // A blank command is no command.
+    let blank = rig
+        .render_touched(&store_with(Some(ORDER)), "s1", Some("  "))
+        .body;
+    assert!(gate_halves(&blank).0.contains(brief::DERIVE_TOUCHED));
 
-    // The control, observed failing: a brief edited back to the suite alone
-    // fails the first reading above, so what is pinned here is the rendered
-    // sentence and not a string that happens to sit somewhere in the page.
+    // The control, observed failing: a brief edited back to a section with no
+    // gate in it fails the first reading above, so what is pinned here is the
+    // rendered sentence and not a string that happens to sit somewhere in the
+    // page.
     let rig = Rig::new("touched-broken");
     rig.fixture.file(
         "defaults/assets/brief.md",
-        "# {item_id}\n\n## The suite\n\n```\n{suite}\n```\n",
+        "# {item_id}\n\n## The suite\n\n```\n{project}\n```\n",
     );
     let broken = Rig::over(rig.fixture)
         .render(&store_with(Some(ORDER)), "s1")
@@ -431,6 +472,43 @@ fn gate_halves(body: &str) -> (&str, &str) {
     section
         .split_once("The project's whole suite is")
         .expect("the gate section names the reviewer's half")
+}
+
+/// A policy file that still sets `[gates] touched` is REFUSED, by name, with
+/// the pack setting that replaces it — and nothing reaches stdout. Read as
+/// absent instead, the seat would be handed the derivation sentence while the
+/// person who wrote the key believes the seat was handed their command.
+#[test]
+fn a_policy_file_setting_gates_touched_is_refused_naming_the_pack_setting() {
+    let rig = Rig::declaring(
+        "moved-touched",
+        "[gates]\ntouched = \"make the-touched-gate\"\n\n[guards]\nrecord = { enabled = false }\n",
+    );
+    let rendered = rig.render(&store_with(Some(ORDER)), "s1");
+    assert_eq!(
+        rendered.code,
+        Some(1),
+        "refused on the record: {}",
+        rendered.why
+    );
+    assert!(
+        rendered.why.contains("[gates] touched")
+            && rendered
+                .why
+                .contains("`takeoff.touched` under [packs.tiny]")
+            && rendered.why.contains("fleet dispatch --touched <command>"),
+        "the line names the key and where it is set instead: {}",
+        rendered.why
+    );
+    assert!(
+        rendered.body.is_empty(),
+        "nothing on stdout: {}",
+        rendered.body
+    );
+
+    // The control: the same policy with the key taken out renders.
+    let rig = Rig::new("moved-touched-control");
+    assert_eq!(rig.render(&store_with(Some(ORDER)), "s1").code, None);
 }
 
 #[test]
@@ -538,6 +616,7 @@ fn the_real_store_renders_the_same_brief_as_the_one_held_in_memory() {
             store,
             &item,
             "s1",
+            Some(TOUCHED),
         )
         .expect("the brief renders");
         String::from_utf8(out).expect("utf-8")

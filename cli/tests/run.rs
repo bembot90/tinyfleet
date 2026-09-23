@@ -397,9 +397,9 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// A policy with a run cap, and the two gates a project carries.
+/// A policy with a run cap.
 fn policy_with(max_open: u64) -> String {
-    format!("[gates]\nsuite = \"make check\"\n\n[core.run]\nmax_open = {max_open}\n")
+    format!("[core.run]\nmax_open = {max_open}\n")
 }
 
 /// The cap an arm that is not measuring one runs under. The board is shared, so
@@ -1451,6 +1451,31 @@ fn a_section_for_a_pack_not_installed_refuses_naming_it_and_writes_nothing() {
         said.contains("scratch"),
         "the refusal names the packs that are installed: {said}"
     );
+}
+
+/// A policy that still sets a TEST COMMAND under `[gates]` opens no run: the
+/// refusal names the key and the pack setting that replaces it, before
+/// anything is written — the workflow being opened is where the command is set
+/// now, and a run beside the old key would land untested while the person who
+/// wrote it believes otherwise.
+#[test]
+fn a_policy_setting_a_gates_test_command_opens_no_run_and_names_where_it_moved() {
+    for (key, setting) in [("suite", "takeoff.test"), ("touched", "takeoff.touched")] {
+        let rig = Rig::new(
+            &format!("moved-{key}"),
+            &Pack::running(ECHOES_AND_WAITS),
+            &policy_setting(&format!("[gates]\n{key} = \"make check\"\n")),
+        );
+        let said = refuses(
+            &rig,
+            &["run", &rig.workflow(ONE), "--by", BY],
+            &format!("[gates] {key}"),
+        );
+        assert!(
+            said.contains(&format!("`{setting}` under [packs.tiny]")),
+            "the refusal names the pack setting that replaces it: {said}"
+        );
+    }
 }
 
 /// The stream a re-run in this process appends to: the same file, through the

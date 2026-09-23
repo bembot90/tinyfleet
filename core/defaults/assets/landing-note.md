@@ -1,4 +1,4 @@
-LANDED {sha} on {trunk} by {actor} (range {old}..{new}; squash of {commit}{rebased}; implemented by {builder}) — suite: {suite}, rc {rc}
+LANDED {sha} on {trunk} by {actor} (range {old}..{new}; squash of {commit}{rebased}; implemented by {builder}) — {tested}
 {gate}
 
 The one shape a landing writes, and the landing verb renders it whole. What is
@@ -8,9 +8,11 @@ to an item.
 The first line is ONE line on purpose: a reader that is not human takes the
 landed sha, the trunk it is on, the range the push printed, the commit that was
 squashed, who wrote the work and the suite's own status off it without parsing
-the table below. A project that names no suite lands on the review alone, and
-the line then reads `suite: none, rc none` — a measured absence, never a zero
-borrowed from a run that did not happen.
+the table below. `{tested}` is `suite: <command>, rc <rc>` — the command `fleet
+land --test` was handed, run on the land branch before the push — or, where
+the landing was handed none, `NOT TESTED: ` and the sentence saying nothing ran.
+An untested landing is allowed and never quiet: the suite row below says NOT
+TESTED too, and no rc is borrowed from a run that did not happen.
 
 `{rebased}` writes `; rebased from <base>` and nothing else, and only where the
 delivery was cut from a base the landing did not land on: under the `advance`

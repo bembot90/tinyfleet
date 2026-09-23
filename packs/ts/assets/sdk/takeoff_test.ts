@@ -13,8 +13,10 @@
 
 import { assert, assertEquals, assertMatch } from "jsr:@std/assert@1";
 import {
+  commandOf,
   FINDINGS_DIR,
   itemsOf,
+  NOT_TESTED,
   OPTIONS,
   policyOf,
   REPORT,
@@ -100,18 +102,30 @@ async function delivered(
   });
 }
 
-function pinned(items: string, policy?: string): string {
+function pinned(
+  items: string,
+  policy?: string,
+  more: { inputs?: Record<string, string>; config?: Record<string, string> } =
+    {},
+): string {
   return JSON.stringify({
-    inputs: policy === undefined ? { items } : { items, policy },
+    inputs: {
+      items,
+      ...(policy === undefined ? {} : { policy }),
+      ...(more.inputs ?? {}),
+    },
+    ...(more.config === undefined ? {} : { config: more.config }),
   });
 }
 
+/** The four inputs every flight reads first, in order. */
+const INPUTS = ["input items", "input policy", "input test", "input touched"];
+
 /** The step names a two-item flight records under `review=accept`, in order:
- * the two inputs, then per item spawn, until, review and land with the second
+ * the four inputs, then per item spawn, until, review and land with the second
  * spawn fed by the first landing at width 1, then the report and the tick. */
-const TWELVE = [
-  "input items",
-  "input policy",
+const FOURTEEN = [
+  ...INPUTS,
   "spawn it-1",
   "until delivered it-1",
   "review it-1",
@@ -124,7 +138,7 @@ const TWELVE = [
   "tick",
 ];
 
-Deno.test("AC1 takeoff — two items through spawn, until, review and land: twelve steps in order, the report and the tick in the run directory, and a replay that spawns nothing", async () => {
+Deno.test("AC1 takeoff — two items through spawn, until, review and land: fourteen steps in order, the report and the tick in the run directory, and a replay that spawns nothing", async () => {
   const s = await scratch();
   await delivered(s, "it-1", "aaa1111");
   await delivered(s, "it-2", "bbb2222");
@@ -132,9 +146,9 @@ Deno.test("AC1 takeoff — two items through spawn, until, review and land: twel
 
   assertEquals(await replay(takeoff, s.env, stdin), { code: 0 });
   const recorded = closes(await lines(s));
-  assertEquals(recorded.map((l) => l.payload.n), TWELVE.map((_, i) => i + 1));
-  assertEquals(recorded.map((l) => l.payload.name), TWELVE);
-  assertEquals(recorded.length, 12, "the flight's own steps, counted");
+  assertEquals(recorded.map((l) => l.payload.n), FOURTEEN.map((_, i) => i + 1));
+  assertEquals(recorded.map((l) => l.payload.name), FOURTEEN);
+  assertEquals(recorded.length, 14, "the flight's own steps, counted");
 
   const seen = await calls(s);
   assertEquals(verbs(seen), [
@@ -169,18 +183,18 @@ Deno.test("AC1 takeoff — two items through spawn, until, review and land: twel
   const tick = await Deno.readTextFile(`${s.env.runDir}/${TICK}`);
   assertMatch(tick, /^- ☑ it-1 fedcba9$/m);
   assertMatch(tick, /^- ☑ it-2 fedcba9$/m);
-  assertEquals(recorded[10].payload.result, {
+  assertEquals(recorded[12].payload.result, {
     path: `${s.env.runDir}/${REPORT}`,
     landed: 2,
     returned: 0,
   });
-  assertEquals(recorded[11].payload.result, {
+  assertEquals(recorded[13].payload.result, {
     path: `${s.env.runDir}/${TICK}`,
     ticked: ["it-1", "it-2"],
   });
 
   assertEquals(await replay(takeoff, s.env, stdin), { code: 0 });
-  assertEquals(closes(await lines(s)).length, 12, "a replay records nothing");
+  assertEquals(closes(await lines(s)).length, 14, "a replay records nothing");
   assertEquals((await calls(s)).length, 6, "and spawns nothing");
 });
 
@@ -202,7 +216,7 @@ Deno.test("AC2 re-run — Waiting at the second item's until: exit 2 naming it, 
   );
   assertEquals(
     closes(await lines(s)).map((l) => l.payload.name),
-    TWELVE.slice(0, 7),
+    FOURTEEN.slice(0, 9),
   );
 
   assertEquals(await replay(takeoff, s.env, stdin), {
@@ -211,12 +225,12 @@ Deno.test("AC2 re-run — Waiting at the second item's until: exit 2 naming it, 
   });
   assertEquals(spawns(await calls(s)), 2, "the re-run spawns nothing");
   assertEquals((await calls(s)).length, 4, "nor reviews or lands again");
-  assertEquals(closes(await lines(s)).length, 7, "and records no step");
+  assertEquals(closes(await lines(s)).length, 9, "and records no step");
 
   await delivered(s, "it-2", "bbb2222");
   assertEquals(await replay(takeoff, s.env, stdin), { code: 0 });
   assertEquals(spawns(await calls(s)), 2);
-  assertEquals(closes(await lines(s)).map((l) => l.payload.name), TWELVE);
+  assertEquals(closes(await lines(s)).map((l) => l.payload.name), FOURTEEN);
 });
 
 Deno.test("AC1 gate — under review=gate every verdict is a gate: the flight waits on the gate id, asks once across the re-runs, lands on A and returns on B with the findings file", async () => {
@@ -276,8 +290,7 @@ Deno.test("AC1 gate — under review=gate every verdict is a gate: the flight wa
   ], "B is a return, and nothing lands");
   assertMatch(await Deno.readTextFile(findings), /^RETURNED it-1 at aaa1111$/m);
   assertEquals(closes(await lines(s)).map((l) => l.payload.name), [
-    "input items",
-    "input policy",
+    ...INPUTS,
     "spawn it-1",
     "until delivered it-1",
     "gate Accept it-1 at aaa1111?",
@@ -363,13 +376,12 @@ Deno.test("AC1 an item taken back — its delivery sits at or below the seq the 
   );
   const recorded = closes(await lines(s));
   assertEquals(recorded.map((l) => l.payload.name), [
-    "input items",
-    "input policy",
+    ...INPUTS,
     "spawn it-1",
     "until delivered it-1",
   ], "the steps a spawned item records, in the same places");
   assertEquals(
-    recorded[2].payload.result,
+    recorded[4].payload.result,
     `${RETAKEN}aaa1111`,
     "the spawn step closes on the delivery it found",
   );
@@ -391,6 +403,106 @@ Deno.test("AC1 an item taken back — its delivery sits at or below the seq the 
     ["land", "it-1", "aaa1111", "--by", runId, "--json"],
     "the item lands on the commit it was delivered at, with no builder cut",
   );
+});
+
+/** A one-item flight under `review=accept`, run to its close over the pinned
+ * document the arm hands it: the argv each verb was called with, and the
+ * report the flight wrote. */
+async function flown(
+  more: { inputs?: Record<string, string>; config?: Record<string, string> },
+): Promise<{ dispatch: string[]; land: string[]; report: string }> {
+  const s = await scratch();
+  await delivered(s, "it-1", "aaa1111");
+  assertEquals(
+    await replay(takeoff, s.env, pinned("it-1", "review=accept", more)),
+    { code: 0 },
+  );
+  const seen = await calls(s);
+  const find = (verb: string) => {
+    const argv = seen.find((a) => a[0] === verb);
+    if (argv === undefined) throw new Error(`no ${verb} among ${seen}`);
+    return argv;
+  };
+  return {
+    dispatch: find("dispatch"),
+    land: find("land"),
+    report: await Deno.readTextFile(`${s.env.runDir}/${REPORT}`),
+  };
+}
+
+Deno.test("AC3 the test commands — `--input test=` wins over [packs.tiny] takeoff.test and reaches the landing as `--test`; takeoff.touched reaches the dispatch as `--touched`; the report says what was run", async () => {
+  const both = await flown({
+    inputs: { test: "make from-the-input" },
+    config: {
+      "takeoff.test": "make from-the-fleet",
+      "takeoff.touched": "make touched-from-the-fleet",
+    },
+  });
+  assertEquals(
+    both.land.slice(0, 5),
+    ["land", "it-1", "aaa1111", "--test", "make from-the-input"],
+    "the input's command, never the fleet's, reaches the landing",
+  );
+  assertEquals(
+    both.dispatch.slice(0, 4),
+    ["dispatch", "it-1", "--touched", "make touched-from-the-fleet"],
+    "the fleet's touched command reaches the builder's dispatch",
+  );
+  assert(
+    both.report.startsWith("# Flight "),
+    `a tested flight's report opens on its heading:\n${both.report}`,
+  );
+  assert(!both.report.includes("NOT TESTED"), both.report);
+  assertMatch(both.report, /`make from-the-input`/);
+
+  // The fleet's setting alone is the one used, and a touched input wins over
+  // the fleet's touched the same way.
+  const fleet = await flown({
+    inputs: { touched: "make touched-from-the-input" },
+    config: {
+      "takeoff.test": "make from-the-fleet",
+      "takeoff.touched": "make touched-from-the-fleet",
+    },
+  });
+  assertEquals(fleet.land.slice(3, 5), ["--test", "make from-the-fleet"]);
+  assertEquals(fleet.dispatch.slice(2, 4), [
+    "--touched",
+    "make touched-from-the-input",
+  ]);
+});
+
+Deno.test("AC3 no test command — with neither an input nor [packs.tiny] takeoff.test the flight still flies and lands, the report's FIRST line says NOT TESTED, and no landing is handed `--test`, so each landing note says NOT TESTED too", async () => {
+  const none = await flown({});
+  assertEquals(
+    none.land.includes("--test"),
+    false,
+    `the landing is handed no test, which is what writes NOT TESTED on its note: ${none.land}`,
+  );
+  assertEquals(
+    none.dispatch.includes("--touched"),
+    false,
+    `nor the dispatch a touched command: ${none.dispatch}`,
+  );
+  const first = none.report.split("\n")[0];
+  assertEquals(first, NOT_TESTED, "the report's first line");
+  assert(first.startsWith("NOT TESTED"), first);
+  assertMatch(none.report, /\| it-1 \| landed \| fedcba9 \|/);
+
+  // A blank value names nothing, on either side.
+  const blank = await flown({
+    inputs: { test: "  " },
+    config: { "takeoff.test": "" },
+  });
+  assertEquals(blank.land.includes("--test"), false, `${blank.land}`);
+  assertEquals(blank.report.split("\n")[0], NOT_TESTED);
+});
+
+Deno.test("commandOf — the input over the setting, a blank value names nothing, and neither is undefined", () => {
+  assertEquals(commandOf("make a", "make b"), "make a");
+  assertEquals(commandOf(null, "make b"), "make b");
+  assertEquals(commandOf(" ", "make b"), "make b");
+  assertEquals(commandOf(null, undefined), undefined);
+  assertEquals(commandOf("", ""), undefined);
 });
 
 /** One [runtime] line of the ts pack's manifest, as the manifest stores it:

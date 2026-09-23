@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 
 use crate::guard;
 use crate::item::{render, Project, Stop};
-use crate::policy;
 use crate::resolve::{self, Layer, Resolution};
 use crate::store::{Store, StoreError};
 
@@ -36,21 +35,22 @@ pub const TRANSIENT: &str = "(transient)";
 /// found among the item's notes.
 pub const ORDER_MARK: &str = "orders given";
 
-/// The value `{suite}` takes where the project declares none. `land` runs no
-/// suite on such a project and the brief says so rather than leaving the line
-/// blank.
-pub const NO_SUITE: &str = "none";
-
-/// The value `{touched}` takes where the project declares no builder's gate.
+/// The value `{touched}` takes where the dispatch was handed no builder's gate.
 ///
 /// A SENTENCE and not a command, because there is no command to name and the
 /// one thing that must not fill the hole is the project's whole suite: that is
 /// the reviewer's, `land` runs it, and a seat running it too pays for it twice.
 pub const DERIVE_TOUCHED: &str = concat!(
-    "this project declares no `[gates] touched` command — read its own build targets\n",
-    "and run only the suites whose sources your diff reaches. The suite below is the\n",
-    "reviewer's, and running it here buys the landing nothing.",
+    "no touched command was handed to this dispatch — read the project's own build\n",
+    "targets and run only the suites whose sources your diff reaches. The whole suite\n",
+    "is the reviewer's, and running it here buys the landing nothing.",
 );
+
+/// The value a reviewer's `{suite}` takes where the review was handed no test
+/// command: `land` then runs none, and says NOT TESTED on its note.
+pub const NO_TEST: &str =
+    "no test command was handed to this review — `fleet land` runs none, and its note says NOT \
+     TESTED";
 
 /// The installed packs, ordered and resolved once.
 pub struct Packs {
@@ -132,6 +132,10 @@ pub struct Subject<'a> {
     pub order: &'a str,
     /// The seat the order named, or [`TRANSIENT`].
     pub seat: &'a str,
+    /// The builder's gate as the caller handed it, or `None` for
+    /// [`DERIVE_TOUCHED`]. It is the CALLER's because it is the workflow's: a
+    /// project's policy names no test command.
+    pub touched: Option<&'a str>,
 }
 
 /// The order note among an item's notes: the last line carrying a recorded
@@ -150,11 +154,11 @@ pub fn order_line(notes: Option<&str>) -> Option<String> {
 
 /// The brief, assembled whole.
 pub fn text(packs: &Packs, project: &Project, subject: &Subject) -> Result<String, Stop> {
+    project.refuse_moved()?;
     let template = packs.read(BRIEF)?;
     let rules = packs.read(RULES)?;
     let delivery_note = packs.read(DELIVERY_NOTE)?;
-    let suite = suite_of(project)?;
-    let touched = touched_of(project)?;
+    let touched = command_or(subject.touched, DERIVE_TOUCHED);
     let guards = guards_of(project);
 
     render(
@@ -165,8 +169,7 @@ pub fn text(packs: &Packs, project: &Project, subject: &Subject) -> Result<Strin
             ("order", subject.order),
             ("seat", subject.seat),
             ("project", &project.name),
-            ("suite", &suite),
-            ("touched", &touched),
+            ("touched", touched),
             ("guards", &guards),
             ("rules", &rules),
             ("delivery_note", &delivery_note),
@@ -195,13 +198,17 @@ pub struct Delivery<'a> {
     pub delivery: &'a str,
     /// The size line `review` prints, measured by the caller.
     pub size: &'a str,
+    /// The command the landing will run, as the caller handed it, or `None`
+    /// for [`NO_TEST`].
+    pub test: Option<&'a str>,
 }
 
 /// The reviewer's brief, assembled whole, from the pack's own template.
 pub fn review_text(packs: &Packs, project: &Project, subject: &Delivery) -> Result<String, Stop> {
+    project.refuse_moved()?;
     let template = packs.read(REVIEW_BRIEF)?;
     let rules = packs.read(RULES)?;
-    let suite = suite_of(project)?;
+    let suite = command_or(subject.test, NO_TEST);
 
     render(
         &template,
@@ -211,7 +218,7 @@ pub fn review_text(packs: &Packs, project: &Project, subject: &Delivery) -> Resu
             ("delivery", subject.delivery),
             ("size", subject.size),
             ("project", &project.name),
-            ("suite", &suite),
+            ("suite", suite),
             ("rules", &rules),
         ],
     )
@@ -247,6 +254,7 @@ pub fn print(
 /// The order note is the gate: an item carrying none has not been given to
 /// anybody, and a brief for it would tell a seat it may begin when nothing said
 /// so.
+#[allow(clippy::too_many_arguments)]
 pub fn for_item(
     out: &mut dyn Write,
     err: &mut dyn Write,
@@ -255,6 +263,7 @@ pub fn for_item(
     store: &dyn Store,
     item: &str,
     seat: &str,
+    touched: Option<&str>,
 ) -> Result<usize, Stop> {
     let record = store.show(item).map_err(stop_of)?;
     let Some(order) = order_line(record.notes.as_deref()) else {
@@ -274,6 +283,7 @@ pub fn for_item(
             text: &text,
             order: &order,
             seat,
+            touched,
         },
     )
 }
@@ -285,29 +295,14 @@ fn stop_of(e: StoreError) -> Stop {
     }
 }
 
-/// `[gates] suite`, through the census reader.
-fn suite_of(project: &Project) -> Result<String, Stop> {
-    match policy::read("gates", "suite", &project.gates) {
-        Ok(Some(value)) => Ok(value
-            .as_str()
-            .map(str::to_string)
-            .unwrap_or_else(|| NO_SUITE.to_string())),
-        Ok(None) => Ok(NO_SUITE.to_string()),
-        Err(unlisted) => Err(Stop::could_not_tell(unlisted.to_string())),
-    }
-}
-
-/// `[gates] touched`, through the same reader: the gate a dispatched SEAT runs
-/// over its own diff, which is not the gate the landing runs over the tree.
-fn touched_of(project: &Project) -> Result<String, Stop> {
-    match policy::read("gates", "touched", &project.gates) {
-        Ok(Some(value)) => Ok(value
-            .as_str()
-            .map(str::to_string)
-            .unwrap_or_else(|| DERIVE_TOUCHED.to_string())),
-        Ok(None) => Ok(DERIVE_TOUCHED.to_string()),
-        Err(unlisted) => Err(Stop::could_not_tell(unlisted.to_string())),
-    }
+/// A command a caller handed in, or the named absence in its place. A blank
+/// command is no command: a brief that printed an empty block would tell a
+/// seat it had been given a gate.
+fn command_or<'a>(given: Option<&'a str>, absent: &'a str) -> &'a str {
+    given
+        .map(str::trim)
+        .filter(|command| !command.is_empty())
+        .unwrap_or(absent)
 }
 
 /// One line per guard class, on or off, read through the same function the

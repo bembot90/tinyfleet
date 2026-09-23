@@ -1,15 +1,24 @@
 // packs/tiny/workflows/takeoff.ts — a flight's middle as code. Pre-flight,
-// the preboard skill with the person present, hands this run its items and
-// its policy; the run spawns a builder per item, waits on each delivery,
-// reviews it — every verdict a gate when the policy says so — lands the
-// accepted ones, and ends on the report and the board tick as its last two
-// steps. Every act is a numbered step over the SDK, so a re-run after a
-// Waiting exit replays to where it stopped and spawns nothing twice.
+// the preboard skill with the person present, hands this run its items, its
+// policy and the test command its landings run; the run spawns a builder per
+// item, waits on each delivery, reviews it — every verdict a gate when the
+// policy says so — lands the accepted ones on the test it was handed, and ends
+// on the report and the board tick as its last two steps. Every act is a
+// numbered step over the SDK, so a re-run after a Waiting exit replays to
+// where it stopped and spawns nothing twice.
 import { type Run, workflow } from "../../ts/assets/sdk/mod.ts";
 
 export async function takeoff(run: Run): Promise<void> {
   const items = itemsOf(await run.input("items"));
   const policy = policyOf(await run.input("policy"));
+  // The two test commands: the run's own input over the fleet's setting. With
+  // neither, the flight still flies — and says NOT TESTED where it cannot be
+  // missed.
+  const test = commandOf(await run.input("test"), run.config("takeoff.test"));
+  const touched = commandOf(
+    await run.input("touched"),
+    run.config("takeoff.touched"),
+  );
   const rows: Row[] = [];
   const decisions: Decision[] = [];
 
@@ -17,7 +26,7 @@ export async function takeoff(run: Run): Promise<void> {
   // spawned up front and every landing or return feeds the next unspawned item.
   let next = 0;
   for (; next < Math.min(policy.width, items.length); next++) {
-    await run.spawn({ role: "builder", item: items[next] });
+    await run.spawn({ role: "builder", item: items[next], touched });
   }
   for (const item of items) {
     const delivery = (await run.until([item], "delivered"))[item] as Delivery;
@@ -30,7 +39,7 @@ export async function takeoff(run: Run): Promise<void> {
     }
     if (letter === "A") {
       await run.review(item, "accepted");
-      const landed = await run.land(item, commit);
+      const landed = await run.land(item, commit, { test });
       rows.push({ item, outcome: "landed", sha: landed.sha });
     } else {
       const findings = `${run.env.runDir}/${FINDINGS_DIR}/${item}.md`;
@@ -47,11 +56,11 @@ export async function takeoff(run: Run): Promise<void> {
       rows.push({ item, outcome: "returned", sha: "" });
     }
     if (next < items.length) {
-      await run.spawn({ role: "builder", item: items[next++] });
+      await run.spawn({ role: "builder", item: items[next++], touched });
     }
   }
 
-  await run.step("report", () => writeReport(run, rows, decisions));
+  await run.step("report", () => writeReport(run, rows, decisions, test));
   await run.step("tick", () => writeTick(run, rows));
 }
 
@@ -68,11 +77,19 @@ export const TICK = "board-tick.md";
 /** Where a returned item's findings file goes under the run directory. */
 export const FINDINGS_DIR = "findings";
 
+/** The report's first line where the flight was handed no test command: every
+ * landing it made ran nothing, and says so on its own note too. */
+export const NOT_TESTED =
+  "NOT TESTED — this flight was handed no test command, so every landing ran nothing and stands on the review alone. Set `takeoff.test` under [packs.tiny] in fleet.toml, or pass `--input test=<command>`.";
+
 /** What the flight pins. `items` is the ids in board order, as a JSON array or
  * a comma-separated list. `policy` is `key=value` pairs, comma-separated:
  * `review` is `gate` (every verdict asked of the person, the default) or
  * `accept` (every delivery landed); `width` is how many items fly at once,
- * 1 unless named. */
+ * 1 unless named. `test` is the command each landing runs on the rebased tree
+ * and `touched` the one each builder's brief names; each is read from the
+ * run's input, else from `takeoff.test` / `takeoff.touched` under
+ * [packs.tiny] in fleet.toml, and the input wins. */
 export interface Policy {
   review: "gate" | "accept";
   width: number;
@@ -120,6 +137,18 @@ export function itemsOf(pinned: unknown): string[] {
   return kept;
 }
 
+/** A test command: the run's input where it names one, else the fleet's
+ * setting, else undefined. A blank value names nothing, on either side. */
+export function commandOf(
+  input: unknown,
+  setting: unknown,
+): string | undefined {
+  for (const value of [input, setting]) {
+    if (typeof value === "string" && value.trim() !== "") return value.trim();
+  }
+  return undefined;
+}
+
 export function policyOf(pinned: unknown): Policy {
   const policy: Policy = { review: "gate", width: 1 };
   if (pinned === null || pinned === undefined) return policy;
@@ -143,11 +172,19 @@ async function writeReport(
   run: Run,
   rows: Row[],
   decisions: Decision[],
+  test: string | undefined,
 ): Promise<{ path: string; landed: number; returned: number }> {
   const landed = rows.filter((r) => r.outcome === "landed").length;
   const returned = rows.length - landed;
   const lines = [
+    // The FIRST line, above the heading, so a reader who reads one line of
+    // this file reads that nothing was tested.
+    ...(test === undefined ? [NOT_TESTED, ""] : []),
     `# Flight ${run.id}`,
+    "",
+    test === undefined
+      ? "Tested: nothing — no test command reached this flight."
+      : `Tested: every landing ran \`${test}\` on its rebased tree before the push.`,
     "",
     "## Decisions",
     "",

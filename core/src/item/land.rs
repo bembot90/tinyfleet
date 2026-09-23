@@ -40,7 +40,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::item::brief::{Packs, NO_SUITE};
+use crate::item::brief::Packs;
 use crate::item::deliver::BRANCH;
 use crate::item::lane;
 use crate::item::review::last_verdict;
@@ -94,6 +94,16 @@ pub const SUITE_RERUN: &str = "suite rerun";
 
 /// The line a landing ends on, which is also the one a caller greps for.
 pub const LANDED: &str = "LANDED";
+
+/// What a landing handed no test command says, on its suite row and on its
+/// note's first line. Loud on purpose: a landing that ran nothing is allowed
+/// and is never allowed to read like one that ran something.
+pub const NOT_TESTED: &str = "NOT TESTED";
+
+/// What follows [`NOT_TESTED`] on the note's first line and on the row.
+const UNTESTED: &str =
+    "no test command was handed to this landing (`fleet land --test <command>`), so nothing ran \
+     and it stands on the review alone";
 
 /// The line a landing prints when the trunk moved between the land branch's cut
 /// and the push's own gate.
@@ -249,6 +259,11 @@ pub struct Landing<'a> {
     pub commit: &'a str,
     /// The reviewer's own paths, admitted into the staged set by name.
     pub also: &'a [String],
+    /// The command run on the land branch under the lane's lock, after the
+    /// squash and before the push, so what is tested is what lands. It is the
+    /// CALLER's, never the project's: a workflow hands it in, and `None` runs
+    /// nothing and lands [`NOT_TESTED`].
+    pub test: Option<&'a str>,
     /// What the close says beyond the landed sha.
     pub reason: Option<&'a str>,
     /// The reviewer.
@@ -314,6 +329,7 @@ pub fn land(
     // refused before any instrument is asked anything — the resolution below
     // reads a checkout and a file, and both are instruments.
     commit_shape(landing.commit)?;
+    wiring.project.refuse_moved()?;
     if wiring
         .git
         .is_linked_worktree()
@@ -707,7 +723,7 @@ fn run(
         ),
     );
 
-    // (f) THE MARKER, read through the census reader like the suite key.
+    // (f) THE MARKER, read through the census reader.
     let marker_command = marker_of(wiring.project)?;
     let marker = match &marker_command {
         // THE STAGED PATHS, all of them: §4(f) says the staged paths, and a
@@ -754,9 +770,14 @@ fn run(
         .commit_message_file(&message_path)
         .map_err(Stop::could_not_tell)?;
 
-    // (h) THE SUITE, the one the project names, or none at all (Q2), with the
-    // one rerun a red gets before it refuses (R18, Q3c).
-    let suite_command = suite_of(wiring.project)?;
+    // (h) THE SUITE, the command the caller handed in, or none at all and the
+    // landing says NOT TESTED, with the one rerun a red gets before it refuses
+    // (R18, Q3c).
+    let suite_command = landing
+        .test
+        .map(str::trim)
+        .filter(|command| !command.is_empty())
+        .map(str::to_string);
     let readings = the_gate(
         out,
         &mut rows,
@@ -864,6 +885,10 @@ fn run(
     // (k) THE LANDING NOTE, written through the store and read back. The
     // landing stands on the trunk whatever this step says.
     let rebased = rebased_from(&delivery, &old);
+    let tested = match (&suite_command, suite_rc) {
+        (Some(command), Some(rc)) => format!("suite: {command}, rc {}", rc_word(rc)),
+        _ => format!("{NOT_TESTED}: {UNTESTED}"),
+    };
     let note = render(
         &block(&wiring.packs.read(LANDING_NOTE)?)?,
         &[
@@ -875,8 +900,7 @@ fn run(
             ("new", &sha),
             ("commit", commit),
             ("builder", &builder),
-            ("suite", suite_command.as_deref().unwrap_or(NO_SUITE)),
-            ("rc", &suite_rc.map_or(NO_SUITE.to_string(), rc_word)),
+            ("tested", &tested),
             ("gate", &rows.rendered(commit, &sha, work_branch.as_deref())),
         ],
     )
@@ -942,6 +966,10 @@ fn run(
             "run": by_run.as_ref().map_or(serde_json::Value::Null, |record| {
                 serde_json::Value::String(record.id.clone())
             }),
+            // WHAT TESTED IT: the command that ran green on the tree this
+            // pushed, or `null` for a landing handed none — the stream's own
+            // NOT TESTED, readable without the note.
+            "test": suite_command,
         }),
     )?;
 
@@ -1108,14 +1136,14 @@ impl Reading {
     }
 }
 
-/// The suite the project names, run once, and once more where the first read
-/// red (R18, Q3c).
+/// The command the landing was handed, run once, and once more where the first
+/// read red (R18, Q3c).
 ///
 /// THE RERUN IS UNCONDITIONAL, and that is Alberto's ruling and not this
 /// module's economy: R18 asks for a rerun of an arm the diff did not reach, and
-/// `[gates] suite` is one opaque command that reports no arms, so the condition
-/// has nothing to read. Both readings go on the record either way, which is
-/// what lets a person answer the question the condition would have.
+/// the command is one opaque line that reports no arms, so the condition has
+/// nothing to read. Both readings go on the record either way, which is what
+/// lets a person answer the question the condition would have.
 ///
 /// A SECOND RED REFUSES WITH BOTH LOGS ON STDOUT. That is the whole channel the
 /// park needs: the flight's landing act carries what this printed into the
@@ -1132,15 +1160,7 @@ fn the_gate(
     wiring: &Wiring,
 ) -> Result<Vec<Reading>, Stop> {
     let Some(command) = command else {
-        rows.read(
-            out,
-            wiring,
-            "NONE",
-            format!(
-                "no [gates] suite in this project — the landing stands on the review alone \
-                 ({NO_SUITE})"
-            ),
-        );
+        rows.read(out, wiring, NOT_TESTED, UNTESTED);
         return Ok(Vec::new());
     };
 
@@ -1825,19 +1845,12 @@ fn rerun(item: &str, sha: &str, why: &str) -> Stop {
     ))
 }
 
-// ---- the two gate keys --------------------------------------------------------
+// ---- the gate key -------------------------------------------------------------
 
-/// `[gates] suite`, through the census reader, in the shape the brief reads it.
-///
-/// The table and the key are LITERALS at the call site, as they are at every
-/// other reader in this workspace: the pair a verb reads has to be readable out
-/// of the source without running it, so the two keys are two functions rather
-/// than one taking a name.
-fn suite_of(project: &Project) -> Result<Option<String>, Stop> {
-    command(policy::read("gates", "suite", &project.gates))
-}
-
-/// `[gates] ci_marker`, the same way. This verb is its first reader.
+/// `[gates] ci_marker`, through the census reader. The table and the key are
+/// LITERALS at the call site, as they are at every other reader in this
+/// workspace: the pair a verb reads has to be readable out of the source
+/// without running it. This verb is its first reader.
 fn marker_of(project: &Project) -> Result<Option<String>, Stop> {
     command(policy::read("gates", "ci_marker", &project.gates))
 }

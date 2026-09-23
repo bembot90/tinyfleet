@@ -52,12 +52,14 @@ this run raised are its k-th `gate` and k-th `start` call — so neither asks
 nor starts twice. Their suite is `assets/sdk/verbs_test.ts`, against a fake
 binary on `FLEET_BIN` that answers `event …` with the real one.
 
-- `spawn({ role, item, model? })` — a builder on an item, over
-  `fleet dispatch <item> --json`: the verb that cuts a transient seat, writes
-  the order and rings it. `fleet seat spawn` alone carries neither an item
-  nor a role, and a seat with no order could never deliver. The one role is
-  `"builder"` (a reviewer's spawn is the flight's own), and a hand-run
-  dispatch pins no model, so a `model` given is refused rather than dropped.
+- `spawn({ role, item, model?, touched? })` — a builder on an item, over
+  `fleet dispatch <item> [--touched <command>] --json`: the verb that cuts a
+  transient seat, writes the order and rings it. `fleet seat spawn` alone
+  carries neither an item nor a role, and a seat with no order could never
+  deliver. The one role is `"builder"` (a reviewer's spawn is the flight's
+  own), and a hand-run dispatch pins no model, so a `model` given is refused
+  rather than dropped. `touched` is the builder's gate its brief names; without
+  one the brief names the absence.
 
   ```ts
   const { seat } = await run.spawn({ role: "builder", item: "item-12" });
@@ -80,11 +82,15 @@ binary on `FLEET_BIN` that answers `event …` with the real one.
   await run.review("item-13", { returned: `${run.env.runDir}/findings.md` });
   ```
 
-- `land(item, sha)` — `fleet land <item> <sha> --json`; the result carries the
-  landed sha, read by the verb from the push's own range line.
+- `land(item, sha, { test? })` — `fleet land <item> <sha> [--test <command>]
+  --json`; the result carries the landed sha, read by the verb from the push's
+  own range line. `test` is the command the landing runs on the rebased tree
+  under its lock, before the push; without one the landing runs nothing and
+  its note says NOT TESTED. A project's policy names no test command: the
+  workflow hands it in.
 
   ```ts
-  const { sha } = await run.land("item-12", "0123abc");
+  const { sha } = await run.land("item-12", "0123abc", { test: "make check" });
   ```
 
 - `gate(question, options)` — a question for a person on the run's own record

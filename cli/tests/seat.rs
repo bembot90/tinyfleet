@@ -150,7 +150,7 @@ impl Rig {
             rig.project.join("fleet.toml"),
             if declared {
                 format!(
-                    "[gates]\nsuite = \"make check\"\n\n\
+                    "[gates]\n\n\
                      [controller]\nnudge_model = \"a-cheap-model\"\n\
                      nudge_timeout_seconds = 30\nstart_watch_seconds = 10\n\
                      default_model = \"a-model\"\n\n\
@@ -159,7 +159,7 @@ impl Rig {
                     worktrees = toml_string(&rig.worktrees.display().to_string()),
                 )
             } else {
-                "[gates]\nsuite = \"make check\"\n\n\
+                "[gates]\n\n\
                  [controller]\nnudge_model = \"a-cheap-model\"\n\
                  nudge_timeout_seconds = 30\nstart_watch_seconds = 10\n\
                  default_model = \"a-model\"\n"
@@ -199,10 +199,7 @@ impl Rig {
             .map(|word| toml_string(word))
             .collect::<Vec<_>>()
             .join(", ");
-        let declared = policy.replace(
-            "[gates]\nsuite = \"make check\"\n",
-            &format!("[gates]\nsuite = \"make check\"\ntool_commands = [{list}]\n"),
-        );
+        let declared = policy.replace("[gates]\n", &format!("[gates]\ntool_commands = [{list}]\n"));
         assert!(
             declared.contains("tool_commands"),
             "the fixture's [gates] table is the one this helper edits: {policy}"
@@ -566,6 +563,8 @@ fn a_spawn_renders_the_packs_permission_rules_into_the_seats_worktree() {
         "spawn",
         "--first-turn",
         &rig.turn.display().to_string(),
+        "--touched",
+        "make check",
     ]);
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
 
@@ -580,19 +579,21 @@ fn a_spawn_renders_the_packs_permission_rules_into_the_seats_worktree() {
     assert_eq!(
         written,
         template
-            .replace("{suite}", "make check")
+            .replace("{touched}", "make check")
             .replace("{worktree}", &worktree.display().to_string()),
-        "the seat's settings are the pack's document with the suite and the worktree rendered in"
+        "the seat's settings are the pack's document with the builder's gate and the worktree \
+         rendered in"
     );
 
     assert!(
-        !written.contains("{suite}") && !written.contains("{worktree}"),
+        !written.contains("{touched}") && !written.contains("{worktree}"),
         "no placeholder survives into the seat's own settings: {written}"
     );
     assert!(
         written.contains("Bash(make check:*)")
             && written.contains(&format!("Edit(/{}/**)", worktree.display())),
-        "the project's suite and the seat's own checkout are both in a rule: {written}"
+        "the builder's gate the spawn was handed and the seat's own checkout are both in a rule: \
+         {written}"
     );
 
     let doc: serde_json::Value =
@@ -602,6 +603,77 @@ fn a_spawn_renders_the_packs_permission_rules_into_the_seats_worktree() {
             .as_array()
             .is_some_and(|rules| !rules.is_empty()),
         "and the document the provider reads carries an allow list: {written}"
+    );
+}
+
+/// A spawn handed NO builder's gate writes no rule for one — the entry that
+/// would carry it is taken out, and nothing else is — and a gate that carries a
+/// quote is written into its rule as JSON, so the document still parses.
+#[test]
+fn a_spawn_handed_no_touched_command_writes_no_rule_for_one() {
+    let rig = Rig::new("permissions-untouched", true);
+    let spawned = rig.run(&[
+        "seat",
+        "spawn",
+        "--first-turn",
+        &rig.turn.display().to_string(),
+    ]);
+    assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
+
+    let worktree = rig.worktrees.join("transient-1");
+    let written = std::fs::read_to_string(worktree.join(".claude/settings.local.json"))
+        .expect("the seat's settings are written");
+    let doc: serde_json::Value =
+        serde_json::from_str(&written).expect("the seat's settings parse as JSON");
+    let allow = |doc: &serde_json::Value| -> Vec<String> {
+        doc["permissions"]["allow"]
+            .as_array()
+            .expect("the document carries an allow list")
+            .iter()
+            .map(|rule| rule.as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    let defaults = ShippedDefaults::new("overlay-untouched");
+    let template: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(defaults.path().join(PERMISSIONS))
+            .expect("the overlay is readable"),
+    )
+    .expect("the template is JSON");
+    let wanted: Vec<String> = allow(&template)
+        .into_iter()
+        .filter(|rule| !rule.contains("{touched}"))
+        .map(|rule| rule.replace("{worktree}", &worktree.display().to_string()))
+        .collect();
+    assert_eq!(
+        allow(&doc),
+        wanted,
+        "the pack's list, less the one rule nobody handed a command for: {written}"
+    );
+    assert_eq!(doc["permissions"]["deny"], template["permissions"]["deny"]);
+
+    // A gate carrying a quote is escaped into its rule, not spliced into the
+    // document's syntax.
+    let rig = Rig::new("permissions-quoted", true);
+    let spawned = rig.run(&[
+        "seat",
+        "spawn",
+        "--first-turn",
+        &rig.turn.display().to_string(),
+        "--touched",
+        "make check ARGS=\"-p core\"",
+    ]);
+    assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
+    let written = std::fs::read_to_string(
+        rig.worktrees
+            .join("transient-1")
+            .join(".claude/settings.local.json"),
+    )
+    .expect("the seat's settings are written");
+    let doc: serde_json::Value =
+        serde_json::from_str(&written).expect("the seat's settings still parse as JSON");
+    assert!(
+        allow(&doc).contains(&"Bash(make check ARGS=\"-p core\":*)".to_string()),
+        "the gate is one rule, quote and all: {written}"
     );
 }
 
@@ -741,6 +813,8 @@ fn a_pack_above_the_defaults_shadowing_the_permission_slot_is_what_the_seat_come
         "spawn",
         "--first-turn",
         &rig.turn.display().to_string(),
+        "--touched",
+        "make check",
     ]);
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
 
@@ -752,10 +826,10 @@ fn a_pack_above_the_defaults_shadowing_the_permission_slot_is_what_the_seat_come
     assert_eq!(
         written,
         SHADOW_RULES
-            .replace("{suite}", "make check")
+            .replace("{touched}", "make check")
             .replace("{worktree}", &worktree.display().to_string()),
-        "the seat's settings are the SHADOWING pack's document with the suite and the worktree \
-         rendered in"
+        "the seat's settings are the SHADOWING pack's document with the builder's gate and the \
+         worktree rendered in"
     );
     assert!(
         written.contains(SHADOW_MARK),
@@ -766,7 +840,7 @@ fn a_pack_above_the_defaults_shadowing_the_permission_slot_is_what_the_seat_come
         "and the default list is replaced whole rather than merged into: {written}"
     );
     assert!(
-        !written.contains("{suite}") && !written.contains("{worktree}"),
+        !written.contains("{touched}") && !written.contains("{worktree}"),
         "no placeholder survives into the seat's own settings: {written}"
     );
 
@@ -797,6 +871,8 @@ fn a_pack_above_the_defaults_carrying_no_permission_rules_leaves_the_default_doc
         "spawn",
         "--first-turn",
         &rig.turn.display().to_string(),
+        "--touched",
+        "make check",
     ]);
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
 
@@ -812,7 +888,7 @@ fn a_pack_above_the_defaults_carrying_no_permission_rules_leaves_the_default_doc
     assert_eq!(
         written,
         template
-            .replace("{suite}", "make check")
+            .replace("{touched}", "make check")
             .replace("{worktree}", &worktree.display().to_string()),
         "a pack above the defaults that carries no permission rules leaves theirs in place"
     );
@@ -832,7 +908,7 @@ const SHADOW_RULES: &str = r#"{
   "permissions": {
     "allow": [
       "Bash(the-shadowing-packs-own-verb:*)",
-      "Bash({suite}:*)",
+      "Bash({touched}:*)",
       "Edit(/{worktree}/**)"
     ],
     "deny": [
@@ -1000,7 +1076,7 @@ fn a_declaration_beside_a_fleet_toml_resolves_standalone() {
         format!(
             "[project]\nname = \"a-declared-project\"\nitem_prefix = \"dp\"\n\
              primary = {primary}\nworktrees = {worktrees}\n\n\
-             [gates]\nsuite = \"make declared\"\n",
+             [gates]\nci_marker = \"printf '[skip ci]'\"\n",
             primary = toml_string(&rig.project.display().to_string()),
             worktrees = toml_string(&declared.display().to_string()),
         ),

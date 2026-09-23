@@ -22,7 +22,9 @@ use common::hermetic::Hermetic;
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 const REVIEWER: &str = "a-reviewer";
-const POLICY: &str = "[gates]\nsuite = \"make check\"\n\n\
+/// One guard opted out, so a brief rendered off this file carries a line only
+/// this file could have put there.
+const POLICY: &str = "[guards]\nrecord = { enabled = false }\n\n\
                       [core]\nreviewer = \"a-reviewer\"\n\n\
                       [controller]\nnudge_model = \"a-cheap-model\"\n\
                       nudge_timeout_seconds = 20\n";
@@ -702,11 +704,16 @@ fn a_seat_worktree_beside_an_uncommitted_policy_delivers_through_the_machine_con
     rig.an_order_note_on(&item);
     let seat = rig.init_repo_in_a_linked_worktree(false);
 
-    let out = rig.run_from(&seat, &["brief", &item]);
+    let out = rig.run_from(&seat, &["brief", &item, "--touched", "make check"]);
     assert_eq!(out.status.code(), Some(0), "brief: {}", stderr(&out));
     assert!(
+        stdout(&out).contains("- record: off"),
+        "the guards are read off the file the machine config names: {}",
+        stdout(&out)
+    );
+    assert!(
         stdout(&out).contains("make check"),
-        "the suite is read off the file the machine config names: {}",
+        "and the builder's gate is the one the call handed in: {}",
         stdout(&out)
     );
 

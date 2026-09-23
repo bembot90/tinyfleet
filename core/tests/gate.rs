@@ -34,7 +34,7 @@ const BRANCH: &str = "a-seat/feat/the-work";
 /// The hash a run's open pinned, which its park stands on where a seat's park
 /// stands on a commit.
 const RUN_HASH: &str = "5555555555555555555555555555555555555555";
-const POLICY: &str = "[gates]\nsuite = \"make check\"\n\n[core]\nreviewer = \"a-reviewer\"\n";
+const POLICY: &str = "[core]\nreviewer = \"a-reviewer\"\n";
 
 /// The question a seat hands in, in the shipped grammar.
 const QUESTION: &str = "\

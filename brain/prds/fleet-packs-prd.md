@@ -270,6 +270,32 @@ the run is opened, and **pinned under `config` in the run directory's
 workflow is handed on stdin — so a re-run reads the values the run was opened
 with and never what `fleet.toml` says since.
 
+### Where the test commands live
+
+The two test commands are **the workflow's, and not project policy** (Alberto's
+ruling, 2026-09-23). `[gates]` carries neither: a `fleet.toml` or
+`.fleet/project.toml` that sets `[gates] suite` or `[gates] touched` is refused
+by name — by `land`, `dispatch`, `brief`, `seat spawn` and `run` — with the
+setting that replaces it. `[gates] ci_marker` stays.
+
+- **The landing's suite** reaches `land` as `--test <command>`, and `land` runs
+  it on the rebased land branch under the lane's lock, before the push, so what
+  is tested is what lands. With no `--test` it runs nothing and lands, and says
+  so where nobody can miss it: the note's first line reads `— NOT TESTED: …`
+  where a tested one reads `— suite: <command>, rc 0`, the suite row's verdict
+  is `NOT TESTED`, and `item.landed` carries `test: null` (the command, where
+  one ran).
+- **The builder's gate** reaches `dispatch` as `--touched <command>` and the
+  brief renders it where `{touched}` goes, and the seat's permission rules
+  carry one `Bash(<command>:*)` for it; with none the brief names the absence.
+- **takeoff** reads each from its run input over the pack setting — `test` from
+  `--input test=`, else `takeoff.test`; `touched` from `--input touched=`, else
+  `takeoff.touched` — and hands them to `run.land(item, sha, { test })` and
+  `run.spawn({ …, touched })`. With no test command from either source the
+  flight FLIES, and the report's first line says `NOT TESTED`; the preboard
+  skill prints the test pair beside `items` and `policy`, or the NOT TESTED line
+  where there is none, before the person says go.
+
 ### The four verbs
 
 Each verb is one executable under the pack's `bin/`, on every seat's `PATH`
@@ -291,8 +317,8 @@ controller's R30–R31 are the primitives it calls).
 
 **`fleet brief <item>`** — renders the first thing a dispatched seat reads:
 the item verbatim, the contract (deliver to a work branch, record the commit,
-reassign, ring; never land), the guards' names, the project's suite command,
-and the pack's rule lines. Rendered whole or not at all (R: a partial brief is
+reassign, ring; never land), the guards' names, the builder's gate its dispatch
+was handed (`--touched`), and the pack's rule lines. Rendered whole or not at all (R: a partial brief is
 a builder who cannot tell it read half).
 
 **`fleet deliver`** — the builder's handoff. Commits the work branch, writes
@@ -315,8 +341,9 @@ decisions walk).
 
 **`fleet land <item> <commit>`** — the reviewer's landing, never the builder's.
 Fetches, refuses unless `origin/main` is current, squashes the reviewed commit
-onto it as one commit referencing the item, runs the project's suite from
-`project.toml` on the land branch, exports the board into the commit, pushes,
+onto it as one commit referencing the item, runs the command it was handed with
+`--test` on the land branch (none, and the note says NOT TESTED), exports the
+board into the commit, pushes,
 reads the push's own range line before writing anything, writes the landing
 note with the gate table, classifies the work branch and deletes it only when
 safe, and closes the item. Exit codes are the contract: landed, refused, could
@@ -437,17 +464,17 @@ worktrees = "../…-worktrees"
 primary = "/path/to/checkout"
 
 [gates]
-suite = "make test"             # what land runs; absent means land runs none and says so
-touched = "make test-touched"   # the BUILDER's gate, over its own diff; absent means the
-                                # brief tells a seat to derive it and never hands over `suite`
 ci_marker = ""                  # a tool that prints the skip marker, or absent
+# no `suite`, no `touched`: a file setting either is refused by name
 ```
 
-The two gate keys are two gates, not one. `suite` is the reviewer's, run once
-at the landing; `touched` is what a dispatched seat runs before it delivers.
-The MAPPING from a changed path to a suite stays in the project — a runner that
-already computes its own blast radius needs a command named here and nothing
-else — so this key is a command and never a table.
+The two test commands are not here (§ Where the test commands live). They are
+still two gates and not one: the suite is the reviewer's, run once at the
+landing as `land --test`; `touched` is what a dispatched seat runs before it
+delivers, handed to `dispatch --touched`. The MAPPING from a changed path to a
+suite stays with whoever names the command — a runner that already computes its
+own blast radius needs a command and nothing else — so each is a command and
+never a table.
 
 Keys a pack's guards read — a release-ref glob, a list of production targets —
 are that pack's, declared in its own table, never core's.
@@ -509,9 +536,9 @@ cannot do something through the surface, the surface is what changes.
    walks the decisions block, writes `ACCEPTED` or `RETURNED WITH FINDINGS`
    with a numbered count, returns to the builder on findings. R.
 8. `fleet land` is the reviewer's, takes a commit, gates on a current trunk,
-   squashes, runs the project's suite, exports the board, pushes, reads the
-   range line, classifies and deletes the branch only when safe, closes the
-   item, and exits by the contract. R.
+   squashes, runs the `--test` it is handed (NOT TESTED where none), exports
+   the board, pushes, reads the range line, classifies and deletes the branch
+   only when safe, closes the item, and exits by the contract. R.
 9. Every verb reads its note back before exiting 0; a note that did not land
    is the verb's failure. R.
 10. Every gate reads its command's own exit and never a pipeline's. R.
@@ -604,7 +631,12 @@ user); no review in core (land on the builder's word).
 **Q2 — does `land` require a suite?** *Ruled 2026-09-05:* it runs the one
 `project.toml` names, and a project that names none lands on the review alone
 with `suite: none` in the landing note. Declined: refusing to land without a
-suite (most side projects have none on day one).
+suite (most side projects have none on day one). *Superseded 2026-09-23:* the
+suite is not project policy. `land` runs the command it is handed with
+`--test`; a landing handed none still lands, on the review alone, and says NOT
+TESTED on its note's first line, its suite row and `item.landed`, and a takeoff
+handed none says NOT TESTED on its report's first line (§ Where the test
+commands live).
 
 **Q3 — how a guard is opted out.** *Ruled 2026-09-05:* `[guards]` in
 `fleet.toml`, one line per installed guard, written on by `fleet create`; a

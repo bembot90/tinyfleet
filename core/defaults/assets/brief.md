@@ -42,14 +42,10 @@ before you deliver, and read its exit from the command's own status:
 {touched}
 ```
 
-The project's whole suite is the **reviewer's**, and `fleet land` runs it once:
-
-```
-{suite}
-```
-
-Running the whole suite here does not make that landing safer — it runs there
-either way — and on a box carrying other seats every one of them pays for it.
+The project's whole suite is the **reviewer's**: `fleet land` runs the command
+it is handed, once, on the rebased tree that lands. Running the whole suite
+here does not make that landing safer — it runs there either way — and on a
+box carrying other seats every one of them pays for it.
 
 ## The guards in force
 

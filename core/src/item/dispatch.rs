@@ -73,6 +73,11 @@ pub struct Order<'a> {
     /// The model the spawned seat runs on, where the caller names one; `None`
     /// leaves the fleet's policy default.
     pub model: Option<&'a str>,
+    /// The builder's gate — the command the seat runs over its own diff before
+    /// it delivers — as the caller hands it. It reaches the brief's `{touched}`
+    /// and the spawned seat's permission rules; `None` renders the brief's
+    /// named absence ([`brief::DERIVE_TOUCHED`]).
+    pub touched: Option<&'a str>,
 }
 
 /// A dispatch that stopped, with the one outcome a flight has to tell from the
@@ -143,6 +148,9 @@ pub fn dispatch(
 ) -> Result<Given, Refused> {
     let note = note_text(wiring.packs, order.by).map_err(Refused::stopped)?;
 
+    // Before the first write: the brief refuses on the same reading, and an
+    // order written ahead of a brief that cannot render is one nobody reads.
+    wiring.project.refuse_moved().map_err(Refused::stopped)?;
     refuse_unless_dispatchable(order, wiring).map_err(Refused::stopped)?;
 
     let given = match order.to {
@@ -304,6 +312,7 @@ fn to_a_transient_seat(
         item: order.item,
         base: order.base,
         model: order.model,
+        touched: order.touched,
     }) {
         SpawnOutcome::Spawned { seat, base, belt } => {
             wiring
@@ -643,6 +652,7 @@ fn write_brief(wiring: &Wiring, order: &Order, note: &str, seat: &str) -> Result
             text: &text,
             order: note,
             seat,
+            touched: order.touched,
         },
     )
     .map_err(|stop| stands(order.item, &stop.message))?;

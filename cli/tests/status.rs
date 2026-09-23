@@ -782,7 +782,7 @@ fn a_run_that_exits_one_is_on_the_page() {
     );
     written(
         &rig.project.join("fleet.toml"),
-        "[gates]\nsuite = \"make check\"\n\n[core.run]\nmax_open = 1000\n",
+        "[core.run]\nmax_open = 1000\n",
     );
     common::take_a_board(&rig.project, "status");
 

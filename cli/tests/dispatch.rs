@@ -26,8 +26,7 @@ use common::hermetic::Hermetic;
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 const MODEL: &str = "a-cheap-model";
-const POLICY: &str = "[gates]\nsuite = \"make check\"\n\n\
-                      [controller]\nnudge_model = \"a-cheap-model\"\n\
+const POLICY: &str = "[controller]\nnudge_model = \"a-cheap-model\"\n\
                       nudge_timeout_seconds = 20\n";
 
 fn defaults_into(machine: &Path) -> PathBuf {
@@ -324,11 +323,27 @@ fn a_live_row_in_the_seats_worktree_is_rung_with_the_item_and_the_brief() {
     rig.live();
     let item = project.item("a ready item for a live seat");
 
-    let out = rig.run(&["dispatch", &item, "--to", &rig.seat, "--by", "lead-1"]);
+    let out = rig.run(&[
+        "dispatch",
+        &item,
+        "--to",
+        &rig.seat,
+        "--by",
+        "lead-1",
+        "--touched",
+        "make the-touched-gate",
+    ]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
         "dispatched by lead-1 — orders given\n"
+    );
+    // The builder's gate the call handed in is the one the brief names.
+    let brief = std::fs::read_to_string(rig.machine.join("briefs").join(format!("{item}.md")))
+        .expect("the brief is written");
+    assert!(
+        brief.contains("```\nmake the-touched-gate\n```"),
+        "the brief renders the touched command handed to dispatch:\n{brief}"
     );
 
     let argv = rig.nudge_argv();
@@ -396,11 +411,14 @@ fn an_empty_roster_exits_four_and_the_three_writes_stand() {
         serde_json::json!("dispatch"),
         "the index stands"
     );
-    assert!(rig
-        .machine
-        .join("briefs")
-        .join(format!("{item}.md"))
-        .is_file());
+    // A dispatch handed no builder's gate: the brief names the absence where
+    // the command goes.
+    let brief = std::fs::read_to_string(rig.machine.join("briefs").join(format!("{item}.md")))
+        .expect("the brief stands");
+    assert!(
+        brief.contains(fleet_core::item::brief::DERIVE_TOUCHED),
+        "the brief names the absent touched command:\n{brief}"
+    );
 }
 
 #[test]
@@ -585,10 +603,15 @@ fn each_verbs_help_lists_only_the_options_it_reads() {
 
     let dispatch = help("dispatch");
     assert!(dispatch.contains("--by"), "{dispatch}");
+    assert!(dispatch.contains("--touched"), "{dispatch}");
     assert!(!dispatch.contains("--lock"), "{dispatch}");
 
     let brief = help("brief");
     assert!(brief.contains("--to"), "{brief}");
+    assert!(brief.contains("--touched"), "{brief}");
+
+    let land = help("land");
+    assert!(land.contains("--test"), "{land}");
     assert!(!brief.contains("--by"), "{brief}");
     assert!(!brief.contains("--lock"), "{brief}");
 }
@@ -599,7 +622,7 @@ fn brief_prints_the_first_turn_and_says_what_it_cost() {
     let rig = Rig::new("brief");
     let item = project.ordered("a ready item with an order on it");
 
-    let out = rig.run(&["brief", &item]);
+    let out = rig.run(&["brief", &item, "--touched", "make check"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let body = String::from_utf8_lossy(&out.stdout);
     assert!(body.contains(&item), "{body}");
@@ -616,7 +639,10 @@ fn brief_prints_the_first_turn_and_says_what_it_cost() {
         "the first line is the one only `{{item_id}}` fills"
     );
     assert!(body.contains("(transient)"), "{body}");
-    assert!(body.contains("make check"), "the project's suite: {body}");
+    assert!(
+        body.contains("```\nmake check\n```"),
+        "the builder's gate the call handed in: {body}"
+    );
     assert_eq!(
         stderr(&out).trim(),
         format!("brief: {} bytes", out.stdout.len())

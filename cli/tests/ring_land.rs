@@ -55,10 +55,13 @@ const WORK: &str = "a-builder/feat/the-work";
 /// The second item's branch, for the arm that asks for two landings at once.
 const OTHER: &str = "a-builder/feat/the-other";
 
-/// The suite is a script whose exit a seam file sets, so an arm chooses green
-/// or red without changing the command the note reports.
-const POLICY: &str = "[gates]\nsuite = \"sh the-suite.sh\"\nci_marker = \"sh the-marker.sh\"\n\n\
+const POLICY: &str = "[gates]\nci_marker = \"sh the-marker.sh\"\n\n\
                       [core]\nreviewer = \"a-reviewer\"\n";
+
+/// The test every landing below is handed, as `fleet land --test`: a script
+/// whose exit a seam file sets, so an arm chooses green or red without changing
+/// the command the note reports.
+const SUITE: &str = "sh the-suite.sh";
 
 /// Where every stub script below reads its seam files from: the rig's own root,
 /// handed to the landing and inherited by the children it spawns.
@@ -696,7 +699,7 @@ impl Rig {
     }
 
     fn land(&self) -> Output {
-        self.run(&["land", &self.item, &self.commit])
+        self.run(&["land", &self.item, &self.commit, "--test", SUITE])
     }
 
     /// A landing started and not waited on, its two streams into one file the
@@ -711,7 +714,7 @@ impl Rig {
             .unwrap_or_else(|e| panic!("{} is opened: {e}", into.display()));
         let both = page.try_clone().expect("the page is shared with stderr");
         Command::new(env!("CARGO_BIN_EXE_fleet"))
-            .args(self.args(&["land", item, commit], &packs))
+            .args(self.args(&["land", item, commit, "--test", SUITE], &packs))
             .current_dir(&self.reviewer)
             .stdout(std::process::Stdio::from(page))
             .stderr(std::process::Stdio::from(both))
@@ -917,7 +920,7 @@ fn a_green_landing_moves_the_bare_and_closes_the_item() {
     );
     assert!(
         notes.contains("suite: sh the-suite.sh, rc 0"),
-        "and it names the suite the project declared:\n{notes}"
+        "and it names the command the landing was handed:\n{notes}"
     );
     assert_eq!(rig.item_json()["status"], serde_json::json!("closed"));
     assert!(
@@ -1061,6 +1064,8 @@ fn an_also_path_rides_the_landing_and_the_branch_is_still_deleted() {
         "land",
         &rig.item,
         &rig.commit,
+        "--test",
+        SUITE,
         "--also",
         "the-log.md",
         "--reason",
@@ -1255,7 +1260,7 @@ fn the_bar_is_drawn_on_a_terminal_and_never_on_a_pipe() {
     // second, and the bar has to be read on two DIFFERENT counts.
     rig.suite_sleeps("2");
 
-    let out = rig.on_a_pty(&["land", &rig.item, &rig.commit]);
+    let out = rig.on_a_pty(&["land", &rig.item, &rig.commit, "--test", SUITE]);
     // The child's own status, which `script` hands back — not inferred from
     // anything the page says (R10).
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
@@ -1469,7 +1474,7 @@ fn a_landing_under_json_prints_the_sha_the_push_named_and_the_table_on_stderr() 
     let rig = Rig::new("json");
     rig.accepted();
 
-    let out = rig.run(&["land", &rig.item, &rig.commit, "--json"]);
+    let out = rig.run(&["land", &rig.item, &rig.commit, "--test", SUITE, "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
 
     let document = one_document(&out);
@@ -1504,7 +1509,7 @@ fn a_refused_landing_under_json_prints_the_refusal_shape_and_the_same_exit_code(
     rig.suite_exits("3");
     let before = rig.bare_main();
 
-    let out = rig.run(&["land", &rig.item, &rig.commit, "--json"]);
+    let out = rig.run(&["land", &rig.item, &rig.commit, "--test", SUITE, "--json"]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
 
     let document = one_document(&out);

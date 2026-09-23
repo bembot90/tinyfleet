@@ -144,10 +144,11 @@ pub fn project_text(
          primary = \"{primary}\"\n\
          worktrees = \"{worktrees}\"\n\
          \n\
-         # Owed, and left for the person: a landing gates on the project's own\n\
-         # suite, and a suite this file guessed would gate on nothing.\n\
+         # Owed, and left for the person: a marker this file guessed would\n\
+         # skip a pipeline nobody chose to skip. The test commands are not set\n\
+         # here — a workflow hands them to the landing; for takeoff they are\n\
+         # takeoff.test and takeoff.touched under [packs.tiny] in fleet.toml.\n\
          [gates]\n\
-         # suite = \"the command a landing runs\"\n\
          # ci_marker = \"the marker a landing's commit carries\"\n",
         name = basic(name),
         primary = basic(&primary.display().to_string()),
@@ -829,8 +830,8 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("# suite ="),
-            "the gates are owed, not guessed: {text}"
+            !text.contains("suite =") && text.contains("takeoff.test"),
+            "no test command is written or owed here, and the file says where it is set: {text}"
         );
         assert!(text.contains("# ci_marker ="), "{text}");
 
