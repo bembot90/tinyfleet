@@ -555,6 +555,40 @@ mod effects {
         );
     }
 
+    /// A start the BUILT CONTROLLER issues hands the session the controller's own
+    /// binary as `FLEET_BIN`, so the plugin's hooks in that session run the
+    /// binary that spawned it — and not a build the plugin root may not hold,
+    /// which blocks every Bash command the session makes.
+    ///
+    /// Out of process, because the subject is WHICH EXECUTABLE IS RUNNING: in
+    /// this process the running executable is the test binary, and a value read
+    /// off an in-process poll would pass against a controller that named any
+    /// file at all.
+    ///
+    /// Asserted against the built binary's own path, canonical on both sides,
+    /// which is what tells it from a pass-through: this process's `FLEET_BIN` is
+    /// unset under a plain shell and names the seat's binary inside a flight.
+    #[test]
+    fn a_start_hands_the_session_the_controllers_own_binary_as_fleet_bin() {
+        let rig = Rig::new("effect-fleet-bin");
+        rig.write_roster("[]");
+
+        let out = rig.observe_out_of_process();
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert_eq!(seat_row(&rig)["outcome"], "spawned");
+
+        let handed = rig.start_fleet_bin();
+        assert!(!handed.is_empty(), "the start carried a FLEET_BIN at all");
+        let handed = std::fs::canonicalize(&handed)
+            .unwrap_or_else(|e| panic!("the FLEET_BIN handed over, {handed}, resolves: {e}"));
+        let built =
+            std::fs::canonicalize(env!("CARGO_BIN_EXE_fleet")).expect("the built binary resolves");
+        assert_eq!(
+            handed, built,
+            "the session is handed the binary the controller is running"
+        );
+    }
+
     /// A NAMED seat's start writes no settings into its worktree: that checkout
     /// is a person's, and their own permission rules stay theirs (R13's shape).
     /// Only a transient spawn renders the pack's document, and this loop makes

@@ -6,27 +6,76 @@
 # service environment holds neither a package manager's prefix nor the user's
 # local bin (fleet/brain/lessons/claude-code.md D1), so a bare `fleet` here
 # would find nothing under the process that starts a session.
+#
+# WITH NO BINARY TO RUN, THE CALLER DECIDES THE EXIT. A pre-tool hook blocks
+# only on 2 and reads every other non-zero exit as a hook that failed and let
+# the call through, so a guard that exited 127 here would switch itself off
+# with one line nobody reads. A guard therefore exits 2 and blocks the call it
+# was asked about. The session-start line must never block — a session that
+# does not come up cannot be told why — so prime exits 127, which the agent
+# shows the person and goes on from. Every other verb, `guard --check`
+# included, is a command that could not run: 127, and no word of a block.
 set -u
 
+mode=command
+class=
+case "${1-}" in
+guard)
+	mode=guard
+	class=${2-}
+	for arg in "$@"; do
+		if [ "${arg}" = --check ]; then
+			mode=command
+		fi
+	done
+	;;
+prime)
+	mode=prime
+	;;
+esac
+
+# no_binary <what is missing>: say what is missing and how to supply it, in the
+# words this invocation's caller reads, and exit with the status it acts on.
+no_binary() {
+	case "${mode}" in
+	guard)
+		echo "fleet: this Bash command is blocked: the \`fleet guard${class:+ ${class}}\` hook has no fleet binary to judge it with, and a guard that cannot judge refuses rather than letting a command run unjudged." >&2
+		echo "fleet: $1." >&2
+		echo "fleet: every Bash command in this session is blocked until one is found, so supply it from a terminal outside the session: run \`cargo build --release\` in ${build_in}, or start the session with FLEET_BIN set to the absolute path of a fleet binary." >&2
+		exit 2
+		;;
+	prime)
+		echo "fleet: this session starts without its fleet context: the session-start hook has no fleet binary to run, and every Bash command in the session will be blocked until one is found." >&2
+		echo "fleet: $1." >&2
+		echo "fleet: to supply one, run \`cargo build --release\` in ${build_in}, or start the session with FLEET_BIN set to the absolute path of a fleet binary." >&2
+		exit 127
+		;;
+	*)
+		echo "fleet: $1." >&2
+		echo "fleet: to supply one, run \`cargo build --release\` in ${build_in}, or set FLEET_BIN to the absolute path of a fleet binary." >&2
+		exit 127
+		;;
+	esac
+}
+
 root=$(cd -- "$(dirname -- "$0")/.." 2>/dev/null && pwd -P)
+build_in=${root:-"the plugin's checkout"}
 if [ -z "${root}" ]; then
-	echo "fleet: the plugin root cannot be resolved from $0" >&2
-	exit 127
+	no_binary "the plugin root cannot be resolved from $0"
 fi
 
-# FLEET_BIN is the seam an installed copy sets: the plugin cache carries no
-# target directory, so the binary it runs is named from outside.
+# FLEET_BIN is the seam an installed copy sets, and the one a controller sets
+# on every session it spawns, naming its own binary: the plugin cache carries
+# no target directory, so the binary it runs is named from outside.
 if [ -n "${FLEET_BIN-}" ]; then
 	case "${FLEET_BIN}" in
 	/*) ;;
 	*)
-		echo "fleet: FLEET_BIN names \`${FLEET_BIN}\`, which is not an absolute path" >&2
-		exit 127
+		no_binary "FLEET_BIN names \`${FLEET_BIN}\`, which is not an absolute path"
 		;;
 	esac
 	if [ ! -x "${FLEET_BIN}" ]; then
-		echo "fleet: FLEET_BIN names \`${FLEET_BIN}\`, which is not an executable file" >&2
-		exit 127
+		no_binary "FLEET_BIN names \`${FLEET_BIN}\`, which is not an executable file"
 	fi
 	exec "${FLEET_BIN}" "$@"
 fi
@@ -37,5 +86,4 @@ for candidate in "${root}/target/release/fleet" "${root}/target/debug/fleet"; do
 	fi
 done
 
-echo "fleet: no built binary under ${root}/target — run cargo build --release in ${root}, or set FLEET_BIN" >&2
-exit 127
+no_binary "no built binary under ${root}/target, and FLEET_BIN is not set"

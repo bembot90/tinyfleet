@@ -1069,6 +1069,17 @@ impl Rig {
         PathBuf::from(printed.trim())
     }
 
+    /// The `FLEET_BIN` the last start was handed — the binary the plugin's hooks
+    /// in the session it opens will run. Empty is a start that carried none.
+    fn start_fleet_bin_path(&self) -> PathBuf {
+        self.root.join("start-fleet-bin")
+    }
+
+    fn start_fleet_bin(&self) -> String {
+        std::fs::read_to_string(self.start_fleet_bin_path())
+            .expect("the start recorded its FLEET_BIN")
+    }
+
     /// A copy of the recording stub under the ONE NAME the default seam resolves,
     /// planted where the CONSTRUCTED path finds it — the home's `.local/bin`,
     /// which `platform::child_path` carries and which this rig owns because it
@@ -1474,6 +1485,8 @@ impl Rig {
         let calls = calls.display();
         let start_bin = self.start_bin_path();
         let start_bin = start_bin.display();
+        let start_fleet_bin = self.start_fleet_bin_path();
+        let start_fleet_bin = start_fleet_bin.display();
         let start_argv = self.start_argv_path();
         let start_argv = start_argv.display();
         let start_cwd = self.start_cwd_path();
@@ -1537,6 +1550,7 @@ impl Rig {
                  \x20   ;;\n\
                  \x20 --bg)\n\
                  \x20   printf '%s' \"$0\" > '{start_bin}'\n\
+                 \x20   printf '%s' \"${{FLEET_BIN-}}\" > '{start_fleet_bin}'\n\
                  \x20   printf '%s\\n' \"$@\" > '{start_argv}'\n\
                  \x20   pwd > '{start_cwd}'\n\
                  \x20   printf '%s' \"$PATH\" > '{start_path}'\n\

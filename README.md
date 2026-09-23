@@ -94,8 +94,14 @@ because a hook's `PATH` does not carry `bin/` and the Bash tool's does
 
 `bin/fleet` resolves the real binary by explicit path: `$FLEET_BIN` when it
 names an absolute executable, else `target/release/fleet`, else
-`target/debug/fleet` under this directory. An installed copy carries no
-`target/`, so `$FLEET_BIN` is the seam the install sets.
+`target/debug/fleet` under this directory — never a bare `fleet` on `PATH`,
+which a service environment does not carry. The controller sets `$FLEET_BIN`
+to its own binary on every session it spawns, so a seat's hooks run the binary
+that spawned it. A session with no binary to find — started from a checkout
+nobody built, or from an installed copy, which carries no `target/` and which
+nothing yet points at a binary — fails closed: each guard hook exits 2, which
+blocks the Bash command, and says what is missing and how to supply it, while
+the session-start hook says the same and lets the session come up.
 
 ### The rituals a session gets
 

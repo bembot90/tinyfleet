@@ -1635,6 +1635,57 @@ fn a_child_carries_the_configured_credential_scope_and_not_the_resolved_config_d
     );
 }
 
+/// Every child carries THIS PROCESS'S OWN EXECUTABLE as `FLEET_BIN`, so a
+/// session this fleet spawns runs its plugin hooks through the binary that
+/// spawned it. Without it the plugin's shim looks under its root's `target/`,
+/// and a root with no build there blocks every Bash command the session makes.
+///
+/// EVERY CHILD, and not only the start: a session is claimed from the agent's
+/// background daemon, and any of the adapter's calls — a listing included —
+/// can be the one that starts that daemon (lessons claude-code D1). So the value
+/// is read off a start and off a read, one child each.
+///
+/// Asserted BY VALUE against this process's own path, which is what tells the
+/// value from a pass-through: this process's own `FLEET_BIN` is unset under a
+/// plain shell and names the seat's binary inside a flight, and neither is this
+/// test binary.
+#[test]
+fn every_child_carries_this_processs_own_executable_as_fleet_bin() {
+    let rig = Rig::new("fleet-bin");
+    let leaked = rig.write_env_recording_stub();
+    let own = std::env::current_exe().expect("this process names its own executable");
+    assert!(own.is_absolute(), "{} is absolute", own.display());
+    let owed = format!("FLEET_BIN={}", own.display());
+
+    let worktree = rig.worktree().display().to_string();
+    let mut table = Table::default();
+    let mut log = rig.log();
+    let outcome = effect::spawn_woken(
+        &rig.agent(),
+        &a_policy(),
+        &a_target(&worktree, None),
+        &mut log,
+        &mut table,
+        1_000,
+    );
+    assert_eq!(outcome, effect::Outcome::Spawned);
+    let env = std::fs::read_to_string(&leaked).expect("the start recorded its environment");
+    let lines: Vec<&str> = env.lines().collect();
+    assert!(
+        lines.contains(&owed.as_str()),
+        "the start carries {owed}: {lines:?}"
+    );
+
+    std::fs::remove_file(&leaked).expect("the start's record is cleared");
+    let _ = rig.agent().daemon();
+    let env = std::fs::read_to_string(&leaked).expect("the read recorded its environment");
+    let lines: Vec<&str> = env.lines().collect();
+    assert!(
+        lines.contains(&owed.as_str()),
+        "the daemon read carries {owed} too: {lines:?}"
+    );
+}
+
 /// The table a rebuild folds out of the stream carries the DISPATCH the live
 /// table holds — the property the unit arms in `sessions::tests` approximate,
 /// measured here against the live path itself rather than against a fixture.

@@ -45,6 +45,15 @@ pub struct ClaudeCode {
     /// refuses rather than falling back to a name it would discover at the
     /// spawn.
     effect_bin: Option<PathBuf>,
+    /// This process's own executable, which every child is handed as
+    /// [`FLEET_BIN_VAR`] so the plugin's hooks in a session this fleet spawns run
+    /// the binary that spawned it. `None` is an executable this process cannot
+    /// name, and the child is then handed nothing rather than a guess.
+    ///
+    /// Not a seam either constructor takes: it is WHICH PROCESS THIS IS, the same
+    /// answer for every arm of a suite, and a caller handing in some other file
+    /// would be naming a binary the session's hooks were never run against.
+    fleet_bin: Option<PathBuf>,
     /// Children still running when their watch window closed. Held so their
     /// eventual exit is reaped rather than left a zombie per start; never waited
     /// on, because arrival is the roster's answer and not this handle's.
@@ -72,6 +81,7 @@ impl ClaudeCode {
             // reading issues no effect, and a `None` here refuses every verb
             // rather than letting one fall back to `bin`.
             effect_bin: None,
+            fleet_bin: own_executable(),
             adopted: Mutex::new(Vec::new()),
         }
     }
@@ -106,6 +116,7 @@ impl ClaudeCode {
             child_path,
             credential_dir,
             effect_bin,
+            fleet_bin: own_executable(),
             adopted: Mutex::new(Vec::new()),
         }
     }
@@ -152,8 +163,9 @@ impl ClaudeCode {
     /// carries the collapsed search path, long after the start that caused it.
     /// So the environment is cleared and rebuilt: the constructed `PATH`, the
     /// four values a shell needs to be a shell, the agent's own configuration
-    /// directory when this adapter is scoped to one, and the credential scope
-    /// that directory would otherwise move off the operator's own login.
+    /// directory when this adapter is scoped to one, the credential scope that
+    /// directory would otherwise move off the operator's own login, and this
+    /// process's own executable as the binary the plugin's hooks run.
     ///
     /// It chooses no program. Its two callers below do, and they choose
     /// differently on purpose.
@@ -175,6 +187,15 @@ impl ClaudeCode {
         // Set on EVERY child, defined even when empty: unset falls back to the
         // suffixed credential lookup, which is the logged-out child.
         cmd.env("CLAUDE_SECURESTORAGE_CONFIG_DIR", &self.credential_dir);
+        // Set on EVERY child and not only the start, for the reason the PATH
+        // above is: a session is claimed from the agent's background daemon,
+        // and any of these calls can be the one that starts it (lessons
+        // claude-code D1). Without it the plugin's shim looks for a build under
+        // its own root, and a root holding none blocks every Bash command the
+        // session makes.
+        if let Some(bin) = &self.fleet_bin {
+            cmd.env(FLEET_BIN_VAR, bin);
+        }
         cmd
     }
 
@@ -252,6 +273,11 @@ pub const NUDGES_DIR: &str = "nudges";
 /// credential's service name hashes that input, so a directory value — the home
 /// default included — names a credential nobody wrote, and only the operator's
 /// own input, empty when they configured none, reaches their login.
+///
+/// `FLEET_BIN` is not here, and passing it through would be wrong twice over: a
+/// controller started by a service manager has none to pass, and one started
+/// from inside a seat would hand on that seat's binary rather than its own. It
+/// is set from this process's own executable instead.
 pub const PASSED_THROUGH: [&str; 4] = ["HOME", "USER", "TMPDIR", "LANG"];
 
 /// The binary the adapter runs, with the environment passed in, so the order is
@@ -277,6 +303,21 @@ pub fn bin_from(configured: Option<&str>) -> String {
 
 /// The variable naming the agent binary.
 pub const CLAUDE_BIN_VAR: &str = "FLEET_CLAUDE_BIN";
+
+/// The variable the plugin's shim runs its binary from, which every child of
+/// this adapter is handed. Spelled here and not taken from the item layer's
+/// own constant, because this crate names nothing of the project around it.
+pub const FLEET_BIN_VAR: &str = "FLEET_BIN";
+
+/// This process's own executable, as the absolute path the shim requires.
+///
+/// Whatever the operating system answers, and nothing when it answers nothing
+/// or something relative: the shim refuses a relative seam, so handing one over
+/// would block every Bash command of the session it reached rather than let the
+/// shim look under its own root.
+fn own_executable() -> Option<PathBuf> {
+    std::env::current_exe().ok().filter(|exe| exe.is_absolute())
+}
 
 /// Set, `CLAUDE_BIN_VAR` naming nothing is a refusal rather than a fall back.
 pub const HERMETIC_VAR: &str = "FLEET_TEST_HERMETIC";
@@ -833,6 +874,11 @@ mod tests {
             credential_dir_from(std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref()),
             "the configured value, read by its own reader and not by the directory's"
         );
+        assert_eq!(
+            agent.fleet_bin,
+            own_executable(),
+            "the executable this process is, which every child is handed"
+        );
     }
 
     /// The deadline the controller runs on when nothing sets one. Asserted as
@@ -877,6 +923,7 @@ mod tests {
             child_path: String::new(),
             credential_dir: String::new(),
             effect_bin: None,
+            fleet_bin: None,
             adopted: Mutex::new(Vec::new()),
         };
         let cause = match empty.status(None) {
@@ -920,6 +967,7 @@ mod tests {
             child_path: String::new(),
             credential_dir: String::new(),
             effect_bin: None,
+            fleet_bin: None,
             adopted: Mutex::new(Vec::new()),
         };
         let control = match present.status(None) {
@@ -953,6 +1001,7 @@ mod tests {
             child_path: String::new(),
             credential_dir: String::new(),
             effect_bin: None,
+            fleet_bin: None,
             adopted: Mutex::new(Vec::new()),
         };
         let answered = match answering.status(None) {

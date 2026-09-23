@@ -179,6 +179,236 @@ fn the_shim_refuses_a_relative_seam() {
     );
 }
 
+// ---- the shim with no binary to run ------------------------------------------
+//
+// A pre-tool hook blocks only on exit 2, and every other non-zero exit is read
+// as a hook that failed and let the call through. So a shim that exits 127 for
+// a missing binary switches all four guards off without a word to the session,
+// and the arms below hold the three answers it gives instead: a guard blocks,
+// the session-start line fails open and says what is missing, and an ordinary
+// verb fails as a command that could not run.
+
+/// A plugin root holding the shim and NOTHING ELSE: no `target/`, which is the
+/// shape of a checkout nobody built and of every copy the plugin cache holds.
+/// The shim resolves its root off its own path, so the copy under the scratch
+/// tree is what decides, and the real checkout's build is out of reach.
+fn unbuilt_root(s: &Scratch) -> PathBuf {
+    let root = s.dir("plugin");
+    std::fs::create_dir_all(root.join("bin")).expect("the bin directory is created");
+    std::fs::copy(fleet_root().join("bin/fleet"), root.join("bin/fleet"))
+        .expect("the shim is copied, mode and all");
+    assert!(
+        !root.join("target").exists(),
+        "the fixture root has no build under it"
+    );
+    // Canonical, because the shim names its root as `pwd -P` resolves it and
+    // the temp directory is a link on some hosts.
+    std::fs::canonicalize(&root).expect("the fixture root resolves")
+}
+
+/// One hook command line run the way the agent runs it: through a shell, with
+/// `CLAUDE_PLUGIN_ROOT` naming the root and nothing else inherited — this
+/// process's own `FLEET_BIN` least of all, since a suite run inside a seat
+/// carries one. The home and the machine directory are the scratch tree's, so
+/// a binary the hook does reach reads no fleet this box runs.
+fn run_hook(s: &Scratch, command: &str, root: &Path, fleet_bin: Option<&str>) -> Output {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut cmd = Command::new("/bin/sh");
+    cmd.args(["-c", command])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("CLAUDE_PLUGIN_ROOT", root)
+        .env("HOME", s.dir("home"))
+        .env("FLEET_DIR", s.dir("fleet-dir"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(bin) = fleet_bin {
+        cmd.env("FLEET_BIN", bin);
+    }
+    let mut child = cmd.spawn().expect("the shell runs");
+    // The payload a pre-tool hook is handed. A shim with nothing to run never
+    // reads it, so a closed pipe on the far side is not an error here.
+    let body = serde_json::json!({
+        "tool_name": "Bash",
+        "tool_input": { "command": "git status" },
+        "cwd": root,
+    });
+    let _ = child
+        .stdin
+        .take()
+        .expect("stdin is piped")
+        .write_all(body.to_string().as_bytes());
+    child.wait_with_output().expect("the shell finishes")
+}
+
+/// Every PreToolUse command the plugin's hook file carries, as written there.
+fn guard_hook_commands() -> Vec<String> {
+    let plugin = json("hooks/hooks.json");
+    let pre = plugin["hooks"]["PreToolUse"]
+        .as_array()
+        .expect("the plugin file carries a PreToolUse array");
+    let commands: Vec<String> = pre.iter().flat_map(commands).collect();
+    // The control on the loops below: an empty list would pass every one.
+    assert_eq!(
+        commands.len(),
+        4,
+        "the four guard hooks were read: {commands:?}"
+    );
+    commands
+}
+
+/// THE GUARDS FAIL CLOSED. With no binary to judge by, every guard hook the
+/// plugin wires exits 2 — the one status a pre-tool hook blocks on — and says on
+/// stderr, which is what the agent is handed with the block, what is missing
+/// and the two ways to supply it.
+///
+/// Three shapes of missing, because the shim has three refusals and a guard
+/// that blocked on one and let the call through on the others would still be a
+/// guard switched off by a typo: no build under the root with nothing named,
+/// a `FLEET_BIN` that is relative, and one naming a file that is not there.
+#[test]
+fn a_guard_hook_with_no_binary_to_run_blocks_the_call_and_says_how_to_supply_one() {
+    let s = Scratch::new("shim-guard-unbuilt");
+    let root = unbuilt_root(&s);
+    let absent = s.root.join("no-such-fleet");
+    let shapes: [(&str, Option<&str>, &str); 3] = [
+        ("no build and no FLEET_BIN", None, "cargo build --release"),
+        (
+            "a relative FLEET_BIN",
+            Some("target/debug/fleet"),
+            "target/debug/fleet",
+        ),
+        (
+            "a FLEET_BIN naming nothing",
+            Some(absent.to_str().expect("the temp path is utf-8")),
+            absent.to_str().expect("the temp path is utf-8"),
+        ),
+    ];
+
+    for command in guard_hook_commands() {
+        let class = command
+            .rsplit(' ')
+            .next()
+            .expect("a guard command ends on its class");
+        for (shape, fleet_bin, named) in shapes {
+            let out = run_hook(&s, &command, &root, fleet_bin);
+            let text = utf8(out.stderr.clone());
+            assert_eq!(
+                out.status.code(),
+                Some(2),
+                "{shape}: `{command}` blocks the call rather than letting it run unjudged: {text}"
+            );
+            assert!(
+                utf8(out.stdout.clone()).is_empty(),
+                "{shape}: a block is a status and a reason, never a verdict on stdout"
+            );
+            for owed in ["blocked", class, named, "FLEET_BIN", "absolute path"] {
+                assert!(
+                    text.contains(owed),
+                    "{shape}: the reason names `{owed}`: {text}"
+                );
+            }
+            assert!(
+                text.contains(root.to_str().expect("the temp path is utf-8")),
+                "{shape}: the reason names the plugin root a build would go under: {text}"
+            );
+        }
+    }
+}
+
+/// The CONTROL on the arm above, which says the block is the missing binary's
+/// and not the shim's on every path: a guard hook with a binary to run is
+/// that binary's own answer, exit 0 with nothing refused for a command no
+/// class judges.
+#[test]
+fn a_guard_hook_with_a_binary_to_run_is_the_binarys_own_answer() {
+    let s = Scratch::new("shim-guard-built");
+    let root = unbuilt_root(&s);
+    for command in guard_hook_commands() {
+        let out = run_hook(&s, &command, &root, Some(env!("CARGO_BIN_EXE_fleet")));
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "`{command}` judged and allowed: {}",
+            utf8(out.stderr.clone())
+        );
+        assert!(
+            utf8(out.stdout).is_empty(),
+            "`{command}` refused nothing about `git status`"
+        );
+    }
+}
+
+/// THE SESSION-START LINE FAILS OPEN. A session whose start hook blocked would
+/// never come up to be told why, so prime's missing binary is a non-zero status
+/// that is NOT 2 — a hook that failed, shown to the person — and its words say
+/// what the session is missing and what that does to the guards beside it.
+#[test]
+fn the_session_start_hook_with_no_binary_fails_open_and_says_what_the_session_lacks() {
+    let s = Scratch::new("shim-prime-unbuilt");
+    let root = unbuilt_root(&s);
+    let plugin = json("hooks/hooks.json");
+    let start = &commands(&plugin["hooks"]["SessionStart"][0])[0];
+
+    let out = run_hook(&s, start, &root, None);
+    let text = utf8(out.stderr.clone());
+    assert_eq!(
+        out.status.code(),
+        Some(127),
+        "the start hook fails as a command that could not run, which never blocks: {text}"
+    );
+    assert!(
+        utf8(out.stdout).is_empty(),
+        "nothing is handed to the session"
+    );
+    for owed in [
+        "this session starts without",
+        "every Bash command",
+        "blocked",
+        "cargo build --release",
+        "FLEET_BIN",
+        "absolute path",
+    ] {
+        assert!(text.contains(owed), "the reason names `{owed}`: {text}");
+    }
+}
+
+/// An ORDINARY verb with no binary fails as a command that could not run, 127,
+/// and its words say nothing of a block: the Bash tool reaches the same file by
+/// bare name, and a person reading a refused `fleet status` must not be told a
+/// guard judged something. `guard --check` is ordinary in this sense — it is a
+/// person asking about configuration, and no hook runs it.
+#[test]
+fn an_ordinary_verb_with_no_binary_fails_as_could_not_run_and_never_as_a_block() {
+    let s = Scratch::new("shim-ordinary-unbuilt");
+    let root = unbuilt_root(&s);
+    let shim = root.join("bin/fleet");
+    let shim = shim.to_str().expect("the temp path is utf-8");
+
+    for verb in ["status", "guard shell-trap --check"] {
+        let out = run_hook(&s, &format!("'{shim}' {verb}"), &root, None);
+        let text = utf8(out.stderr.clone());
+        assert_eq!(out.status.code(), Some(127), "`fleet {verb}`: {text}");
+        assert!(
+            utf8(out.stdout).is_empty(),
+            "`fleet {verb}` printed a verdict"
+        );
+        assert!(
+            !text.contains("blocked"),
+            "`fleet {verb}` is not reported as a block: {text}"
+        );
+        for owed in ["cargo build --release", "FLEET_BIN", "absolute path"] {
+            assert!(
+                text.contains(owed),
+                "`fleet {verb}`: the reason names `{owed}`: {text}"
+            );
+        }
+    }
+}
+
 #[test]
 fn the_probe_skill_is_named_version() {
     let skill = read("skills/version/SKILL.md");
