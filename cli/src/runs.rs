@@ -332,4 +332,119 @@ mod tests {
             refused.message
         );
     }
+
+    /// The `PATH` a launchd agent is started with, which is the whole of this
+    /// box's search path for the controller: no package-manager prefix, where
+    /// `bd` actually is, and no user local bin either.
+    const SERVICE_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+    /// Serialises the arms here that move the process's environment, because
+    /// `cargo test` runs this binary's arms as threads of one process.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Variables moved for one arm and put back when it ends — on a panic too,
+    /// so a red arm never leaves the service `PATH` behind for a sibling.
+    struct EnvHeld(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl EnvHeld {
+        fn set(moved: &[(&'static str, &std::ffi::OsStr)]) -> EnvHeld {
+            let held = EnvHeld(
+                moved
+                    .iter()
+                    .map(|(key, _)| (*key, std::env::var_os(key)))
+                    .collect(),
+            );
+            for (key, value) in moved {
+                std::env::set_var(key, value);
+            }
+            held
+        }
+    }
+
+    impl Drop for EnvHeld {
+        fn drop(&mut self) {
+            for (key, before) in self.0.iter().rev() {
+                match before {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    /// The opener the binary builds runs the `bd` it resolved, by absolute
+    /// path, when the process's own `PATH` is the service's and holds no `bd`
+    /// at all — which is the controller's situation on every tick.
+    ///
+    /// THE ENGINE AND NOT THE OPENER: [`Engine::on`] is the one place the pass
+    /// gets its stores, so the arm reaches the store through it. THE CONTROL
+    /// AND THE PROOF ARE ON ONE `PATH`: the shim is named to the resolver by
+    /// absolute path and is unreachable by bare name, so a store that fell
+    /// back to the bare name would be refused rather than find it.
+    #[test]
+    fn the_engines_store_runs_the_resolved_bd_on_a_service_path() {
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = std::env::temp_dir().join(format!("fleet-runs-bd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.join("project");
+        std::fs::create_dir_all(&root).expect("the project root is created");
+
+        // A `bd` that records the argv it was handed and answers an empty list.
+        let log = dir.join("argv");
+        let bd = dir.join("bd");
+        std::fs::write(
+            &bd,
+            format!(
+                "#!/bin/sh\n\
+                 for a in \"$@\"; do printf '%s\\n' \"$a\" >> '{log}'; done\n\
+                 printf '[]\\n'\n",
+                log = log.display(),
+            ),
+        )
+        .expect("the shim is written");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bd, std::fs::Permissions::from_mode(0o755))
+            .expect("the shim is executable");
+
+        let (by_name, by_engine) = {
+            let _held = EnvHeld::set(&[
+                ("PATH", SERVICE_PATH.as_ref()),
+                ("FLEET_BD_BIN", bd.as_os_str()),
+            ]);
+            (
+                Bd::at(&root).ready(),
+                Engine::on(dir.join("machine")).stores.open(&root).ready(),
+            )
+        };
+
+        let refusal = by_name.expect_err("a bare `bd` is not on the service PATH");
+        assert!(
+            format!("{refusal:?}").contains("could not be run"),
+            "the bare name must fail because nothing could be run, not for some \
+             other reason — {refusal:?}"
+        );
+        assert!(by_engine
+            .expect("the engine's store runs the shim, which answers a list")
+            .is_empty());
+        let argv: Vec<String> = std::fs::read_to_string(&log)
+            .expect("the shim recorded its argv")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            argv,
+            vec![
+                String::from("-C"),
+                root.display().to_string(),
+                String::from("ready"),
+                String::from("--json"),
+                String::from("-n"),
+                String::from("0"),
+            ],
+            "exactly the engine's read reached the shim"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
