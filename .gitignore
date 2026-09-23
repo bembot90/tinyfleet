@@ -7,3 +7,7 @@ target/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Claude Code: builder worktrees and per-machine settings
+.claude/worktrees/
+.claude/settings.local.json
