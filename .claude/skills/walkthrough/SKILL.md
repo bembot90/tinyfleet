@@ -1,6 +1,6 @@
 ---
 name: walkthrough
-description: Walk Alberto through one scope of the fleet code as its teacher and its senior engineer in one sitting — file the dated sitting bead, read the scope from the primary so every line number matches his VS Code, explain each section with a map and one worked trace and close it with a retrieval check, file every Critical or Required finding as a bead pointing back at the sitting, and split a scope over the ceiling into an outline bead the next sitting resumes from. Invoke as /walkthrough <path> at Alberto's word, with him present.
+description: Walk Alberto through one scope of the fleet code as its teacher and its senior engineer in one sitting — file the dated sitting bead, read the scope from the primary so every line number matches his VS Code, walk each section file by file in short line-range steps and close it with a one-line-per-hop trace and a retrieval check, then put each finding to him one at a time and file what he chooses as a bead pointing back at the sitting, and split a scope over the ceiling into an outline bead the next sitting resumes from. Invoke as /walkthrough <path> at Alberto's word, with him present.
 ---
 
 # walkthrough
@@ -257,14 +257,17 @@ the order they make sense in.
 Then write the plan — the sitting's **sections**, each 300 to 800 lines, in
 reading order, and for each:
 
-- its files and line ranges;
-- **the one worked trace** it will follow — a concrete request, event,
-  command or message, named ("`fleet dispatch` writes the order note on an
-  item", "a seat rests and its successor wakes", "a routine fires on the
-  controller's clock") — and the hops it takes through this section;
-- the concepts, decisions and dependency boundaries that first appear here.
+- its files and line ranges, in the order the steps will walk them;
+- **the one worked trace** that ties it up at the end, a concrete request,
+  event, command or message, named ("`fleet dispatch` writes the order note
+  on an item", "a seat rests and its successor wakes", "a routine fires on
+  the controller's clock"), with the hops it takes through this section;
+- the concepts, decisions and dependency boundaries that first appear here;
+- the findings you measured during the silent read, held for the section's
+  end (§ 8).
 
-One note on the sitting bead, then five lines in chat, then section 1:
+One note on the sitting bead, then one line per section in chat, then the
+pointer that opens section 1:
 
 ```sh
 bd note <sitting> "$(cat plan.txt)"
@@ -274,49 +277,64 @@ The plan is not a question; he redirects if he wants to.
 
 ## 8. Step 4 — a section
 
-Every section is the same five moves in one message, and **the message ends
-at the check**. One section per message, never two; the turn ends there and
-waits.
+**File by file, line by line, in small steps.** Alberto's ruling on
+`fleet-alt.1` (2026-09-23), verbatim: *"we're gonna go file by file and line
+by line instead of this giant wall of text, at the beginning of each section
+it should just point at where to start. the check should happen at the end of
+each section to make sure i know how things work. the findings should also go
+at the end of each section since right now i dont have enough knowledge to
+make a decision. the findings should be walked one by one with
+AskUserQuestion"*. A section is a run of short messages, never one long one:
 
-1. **The map** (3–6 sentences; the advance organizer, tinytown's ruling R5).
-   What this code is for, where it sits in the whole — what calls it, what it
-   calls — what to watch for while reading it, and which new concepts it will
-   meet.
-2. **The trace** (tinytown's ruling R5). One concrete thing followed end to
-   end: `path:line` per hop, one or two sentences per hop, and at every hop
-   the *why* — why here, why this shape, what breaks if it were elsewhere.
-   The worked example is what turns a list of files into a mechanism he can
-   hold.
-3. **The rest.** The section's other files in reading order, a paragraph
-   each with line references, skipping what the trace already covered. A
-   concept, a decision or a dependency boundary gets its paragraph here, on
-   its first appearance, once.
-4. **The findings**, inline as you meet them, one line each, in this shape
-   (the paths are illustrative):
+1. **The opening points, and that is all.** One line: the file and the line
+   to start at (`core/src/store.rs:1`). No map, no overview, no list of what
+   is coming. The first step can follow in the same message.
+2. **The steps.** Walk each file top to bottom in the plan's order, one range
+   at a time: a header, a type, a function, or a few short neighbours
+   together, no more than a screen of his editor (about 20–60 lines). Each
+   step is its range by `path:from-to`, then what those lines do and **why
+   they are shaped that way**: the constraint, the PRD requirement or bead,
+   the boundary with a dependency. A concept, decision or boundary is
+   explained at the step where it first appears, once. A range that holds
+   nothing to explain (a derive block, a list of imports) gets one line
+   saying so, or is folded into the next range. **Then the message ends**,
+   and "next" (or a question) opens the next step. A range the walk skips,
+   such as an inline test module, is named as skipped.
+3. **No findings during the steps.** The senior-engineer read happens as you
+   go and is measured as you go (§ 9), but it is **held back**: he cannot
+   judge a cut in code he has not finished reading. Keep the finding lines
+   for the end of the section.
+4. **At the end of the section: the tie-up and the check.** After the last
+   step, one short trace ties the section together: a concrete request,
+   event or command, one line per hop with its `path:line`, and no hop he
+   has not already walked. Then **the check** (tinytown's ruling R5, the
+   retrieval-practice half): two or three questions he answers from memory,
+   about load-bearing things such as what calls this, why it is shaped this
+   way, and what would break. Then stop.
+5. **After the check: the findings, one at a time** (§ 10).
 
-       F3 [Required] architecture controller/src/effect.rs:88-131 — the retry loop re-implements core/src/lock.rs:12 — evidence: grep -n 'from_millis' finds both, same backoff table — remedy: call core's; -31 lines
+A finding line keeps this shape (the paths are illustrative):
 
-   Severity and axis are § 9's. A concision finding carries one of the five
-   tags instead of an axis and ends with the line delta. **A section with no
-   finding says "no findings" and names what was checked** — never "this
-   looks fine", which is a claim without a measurement.
-5. **The check** (tinytown's ruling R5, the retrieval practice half). Two or
-   three questions he answers from memory before the next section opens — not
-   trivia, the load-bearing things: what calls this, why is it shaped this
-   way, what would break. Then stop.
+    F3 [Required] architecture controller/src/effect.rs:88-131 — the retry loop re-implements core/src/lock.rs:12 — evidence: grep -n 'from_millis' finds both, same backoff table — remedy: call core's; -31 lines
 
-When his answers come, confirm or correct each in one line and record the
-exchange, then his questions from the section, verbatim:
+Severity and axis are § 9's. A concision finding carries one of the five tags
+instead of an axis and ends with the line delta. **A section with no finding
+says "no findings" and names what was checked.** It never says "this looks
+fine", which is a claim without a measurement.
+
+When his check answers come, confirm or correct each in one line and record
+the exchange. Record his questions from the section too, verbatim:
 
 ```sh
 bd note <sitting> "SECTION <n>: <name> — walked <paths>. CHECK: <q1> → \"<his answer>\" (right | corrected: <one line>); <q2> → ..."
 bd note <sitting> "Q (Alberto): \"<his question, verbatim>\" — A: <your answer, one or two lines>"
 ```
 
-**Pacing is his.** "Next" or the check's answers open the next section; a
-question in between is answered as an ordinary message and recorded. If he
-says "slower", the next section is smaller; if "faster", the trace alone with
-the rest as a list of paths. Never race ahead to fill a turn.
+**Pacing is his.** "Next" opens the next step, and a question is answered as
+an ordinary message and recorded. If he says "slower", the steps get smaller;
+if he says "faster", they get larger, up to a whole function or a whole short
+file. Never race ahead to fill a turn, and never put two steps in one message
+to save a round trip.
 
 ## 9. The review standard
 
@@ -385,14 +403,27 @@ sitting with an empty KEPT list did not look hard enough.
 
 ## 10. Step 5 — findings to beads
 
-**At the end of each section, never mid-explanation** — the filing is a batch
-so the teaching is not interrupted ten times. The bar is tinytown's ruling R8,
-verbatim: *"Critical/Required file; you can say 'file it'"*:
+**At the end of each section, after the check, never mid-walk.** By then he
+has read every line the findings name, which is what lets him decide on them.
+The bar is tinytown's ruling R8, verbatim: *"Critical/Required file; you can
+say 'file it'"*.
 
-- every **Critical** or **Required** finding becomes a bead;
-- any finding he says **"file it"** to becomes a bead, whatever its severity;
-- any finding he says **drop** to is dropped, his reason on the sitting bead;
-- Optional, Nit and FYI stay on the sitting bead as the finding line.
+**One finding at a time, each its own AskUserQuestion**, in severity order,
+most severe first. The question carries three things: the finding line, the
+evidence behind it in one or two sentences, and its fence (what the code's own
+comment or bead says, and why that reason no longer holds). Then give three
+options:
+
+- **File it**: it becomes a bead, spec'd or marked as a finding (below).
+  This is the recommended option for a Critical or Required finding.
+- **Keep on the bead**: the finding line stays on the sitting bead and is
+  not filed. This is the recommended option for Optional, Nit and FYI.
+- **Drop**: it is dropped, and his reason (asked for when he gives none)
+  goes on the sitting bead.
+
+His own words ("Other") win over the options. The next finding waits for his
+answer to this one. Once every finding is answered, file the chosen ones in
+one batch, then record the FILED/DROPPED note.
 
 The bead takes this shape:
 
@@ -432,7 +463,8 @@ pass is a later act.
 
 ## 11. Step 6 — the boundary
 
-At every section boundary, before the next map, check the session's context.
+At every section boundary, before pointing at the next section's start, check
+the session's context.
 **Past two-thirds, write the resume note now**, whatever happens next —
 stopping is Alberto's word, and this note is what makes his word cheap:
 
