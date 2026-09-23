@@ -1,18 +1,16 @@
 ---
 name: morning
-description: Read the open gates first thing, answer only the ones the record already settles, and hand the person one list of the rest with each question and its options.
+description: Read the open gates and the runs that stopped first thing, answer only the ones the record already settles, and hand the person one list of the rest with each question and its options.
 ---
 
 # morning
 
-Overnight the flights parked on questions. This is the first read of them: an
-architect walks the open gates, answers what the record already settles, and
-leaves the person a single list of what genuinely needs them — with the
-question and its options beside each one, so answering is a press and not an
-investigation.
-
-Core offers the gates and their listing; **who reads them first is this pack's
-opinion**, and this skill is it.
+Overnight the flights parked on questions, and some runs stopped. This is the
+first read of both: an architect walks them, answers what the record already
+settles, and leaves the person a single list of what genuinely needs them —
+with the question and its options beside each one, so answering is a press
+and not an investigation. Core offers the gates and the stream; **who reads
+them first is this pack's opinion**, and this skill is it.
 
 ## The rule for what you may answer
 
@@ -34,11 +32,13 @@ flight.
 
 ## Procedure
 
-### 1. The open gates
+### 1. The open gates, and the runs that stopped
 
-A gate is the store's own object and the listing is the store's own command —
-`bd gate list --json` on the store this fleet runs. `fleet status` does not
-print gates, so this is where the morning starts.
+A gate is the store's own object: `bd gate list --json` on this fleet's store.
+**A failed run raises no gate**, and one nothing could classify re-runs until
+it parks: read both with `fleet event tail --json --since <stamp> --type
+run.failed` and `--type run.could_not_tell`, and list each unanswered with
+its `reason`, or its `exit` and `read`. `fleet status` shows them under `runs`.
 
 Each gate names the item it blocks. Read that item's **last `PARKED` region**
 — the marker at column zero, then its `branch:`, `commit:` and `gate:` lines,

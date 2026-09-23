@@ -476,3 +476,365 @@ fn every_run_leaves_the_machine_directory_byte_identical() {
         "the fingerprint reads a changed byte"
     );
 }
+
+// ---- the runs section --------------------------------------------------------
+
+/// The stamp a line older than the failure window carries.
+const LONG_AGO: &str = "2026-01-01T00:00:00Z";
+
+/// Lines onto the rig's stream in the controller's own write shape, each with
+/// the stamp the arm chose — which the controller's appender, stamping the wall
+/// clock, cannot give a line meant to sit outside the failure window.
+fn stream(rig: &Rig, lines: &[(String, &str, serde_json::Value)]) {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(rig.machine.join("events.jsonl"))
+        .expect("the stream is opened");
+    for (n, (ts, kind, payload)) in lines.iter().enumerate() {
+        let seq = n as u64 + 1;
+        let line = serde_json::to_string(&fleet_controller::events::Event {
+            id: format!("ev-{seq}"),
+            seq,
+            ts: ts.clone(),
+            kind,
+            actor: "architect-1",
+            payload: payload.clone(),
+        })
+        .expect("the line serializes");
+        writeln!(file, "{line}").expect("the line is appended");
+    }
+}
+
+/// One line of the stream, at `ts`.
+fn line(
+    ts: &str,
+    kind: &'static str,
+    payload: serde_json::Value,
+) -> (String, &'static str, serde_json::Value) {
+    (ts.to_string(), kind, payload)
+}
+
+/// `run.started` for one run of `takeoff`, as core's front half writes it.
+fn started(ts: &str, run: &str) -> (String, &'static str, serde_json::Value) {
+    line(
+        ts,
+        fleet_core::item::RUN_STARTED,
+        serde_json::json!({ "run": run, "hash": "h", "workflow": "takeoff" }),
+    )
+}
+
+/// `item.parked` for one item, as a park writes it.
+fn parked(ts: &str, item: &str, gate: &str) -> (String, &'static str, serde_json::Value) {
+    line(
+        ts,
+        fleet_core::item::ITEM_PARKED,
+        serde_json::json!({
+            "item": item, "reason": "a question", "branch": null, "commit": null, "gate": gate,
+        }),
+    )
+}
+
+/// The page's runs section, from its header to the blank line that ends it.
+fn runs_section(page: &str) -> String {
+    let from = page
+        .find("\nruns  ")
+        .unwrap_or_else(|| panic!("the page carries a runs section: {page}"));
+    let rest = &page[from + 1..];
+    let to = rest.find("\n\n").map(|at| at + 1).unwrap_or(rest.len());
+    rest[..to].to_string()
+}
+
+/// The one row of the section that names `run`.
+fn row_of(section: &str, run: &str) -> String {
+    section
+        .lines()
+        .find(|line| line.trim_start().starts_with(&format!("{run} ")))
+        .unwrap_or_else(|| panic!("the section carries a row for {run}: {section}"))
+        .to_string()
+}
+
+/// AC1: every standing a run can be in, read off the stream the run pass
+/// decides on — the failure in the window with its reason, the park with its
+/// gate and the park whose gate was answered, the could-not-tell with what was
+/// read, the wait with its wake, the open run — and the two the section leaves
+/// out: the closed run, and the
+/// failure before the window, which is counted and not listed. The gate count
+/// is every park the stream holds that no `gate.resolved` answered, a run's or
+/// an item's.
+#[test]
+fn the_runs_section_reads_every_standing_off_the_stream() {
+    let rig = Rig::new("runs");
+    rig.publish(&document(
+        &rig.policy_file(),
+        &fleet_controller::clock::now_stamp(),
+        vec![seat("builder-1")],
+    ));
+    let now = fleet_controller::clock::now_stamp();
+    let now = now.as_str();
+    stream(
+        &rig,
+        &[
+            started(now, "fx-open"),
+            started(now, "fx-wait"),
+            line(
+                now,
+                fleet_core::item::RUN_WAITING,
+                serde_json::json!({ "run": "fx-wait", "wake": { "for": "a delivery" }, "seq": 2 }),
+            ),
+            started(now, "fx-crash"),
+            line(
+                now,
+                fleet_core::item::RUN_COULD_NOT_TELL,
+                serde_json::json!({ "run": "fx-crash", "exit": 7, "read": "nothing to see" }),
+            ),
+            started(now, "fx-park"),
+            line(
+                now,
+                fleet_core::item::RUN_COULD_NOT_TELL,
+                serde_json::json!({ "run": "fx-park", "exit": 7, "read": "nothing to see" }),
+            ),
+            parked(now, "fx-park", "fx-gate-run"),
+            started(now, "fx-heard"),
+            line(
+                now,
+                fleet_core::item::RUN_COULD_NOT_TELL,
+                serde_json::json!({ "run": "fx-heard", "exit": null, "read": null }),
+            ),
+            parked(now, "fx-heard", "fx-gate-heard"),
+            line(
+                now,
+                fleet_core::item::GATE_RESOLVED,
+                serde_json::json!({ "item": "fx-heard", "gate": "fx-gate-heard", "letter": "b" }),
+            ),
+            started(now, "fx-fail"),
+            line(
+                now,
+                fleet_core::item::RUN_FAILED,
+                serde_json::json!({ "run": "fx-fail", "reason": { "why": "fleet land refused" } }),
+            ),
+            started(LONG_AGO, "fx-stale"),
+            line(
+                LONG_AGO,
+                fleet_core::item::RUN_FAILED,
+                serde_json::json!({ "run": "fx-stale", "reason": { "why": "long ago" } }),
+            ),
+            started(now, "fx-done"),
+            line(
+                now,
+                fleet_core::item::RUN_CLOSED,
+                serde_json::json!({ "run": "fx-done" }),
+            ),
+            parked(now, "fx-item", "fx-gate-item"),
+            parked(now, "fx-answered", "fx-gate-answered"),
+            line(
+                now,
+                fleet_core::item::GATE_RESOLVED,
+                serde_json::json!({
+                    "item": "fx-answered", "gate": "fx-gate-answered", "letter": "a",
+                }),
+            ),
+        ],
+    );
+
+    let out = rig.run(&["status"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let page = stdout(&out);
+    let section = runs_section(&page);
+
+    assert!(
+        section.starts_with(
+            "runs  1 failed in the last 24 hours, 2 parked, 1 could not tell, 1 waiting, 1 open\n"
+        ),
+        "{section}"
+    );
+    let failed = row_of(&section, "fx-fail");
+    assert!(failed.contains("takeoff  FAILED at "), "{failed}");
+    assert!(
+        failed.contains(r#"{"why":"fleet land refused"}"#),
+        "the reason is the workflow's own: {failed}"
+    );
+    let park = row_of(&section, "fx-park");
+    assert!(park.contains("PARKED at "), "{park}");
+    assert!(
+        park.contains("on gate fx-gate-run — "),
+        "a gate nobody answered: {park}"
+    );
+    let heard = row_of(&section, "fx-heard");
+    assert!(
+        heard.contains("on gate fx-gate-heard, answered — "),
+        "a park whose gate was answered still stands, and says so: {heard}"
+    );
+    let crash = row_of(&section, "fx-crash");
+    assert!(crash.contains("could not tell at "), "{crash}");
+    assert!(
+        crash.contains(r#"exit 7, read "nothing to see""#),
+        "{crash}"
+    );
+    let wait = row_of(&section, "fx-wait");
+    assert!(wait.contains("waiting since "), "{wait}");
+    assert!(wait.contains(r#"{"for":"a delivery"}"#), "{wait}");
+    let open = row_of(&section, "fx-open");
+    assert!(open.contains("open since "), "{open}");
+
+    // The order is the order a person answers them in.
+    let at = |run: &str| {
+        section
+            .find(&format!("  {run} "))
+            .expect("the row is there")
+    };
+    assert!(at("fx-fail") < at("fx-park"), "{section}");
+    assert!(at("fx-park") < at("fx-crash"), "{section}");
+    assert!(at("fx-crash") < at("fx-wait"), "{section}");
+    assert!(at("fx-wait") < at("fx-open"), "{section}");
+
+    assert!(
+        !section.contains("fx-done"),
+        "a closed run is not listed: {section}"
+    );
+    assert!(
+        !section.contains("fx-stale"),
+        "a failure before the window is not listed: {section}"
+    );
+    assert!(
+        section.contains("1 earlier failure is not listed"),
+        "and it is counted: {section}"
+    );
+
+    assert!(
+        page.contains("\ngates  2 raised by a park and not answered\n"),
+        "{page}"
+    );
+}
+
+/// AC1, the quiet page: no stream at all is a fleet nobody has run anything on,
+/// which is every count at zero and no row — never a could-not-tell.
+#[test]
+fn a_machine_with_no_stream_prints_every_count_at_zero() {
+    let rig = Rig::new("runs-quiet");
+    rig.publish(&document(
+        &rig.policy_file(),
+        &fleet_controller::clock::now_stamp(),
+        Vec::new(),
+    ));
+
+    let out = rig.run(&["status"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let page = stdout(&out);
+    assert!(
+        page.contains(
+            "\nruns  0 failed in the last 24 hours, 0 parked, 0 could not tell, 0 waiting, 0 open\n\n"
+        ),
+        "{page}"
+    );
+    assert!(
+        page.contains("\ngates  0 raised by a park and not answered\n"),
+        "{page}"
+    );
+}
+
+/// AC2: a real `fleet run` whose workflow exits 1 — the row a takeoff whose
+/// `fleet land` refused ends on — and the page a person reads afterwards names
+/// it, with the reason the workflow gave.
+///
+/// THE RUN IS THE BINARY'S OWN, on a scratch pack whose runtime is a stub this
+/// arm writes, as `run.rs`'s rig does: what is measured is that the lines the
+/// back half writes are the lines this page reads, and a fixture written here
+/// could only measure agreement with itself.
+#[test]
+fn a_run_that_exits_one_is_on_the_page() {
+    const RUNTIME: &str = "fx-runtime";
+    let rig = Rig::new("run-fails");
+    rig.publish(&document(
+        &rig.policy_file(),
+        &fleet_controller::clock::now_stamp(),
+        vec![seat("builder-1")],
+    ));
+
+    let defaults = rig.machine.join(fleet_core::defaults::DIR);
+    std::fs::create_dir_all(&defaults).expect("the defaults dir is made");
+    fleet_core::embedded::write_all(&defaults).expect("the embedded defaults are written");
+
+    // The runtime, as the one line on stdout its doctor check reads.
+    let stubs = rig.root.join("stubs");
+    let stub = stubs.join(RUNTIME);
+    written(&stub, &format!("#!/bin/sh\necho \"{RUNTIME} 1.2.3\"\n"));
+    executable(&stub);
+
+    let scratch = rig.machine.join("packs/scratch");
+    let bundler = scratch.join("assets/bundle.sh");
+    written(&bundler, "#!/bin/sh\nset -eu\ncp \"$1\" \"$2\"\n");
+    executable(&bundler);
+    written(
+        &scratch.join("workflows/status-fails.sh"),
+        "#!/bin/sh\necho '{\"why\":\"fleet land refused\"}'\nexit 1\n",
+    );
+    written(
+        &scratch.join("pack.toml"),
+        &format!(
+            "[pack]\nname = \"scratch\"\nversion = \"0.1.0\"\nschema = 3\n\
+             description = \"a scratch pack\"\n\n[runtime]\nname = \"{RUNTIME}\"\n\
+             version = \"1.2.3\"\nbundle = \"sh {} {{entry}} {{bundle}}\"\n\
+             run = \"sh {{bundle}}\"\n",
+            bundler.display()
+        ),
+    );
+    written(
+        &rig.project.join("fleet.toml"),
+        "[gates]\nsuite = \"make check\"\n\n[core.run]\nmax_open = 1000\n",
+    );
+    common::take_a_board(&rig.project, "status");
+
+    let path = match std::env::var("PATH") {
+        Ok(held) => format!("{}:{held}", stubs.display()),
+        Err(_) => stubs.display().to_string(),
+    };
+    let ran = Command::new(env!("CARGO_BIN_EXE_fleet"))
+        .args(["run", "status-fails", "--by", "architect-1", "--packs-dir"])
+        .arg(rig.machine.join("packs"))
+        .current_dir(&rig.project)
+        .hermetic(&rig.root.join("home"), &rig.machine, None)
+        .env("PATH", &path)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .expect("the built binary runs");
+    assert_eq!(
+        ran.status.code(),
+        Some(1),
+        "the workflow's exit 1 is the verb's: {}",
+        stderr(&ran)
+    );
+    let said = stdout(&ran);
+    let run = said
+        .lines()
+        .next()
+        .and_then(|line| line.split_once(" — "))
+        .map(|(id, _)| id.to_string())
+        .unwrap_or_else(|| panic!("the run prints its id first: {said}"));
+
+    let out = rig.run(&["status"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let section = runs_section(&stdout(&out));
+    assert!(
+        section.starts_with("runs  1 failed in the last 24 hours,"),
+        "{section}"
+    );
+    let row = row_of(&section, &run);
+    assert!(row.contains("status-fails  FAILED at "), "{row}");
+    assert!(row.contains(r#"{"why":"fleet land refused"}"#), "{row}");
+}
+
+fn written(path: &Path, body: &str) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("the parent directory is made");
+    }
+    std::fs::write(path, body).expect("the file is written");
+}
+
+fn executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .expect("the stub is made executable");
+}

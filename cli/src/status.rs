@@ -1,22 +1,25 @@
 //! `fleet status` — the projection printed (cli PRD § `fleet status`).
 //!
-//! IT READS FILES AND WRITES NOTHING. The projection the controller published
-//! and the policy in force are the two instruments; the process table is not
-//! one of them, because a running process is not what makes a seat one of this
-//! fleet's.
+//! IT READS FILES AND WRITES NOTHING. The projection the controller published,
+//! the policy in force and the event stream the runs are read off are the three
+//! instruments; the process table is not one of them, because a running process
+//! is not what makes a seat one of this fleet's.
 //!
 //! THE PROJECTION IS THE ONE INSTRUMENT THIS VERB REFUSES WITHOUT (exit 5).
-//! The policy prints what it could not read in its own sections and the page
-//! around them still prints, with the exit table's could-not-tell at the end
-//! — a page that stopped at its second section would hide the ones that had
-//! answers.
+//! The policy and the stream print what they could not read in their own
+//! sections and the page around them still prints, with the exit table's
+//! could-not-tell at the end — a page that stopped at its second section would
+//! hide the ones that had answers.
 
+use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use fleet_controller::events::{self, Record};
 use fleet_controller::policy::{self as controller_policy, Policy};
 use fleet_controller::projection::{self, Projection, SeatRow};
 use fleet_controller::routines::RoutineRow;
+use fleet_controller::runs::{self, Reading, Standing};
 use fleet_controller::seat::COLLECTOR_STALE_POLLS;
 use fleet_controller::{clock, config, platform};
 use fleet_core::item::{rules, Stop};
@@ -31,6 +34,18 @@ const PROJECTION: &str = "projection.json";
 /// file's keys — read here so the threshold this page measures against is the
 /// one the controller fires `suggest-rest` at.
 const CONFIG: &str = "config.json";
+
+/// The stream the runs section is read off, under the machine directory.
+const STREAM: &str = "events.jsonl";
+
+/// How far back the runs section lists a failed run, in hours.
+///
+/// A WINDOW AND NOT A LAST-READ MARK. "Failed since you last looked" needs a
+/// mark of when somebody last looked, and that mark is a file this verb would
+/// write — and it writes nothing. A day covers a night's flight and the morning
+/// that reads it; a failure older than that is counted on the page and left to
+/// the stream to list.
+const FAILED_WINDOW_HOURS: u64 = 24;
 
 /// What `status` takes. The two flags are mutually exclusive at the parser, so
 /// the pair refuses with clap's own usage line and the exit table's row 2.
@@ -135,6 +150,7 @@ struct Read {
     stale: bool,
     policy: Result<Policy, String>,
     rules: Result<Vec<RuleRow>, String>,
+    runs: Result<RunsRead, String>,
 }
 
 impl Read {
@@ -150,17 +166,22 @@ impl Read {
             stale,
             policy: effective_policy(&policy_file, machine_dir),
             rules: read_rules(&policy_file),
+            runs: read_runs(&machine_dir.join(STREAM)),
         }
     }
 
     /// Every instrument here that would not answer. The page names each of
     /// them in its own section too; this is what stderr and the exit read.
     fn unread(&self) -> Vec<&str> {
-        [self.policy.as_ref().err(), self.rules.as_ref().err()]
-            .into_iter()
-            .flatten()
-            .map(String::as_str)
-            .collect()
+        [
+            self.policy.as_ref().err(),
+            self.rules.as_ref().err(),
+            self.runs.as_ref().err(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .collect()
     }
 }
 
@@ -251,6 +272,63 @@ fn string_of(value: Option<&core_policy::Value>) -> Option<String> {
     value?.as_str().map(str::to_string)
 }
 
+/// Every run the stream holds, and the gates standing on it.
+///
+/// THE STREAM AND NOT THE RUN'S RECORD OR ITS DIRECTORY. The directory holds
+/// the pins and the logs and never how the run ended; the record is open or
+/// closed, which cannot tell a failure from a close or a wait from a crash, and
+/// reading it is a store this verb does not open. The stream carries one row of
+/// the exit table per execution and the park's latch, and it is what the run
+/// pass decides every re-run and every park on — so the page and the pass read
+/// one fold.
+struct RunsRead {
+    readings: Vec<Reading>,
+    gates: BTreeSet<String>,
+}
+
+fn read_runs(path: &Path) -> Result<RunsRead, String> {
+    // A stream that is not there is a machine nobody has run anything on, and
+    // every count is zero. One that is there and will not open is not that, and
+    // the fold's reader would answer it as empty all the same.
+    if path.exists() {
+        std::fs::File::open(path).map_err(|e| {
+            format!(
+                "the stream at {} could not be read for the runs section: {e}",
+                path.display()
+            )
+        })?;
+    }
+    let stream = events::read_after(path, 0);
+    Ok(RunsRead {
+        readings: runs::readings(&stream),
+        gates: standing_gates(&stream),
+    })
+}
+
+/// Every gate a park announced that no `gate.resolved` has answered since.
+///
+/// The stream's count and not the store's: a gate raised or resolved by hand
+/// with `bd` wrote no line here, and `bd gate list` is the listing that sees
+/// those.
+fn standing_gates(stream: &[Record]) -> BTreeSet<String> {
+    let mut standing = BTreeSet::new();
+    for record in stream {
+        let Some(gate) = record.payload.get("gate").and_then(|gate| gate.as_str()) else {
+            continue;
+        };
+        match record.kind.as_str() {
+            runs::ITEM_PARKED => {
+                standing.insert(gate.to_string());
+            }
+            fleet_core::item::GATE_RESOLVED => {
+                standing.remove(gate);
+            }
+            _ => {}
+        }
+    }
+    standing
+}
+
 // ---- the page ----------------------------------------------------------------
 
 fn whole_page(out: &mut dyn Write, document: &Projection, read: &Read) -> Result<(), Stop> {
@@ -297,6 +375,7 @@ fn whole_page(out: &mut dyn Write, document: &Projection, read: &Read) -> Result
     write(context_section(out, &document.seats, read))?;
     write(rules_section(out, read))?;
     write(routines_section(out, &document.orders))?;
+    write(runs_section(out, &read.runs))?;
     Ok(())
 }
 
@@ -433,6 +512,123 @@ fn routines_section(out: &mut dyn Write, routines: &[RoutineRow]) -> std::io::Re
         )?;
     }
     Ok(())
+}
+
+/// The runs a person has to know about, in the order they answer them: the
+/// failures inside the window, the parks, the executions nothing could
+/// classify, the waits, and the runs still executing. A closed run is not
+/// listed; a failure before the window is counted and not listed. Then the
+/// gates the stream holds standing, runs' and items' alike, because a park is
+/// what the morning's first read is of.
+fn runs_section(out: &mut dyn Write, read: &Result<RunsRead, String>) -> std::io::Result<()> {
+    let read = match read {
+        Ok(read) => read,
+        Err(why) => {
+            writeln!(out, "\nruns")?;
+            writeln!(out, "  {why}")?;
+            return writeln!(out, "\ngates  not counted — the stream did not read");
+        }
+    };
+    let window = FAILED_WINDOW_HOURS * 60 * 60;
+    // A stamp nobody can date is listed: a failure hidden because its line was
+    // torn is the one this section exists not to hide.
+    let recent = |reading: &&Reading| {
+        clock::seconds_since_stamp(&reading.stamp).is_none_or(|age| age <= window)
+    };
+    let of = |standing: Standing| -> Vec<&Reading> {
+        read.readings
+            .iter()
+            .filter(|reading| reading.standing == standing)
+            .collect()
+    };
+    let failed = of(Standing::Failed);
+    let listed: Vec<&Reading> = failed.iter().copied().filter(recent).collect();
+    let earlier = failed.len() - listed.len();
+    let parked = of(Standing::Parked);
+    let unread = of(Standing::CouldNotTell);
+    let waiting = of(Standing::Waiting);
+    let open = of(Standing::Open);
+
+    writeln!(
+        out,
+        "\nruns  {} failed in the last {FAILED_WINDOW_HOURS} hours, {} parked, {} could not tell, \
+         {} waiting, {} open",
+        listed.len(),
+        parked.len(),
+        unread.len(),
+        waiting.len(),
+        open.len()
+    )?;
+    for reading in [listed, parked, unread, waiting, open].concat() {
+        writeln!(out, "  {}", run_row(reading, &read.gates))?;
+    }
+    match earlier {
+        0 => {}
+        1 => writeln!(
+            out,
+            "  1 earlier failure is not listed — `fleet event tail --type run.failed` lists it"
+        )?,
+        n => writeln!(
+            out,
+            "  {n} earlier failures are not listed — `fleet event tail --type run.failed` lists \
+             them"
+        )?,
+    }
+    writeln!(
+        out,
+        "\ngates  {} raised by a park and not answered",
+        read.gates.len()
+    )
+}
+
+fn run_row(reading: &Reading, gates: &BTreeSet<String>) -> String {
+    let said = |key: &str| said_of(reading.said.get(key));
+    let what = match reading.standing {
+        Standing::Failed => format!("FAILED at {} — {}", reading.stamp, said("reason")),
+        Standing::Parked => format!(
+            "PARKED at {} on gate {}{} — nothing could classify {} execution(s)",
+            reading.stamp,
+            reading.gate.as_deref().unwrap_or("—"),
+            match &reading.gate {
+                Some(gate) if !gates.contains(gate) => ", answered",
+                _ => "",
+            },
+            reading.crashes
+        ),
+        // The last line quoted, as it stood: it is what could not be read, and
+        // bare it runs into the prose around it.
+        Standing::CouldNotTell => format!(
+            "could not tell at {}, {} execution(s) so far — exit {}, read {}",
+            reading.stamp,
+            reading.crashes,
+            match reading.said.get("exit").and_then(|exit| exit.as_i64()) {
+                Some(code) => code.to_string(),
+                None => String::from("on a signal"),
+            },
+            match reading.said.get("read") {
+                None | Some(serde_json::Value::Null) => String::from("nothing"),
+                Some(line) => line.to_string(),
+            }
+        ),
+        Standing::Waiting => format!("waiting since {} for {}", reading.stamp, said("wake")),
+        Standing::Open => format!("open since {}", reading.stamp),
+        Standing::Closed => format!("closed at {}", reading.stamp),
+    };
+    format!(
+        "{}  {}  {what}",
+        reading.run,
+        reading.workflow.as_deref().unwrap_or("—")
+    )
+}
+
+/// A payload value as one line: a string as itself, an absence as `nothing`,
+/// and anything else as the compact JSON the workflow wrote.
+fn said_of(value: Option<&serde_json::Value>) -> String {
+    match value {
+        None | Some(serde_json::Value::Null) => String::from("nothing"),
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(other) => other.to_string(),
+    }
 }
 
 /// `--seat <name>`: the roster row and the context row, and nothing else.

@@ -80,8 +80,9 @@ e. **State the list back and wait for go.** The final list in order, every
    The run prints its id and its hash; the run directory under the machine
    directory holds `inputs.toml`, the policy in force and the bundle, and
    **the pinned inputs are the list that flies**. Read them back. Nothing
-   else is yours to do until the run closes or parks: `fleet status` shows
-   it, and a park is a gate the morning skill reads.
+   else is yours to do until the run closes, fails or parks: the `runs`
+   section of `fleet status` shows it open, waiting, failed or parked, and a
+   failure, a could-not-tell and a park are all what the morning skill reads.
 
 ## Phase 5 — The report, then the walk-through
 

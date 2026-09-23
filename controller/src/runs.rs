@@ -139,6 +139,15 @@ struct Folded {
     /// The seats `session.spawned` named this run on, in the order the stream
     /// met them.
     spawned: BTreeSet<String>,
+    /// The workflow `run.started` named. The pass decides nothing on it; it is
+    /// what a reader of [`readings`] is told the run was a run of.
+    workflow: Option<String>,
+    /// The stamp and the payload of the last lifecycle line — the reason on a
+    /// failure, the wake on a wait, what was read on a could-not-tell.
+    stamp: String,
+    said: serde_json::Value,
+    /// The gate the park raised, as `item.parked` carried it.
+    gate: Option<String>,
 }
 
 /// One pass over every run this machine's stream knows about.
@@ -220,6 +229,11 @@ fn fold(stream: &[Record]) -> BTreeMap<String, Folded> {
                 };
                 let state = runs.entry(id).or_default();
                 state.last = Some((record.kind.clone(), record.seq));
+                state.stamp = record.ts.clone();
+                state.said = record.payload.clone();
+                if record.kind == RUN_STARTED {
+                    state.workflow = payload_str(record, "workflow");
+                }
                 (state.recorded, state.wake) = if record.kind == RUN_WAITING {
                     (
                         record
@@ -245,7 +259,9 @@ fn fold(stream: &[Record]) -> BTreeMap<String, Folded> {
             // which for a run is the run's own id.
             ITEM_PARKED => {
                 if let Some(id) = payload_str(record, "item") {
-                    runs.entry(id).or_default().parked = true;
+                    let state = runs.entry(id).or_default();
+                    state.parked = true;
+                    state.gate = payload_str(record, "gate");
                 }
             }
             // The seat is the line's ACTOR on both of the arms below, which is
@@ -273,6 +289,76 @@ fn fold(stream: &[Record]) -> BTreeMap<String, Folded> {
         }
     }
     runs
+}
+
+/// Where one run stands, read off its last lifecycle line and the park's latch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Standing {
+    /// `run.started` is the last line: an execution is under way, or its
+    /// process is gone and wrote no row of the exit table. The stream cannot
+    /// tell those two apart, and neither can a reader of it.
+    Open,
+    Waiting,
+    /// `run.could_not_tell` with no park behind it: the pass executes it again
+    /// while it is under `[core.run] max_crashes`, and parks it at the cap.
+    CouldNotTell,
+    /// `run.could_not_tell` with the park's latch standing: a gate on the
+    /// record, and nothing executes it until a person answers.
+    Parked,
+    Failed,
+    Closed,
+}
+
+/// One run as a reader outside the pass is told it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reading {
+    pub run: String,
+    /// The workflow `run.started` named, where the stream holds that line.
+    pub workflow: Option<String>,
+    pub standing: Standing,
+    /// The stamp on the last lifecycle line, as the writer put it there.
+    pub stamp: String,
+    /// That line's payload whole: the reason on a failure, the wake on a wait,
+    /// the exit and what was read on a could-not-tell.
+    pub said: serde_json::Value,
+    /// How many executions ended on `run.could_not_tell`.
+    pub crashes: u64,
+    /// The gate the park raised, where it is parked.
+    pub gate: Option<String>,
+}
+
+/// Every run the stream holds a lifecycle line for, in id order.
+///
+/// THE PASS'S OWN FOLD, and not a second reading of the same lines: a page that
+/// called a run parked by some rule of its own could disagree with the pass
+/// that is deciding whether to execute it, and the page is the one a person
+/// believes. The run's record in the store is not read — the stream is what the
+/// pass decides on, and the record's open or closed carries no row of the exit
+/// table.
+pub fn readings(stream: &[Record]) -> Vec<Reading> {
+    fold(stream)
+        .into_iter()
+        .filter_map(|(run, state)| {
+            let (kind, _) = state.last?;
+            let standing = match kind.as_str() {
+                RUN_STARTED => Standing::Open,
+                RUN_WAITING => Standing::Waiting,
+                RUN_COULD_NOT_TELL if state.parked => Standing::Parked,
+                RUN_COULD_NOT_TELL => Standing::CouldNotTell,
+                RUN_FAILED => Standing::Failed,
+                _ => Standing::Closed,
+            };
+            Some(Reading {
+                run,
+                workflow: state.workflow,
+                standing,
+                stamp: state.stamp,
+                said: state.said,
+                crashes: state.crashes,
+                gate: state.gate.filter(|_| standing == Standing::Parked),
+            })
+        })
+        .collect()
 }
 
 /// The items a `run.waiting` names, where its wake is the one the SDK's `until`

@@ -13,7 +13,7 @@
 //! measuring the binary's wiring through a crate that does not have it.
 
 use fleet_controller::events::{self, EventLog};
-use fleet_controller::runs::{self, Pass, Runs};
+use fleet_controller::runs::{self, Pass, Runs, Standing};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -457,6 +457,59 @@ fn a_run_nothing_can_classify_runs_to_the_cap_then_parks() {
     pass(&stub, &stream, 2).expect("the pass runs");
     assert_eq!(count(&stream, runs::RUN_STARTED), 3);
     assert_eq!(count(&stream, runs::ITEM_PARKED), 1);
+}
+
+/// What a reader outside the pass is told is the pass's own fold: a run the
+/// pass has not parked reads as could-not-tell, and the same run reads as
+/// parked, on the gate the pass raised, once the pass has parked it — never on
+/// a rule of the reader's own. A failure reads as failed with its reason.
+#[test]
+fn the_readings_follow_the_pass_from_could_not_tell_to_parked() {
+    let scratch = Scratch::new("readings");
+    let stream = scratch.stream();
+    let mut log = EventLog::open(&stream);
+    for (kind, payload) in [
+        (
+            runs::RUN_STARTED,
+            serde_json::json!({ "run": "r3", "hash": "abc", "workflow": "w" }),
+        ),
+        (
+            runs::RUN_COULD_NOT_TELL,
+            serde_json::json!({ "run": "r3", "exit": 7, "read": serde_json::Value::Null }),
+        ),
+        (
+            runs::RUN_STARTED,
+            serde_json::json!({ "run": "r4", "hash": "abc", "workflow": "w" }),
+        ),
+        (
+            runs::RUN_FAILED,
+            serde_json::json!({ "run": "r4", "reason": { "why": "refused" } }),
+        ),
+    ] {
+        log.append(kind, "a-runner", payload)
+            .expect("the line lands");
+    }
+    let read = || runs::readings(&events::read_after(&stream, 0));
+
+    let before = read();
+    assert_eq!(before.len(), 2, "{before:?}");
+    assert_eq!(before[0].run, "r3");
+    assert_eq!(before[0].standing, Standing::CouldNotTell);
+    assert_eq!(before[0].workflow.as_deref(), Some("w"));
+    assert_eq!(before[0].crashes, 1);
+    assert_eq!(before[0].gate, None, "no gate before the pass raised one");
+    assert_eq!(before[1].run, "r4");
+    assert_eq!(before[1].standing, Standing::Failed);
+    assert_eq!(before[1].said["reason"]["why"], "refused");
+    assert!(!before[1].stamp.is_empty(), "the line's stamp is carried");
+
+    // A cap of zero re-runs: the one could-not-tell already stands at it.
+    let stub = Stub::with(&stream, &[]);
+    pass(&stub, &stream, 0).expect("the pass runs");
+    let after = read();
+    assert_eq!(after[0].standing, Standing::Parked);
+    assert_eq!(after[0].gate.as_deref(), Some("gate-for-r3"));
+    assert_eq!(after[1].standing, Standing::Failed);
 }
 
 /// The cap is READ and not a constant this pass carries: a fleet that names one
