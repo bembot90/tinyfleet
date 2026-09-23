@@ -35,7 +35,7 @@ use fleet_core::item::run as workflow_run;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
-const BY: &str = "architect-1";
+const BY: &str = "lead-1";
 
 /// The runtime the scratch pack pins, and the version its stub prints.
 const RUNTIME: &str = "fx-runtime";

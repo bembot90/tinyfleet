@@ -6,7 +6,8 @@ it the same way. It imports nothing itself, so it sits between the opinion
 pack above it and the binary's own defaults below.
 
 This file lives under `assets/` because a pack's top level holds the manifest
-and the eight slots and nothing else; `fleet pack check` refuses a tenth name.
+and the eight slots and nothing else; `fleet pack check` refuses a tenth name,
+and reads past only the litter a file browser leaves, such as `.DS_Store`.
 
 What it holds today:
 

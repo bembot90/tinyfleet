@@ -1,9 +1,9 @@
 nextest-version = "0.9.111"
 
-# fail-fast off for the reason backend/.config/nextest.toml states: a gate is
-# asked which arms failed, and a run cancelled at the first red answers a
-# different question. No setup scripts — the per-run dolt server is the
-# Makefile's wrapper (the per-run dolt server), not nextest's.
+# fail-fast off: a gate is asked which arms failed, and a run cancelled at the
+# first red answers a different question. No setup scripts — a served dolt for
+# the run is tools/dolt-test-server's, which wraps the nextest command from
+# outside, and with none the rigs run their boards on bd's embedded engine.
 #
 # slow-timeout bounds every arm: past two periods the arm is killed and reported
 # red BY NAME, where before nothing bounded it and one arm held a lane for 4920 s
@@ -16,25 +16,23 @@ nextest-version = "0.9.111"
 # measurement killed 141 arms at exactly 60 s), and each slice of the
 # under-one-minute plan lowers it to what it measured. The 2 s cap the plan's
 # last step asked for is NOT what this baseline supports and is not set here —
-# at 1 s x 2 every one of those three arms dies green. No bead id here: the
-# boundary check refuses the surrounding project's name anywhere under fleet/.
+# at 1 s x 2 every one of those three arms dies green.
 #
 # default-filter excludes the ring lane — the end-to-end binaries named ring_*,
 # which spawn the shipped binary against real repositories and are the suite's
 # long arms. They are selected BY BINARY and never by a list of arm names: an
 # arm added to a ring_ file is in the lane by construction, where a name list
-# goes stale silently. The budget this profile's junit report is held to is a
-# statement about this population and not about the ring's.
+# goes stale silently. What this profile's junit report measures is this
+# population and not the ring's.
 [profile.default]
 fail-fast = false
 slow-timeout = { period = "80s", terminate-after = 2, grace-period = "5s" }
 leak-timeout = "1s"
 default-filter = 'not binary(/^ring_/)'
 
-# The junit report is the instrument: fleet/tools/suite-profile reads every
-# arm's seconds and the run's test-phase time from it, and the fleet-test
-# target holds that time to the budget in the project's fleet.toml. Written
-# under this profile's store directory, target/nextest/default/, gitignored.
+# The junit report is the instrument: tools/suite-profile reads every arm's
+# seconds and the run's test-phase time from it. Written under this profile's
+# store directory, target/nextest/default/, gitignored.
 [profile.default.junit]
 path = "junit.xml"
 
@@ -52,7 +50,7 @@ path = "junit.xml"
 # ceiling.
 #
 # Its junit report lands under this profile's own store directory,
-# target/nextest/ring/, so the budget's instrument — which reads the default
+# target/nextest/ring/, so tools/suite-profile — which reads the default
 # profile's — never sees an arm from this lane.
 [profile.ring]
 default-filter = 'binary(/^ring_/)'

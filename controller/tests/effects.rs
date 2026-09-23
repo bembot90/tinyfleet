@@ -238,7 +238,7 @@ fn a_policy() -> Policy {
 fn a_target<'a>(worktree: &'a str, short: Option<&'a str>) -> Target<'a> {
     Target {
         seat_dir: "s1",
-        display_name: "rook".to_string(),
+        display_name: "orla".to_string(),
         project: "demo",
         worktree,
         model: "claude-opus-5".to_string(),
@@ -290,7 +290,7 @@ fn a_row_for(seat: &str, worktree: &str, dispatched_at: u64, session: Option<&st
         seat: seat.to_string(),
         project: "demo".to_string(),
         worktree: worktree.to_string(),
-        name: "rook".to_string(),
+        name: "orla".to_string(),
         model: "a-model".to_string(),
         posture: "auto".to_string(),
         first_turn: format!("/wake {seat}"),
@@ -424,7 +424,7 @@ mod lessons {
         let spec = StartSpec {
             seat_dir: "s1".to_string(),
             worktree: worktree.clone(),
-            name: "rook".to_string(),
+            name: "orla".to_string(),
             model: "claude-opus-5".to_string(),
             posture: "auto".to_string(),
             first_turn: "/wake s1".to_string(),
@@ -439,7 +439,7 @@ mod lessons {
 
         let argv = rig.argv();
         assert_eq!(flag_value(&argv, "--model"), "claude-opus-5");
-        assert_eq!(flag_value(&argv, "--name"), "rook");
+        assert_eq!(flag_value(&argv, "--name"), "orla");
         let name_at = argv.iter().position(|a| a == "--name").unwrap();
         assert_eq!(
             argv.get(name_at + 2).map(String::as_str),
@@ -671,7 +671,7 @@ mod lessons {
         let spec = StartSpec {
             seat_dir: "s1".to_string(),
             worktree: rig.worktree().display().to_string(),
-            name: "rook".to_string(),
+            name: "orla".to_string(),
             model: "claude-opus-5".to_string(),
             posture: "auto".to_string(),
             first_turn: "/wake s1".to_string(),
@@ -796,7 +796,7 @@ mod lessons {
         let spec = StartSpec {
             seat_dir: "s1".to_string(),
             worktree: rig.worktree().display().to_string(),
-            name: "rook".to_string(),
+            name: "orla".to_string(),
             model: "claude-opus-5".to_string(),
             posture: "auto".to_string(),
             first_turn: "/wake s1".to_string(),
@@ -1290,7 +1290,7 @@ fn an_adapter_with_no_effect_binary_refuses_every_verb_and_execs_nothing() {
     let spec = StartSpec {
         seat_dir: "s1".to_string(),
         worktree: worktree.clone(),
-        name: "rook".to_string(),
+        name: "orla".to_string(),
         model: "claude-opus-5".to_string(),
         posture: "auto".to_string(),
         first_turn: "/wake s1".to_string(),
@@ -1510,7 +1510,7 @@ fn a_nudge_marks_its_session_and_states_what_it_carried() {
     // its last LINE is not its last ELEMENT.
     let prompt = rig.argv_text();
     for needle in [
-        "rook",
+        "orla",
         "700000",
         "fleet event rest s1",
         "exactly one message",

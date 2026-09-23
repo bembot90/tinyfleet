@@ -194,7 +194,7 @@ fn a_seat_list_that_moves_the_policy_path_moves_the_policy_the_loop_reads() {
         );
         rig.write_config(&format!(
             r#"{{"fleet_toml": "{}", "children": [
-             {{"name":"builder-1","chosen_name":"Rook","worktrees":{{"demo":"{}"}}}},
+             {{"name":"builder-1","chosen_name":"Orla","worktrees":{{"demo":"{}"}}}},
              {{"name":"builder-2","worktrees":{{"demo":"{}"}}}}
            ]}}"#,
             rig.second_policy_path().display(),

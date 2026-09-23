@@ -1,14 +1,15 @@
-//! The doctrine pack's boundary: it is this fleet's own knowledge, and it names
-//! only verbs this binary has.
+//! The doctrine pack as it ships: it names only verbs this binary has, it
+//! checks clean with every slot it fills, and its doctor entries and rituals
+//! are what they say they are.
 //!
-//! Three claims, each with the control that makes its zero a reading. The
-//! needles are READ from the surrounding project's own files rather than typed
-//! here, because a file under `fleet/` that spelled them would be the very thing
-//! it is checking for; and the scan set is a DIRECTORY, so this file is outside
-//! it by structure rather than by a pattern that exempts it.
+//! Each sweep carries the control that makes its zero a reading, and the scan
+//! set is the pack's DIRECTORY, so a document added later is read without
+//! anyone adding it here.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+use fleet_core::pack;
 
 mod common;
 use common::hermetic::Hermetic;
@@ -20,36 +21,24 @@ fn fleet_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// The tree `fleet/` currently sits in. Where it holds neither file this arm
-/// reads, the arm says so and fails rather than passing on an empty needle set.
-fn surrounding_root() -> PathBuf {
-    fleet_root()
-        .parent()
-        .expect("the workspace sits inside something")
-        .to_path_buf()
-}
-
-fn read_at(root: &Path, relative: &str) -> String {
-    let path = root.join(relative);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "{} is readable — this check cannot run without it, and a pass \
-             without it would prove nothing: {e}",
-            path.display()
-        )
-    })
-}
-
 /// Every file under the doctrine pack, with its path relative to the pack.
 fn pack_files() -> Vec<(String, String)> {
-    let root = fleet_root().join("packs/tiny");
-    let mut found = Vec::new();
-    walk(&root, &root, &mut found);
-    found.sort();
+    let files = pack_files_in(&fleet_root().join("packs/tiny"));
     assert!(
-        found.len() >= 4,
-        "the pack was walked and holds its documents: {found:?}"
+        files.len() >= 4,
+        "the pack was walked and holds its documents: {:?}",
+        files.iter().map(|(p, _)| p).collect::<Vec<_>>()
     );
+    files
+}
+
+/// Every file under `root` the pack check reads, as text. The OS litter the
+/// check reads past is read past here too: a Finder `.DS_Store` is none of the
+/// pack's documents, and it is not UTF-8.
+fn pack_files_in(root: &Path) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    walk(root, root, &mut found);
+    found.sort();
     found
         .into_iter()
         .map(|p| {
@@ -63,6 +52,9 @@ fn pack_files() -> Vec<(String, String)> {
 fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
     for entry in std::fs::read_dir(dir).expect("the pack directory is readable") {
         let entry = entry.expect("the entry is readable");
+        if pack::is_os_litter(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
         let path = entry.path();
         if entry.file_type().expect("the kind is readable").is_dir() {
             walk(root, &path, out);
@@ -72,170 +64,6 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
                     .expect("every walked path is under the pack")
                     .to_string_lossy()
                     .into_owned(),
-            );
-        }
-    }
-}
-
-// ---- the item-id grammar ----------------------------------------------------
-
-/// The surrounding project's own token, read from the one file under `fleet/`
-/// that is allowed to spell it — the boundary checker, whose job is naming it.
-fn foreign_token() -> String {
-    let text = read_at(&surrounding_root(), "fleet/tools/lessons-check");
-    let line = text
-        .lines()
-        .find(|l| l.starts_with("FOREIGN_TOKEN = \""))
-        .expect("the boundary checker declares the token it scans for");
-    let token = line
-        .trim_start_matches("FOREIGN_TOKEN = \"")
-        .trim_end_matches('"')
-        .to_string();
-    assert!(!token.is_empty(), "the token was read and is not empty");
-    token
-}
-
-/// Every `<token>-<suffix>` in `text`: the id grammar is the project's item
-/// prefix, a hyphen, and a suffix, so a hyphen followed by anything else is
-/// prose and not an id.
-fn item_ids(text: &str, token: &str) -> Vec<String> {
-    let hay = text.to_ascii_lowercase();
-    let needle = format!("{}-", token.to_ascii_lowercase());
-    let bytes = hay.as_bytes();
-    let mut found = Vec::new();
-    let mut from = 0;
-    while let Some(at) = hay[from..].find(&needle) {
-        let start = from + at;
-        let mut end = start + needle.len();
-        while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'.') {
-            end += 1;
-        }
-        if end > start + needle.len() {
-            found.push(hay[start..end].to_string());
-        }
-        from = start + needle.len();
-    }
-    found
-}
-
-#[test]
-fn no_file_in_the_pack_carries_an_item_id_from_the_surrounding_project() {
-    let token = foreign_token();
-
-    // The control: the scanner is shown an id it must find, built from the same
-    // token, so a clean sweep below is a reading rather than a broken matcher.
-    assert_eq!(
-        item_ids(&format!("filed as {token}-ab1c.2 last week"), &token),
-        vec![format!("{}-ab1c.2", token.to_ascii_lowercase())],
-        "the scanner finds an id when there is one"
-    );
-    assert!(
-        item_ids(&format!("a {token}-shaped thing"), &token).len() == 1,
-        "and it is deliberately generous: anything after the hyphen counts"
-    );
-
-    for (path, text) in pack_files() {
-        let hits = item_ids(&text, &token);
-        assert!(
-            hits.is_empty(),
-            "{path} names an item of the surrounding project: {hits:?} — the \
-             pack's documents cite a PRD section, never an item"
-        );
-    }
-}
-
-// ---- the roster -------------------------------------------------------------
-
-/// The chosen names and seat directories of the rendered roster block, read
-/// from the block rather than typed here, so a seat added later is a needle
-/// nobody has to remember to add.
-fn roster_needles() -> Vec<String> {
-    let text = read_at(&surrounding_root(), "seats/README.md");
-    let begin = text
-        .find("<!-- roster:begin")
-        .expect("the roster block opens");
-    let after = text[begin..]
-        .find("-->")
-        .expect("the opening marker closes")
-        + begin
-        + 3;
-    let end = text[after..]
-        .find("<!-- roster:end -->")
-        .expect("the roster block closes")
-        + after;
-
-    let mut needles = Vec::new();
-    for line in text[after..end].lines() {
-        let cells: Vec<&str> = line.split('|').collect();
-        if cells.len() < 3 {
-            continue;
-        }
-        if let Some(name) = between(cells[1], "**", "**") {
-            needles.push(name);
-        }
-        if let Some(seat) = between(cells[2], "`", "/`") {
-            needles.push(seat);
-        }
-    }
-    needles.sort();
-    needles.dedup();
-    assert!(
-        needles.len() >= 4,
-        "the roster block yielded needles — a scan against an empty set would \
-         prove nothing: {needles:?}"
-    );
-    needles
-}
-
-fn between(cell: &str, open: &str, close: &str) -> Option<String> {
-    let start = cell.find(open)? + open.len();
-    let rest = &cell[start..];
-    let end = rest.find(close)?;
-    let inner = &rest[..end];
-    (!inner.is_empty()).then(|| inner.to_string())
-}
-
-/// `needle` as a whole word, case-insensitively: a hit whose neighbour is a
-/// letter or a digit is part of a longer word and is not the name.
-fn names_word(text: &str, needle: &str) -> bool {
-    let hay = text.to_ascii_lowercase();
-    let needle = needle.to_ascii_lowercase();
-    let bytes = hay.as_bytes();
-    let mut from = 0;
-    while let Some(at) = hay[from..].find(&needle) {
-        let start = from + at;
-        let end = start + needle.len();
-        let before = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
-        let after = end == bytes.len() || !bytes[end].is_ascii_alphanumeric();
-        if before && after {
-            return true;
-        }
-        from = start + 1;
-    }
-    false
-}
-
-#[test]
-fn no_file_in_the_pack_names_a_seat_of_the_surrounding_project() {
-    let needles = roster_needles();
-
-    // The control: the same matcher, on a line that does name one.
-    let planted = format!("handed to {} on Tuesday", needles[0]);
-    assert!(
-        names_word(&planted, &needles[0]),
-        "the matcher finds a name when there is one"
-    );
-    assert!(
-        !names_word(&format!("x{}x", needles[0]), &needles[0]),
-        "and it reads whole words, not substrings"
-    );
-
-    for (path, text) in pack_files() {
-        for needle in &needles {
-            assert!(
-                !names_word(&text, needle),
-                "{path} names the seat '{needle}' — the pack is written for a \
-                 fleet that is not the one it was extracted from"
             );
         }
     }
@@ -335,8 +163,49 @@ fn every_verb_the_pack_invokes_is_one_this_binary_has() {
 /// The pack's own directory, checked by the verb that validates one.
 #[test]
 fn the_pack_checks_clean_with_every_slot_it_fills() {
+    checks_clean_with_every_slot(&fleet_root().join("packs/tiny"));
+}
+
+/// The same pack after a file browser has been through it: Finder's
+/// `.DS_Store` at the top level, in the skills slot and inside one skill, and
+/// Explorer's two beside them. The verb reports what it reports on the clean
+/// copy, and the sweeps above read the same documents off both.
+#[test]
+fn the_pack_checks_clean_and_reads_the_same_with_os_litter_in_it() {
+    let rig = Rig::new("litter");
+    let copy = rig.dir("tiny");
+    fleet_core::test_support::copy_tree(&fleet_root().join("packs/tiny"), &copy);
+    for dir in ["", "skills/", "skills/wake/", "assets/", "doctor/"] {
+        for name in pack::OS_LITTER {
+            std::fs::write(
+                copy.join(format!("{dir}{name}")),
+                b"\x00\x00\x00\x01Bud1\x00\x00\x10\x00\xff\xfe",
+            )
+            .expect("the litter is written");
+        }
+    }
+    assert!(
+        copy.join("skills/.DS_Store").is_file(),
+        "the litter landed where the check walks"
+    );
+
+    checks_clean_with_every_slot(&copy);
+    let paths =
+        |files: Vec<(String, String)>| files.into_iter().map(|(p, _)| p).collect::<Vec<_>>();
+    assert_eq!(
+        paths(pack_files_in(&copy)),
+        paths(pack_files()),
+        "the littered copy holds the pack's documents and nothing more"
+    );
+}
+
+/// `fleet pack check` over `dir`: exit 0, and one line per slot the doctrine
+/// pack fills with the entry count it fills it with.
+fn checks_clean_with_every_slot(dir: &Path) {
     let out = Command::new(env!("CARGO_BIN_EXE_fleet"))
-        .args(["pack", "check", "packs/tiny"])
+        .arg("pack")
+        .arg("check")
+        .arg(dir)
         .current_dir(fleet_root())
         .hermetic_nowhere()
         .output()

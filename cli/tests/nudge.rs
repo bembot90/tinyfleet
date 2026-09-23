@@ -70,7 +70,7 @@ impl Rig {
             rig.machine.join("config.json"),
             format!(
                 r#"{{"fleet_toml": {fleet_toml}, "children": [
-                     {{"name": "{seat}", "chosen_name": "Rook",
+                     {{"name": "{seat}", "chosen_name": "Orla",
                       "worktrees": {{"a-project": {worktree}}}}}
                    ]}}"#,
                 seat = rig.seat,
@@ -238,7 +238,7 @@ fn a_live_row_and_a_fresh_projection_carry_the_text_and_say_sent() {
     let argv = rig.nudge_argv();
     assert!(argv.contains(TEXT), "the text is carried verbatim:\n{argv}");
     assert!(
-        argv.contains("Rook"),
+        argv.contains("Orla"),
         "the seat is addressed by its display name:\n{argv}"
     );
 

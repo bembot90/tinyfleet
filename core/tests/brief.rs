@@ -18,7 +18,7 @@ use fleet_core::test_support::FakeStore;
 /// guard opted out so the on/off line is read rather than assumed.
 const POLICY: &str = "[gates]\nsuite = \"make check\"\n\n[guards]\nrecord = { enabled = false }\n";
 
-const ORDER: &str = "dispatched by architect-1 — orders given";
+const ORDER: &str = "dispatched by lead-1 — orders given";
 const ITEM: &str = "fx-1";
 
 struct Rig {
@@ -515,7 +515,7 @@ fn a_pack_on_top_shadows_the_brief_whole() {
 fn the_real_store_renders_the_same_brief_as_the_one_held_in_memory() {
     let scratch = shared_store("brief");
     let item = scratch.item("a ready item");
-    let out = scratch.bd(&["note", &item, ORDER, "--actor", "architect-1"]);
+    let out = scratch.bd(&["note", &item, ORDER, "--actor", "lead-1"]);
     assert!(out.status.success(), "the order note is written");
 
     let rig = Rig::new("fidelity");

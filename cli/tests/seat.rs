@@ -1257,7 +1257,7 @@ fn a_named_dispatch_writes_the_event_with_no_base() {
         rig.machine.join("config.json"),
         format!(
             "{{\"fleet_toml\": {policy}, \"children\": [{{\"name\": \"s-cli-named\", \
-             \"chosen_name\": \"Rook\", \"worktrees\": {{\"a-project\": {tree}}}}}]}}\n",
+             \"chosen_name\": \"Orla\", \"worktrees\": {{\"a-project\": {tree}}}}}]}}\n",
             policy = json_string(&rig.project.join("fleet.toml").display().to_string()),
             tree = json_string(&rig.project.display().to_string()),
         ),
@@ -1317,7 +1317,7 @@ fn a_dispatch_that_starts_nothing_prints_no_belt_legs() {
         rig.machine.join("config.json"),
         format!(
             "{{\"fleet_toml\": {policy}, \"children\": [{{\"name\": \"s-cli-belts\", \
-             \"chosen_name\": \"Rook\", \"worktrees\": {{\"a-project\": {tree}}}}}]}}\n",
+             \"chosen_name\": \"Orla\", \"worktrees\": {{\"a-project\": {tree}}}}}]}}\n",
             policy = json_string(&rig.project.join("fleet.toml").display().to_string()),
             tree = json_string(&rig.project.display().to_string()),
         ),

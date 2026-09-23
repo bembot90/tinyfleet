@@ -395,6 +395,39 @@ fn a_slot_path_resolves_to_the_file_the_highest_layer_carries() {
     );
 }
 
+/// Two packs a file browser has opened both carry a `.DS_Store` in the same
+/// slot. Neither file is part of either pack, so neither resolves and neither
+/// shadows the other.
+#[test]
+fn os_litter_in_two_layers_neither_resolves_nor_shadows() {
+    let top = Fixture::new("litter-top");
+    top.manifest("top").file("assets/brief.md", "the top\n");
+    let bottom = Fixture::new("litter-bottom");
+    bottom
+        .manifest("bottom")
+        .file("assets/rules.md", "the rules\n");
+    for fixture in [&top, &bottom] {
+        std::fs::write(
+            fixture.path("assets/.DS_Store"),
+            b"\x00\x00\x00\x01Bud1\xff",
+        )
+        .expect("the litter is written");
+    }
+
+    let layers = layers(&[("top", &top), ("bottom", &bottom)]);
+    let resolution = resolve::resolve(&layers).expect("two littered layers resolve");
+    assert_eq!(
+        resolution.files.keys().collect::<Vec<_>>(),
+        vec!["assets/brief.md", "assets/rules.md"],
+        "the resolution carries each pack's own files and nothing else"
+    );
+    assert!(
+        resolution.shadowed.is_empty(),
+        "and the two copies of the litter are no shadow: {:?}",
+        resolution.shadowed
+    );
+}
+
 /// The doctrine pack over the binary's defaults, resolved as two layers:
 /// nothing refuses, the doctrine pack carries the every-turn rules it shadows,
 /// and the defaults still carry the brief template nobody has shadowed. Read

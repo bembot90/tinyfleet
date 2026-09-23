@@ -208,7 +208,7 @@ fn the_page_prints_every_section() {
     let rig = Rig::new("page");
 
     let mut busy = seat("builder-1");
-    busy.chosen_name = Some("Rook".to_string());
+    busy.chosen_name = Some("Orla".to_string());
     busy.context_tokens = Some(250);
     let mut held = seat("builder-2");
     held.roster_state = "prompt-blocked".to_string();
@@ -245,7 +245,7 @@ fn the_page_prints_every_section() {
     assert!(!page.contains("GRANT PENDING"), "{page}");
 
     // (c) the roster, with the halt mark and the blind count.
-    assert!(page.contains("builder-1 (Rook)  present"), "{page}");
+    assert!(page.contains("builder-1 (Orla)  present"), "{page}");
     assert!(
         page.contains("decision leave-alone, outcome none"),
         "{page}"
@@ -499,7 +499,7 @@ fn stream(rig: &Rig, lines: &[(String, &str, serde_json::Value)]) {
             seq,
             ts: ts.clone(),
             kind,
-            actor: "architect-1",
+            actor: "lead-1",
             payload: payload.clone(),
         })
         .expect("the line serializes");
@@ -791,7 +791,7 @@ fn a_run_that_exits_one_is_on_the_page() {
         Err(_) => stubs.display().to_string(),
     };
     let ran = Command::new(env!("CARGO_BIN_EXE_fleet"))
-        .args(["run", "status-fails", "--by", "architect-1", "--packs-dir"])
+        .args(["run", "status-fails", "--by", "lead-1", "--packs-dir"])
         .arg(rig.machine.join("packs"))
         .current_dir(&rig.project)
         .hermetic(&rig.root.join("home"), &rig.machine, None)

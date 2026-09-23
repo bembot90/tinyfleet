@@ -193,9 +193,9 @@ impl Rig {
                 r#"{{"fleet_toml": {fleet_toml}, "children": [
                      {{"name": "{REVIEWER}", "chosen_name": "Kite",
                       "worktrees": {{"a-project": {worktree}}}}},
-                     {{"name": "{target}", "chosen_name": "Wren",
+                     {{"name": "{target}", "chosen_name": "Pell",
                       "worktrees": {{"a-project": {target_worktree}}}}},
-                     {{"name": "{other_target}", "chosen_name": "Rook",
+                     {{"name": "{other_target}", "chosen_name": "Orla",
                       "worktrees": {{"a-project": {other_worktree}}}}}
                    ]}}"#,
                 target = rig.target,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""lessons-check — the one reader of fleet/brain/lessons/.
+"""lessons-check — the one reader of brain/lessons/.
 
 The lessons files carry two contracts nothing else enforces. Each `###` entry
 owes five labelled fields, because a fact without the release and date it was
@@ -8,10 +8,6 @@ measured on is a rumour by the files' own preamble. And each file's
 fixture tests, so a table that drops a row, duplicates one, disagrees with the
 entry that names the slug, or vanishes entirely breaks a contract the slices
 depend on with nothing to say so.
-
-The third check is the boundary: no lessons document may name a roster seat's
-chosen name or a seat directory, so the documents read as this fleet's own
-knowledge.
 
 Exit 0 when every check passes, 1 when any fails, 2 when the check could not
 be run at all.
@@ -167,69 +163,17 @@ def check_lessons(root, path):
     return len(entries), len(rows)
 
 
-def roster(root):
-    """The chosen names and seat directories of the rendered roster block. Read
-    from the block rather than typed here, so a seat added upstream is a needle
-    nobody has to remember to add."""
-    text = (root / "seats/README.md").read_text(encoding="utf-8")
-    block = re.search(r"<!-- roster:begin.*?-->(.*?)<!-- roster:end -->", text, re.S)
-    if not block:
-        sys.exit("lessons-check: seats/README.md carries no rendered roster block")
-    needles = set()
-    for line in block.group(1).splitlines():
-        cells = [c.strip() for c in line.split("|")]
-        if len(cells) < 3:
-            continue
-        name = re.search(r"\*\*([A-Za-z]+)\*\*", cells[1])
-        seat = re.search(r"`([a-z0-9-]+)/`", cells[2])
-        if name:
-            needles.add(name.group(1))
-        if seat:
-            needles.add(seat.group(1))
-    if not needles:
-        sys.exit("lessons-check: the roster block yielded no names — the scan would prove nothing")
-    return sorted(needles)
-
-
-def check_boundary(root, lesson_paths, names):
-    """No roster name or seat directory in the lessons documents."""
-    word = {n: re.compile(rf"(?<![A-Za-z0-9]){re.escape(n)}(?![A-Za-z0-9])", re.I) for n in names}
-    scanned = 0
-    for path in sorted(lesson_paths):
-        try:
-            text = (root / path).read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            continue
-        scanned += 1
-        for n, line in enumerate(text.splitlines(), 1):
-            for needle, pattern in word.items():
-                if pattern.search(line):
-                    fail(path, f"line {n} names the seat '{needle}'")
-    # The control on the sweep above: a clean scan is only a reading if the
-    # documents were opened at all, so a zero here is reported rather than read
-    # as silence.
-    if scanned != len(lesson_paths):
-        fail(
-            "boundary",
-            f"{scanned} of {len(lesson_paths)} lesson file(s) were read — "
-            "the rest could not be opened",
-        )
-
-
 def main():
     root = repo_root()
-    lesson_paths = [p for p in tracked(root, "fleet/brain/lessons") if p.endswith(".md")]
+    lesson_paths = [p for p in tracked(root, "brain/lessons") if p.endswith(".md")]
     if not lesson_paths:
-        sys.exit("lessons-check: no tracked file under fleet/brain/lessons — nothing to check")
+        sys.exit("lessons-check: no tracked file under brain/lessons — nothing to check")
 
     entries = tests = 0
     for path in lesson_paths:
         e, t = check_lessons(root, path)
         entries += e
         tests += t
-
-    names = roster(root)
-    check_boundary(root, set(lesson_paths), names)
 
     if failures:
         for line in failures:
@@ -239,7 +183,7 @@ def main():
 
     print(
         f"lessons-check: ok — {len(lesson_paths)} lesson file(s), {entries} entries, "
-        f"{tests} inventory rows, {len(names)} roster needles, boundary clean"
+        f"{tests} inventory rows"
     )
     return 0
 

@@ -114,7 +114,7 @@ fn a_poll_publishes_the_seat_and_the_context_it_is_carrying() {
     assert_eq!(published["fleet"]["poll_seconds"], 1);
     assert!(published["fleet"]["mtime"].as_str().is_some());
     assert_eq!(published["seats"][0]["seat_dir"], "builder-1");
-    assert_eq!(published["seats"][0]["chosen_name"], "Rook");
+    assert_eq!(published["seats"][0]["chosen_name"], "Orla");
     assert_eq!(published["seats"][0]["roster_state"], "present");
     assert_eq!(published["seats"][0]["context_tokens"], 18);
     assert_eq!(published["seats"][0]["project"], "demo");
@@ -154,7 +154,7 @@ fn a_published_row_carries_neither_the_seats_model_nor_its_transience() {
     // shape a leak rides.
     let row = &rig.projection()["seats"][0];
     assert_eq!(row["seat_dir"], "builder-1");
-    assert_eq!(row["chosen_name"], "Rook");
+    assert_eq!(row["chosen_name"], "Orla");
     assert_eq!(row["roster_state"], "present");
 
     let keys: BTreeSet<&str> = row

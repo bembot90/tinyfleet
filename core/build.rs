@@ -10,6 +10,9 @@
 
 use std::path::{Path, PathBuf};
 
+#[path = "src/os_litter.rs"]
+mod os_litter;
+
 fn main() {
     let root = PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("cargo names the manifest directory"),
@@ -24,6 +27,7 @@ fn main() {
     // an edit does.
     println!("cargo:rerun-if-changed=defaults");
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src/os_litter.rs");
 
     let mut out = String::from("pub static FILES: &[File] = &[\n");
     for relative in &files {
@@ -43,9 +47,16 @@ fn main() {
     std::fs::write(&generated, out).expect("the embedded table is written");
 }
 
+/// A checkout a file browser has opened carries OS litter under `defaults/`;
+/// it is no default, and embedded it would hash into a set no installed copy
+/// matches, because the installed copy's hash leaves it out.
 fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
+        let entry = entry?;
+        if os_litter::is_os_litter(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
+        let path = entry.path();
         if path.is_dir() {
             walk(root, &path, out)?;
         } else {

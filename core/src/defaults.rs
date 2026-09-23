@@ -406,9 +406,16 @@ fn frame(digest: &mut Sha256, relative: &str, bytes: &[u8]) {
     digest.update(bytes);
 }
 
+/// The OS litter a file browser leaves in the machine directory is not walked:
+/// hashed, it would read a copy somebody merely LOOKED AT as one they edited,
+/// and the next install would refuse it. The build leaves the same names out
+/// of the embedded set, so the two sides of the comparison agree.
 fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(), String> {
     for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
         let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
+        if crate::pack::is_os_litter(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
         let path = entry.path();
         if path.is_dir() {
             walk(root, &path, out)?;
@@ -768,6 +775,68 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Finder writes a `.DS_Store` into the installed defaults the first time
+    /// somebody opens the machine directory, and Explorer its two. The copy is
+    /// still this binary's set: it hashes to the line that pinned it, and the
+    /// next install finds it already standing rather than refusing it as edited.
+    #[test]
+    fn os_litter_in_the_installed_set_leaves_its_hash_and_its_pin_standing() {
+        let dir = scratch("litter");
+        let root = dir.join(DIR);
+        let packs = dir.join("packs");
+        let lock_path = dir.join(lock::LOCK);
+        install(&root, &packs, &lock_path, VERSION, "2026-09-12").expect("it lands");
+
+        for sub in ["", "assets/", "doctor/"] {
+            for name in crate::pack::OS_LITTER {
+                std::fs::write(
+                    root.join(format!("{sub}{name}")),
+                    b"\x00\x00\x00\x01Bud1\x00\x00\x10\x00\xff\xfe",
+                )
+                .expect("the litter is written");
+            }
+        }
+        assert!(root.join("assets/.DS_Store").is_file(), "the litter landed");
+
+        assert_eq!(
+            tree_hash(&root).expect("the littered copy hashes"),
+            embedded_hash(),
+            "the litter is not part of the set, so it moves no hash"
+        );
+        let again = install(&root, &packs, &lock_path, VERSION, "2026-09-13")
+            .expect("a littered copy is not an edited one");
+        assert_eq!(again.landed, Landed::Already);
+        assert_eq!(again.entry, line(&lock_path), "the pin stands as written");
+
+        // The control: a file that is not litter is still an edit, so the read
+        // above is the litter being skipped and not the comparison gone blind.
+        std::fs::write(root.join("assets/.DS_Store.bak"), "x\n").unwrap();
+        assert!(
+            matches!(
+                install(&root, &packs, &lock_path, VERSION, "2026-09-14"),
+                Err(Refusal::Shadowed { .. })
+            ),
+            "a file somebody added is still refused"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The build walks the crate's `defaults/` tree, and a checkout that Finder
+    /// has opened carries a `.DS_Store` in it. That file is never embedded: a
+    /// set carrying it would hash differently from every copy [`tree_hash`]
+    /// reads, which leaves the litter out, and would put a name outside every
+    /// slot into the bottom layer.
+    #[test]
+    fn the_embedded_set_carries_no_os_litter() {
+        let litter: Vec<&str> = embedded::FILES
+            .iter()
+            .map(|file| file.path)
+            .filter(|path| path.split('/').any(crate::pack::is_os_litter))
+            .collect();
+        assert_eq!(litter, Vec::<&str>::new());
     }
 
     /// THE REGISTRY IS PINNED TO THE SET (the reference's build-pack lesson,

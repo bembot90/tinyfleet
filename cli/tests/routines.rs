@@ -32,7 +32,7 @@ impl Rig {
             &rig.machine().join("config.json"),
             &format!(
                 r#"{{"fleet_toml": "{}", "children": [
-                     {{"name":"builder-1","chosen_name":"Rook",
+                     {{"name":"builder-1","chosen_name":"Orla",
                        "worktrees":{{"demo":"{}"}}}}
                    ]}}"#,
                 rig.fleet_root().join("fleet.toml").display(),

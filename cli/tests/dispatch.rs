@@ -130,9 +130,9 @@ impl Project {
             .bd(&[
                 "note",
                 &item,
-                "dispatched by architect-1 — orders given",
+                "dispatched by lead-1 — orders given",
                 "--actor",
-                "architect-1",
+                "lead-1",
             ])
             .status
             .success());
@@ -204,7 +204,7 @@ impl Rig {
             rig.machine.join("config.json"),
             format!(
                 r#"{{"fleet_toml": {fleet_toml}, "children": [
-                     {{"name": "{seat}", "chosen_name": "Rook",
+                     {{"name": "{seat}", "chosen_name": "Orla",
                       "worktrees": {{"a-project": {worktree}}}}}
                    ]}}"#,
                 seat = rig.seat,
@@ -324,11 +324,11 @@ fn a_live_row_in_the_seats_worktree_is_rung_with_the_item_and_the_brief() {
     rig.live();
     let item = project.item("a ready item for a live seat");
 
-    let out = rig.run(&["dispatch", &item, "--to", &rig.seat, "--by", "architect-1"]);
+    let out = rig.run(&["dispatch", &item, "--to", &rig.seat, "--by", "lead-1"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        "dispatched by architect-1 — orders given\n"
+        "dispatched by lead-1 — orders given\n"
     );
 
     let argv = rig.nudge_argv();
@@ -352,7 +352,7 @@ fn a_live_row_in_the_seats_worktree_is_rung_with_the_item_and_the_brief() {
         "the prompt names the brief's path:\n{argv}"
     );
     assert!(
-        argv.contains("Rook"),
+        argv.contains("Orla"),
         "the seat is addressed by its name:\n{argv}"
     );
 
@@ -368,7 +368,7 @@ fn an_empty_roster_exits_four_and_the_three_writes_stand() {
     let rig = Rig::new("absent");
     let item = project.item("a ready item for a seat that is not up");
 
-    let out = rig.run(&["dispatch", &item, "--to", &rig.seat, "--by", "architect-1"]);
+    let out = rig.run(&["dispatch", &item, "--to", &rig.seat, "--by", "lead-1"]);
     assert_eq!(out.status.code(), Some(4), "{}", stderr(&out));
     assert!(
         stderr(&out).contains("ORDERED, NOT RUNG"),
@@ -410,7 +410,7 @@ fn a_ring_the_provider_refuses_exits_one_and_the_three_writes_stand() {
     rig.live().nudge_exits(1);
     let item = project.item("a ready item whose ring will not land");
 
-    let out = rig.run(&["dispatch", &item, "--to", &rig.seat, "--by", "architect-1"]);
+    let out = rig.run(&["dispatch", &item, "--to", &rig.seat, "--by", "lead-1"]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(
         stderr(&out).contains("ORDERED, NOT RUNG"),
@@ -425,7 +425,7 @@ fn a_ring_the_provider_refuses_exits_one_and_the_three_writes_stand() {
     let (assignee, notes, orders) = project.order_of(&item);
     assert_eq!(assignee.as_deref(), Some(rig.seat.as_str()));
     assert!(notes.contains("orders given"), "{notes}");
-    assert_eq!(orders["by"], serde_json::json!("architect-1"));
+    assert_eq!(orders["by"], serde_json::json!("lead-1"));
 }
 
 /// AC2's third clause: a spawn the controller refuses withdraws the order in
@@ -442,7 +442,7 @@ fn a_spawn_the_controller_refuses_withdraws_the_order() {
     let rig = Rig::new("transient");
     let item = project.item("a ready item nobody can be spawned for");
 
-    let out = rig.run(&["dispatch", &item, "--by", "architect-1"]);
+    let out = rig.run(&["dispatch", &item, "--by", "lead-1"]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(
         stderr(&out).contains("was not dispatched") && stderr(&out).contains("withdrawn"),
@@ -475,7 +475,7 @@ fn an_unresolvable_agent_binary_exits_three_and_the_order_stands() {
     let item = project.item("a ready item whose spawn nobody could observe");
 
     let out = rig.run_with_agent(
-        &["dispatch", &item, "--by", "architect-1"],
+        &["dispatch", &item, "--by", "lead-1"],
         rig.root.join("no-such-agent"),
     );
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
@@ -529,7 +529,7 @@ fn a_dispatcher_the_call_does_not_name_is_a_usage_error() {
         .arg(rig.machine.join("packs"))
         .current_dir(&Project::shared().root)
         .hermetic(&rig.root.join("home"), &rig.machine, None)
-        .env("BEADS_ACTOR", "architect-1")
+        .env("BEADS_ACTOR", "lead-1")
         .output()
         .expect("the built binary runs");
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
@@ -544,7 +544,7 @@ fn a_lock_on_dispatch_is_a_usage_error() {
         "--to",
         rig.seat.as_str(),
         "--by",
-        "architect-1",
+        "lead-1",
     ];
 
     let out = rig.run(&[&call[..], &["--lock", "/nonexistent"]].concat());
@@ -563,7 +563,7 @@ fn a_by_on_brief_is_a_usage_error() {
     let rig = Rig::new("brief-by");
     let item = project.ordered("a ready item briefed with a name");
 
-    let out = rig.run(&["brief", &item, "--by", "architect-1"]);
+    let out = rig.run(&["brief", &item, "--by", "lead-1"]);
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert!(stderr(&out).contains("--by"), "{}", stderr(&out));
 

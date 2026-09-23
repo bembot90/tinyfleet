@@ -1199,46 +1199,6 @@ mod tests {
         refused
     }
 
-    /// THE FILE THIS PROJECT ACTUALLY SHIPS, read from disk and not retyped:
-    /// `fleet start` renders its seats before anything is loaded, so a word in
-    /// it this reader refuses is a fleet that cannot come up at all.
-    #[test]
-    fn seats_in_over_this_projects_own_fleet_toml_runs_six_and_parks_four() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(std::path::Path::parent)
-            .expect("the controller crate sits two directories under the project root")
-            .join("fleet.toml");
-        let body =
-            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        let seats = seats_in(&body).expect("the project's own seat table is read, not refused");
-
-        let names = |parked: bool| {
-            seats
-                .iter()
-                .filter(|s| s.parked == parked)
-                .map(|s| s.name.as_str())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            names(false),
-            [
-                "architect-1",
-                "architect-2",
-                "builder-1",
-                "builder-2",
-                "chronicler",
-                "warden"
-            ],
-            "the six the fleet runs"
-        );
-        assert_eq!(
-            names(true),
-            ["builder-3", "builder-4", "builder-5", "builder-6"],
-            "the four it keeps and does not run"
-        );
-    }
-
     #[test]
     fn the_pin_reads_from_a_table_or_from_a_flat_string() {
         let table = parse("[substrate.claude_code]\nversion = \"2.1.261\"\n").unwrap();

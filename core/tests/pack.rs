@@ -144,6 +144,67 @@ fn a_ninth_top_level_name_is_a_defect() {
     );
 }
 
+/// The head of a real Finder `.DS_Store`, then a byte no UTF-8 text holds: a
+/// check that opened the file as text would fail on it, not skim past it.
+const LITTER: &[u8] = b"\x00\x00\x00\x01Bud1\x00\x00\x10\x00\xff\xfe";
+
+/// A file browser writes its bookkeeping into every directory it opens, so a
+/// pack somebody has looked at in Finder carries a `.DS_Store` at its top
+/// level and in every slot they clicked into. The check reads past it: the
+/// report on the littered pack is the report on the clean one, down to the
+/// entry count of each slot.
+#[test]
+fn os_litter_anywhere_in_a_pack_is_ignored_and_changes_nothing_the_check_reports() {
+    let fixture = Fixture::new("litter");
+    fixture
+        .manifest("litter")
+        .file("agents/dispatcher/agent.toml", "name = \"dispatcher\"\n")
+        .file("skills/brief/SKILL.md", "# brief\n")
+        .file("orders/nightly.toml", "cron = \"0 22 * * *\"\n")
+        .file("doctor/binaries/doctor.toml", "name = \"binaries\"\n")
+        .file("assets/brief.md", "the brief\n");
+    let clean = pack::check(&fixture.root);
+    assert!(
+        clean.is_valid(),
+        "the pack is clean before the litter lands: {:?}",
+        clean.defects
+    );
+
+    for dir in [
+        "",
+        "agents/",
+        "skills/",
+        "orders/",
+        "doctor/",
+        "assets/",
+        "skills/brief/",
+    ] {
+        for name in [".DS_Store", "Thumbs.db", "desktop.ini"] {
+            std::fs::write(fixture.path(&format!("{dir}{name}")), LITTER)
+                .expect("the litter is written");
+        }
+    }
+    let littered = pack::check(&fixture.root);
+    assert_eq!(
+        littered.defects,
+        Vec::<Defect>::new(),
+        "the litter is no defect at the top level or in any slot"
+    );
+    assert_eq!(
+        littered.slots, clean.slots,
+        "and no slot counts it as an entry"
+    );
+
+    // The control: the ignore is those names exactly, not every dotted or
+    // unfamiliar one, so a top-level name that merely looks like litter is
+    // still the typo the check exists to name.
+    fixture.file(".DS_Store.bak", "x\n");
+    assert_eq!(
+        defects(&fixture.root),
+        vec![Defect::UnknownTopLevel(".DS_Store.bak".into())]
+    );
+}
+
 #[test]
 fn an_unknown_manifest_key_is_a_defect_and_is_named() {
     let fixture = Fixture::new("key");

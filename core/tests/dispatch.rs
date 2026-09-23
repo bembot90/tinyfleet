@@ -25,7 +25,7 @@ use fleet_core::item::{
 use fleet_core::store::{Item, Row, Store, StoreError};
 
 const POLICY: &str = "[gates]\nsuite = \"make check\"\n";
-const BY: &str = "architect-1";
+const BY: &str = "lead-1";
 const AT: &str = "2026-09-08T18:46:55Z";
 
 // ---- the seams ---------------------------------------------------------------

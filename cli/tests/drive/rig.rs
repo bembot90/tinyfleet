@@ -554,7 +554,7 @@ impl Rig {
     fn one_seat_config(&self, policy: PathBuf) -> String {
         format!(
             r#"{{"fleet_toml": "{}", "children": [
-                 {{"name":"builder-1","chosen_name":"Rook",
+                 {{"name":"builder-1","chosen_name":"Orla",
                    "worktrees":{{"demo":"{}"}}}}
                ]}}"#,
             policy.display(),
@@ -569,7 +569,7 @@ impl Rig {
     fn one_seat_config_carrying_model_and_transient(&self, policy: PathBuf) -> String {
         format!(
             r#"{{"fleet_toml": "{}", "children": [
-                 {{"name":"builder-1","chosen_name":"Rook",
+                 {{"name":"builder-1","chosen_name":"Orla",
                    "model":"a-model","transient":true,
                    "worktrees":{{"demo":"{}"}}}}
                ]}}"#,

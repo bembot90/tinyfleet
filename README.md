@@ -23,17 +23,23 @@ empty `[workspace]` table.
 
 ## Working here
 
-    make fleet-fmt     # cargo fmt --all --check at the workspace root
-    make fleet-check   # clippy over every target and the boundary checks; no arm runs
-    make fleet-test    # fleet-check, then cargo nextest run --workspace, then the budget verdict
-    make fleet-ring    # the ring_ binaries, serial, outside the budget and judged by nothing
+    cargo fmt --all --check                                # formatting, at the workspace root
+    cargo clippy --workspace --all-targets -- -D warnings  # every target, warnings as errors; no arm runs
+    cargo nextest run --workspace                          # every suite but the ring lane
+    cargo nextest run --profile ring                       # the ring_ binaries, serial, judged by nothing
 
-`fleet-test` is the gate a landing runs. Its test phase is held to the budget in
-the surrounding project's own policy file, judged only when the box's 1-minute
-load before the run is under that file's ceiling — over it the run prints NOT
-JUDGED and exits 0, because contention can only lengthen a run and so neither
-side of the budget says anything about the code. The ring lane is a separate
-population by binary name and no ring second is inside the budgeted number.
+There is no wrapper around these and no time budget: the four commands are the
+whole of it, and the third is the suite a landing runs. The ring lane — the
+`ring_*` binaries, which spawn the shipped binary against real repositories — is
+left out of the default profile by binary name in `.config/nextest.toml` and
+runs only under its own profile. That file's per-arm `slow-timeout` is the one
+bound on a run's time.
+
+A rig's scratch board runs on bd's embedded engine unless
+`FLEET_TEST_DOLT_PORT` names a served one; `tools/dolt-test-server <command>`
+runs `<command>` against a throwaway server it starts and stops.
+`tools/suite-profile` ranks where a run's seconds went, read from the junit
+report the default profile writes.
 
 Tests that drive the built binary live in the crate that builds it — `cli/tests`
 — because `CARGO_BIN_EXE_fleet` is defined only for the package whose manifest
@@ -128,7 +134,7 @@ packs, which is why the pack is not named after the bundle.
 Tiny installs from a checkout with the subdirectory form, which takes the
 repository and the path to the pack inside it:
 
-    fleet pack add <checkout>//fleet/packs/tiny --version <tag, branch or sha:…>
+    fleet pack add <checkout>//packs/tiny --version <tag, branch or sha:…>
 
 `fleet prime` then names the installed packs on its first line, top first —
 `none installed` until one is added, and never the defaults, which are the
@@ -137,7 +143,7 @@ binary's — and prints the resolved rules file beneath it.
 ### Driving it from a checkout
 
     cargo build                       # in this directory, so target/debug/fleet exists
-    claude --plugin-dir <checkout>/fleet
+    claude --plugin-dir <checkout>
 
 `--plugin-dir` loads the plugin for that session only and shadows an installed
 plugin of the same name. Four probes say it worked:
@@ -150,7 +156,7 @@ plugin of the same name. Four probes say it worked:
 4. `claude -p '/fleet:version'` answers with the version, which is the skill
    namespace.
 
-`claude plugin validate <checkout>/fleet` checks the manifests.
+`claude plugin validate <checkout>` checks the manifests.
 
 A project INSTALLS the plugin instead, with
 `claude plugin marketplace add <path to this directory>` followed by

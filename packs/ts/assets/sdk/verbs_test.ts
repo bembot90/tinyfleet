@@ -315,7 +315,7 @@ Deno.test("AC3 until — Waiting names exactly the outstanding items, in the ord
     base: "0",
     squash_of: "x",
   });
-  await append(s.env.stream, "item.delivered", "wren", {
+  await append(s.env.stream, "item.delivered", "pell", {
     item: "it-a",
     commit: "a0a",
     branch: "w",

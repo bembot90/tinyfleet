@@ -427,7 +427,7 @@ mod effects {
 
         let argv = rig.start_argv();
         assert_eq!(argv.first().map(String::as_str), Some("--bg"));
-        assert_eq!(flag_value(&argv, "--name"), "rook");
+        assert_eq!(flag_value(&argv, "--name"), "orla");
         assert_eq!(flag_value(&argv, "--model"), "claude-opus-5");
         assert_eq!(flag_value(&argv, "--permission-mode"), "auto");
         assert_eq!(argv.last().map(String::as_str), Some("/wake builder-1"));
@@ -452,7 +452,7 @@ mod effects {
         assert_eq!(table["schema"], 1);
         let row = &table["sessions"][0];
         assert_eq!(row["seat"], "builder-1");
-        assert_eq!(row["name"], "rook");
+        assert_eq!(row["name"], "orla");
         assert_eq!(row["model"], "claude-opus-5");
         assert_eq!(row["posture"], "auto");
         assert_eq!(row["first_turn"], "/wake builder-1");
@@ -824,7 +824,7 @@ mod effects {
         rig.write_roster("[]");
         rig.write_config(&format!(
             r#"{{"fleet_toml": "{}", "children": [
-                 {{"name":"builder-1","chosen_name":"Rook",
+                 {{"name":"builder-1","chosen_name":"Orla",
                    "model":"claude-haiku-4-5-20251001",
                    "worktrees":{{"demo":"{}"}}}}
                ]}}"#,
@@ -1484,7 +1484,7 @@ mod isolation {
     fn one_transient_seat(rig: &Rig) -> String {
         format!(
             r#"{{"fleet_toml": "{}", "children": [
-                 {{"name":"builder-1","chosen_name":"Rook","transient":true,
+                 {{"name":"builder-1","chosen_name":"Orla","transient":true,
                    "worktrees":{{"demo":"{}"}}}}
                ]}}"#,
             rig.policy_path().display(),
@@ -1499,7 +1499,7 @@ mod isolation {
         format!(
             r#"{{"schema":1,"consumed_seq":0,"nudged":{{}},"seats":{{}},"sessions":[
                  {{"seat":"builder-1","project":"demo","worktree":"{}",
-                   "name":"rook","model":"a-model","posture":"dontAsk",
+                   "name":"orla","model":"a-model","posture":"dontAsk",
                    "first_turn":"a brief","transient":true,
                    "config_dir":"{}","item":"{}",
                    "dispatch_id":"a-dispatch","dispatched_at":1000}}

@@ -382,7 +382,7 @@ mod tests {
     const ONE_SEAT: &str = r#"{
       "fleet_toml": "/fleet/fleet.toml",
       "children": [
-        {"name": "builder-1", "chosen_name": "Rook", "model": "a-model",
+        {"name": "builder-1", "chosen_name": "Orla", "model": "a-model",
          "worktrees": {"demo": "/wt/builder-1"}},
         {"name": "builder-2", "worktrees": {}},
         {"chosen_name": "nameless", "worktrees": {"demo": "/wt/x"}}
@@ -498,7 +498,7 @@ mod tests {
             },
             RenderedSeat {
                 name: "two".to_string(),
-                chosen_name: Some("Wren".to_string()),
+                chosen_name: Some("Pell".to_string()),
                 model: "a-model".to_string(),
                 worktrees: vec![("p".to_string(), "/wt/two".to_string())],
             },
@@ -523,7 +523,7 @@ mod tests {
             7,
             "a key this render has nothing to say about survives it"
         );
-        assert_eq!(row("two")["chosen_name"], "Wren");
+        assert_eq!(row("two")["chosen_name"], "Pell");
         assert!(!rows.iter().any(|r| r["name"] == "gone"));
 
         // The transient row and the unknown top-level key, unchanged.

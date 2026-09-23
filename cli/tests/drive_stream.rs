@@ -580,7 +580,7 @@ fn a_configured_worktree_with_a_trailing_separator_still_reads_a_context() {
     let rig = Rig::new("slashed");
     rig.write_config(&format!(
         r#"{{"fleet_toml": "{}", "children": [
-             {{"name":"builder-1","chosen_name":"Rook","worktrees":{{"demo":"{}/"}}}}
+             {{"name":"builder-1","chosen_name":"Orla","worktrees":{{"demo":"{}/"}}}}
            ]}}"#,
         rig.policy_path().display(),
         rig.worktree().display()
@@ -747,7 +747,7 @@ fn every_change_the_loop_states_is_one_line_and_not_one_line_per_poll() {
         );
         rig.write_config(&format!(
             r#"{{"fleet_toml": "{}", "children": [
-             {{"name":"builder-1","chosen_name":"Rook","worktrees":{{"demo":"{}"}}}}
+             {{"name":"builder-1","chosen_name":"Orla","worktrees":{{"demo":"{}"}}}}
            ]}}"#,
             rig.second_policy_path().display(),
             rig.worktree().display()
@@ -791,7 +791,7 @@ fn every_change_the_loop_states_is_one_line_and_not_one_line_per_poll() {
         // the seat list names has not moved.
         rig.write_config(&format!(
             r#"{{"fleet_toml": "{}", "children": [
-             {{"name":"builder-1","chosen_name":"Rook","worktrees":{{"demo":"{}"}}}}
+             {{"name":"builder-1","chosen_name":"Orla","worktrees":{{"demo":"{}"}}}}
            ]}}"#,
             rig.second_policy_path().display(),
             rig.worktree().display()
@@ -827,7 +827,7 @@ fn every_change_the_loop_states_is_one_line_and_not_one_line_per_poll() {
         // has its pair.
         rig.write_config(&format!(
             r#"{{"fleet_toml": "{}", "children": [
-             {{"name":"builder-1","chosen_name":"Rook","worktrees":{{"demo":"{}"}}}}
+             {{"name":"builder-1","chosen_name":"Orla","worktrees":{{"demo":"{}"}}}}
            ]}}"#,
             rig.policy_path().display(),
             rig.worktree().display()

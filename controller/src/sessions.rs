@@ -602,7 +602,7 @@ mod tests {
             seat: seat.to_string(),
             project: "demo".to_string(),
             worktree: worktree.to_string(),
-            name: "rook".to_string(),
+            name: "orla".to_string(),
             model: "a-model".to_string(),
             posture: "auto".to_string(),
             first_turn: "/wake s1".to_string(),
@@ -781,12 +781,12 @@ mod tests {
         use crate::events::{EventLog, SESSION_ADOPTED, SESSION_SPAWNED};
         let dir = scratch("adopted-fold");
         let spawned = serde_json::json!({
-            "worktree": "/wt/s1", "project": "demo", "name": "rook", "model": "a-model",
+            "worktree": "/wt/s1", "project": "demo", "name": "orla", "model": "a-model",
             "posture": "auto", "first_turn": "/wake s1", "transient": false, "output": "",
         });
         let adopted = serde_json::json!({
             "session": "a-session", "short_id": "ab12", "worktree": "/wt/s1",
-            "project": "demo", "name": "rook", "model": "a-model", "posture": "auto",
+            "project": "demo", "name": "orla", "model": "a-model", "posture": "auto",
             "first_turn": "/wake s1", "transient": false,
         });
         let stream = |name: &str, lines: &[(&str, &serde_json::Value)]| {
@@ -867,7 +867,7 @@ mod tests {
 
     fn spawned_payload() -> serde_json::Value {
         serde_json::json!({
-            "worktree": "/wt/s1", "project": "demo", "name": "rook", "model": "a-model",
+            "worktree": "/wt/s1", "project": "demo", "name": "orla", "model": "a-model",
             "posture": "auto", "first_turn": "/wake s1", "transient": false, "output": "",
         })
     }
@@ -922,7 +922,7 @@ mod tests {
         let revive_ts = "2026-09-12T11:15:00Z";
         let adopted = serde_json::json!({
             "session": "a-session", "short_id": "ab12", "worktree": "/wt/s1",
-            "project": "demo", "name": "rook", "model": "a-model", "posture": "auto",
+            "project": "demo", "name": "orla", "model": "a-model", "posture": "auto",
             "first_turn": "/wake s1", "transient": false,
         });
         let revived = serde_json::json!({
@@ -986,7 +986,7 @@ mod tests {
                 rows[0]
             );
             assert_eq!(
-                rows[0].name, "rook",
+                rows[0].name, "orla",
                 "{name}: and the fields the spawn knew are the row's still"
             );
         }
@@ -1011,7 +1011,7 @@ mod tests {
         let ts = "2026-09-12T11:15:00Z";
         let revived = serde_json::json!({
             "session": "a-session", "address": "ab12", "worktree": "/wt/s1",
-            "project": "demo", "name": "rook", "model": "a-model", "posture": "auto",
+            "project": "demo", "name": "orla", "model": "a-model", "posture": "auto",
             "first_turn": "/wake s1", "transient": false, "outcome": "dispatched",
         });
         let path = stream_of(
@@ -1039,7 +1039,7 @@ mod tests {
                 rows[0].posture.as_str(),
                 rows[0].first_turn.as_str(),
             ),
-            ("rook", "a-model", "auto", "/wake s1"),
+            ("orla", "a-model", "auto", "/wake s1"),
             "the fallback row's four fields are the line's: {:?}",
             rows[0]
         );
@@ -1066,7 +1066,7 @@ mod tests {
         let ts = "2026-09-12T10:00:00Z";
         let adopted = serde_json::json!({
             "session": "a-session", "short_id": "ab12", "worktree": "/wt/s1",
-            "project": "demo", "name": "rook", "model": "a-model", "posture": "auto",
+            "project": "demo", "name": "orla", "model": "a-model", "posture": "auto",
             "first_turn": "/wake s1", "transient": false,
         });
         let path = stream_of(

@@ -247,7 +247,7 @@ mod tests {
             grant_detail: None,
             seats: vec![SeatRow::from_observation(
                 "builder-1",
-                Some("Rook"),
+                Some("Orla"),
                 &SeatObservation {
                     state: RosterState::Present,
                     unknown_cause: None,

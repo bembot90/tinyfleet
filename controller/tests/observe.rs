@@ -43,7 +43,7 @@ fn started() -> Recency<'static> {
 fn seat() -> Seat {
     Seat {
         name: "builder-1".to_string(),
-        chosen_name: Some("Rook".to_string()),
+        chosen_name: Some("Orla".to_string()),
         model: None,
         transient: false,
         worktrees: vec![("demo".to_string(), WORKTREE.to_string())],
@@ -131,7 +131,7 @@ mod lessons {
         let mixed = parse_roster(
             r#"[
               {"id":"aa","sessionId":"aa","cwd":"/wt/builder-1","kind":"background",
-               "pid":1,"status":"idle","state":"running","name":"rook","startedAt":10,
+               "pid":1,"status":"idle","state":"running","name":"orla","startedAt":10,
                "someFieldNobodyHasSeen":"harmless"},
               {"sessionId":"bb","cwd":"/wt/builder-2","kind":"interactive"}
             ]"#,
@@ -736,7 +736,7 @@ fn the_projection_carries_no_pid_and_no_handle() {
     let mut document = projection(Some("2.1.261"), Some("2.1.261"));
     document.seats = vec![SeatRow::from_observation(
         "builder-1",
-        Some("Rook"),
+        Some("Orla"),
         &seen,
         Some(1234),
     )];
@@ -801,7 +801,7 @@ fn the_projection_carries_no_model_and_no_transient() {
     // the projection's silence and not an empty document.
     let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(parsed["seats"][0]["seat_dir"], "builder-1");
-    assert_eq!(parsed["seats"][0]["chosen_name"], "Rook");
+    assert_eq!(parsed["seats"][0]["chosen_name"], "Orla");
     assert_eq!(parsed["seats"][0]["roster_state"], "present");
 
     for forbidden in ["\"model\"", "\"transient\"", "a-model"] {

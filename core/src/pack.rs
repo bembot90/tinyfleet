@@ -632,13 +632,22 @@ fn check_registry(root: &Path) -> Vec<Defect> {
     }
 }
 
+/// A pack's walks read past OS litter rather than refusing the pack or
+/// resolving the litter as slot files.
+pub use crate::os_litter::{is_os_litter, OS_LITTER};
+
 /// The names directly under a directory, sorted, so a report reads the same on
-/// every filesystem.
+/// every filesystem, with [`OS_LITTER`] left out. Every walk of a pack — the
+/// check here and the resolver's — lists a directory through this one reader,
+/// which is what keeps them agreeing on what a pack holds.
 pub(crate) fn dir_names(dir: &Path) -> Result<Vec<String>, String> {
     let mut names = Vec::new();
     for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
-        names.push(entry.file_name().to_string_lossy().into_owned());
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !is_os_litter(&name) {
+            names.push(name);
+        }
     }
     names.sort();
     Ok(names)

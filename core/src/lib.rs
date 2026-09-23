@@ -111,6 +111,7 @@ pub mod embedded;
 pub mod guard;
 pub mod item;
 pub mod lock;
+mod os_litter;
 pub mod pack;
 pub mod policy;
 pub mod registry;
