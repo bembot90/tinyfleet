@@ -20,6 +20,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
+use common::capped::{calls, capped_bd, Held};
 use common::Fixture;
 use fleet_core::store::{Bd, Store};
 
@@ -238,5 +239,47 @@ fn open_gates_lifts_the_row_cap() {
             String::from("0"),
         ],
         "the open-gate read must carry `-n 0`, or it answers the first 50 rows only"
+    );
+}
+
+/// A seat's listing lifts the row cap, and answers the row past it.
+///
+/// The one list read here proved by the COUNT as well as by the argv, because
+/// the fake that caps it is cheap: 51 non-closed rows against one seat, the
+/// 51st the one a capped read drops. A retire takes a seat's ordered items off
+/// this listing before its name goes back on the pile, so a row it cannot see
+/// is an order the next seat of that name inherits.
+#[test]
+fn a_seat_listing_lifts_the_row_cap() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-argv-seat");
+    let log = dir.path("argv");
+    let ids: Vec<String> = (1..=51).map(|n| format!("fx-row-{n:02}")).collect();
+    let rows: Vec<Held> = ids.iter().map(|id| Held { id, ordered: false }).collect();
+    capped_bd(&dir, "transient-3", &rows, &log);
+
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+    let answered = with_path_ahead(&dir.root, || Bd::at(&root).assigned_to("transient-3"));
+
+    let held: Vec<String> = answered
+        .expect("the fake answers a list")
+        .into_iter()
+        .map(|row| row.id)
+        .collect();
+    assert_eq!(held, ids, "every row the seat holds, the 51st included");
+    assert_eq!(
+        calls(&log),
+        vec![vec![
+            String::from("-C"),
+            root.display().to_string(),
+            String::from("list"),
+            String::from("-a"),
+            String::from("transient-3"),
+            String::from("--json"),
+            String::from("-n"),
+            String::from("0"),
+        ]],
+        "the seat's listing must carry `-n 0`, or it answers the first 50 rows only"
     );
 }

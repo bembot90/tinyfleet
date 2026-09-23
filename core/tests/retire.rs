@@ -1,14 +1,19 @@
 //! The record's half of `fleet seat retire`: the orders a retiring seat still
 //! holds, withdrawn before its name goes back on the pile.
 //!
-//! The applying fake store and nothing else. What is under test is which items
-//! the query names and what the three writes leave on them — no session, no
-//! worktree and no seat list, all three of which are the controller's and are
-//! asserted in its own suite.
+//! The applying fake store, and for the one arm about the listing's row cap a
+//! fake `bd` behind the store that talks to it. What is under test is which
+//! items the query names and what the three writes leave on them — no session,
+//! no worktree and no seat list, all three of which are the controller's and
+//! are asserted in its own suite.
 
+mod common;
+
+use common::capped::{calls, capped_bd, Held};
+use common::Fixture;
 use fleet_core::item::COULD_NOT_TELL;
 use fleet_core::seat::retire::{self, WITHDRAWN};
-use fleet_core::store::{Item, Orders, Row, Store};
+use fleet_core::store::{Bd, Item, Orders, Row, Store};
 use fleet_core::test_support::FakeStore;
 
 /// The name the incident wore: a transient seat retired while an item it was
@@ -222,5 +227,58 @@ fn a_retire_that_cannot_read_the_board_refuses_rather_than_reading_no_hold() {
         stop.message.contains("could not be run"),
         "the store's own cause reaches the caller: {}",
         stop.message
+    );
+}
+
+/// PAST FIFTY ITEMS ON ONE SEAT the ordered one is still withdrawn: the seat
+/// holds 51 open items, and the only ordered one is the 51st — the row `bd
+/// list` drops when nothing lifts its cap of 50.
+///
+/// Through the store that talks to `bd`, because the cap is the binary's and
+/// the applying fake has none: the arm is red for a listing that reads the
+/// first page and takes it for the whole.
+#[test]
+fn a_retire_withdraws_an_ordered_item_past_the_fiftieth_row() {
+    let dir = Fixture::new("retire-row-51");
+    let log = dir.path("calls");
+    let ids: Vec<String> = (1..=51).map(|n| format!("fx-row-{n:02}")).collect();
+    let rows: Vec<Held> = ids
+        .iter()
+        .map(|id| Held {
+            id,
+            ordered: id == "fx-row-51",
+        })
+        .collect();
+    let bin = capped_bd(&dir, SEAT, &rows, &log);
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+    let store = Bd::at_bin(&root, &bin);
+
+    let held = retire::held(&store, SEAT).expect("the board answers");
+    assert_eq!(
+        held,
+        vec![String::from("fx-row-51")],
+        "the query names the ordered item at row 51"
+    );
+
+    retire::withdraw(&store, &held, SEAT, BY).expect("the withdrawal lands");
+
+    let after = store
+        .show("fx-row-51")
+        .expect("the store answers about the item");
+    assert!(
+        !after.has_orders_key && after.assignee.is_none() && after.status == "open",
+        "the item reads open, unassigned and unordered: {}",
+        after.document
+    );
+    let withdrawals: Vec<String> = calls(&log)
+        .into_iter()
+        .filter(|call| call.get(2).map(String::as_str) == Some("update"))
+        .map(|call| call[3].clone())
+        .collect();
+    assert_eq!(
+        withdrawals,
+        vec![String::from("fx-row-51")],
+        "one withdrawal, of the item at row 51"
     );
 }

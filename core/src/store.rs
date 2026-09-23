@@ -531,9 +531,13 @@ impl Store for Bd {
         self.wrote(&["update", item, "--title", title, "--actor", by])
     }
 
+    /// `-n 0` for the same reason the reads above carry it: this answer's
+    /// default cap is 50 rows and a truncated list reads exactly like a whole
+    /// one, so past fifty items on one seat a retire misses the orders beyond
+    /// row 50 and the next seat of that name inherits them.
     fn assigned_to(&self, seat: &str) -> Result<Vec<Row>, StoreError> {
         Ok(self
-            .listed(&["list", "-a", seat, "--json"])?
+            .listed(&["list", "-a", seat, "--json", "-n", "0"])?
             .iter()
             .filter_map(|row| {
                 Some(Row {
@@ -597,7 +601,7 @@ impl Store for Bd {
         ])
     }
 
-    /// `-n 0` for the same reason the two reads above carry it: this verb
+    /// `-n 0` for the same reason the three reads above carry it: this verb
     /// answers its first 50 rows by default and a truncated list reads exactly
     /// like a whole one, so past fifty open gates a gate the board holds open
     /// is absent from the listing — and `answer` refuses a gate it does not

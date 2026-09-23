@@ -5,6 +5,7 @@
 //! folder rather than against a model of it.
 
 mod board;
+pub mod capped;
 
 pub use board::bd_init_server_args;
 
