@@ -105,9 +105,11 @@ coming up for a session; **handoff**, the seat's day ending; **rest**, a
 mid-day handoff that asks the controller for a woken successor; **clock-out**,
 a spawned seat's last acts; **morning**, the first read of the open gates;
 **corrections-review**, a landing judged a second time for whether every line
-earns its place; **praise**, a laurel written into another seat's file; and
-**report** and **runbook**, the two published-page house styles, each carrying
-its own `template.html`.
+earns its place; **praise**, a laurel written into another seat's file;
+**preboard**, the next flight's list composed off the departure board;
+**takeoff**, a flight's two human phases, pre-flight and the reading of its
+report; and **report** and **runbook**, the two published-page house styles,
+each carrying its own `template.html`.
 
 ### The defaults and the packs
 

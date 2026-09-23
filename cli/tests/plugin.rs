@@ -360,6 +360,46 @@ mod lessons {
             "the pack's rituals reach the plugin root through links: {linked} found"
         );
     }
+
+    /// The converse of the arm above, which holds every link it finds and so
+    /// cannot see one that is missing. A skill the pack ships and the plugin
+    /// root does not link is a ritual no `--plugin-dir` session can invoke, and
+    /// nothing else fails for it: the pack installs, and every link that is
+    /// there resolves.
+    #[test]
+    fn every_pack_skill_is_linked_into_the_plugin_root() {
+        let root = fleet_root();
+        let pack = root.join("packs/tiny/skills");
+
+        let mut owned: Vec<String> = std::fs::read_dir(&pack)
+            .expect("the pack's skills directory is readable")
+            .map(|entry| entry.expect("the entry is readable"))
+            .filter(|entry| entry.path().is_dir())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        owned.sort();
+
+        // The control on the loop below: a pack directory this test could not
+        // read would own nothing, and nothing would pass as all linked.
+        assert!(
+            owned.iter().any(|name| name == "wake"),
+            "the pack's skills were read: {owned:?}"
+        );
+
+        let unlinked: Vec<&String> = owned
+            .iter()
+            .filter(|name| {
+                std::fs::symlink_metadata(root.join("skills").join(name.as_str()))
+                    .map(|meta| !meta.file_type().is_symlink())
+                    .unwrap_or(true)
+            })
+            .collect();
+        assert!(
+            unlinked.is_empty(),
+            "every skill the pack ships has a link under skills/, or a session \
+             loaded with the plugin has no fleet: ritual for it: {unlinked:?} unlinked"
+        );
+    }
 }
 
 // ---- AC2: `fleet prime` -----------------------------------------------------
