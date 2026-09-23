@@ -11,7 +11,7 @@
 //! well-formed answer over its last byte.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 /// The binary every write and read goes through when the caller names no
 /// other, resolved on the process's own `PATH`.
@@ -269,65 +269,108 @@ impl Bd {
     }
 
     /// One call, with its status read from the command itself.
-    fn run(&self, args: &[&str]) -> Result<Answer, StoreError> {
-        let mut cmd = Command::new(&self.bin);
-        cmd.arg("-C").arg(&self.root).args(args);
-        let out = cmd.output().map_err(|e| {
-            StoreError::Unreadable(format!(
-                "`{}` could not be run ({e}) — nothing was written",
-                self.bin.display()
-            ))
-        })?;
-        Ok(Answer {
-            ok: out.status.success(),
-            code: out.status.code(),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        })
+    fn run(&self, args: &[&str]) -> Result<Output, StoreError> {
+        Command::new(&self.bin)
+            .arg("-C")
+            .arg(&self.root)
+            .args(args)
+            .output()
+            .map_err(|e| {
+                StoreError::Unreadable(format!(
+                    "`{}` could not be run ({e}) — nothing was written",
+                    self.bin.display()
+                ))
+            })
     }
 
-    fn wrote(&self, what: &str, args: &[&str]) -> Result<(), StoreError> {
-        let answer = self.run(args)?;
-        if answer.ok {
-            return Ok(());
+    /// The call as a message names it: the binary this store runs and the argv
+    /// it ran, so a refusal never names a binary or a flag the call did not.
+    fn named(&self, args: &[&str]) -> String {
+        let args: Vec<&str> = args
+            .iter()
+            .map(|arg| if arg.is_empty() { "''" } else { arg })
+            .collect();
+        format!("`{} {}`", self.bin.display(), args.join(" "))
+    }
+
+    fn refused(&self, args: &[&str], out: &Output) -> StoreError {
+        StoreError::Unreadable(format!(
+            "{} {}: {}",
+            self.named(args),
+            out.status,
+            tail(out)
+        ))
+    }
+
+    /// One call that has to succeed, its answer handed back whole.
+    fn answered(&self, args: &[&str]) -> Result<Output, StoreError> {
+        let out = self.run(args)?;
+        if !out.status.success() {
+            return Err(self.refused(args, &out));
         }
-        Err(StoreError::Unreadable(format!(
-            "`{BD}` {what} exited {}: {}",
-            answer.status(),
-            answer.tail()
-        )))
+        Ok(out)
+    }
+
+    /// One listing, as its rows.
+    ///
+    /// AN EMPTY LISTING MAY ANSWER `null` AND NOT `[]` — measured on bd 1.2.2
+    /// for `gate list` — or nothing at all, and both read as no rows: a decoder
+    /// demanding an array would read "nothing here" as a store that would not
+    /// answer, and refuse every answer on a fleet with nothing parked.
+    fn listed(&self, args: &[&str]) -> Result<Vec<serde_json::Value>, StoreError> {
+        let out = self.answered(args)?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        match first_value(&stdout) {
+            Some(serde_json::Value::Array(rows)) => Ok(rows),
+            Some(serde_json::Value::Null) => Ok(Vec::new()),
+            None if stdout.trim().is_empty() => Ok(Vec::new()),
+            _ => Err(StoreError::Unreadable(format!(
+                "{} did not answer a list: {}",
+                self.named(args),
+                tail(&out)
+            ))),
+        }
+    }
+
+    /// The id off a write's OWN answer. A second read for the newest item would
+    /// name whatever else landed in the store between the two calls.
+    fn created_id(&self, args: &[&str]) -> Result<String, StoreError> {
+        let out = self.answered(args)?;
+        first_value(&String::from_utf8_lossy(&out.stdout))
+            .as_ref()
+            .and_then(|value| value.get("id"))
+            .and_then(|id| id.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                StoreError::Unreadable(format!(
+                    "{} answered no id: {}",
+                    self.named(args),
+                    tail(&out)
+                ))
+            })
+    }
+
+    fn wrote(&self, args: &[&str]) -> Result<(), StoreError> {
+        self.answered(args).map(|_| ())
     }
 }
 
-struct Answer {
-    ok: bool,
-    code: Option<i32>,
-    stdout: String,
-    stderr: String,
-}
-
-impl Answer {
-    fn status(&self) -> String {
-        match self.code {
-            Some(code) => code.to_string(),
-            None => "on a signal".to_string(),
-        }
-    }
-
-    fn tail(&self) -> String {
-        let body = if self.stderr.trim().is_empty() {
-            &self.stdout
-        } else {
-            &self.stderr
-        };
-        body.lines()
-            .rev()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("no output")
-            .chars()
-            .take(160)
-            .collect()
-    }
+/// What a call said last: the last line of its stderr that is not blank, else
+/// of its stdout, cut to 160 characters.
+fn tail(out: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let body = if stderr.trim().is_empty() {
+        String::from_utf8_lossy(&out.stdout)
+    } else {
+        stderr
+    };
+    body.lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("no output")
+        .chars()
+        .take(160)
+        .collect()
 }
 
 /// The first JSON value of an answer, with whatever trails it discarded.
@@ -404,21 +447,8 @@ impl Store for Bd {
         // `-n 0` lifts the read's row cap. The verb answers its first 100 rows
         // by default, and a truncated list reads exactly like a whole one — so
         // past a hundred ready rows a ready item would be refused as not ready.
-        let answer = self.run(&["ready", "--json", "-n", "0"])?;
-        if !answer.ok {
-            return Err(StoreError::Unreadable(format!(
-                "`{BD} ready --json -n 0` exited {}: {}",
-                answer.status(),
-                answer.tail()
-            )));
-        }
-        let Some(serde_json::Value::Array(rows)) = first_value(&answer.stdout) else {
-            return Err(StoreError::Unreadable(format!(
-                "`{BD} ready --json -n 0` did not answer a list: {}",
-                answer.tail()
-            )));
-        };
-        Ok(rows
+        Ok(self
+            .listed(&["ready", "--json", "-n", "0"])?
             .iter()
             .filter_map(|row| {
                 Some(Ready {
@@ -431,11 +461,16 @@ impl Store for Bd {
     }
 
     fn show(&self, item: &str) -> Result<Item, StoreError> {
-        let answer = self.run(&["show", item, "--json"])?;
-        let Some(value) = first_value(&answer.stdout) else {
+        // THE JSON IS READ BEFORE THE STATUS, and this read stays off
+        // `answered`: bd exits non-zero on an item it does not hold and prints
+        // the error object, which is the record's answer and not a refusal.
+        let args = ["show", item, "--json"];
+        let out = self.run(&args)?;
+        let Some(value) = first_value(&String::from_utf8_lossy(&out.stdout)) else {
             return Err(StoreError::Unreadable(format!(
-                "`{BD} show {item} --json` answered no JSON: {}",
-                answer.tail()
+                "{} answered no JSON: {}",
+                self.named(&args),
+                tail(&out)
             )));
         };
         let Some(row) = sole(value) else {
@@ -444,12 +479,8 @@ impl Store for Bd {
         if let Some(error) = row.get("error").and_then(|e| e.as_str()) {
             return Err(StoreError::Missing(format!("{item}: {error}")));
         }
-        if !answer.ok {
-            return Err(StoreError::Unreadable(format!(
-                "`{BD} show {item} --json` exited {}: {}",
-                answer.status(),
-                answer.tail()
-            )));
+        if !out.status.success() {
+            return Err(self.refused(&args, &out));
         }
         Ok(item_from(item, &row))
     }
@@ -460,15 +491,8 @@ impl Store for Bd {
     /// line both names a provider and makes the same item render two different
     /// ways. Quiet drops it and leaves the body byte-identical.
     fn show_text(&self, item: &str) -> Result<String, StoreError> {
-        let answer = self.run(&["-q", "show", item])?;
-        if !answer.ok {
-            return Err(StoreError::Unreadable(format!(
-                "`{BD} show {item}` exited {}: {}",
-                answer.status(),
-                answer.tail()
-            )));
-        }
-        Ok(answer.stdout)
+        let out = self.answered(&["-q", "show", item])?;
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
     /// `-n 0` for the same reason the ready read carries it: this answer's
@@ -476,23 +500,10 @@ impl Store for Bd {
     /// one, so past fifty open flight records a plan would be admitted onto a
     /// list an open flight already holds.
     fn open_labelled(&self, label: &str) -> Result<Vec<String>, StoreError> {
-        let answer = self.run(&[
-            "list", "--label", label, "--status", "open", "--json", "-n", "0",
-        ])?;
-        if !answer.ok {
-            return Err(StoreError::Unreadable(format!(
-                "`{BD} list --label {label} --status open --json -n 0` exited {}: {}",
-                answer.status(),
-                answer.tail()
-            )));
-        }
-        let Some(serde_json::Value::Array(rows)) = first_value(&answer.stdout) else {
-            return Err(StoreError::Unreadable(format!(
-                "`{BD} list --label {label} --status open --json -n 0` did not answer a list: {}",
-                answer.tail()
-            )));
-        };
-        Ok(rows
+        Ok(self
+            .listed(&[
+                "list", "--label", label, "--status", "open", "--json", "-n", "0",
+            ])?
             .iter()
             .filter_map(|row| text_field(row, "id"))
             .collect())
@@ -513,50 +524,16 @@ impl Store for Bd {
             args.extend(["--labels", labels.as_str()]);
         }
         args.extend(["--actor", by, "--json"]);
-        let answer = self.run(&args)?;
-        if !answer.ok {
-            return Err(StoreError::Unreadable(format!(
-                "`{BD} create` exited {}: {}",
-                answer.status(),
-                answer.tail()
-            )));
-        }
-        // The id comes off the create's OWN answer. A second read for the
-        // newest item would name whatever else landed in the store between the
-        // two calls.
-        first_value(&answer.stdout)
-            .as_ref()
-            .and_then(|value| value.get("id"))
-            .and_then(|id| id.as_str())
-            .map(str::to_string)
-            .ok_or_else(|| {
-                StoreError::Unreadable(format!("`{BD} create` answered no id: {}", answer.tail()))
-            })
+        self.created_id(&args)
     }
 
     fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(
-            "update --title",
-            &["update", item, "--title", title, "--actor", by],
-        )
+        self.wrote(&["update", item, "--title", title, "--actor", by])
     }
 
     fn assigned_to(&self, seat: &str) -> Result<Vec<Row>, StoreError> {
-        let answer = self.run(&["list", "-a", seat, "--json"])?;
-        if !answer.ok {
-            return Err(StoreError::Unreadable(format!(
-                "`{BD} list -a {seat} --json` exited {}: {}",
-                answer.status(),
-                answer.tail()
-            )));
-        }
-        let Some(serde_json::Value::Array(rows)) = first_value(&answer.stdout) else {
-            return Err(StoreError::Unreadable(format!(
-                "`{BD} list -a {seat} --json` did not answer a list: {}",
-                answer.tail()
-            )));
-        };
-        Ok(rows
+        Ok(self
+            .listed(&["list", "-a", seat, "--json"])?
             .iter()
             .filter_map(|row| {
                 Some(Row {
@@ -569,56 +546,41 @@ impl Store for Bd {
     }
 
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(
-            "update --assignee",
-            &["update", item, "--assignee", seat, "--actor", by],
-        )
+        self.wrote(&["update", item, "--assignee", seat, "--actor", by])
     }
 
     fn note(&self, item: &str, text: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote("note", &["note", item, text, "--actor", by])
+        self.wrote(&["note", item, text, "--actor", by])
     }
 
     fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(
-            "update --metadata",
-            &["update", item, "--metadata", payload, "--actor", by],
-        )
+        self.wrote(&["update", item, "--metadata", payload, "--actor", by])
     }
 
     /// The same argv `set_orders` uses: bd names one flag for a metadata write
     /// and the polarity above is what makes one flag safe for two keys.
     fn set_metadata(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(
-            "update --metadata",
-            &["update", item, "--metadata", payload, "--actor", by],
-        )
+        self.wrote(&["update", item, "--metadata", payload, "--actor", by])
     }
 
     fn unset_orders(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(
-            "update --unset-metadata",
-            &["update", item, "--unset-metadata", "orders", "--actor", by],
-        )
+        self.wrote(&["update", item, "--unset-metadata", "orders", "--actor", by])
     }
 
     /// Both flags on one `update`, which bd takes: the empty assignee is what
     /// clears the field, measured through the shipped binary in the cli's own
     /// seat suite.
     fn withdraw_order(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(
-            "update --assignee '' --unset-metadata",
-            &[
-                "update",
-                item,
-                "--assignee",
-                "",
-                "--unset-metadata",
-                "orders",
-                "--actor",
-                by,
-            ],
-        )
+        self.wrote(&[
+            "update",
+            item,
+            "--assignee",
+            "",
+            "--unset-metadata",
+            "orders",
+            "--actor",
+            by,
+        ])
     }
 
     /// `--type` is not passed: human is the type `bd gate create` takes with no
@@ -630,70 +592,30 @@ impl Store for Bd {
     /// this subcommand; a parse of the prose is the form that goes quiet the
     /// day the prose changes.
     fn gate(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
-        let answer = self.run(&[
+        self.created_id(&[
             "gate", "create", "--blocks", item, "--reason", reason, "--actor", by, "--json",
-        ])?;
-        if !answer.ok {
-            return Err(StoreError::Unreadable(format!(
-                "`{BD} gate create --blocks {item}` exited {}: {}",
-                answer.status(),
-                answer.tail()
-            )));
-        }
-        first_value(&answer.stdout)
-            .as_ref()
-            .and_then(|value| value.get("id"))
-            .and_then(|id| id.as_str())
-            .map(str::to_string)
-            .ok_or_else(|| {
-                StoreError::Unreadable(format!(
-                    "`{BD} gate create --blocks {item}` answered no id: {}",
-                    answer.tail()
-                ))
-            })
+        ])
     }
 
-    /// AN EMPTY LISTING ANSWERS `null` AND NOT `[]`, measured on bd 1.2.2 — so
-    /// a decoder demanding an array would read "no gate is open" as a store
-    /// that would not answer, and refuse every answer on a fleet with nothing
-    /// parked.
-    ///
     /// `-n 0` for the same reason the two reads above carry it: this verb
     /// answers its first 50 rows by default and a truncated list reads exactly
     /// like a whole one, so past fifty open gates a gate the board holds open
     /// is absent from the listing — and `answer` refuses a gate it does not
     /// find there as one somebody has already resolved.
     fn open_gates(&self) -> Result<Vec<String>, StoreError> {
-        let answer = self.run(&["gate", "list", "--json", "-n", "0"])?;
-        if !answer.ok {
-            return Err(StoreError::Unreadable(format!(
-                "`{BD} gate list --json -n 0` exited {}: {}",
-                answer.status(),
-                answer.tail()
-            )));
-        }
-        match first_value(&answer.stdout) {
-            Some(serde_json::Value::Array(rows)) => Ok(rows
-                .iter()
-                .filter_map(|row| text_field(row, "id"))
-                .collect()),
-            Some(serde_json::Value::Null) | None => Ok(Vec::new()),
-            Some(_) => Err(StoreError::Unreadable(format!(
-                "`{BD} gate list --json -n 0` did not answer a list: {}",
-                answer.tail()
-            ))),
-        }
+        Ok(self
+            .listed(&["gate", "list", "--json", "-n", "0"])?
+            .iter()
+            .filter_map(|row| text_field(row, "id"))
+            .collect())
     }
 
     fn resolve_gate(&self, gate: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote("gate resolve", &["gate", "resolve", gate, "--actor", by])
+        self.wrote(&["gate", "resolve", gate, "--actor", by])
     }
 
     fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(
-            "close --reason",
-            &["close", item, "--reason", reason, "--actor", by],
-        )
+        self.wrote(&["close", item, "--reason", reason, "--actor", by])
     }
 
     /// `-o` is resolved against the CALLER's directory and not against `-C`:
@@ -715,7 +637,7 @@ impl Store for Bd {
             })?;
         }
         let into = into.to_string_lossy().into_owned();
-        self.wrote("export", &["export", "-o", &into])
+        self.wrote(&["export", "-o", &into])
     }
 }
 
