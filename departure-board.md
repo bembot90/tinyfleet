@@ -10,10 +10,10 @@ dependencies are the real blockers.
 
 | Bead | What | Blocked by | Landed |
 | --- | --- | --- | --- |
-| fleet-ah4 | Store helpers `answered`/`listed`/`created_id` over `std::process::Output` (F2+F8) | — | ☐ |
-| fleet-fhi | `assigned_to` reads a seat's whole listing: `-n 0` (F12, Required) | — | ☐ |
-| fleet-jqh | One `From<StoreError> for Stop` replacing eight mappings (F5) | — | ☐ |
-| fleet-nv0 | `fleet brief` decides from the order index, not a notes search | — | ☐ |
+| fleet-ah4 | Store helpers `answered`/`listed`/`created_id` over `std::process::Output` (F2+F8) | — | ☑ |
+| fleet-fhi | `assigned_to` reads a seat's whole listing: `-n 0` (F12, Required) | — | ☑ |
+| fleet-jqh | One `From<StoreError> for Stop` replacing eight mappings (F5) | — | ☑ |
+| fleet-nv0 | `fleet brief` decides from the order index, not a notes search | — | ☑ |
 
 ## Flight 2 — store cleanup and the bd pin
 
