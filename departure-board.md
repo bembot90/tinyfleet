@@ -24,6 +24,10 @@ dependencies are the real blockers.
 | fleet-5y5 | `Item.blockers` counts only blocking dependency types (F9) | lands after fleet-ah4 (same file) | ☐ |
 | fleet-016 | History out of comments, `Row` renamed `AssignedItem`, fix `open_labelled`'s doc (F3+F4+F6) | lands after fleet-16s (same lines) | ☐ |
 | fleet-reb | Pin bd at 1.3.0, checked, and re-measure the store's quirks | — | ☐ |
+| fleet-ay8 | `fleet ask` on an epic leaves an edgeless gate; `ready` lets epics through | fleet-ah4 (`gate()`); with fleet-16s (`ready`) | ☐ |
+| fleet-998 | `fleet dispatch <suffix>` refuses a ready item | fleet-16s (same line, `dispatch.rs:182`) | ☐ |
+| fleet-pg7 | dispatch's hold check counts ordered items only (ruled) | fleet-fhi (`assigned_to`) | ☐ |
+| fleet-bk115 | A test for the store opener's bd resolution (`cli/src/runs.rs:53`) | — | ☐ |
 
 ## Flight 3 — generated wire types
 
@@ -39,13 +43,13 @@ dependencies are the real blockers.
 | fleet-iex | Design: a seat is a UUID v7 identity, name optional, kind human or agent (clean break) | — | ☐ |
 | fleet-6gr | Rename gates to hold / clearance / checks; verbs decided in the spec | — | ☐ |
 | fleet-g68 | Archive built PRDs to `brain/archive/prds/`; restate the 132 code citations as constraints | — | ☐ |
-| fleet-zex | Store calls bounded at 60s; where the helper lives | — | ☐ |
+| fleet-rzixz | One reader of the item store: bd calls bounded at 60s, no bare-name `bd`, prime's second reader (absorbed fleet-zex) | — | ☐ |
 
 ## Flight 5 — namespacing, the store contract, adopting a board
 
 | Bead | What | Blocked by | Landed |
 | --- | --- | --- | --- |
-| fleet-4j6 | Namespace fleet's metadata key and run label (clean break) | — | ☐ |
+| fleet-4j6 | Namespace fleet's metadata key and run label (clean break); carries fleet-y3l's RERUN fix and preboard's `orders` filter | — | ☐ |
 | fleet-0q4 | Executable store contract, bd adapter compiled in, `fleet store check`; split at spec | fleet-ah4; fleet-zlk and fleet-iex designs first | ☐ |
 | fleet-0ml | Adopt an existing board: read-only scan verb and mapping skill | fleet-4j6 | ☐ |
 
@@ -54,3 +58,14 @@ dependencies are the real blockers.
 | Bead | What | Blocked by | Landed |
 | --- | --- | --- | --- |
 | fleet-alt.1 | Walkthrough section 1 continues past `store.rs`: re-run step 0 at the new SHA, re-plan, next file | flights 1–3 landed | ☐ |
+
+## Held for fleet-zlk
+
+These are notes-as-state bugs that the typed timeline retires. They aren't
+fixed in the prose grammar and aren't on a flight; each closes when fleet-zlk
+is built, or is judged again there.
+
+- fleet-4rl: deliver accepts a second column-zero marker, then fails its read-back after committing
+- fleet-20s: preboard's filter reads an `On flight` note that nothing writes
+- fleet-56e: landing records carry 7-character shas
+- fleet-z4w: the SDK's gate trips the crash-cap park latch through `item.parked`
