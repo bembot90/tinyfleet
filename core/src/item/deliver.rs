@@ -30,7 +30,7 @@ use crate::item::{
     Stop, DELIVERY_MARKERS, ITEM_DELIVERED, TRUNK, TRUNK_BRANCH,
 };
 use crate::policy;
-use crate::store::{Item, Row, Store, StoreError};
+use crate::store::{Item, Row, Store};
 
 /// The three lines the verb fills. Everything else in the grammar is the
 /// seat's.
@@ -275,8 +275,7 @@ pub fn held_item(store: &dyn Store, by: &str, named: Option<&str>) -> Result<Str
         return Ok(item.id);
     }
     let held = store
-        .assigned_to(by)
-        .map_err(unreadable)?
+        .assigned_to(by)?
         .into_iter()
         .filter(open)
         .collect::<Vec<Row>>();
@@ -529,14 +528,7 @@ fn normalised(text: &str) -> String {
 }
 
 fn read(store: &dyn Store, item: &str) -> Result<Item, Stop> {
-    store.show(item).map_err(unreadable)
-}
-
-pub(crate) fn unreadable(e: StoreError) -> Stop {
-    match e {
-        StoreError::Missing(why) => Stop::refused(why),
-        StoreError::Unreadable(why) => Stop::could_not_tell(why),
-    }
+    store.show(item).map_err(Stop::from)
 }
 
 /// A git operation that would not answer. The step names itself in the message

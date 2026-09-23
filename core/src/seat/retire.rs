@@ -18,7 +18,7 @@
 //! WITHDRAWN. A seat holding nothing ordered — which is most of them — makes
 //! the one read and stops.
 
-use crate::item::deliver::{open, unreadable};
+use crate::item::deliver::open;
 use crate::item::Stop;
 use crate::store::Store;
 
@@ -38,8 +38,7 @@ pub const WITHDRAWN: &str = "ORDER WITHDRAWN at retire";
 /// existed.
 pub fn held(store: &dyn Store, seat: &str) -> Result<Vec<String>, Stop> {
     Ok(store
-        .assigned_to(seat)
-        .map_err(unreadable)?
+        .assigned_to(seat)?
         .into_iter()
         .filter(|row| open(row) && row.has_orders_key)
         .map(|row| row.id)
@@ -65,7 +64,7 @@ pub fn withdraw(store: &dyn Store, items: &[String], seat: &str, by: &str) -> Re
         store
             .note(item, &line, by)
             .map_err(|e| halfway(item, &e.to_string()))?;
-        let read = store.show(item).map_err(unreadable)?;
+        let read = store.show(item)?;
         if read.has_orders_key {
             return Err(halfway(item, "it still carries an orders key"));
         }

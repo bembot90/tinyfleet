@@ -613,10 +613,7 @@ fn run(
     // (e) THE EXPORT, then the staged set and the gate on it.
     let export = wiring.project.root.join(EXPORT);
     let before = fingerprint(&export);
-    wiring
-        .store
-        .export(&wiring.project.root)
-        .map_err(unreadable)?;
+    wiring.store.export(&wiring.project.root)?;
     let after = fingerprint(&export);
     if after.is_none() {
         return Err(Stop::could_not_tell(format!(
@@ -909,10 +906,7 @@ fn run(
             "`{LANDING_NOTE}` writes `{{{name}}}`, which is not a placeholder this verb resolves"
         ))
     })?;
-    wiring
-        .store
-        .note(&item.id, &note, &closer)
-        .map_err(unreadable)?;
+    wiring.store.note(&item.id, &note, &closer)?;
     read_back(&item.id, &note, wiring)?;
 
     // (k2) THE TWO EVENTS, after the note has been written and read back and
@@ -2161,12 +2155,5 @@ fn normalised(text: &str) -> String {
 }
 
 fn read(store: &dyn Store, item: &str) -> Result<Item, Stop> {
-    store.show(item).map_err(unreadable)
-}
-
-fn unreadable(e: StoreError) -> Stop {
-    match e {
-        StoreError::Missing(why) => Stop::refused(why),
-        StoreError::Unreadable(why) => Stop::could_not_tell(why),
-    }
+    store.show(item).map_err(Stop::from)
 }

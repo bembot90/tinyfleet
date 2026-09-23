@@ -176,7 +176,7 @@ pub fn dispatch(
 
 /// The four refusals, in order, each of them before any write.
 fn refuse_unless_dispatchable(order: &Order, wiring: &Wiring) -> Result<(), Stop> {
-    let ready = wiring.store.ready().map_err(unreadable)?;
+    let ready = wiring.store.ready()?;
     let item = read(wiring.store, order.item)?;
 
     if !ready.iter().any(|row| row.id == order.item) {
@@ -209,8 +209,7 @@ fn refuse_unless_dispatchable(order: &Order, wiring: &Wiring) -> Result<(), Stop
     }
     let held: Vec<String> = wiring
         .store
-        .assigned_to(seat)
-        .map_err(unreadable)?
+        .assigned_to(seat)?
         .into_iter()
         .filter(|row| row.status == "open" || row.status == "in_progress")
         .map(|row| format!("{} ({})", row.id, row.status))
@@ -685,17 +684,7 @@ fn write_brief(wiring: &Wiring, order: &Order, note: &str, seat: &str) -> Result
 }
 
 fn read(store: &dyn Store, item: &str) -> Result<Item, Stop> {
-    store.show(item).map_err(|e| match e {
-        StoreError::Missing(why) => Stop::refused(why),
-        StoreError::Unreadable(why) => Stop::could_not_tell(why),
-    })
-}
-
-fn unreadable(e: StoreError) -> Stop {
-    match e {
-        StoreError::Missing(why) => Stop::refused(why),
-        StoreError::Unreadable(why) => Stop::could_not_tell(why),
-    }
+    store.show(item).map_err(Stop::from)
 }
 
 fn why_not_ready(item: &Item) -> String {

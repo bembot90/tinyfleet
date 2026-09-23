@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use crate::guard;
 use crate::item::{render, Project, Stop};
 use crate::resolve::{self, Layer, Resolution};
-use crate::store::{Store, StoreError};
+use crate::store::Store;
 
 /// The four files this verb reads, all of them shadowable.
 pub const BRIEF: &str = "assets/brief.md";
@@ -265,14 +265,14 @@ pub fn for_item(
     seat: &str,
     touched: Option<&str>,
 ) -> Result<usize, Stop> {
-    let record = store.show(item).map_err(stop_of)?;
+    let record = store.show(item)?;
     let Some(order) = order_line(record.notes.as_deref()) else {
         return Err(Stop::refused(format!(
             "{item} carries no order note — a brief for an unordered item would tell a seat it \
              may begin when nothing said so"
         )));
     };
-    let text = store.show_text(item).map_err(stop_of)?;
+    let text = store.show_text(item)?;
     print(
         out,
         err,
@@ -286,13 +286,6 @@ pub fn for_item(
             touched,
         },
     )
-}
-
-fn stop_of(e: StoreError) -> Stop {
-    match e {
-        StoreError::Missing(why) => Stop::refused(why),
-        StoreError::Unreadable(why) => Stop::could_not_tell(why),
-    }
 }
 
 /// A command a caller handed in, or the named absence in its place. A blank

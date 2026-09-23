@@ -21,7 +21,7 @@ use crate::item::{
     control_token, label_value, last_delivery, render, Change, Events, Git, Project, Ring,
     RingOutcome, Stop, ITEM_RETURNED, ITEM_REVIEWED, VERDICT_ACCEPTED, VERDICT_MARKERS,
 };
-use crate::store::{Item, Store, StoreError};
+use crate::store::{Item, Store};
 
 /// The verdict grammar, in core's pack and shadowable like every other asset.
 pub const VERDICT: &str = "assets/verdict.md";
@@ -414,10 +414,7 @@ fn retur(
     )
     .map_err(|name| unresolved(&name))?;
 
-    wiring
-        .store
-        .assign(&item.id, &builder, verdict.by)
-        .map_err(unreadable)?;
+    wiring.store.assign(&item.id, &builder, verdict.by)?;
     write_verdict(&item.id, &note, Some(&builder), verdict, wiring)?;
     announce(
         &item.id,
@@ -462,10 +459,7 @@ fn write_verdict(
     verdict: &Verdict,
     wiring: &Wiring,
 ) -> Result<(), Stop> {
-    wiring
-        .store
-        .note(item, note, verdict.by)
-        .map_err(unreadable)?;
+    wiring.store.note(item, note, verdict.by)?;
     let read = read(wiring.store, item)?;
     if let Some(wanted) = assignee {
         if read.assignee.as_deref() != Some(wanted) {
@@ -551,12 +545,5 @@ fn normalised(text: &str) -> String {
 }
 
 fn read(store: &dyn Store, item: &str) -> Result<Item, Stop> {
-    store.show(item).map_err(unreadable)
-}
-
-fn unreadable(e: StoreError) -> Stop {
-    match e {
-        StoreError::Missing(why) => Stop::refused(why),
-        StoreError::Unreadable(why) => Stop::could_not_tell(why),
-    }
+    store.show(item).map_err(Stop::from)
 }

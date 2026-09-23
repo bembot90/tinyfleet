@@ -41,7 +41,7 @@ use crate::item::{
     render, Events, Git, Project, Stop, ANSWER_MARKERS, GATE_RESOLVED, ITEM_PARKED, PARK_MARKERS,
     TRUNK_BRANCH, VERDICT_MARKERS,
 };
-use crate::store::{Item, Store, StoreError};
+use crate::store::{Item, Store};
 
 /// The park-note grammar, in core's pack and shadowable like every other asset.
 pub const PARK_NOTE: &str = "assets/park-note.md";
@@ -128,7 +128,7 @@ pub fn ask(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result<
     // WHICH OF THE TWO PARKS THIS IS, off the record the store already answers:
     // the run label is the only mark that tells a run's record from every other
     // item, and a run's park touches no git at all.
-    let record = wiring.store.show(&item).map_err(unreadable)?;
+    let record = wiring.store.show(&item)?;
     let of_a_run = record.labels.iter().any(|label| label == run::LABEL);
 
     let branch = if of_a_run {
@@ -346,7 +346,7 @@ fn off_column_zero(text: &str) -> String {
 /// One read, asserting the park region against the note that was written — plus
 /// a token nothing wrote.
 fn read_back(item: &str, note: &str, store: &dyn Store) -> Result<(), Stop> {
-    let read = store.show(item).map_err(unreadable)?;
+    let read = store.show(item)?;
     let seen = read.notes.as_deref().and_then(last_park);
     if seen.as_deref().map(normalised) != Some(normalised(note)) {
         return Err(Stop::could_not_tell(format!(
@@ -396,7 +396,7 @@ pub struct Capped<'a> {
 /// own, and one left behind with no note naming it is exactly the unanswerable
 /// gate this park exists not to leave.
 pub fn park_at_the_cap(capped: &Capped, store: &dyn Store, packs: &Packs) -> Result<String, Stop> {
-    let record = store.show(capped.run).map_err(unreadable)?;
+    let record = store.show(capped.run)?;
     let question = cap_question(capped);
     let gate = store.gate(capped.run, &question, capped.by).map_err(|e| {
         Stop::could_not_tell(format!(
@@ -480,7 +480,7 @@ pub struct Replied {
 }
 
 pub fn answer(out: &mut dyn Write, reply: &Reply, wiring: &Wiring) -> Result<Replied, Stop> {
-    let read = wiring.store.show(reply.item).map_err(unreadable)?;
+    let read = wiring.store.show(reply.item)?;
     let notes = read.notes.unwrap_or_default();
     let Some(park) = last_park(&notes) else {
         return Err(Stop::refused(format!(
@@ -499,7 +499,7 @@ pub fn answer(out: &mut dyn Write, reply: &Reply, wiring: &Wiring) -> Result<Rep
     // THE OPEN LIST IS FILTERED BY THE PARK'S OWN GATE ID and by nothing else:
     // the listing answers which gates are open and never which item each one
     // blocks, so the item's own record is what ties the two together.
-    let open = wiring.store.open_gates().map_err(unreadable)?;
+    let open = wiring.store.open_gates()?;
     if !open.contains(&gate) {
         return Err(Stop::refused(format!(
             "{}'s gate {gate} is not one the store lists open — it has been answered already, or \
@@ -532,14 +532,10 @@ pub fn answer(out: &mut dyn Write, reply: &Reply, wiring: &Wiring) -> Result<Rep
     }
 
     let note = answer_note(wiring.packs, &gate, reply.by, letter, reply.text)?;
-    wiring
-        .store
-        .note(reply.item, &note, reply.by)
-        .map_err(unreadable)?;
+    wiring.store.note(reply.item, &note, reply.by)?;
     let seen = wiring
         .store
-        .show(reply.item)
-        .map_err(unreadable)?
+        .show(reply.item)?
         .notes
         .as_deref()
         .and_then(last_answer);
@@ -551,11 +547,8 @@ pub fn answer(out: &mut dyn Write, reply: &Reply, wiring: &Wiring) -> Result<Rep
         )));
     }
 
-    wiring
-        .store
-        .resolve_gate(&gate, reply.by)
-        .map_err(unreadable)?;
-    let still = wiring.store.open_gates().map_err(unreadable)?;
+    wiring.store.resolve_gate(&gate, reply.by)?;
+    let still = wiring.store.open_gates()?;
     if still.contains(&gate) {
         return Err(Stop::could_not_tell(format!(
             "{gate} is still on the store's open list after it was resolved — the answer on {} \
@@ -765,13 +758,6 @@ pub fn answered_at(notes: &str, reason: &str) -> bool {
 /// the wrapping it was written with and the comparison is about the words.
 fn normalised(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn unreadable(e: StoreError) -> Stop {
-    match e {
-        StoreError::Missing(why) => Stop::refused(why),
-        StoreError::Unreadable(why) => Stop::could_not_tell(why),
-    }
 }
 
 /// A failure after the commit and before the gate. The commit is real and the

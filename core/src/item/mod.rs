@@ -22,6 +22,8 @@ pub mod run;
 
 use std::path::{Path, PathBuf};
 
+use crate::store::StoreError;
+
 /// The exits, as the cli PRD's table names them. A verb answers with one of
 /// these and the cli does nothing but return it.
 pub const DONE: u8 = 0;
@@ -61,6 +63,18 @@ impl Stop {
         Stop {
             code: USAGE,
             message: message.into(),
+        }
+    }
+}
+
+/// The store's two answers in the exit vocabulary: an item that is not there is
+/// refused on the record, and a store that would not answer is could-not-tell.
+/// The store's own sentence is the message, word for word.
+impl From<StoreError> for Stop {
+    fn from(e: StoreError) -> Stop {
+        match e {
+            StoreError::Missing(why) => Stop::refused(why),
+            StoreError::Unreadable(why) => Stop::could_not_tell(why),
         }
     }
 }
