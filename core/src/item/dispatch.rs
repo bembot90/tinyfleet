@@ -526,7 +526,8 @@ pub fn index(by: &str, kind: &str, seat: Option<&str>, at: &str, ordinal: Option
 }
 
 /// The order note the pack's template renders, for a caller that writes its own
-/// order rather than calling [`dispatch`].
+/// order rather than calling [`dispatch`] — and for `fleet brief`, which renders
+/// the order it prints from the index's `by` rather than reading the note back.
 pub fn note_for(packs: &Packs, by: &str) -> Result<String, Stop> {
     note_text(packs, by)
 }

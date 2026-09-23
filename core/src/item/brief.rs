@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::guard;
-use crate::item::{render, Project, Stop};
+use crate::item::{dispatch, render, Project, Stop};
 use crate::resolve::{self, Layer, Resolution};
 use crate::store::Store;
 
@@ -31,8 +31,8 @@ pub const REVIEW_BRIEF: &str = "assets/review-brief.md";
 /// What `{seat}` reads as before a seat exists to name.
 pub const TRANSIENT: &str = "(transient)";
 
-/// The substring every recorded order form ends on, and how the order note is
-/// found among the item's notes.
+/// The substring every recorded order form ends on, and how a dispatch finds
+/// the note it just wrote among the item's notes.
 pub const ORDER_MARK: &str = "orders given";
 
 /// The value `{touched}` takes where the dispatch was handed no builder's gate.
@@ -128,7 +128,8 @@ pub struct Subject<'a> {
     pub id: &'a str,
     /// The item as a person reads it, verbatim.
     pub text: &'a str,
-    /// The order note the item carries.
+    /// The order, as the dispatch note's template renders it for whoever the
+    /// order index says gave it.
     pub order: &'a str,
     /// The seat the order named, or [`TRANSIENT`].
     pub seat: &'a str,
@@ -141,8 +142,10 @@ pub struct Subject<'a> {
 /// The order note among an item's notes: the last line carrying a recorded
 /// form.
 ///
-/// An item with none has not been ordered, and a brief for it would tell a seat
-/// it may begin when nothing said so.
+/// IT IS A DISPATCH'S READ-BACK OF ITS OWN WRITE, and nothing decides from it.
+/// Notes are append-only, so a withdrawn order's line is still the last one
+/// carrying the form, and a person's note can carry it too: whether an item is
+/// ordered is its order index's answer, which is what every verb reads.
 pub fn order_line(notes: Option<&str>) -> Option<String> {
     notes?
         .lines()
@@ -251,9 +254,15 @@ pub fn print(
 
 /// The brief for one item, read out of the store and printed.
 ///
-/// The order note is the gate: an item carrying none has not been given to
-/// anybody, and a brief for it would tell a seat it may begin when nothing said
-/// so.
+/// The order INDEX is the gate — `metadata.orders`, the reading dispatch,
+/// deliver, review and retire all take: an item carrying none has not been
+/// given to anybody, and a brief for it would tell a seat it may begin when
+/// nothing said so. The notes are never searched for it, because a withdrawal
+/// unsets the index and leaves the order note standing.
+///
+/// The order the brief prints is rendered from the index, through the template
+/// the dispatch wrote its note with, so the brief `fleet brief` prints and the
+/// one a dispatch handed its seat are one text.
 #[allow(clippy::too_many_arguments)]
 pub fn for_item(
     out: &mut dyn Write,
@@ -266,12 +275,26 @@ pub fn for_item(
     touched: Option<&str>,
 ) -> Result<usize, Stop> {
     let record = store.show(item)?;
-    let Some(order) = order_line(record.notes.as_deref()) else {
+    let Some(index) = record.orders.as_ref() else {
+        return Err(Stop::refused(if record.has_orders_key {
+            format!(
+                "{item}'s order index is not an object — a brief read off an order nobody can \
+                 read would tell a seat it may begin when nothing said so"
+            )
+        } else {
+            format!(
+                "{item} carries no order index — a brief for an unordered item would tell a seat \
+                 it may begin when nothing said so"
+            )
+        }));
+    };
+    let Some(by) = index.by.as_deref() else {
         return Err(Stop::refused(format!(
-            "{item} carries no order note — a brief for an unordered item would tell a seat it \
-             may begin when nothing said so"
+            "{item}'s order index names no dispatcher — the brief's order says who gave it, and \
+             the record does not say who that is"
         )));
     };
+    let order = dispatch::note_for(packs, by)?;
     let text = store.show_text(item)?;
     print(
         out,

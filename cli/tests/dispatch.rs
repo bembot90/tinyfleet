@@ -122,7 +122,8 @@ impl Project {
         value["id"].as_str().expect("an id").to_string()
     }
 
-    /// An item carrying the order note `brief` refuses to render without.
+    /// An item carrying an order as a dispatch leaves one: the note, and the
+    /// order index `brief` refuses to render without.
     fn ordered(&self, title: &str) -> String {
         let item = self.item(title);
         assert!(self
@@ -130,6 +131,17 @@ impl Project {
                 "note",
                 &item,
                 "dispatched by lead-1 — orders given",
+                "--actor",
+                "lead-1",
+            ])
+            .status
+            .success());
+        assert!(self
+            .bd(&[
+                "update",
+                &item,
+                "--metadata",
+                r#"{"orders": {"by": "lead-1", "kind": "dispatch", "at": "2026-09-09T00:00:00Z"}}"#,
                 "--actor",
                 "lead-1",
             ])

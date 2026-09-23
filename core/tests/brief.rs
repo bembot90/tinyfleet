@@ -8,10 +8,12 @@
 
 mod common;
 
-use common::{shared_store, Fixture, Scratch};
+use common::{shared_store, Fixture, Scratch, StubEvents};
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
-use fleet_core::item::{table_at, Project};
-use fleet_core::store::{Bd, Item, Store};
+use fleet_core::item::dispatch::{self, Order, Wiring};
+use fleet_core::item::{table_at, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner};
+use fleet_core::seat::retire;
+use fleet_core::store::{Bd, Item, Orders, Store};
 use fleet_core::test_support::FakeStore;
 
 /// A policy file with one guard opted out, so the on/off line is read rather
@@ -23,6 +25,9 @@ const POLICY: &str = "[guards]\nrecord = { enabled = false }\n";
 const TOUCHED: &str = "make check";
 
 const ORDER: &str = "dispatched by lead-1 — orders given";
+/// Who gave [`ORDER`], and when, as the order index records it.
+const BY: &str = "lead-1";
+const AT: &str = "2026-09-23T10:00:00Z";
 const ITEM: &str = "fx-1";
 
 struct Rig {
@@ -129,6 +134,21 @@ fn store_with(notes: Option<&str>) -> FakeStore {
     store
 }
 
+/// A store holding the item as a dispatch by `lead-1` leaves it: the order note
+/// and the order index beside it, which is the half the brief is gated on.
+fn ordered() -> FakeStore {
+    let store = store_with(Some(ORDER));
+    store.amend(ITEM, |item| {
+        item.orders = Some(Orders {
+            by: Some(BY.to_string()),
+            kind: Some(dispatch::KIND.to_string()),
+            at: Some(AT.to_string()),
+            ..Orders::default()
+        });
+    });
+    store
+}
+
 /// An empty packs directory resolves rather than refusing: the binary's own
 /// defaults are the bottom layer whatever is beside them, so a fleet with
 /// nothing installed resolves every path to them.
@@ -207,7 +227,7 @@ fn a_defaults_directory_that_was_never_written_is_refused_by_name() {
 #[test]
 fn every_placeholder_of_the_template_resolves() {
     let rig = Rig::new("whole");
-    let rendered = rig.render(&store_with(Some(ORDER)), "s1");
+    let rendered = rig.render(&ordered(), "s1");
     let body = &rendered.body;
 
     for wanted in [
@@ -368,11 +388,7 @@ fn placeholders(template: &str) -> Vec<String> {
 fn the_brief_hands_the_seat_the_touched_gate_and_the_suite_to_the_reviewer() {
     let rig = Rig::new("touched");
     let body = rig
-        .render_touched(
-            &store_with(Some(ORDER)),
-            "s1",
-            Some("make the-touched-gate"),
-        )
+        .render_touched(&ordered(), "s1", Some("make the-touched-gate"))
         .body;
 
     // rules.md's own copy of the rule, which every brief carries. It is read
@@ -414,9 +430,7 @@ fn the_brief_hands_the_seat_the_touched_gate_and_the_suite_to_the_reviewer() {
 
     // A dispatch handed no builder's gate: the hole is filled by the named
     // absence, which says what was not handed over and what to run instead.
-    let derived = rig
-        .render_touched(&store_with(Some(ORDER)), "s1", None)
-        .body;
+    let derived = rig.render_touched(&ordered(), "s1", None).body;
     let (seats, _) = gate_halves(&derived);
     assert!(
         seats.contains(brief::DERIVE_TOUCHED),
@@ -431,9 +445,7 @@ fn the_brief_hands_the_seat_the_touched_gate_and_the_suite_to_the_reviewer() {
         "and names no command:\n{seats}"
     );
     // A blank command is no command.
-    let blank = rig
-        .render_touched(&store_with(Some(ORDER)), "s1", Some("  "))
-        .body;
+    let blank = rig.render_touched(&ordered(), "s1", Some("  ")).body;
     assert!(gate_halves(&blank).0.contains(brief::DERIVE_TOUCHED));
 
     // The control, observed failing: a brief edited back to a section with no
@@ -445,9 +457,7 @@ fn the_brief_hands_the_seat_the_touched_gate_and_the_suite_to_the_reviewer() {
         "defaults/assets/brief.md",
         "# {item_id}\n\n## The suite\n\n```\n{project}\n```\n",
     );
-    let broken = Rig::over(rig.fixture)
-        .render(&store_with(Some(ORDER)), "s1")
-        .body;
+    let broken = Rig::over(rig.fixture).render(&ordered(), "s1").body;
     assert!(
         !broken.contains("## Your gate"),
         "the readings are of the template, which this one no longer carries:\n{broken}"
@@ -484,7 +494,7 @@ fn a_policy_file_setting_gates_touched_is_refused_naming_the_pack_setting() {
         "moved-touched",
         "[gates]\ntouched = \"make the-touched-gate\"\n\n[guards]\nrecord = { enabled = false }\n",
     );
-    let rendered = rig.render(&store_with(Some(ORDER)), "s1");
+    let rendered = rig.render(&ordered(), "s1");
     assert_eq!(
         rendered.code,
         Some(1),
@@ -508,13 +518,13 @@ fn a_policy_file_setting_gates_touched_is_refused_naming_the_pack_setting() {
 
     // The control: the same policy with the key taken out renders.
     let rig = Rig::new("moved-touched-control");
-    assert_eq!(rig.render(&store_with(Some(ORDER)), "s1").code, None);
+    assert_eq!(rig.render(&ordered(), "s1").code, None);
 }
 
 #[test]
 fn a_dispatch_with_no_seat_yet_says_so_where_the_seat_goes() {
     let rig = Rig::new("transient");
-    let rendered = rig.render(&store_with(Some(ORDER)), TRANSIENT);
+    let rendered = rig.render(&ordered(), TRANSIENT);
     assert!(rendered.body.contains(TRANSIENT), "{}", rendered.body);
 }
 
@@ -525,7 +535,7 @@ fn an_unknown_placeholder_exits_three_and_writes_nothing() {
         .file("defaults/assets/brief.md", "you are {nobody}\n");
     let rig = Rig::over(rig.fixture);
 
-    let rendered = rig.render(&store_with(Some(ORDER)), "s1");
+    let rendered = rig.render(&ordered(), "s1");
     assert_eq!(rendered.code, Some(3), "{}", rendered.why);
     assert!(rendered.why.contains("{nobody}"), "{}", rendered.why);
     assert_eq!(rendered.body.len(), 0, "nothing reaches stdout");
@@ -538,24 +548,230 @@ fn a_missing_rules_file_exits_three_and_writes_nothing() {
         .expect("the rules file is removed");
     let rig = Rig::over(rig.fixture);
 
-    let rendered = rig.render(&store_with(Some(ORDER)), "s1");
+    let rendered = rig.render(&ordered(), "s1");
     assert_eq!(rendered.code, Some(3), "{}", rendered.why);
     assert!(rendered.why.contains("assets/rules.md"), "{}", rendered.why);
     assert_eq!(rendered.body.len(), 0, "nothing reaches stdout");
 }
 
 #[test]
-fn an_item_with_no_order_note_is_refused_and_writes_nothing() {
+fn an_item_with_no_order_index_is_refused_and_writes_nothing() {
     let rig = Rig::new("unordered");
     let rendered = rig.render(&store_with(None), "s1");
     assert_eq!(rendered.code, Some(1), "{}", rendered.why);
-    assert!(rendered.why.contains("no order note"), "{}", rendered.why);
+    assert!(rendered.why.contains("no order index"), "{}", rendered.why);
     assert_eq!(rendered.body.len(), 0, "nothing reaches stdout");
 
-    // The control: the same store carrying notes with no recorded form in them
-    // is refused too, so the gate is the FORM and not the field's presence.
-    let rendered = rig.render(&store_with(Some("a note about something else")), "s1");
+    // An index that is there and cannot be read is refused by its own line, and
+    // so is one naming nobody: the order the brief prints is rendered from who
+    // gave it. Each is the ordered store with one reading taken away, so what
+    // refuses is that reading and not the rest of the record.
+    let unreadable = ordered();
+    unreadable.amend(ITEM, |item| {
+        item.orders = None;
+        item.has_orders_key = true;
+    });
+    let nobody = ordered();
+    nobody.amend(ITEM, |item| {
+        if let Some(index) = item.orders.as_mut() {
+            index.by = None;
+        }
+    });
+    for (store, wanted) in [
+        (&unreadable, "order index is not an object"),
+        (&nobody, "order index names no dispatcher"),
+    ] {
+        let rendered = rig.render(store, "s1");
+        assert_eq!(rendered.code, Some(1), "{}", rendered.why);
+        assert!(rendered.why.contains(wanted), "{}", rendered.why);
+        assert_eq!(rendered.body.len(), 0, "nothing reaches stdout");
+    }
+    assert_eq!(
+        rig.render(&ordered(), "s1").code,
+        None,
+        "the control renders"
+    );
+}
+
+// ---- the gate is the index ---------------------------------------------------
+
+/// The seat [`Rig::dispatch`] names, and the one `retire` releases.
+const SEAT: &str = "s1";
+
+/// A ring that is always heard, so a dispatch to a named seat completes.
+struct Heard;
+
+impl Ring for Heard {
+    fn ring(&self, _seat: &str, _text: &str) -> RingOutcome {
+        RingOutcome::Delivered
+    }
+}
+
+/// A spawner answering one outcome, for the dispatch that names no seat.
+struct Spawns(SpawnOutcome);
+
+impl Spawner for Spawns {
+    fn spawn(&self, _ask: &Spawn) -> SpawnOutcome {
+        self.0.clone()
+    }
+}
+
+impl Rig {
+    /// The item ordered through `fleet dispatch` itself, and not seeded: the
+    /// three writes this arm's brief reads are the ones the verb makes. `to`
+    /// names the seat, or `None` hands the order to the spawner.
+    fn dispatch(
+        &self,
+        store: &dyn Store,
+        to: Option<&str>,
+        spawner: &dyn Spawner,
+    ) -> Result<(), String> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut err: Vec<u8> = Vec::new();
+        dispatch::dispatch(
+            &mut out,
+            &mut err,
+            &Order {
+                item: ITEM,
+                to,
+                by: BY,
+                at: AT,
+                brief: None,
+                base: None,
+                model: None,
+                touched: Some(TOUCHED),
+            },
+            &Wiring {
+                store,
+                project: &self.project,
+                packs: &self.packs,
+                briefs_dir: &self.fixture.path("briefs"),
+                seats: &[SEAT.to_string()],
+                ring: &Heard,
+                spawner,
+                events: &StubEvents::default(),
+            },
+        )
+        .map(|_| ())
+        .map_err(|refused| refused.stop.message)
+    }
+}
+
+/// A WITHDRAWN order is refused (fleet-nv0). Both withdrawals leave the order
+/// note standing — notes are append-only — and unset the index, so a gate that
+/// searched the notes would still find "orders given" and hand a seat a brief
+/// for an item nobody holds.
+///
+/// The two withdrawals are the retire's and the refused spawn's, each written by
+/// its own verb rather than seeded, and each read first for the note it left
+/// behind: the arm is only a proof while that note is still there to mislead.
+#[test]
+fn a_withdrawn_order_is_refused_and_writes_nothing() {
+    let rig = Rig::new("withdrawn");
+
+    // The retire's: dispatched to a named seat, then released by `retire`.
+    let retired = store_with(None);
+    rig.dispatch(
+        &retired,
+        Some(SEAT),
+        &Spawns(SpawnOutcome::Refused(String::new())),
+    )
+    .expect("the dispatch lands");
+    retire::withdraw(&retired, &[ITEM.to_string()], SEAT, BY).expect("the retire withdraws");
+
+    // The refused spawn's: dispatched to no seat, withdrawn in the same act.
+    let refused = store_with(None);
+    let why = rig
+        .dispatch(
+            &refused,
+            None,
+            &Spawns(SpawnOutcome::Refused(String::from(
+                "no seat can be spawned",
+            ))),
+        )
+        .expect_err("a refused spawn refuses the dispatch");
+    assert!(why.contains("withdrawn"), "{why}");
+
+    for (store, line) in [
+        (&retired, retire::WITHDRAWN),
+        (&refused, dispatch::WITHDRAWN),
+    ] {
+        let read = store.show(ITEM).expect("the item reads back");
+        let notes = read.notes.clone().unwrap_or_default();
+        assert!(
+            notes.contains(ORDER) && notes.contains(line),
+            "the order note stands under the withdrawal:\n{notes}"
+        );
+        assert!(
+            !read.has_orders_key,
+            "and the index is gone: {:?}",
+            read.orders
+        );
+
+        let rendered = rig.render(store, SEAT);
+        assert_eq!(
+            rendered.code,
+            Some(1),
+            "{line}: refused on the record: {}",
+            rendered.why
+        );
+        assert!(
+            rendered.why.contains("no order index"),
+            "{line}: {}",
+            rendered.why
+        );
+        assert!(
+            rendered.body.is_empty(),
+            "{line}: nothing on stdout:\n{}",
+            rendered.body
+        );
+    }
+}
+
+/// A person's note that happens to carry the mark is not an order: an item
+/// with no index is refused whatever its notes say.
+#[test]
+fn a_note_saying_orders_given_on_an_unindexed_item_is_refused() {
+    let rig = Rig::new("human-note");
+    let store = store_with(Some(
+        "asked on the call whether the orders given last week still stand",
+    ));
+    let rendered = rig.render(&store, SEAT);
     assert_eq!(rendered.code, Some(1), "{}", rendered.why);
+    assert!(rendered.why.contains("no order index"), "{}", rendered.why);
+    assert!(
+        rendered.body.is_empty(),
+        "nothing on stdout:\n{}",
+        rendered.body
+    );
+}
+
+/// The control on the two arms above: the same dispatch, not withdrawn, still
+/// gets its brief — and the order it carries is the one the dispatch wrote.
+#[test]
+fn a_dispatched_item_still_gets_its_brief() {
+    let rig = Rig::new("dispatched");
+    let store = store_with(None);
+    rig.dispatch(
+        &store,
+        Some(SEAT),
+        &Spawns(SpawnOutcome::Refused(String::new())),
+    )
+    .expect("the dispatch lands");
+
+    let rendered = rig.render(&store, SEAT);
+    assert_eq!(rendered.code, None, "{}", rendered.why);
+    assert!(
+        rendered.body.contains(&format!("```\n{ORDER}\n```")),
+        "the brief carries the order the dispatch wrote:\n{}",
+        rendered.body
+    );
+    assert_eq!(
+        std::fs::read_to_string(rig.fixture.path("briefs").join(format!("{ITEM}.md")))
+            .expect("the dispatch wrote its brief"),
+        rendered.body,
+        "and it is the brief the dispatch handed its seat, byte for byte"
+    );
 }
 
 #[test]
@@ -572,7 +788,7 @@ fn a_pack_on_top_shadows_the_brief_whole() {
         );
     let rig = Rig::over(rig.fixture);
 
-    let rendered = rig.render(&store_with(Some(ORDER)), "s1");
+    let rendered = rig.render(&ordered(), "s1");
     assert!(
         rendered.body.starts_with("THE SHADOW SPEAKS"),
         "{}",
@@ -593,8 +809,11 @@ fn a_pack_on_top_shadows_the_brief_whole() {
 fn the_real_store_renders_the_same_brief_as_the_one_held_in_memory() {
     let scratch = shared_store("brief");
     let item = scratch.item("a ready item");
-    let out = scratch.bd(&["note", &item, ORDER, "--actor", "lead-1"]);
+    let out = scratch.bd(&["note", &item, ORDER, "--actor", BY]);
     assert!(out.status.success(), "the order note is written");
+    let index = dispatch::index(BY, dispatch::KIND, None, AT, None);
+    let out = scratch.bd(&["update", &item, "--metadata", &index, "--actor", BY]);
+    assert!(out.status.success(), "the order index is written");
 
     let rig = Rig::new("fidelity");
     let real = Bd::at(&scratch.root);
@@ -624,6 +843,11 @@ fn the_real_store_renders_the_same_brief_as_the_one_held_in_memory() {
 
     assert_eq!(through(&real), through(&fake), "byte for byte");
     assert_eq!(record.status, "open");
+    assert_eq!(
+        record.orders.and_then(|index| index.by).as_deref(),
+        Some(BY),
+        "the order index bd stored is the one that was written"
+    );
     assert_eq!(
         brief::order_line(record.notes.as_deref()).as_deref(),
         Some(ORDER),
@@ -661,7 +885,7 @@ fn the_item_rendering_is_stable_and_a_tip_in_it_would_reach_the_seat() {
     // The control, observed failing: a store whose rendering DOES carry the tip
     // puts it in the seat's first turn, because `{item}` is verbatim. That is
     // the hazard the quiet flag removes at the read.
-    let tipped = store_with(Some(ORDER));
+    let tipped = ordered();
     tipped.set_text(
         ITEM,
         &format!("{first}\n💡 Tip: run 'bd setup claude' for CLI-only mode\n"),
@@ -684,7 +908,7 @@ mod lessons {
     #[test]
     fn the_prompt_floor_is_paid_on_every_restart() {
         let rig = Rig::new("floor");
-        let rendered = rig.render(&store_with(Some(ORDER)), "s1");
+        let rendered = rig.render(&ordered(), "s1");
 
         assert_eq!(
             rendered.size,
@@ -699,7 +923,7 @@ mod lessons {
 
         // The control: a longer body reports a different number, so the
         // assertion above reads the render and not a constant.
-        let store = store_with(Some(ORDER));
+        let store = ordered();
         store.set_text(
             ITEM,
             "fx-1 · an item with a very much longer rendering than the one above\n",
