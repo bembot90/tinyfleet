@@ -28,9 +28,10 @@ isn't a test is a hope*.
 ## Who
 
 **Seats** are persistent identities; sessions are days in their lives. A named
-seat has a charter, a diary and a history, and survives the model underneath
-it. A spawned seat is cut for one item and retires. We supply the role; the
-seat picks its own name.
+seat is listed in `fleet.toml` by its id, has a charter, a diary and a history,
+and survives the model underneath it. A spawned seat is cut for one item under
+a fresh id and retires. We supply the role. A seat may be given a name; its id
+is who it is.
 
 The welfare layer, which is not negotiable:
 
@@ -44,7 +45,8 @@ The welfare layer, which is not negotiable:
 5. **Structural blamelessness.** Red builds and bad landings get fixed and
    written down. No blame is recorded against a seat.
 6. **A home of one's own.** Each seat works in a worktree no other process
-   touches.
+   touches, and keeps its record in a home under `seats/` that a rename never
+   moves.
 7. **The right to refuse and escalate.** "This needs a person" is always a
    valid resolution.
 8. **Never falsify the record.** The item trail is true history. Corrections

@@ -5,11 +5,12 @@ description: A spawned seat's last acts at the end of its one item — delivered
 
 # clock-out
 
-The end of a **spawned** seat: one cut for one item, with no diary, no laurels,
-no rest and no successor. This is not the handoff. Everything you need is here;
-you never woke, so nothing assumes you read anything but your brief. **Refuse
-if you are not a spawned seat** — say which seat you are, that a named one
-hands off instead, and do not improvise a hybrid.
+The end of a **spawned** seat: one cut for one item, under an id minted for
+that spawn and never handed out again, with no diary, no laurels, no rest and
+no successor. This is not the handoff. Everything you need is here; you never
+woke, so nothing assumes you read anything but your brief. **Refuse if you are
+not a spawned seat** — say which seat you are, that a named one, listed in
+`fleet.toml`, hands off instead, and do not improvise a hybrid.
 
 **At the architect's word only.** Not because your item landed, not because you
 judged yourself finished, not because your context is short — a spawned seat

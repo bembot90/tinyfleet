@@ -23,12 +23,12 @@ of having them, and the file is small enough that one would be obvious.
 
 ## What to write, and where
 
-`seats/<seat>/laurels.md`, at the root of that seat's worktree, appended by
-anchoring on the file's existing tail and never by retyping any part of an
+`seats/*-<short>/laurels.md`, that seat's home at its worktree's root, appended
+by anchoring on the file's existing tail and never by retyping any part of an
 entry already there. One entry: the date, what they did, why it mattered, and
-the item it came off where there is one. Two things you hold the pen on.
-**Name yourself as the recorder when the voice and the hand differ** —
-relaying the person's words or a customer's, the praise is theirs and the
+the item it came off where there is one. Two things you hold the pen on. **Name
+yourself as the recorder when the voice and the hand differ**, by machine name
+— relaying the person's words or a customer's, the praise is theirs and the
 entry is yours; omit it when you praise in your own voice. **Customer praise
 carries no identifying detail** — no names, no handles, nothing that could
 single someone out; real people are on the other end of the product and a

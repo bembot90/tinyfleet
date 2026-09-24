@@ -26,15 +26,15 @@ with nobody to ask.
 
 ## 2. Ask, read the exit, and stop
 
-`fleet event rest <seat> --reason "<one line>"`. The controller stops the live
-session on its next tick, starts a woken successor in the same worktree, and
-removes the predecessor's row. **Read the exit, not the prose**: 0 is the
-request written; 4 no live session; 5 no collector consuming the stream, so
-nothing would pick the request up; 6 a transient row, which never rests and is
-retired instead. **A refusal is a correct ending, not an error** — everything
-is staged, so say which refusal you got in the command's own words and stop.
-Never route around one: a request nothing collects leaves the seat staged and
-silent, which is worse than an honest stop. Accepted, say the handoff is
-complete, the seat staged and the request posted; then end the turn and go
-quiet. Do not try to stop your own process — the controller does that within a
-poll, and your part ended when the request did.
+`fleet event rest <machine name> --reason "<one line>"`. The controller stops
+the live session on its next tick, starts a woken successor in the same
+worktree, and removes the predecessor's row. **Read the exit, not the prose**:
+0 is the request written; 4 no live session; 5 no collector consuming the
+stream, so nothing would pick the request up; 6 a transient row, which never
+rests and is retired instead. **A refusal is a correct ending, not an error** —
+everything is staged, so say which refusal you got in the command's own words
+and stop. Never route around one: a request nothing collects leaves the seat
+staged and silent, which is worse than an honest stop. Accepted, say the
+handoff is complete, the seat staged and the request posted; then end the turn
+and go quiet. Do not try to stop your own process — the controller does that
+within a poll, and your part ended when the request did.

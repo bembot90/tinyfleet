@@ -40,7 +40,9 @@ If you are not the architect and you reached this file, stop and say so.
 - **The item trail comes first.** Every act of the run is on the stream and
   on the items before or as it happens; a message is a doorbell.
 - **One session, one seat, one day** holds, along with worktrees, squash
-  landings and an actor on every write.
+  landings and a typed actor on every write: `seat:<id>` in a seat's session,
+  where the controller sets it as `FLEET_ACTOR`, and `run:<id>` for the run's
+  own acts.
 
 ## Phase 1 — Pre-flight, with the person present
 

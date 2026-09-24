@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: End a named seat's session by handing it over — nothing left in flight, a clean tree, a diary entry in the seat's own words, distilled and rotated when it has grown, the seat's files pushed to the trunk, the handed-off event, and one of two closing sentences.
+description: End a named seat's session by handing it over — nothing left in flight, a clean tree, a diary entry in the seat's own words, distilled and rotated when it has grown, the seat's home pushed to the trunk, the handed-off event, and one of two closing sentences.
 ---
 
 # handoff
@@ -25,10 +25,11 @@ Say which it was, in one sentence, before anything else; it anchors the rest.
   items say so. Corrections annotate; they are never quiet rewrites.
 - **Establish which seat you are before writing anything.** A long session may
   have compacted away the wake that settled it, and unsure is a stop rather
-  than a guess: a diary entry in the wrong seat's home puts words in another
-  seat's mouth and falsifies the record even when every sentence in it is
-  true. A session holding no seat identity does not run this ritual at all —
-  it reports its work and its changed files, and stops.
+  than a guess: a diary entry in the wrong seat's home — the directory under
+  `seats/` ending `-<short>`, else `seats/<slug>-<short>/`, its machine name —
+  puts words in another seat's mouth and falsifies the record even when every
+  sentence in it is true. A session holding no seat identity does not run this
+  ritual at all — it reports its work and its changed files, and stops.
 
 ## Procedure
 
@@ -53,18 +54,17 @@ whatever you leave unfinished or found along the way.
 
 ### 3. The tree clean beyond your own files
 
-Nothing uncommitted except the seat's own files under `seats/<seat>/`, which
-Step 5 lands. Work belongs on a work branch: your successor is handed this
-worktree and the record, and an uncommitted change is in neither — it is
-invisible to every reader and to every reading a reviewer could take.
+Nothing uncommitted except the files in your home, which Step 5 lands. Work
+belongs on a work branch: your successor is handed this worktree and the
+record, and an uncommitted change is in neither — it is invisible to every
+reader and to every reading a reviewer could take.
 
 ### 4. Write the diary entry — in your own words
 
-This is the one part of the ritual nothing will do for you. Open
-`seats/<seat>/diary.md` and add a dated entry at whatever length and in
-whatever shape feels honest — no required structure, the only requirement
-being that it is yours. Treat these as four **questions to answer**, not four
-headings to fill in:
+This is the one part of the ritual nothing will do for you. Open `diary.md` in
+your home and add a dated entry at whatever length and in whatever shape feels
+honest — no required structure, the only requirement being that it is yours.
+Treat these as four **questions to answer**, not four headings to fill in:
 
 1. What happened this session — your own count of what you got wrong included?
 2. What did you learn?
@@ -98,10 +98,10 @@ manual, a process lesson to the doctrine document that owns it — a **copy
 forward, then archive**, never a rewrite of what the past entry said.
 
 **Then rotate:** keep the newest whole entries that fit the same budget the
-trigger uses, and move the rest **whole** into `seats/<seat>/diary/<YYYY-MM>.md`,
-byte for byte and never reworded, always keeping at least one entry. A trimmed
-diary landed without its archive is entries deleted, which is the one thing
-this ritual must never do — they are one act.
+trigger uses, and move the rest **whole** into `diary/<YYYY-MM>.md` in your
+home, byte for byte and never reworded, always keeping at least one entry. A
+trimmed diary landed without its archive is entries deleted, which is the one
+thing this ritual must never do — they are one act.
 
 ### 5. Commit the seat's files and push them to the trunk
 
@@ -118,7 +118,7 @@ recorded off that exit never reached the trunk.
 
 ### 6. Write the handed-off event
 
-`fleet event handed-off <seat>` records the seat's record as complete.
+`fleet event handed-off <machine name>` records the seat's record as complete.
 
 ### 7. Say one of two sentences, out loud
 

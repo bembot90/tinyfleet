@@ -28,9 +28,8 @@
 // reason. Every act a verb takes is attributed `--by run:<id>`, the run typed as
 // an actor, and the two verbs that leave something open across a Waiting exit —
 // a hold's question, a start's child run — find their own record on a re-run by
-// that actor: the k-th
-// park or the k-th run this run raised is the k-th hold or start call, so
-// neither holds nor starts twice.
+// that actor: the k-th park or the k-th run this run raised is the k-th hold or
+// start call, so neither holds nor starts twice.
 
 /// The six names the run exports to its child (core's run module), and the
 /// machine directory the binary resolves the stream under.

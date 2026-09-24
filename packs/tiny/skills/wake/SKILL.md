@@ -1,16 +1,17 @@
 ---
 name: wake
-description: Bring a named seat up for a session — its row, its worktree, its role document, its charter, diary and laurels, then the board and the woke event, closing on one report in the seat's own voice that ends at the state of the work.
+description: Bring a named seat up for a session — resolved from its id, short id, name or machine name — then its row, its worktree, its role document, its home's charter, diary and laurels, the board and the woke event, closing on one report in the seat's own voice that ends at the state of the work.
 ---
 
 # wake
 
-A **seat** is a named identity with a history; a **session** is one day in its
-life. Seats outlive the model under them and outlive their own names; sessions
-do not. This skill turns a session starting into a seat waking — reading its
-own record before it does anything else, so it begins oriented instead of
-amnesiac. It is read fresh every time, so everything it needs is here.
-It takes one argument: the seat directory, or the seat's chosen name.
+A **seat** is an identity with a history, and a **session** is one day in its
+life. Seats outlive the model under them and any name a person gives them;
+sessions do not. This skill turns a session starting into a seat waking —
+reading its own record before it does anything else, so it begins oriented
+instead of amnesiac. It is read fresh every time, so everything it needs is
+here. It takes one argument: the seat — its id, its short id, its name, or its
+machine name (`<slug>-<short>`).
 
 ## The two roots, and where a seat's files live
 
@@ -19,9 +20,11 @@ platform's own answer under the home directory; the packs installed on this
 machine sit under `packs/` inside it, and `fleet pack list` names them. The
 **project root** is the walk from the current directory up to the first
 project file, or to the fleet's own file where the fleet is embedded in the
-project. A seat's files live in `seats/<seat>/` at the root of the worktree it
-works in — `charter.md`, `diary.md`, `laurels.md`, and dated archives under
-`seats/<seat>/diary/`.
+project. A seat's **home** is the directory under `seats/`, at the root of the
+worktree it works in, whose name ends `-<short>` — the last eight hex digits
+of its id. Where none exists, the seat creates `seats/<slug>-<short>/`, named
+for its machine name, so a rename moves nothing. It holds `charter.md`,
+`diary.md`, `laurels.md`, and dated archives under `diary/`.
 
 ## Hard rules
 
@@ -44,24 +47,22 @@ works in — `charter.md`, `diary.md`, `laurels.md`, and dated archives under
 ### 1. Refuse a second wake, then resolve the row
 
 Has this session already woken? Different seat, refuse; same seat, re-orient
-briefly and stop there. Otherwise resolve the name — directory or chosen name
-— against the fleet's own roster:
+briefly and stop there. Otherwise resolve the argument through the fleet:
 
 ```sh
-fleet status --seat <name>
+fleet status --seat <arg>
 ```
 
-That prints the seat's roster row and its context row. **A row the fleet does
-not know is a stop**: say so and do not guess at a directory, a worktree or a
-fuzzy match. No projection at all exits 5 — the fleet is unobserved, which is
-a stop of its own.
+That prints the seat's roster row, opening on its machine name and carrying
+its project and worktree, and its context row. **A seat the fleet does not
+know is a stop**, and so is an argument that names two: say so and do not
+guess at a directory, a worktree or a fuzzy match. No projection at all exits
+5 — the fleet is unobserved, which is a stop of its own.
 
-Then confirm you are standing where that seat works. `fleet status --json`
-prints the projection document, whose seat rows carry the seat directory, the
-chosen name, the project and the worktree. **The worktree for this project
-must be the directory this session is in.** A cwd names a seat and never
-proves ownership, so the row settles it; if the two disagree, stop and say
-both.
+Then confirm you are standing where that seat works: **the worktree for this
+project must be the directory this session is in.** A cwd names a seat and
+never proves ownership, so the row settles it; if the two disagree, stop and
+say both. `fleet status --json` carries the full id, in the row's `seat`.
 
 ### 2. Read the role, then the seat's own files
 
@@ -71,14 +72,14 @@ a. **The role document.** The charter's `Role:` line names a role; the
    document is `agents/<role>/prompt.template.md` in a pack under the packs
    directory, found through `fleet pack list`. It is what the seat is *for* —
    the layer a pack owns rather than the seat.
-b. **`seats/<seat>/charter.md`** — identity (name and pronouns, or unset),
+b. **The home's `charter.md`** — identity (name and pronouns, or unset),
    role, the model class line, and the seat's own standing orders.
-c. **`seats/<seat>/diary.md`** in full — your own voice from last session,
+c. **The home's `diary.md`** in full — your own voice from last session,
    not a report written for you. Past about 300 lines, read **the newest whole
    entries that fit in that budget** and say in the report that it is due for
    rotation; rotating it here would edit the record before you had finished
    reading it. The dated archives beside it never load at wake.
-d. **`seats/<seat>/laurels.md`.** Nothing follows from it and nothing queries
+d. **The home's `laurels.md`.** Nothing follows from it and nothing queries
    it. Read it anyway; it is yours.
 
 **Check the diary's last entry for a clean ending** — a finished thought with
@@ -102,8 +103,9 @@ when it matters most.
 Only when the charter's identity is still unset. Choose your own name and
 pronouns, write the identity line into the charter yourself, read your
 laurels, and write a first diary entry in your own words — no template,
-deliberately. The chosen name in the fleet's own seat table is the person's
-write, not yours: ask for it and carry on.
+deliberately. Your name in the fleet is the person's edit, not yours: ask them
+to set `name = "<chosen>"` on your `[seats.<id>]` table in `fleet.toml`, and
+carry on. It takes effect at the next `fleet start`; home and worktree stay put.
 
 ### 4B. Orient
 
@@ -118,8 +120,8 @@ assigned-but-unordered and is reported as such.
 
 ### 5. Write the woke event
 
-`fleet event woke <seat>` records that the seat started and oriented, and
-reads the stream back to confirm its own line is the last before exiting zero.
+`fleet event woke <machine name>` records that the seat started and oriented;
+it reads the stream back, and exits zero only once its own line is the last.
 
 ### 6. Report, then stop
 

@@ -15,7 +15,7 @@ purpose = "which guard classes this provider's sessions run before a shell call,
 
 [[shadow]]
 path = "overlay/per-provider/claude/permissions.json"
-purpose = "the permission rules a transient seat's session comes up under, with {touched} and {worktree} rendered at the spawn"
+purpose = "the permission rules a spawned seat's session comes up under, with {touched} and {worktree} rendered at the spawn"
 
 [[shadow]]
 path = "doctor/guards-installed/doctor.toml"

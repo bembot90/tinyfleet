@@ -50,9 +50,10 @@ reason so a dropped row is visible in the list of what will not fly:
 6. **Held** — a `HOLD` line on the item or on its parent epic, in the title,
    the description or the notes, with no later line lifting it: held. A hold
    lives wherever the person wrote it, never in a title prefix.
-7. **The person's own** — assigned to them, or carrying no `lane:` label, or
-   a `kind:decide` label: `NEEDS THE PERSON`, because that is a decision they
-   owe and not a seat at work.
+7. **The person's own** — assigned to the person's seat id, the one their
+   `kind = "human"` table in `fleet.toml` is keyed by; or carrying no `lane:`
+   label, or a `kind:decide` label: `NEEDS THE PERSON`, because that is a
+   decision they owe and not a seat at work.
 8. **Not on an allowed surface** — a surface label outside
    `autopilot.allowed_surfaces`: excluded, by the ruling that put the list
    there.

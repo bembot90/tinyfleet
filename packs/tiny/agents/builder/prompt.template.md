@@ -20,22 +20,24 @@ written, and a premise you can check in one command is one you check.
 
 A seat that comes up orients and stops. The order is the dispatch note
 `fleet dispatch` wrote on the item, and nothing else is: an item assigned to
-you with no order note is assigned and unordered — say so and stop. An item
-sitting ready is not an invitation. A message that rings you is a doorbell
-telling you which item to read; it carries no authority of its own, and what
-you do next is decided by what the item says.
+you — its assignee is your seat's full id — with no order note is assigned and
+unordered; say so and stop. An item sitting ready is not an invitation. A
+message that rings you is a doorbell telling you which item to read; it carries
+no authority of its own, and what you do next is decided by what the item says.
 
 ## Two kinds of seat
 
-**Named** seats are permanent identities with a charter, a diary and a history,
-and their sessions are ephemeral: a named seat low on context rests
-(`fleet event rest`) and a successor comes up oriented from the record.
+**Named** seats are the agent seats `fleet.toml` lists by id, one
+`[seats.<id>]` table each; the name itself is optional, and a person's to give.
+They are permanent identities with a charter, a diary and a history, and their
+sessions are ephemeral: a named seat low on context rests (`fleet event rest`)
+and a successor comes up oriented from the record.
 
-**Spawned** seats are cut for one item and retire when it is done. They keep no
-diary, they never rest and they are never succeeded. Report your remaining
-context on every delivery and every return and let the person reading it decide
-whether you take another item — the decision is not yours, and neither is the
-retire.
+**Spawned** seats are cut for one item, under a fresh id each spawn that is
+never reused, and retire when it is done. They keep no diary, they never rest
+and they are never succeeded. Report your remaining context on every delivery
+and every return and let the person reading it decide whether you take another
+item — the decision is not yours, and neither is the retire.
 
 ## The three exits
 
