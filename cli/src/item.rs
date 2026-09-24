@@ -731,7 +731,7 @@ pub fn brief_command(args: &BriefArgs) -> Exit {
 /// core states a stop's exit as a number from the same table this enum holds.
 /// A number outside it is core's own defect and reads as could-not-tell here
 /// rather than as a status this binary invented.
-fn stop_exit(code: u8) -> Exit {
+pub(crate) fn stop_exit(code: u8) -> Exit {
     Exit::from_status(code).unwrap_or(Exit::CouldNotTell)
 }
 
@@ -740,13 +740,13 @@ fn stop_exit(code: u8) -> Exit {
 /// Where a verb's human rendering goes: stdout ordinarily, and stderr under
 /// `--json`, because stdout then carries the one document and nothing else
 /// (`envelope.rs`). The exit code is the exit table's own row either way.
-enum Human {
+pub(crate) enum Human {
     Out(std::io::Stdout),
     Aside(std::io::Stderr),
 }
 
 impl Human {
-    fn under(json: bool) -> Human {
+    pub(crate) fn under(json: bool) -> Human {
         if json {
             Human::Aside(std::io::stderr())
         } else {
@@ -782,7 +782,7 @@ fn answered(verb: &str, data: serde_json::Value, json: bool) -> Exit {
 /// A refusal said once: the human's line on stderr always, the envelope on
 /// stdout when the caller asked for the document, and the exit table's own row
 /// either way. `stream.rs` says the same for the event verbs.
-fn refused(verb: &str, exit: Exit, why: &str, json: bool) -> Exit {
+pub(crate) fn refused(verb: &str, exit: Exit, why: &str, json: bool) -> Exit {
     eprintln!("fleet {verb}: {why}");
     if json {
         println!("{}", envelope::refusal(verb, exit, why));

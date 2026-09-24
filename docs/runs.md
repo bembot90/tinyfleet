@@ -86,10 +86,13 @@ imports that declares one; two such imports, or none, are refused with
 exit 1. The tiny pack declares no table and takes the ts pack's, which pins
 Deno.
 
-Before it opens the run, fleet runs the runtime check that ships with its
-defaults, `doctor/runtime-version`, against the pack that declares the table.
-It asks the pinned runtime for its version on the `PATH` the workflow gets,
-and a red check refuses the run with exit 1 and the check's own lines.
+Before it opens the run, fleet runs the `runtime-version` doctor check
+against the pack that declares the table: the same check
+`fleet doctor runtime-version` runs for that pack (see
+[Packs](packs.md#doctor-checks)), bounded at 60 seconds. It asks the pinned
+runtime for its version on the `PATH` the workflow gets. A check that exits
+non-zero refuses the run with exit 1 and the check's own lines; one that is
+killed, runs past 60 seconds or cannot be started refuses it with exit 3.
 
 That `PATH` is built, not copied from yours. On macOS it is `/usr/bin`,
 `/bin`, `/usr/sbin`, `/sbin`, `/opt/homebrew/bin`, `/usr/local/bin` and

@@ -9,6 +9,7 @@
 //! nothing at all.
 
 mod claude;
+mod doctor;
 mod envelope;
 mod exit;
 mod item;
@@ -282,6 +283,28 @@ It reads the published document and the policy file — never the process
 table — and it writes nothing. --json prints the document verbatim and
 --seat <name> prints one seat's two rows; no projection is exit 5.")]
     Status(status::StatusArgs),
+
+    /// run the doctor checks the pack layers carry
+    #[command(long_about = "\
+run the doctor checks the pack layers carry: every doctor/<name>/ entry
+resolved through the layers, the defaults at the bottom and each installed
+pack above, a pack's entry replacing a lower one of the same name. Name
+checks to run those alone.
+
+Each check runs its doctor.toml's `run` script with sh from the project
+root, bounded at 60 seconds, with FLEET_PACK_DIR naming the pack that
+carries it. runtime-version runs once for each pack that declares a
+[runtime] table, on the PATH `fleet run` gives that pack's workflows.
+
+One row per check: pass, finding or could not tell, its name, its layer
+and its last line; a row that did not pass is followed by all it printed.
+It writes nothing.
+
+Exit 0 when every check passed, 1 when one reported a finding, 3 when one
+could not tell — it exited 3 or anything but 0 and 1, was killed, or did
+not answer in time. 3 wins over 1. --json prints one document whose data
+carries every row, with the same exit.")]
+    Doctor(doctor::DoctorArgs),
 
     /// judge one pre-tool payload read from stdin
     #[command(long_about = "\
@@ -599,6 +622,7 @@ fn dispatch() -> Result<Exit> {
         Family::Run(args) => Ok(item::run_command(&args)),
         Family::Cancel(args) => Ok(item::cancel_command(&args)),
         Family::Status(args) => Ok(status::status_command(&args)),
+        Family::Doctor(args) => Ok(doctor::command(&ui, &args)),
         Family::Guard { class, check } => guard_command(&ui, class, check),
         Family::Prime => Ok(prime::command()),
     }
@@ -1355,7 +1379,7 @@ mod tests {
     #[test]
     fn the_help_page_measured_above_lists_every_family() {
         let page = Cli::command().render_help().to_string();
-        for family in ["observe", "seat", "event", "pack", "guard"] {
+        for family in ["observe", "seat", "event", "pack", "guard", "doctor"] {
             assert!(
                 page.contains(family),
                 "`fleet --help` omits {family}: {page}"

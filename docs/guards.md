@@ -324,7 +324,8 @@ reports its checks, and still exits 1 when a target is not set.
 The defaults every fleet gets carry a doctor entry, `guards-installed`, that
 runs `--check` for shell-trap and record. The tiny pack shadows it with one
 that runs all four. Either prints every line and exits with the first
-non-zero status among them.
+non-zero status among them. `fleet doctor` runs it (see
+[Packs](packs.md#doctor-checks)).
 
 ## When it refuses
 

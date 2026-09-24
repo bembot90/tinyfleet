@@ -375,6 +375,127 @@ A pack that publishes a shadow registry at `assets/shadow-registry.toml` holds
 every path it lists. The registry is `schema = 1` and one `[[shadow]]` table
 per file, each with a `path` and a `purpose`.
 
+## Doctor checks
+
+A doctor check is a `doctor/<name>/` entry in a pack or in the defaults: a
+script that looks at one thing on this machine and says whether it holds.
+`fleet doctor` runs them, from inside a project, and writes nothing itself.
+
+```sh
+$ fleet doctor
+pass bd-version (defaults) — bd-version: holds
+pass claude-code-version (defaults) — claude-code-version: holds
+pass guards-installed (defaults) — record bare-id: configured — [project] item_prefix
+pass isolation-pair (defaults) — isolation-pair: holds
+pass runtime-version (defaults) — nothing pinned: no installed pack declares a [runtime] table
+doctor 5 checks — 5 pass, 0 finding, 0 could not tell
+```
+
+It exits 0. Each row is the verdict, the check's name, the layer that
+carries it in parentheses, and the last line the check printed. The rows come
+in name order, each as soon as its check finishes, and the summary line comes
+last. Name checks to run only those:
+
+```sh
+$ fleet doctor guards-installed
+finding guards-installed (defaults) — record bare-id: not configured — [project] item_prefix
+  shell-trap record-backtick: configured
+  shell-trap modifier: configured
+  shell-trap unsplit-variable: configured
+  shell-trap pipe-rc: configured
+  shell-trap false-alternative: configured
+  record notes-replace: configured
+  record sql-write: configured
+  record bare-id: not configured — [project] item_prefix
+doctor 1 check — 0 pass, 1 finding, 0 could not tell
+```
+
+It exits 1. A row that did not pass is followed by every line the check
+printed, standard output first, each indented by two spaces.
+
+`--json` prints one document on standard output instead, whose `data` holds
+a `checks` array with one object per row, the `counts` of each verdict, and
+the `verdict` over them all; the rows and the summary move to standard error.
+See
+[Exit codes and conventions](conventions.md#verbs-whose-exit-means-something-narrower).
+
+### What a check is
+
+`doctor/<name>/doctor.toml` takes two keys: `description`, one line on what
+the check is for, and `run`, the script to run, named relative to the entry.
+fleet reads no other key. The directory's name is the check's name.
+
+Each file resolves through the layers on its own, like any other pack file:
+a pack can shadow a check's `doctor.toml`, its script, or both, and a pack
+can carry checks of its own under new names. The layer a row names is the
+one that carries the `doctor.toml`. The defaults' shadow registry lists each
+of their checks' two files.
+
+### How a check runs
+
+fleet runs the script with `sh`, from the project root, with three variables
+set beside everything else in your environment:
+
+- `FLEET_PACK_DIR`: the directory of the layer that carries the check's
+  `doctor.toml`. `runtime-version` is the exception, below.
+- `FLEET_PROJECT`: the project root.
+- `FLEET_BIN`: the `fleet` binary that is running.
+
+The check runs on your `PATH`. It is given 60 seconds; a check still running
+then is killed, together with its process group.
+
+The check's exit is its verdict:
+
+| The check | Verdict |
+| --- | --- |
+| exits 0 | pass |
+| exits 1 | finding |
+| exits any other code, 3 among them; is killed; runs past 60 seconds; or cannot be started | could not tell |
+
+A check whose entry has no `doctor.toml`, whose `doctor.toml` does not parse
+or names no `run`, or whose script no layer carries, could not tell, and
+nothing runs.
+
+`fleet doctor` exits 0 when every check passed, 1 when one reported a
+finding, and 3 when one could not tell. 3 wins over 1.
+
+### runtime-version
+
+`runtime-version` runs once for each installed pack that declares a
+`[runtime]` table, with `FLEET_PACK_DIR` naming that pack, on the `PATH`
+`fleet run` gives that pack's workflows (see [Runs and workflows](runs.md)).
+Its row names the pack it measured:
+
+```sh
+$ fleet doctor runtime-version
+pass runtime-version for ts (defaults) — runtime-version: holds
+doctor 1 check — 1 pass, 0 finding, 0 could not tell
+```
+
+A pack whose `pack.toml` cannot be read or does not parse gets a
+could-not-tell row saying why. When no installed pack declares a `[runtime]`
+table, `runtime-version` is one passing row, `nothing pinned: no installed
+pack declares a [runtime] table`, and nothing runs.
+
+### When fleet doctor refuses
+
+Outside a project, `fleet doctor` runs nothing:
+
+```sh
+$ fleet doctor
+fleet doctor: no `fleet.toml` and no `.fleet/project.toml` above <dir> — `fleet create` writes one
+```
+
+It exits 3. A name no layer carries is refused before any check runs, with
+the names the layers do carry:
+
+```sh
+$ fleet doctor nosuch
+fleet doctor: no doctor check named nosuch — the layers carry: bd-version, claude-code-version, guards-installed, isolation-pair, runtime-version
+```
+
+It exits 2.
+
 ## Pack settings in fleet.toml
 
 A pack declares the settings it takes in its `pack.toml`; you set them in

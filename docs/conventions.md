@@ -174,8 +174,8 @@ It exits 2.
 
 `--json` asks for the outcome as one JSON document on standard output. These
 verbs take it: `fleet dispatch`, `deliver`, `hold`, `clear`, `review` and
-`land`; `fleet seat spawn`, `feed` and `retire`; and `fleet event tail` and
-`fleet event show`.
+`land`; `fleet seat spawn`, `feed` and `retire`; `fleet doctor`; and
+`fleet event tail` and `fleet event show`.
 
 A success is `ok`, then `verb`, then `data`:
 
@@ -219,6 +219,12 @@ Two things under `--json` print no envelope:
   command through prints nothing. A hook reads the object, not the exit.
   `fleet guard <class> --check` is the one guard form with a verdict in its
   exit: 0 when every check is configured, 1 when one is not.
+- **`fleet doctor`** exits with what its checks said: 0 when every check
+  passed, 1 when one reported a finding, and 3 when one could not tell. 3
+  wins over 1. Under `--json` the document's `ok` is `true` whatever the
+  checks said, and `data.verdict` carries the same answer as `pass`,
+  `finding` or `could_not_tell`. `ok` is `false` only when `fleet doctor`
+  refuses before any check runs. See [Packs](packs.md#doctor-checks).
 - **`fleet prime`** exits 0 every time. A part it cannot read is said in its
   place, and the rest still prints.
 - **`fleet run`** exits with the workflow's outcome: 0 for a run that closed
