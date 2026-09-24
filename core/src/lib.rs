@@ -87,11 +87,10 @@
 //! `seat` is the record half of the verbs that end a seat, and `retire` is
 //! the one it carries: the orders the seat still holds are withdrawn — the
 //! item reopened, the assignee cleared, the order index unset, one note saying
-//! so, all three read back — before the seat list gives its name away. The
-//! name is the reason: the next spawn takes the lowest free transient one, and
-//! an order left standing against a retired seat is inherited by whoever gets
-//! that name next. The session, the worktree and the row are the controller's,
-//! and the cli is where the two halves meet.
+//! so, all three read back — before its row goes. The reason is the work: an
+//! item still ordered to a seat that no longer exists is one nobody will
+//! deliver and nothing will dispatch again. The session, the worktree and the
+//! row are the controller's, and the cli is where the two halves meet.
 //!
 //! `guard` is the four classes a pre-tool hook judges through, and it is the one
 //! module here that no verb calls: `shell-trap` and `record` are core's, because

@@ -243,7 +243,7 @@ mod tests {
     use fleet_core::store::{Item, Orders};
     use fleet_core::test_support::FakeStore;
 
-    const SEAT: &str = "transient-3";
+    const SEAT: &str = "agent-0c3a5e71";
     const PARKED: &str = "fx-parked";
 
     /// The state the leak lives in: a run's item PARKED, so it is still open

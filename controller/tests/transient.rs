@@ -387,6 +387,33 @@ impl Rig {
         std::fs::read(self.config_path()).unwrap_or_default()
     }
 
+    /// The seat list's row for this machine name, read off the raw document:
+    /// the controller's reader folds on the name and does not keep the id.
+    fn row_of(&self, seat: &str) -> serde_json::Value {
+        let document: serde_json::Value =
+            serde_json::from_slice(&self.config_bytes()).expect("the seat list is JSON");
+        document["children"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["name"] == seat))
+            .cloned()
+            .unwrap_or_else(|| panic!("the seat list carries a row for {seat}: {document}"))
+    }
+
+    /// Every entry in the worktrees directory, sorted: a spawn's name is
+    /// minted, so "no worktree was made" is an empty directory and not the
+    /// absence of one name.
+    fn worktree_entries(&self) -> Vec<String> {
+        let mut entries: Vec<String> = std::fs::read_dir(&self.worktrees)
+            .map(|dir| {
+                dir.filter_map(Result::ok)
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        entries.sort();
+        entries
+    }
+
     fn table_bytes(&self) -> Vec<u8> {
         std::fs::read(sessions::path_in(&self.machine)).unwrap_or_default()
     }
@@ -551,6 +578,19 @@ impl Drop for Rig {
 
 fn json_string(value: &str) -> String {
     serde_json::Value::String(value.to_string()).to_string()
+}
+
+/// A spawned seat's machine name: `agent-` and the last eight hex digits of a
+/// freshly minted id.
+fn assert_agent_name(seat: &str) {
+    let short = seat.strip_prefix("agent-").unwrap_or("");
+    assert!(
+        short.len() == 8
+            && short
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+        "{seat:?} is not agent-<8 hex>"
+    );
 }
 
 /// The policy these arms run under.
@@ -797,15 +837,16 @@ fn a_load_average_over_the_ceiling_refuses_and_creates_nothing() {
         refusal.message
     );
     assert_eq!(rig.config_bytes(), before, "the seat list is untouched");
-    assert!(
-        !rig.worktrees.join("transient-1").exists(),
+    assert_eq!(
+        rig.worktree_entries(),
+        Vec::<String>::new(),
         "no worktree was made"
     );
     assert!(rig.calls().is_empty(), "and the agent was never called");
 
     // The control, one unit down: the same call at the ceiling proceeds.
     let spawn = spawned(&rig, &policy, 8.0, 8, "/work").expect("8.00 is not over 8.00");
-    assert_eq!(spawn.seat, "transient-1");
+    assert_agent_name(&spawn.seat);
 }
 
 /// The load belt's second leg, counted off the roster: a live row in a
@@ -819,12 +860,12 @@ fn the_transient_cap_refuses_when_more_seats_are_mid_turn_than_the_cap() {
     let policy = policy::parse("[controller]\nstart_watch_seconds = 10\nmax_transient_busy = 1\n")
         .expect("the policy parses");
 
-    let one = rig.worktrees.join("transient-1").display().to_string();
-    let two = rig.worktrees.join("transient-2").display().to_string();
+    let one = rig.worktrees.join("agent-0a1b2c3d").display().to_string();
+    let two = rig.worktrees.join("agent-4e5f6a7b").display().to_string();
     rig.write_config(&format!(
-        "[{{\"name\": \"transient-1\", \"transient\": true, \
+        "[{{\"name\": \"agent-0a1b2c3d\", \"transient\": true, \
            \"worktrees\": {{\"a-project\": {one}}}}}, \
-          {{\"name\": \"transient-2\", \"transient\": true, \
+          {{\"name\": \"agent-4e5f6a7b\", \"transient\": true, \
            \"worktrees\": {{\"a-project\": {two}}}}}, \
           {{\"name\": \"a-named-seat\", \
            \"worktrees\": {{\"a-project\": {named}}}}}]",
@@ -868,8 +909,9 @@ fn the_transient_cap_refuses_when_more_seats_are_mid_turn_than_the_cap() {
         refusal.message
     );
     assert_eq!(rig.config_bytes(), before, "the seat list is untouched");
-    assert!(
-        !rig.worktrees.join("transient-3").exists(),
+    assert_eq!(
+        rig.worktree_entries(),
+        Vec::<String>::new(),
         "no worktree was made"
     );
     assert!(
@@ -885,9 +927,11 @@ fn the_transient_cap_refuses_when_more_seats_are_mid_turn_than_the_cap() {
         rig.row("s-two", "b2", &two, 22, "idle"),
     ));
     let spawn = spawned(&rig, &policy, 0.1, 8, "/work").expect("one mid-turn is not over one");
-    assert_eq!(
-        spawn.seat, "transient-3",
-        "and the name is the lowest free one, which is not 1"
+    assert_agent_name(&spawn.seat);
+    assert!(
+        spawn.seat != "agent-0a1b2c3d" && spawn.seat != "agent-4e5f6a7b",
+        "and the name is a fresh one, not a row's the list already carries: {}",
+        spawn.seat
     );
 }
 
@@ -902,7 +946,7 @@ fn an_unreadable_roster_makes_the_cap_leg_could_not_tell_and_the_spawn_proceeds(
 
     let spawn = spawned(&rig, &policy, 0.1, 8, "/work")
         .expect("a cap leg nobody could read refuses nothing");
-    assert_eq!(spawn.seat, "transient-1");
+    assert_agent_name(&spawn.seat);
     assert!(
         spawn.belt.busy.is_none() && spawn.belt.busy_unreadable.is_some(),
         "the cap leg carries its cause: {:?}",
@@ -947,7 +991,7 @@ fn a_spawn_starts_the_seat_under_the_plugin_root_the_policy_names() {
     .expect("the policy parses");
 
     let spawn = spawned(&rig, &policy, 0.1, 8, "the first turn").expect("the spawn lands");
-    assert_eq!(spawn.seat, "transient-1");
+    assert_agent_name(&spawn.seat);
     let argv = rig.start_argv();
     let at = argv
         .iter()
@@ -963,7 +1007,7 @@ fn a_spawn_starts_the_seat_under_the_plugin_root_the_policy_names() {
     // The control: the same spawn under a policy that names none.
     let bare = Rig::new("plugin-root-control");
     let spawn = spawned(&bare, &a_policy(), 0.1, 8, "the first turn").expect("the spawn lands");
-    assert_eq!(spawn.seat, "transient-1");
+    assert_agent_name(&spawn.seat);
     let argv = bare.start_argv();
     assert!(
         !argv.iter().any(|word| word == "--plugin-dir"),
@@ -994,7 +1038,7 @@ fn a_spawn_writes_the_seats_permission_rules_before_its_first_turn() {
 
     let spawn = spawned_with(&rig, &a_policy(), 0.1, 8, "the first turn", Some(&template))
         .expect("the spawn lands");
-    let worktree = rig.worktrees.join("transient-1");
+    let worktree = rig.worktrees.join(&spawn.seat);
     assert_eq!(spawn.worktree, worktree);
 
     let want = a_settings_doc(&worktree.display().to_string());
@@ -1024,8 +1068,8 @@ fn a_spawn_writes_the_seats_permission_rules_before_its_first_turn() {
 #[test]
 fn a_spawn_offered_no_settings_writes_none() {
     let rig = Rig::new("settings-none");
-    spawned(&rig, &a_policy(), 0.1, 8, "the first turn").expect("the spawn lands");
-    let claude = rig.worktrees.join("transient-1").join(".claude");
+    let spawn = spawned(&rig, &a_policy(), 0.1, 8, "the first turn").expect("the spawn lands");
+    let claude = spawn.worktree.join(".claude");
     assert!(
         !claude.exists(),
         "{} was created by a spawn that was offered nothing",
@@ -1072,7 +1116,7 @@ fn a_spawn_merges_the_packs_rules_into_a_settings_document_the_project_tracks() 
     let template = a_settings_doc_with_deny(transient::WORKTREE);
     let spawn = spawned_with(&rig, &a_policy(), 0.1, 8, "the first turn", Some(&template))
         .expect("the spawn lands");
-    let worktree = rig.worktrees.join("transient-1");
+    let worktree = rig.worktrees.join(&spawn.seat);
     assert_eq!(spawn.worktree, worktree);
 
     let path = worktree.join(".claude/settings.local.json");
@@ -1130,10 +1174,11 @@ fn a_spawn_makes_a_detached_worktree_a_row_and_a_session_and_prints_its_name() {
         "the first turn\nand its second line\n",
     )
     .expect("the spawn lands");
-    assert_eq!(spawn.seat, "transient-1", "the lowest free name");
+    assert_agent_name(&spawn.seat);
+    let seat = spawn.seat.as_str();
 
     // The worktree, detached at the trunk ref.
-    let worktree = rig.worktrees.join("transient-1");
+    let worktree = rig.worktrees.join(seat);
     assert!(worktree.is_dir(), "{} is there", worktree.display());
     let head = std::process::Command::new("git")
         .arg("-C")
@@ -1163,7 +1208,7 @@ fn a_spawn_makes_a_detached_worktree_a_row_and_a_session_and_prints_its_name() {
         .seats;
     let row = seats
         .iter()
-        .find(|seat| seat.name == "transient-1")
+        .find(|row| row.name == seat)
         .expect("the row is on the file");
     assert!(row.transient, "the row says transient");
     assert_eq!(row.model.as_deref(), Some("a-model"), "the policy's model");
@@ -1191,12 +1236,12 @@ fn a_spawn_makes_a_detached_worktree_a_row_and_a_session_and_prints_its_name() {
     };
     assert_eq!(flag("--permission-mode"), Some(policy.posture_for(true)));
     assert_eq!(flag("--model"), Some("a-model"));
-    assert_eq!(flag("--name"), Some("transient-1"));
+    assert_eq!(flag("--name"), Some(seat));
 
     // The session-table row, and the one event.
     let table = rig.table();
     let opened = table
-        .newest_for("transient-1")
+        .newest_for(seat)
         .expect("the table carries the row this start opened");
     assert!(opened.transient);
     assert_eq!(opened.worktree, worktree.display().to_string());
@@ -1208,17 +1253,19 @@ fn a_spawn_makes_a_detached_worktree_a_row_and_a_session_and_prints_its_name() {
     assert_eq!(rig.events_of(events::SESSION_SPAWNED).len(), 1);
     assert!(rig.events_of(events::SESSION_CRASHED).is_empty());
 
-    // A second spawn takes the next free name and its own directory.
+    // A second spawn mints a seat of its own and its own directory.
     let second = spawned(&rig, &policy, 0.1, 8, "another turn").expect("the second spawn lands");
-    assert_eq!(second.seat, "transient-2");
-    assert!(rig.worktrees.join("transient-2").is_dir());
+    assert_agent_name(&second.seat);
+    assert_ne!(second.seat, seat);
+    assert!(rig.worktrees.join(&second.seat).is_dir());
 }
 
-/// The lock arm: two spawns started at once take two different names.
+/// The lock arm: two spawns started at once take two different seats, and the
+/// file carries both rows.
 ///
-/// The name is chosen INSIDE the writer's lock, so this is what a choice made
-/// outside it would red — both threads would read an empty list, both would pick
-/// `transient-1`, and one `git worktree add` would fail on the other's path.
+/// The row is appended INSIDE the writer's lock, so this is what a
+/// read-modify-write outside it would red — both threads would read an empty
+/// list and each rename its own one-row version over the other's.
 #[test]
 fn two_concurrent_spawns_take_two_different_names() {
     let rig = Rig::new("spawn-race");
@@ -1260,14 +1307,19 @@ fn two_concurrent_spawns_take_two_different_names() {
     sorted.sort();
     sorted.dedup();
     assert_eq!(sorted.len(), 2, "two spawns took one name: {names:?}");
-    assert_eq!(
-        sorted,
-        vec!["transient-1".to_string(), "transient-2".to_string()]
-    );
+    for name in &sorted {
+        assert_agent_name(name);
+    }
     let seats = config::read(&rig.config_path())
         .expect("the seat list parses")
         .seats;
     assert_eq!(seats.len(), 2, "and the file carries both rows");
+    let mut rows: Vec<String> = seats.into_iter().map(|seat| seat.name).collect();
+    rows.sort();
+    assert_eq!(
+        rows, sorted,
+        "and they are the two seats the spawns printed"
+    );
 }
 
 /// A14 in this verb's clothes: a start that exits inside its watch window rolls
@@ -1306,8 +1358,9 @@ fn a_start_that_fails_rolls_back_the_worktree_and_the_row_and_never_the_branch()
         "and no spawned line stands beside it"
     );
 
-    assert!(
-        !rig.worktrees.join("transient-1").exists(),
+    assert_eq!(
+        rig.worktree_entries(),
+        Vec::<String>::new(),
         "the worktree is gone"
     );
     // The row is GONE, not the file byte-identical: the rollback rewrites the
@@ -1320,7 +1373,7 @@ fn a_start_that_fails_rolls_back_the_worktree_and_the_row_and_never_the_branch()
         "the seat-list row survived the rollback: {seats:?}"
     );
     assert!(
-        rig.table().newest_for("transient-1").is_none(),
+        rig.table().sessions.is_empty(),
         "and no session-table row was opened"
     );
 
@@ -1571,6 +1624,47 @@ fn a_retire_stops_removes_prunes_drops_both_rows_and_prints_the_reclaim() {
     );
 }
 
+/// Spawn, retire, spawn again: the second seat is a new one. Its id and its
+/// machine name are not the retired seat's, so nothing the first left behind —
+/// an order, a branch name, a configuration directory — can be inherited by
+/// the second. Red on a counter that hands the lowest free name back out,
+/// under which both seats took the counter's first name.
+#[test]
+fn a_spawn_after_a_retire_mints_a_seat_the_retired_one_never_was() {
+    let rig = Rig::new("retire-then-spawn");
+    let policy = a_policy();
+    let (first, _) = a_spawned_seat(&rig, &policy, "idle");
+    let first_id = rig.row_of(&first)["id"].clone();
+
+    let agent = rig.agent();
+    let machine = machine_of(&rig, &agent, &policy);
+    transient::retire(&machine, &first, false).expect("the retire lands");
+
+    let second = spawned(&rig, &policy, 0.1, 8, "another turn").expect("the second spawn lands");
+    assert_ne!(
+        second.seat, first,
+        "the retired seat's name was handed out again"
+    );
+    assert_agent_name(&first);
+    assert_agent_name(&second.seat);
+    assert_eq!(second.worktree, rig.worktrees.join(&second.seat));
+
+    let second_id = rig.row_of(&second.seat)["id"].clone();
+    for id in [&first_id, &second_id] {
+        let id = id
+            .as_str()
+            .unwrap_or_else(|| panic!("the row carries an id: {id}"));
+        assert!(
+            fleet_core::seat::identity::SeatId::parse(id).is_ok(),
+            "{id} is a whole seat id"
+        );
+    }
+    assert_ne!(
+        second_id, first_id,
+        "the retired seat's id was handed out again"
+    );
+}
+
 /// The per-row configuration directory: the spawn makes one and the session row
 /// names it, every listing about the seat is asked UNDER it, and the retire
 /// takes it back — after the outside probes, which read through it.
@@ -1771,7 +1865,7 @@ fn a_retire_whose_withdrawal_refuses_never_frees_the_name() {
     assert_eq!(
         rig.config_bytes(),
         listed,
-        "the seat list stands, so the name is not free for the next spawn"
+        "the seat list stands, so the seat's row is not dropped"
     );
 
     // The same seat again, with the cause cleared: the name goes now, and what
@@ -1913,8 +2007,9 @@ fn a_session_table_that_will_not_parse_refuses_on_every_verb_and_writes_nothing(
         "the spawn's refusal is below the rollback window, so it says what it undid: {}",
         spawn.message
     );
-    assert!(
-        !rig.worktrees.join("transient-2").exists(),
+    assert_eq!(
+        rig.worktree_entries(),
+        vec![seat.clone()],
         "and the worktree that spawn made is gone again"
     );
 
@@ -1925,7 +2020,8 @@ fn a_session_table_that_will_not_parse_refuses_on_every_verb_and_writes_nothing(
     std::fs::remove_file(rig.table_path()).expect("the table is removed");
     let spawn = spawned(&rig, &policy, 0.1, 8, "a turn")
         .expect("a table that was never written is not a defect");
-    assert_eq!(spawn.seat, "transient-2");
+    assert_agent_name(&spawn.seat);
+    assert_ne!(spawn.seat, seat);
 }
 
 /// A verb's read-modify-write of the session table WAITS on the table's lock.
@@ -2087,7 +2183,7 @@ fn a_spawn_in_its_watch_window_does_not_block_a_feed() {
 
     let spawn_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let feed_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    std::thread::scope(|scope| {
+    let second = std::thread::scope(|scope| {
         let (rig, policy) = (&rig, &policy);
         let spawning_done = spawn_done.clone();
         let spawning = scope.spawn(move || {
@@ -2132,7 +2228,9 @@ fn a_spawn_in_its_watch_window_does_not_block_a_feed() {
             .join()
             .expect("the spawning thread finishes")
             .expect("the spawn lands once its window closes");
-        assert_eq!(spawn.seat, "transient-2");
+        assert_agent_name(&spawn.seat);
+        assert_ne!(spawn.seat, fed);
+        spawn.seat
     });
 
     let table = rig.table();
@@ -2142,7 +2240,7 @@ fn a_spawn_in_its_watch_window_does_not_block_a_feed() {
         "the feed's move survived the spawn's write"
     );
     assert!(
-        table.newest_for("transient-2").is_some(),
+        table.newest_for(&second).is_some(),
         "and the spawn's own row is on the same file: {:?}",
         table.sessions
     );
@@ -2719,7 +2817,8 @@ fn a_transcript_that_cannot_be_read_leaves_the_cost_null_and_reclaims_anyway() {
 /// A RUN'S CLEANUP RETIRES THROUGH HERE, and the seat it retires can still hold
 /// an open ordered item — a park leaves the order standing — so the priced
 /// retire owes the record the same withdrawal the hand verb owes it: the leak
-/// that left a parked item carrying an order naming a freed `transient-N`.
+/// that left a parked item carrying an order naming a seat that no longer
+/// exists.
 ///
 /// The seam is driven with a closure rather than a store, because this crate
 /// reaches no work graph: what the withdrawal itself writes onto an item is the
@@ -2852,8 +2951,9 @@ fn a_base_that_does_not_resolve_refuses_naming_it_and_makes_nothing() {
         before,
         "the seat list is byte-identical: no name was claimed"
     );
-    assert!(
-        !rig.worktrees.join("transient-1").exists(),
+    assert_eq!(
+        rig.worktree_entries(),
+        Vec::<String>::new(),
         "and no worktree was made"
     );
     assert!(
@@ -2879,7 +2979,7 @@ fn a_spawn_passes_the_callers_model_to_the_start_over_the_policys_default() {
         "the fixture's default is the value this arm must not read back"
     );
 
-    spawned_at(&rig, &policy, None, Some("a-named-model")).expect("the spawn lands");
+    let spawn = spawned_at(&rig, &policy, None, Some("a-named-model")).expect("the spawn lands");
 
     let argv = rig.start_argv();
     let flag = argv
@@ -2896,7 +2996,7 @@ fn a_spawn_passes_the_callers_model_to_the_start_over_the_policys_default() {
         .expect("the seat list parses")
         .seats
         .into_iter()
-        .find(|seat| seat.name == "transient-1")
+        .find(|seat| seat.name == spawn.seat)
         .expect("the row is on the file");
     assert_eq!(
         row.model.as_deref(),

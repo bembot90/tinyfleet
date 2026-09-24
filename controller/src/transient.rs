@@ -565,8 +565,9 @@ pub const CONFIG_DIRS: &str = "config";
 /// own templates use.
 pub const WORKTREE: &str = "{worktree}";
 
-/// What a spawn left behind. The name is the verb's one answer on stdout,
-/// because the caller is `dispatch` and the name is what it assigns to.
+/// What a spawn left behind. The seat's machine name, `agent-<short>`, is the
+/// verb's one answer on stdout, because the caller is `dispatch` and the name
+/// is what it assigns to.
 #[derive(Debug)]
 pub struct Spawned {
     pub seat: String,
@@ -602,9 +603,10 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
         None => TRUNK.to_string(),
     };
 
-    // (b) and (c) under ONE lock: the name, the worktree cut from the commit
-    // above, and the row. The rollback window opens with the `worktree add`
-    // inside it, and a claim that answers `Made` is one that got that far.
+    // (b) and (c) under ONE lock: a freshly minted seat id, the worktree cut
+    // from the commit above, and the row. The rollback window opens with the
+    // `worktree add` inside it, and a claim that answers `Made` is one that got
+    // that far.
     let model = machine.policy.model_for(ask.model);
     let claimed = config::claim_transient_seat(
         &machine.config_path(),
@@ -837,9 +839,8 @@ fn base_of(worktree: &Path) -> Option<String> {
 
 /// The seat's own configuration directory, made and read back.
 ///
-/// A directory that already stands is EMPTIED first: a spawn re-using a name a
-/// retire left behind would otherwise hand the new session the old one's state,
-/// which is the isolation this exists to give, lost to a name collision.
+/// A directory that already stands is EMPTIED first — a fresh id makes that a
+/// defect, never a reuse.
 ///
 /// The read-back is the same check every other step here takes, and it is the
 /// LISTING and not the existence: a directory the process could not write into
@@ -1414,16 +1415,16 @@ pub fn retire_with(
     }
     let _ = git(machine.primary, "worktree prune", &["worktree", "prune"]);
 
-    // THE RECORD BEFORE THE NAME. The seat list is what hands `transient-N`
-    // out, so the line below is the moment this name becomes takeable — and an
-    // order still standing against it would be inherited by whoever takes it
-    // next. Everything above has already happened and a refusal here says so:
-    // the session is stopped and gone, and the row is the one thing left.
+    // THE RECORD BEFORE THE ROW. The line below is the moment this seat stops
+    // existing, and an order still standing against it would be one nobody
+    // delivers and nothing dispatches again. Everything above has already
+    // happened and a refusal here says so: the session is stopped and gone,
+    // and the row is the one thing left.
     let withdrawn = withdrawal(seat).map_err(|refusal| Refusal {
         code: refusal.code,
         message: format!(
             "{}\n  the session and the worktree for `{seat}` ARE ALREADY GONE and the seat-list \
-             row STANDS: the name is not free, so clear the item and re-run this",
+             row STANDS: clear the item and re-run this",
             refusal.message
         ),
     })?;

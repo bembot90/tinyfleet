@@ -186,7 +186,7 @@ impl Rig {
             "the board",
         ]);
         self.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
-        let seat = self.root.join("a-project-worktrees/transient-1");
+        let seat = self.root.join("a-project-worktrees/agent-1b7e4c09");
         self.git(&[
             "worktree",
             "add",

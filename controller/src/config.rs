@@ -6,9 +6,9 @@
 //!
 //! A WRITER still takes one, because a rename is atomic and a read-modify-write
 //! is not: two spawns that read the same file and then each rename their own
-//! version over it leave one row, and both would have taken the same name.
+//! version over it leave one row where there should be two.
 
-use fleet_core::seat::identity::{Kind, SeatId};
+use fleet_core::seat::identity::{Kind, SeatId, SeatRef};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -121,19 +121,18 @@ pub fn mtime(path: &Path) -> Option<std::time::SystemTime> {
 
 // ---- the writer -------------------------------------------------------------
 
-/// The prefix a transient seat's name and its worktree directory both carry.
-pub const TRANSIENT_PREFIX: &str = "transient-";
-
-/// What a spawn is claiming a name for.
+/// What a spawn is claiming a seat for.
 pub struct TransientSeat<'a> {
     pub project: &'a str,
     pub model: &'a str,
     pub worktrees_dir: &'a Path,
 }
 
-/// The name and the directory a claim took.
+/// The seat and the directory a claim took. The name is the seat's machine
+/// name, `agent-<short>`: a transient seat has no name of its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claimed {
+    pub id: SeatId,
     pub name: String,
     pub worktree: PathBuf,
 }
@@ -147,20 +146,10 @@ pub enum ClaimError {
     Made { worktree: PathBuf, why: String },
 }
 
-/// Take the lowest free `transient-N`, create its worktree, and append its row
-/// — the three under ONE lock, so two spawns cannot take one N.
-///
-/// The name is chosen from the file INSIDE the lock rather than before it: a
-/// spawn that read the list, released, and then wrote would let a second spawn
-/// read the same list and choose the same number, and both worktrees would then
-/// be one directory. `make` runs between the choice and the write, which is
-/// where the reservation has to hold — a name written before the worktree
-/// exists is a row pointing at nothing, and one written after a lock-free
-/// choice is a name two spawns can share.
-///
-/// The counter REUSES a number a retire freed: the seat list is the only
-/// register, and a monotonic one would need a second file to remember what it
-/// had spent.
+/// Mint a fresh seat id, cut its worktree, and append its row — under ONE lock,
+/// so the row is never written for a tree that was not made. An id is never
+/// handed out twice, so nothing a retired seat left behind can be inherited by
+/// a later one.
 ///
 /// THE DOCUMENT IS EDITED, NOT RE-SERIALIZED FROM [`parse`]. That reader takes
 /// the fields the controller folds on and drops the rest —
@@ -173,16 +162,12 @@ pub fn claim_transient_seat(
 ) -> Result<Claimed, ClaimError> {
     let _held = crate::platform::lock_beside(path).map_err(ClaimError::Nothing)?;
     let mut document = read_document(path).map_err(ClaimError::Nothing)?;
-    let taken: Vec<String> = children_of(&mut document)
-        .map_err(ClaimError::Nothing)?
-        .iter()
-        .filter_map(|row| row["name"].as_str().map(str::to_string))
-        .collect();
-
-    let name = (1..=u32::MAX)
-        .map(|n| format!("{TRANSIENT_PREFIX}{n}"))
-        .find(|candidate| !taken.iter().any(|name| name == candidate))
-        .ok_or_else(|| ClaimError::Nothing("every transient name is taken".to_string()))?;
+    let minted = SeatRef {
+        id: SeatId::mint(),
+        name: None,
+        kind: Kind::Agent,
+    };
+    let name = minted.machine_name();
     let worktree = seat.worktrees_dir.join(&name);
     if worktree.exists() {
         return Err(ClaimError::Nothing(format!(
@@ -202,12 +187,18 @@ pub fn claim_transient_seat(
         .map_err(&failed)?
         .push(serde_json::json!({
             "name": name,
+            "id": minted.id.to_string(),
+            "kind": minted.kind.as_str(),
             "transient": true,
             "model": seat.model,
             "worktrees": { seat.project: worktree.display().to_string() },
         }));
     write_document(path, &document).map_err(failed)?;
-    Ok(Claimed { name, worktree })
+    Ok(Claimed {
+        id: minted.id,
+        name,
+        worktree,
+    })
 }
 
 /// Drop one row by name, under the same lock. `Ok(false)` is a name the file
@@ -477,7 +468,7 @@ mod tests {
   "fleet_toml": "/f.toml",
   "autopilot": {"on": true},
   "children": [
-    {"name": "transient-1", "transient": true, "spawned_by": "somebody",
+    {"name": "agent-7e3fa2c0", "transient": true, "spawned_by": "somebody",
      "worktrees": {"p": "/wt/t1"}},
     {"name": "one", "model": "an-old-model", "chosen_name": "Kite",
      "worktrees": {"p": "/wt/one"}, "kept_by_another_tool": 7},
@@ -534,7 +525,7 @@ mod tests {
         assert!(!rows.iter().any(|r| r["name"] == "gone"));
 
         // The transient row and the unknown top-level key, unchanged.
-        assert_eq!(*row("transient-1"), before["children"][0]);
+        assert_eq!(*row("agent-7e3fa2c0"), before["children"][0]);
         assert_eq!(after["autopilot"], before["autopilot"]);
         assert_eq!(after["fleet_toml"], before["fleet_toml"]);
 
@@ -567,8 +558,60 @@ mod tests {
                 .iter()
                 .map(|s| s.name.as_str())
                 .collect::<Vec<_>>(),
-            ["transient-1", "one", "two"]
+            ["agent-7e3fa2c0", "one", "two"]
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two claims back to back, well inside one second: two fresh ids, two
+    /// machine names and two worktrees, and each row carries its seat's id and
+    /// kind. A v7's first eight hex digits are its clock and repeat for a
+    /// minute, so a name cut from them would be one directory twice; the
+    /// machine name is cut from the tail [ASSUMES D1].
+    #[test]
+    fn two_claims_back_to_back_mint_two_ids_and_two_worktrees() {
+        let dir = std::env::temp_dir().join(format!("fleet-claim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let worktrees = dir.join("worktrees");
+        std::fs::create_dir_all(&worktrees).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, "{\"fleet_toml\": \"/f.toml\", \"children\": []}\n").unwrap();
+
+        let seat = TransientSeat {
+            project: "p",
+            model: "a-model",
+            worktrees_dir: &worktrees,
+        };
+        let make = |_: &str, tree: &Path| std::fs::create_dir(tree).map_err(|e| e.to_string());
+        let one = claim_transient_seat(&path, &seat, make).expect("the first claim lands");
+        let two = claim_transient_seat(&path, &seat, make).expect("the second claim lands");
+
+        assert_ne!(one.id, two.id, "two claims minted one id");
+        assert_ne!(one.name, two.name, "two claims took one name");
+        assert_ne!(one.worktree, two.worktree, "two claims cut one directory");
+        for claimed in [&one, &two] {
+            assert_eq!(claimed.name, format!("agent-{}", claimed.id.short()));
+            assert_eq!(claimed.worktree, worktrees.join(&claimed.name));
+            assert!(claimed.worktree.is_dir(), "{}", claimed.worktree.display());
+        }
+
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let rows = after["children"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "{after}");
+        for (row, claimed) in rows.iter().zip([&one, &two]) {
+            assert_eq!(
+                *row,
+                serde_json::json!({
+                    "name": claimed.name,
+                    "id": claimed.id.to_string(),
+                    "kind": "agent",
+                    "transient": true,
+                    "model": "a-model",
+                    "worktrees": {"p": claimed.worktree.display().to_string()},
+                })
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

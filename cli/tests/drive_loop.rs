@@ -394,7 +394,7 @@ fn a_row_pushed_under_the_lock_between_two_polls_survives_the_second_poll() {
             let mut theirs =
                 theirs.unwrap_or_else(|| panic!("the other writer's read of the table: {why:?}"));
             theirs.push(table_row(
-                "transient-1",
+                "agent-1b7e4c09",
                 &rig.worktree(),
                 "dispatch-under-the-lock",
                 2_000,

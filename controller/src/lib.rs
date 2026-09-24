@@ -13,10 +13,11 @@
 //! **`fleet seat spawn --first-turn <file>`** runs the load belt before it
 //! creates anything — the five-minute load average against a per-cpu ceiling and
 //! transient seats mid-turn against a cap, both readings printed whichever leg
-//! refuses — then cuts a worktree from the project's `origin/main`, appends a
-//! `transient: true` row to the seat list, starts the session with the file's
-//! text as its first turn, and prints the seat's name. A start that fails rolls
-//! the worktree and the row back and never a branch.
+//! refuses — then mints a fresh seat id, cuts a worktree from the project's
+//! `origin/main`, appends a `transient: true` row to the seat list, starts the
+//! session with the file's text as its first turn, and prints the seat's
+//! machine name, `agent-<short>`. A start that fails rolls the worktree and the
+//! row back and never a branch.
 //!
 //! **`--base <commit>`** cuts that worktree from a NAMED COMMIT instead of the
 //! trunk: a reviewer reads the delivery it was sent to, and a returned builder

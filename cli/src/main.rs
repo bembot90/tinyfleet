@@ -358,8 +358,8 @@ for a name. It prints the seat's id.")]
 create a transient seat: the load belt first, then a worktree cut from the
 project's origin/main, a seat-list row and a session started with the file's
 text as its first turn. A failed start rolls the worktree and the row back and
-never a branch. It prints the seat's name and writes nothing to the work
-graph.")]
+never a branch. It prints the seat's machine name, agent-<short id>, and
+writes nothing to the work graph.")]
     Spawn(transient::SpawnArgs),
 
     /// hand a live transient seat its next first turn

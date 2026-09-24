@@ -48,12 +48,13 @@ pub fn take_a_board(root: &Path, label: &str) {
 
 /// A board of this rig's OWN, whatever the run made: an init every time.
 ///
-/// For a rig whose arms make a BOARD-WIDE WRITE keyed on something every arm
-/// here shares. `fleet seat retire` withdraws every open ordered item the
-/// retiring seat holds, and every rig in `seat.rs` spawns `transient-1` — so on
-/// one board an arm's retire clears the order another arm's dispatch has just
-/// written, and both read back a disagreement. The run's shared board saves an
-/// init; it cannot save one here.
+/// For a rig whose arms make a BOARD-WIDE WRITE keyed on a seat. `fleet seat
+/// retire` withdraws every open ordered item the retiring seat holds, across
+/// the whole board, so two arms that retired one seat name on one board would
+/// have one's retire clear the order the other's dispatch had just written. A
+/// spawn mints its seat fresh, so the arms in `seat.rs` can no longer meet on a
+/// name; what a board of their own still buys them is one no neighbour's rows
+/// reach, and moving them onto the run's shared board is a change of its own.
 pub fn take_a_board_alone(root: &Path, label: &str) {
     bd_init(Path::new("bd"), root, label);
 }

@@ -159,8 +159,8 @@ pub fn spawn_command(args: &SpawnArgs) -> Exit {
                     )
                 );
             } else {
-                // The seat's name, alone, on stdout: the caller is `dispatch`
-                // and the name is what it assigns to.
+                // The seat's machine name, `agent-<short>`, alone on stdout:
+                // the caller is `dispatch` and the name is what it assigns to.
                 println!("{}", spawned.seat);
             }
             Exit::Done

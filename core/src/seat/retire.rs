@@ -1,17 +1,16 @@
-//! The orders a retiring seat still holds, withdrawn before its name is freed.
+//! The orders a retiring seat still holds, withdrawn before its row is dropped.
 //!
-//! A TRANSIENT NAME GOES BACK ON THE PILE. The spawn takes the lowest free
-//! `transient-N` off the seat list, so a name a retire freed is a name the next
-//! spawn takes — and an order left standing against the retired seat is
-//! inherited whole by that next one: the board still assigns it the item, the
-//! item still carries a `fleet.orders` key, and the new seat's first delivery
-//! is refused for an item it never saw. The retire is the act that frees the name,
-//! so it is the act that owes the name a clean record.
+//! THE WORK IS THE REASON. An order left standing against a retired seat is
+//! work nobody holds: the board still assigns the item to a seat that no
+//! longer exists, the item still carries a `fleet.orders` key, and so nobody
+//! will deliver it and nothing will dispatch it again. The retire is the act
+//! that ends the seat, so it is the act that releases what the seat held and
+//! puts its items back where a dispatch can reach them.
 //!
 //! The query is the `ordered` half of [`crate::item::deliver::holds`] — every
 //! OPEN item assigned to the seat that carries a `fleet.orders` key, whatever
-//! its type — so what is withdrawn here is every order the next seat of that
-//! name would inherit.
+//! its type — so what is withdrawn here is every order the retired seat would
+//! otherwise strand.
 //!
 //! IT IS COUNTED IN STORE CALLS, because every retire pays it and a fleet
 //! retires a seat per dispatched item: ONE call to read the board, then one
@@ -59,8 +58,8 @@ pub fn held(store: &dyn Store, seat: &str) -> Result<Vec<AssignedItem>, Stop> {
 /// refused with nothing written and never reopened.
 ///
 /// Every stop names what it did and did not write, because the caller runs this
-/// BEFORE the act that frees the name: a withdrawal that could not be written
-/// must not become a name somebody else takes.
+/// BEFORE the act that drops the seat's row: a withdrawal that could not be
+/// written must not become an order held by a seat that no longer exists.
 pub fn withdraw(
     store: &dyn Store,
     items: &[AssignedItem],
@@ -116,7 +115,8 @@ pub fn withdraw(
 fn moved_on(item: &str, seat: &str, why: &str) -> Stop {
     Stop::refused(format!(
         "the order on {item} was not withdrawn: `{seat}` no longer holds it as it was listed — \
-         {why}\n  the retire stops here, before the name is freed; read the item and retire again"
+         {why}\n  the retire stops here, before the seat's row is dropped; read the item and \
+         retire again"
     ))
 }
 
@@ -130,10 +130,10 @@ fn nothing_written(item: &str, why: &str) -> Stop {
 
 /// A withdrawal that started and did not finish. The item is named with what is
 /// still on it, because a caller reading this as "nothing happened" would leave
-/// a half-withdrawn item behind a freed name.
+/// a half-withdrawn item behind a dropped row.
 fn halfway(item: &str, why: &str) -> Stop {
     Stop::could_not_tell(format!(
         "{item} was not fully withdrawn: {why}\n  finish it by hand — the item open, the assignee \
-         cleared and the fleet.orders key unset — before the name is given to anybody else"
+         cleared and the fleet.orders key unset — before the seat's row is dropped"
     ))
 }

@@ -1549,7 +1549,7 @@ fn the_seats_table_is_rendered_into_rows_and_a_transient_row_survives_it() {
         &rig.machine.join("config.json"),
         &format!(
             "{{\n  \"fleet_toml\": \"{}\",\n  \"autopilot\": {{\"on\": true}},\n  \
-             \"children\": [\n    {{\"name\": \"transient-1\", \"transient\": true, \
+             \"children\": [\n    {{\"name\": \"agent-2f6d1a93\", \"transient\": true, \
              \"spawned_by\": \"somebody\", \"worktrees\": {{\"a-project\": \"/wt/t1\"}}}},\n    \
              {{\"name\": \"agent-e8a04b17\", \"chosen_name\": \"Pell\", \
              \"worktrees\": {{\"a-project\": \"/wt/b\"}}}},\n    \
@@ -1625,7 +1625,7 @@ fn the_seats_table_is_rendered_into_rows_and_a_transient_row_survives_it() {
     // BYTE-IDENTICAL: the transient row and the unknown key survive, field for
     // field, because the document is edited and never re-serialized.
     let transient_before = before["children"][0].clone();
-    assert_eq!(*row("transient-1"), transient_before, "{after}");
+    assert_eq!(*row("agent-2f6d1a93"), transient_before, "{after}");
     assert_eq!(after["autopilot"], before["autopilot"]);
     assert_eq!(after["fleet_toml"], before["fleet_toml"]);
 

@@ -267,11 +267,11 @@ fn a_seat_listing_lifts_the_row_cap() {
     let log = dir.path("argv");
     let ids: Vec<String> = (1..=51).map(|n| format!("fx-row-{n:02}")).collect();
     let rows: Vec<Held> = ids.iter().map(|id| Held { id, ordered: false }).collect();
-    capped_bd(&dir, "transient-3", &rows, &log);
+    capped_bd(&dir, "agent-0c3a5e71", &rows, &log);
 
     let root = dir.path("project");
     std::fs::create_dir_all(&root).expect("the project root is created");
-    let answered = with_path_ahead(&dir.root, || Bd::at(&root).assigned_to("transient-3"));
+    let answered = with_path_ahead(&dir.root, || Bd::at(&root).assigned_to("agent-0c3a5e71"));
 
     let held: Vec<String> = answered
         .expect("the fake answers a list")
@@ -286,7 +286,7 @@ fn a_seat_listing_lifts_the_row_cap() {
             root.display().to_string(),
             String::from("list"),
             String::from("-a"),
-            String::from("transient-3"),
+            String::from("agent-0c3a5e71"),
             String::from("--json"),
             String::from("-n"),
             String::from("0"),

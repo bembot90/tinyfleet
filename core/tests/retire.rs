@@ -1,5 +1,5 @@
 //! The record's half of `fleet seat retire`: the orders a retiring seat still
-//! holds, withdrawn before its name goes back on the pile.
+//! holds, withdrawn before its row is dropped.
 //!
 //! The applying fake store, and for the one arm about the listing's row cap a
 //! fake `bd` behind the store that talks to it. What is under test is which
@@ -16,9 +16,9 @@ use fleet_core::seat::retire::{self, WITHDRAWN};
 use fleet_core::store::{AssignedItem, Bd, Item, Orders, Store};
 use fleet_core::test_support::FakeStore;
 
-/// The name the incident wore: a transient seat retired while an item it was
-/// given stayed open, and handed out again to the next spawn.
-const SEAT: &str = "transient-3";
+/// A transient seat's machine name: the incident was one retired while an item
+/// it was given stayed ordered to it.
+const SEAT: &str = "agent-0c3a5e71";
 const BY: &str = "an-architect";
 
 const HELD: &str = "fx-held";
@@ -52,7 +52,7 @@ fn board() -> FakeStore {
     store.seed(item(HELD, "open", SEAT, true));
     store.seed(item(UNORDERED, "open", SEAT, false));
     store.seed(item(CLOSED, "closed", SEAT, true));
-    store.seed(item(ANOTHER, "open", "transient-9", true));
+    store.seed(item(ANOTHER, "open", "agent-9d2b4f60", true));
     store
 }
 
@@ -209,7 +209,7 @@ fn a_retire_leaves_what_the_seat_does_not_hold_under_an_open_order() {
         assert_eq!(
             after.assignee.as_deref(),
             Some(if untouched == ANOTHER {
-                "transient-9"
+                "agent-9d2b4f60"
             } else {
                 SEAT
             }),
@@ -281,8 +281,8 @@ fn a_retire_leaves_another_writers_orders_key_untouched() {
 
 /// AN EPIC IS NEVER HELD, AND ITS ORDER IS STILL WITHDRAWN: dispatch and
 /// deliver do not count an epic as work the seat carries, but an order left
-/// on one is still an order standing against the name, and the next seat of
-/// that name would inherit it.
+/// on one is still an order standing against a seat that will no longer
+/// exist, and nothing would dispatch it again.
 #[test]
 fn a_retire_withdraws_an_ordered_epic_the_seat_still_names() {
     let store = board();
@@ -314,9 +314,9 @@ fn a_retire_withdraws_an_ordered_epic_the_seat_still_names() {
 fn a_retire_of_a_seat_holding_nothing_ordered_writes_nothing() {
     let store = board();
 
-    let held = retire::held(&store, "transient-4").expect("the board answers");
+    let held = retire::held(&store, "agent-4a8c1e37").expect("the board answers");
     assert!(held.is_empty(), "the seat holds nothing: {held:?}");
-    retire::withdraw(&store, &held, "transient-4", BY).expect("nothing to withdraw");
+    retire::withdraw(&store, &held, "agent-4a8c1e37", BY).expect("nothing to withdraw");
 
     assert!(
         store.wrote().is_empty(),
@@ -357,7 +357,7 @@ fn a_retire_withdrawing_one_item_makes_one_update_and_one_note() {
 }
 
 /// The second half of the acceptance: a write the store will not apply stops
-/// the retire, so the CALLER never reaches the act that frees the name.
+/// the retire, so the CALLER never reaches the act that drops the seat's row.
 ///
 /// The disagreement is the one a real store will not produce on demand — the
 /// writes are recorded and thrown away — and it is what the read-back after
@@ -383,7 +383,7 @@ fn a_retire_whose_withdrawal_does_not_land_refuses_and_names_the_item() {
     let after = read(&store, HELD);
     assert!(
         after.has_orders_key && after.assignee.as_deref() == Some(SEAT),
-        "the item is as it was, so the name must not be freed: {}",
+        "the item is as it was, so the seat's row must not be dropped: {}",
         after.document
     );
 }
@@ -397,7 +397,7 @@ fn a_retire_whose_item_moved_to_another_seat_is_refused_and_writes_nothing() {
     let store = board();
     let held = retire::held(&store, SEAT).expect("the board answers");
     store
-        .assign(HELD, "transient-9", "the-test")
+        .assign(HELD, "agent-9d2b4f60", "the-test")
         .expect("another seat takes the item after the listing");
 
     let stop = retire::withdraw(&store, &held, SEAT, BY).expect_err("the holder moved");
@@ -412,13 +412,13 @@ fn a_retire_whose_item_moved_to_another_seat_is_refused_and_writes_nothing() {
             && stop
                 .message
                 .contains(&format!("`{SEAT}` no longer holds it"))
-            && stop.message.contains("`transient-9`"),
+            && stop.message.contains("`agent-9d2b4f60`"),
         "the refusal names the item, the retiring seat and the holder now: {}",
         stop.message
     );
     let after = read(&store, HELD);
     assert!(
-        after.has_orders_key && after.assignee.as_deref() == Some("transient-9"),
+        after.has_orders_key && after.assignee.as_deref() == Some("agent-9d2b4f60"),
         "nothing was written: {}",
         after.document
     );
@@ -426,7 +426,7 @@ fn a_retire_whose_item_moved_to_another_seat_is_refused_and_writes_nothing() {
 }
 
 /// A board nobody could read is a QUESTION and never an empty hold: a retire
-/// that took silence for "this seat holds nothing" would free the name with the
+/// that took silence for "this seat holds nothing" would drop the row with the
 /// order still standing, which is the whole defect.
 #[test]
 fn a_retire_that_cannot_read_the_board_refuses_rather_than_reading_no_hold() {

@@ -7,8 +7,8 @@
 //!
 //! The project is a real git repository with a local `refs/remotes/origin/main`,
 //! because a spawn cuts its worktree from that ref, and one per arm: the
-//! worktrees directory is keyed on the project and two arms sharing one would
-//! each meet the other's `transient-1`.
+//! worktrees directory is keyed on the project, and an arm that asserts on
+//! what is in it would read a neighbour's seats there too.
 
 mod common;
 
@@ -224,12 +224,12 @@ impl Rig {
     /// repository the rig committed into is the one it keeps.
     ///
     /// A BOARD OF ITS OWN and never the run's shared one. A SEAT NAME IS
-    /// BOARD-WIDE and every arm in this file spawns `transient-1`: a retire
-    /// asks the board which open ordered items that name holds and clears
-    /// them, so two arms on one board have one arm's retire withdraw the order
-    /// the other's dispatch has just written — and both read back a
-    /// disagreement. What it costs the run is one `bd init` for each arm here
-    /// that has a store, which the wrapper's own count line names.
+    /// BOARD-WIDE: a retire asks the board which open ordered items that name
+    /// holds and clears them. A spawn mints its seat fresh, so two arms here no
+    /// longer meet on one name; what the board of its own still buys an arm is
+    /// one no neighbour's rows reach. What it costs the run is one `bd init`
+    /// for each arm here that has a store, which the wrapper's own count line
+    /// names.
     fn init_store(&self) {
         common::take_a_board_alone(&self.project, &self.label);
     }
@@ -456,6 +456,13 @@ impl Rig {
         std::fs::read_to_string(&self.calls).unwrap_or_default()
     }
 
+    /// Every entry in the worktrees directory, sorted: a spawn's name is
+    /// minted, so "nothing was created" is an empty directory and not the
+    /// absence of one name.
+    fn worktree_entries(&self) -> Vec<String> {
+        entries_of(&self.worktrees)
+    }
+
     fn seats(&self) -> serde_json::Value {
         let body = std::fs::read_to_string(self.machine.join("config.json"))
             .expect("the seat list is readable");
@@ -473,6 +480,19 @@ fn json_string(value: &str) -> String {
     serde_json::Value::String(value.to_string()).to_string()
 }
 
+/// A directory's entries, sorted; none where it is not there.
+fn entries_of(dir: &Path) -> Vec<String> {
+    let mut entries: Vec<String> = std::fs::read_dir(dir)
+        .map(|dir| {
+            dir.filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    entries.sort();
+    entries
+}
+
 fn toml_string(value: &str) -> String {
     json_string(value)
 }
@@ -485,11 +505,32 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
+/// The seat a spawn made, read off its stdout: ONE line, the machine name
+/// `agent-<short>`, where the short is the last eight hex digits of the id the
+/// spawn minted. Every arm here takes the name from the verb and never spells
+/// it, because it is fresh on every spawn.
+fn the_seat(out: &Output) -> String {
+    let printed = stdout(out);
+    let seat = printed.strip_suffix('\n').unwrap_or(&printed);
+    let short = seat.strip_prefix("agent-").unwrap_or("");
+    assert!(
+        !seat.contains('\n')
+            && short.len() == 8
+            && short
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+        "a spawn prints one line, ^agent-[0-9a-f]{{8}}$: {printed:?}\n{}",
+        stderr(out)
+    );
+    seat.to_string()
+}
+
 /// The three verbs end to end through the shipped binary, each exit read from
 /// the child's own status.
 #[test]
 fn the_three_verbs_run_end_to_end_through_the_shipped_binary() {
     let rig = Rig::new("end-to-end", true);
+    let policy = std::fs::read(rig.project.join("fleet.toml")).expect("the policy is readable");
 
     let spawned = rig.run(&[
         "seat",
@@ -498,26 +539,34 @@ fn the_three_verbs_run_end_to_end_through_the_shipped_binary() {
         &rig.turn.display().to_string(),
     ]);
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
-    assert_eq!(
-        stdout(&spawned).trim(),
-        "transient-1",
-        "the name, alone, is the verb's answer on stdout"
-    );
-    assert!(rig.worktrees.join("transient-1").is_dir());
+    // The machine name, alone, is the verb's answer on stdout.
+    let seat = the_seat(&spawned);
+    assert!(rig.worktrees.join(&seat).is_dir());
     let row = &rig.seats()["children"][0];
-    assert_eq!(row["name"], "transient-1");
+    assert_eq!(row["name"], seat.as_str());
     assert_eq!(row["transient"], true);
     assert_eq!(row["model"], "a-model");
+    assert_eq!(row["kind"], "agent", "the row carries the seat's kind");
+    let id = row["id"].as_str().expect("the row carries the seat's id");
+    assert!(
+        fleet_core::seat::identity::SeatId::parse(id).is_ok() && seat.ends_with(&id[28..]),
+        "the id is a whole seat id whose last eight digits name the seat: {id} {seat}"
+    );
+    assert_eq!(
+        std::fs::read(rig.project.join("fleet.toml")).expect("the policy is readable"),
+        policy,
+        "a transient seat is never written to fleet.toml"
+    );
     assert!(rig.calls().contains("START"), "{}", rig.calls());
 
     // The feed: a live idle row takes the next turn.
-    rig.live("transient-1", "idle");
+    rig.live(&seat, "idle");
     let next = rig.root.join("the-next-turn.md");
     std::fs::write(&next, "the next turn\n").expect("the turn is written");
     let fed = rig.run(&[
         "seat",
         "feed",
-        "transient-1",
+        &seat,
         "--first-turn",
         &next.display().to_string(),
     ]);
@@ -525,7 +574,7 @@ fn the_three_verbs_run_end_to_end_through_the_shipped_binary() {
     assert!(rig.calls().contains("NUDGE"), "{}", rig.calls());
 
     // The retire: stopped, removed, both rows dropped, the reclaim printed.
-    let retired = rig.run(&["seat", "retire", "transient-1"]);
+    let retired = rig.run(&["seat", "retire", &seat]);
     assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
     assert!(
         stdout(&retired).contains("reclaimed"),
@@ -534,7 +583,7 @@ fn the_three_verbs_run_end_to_end_through_the_shipped_binary() {
     );
     assert!(rig.calls().contains("STOP ab12"), "{}", rig.calls());
     assert!(rig.calls().contains("RM ab12"), "{}", rig.calls());
-    assert!(!rig.worktrees.join("transient-1").exists());
+    assert!(!rig.worktrees.join(&seat).exists());
     assert_eq!(
         rig.seats()["children"].as_array().map(Vec::len),
         Some(0),
@@ -570,7 +619,7 @@ fn a_spawn_renders_the_packs_permission_rules_into_the_seats_worktree() {
     ]);
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
 
-    let worktree = rig.worktrees.join("transient-1");
+    let worktree = rig.worktrees.join(the_seat(&spawned));
     let path = worktree.join(".claude/settings.local.json");
     let written = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
@@ -622,7 +671,7 @@ fn a_spawn_handed_no_touched_command_writes_no_rule_for_one() {
     ]);
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
 
-    let worktree = rig.worktrees.join("transient-1");
+    let worktree = rig.worktrees.join(the_seat(&spawned));
     let written = std::fs::read_to_string(worktree.join(".claude/settings.local.json"))
         .expect("the seat's settings are written");
     let doc: serde_json::Value =
@@ -667,7 +716,7 @@ fn a_spawn_handed_no_touched_command_writes_no_rule_for_one() {
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
     let written = std::fs::read_to_string(
         rig.worktrees
-            .join("transient-1")
+            .join(the_seat(&spawned))
             .join(".claude/settings.local.json"),
     )
     .expect("the seat's settings are written");
@@ -699,7 +748,7 @@ fn a_projects_declared_tool_commands_are_rules_after_the_packs_own() {
     ]);
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
 
-    let worktree = rig.worktrees.join("transient-1");
+    let worktree = rig.worktrees.join(the_seat(&spawned));
     let path = worktree.join(".claude/settings.local.json");
     let written = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
@@ -774,10 +823,11 @@ fn a_tool_command_that_is_not_one_word_is_refused_at_the_render() {
             "the refusal names the entry `{entry}`: {said}"
         );
         assert!(
-            !rig.worktrees
-                .join("transient-1")
+            rig.worktree_entries().iter().all(|tree| !rig
+                .worktrees
+                .join(tree)
                 .join(".claude/settings.local.json")
-                .exists(),
+                .exists()),
             "and no seat came up under a document this refusal never wrote ({entry})"
         );
     }
@@ -820,7 +870,7 @@ fn a_pack_above_the_defaults_shadowing_the_permission_slot_is_what_the_seat_come
     ]);
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
 
-    let worktree = rig.worktrees.join("transient-1");
+    let worktree = rig.worktrees.join(the_seat(&spawned));
     let path = worktree.join(".claude/settings.local.json");
     let written = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
@@ -878,7 +928,7 @@ fn a_pack_above_the_defaults_carrying_no_permission_rules_leaves_the_default_doc
     ]);
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
 
-    let worktree = rig.worktrees.join("transient-1");
+    let worktree = rig.worktrees.join(the_seat(&spawned));
     let path = worktree.join(".claude/settings.local.json");
     let written = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
@@ -952,7 +1002,7 @@ fn a_spawn_denies_the_five_trunk_push_shapes_to_a_transient_seat() {
     ]);
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
 
-    let worktree = rig.worktrees.join("transient-1");
+    let worktree = rig.worktrees.join(the_seat(&spawned));
     let path = worktree.join(".claude/settings.local.json");
     let written = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
@@ -1008,7 +1058,7 @@ fn a_project_settings_file_that_already_denies_a_shape_keeps_it_beside_the_five(
     ]);
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
 
-    let worktree = rig.worktrees.join("transient-1");
+    let worktree = rig.worktrees.join(the_seat(&spawned));
     let path = worktree.join(".claude/settings.local.json");
     let written = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
@@ -1044,8 +1094,9 @@ fn a_project_that_declares_neither_directory_derives_both_from_its_root() {
         &rig.turn.display().to_string(),
     ]);
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
+    let seat = the_seat(&spawned);
     assert!(
-        rig.worktrees.join("transient-1").is_dir(),
+        rig.worktrees.join(&seat).is_dir(),
         "the derived sibling is {}",
         rig.worktrees.display()
     );
@@ -1053,7 +1104,7 @@ fn a_project_that_declares_neither_directory_derives_both_from_its_root() {
     // primary: a `git worktree list` there names it.
     let listed = rig.git(&["worktree", "list", "--porcelain"]);
     assert!(
-        listed.contains("transient-1"),
+        listed.contains(&seat),
         "the derived primary is the project root: {listed}"
     );
 }
@@ -1094,12 +1145,13 @@ fn a_declaration_beside_a_fleet_toml_resolves_standalone() {
     ]);
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
     assert!(
-        declared.join("transient-1").is_dir(),
+        declared.join(the_seat(&spawned)).is_dir(),
         "the worktree is cut under the declaration's directory {}",
         declared.display()
     );
-    assert!(
-        !rig.worktrees.join("transient-1").exists(),
+    assert_eq!(
+        rig.worktree_entries(),
+        Vec::<String>::new(),
         "and not under the neighbour's {}",
         rig.worktrees.display()
     );
@@ -1190,8 +1242,9 @@ fn a_project_the_directory_does_not_resolve_to_is_a_usage_error() {
     ]);
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert!(stderr(&out).contains("a-project"), "{}", stderr(&out));
-    assert!(
-        !rig.worktrees.join("transient-1").exists(),
+    assert_eq!(
+        rig.worktree_entries(),
+        Vec::<String>::new(),
         "and nothing was created"
     );
 
@@ -1231,8 +1284,9 @@ fn a_project_path_that_is_not_a_string_refuses_and_never_falls_back() {
         "the refusal names the key and what it found: {}",
         stderr(&out)
     );
-    assert!(
-        !rig.worktrees.join("transient-1").exists(),
+    assert_eq!(
+        rig.worktree_entries(),
+        Vec::<String>::new(),
         "and nothing was cut in the derived directory"
     );
 
@@ -1254,7 +1308,7 @@ fn a_project_path_that_is_not_a_string_refuses_and_never_falls_back() {
         &rig.turn.display().to_string(),
     ]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    assert!(rig.worktrees.join("transient-1").is_dir());
+    assert!(rig.worktrees.join(the_seat(&out)).is_dir());
 }
 
 /// A first turn this process cannot read is a usage error and not a refusal:
@@ -1291,14 +1345,16 @@ fn dispatch_without_a_seat_spawns_through_the_real_spawner_and_assigns_the_name(
     assert!(rig.calls().contains("START"), "{}", rig.calls());
 
     let (assignee, notes, orders) = rig.order_of(&item);
+    let seat = assignee.expect("the item is assigned");
     assert_eq!(
-        assignee.as_deref(),
-        Some("transient-1"),
-        "the item is assigned to the seat the spawn printed"
+        entries_of(&rig.worktrees),
+        vec![seat.clone()],
+        "the item is assigned to the one seat the spawn made"
     );
-    assert_eq!(orders["seat"], serde_json::json!("transient-1"));
+    assert!(seat.starts_with("agent-"), "a spawned seat's name: {seat}");
+    assert_eq!(orders["seat"], serde_json::json!(seat));
     assert!(notes.contains("orders given"), "{notes}");
-    let worktree = rig.worktrees.join("transient-1");
+    let worktree = rig.worktrees.join(&seat);
     assert!(worktree.is_dir());
 
     // THE EVENT, off the stream the binary wrote, and its base read by this arm
@@ -1309,7 +1365,7 @@ fn dispatch_without_a_seat_spawns_through_the_real_spawner_and_assigns_the_name(
     assert_eq!(last["type"].as_str(), Some("item.dispatched"), "{last}");
     assert_eq!(last["actor"].as_str(), Some("an-architect"));
     assert_eq!(last["payload"]["item"].as_str(), Some(item.as_str()));
-    assert_eq!(last["payload"]["seat"].as_str(), Some("transient-1"));
+    assert_eq!(last["payload"]["seat"].as_str(), Some(seat.as_str()));
     let head = seen(&worktree, &["rev-parse", "HEAD"]);
     assert_eq!(head.len(), 40, "a commit is 40 hex: {head}");
     assert_eq!(
@@ -1528,8 +1584,9 @@ fn dispatch_under_the_load_override_refuses_and_withdraws_the_order() {
         stderr(&out)
     );
     assert!(rig.calls().is_empty(), "the agent was never called");
-    assert!(
-        !rig.worktrees.join("transient-1").exists(),
+    assert_eq!(
+        rig.worktree_entries(),
+        Vec::<String>::new(),
         "and no worktree was made"
     );
 
@@ -1546,7 +1603,7 @@ fn dispatch_under_the_load_override_refuses_and_withdraws_the_order() {
 
 /// The branch the seat holds while its item is landed. A real builder's, so the
 /// primary's branch list carries it before the retire and is asked after.
-const WORK: &str = "transient-1/feat/the-work";
+const WORK: &str = "a-seat/feat/the-work";
 
 /// The landing note a reviewer's `fleet land` leaves on the item, in the row
 /// grammar `land` writes: the criterion off the verb's own list, the verdict, and
@@ -1565,9 +1622,10 @@ fn a_landing(verdict: &str, branch: &str) -> String {
 }
 
 /// A seat the board has dispatched an item to: the store, the item ORDERED to
-/// `transient-1` and open, and the worktree the spawn cut. It is the state a
-/// seat is in while it works, and the one a retire has an order to answer for.
-fn a_dispatched_seat(rig: &Rig) -> String {
+/// the seat the spawn made and open, and the worktree the spawn cut. It is the
+/// state a seat is in while it works, and the one a retire has an order to
+/// answer for. The item, and the seat read off its assignee.
+fn a_dispatched_seat(rig: &Rig) -> (String, String) {
     rig.init_store();
     let item = rig.item("an item a seat was dispatched");
     let out = rig.run(&[
@@ -1579,20 +1637,24 @@ fn a_dispatched_seat(rig: &Rig) -> String {
         &rig.machine.join("packs").display().to_string(),
     ]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    item
+    let seat = rig
+        .order_of(&item)
+        .0
+        .expect("the dispatch assigned the item to the seat it spawned");
+    (item, seat)
 }
 
 /// A dispatched seat standing on its work branch, its item carrying a landing
-/// that says `verdict` about that branch. What the arms differ in is that one
-/// word.
+/// that says `verdict` about that branch; the seat is what it answers. What the
+/// arms differ in is that one word.
 ///
 /// THE ITEM IS CLOSED, because `fleet land` closes it with the landed sha in
 /// the reason (the land verb, step l) — so a seat retired after its landing holds
 /// nothing open, which is the state these arms are about.
 fn a_landed_seat(rig: &Rig, verdict: &str) -> String {
-    let item = a_dispatched_seat(rig);
+    let (item, seat) = a_dispatched_seat(rig);
 
-    let worktree = rig.worktrees.join("transient-1");
+    let worktree = rig.worktrees.join(&seat);
     seen(&worktree, &["checkout", "--quiet", "-b", WORK]);
     assert_eq!(
         seen(&worktree, &["rev-parse", "--abbrev-ref", "HEAD"]),
@@ -1635,8 +1697,8 @@ fn a_landed_seat(rig: &Rig, verdict: &str) -> String {
         "bd close: {}",
         String::from_utf8_lossy(&closed.stderr)
     );
-    rig.live("transient-1", "idle");
-    item
+    rig.live(&seat, "idle");
+    seat
 }
 
 /// The promise the retire arms below stand on: the pid a roster row here
@@ -1650,7 +1712,7 @@ fn a_landed_seat(rig: &Rig, verdict: &str) -> String {
 #[test]
 fn the_roster_fixtures_pid_names_no_live_process() {
     let rig = Rig::new("gone-pid", true);
-    rig.live("transient-1", "idle");
+    rig.live("agent-5e6f7a8b", "idle");
 
     let pid = rig.pid();
     assert_eq!(
@@ -1670,9 +1732,9 @@ fn the_roster_fixtures_pid_names_no_live_process() {
 #[test]
 fn a_retire_deletes_the_work_branch_its_landing_classified_safe() {
     let rig = Rig::new("release-safe", true);
-    a_landed_seat(&rig, SAFE);
+    let seat = a_landed_seat(&rig, SAFE);
 
-    let retired = rig.run(&["seat", "retire", "transient-1"]);
+    let retired = rig.run(&["seat", "retire", &seat]);
     assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
     assert!(
         stdout(&retired).contains(&format!(
@@ -1693,9 +1755,9 @@ fn a_retire_deletes_the_work_branch_its_landing_classified_safe() {
 #[test]
 fn a_retire_leaves_a_branch_no_landing_called_safe() {
     let rig = Rig::new("release-carries", true);
-    a_landed_seat(&rig, "CARRIES UNLANDED WORK");
+    let seat = a_landed_seat(&rig, "CARRIES UNLANDED WORK");
 
-    let retired = rig.run(&["seat", "retire", "transient-1"]);
+    let retired = rig.run(&["seat", "retire", &seat]);
     assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
     assert!(
         stdout(&retired).contains("work branch kept — ")
@@ -1714,10 +1776,9 @@ fn a_retire_leaves_a_branch_no_landing_called_safe() {
 /// and that item reads unassigned, with no orders key, carrying the withdrawal
 /// note.
 ///
-/// THE NAME IS WHY. `transient-1` goes back on the pile the moment the row
-/// comes off the seat list, and the next spawn takes it — so an order still
-/// standing against it is one that seat inherits, and its first delivery is
-/// refused for an item it never saw.
+/// THE WORK IS WHY. Once the row comes off the seat list the seat no longer
+/// exists, so an order still standing against it is one nobody will deliver
+/// and nothing will dispatch again.
 ///
 /// The state is the one a seat is retired in when its work did NOT land: a
 /// parked item, a crashed seat, a flight that ended. A seat retired after a
@@ -1730,10 +1791,10 @@ fn a_retire_leaves_a_branch_no_landing_called_safe() {
 #[test]
 fn a_retire_withdraws_the_order_the_seat_still_holds() {
     let rig = Rig::new("retire-withdraws", true);
-    let item = a_dispatched_seat(&rig);
-    rig.live("transient-1", "idle");
+    let (item, seat) = a_dispatched_seat(&rig);
+    rig.live(&seat, "idle");
 
-    let retired = rig.run(&["seat", "retire", "transient-1"]);
+    let retired = rig.run(&["seat", "retire", &seat]);
     assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
 
     let (assignee, notes, orders) = rig.order_of(&item);
@@ -1743,7 +1804,7 @@ fn a_retire_withdraws_the_order_the_seat_still_holds() {
     );
     assert!(orders.is_null(), "and carries no orders key: {orders}");
     assert!(
-        notes.contains("ORDER WITHDRAWN at retire: transient-1 retired by")
+        notes.contains(&format!("ORDER WITHDRAWN at retire: {seat} retired by"))
             && notes.contains("the item is open and unassigned"),
         "the withdrawal is on the record: {notes}"
     );
@@ -1758,30 +1819,23 @@ fn a_retire_withdraws_the_order_the_seat_still_holds() {
 
 /// fleet-reb: the same retire over an item the seat CLAIMED. bd 1.3.0 refuses
 /// a plain `--assignee` from anyone but the holder on an `in_progress` item —
-/// `cannot reassign X: held by "transient-1" (in_progress)` — and a retire's
+/// `cannot reassign X: held by "<seat>" (in_progress)` — and a retire's
 /// actor is never the seat it retires, so only the withdrawal's
 /// `--if-assignee <seat>` lets it through. The fence is bd's, so the arm is
 /// the real binary's.
 #[test]
 fn a_retire_withdraws_an_item_the_seat_marked_in_progress() {
     let rig = Rig::new("retire-in-progress", true);
-    let item = a_dispatched_seat(&rig);
-    let claimed = rig.bd(&[
-        "update",
-        &item,
-        "--status",
-        "in_progress",
-        "--actor",
-        "transient-1",
-    ]);
+    let (item, seat) = a_dispatched_seat(&rig);
+    let claimed = rig.bd(&["update", &item, "--status", "in_progress", "--actor", &seat]);
     assert!(
         claimed.status.success(),
         "bd update: {}",
         String::from_utf8_lossy(&claimed.stderr)
     );
-    rig.live("transient-1", "idle");
+    rig.live(&seat, "idle");
 
-    let retired = rig.run(&["seat", "retire", "transient-1"]);
+    let retired = rig.run(&["seat", "retire", &seat]);
     assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
 
     let (assignee, notes, orders) = rig.order_of(&item);
@@ -1791,7 +1845,7 @@ fn a_retire_withdraws_an_item_the_seat_marked_in_progress() {
     );
     assert!(orders.is_null(), "and carries no orders key: {orders}");
     assert!(
-        notes.contains("ORDER WITHDRAWN at retire: transient-1 retired by"),
+        notes.contains(&format!("ORDER WITHDRAWN at retire: {seat} retired by")),
         "the withdrawal is on the record: {notes}"
     );
     // fleet-3e6: AND IT IS OPEN AGAIN. An item left `in_progress` with nobody
@@ -1859,10 +1913,18 @@ fn the_json_spawn_prints_the_seat_the_worktree_the_belt_and_the_base() {
     let parsed = document(&spawned);
     assert_eq!(parsed["ok"], serde_json::Value::Bool(true));
     assert_eq!(parsed["verb"], "seat spawn");
-    assert_eq!(parsed["data"]["seat"], "transient-1");
+    let seat = parsed["data"]["seat"]
+        .as_str()
+        .expect("the document names the seat");
+    assert_eq!(
+        rig.worktree_entries(),
+        vec![seat.to_string()],
+        "the seat the document names is the one the spawn made"
+    );
+    assert!(seat.starts_with("agent-"), "a spawned seat's name: {seat}");
     assert_eq!(
         parsed["data"]["worktree"],
-        rig.worktrees.join("transient-1").display().to_string()
+        rig.worktrees.join(seat).display().to_string()
     );
     assert_eq!(parsed["data"]["belt"]["load"], 0.37);
     assert_eq!(parsed["data"]["belt"]["cpus"], 4u64);
@@ -1894,7 +1956,8 @@ fn the_json_feed_prints_the_seat_and_the_turn_that_replaced_the_last() {
         &rig.turn.display().to_string(),
     ]);
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
-    rig.live("transient-1", "idle");
+    let seat = the_seat(&spawned);
+    rig.live(&seat, "idle");
 
     let next = rig.root.join("the-next-turn.md");
     std::fs::write(&next, "the next turn this seat takes\nand a second line\n")
@@ -1902,7 +1965,7 @@ fn the_json_feed_prints_the_seat_and_the_turn_that_replaced_the_last() {
     let fed = rig.run(&[
         "seat",
         "feed",
-        "transient-1",
+        &seat,
         "--first-turn",
         &next.display().to_string(),
         "--json",
@@ -1912,7 +1975,7 @@ fn the_json_feed_prints_the_seat_and_the_turn_that_replaced_the_last() {
     let parsed = document(&fed);
     assert_eq!(parsed["ok"], serde_json::Value::Bool(true));
     assert_eq!(parsed["verb"], "seat feed");
-    assert_eq!(parsed["data"]["seat"], "transient-1");
+    assert_eq!(parsed["data"]["seat"], seat.as_str());
     assert_eq!(
         parsed["data"]["first_turn"],
         "the next turn this seat takes"
@@ -1930,18 +1993,18 @@ fn the_json_feed_prints_the_seat_and_the_turn_that_replaced_the_last() {
 #[test]
 fn the_json_retire_prints_the_reclaim_and_what_became_of_the_work_branch() {
     let rig = Rig::new("json-retire", true);
-    a_landed_seat(&rig, SAFE);
+    let seat = a_landed_seat(&rig, SAFE);
 
-    let retired = rig.run(&["seat", "retire", "transient-1", "--json"]);
+    let retired = rig.run(&["seat", "retire", &seat, "--json"]);
     assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
 
     let parsed = document(&retired);
     assert_eq!(parsed["ok"], serde_json::Value::Bool(true));
     assert_eq!(parsed["verb"], "seat retire");
-    assert_eq!(parsed["data"]["seat"], "transient-1");
+    assert_eq!(parsed["data"]["seat"], seat.as_str());
     assert_eq!(
         parsed["data"]["worktree"],
-        rig.worktrees.join("transient-1").display().to_string()
+        rig.worktrees.join(&seat).display().to_string()
     );
     assert!(
         parsed["data"]["bytes"].as_u64().is_some(),
@@ -1963,9 +2026,9 @@ fn the_json_retire_prints_the_reclaim_and_what_became_of_the_work_branch() {
 #[test]
 fn the_json_retire_says_kept_where_the_landing_did_not_read_safe() {
     let rig = Rig::new("json-retire-kept", true);
-    a_landed_seat(&rig, "CARRIES UNLANDED WORK");
+    let seat = a_landed_seat(&rig, "CARRIES UNLANDED WORK");
 
-    let retired = rig.run(&["seat", "retire", "transient-1", "--json"]);
+    let retired = rig.run(&["seat", "retire", &seat, "--json"]);
     assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
 
     let parsed = document(&retired);
@@ -2067,8 +2130,8 @@ fn a_could_not_tell_and_a_usage_error_are_different_refusal_codes() {
 }
 
 /// AC3 — the human rendering is what it was: without the flag `seat spawn`
-/// still prints the seat's name ALONE on stdout, which is the byte `dispatch`
-/// reads to assign an item to.
+/// still prints the seat's machine name ALONE on stdout, which is the byte
+/// `dispatch` reads to assign an item to.
 ///
 /// The `--json` run beside it is the control: the same fixture, the same spawn,
 /// and stdout that is not the name — so the pin above is the flagless form's
@@ -2083,9 +2146,10 @@ fn the_human_rendering_of_a_spawn_is_the_name_alone_without_the_flag() {
         &plain.turn.display().to_string(),
     ]);
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
+    let seat = the_seat(&spawned);
     assert_eq!(
         stdout(&spawned),
-        "transient-1\n",
+        format!("{seat}\n"),
         "byte for byte: the name, a newline, and nothing else"
     );
     assert!(
@@ -2093,7 +2157,7 @@ fn the_human_rendering_of_a_spawn_is_the_name_alone_without_the_flag() {
             && stderr(&spawned).contains("transient seats mid-turn")
             && stderr(&spawned).contains(&format!(
                 "worktree: {}",
-                plain.worktrees.join("transient-1").display()
+                plain.worktrees.join(&seat).display()
             )),
         "and the two belt lines and the worktree are still the person's, on stderr: {}",
         stderr(&spawned)
@@ -2108,9 +2172,13 @@ fn the_human_rendering_of_a_spawn_is_the_name_alone_without_the_flag() {
         "--json",
     ]);
     assert_eq!(other.status.code(), Some(0), "{}", stderr(&other));
-    assert_ne!(
-        stdout(&other),
-        "transient-1\n",
-        "the flag replaces the name on stdout rather than joining it"
+    let named = document(&other)["data"]["seat"]
+        .as_str()
+        .expect("the document names the seat")
+        .to_string();
+    assert!(
+        !stdout(&other).lines().any(|line| line == named),
+        "the flag replaces the name on stdout rather than joining it: {}",
+        stdout(&other)
     );
 }

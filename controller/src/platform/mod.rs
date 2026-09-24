@@ -168,8 +168,9 @@ pub const LOCK_SUFFIX: &str = ".lock";
 /// would cap it.
 ///
 /// Two callers widen it on purpose and each says so where it takes it:
-/// [`crate::config::claim_transient_seat`], whose subject is the NAME and which
-/// must hold the reservation across the `make` that cuts the worktree, and
+/// [`crate::config::claim_transient_seat`], whose subject is the SEAT and which
+/// must hold the lock across the `make` that cuts the worktree, so the row is
+/// never written for a tree that was not made, and
 /// [`crate::transient::feed`], which holds the occupant marker's move and its
 /// put-back together so a second feed cannot land between them.
 pub fn lock_beside(path: &Path) -> Result<std::fs::File, String> {
