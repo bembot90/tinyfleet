@@ -42,6 +42,14 @@ still says what beads' contract is:
     and present but unreadable — and a row whose metadata is not an object at
     all, which beads' spec says the store can hold, still decodes.
 
+AN OVERRIDE THAT DID NOT REACH is a refusal, and nothing is written. Each one
+matches the shape v1.3.0 spells — `type: object` for metadata, `type: array`
+on a component's own property — and a spec that spells one otherwise (a type
+list, a `$ref`, an `allOf`, an array nested a level down) would pass it by and
+hand typify beads' strict schema. So the finished fragment is walked, and a
+`required`, a `date-time`, an array that may not be `null`, or an issue
+`metadata` that is not raw JSON anywhere in it names its place and exits 2.
+
 Needs: cargo-typify (`cargo install cargo-typify`), rustfmt, and Python's
 PyYAML. Each is checked for before anything is fetched and named when missing.
 
@@ -176,12 +184,62 @@ def overridden(schema):
     return schema
 
 
+# The keys under which a schema holds data and not schemas: an example or a
+# default may hold a `required` or an `items` that is no schema's.
+DATA_KEYS = {"const", "default", "description", "enum", "example", "examples"}
+
+
+def unapplied(definitions):
+    """Every place in the finished fragment an override did not reach."""
+    found = []
+
+    def walk(node, at):
+        if isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, f"{at}[{index}]")
+            return
+        if not isinstance(node, dict):
+            return
+        kinds = node.get("type")
+        kinds = kinds if isinstance(kinds, list) else [kinds]
+        if "required" in node:
+            found.append(f"{at} still requires {node['required']}")
+        if node.get("format") == "date-time":
+            found.append(f"{at} is still a date-time")
+        if ("array" in kinds or "items" in node) and "null" not in kinds:
+            found.append(f"{at} is an array that may not be null")
+        for key, value in node.items():
+            if key.startswith("x-bd-") or key in DATA_KEYS:
+                continue
+            if key == "properties":
+                for name, prop in value.items():
+                    walk(prop, f"{at}.{name}")
+            else:
+                walk(value, f"{at}.{key}")
+
+    for name, schema in definitions.items():
+        walk(schema, name)
+        # Dependency's metadata is a string and is left alone; any other is raw.
+        metadata = schema.get("properties", {}).get("metadata")
+        if metadata is not None and metadata.get("type") != "string":
+            if set(metadata) - {"description", "x-bd-schema"}:
+                found.append(f"{name}.metadata is not raw JSON: {json.dumps(metadata)}")
+    return found
+
+
 def fragment(tag, spec_text):
     import yaml
 
     spec = yaml.safe_load(spec_text)
     schemas = spec.get("components", {}).get("schemas", {})
     names = closure(schemas)
+    definitions = {name: overridden(rewritten(schemas[name])) for name in names}
+    missed = unapplied(definitions)
+    if missed:
+        refuse(
+            f"at {tag}, fleet's overrides did not reach every place they are for — "
+            "teach `overridden` the shape and rerun:\n  " + "\n  ".join(missed)
+        )
     return {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "$comment": (
@@ -191,7 +249,7 @@ def fragment(tag, spec_text):
             "hand. Fleet's overrides are named in the script and each keeps "
             "beads' own value under an x-bd-* key beside it."
         ),
-        "definitions": {name: overridden(rewritten(schemas[name])) for name in names},
+        "definitions": definitions,
     }
 
 

@@ -15,17 +15,22 @@ path = "src/lib.rs"
 [features]
 test-support = []
 
-# The same three the controller carries, no new crate, at the workspace's
-# versions. This crate depends on no other member of the workspace, and on the
+# The same three the controller carries, and serde_path_to_error, all at the
+# workspace's versions. This crate depends on no other member of the workspace, and on the
 # controller least of all: the boundary between pack-and-project work and the
 # process table is kept in the type system rather than in discipline, and a test
 # in the cli crate refuses the edge.
 #
 # toml: a pack manifest, an order and the shadow registry are all
 # TOML, and this crate is their reader.
+#
+# serde_path_to_error: the bd adapter decodes bd's rows into its wire types, and
+# a row that fails names the key it failed at — serde's own error names only
+# the type it expected.
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+serde_path_to_error.workspace = true
 toml.workspace = true
 
 # THIS CRATE, ON ITSELF, WITH THE FEATURE ON. The module above is reached by

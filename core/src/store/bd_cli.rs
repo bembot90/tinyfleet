@@ -12,7 +12,7 @@
 //! typed envelope would be a second reading of the same two keys, and one that
 //! could not take the bare answer a bd predating the envelope prints.
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 /// The object a `--json` call answers in place of its data when it fails:
 /// `{schema_version, error, code?, hint?}`, with `schema_version` beside the
@@ -21,12 +21,26 @@ use serde::Deserialize;
 ///
 /// `error` and `code` are the fields the adapter classifies by. `hint` is
 /// advice to a person, and a refusal quotes `error` and not it.
+///
+/// AN ERROR IS TOLD BY ITS `error` TEXT ALONE. A `code` of any other shape
+/// than text reads as no code: a strict `code` would let `{"error": …,
+/// "code": 404}` fail to decode as an error and pass on as a row, and the
+/// verb would act on an item the store just said is not there.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CliError {
     pub error: String,
     /// Absent on the answers measured so far — bd 1.3.0's missing id carries
     /// none — so an error with no code is read by its key alone.
+    #[serde(default, deserialize_with = "text_or_none")]
     pub code: Option<String>,
+}
+
+/// A value that is text, else none, whatever else it holds.
+fn text_or_none<'de, D: Deserializer<'de>>(value: D) -> Result<Option<String>, D::Error> {
+    Ok(match serde_json::Value::deserialize(value)? {
+        serde_json::Value::String(text) => Some(text),
+        _ => None,
+    })
 }
 
 /// The wire types against the bd they were generated for, and bd 1.3.0's own
@@ -225,6 +239,37 @@ mod tests {
         assert_eq!(
             (item.orders, item.has_orders_key, item.run),
             (None, false, None)
+        );
+    }
+
+    /// A code bd did not spell as text still leaves the answer an error, read
+    /// by its `error` alone, and never an item.
+    #[test]
+    fn an_error_whose_code_is_not_text_is_still_missing() {
+        for code in [
+            serde_json::json!(404),
+            serde_json::json!(true),
+            serde_json::json!({ "kind": "not_found" }),
+            serde_json::Value::Null,
+        ] {
+            let row = serde_json::json!({ "error": "no issue fx-1", "code": code });
+            let answer = shown("fx-1", row, "");
+            assert!(
+                matches!(&answer, Err(StoreError::Missing(why)) if why == "fx-1: no issue fx-1"),
+                "code {code}: {answer:?}"
+            );
+        }
+    }
+
+    /// A row that does not decode is named by where it fails: the row's id
+    /// and the path to the key, and not serde's reason alone.
+    #[test]
+    fn a_row_that_does_not_decode_names_its_id_and_key() {
+        let row = serde_json::json!({ "id": "fx-1", "labels": ["fleet", 3] });
+        let refusal = item_from("fx-1", &row).expect_err("a number is not a label");
+        assert!(
+            matches!(&refusal, StoreError::Unreadable(why) if why.contains("fx-1") && why.contains("labels[1]")),
+            "{refusal:?}"
         );
     }
 

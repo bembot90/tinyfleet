@@ -414,7 +414,7 @@ impl Bd {
     ) -> Result<Vec<Row>, StoreError> {
         let out = self.answered(args)?;
         let rows = match self.json(args, &out) {
-            Some(rows @ serde_json::Value::Array(_)) => rows,
+            Some(serde_json::Value::Array(rows)) => rows,
             Some(serde_json::Value::Null) => return Ok(Vec::new()),
             None if String::from_utf8_lossy(&out.stdout).trim().is_empty() => return Ok(Vec::new()),
             _ => {
@@ -425,12 +425,17 @@ impl Bd {
                 )))
             }
         };
-        serde_json::from_value(rows).map_err(|why| {
-            StoreError::Unreadable(format!(
-                "{} answered a row bd's wire types do not read: {why}",
-                self.named(args)
-            ))
-        })
+        rows.iter()
+            .enumerate()
+            .map(|(at, row)| {
+                decoded(row).map_err(|why| {
+                    StoreError::Unreadable(format!(
+                        "{} answered a row bd's wire types do not read, row {at}: {why}",
+                        self.named(args)
+                    ))
+                })
+            })
+            .collect()
     }
 
     /// The id off a write's OWN answer. A second read for the newest item would
@@ -922,11 +927,25 @@ impl Store for Bd {
     }
 }
 
+/// One row decoded into a wire type, or where it would not decode: the key's
+/// path and the row's id beside serde's reason, which alone — "invalid type:
+/// integer `3`, expected a string" — names neither the item nor the key, and a
+/// read refused over one field on one row leaves nothing else to find it by.
+fn decoded<'de, Row: Deserialize<'de>>(row: &'de serde_json::Value) -> Result<Row, String> {
+    serde_path_to_error::deserialize(row).map_err(|why| {
+        let id = row
+            .get("id")
+            .and_then(|id| id.as_str())
+            .unwrap_or("a row naming no id");
+        format!("`{}` of {id}: {}", why.path(), why.inner())
+    })
+}
+
 /// One document, read into the fields a verb asserts on, through bd's own wire
 /// type. A row that does not decode into it is a store that did not answer
 /// something readable.
 pub fn item_from(id: &str, row: &serde_json::Value) -> Result<Item, StoreError> {
-    let wire = bd_wire::IssueDetails::deserialize(row).map_err(|why| {
+    let wire: bd_wire::IssueDetails = decoded(row).map_err(|why| {
         StoreError::Unreadable(format!(
             "{id} answered a row bd's wire types do not read: {why}"
         ))
