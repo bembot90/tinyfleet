@@ -19,15 +19,15 @@ dependencies are the real blockers.
 
 | Bead | What | Blocked by | Landed |
 | --- | --- | --- | --- |
-| fleet-9r6 | Read bd's JSON envelope now, before bd v2.0 makes it the default (F11, Required) | fleet-ah4 | ☐ |
-| fleet-16s | Delete dead store fields: `created_at`, `flight`, `Ready` (F1) | lands after fleet-ah4 (same file) | ☐ |
-| fleet-5y5 | `Item.blockers` counts only blocking dependency types (F9) | lands after fleet-ah4 (same file) | ☐ |
-| fleet-016 | History out of comments, `Row` renamed `AssignedItem`, fix `open_labelled`'s doc (F3+F4+F6) | lands after fleet-16s (same lines) | ☐ |
+| fleet-9r6 | Read bd's JSON envelope now, before bd v2.0 makes it the default (F11, Required) | fleet-ah4 | ☑ |
+| fleet-16s | Delete dead store fields: `created_at`, `flight`, `Ready` (F1) | lands after fleet-ah4 (same file) | ☑ |
+| fleet-5y5 | `Item.blockers` counts only blocking dependency types (F9) | lands after fleet-ah4 (same file) | ☑ |
+| fleet-016 | History out of comments, `Row` renamed `AssignedItem`, fix `open_labelled`'s doc (F3+F4+F6) | lands after fleet-16s (same lines) | ☑ |
 | fleet-reb | Pin bd at 1.3.0, checked, and re-measure the store's quirks | — | ☐ |
-| fleet-ay8 | `fleet ask` on an epic leaves an edgeless gate; `ready` lets epics through | fleet-ah4 (`gate()`); with fleet-16s (`ready`) | ☐ |
+| fleet-ay8 | `fleet ask` on an epic leaves an edgeless gate; `ready` lets epics through | fleet-ah4 (`gate()`); with fleet-16s (`ready`) | ☑ |
 | fleet-998 | `fleet dispatch <suffix>` refuses a ready item | fleet-16s (same line, `dispatch.rs:182`) | ☐ |
-| fleet-pg7 | dispatch's hold check counts ordered items only (ruled) | fleet-fhi (`assigned_to`) | ☐ |
-| fleet-bk115 | A test for the store opener's bd resolution (`cli/src/runs.rs:53`) | — | ☐ |
+| fleet-pg7 | dispatch's hold check counts ordered items only (ruled) | fleet-fhi (`assigned_to`) | ☑ |
+| fleet-bk115 | A test for the store opener's bd resolution (`cli/src/runs.rs:53`) | — | ☑ |
 
 ## Flight 3 — generated wire types
 
