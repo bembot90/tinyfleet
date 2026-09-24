@@ -23,41 +23,57 @@ dependencies are the real blockers.
 | fleet-16s | Delete dead store fields: `created_at`, `flight`, `Ready` (F1) | lands after fleet-ah4 (same file) | ☑ |
 | fleet-5y5 | `Item.blockers` counts only blocking dependency types (F9) | lands after fleet-ah4 (same file) | ☑ |
 | fleet-016 | History out of comments, `Row` renamed `AssignedItem`, fix `open_labelled`'s doc (F3+F4+F6) | lands after fleet-16s (same lines) | ☑ |
-| fleet-reb | Pin bd at 1.3.0, checked, and re-measure the store's quirks | — | ☐ |
+| fleet-reb | Pin bd at 1.3.0, checked, and re-measure the store's quirks | Alberto upgrades bd (`brew upgrade beads`) | ☐ |
 | fleet-ay8 | `fleet ask` on an epic leaves an edgeless gate; `ready` lets epics through | fleet-ah4 (`gate()`); with fleet-16s (`ready`) | ☑ |
 | fleet-998 | `fleet dispatch <suffix>` refuses a ready item | fleet-16s (same line, `dispatch.rs:182`) | ☐ |
 | fleet-pg7 | dispatch's hold check counts ordered items only (ruled) | fleet-fhi (`assigned_to`) | ☑ |
 | fleet-bk115 | A test for the store opener's bd resolution (`cli/src/runs.rs:53`) | — | ☑ |
 
-## Flight 3 — generated wire types
+## Flight 3 — specced fixes, independent of the designs
 
 | Bead | What | Blocked by | Landed |
 | --- | --- | --- | --- |
-| fleet-xie | Generate the bd adapter's wire types from beads' OpenAPI spec at the pin | fleet-ah4, fleet-reb | ☐ |
+| fleet-45m | The SDK takes a returned delivery as carried (RETAKEN, `until(delivered)`) (Required) | — | ☐ |
+| fleet-d11 | Delete the flight engine's leftovers: dead constants, the resume path, the rule matcher, seven census rows | — | ☐ |
+| fleet-rzixz | One reader of the item store: the runner moves into core, bd calls bounded at 60s, one opener, prime's reader folded in | — | ☐ |
+| fleet-xie | Generate the bd adapter's wire types from beads' OpenAPI spec at the pin (pin-stamp test) | fleet-reb (bd 1.3.0 installed) | ☐ |
 
-## Flight 4 — design and spec passes with Alberto
-
-| Bead | What | Blocked by | Landed |
-| --- | --- | --- | --- |
-| fleet-zlk | Design: an item's record as a typed timeline the adapter owns; one log or two | — | ☐ |
-| fleet-iex | Design: a seat is a UUID v7 identity, name optional, kind human or agent (clean break) | — | ☐ |
-| fleet-6gr | Rename gates to hold / clearance / checks; verbs decided in the spec | — | ☐ |
-| fleet-g68 | Archive built PRDs to `brain/archive/prds/`; restate the 132 code citations as constraints | — | ☐ |
-| fleet-rzixz | One reader of the item store: bd calls bounded at 60s, no bare-name `bd`, prime's second reader (absorbed fleet-zex) | — | ☐ |
-
-## Flight 5 — namespacing, the store contract, adopting a board
+## Flight 4 — the renames, namespacing and the archive
 
 | Bead | What | Blocked by | Landed |
 | --- | --- | --- | --- |
-| fleet-4j6 | Namespace fleet's metadata key and run label (clean break); carries fleet-y3l's RERUN fix and preboard's `orders` filter | — | ☐ |
-| fleet-0q4 | Executable store contract, bd adapter compiled in, `fleet store check`; split at spec | fleet-ah4; fleet-zlk and fleet-iex designs first | ☐ |
-| fleet-0ml | Adopt an existing board: read-only scan verb and mapping skill | fleet-4j6 | ☐ |
+| fleet-6gr | Gates become holds, clearances and checks; `fleet hold` / `fleet clear`; `[gates]` split; routines evaluate the trigger; split at pickup | — | ☐ |
+| fleet-4j6 | Namespace fleet's keys (`fleet.orders`, `fleet.run`, label `fleet:run`), clean break; carries fleet-y3l's RERUN fix | — | ☐ |
+| fleet-g68 | Archive cli, controller and packs PRDs, flights as superseded, bench stays live; restate every citation as its constraint | fleet-d11 | ☐ |
 
-## Flight 6 — the walkthrough resumes
+## Flight 5 — the record and seat identity (designs ruled; implementation beads split at the flight's start)
 
 | Bead | What | Blocked by | Landed |
 | --- | --- | --- | --- |
-| fleet-alt.1 | Walkthrough section 1 continues past `store.rs`: re-run step 0 at the new SHA, re-plan, next file | flights 1–3 landed | ☐ |
+| fleet-zlk | The record: typed timeline entries as bd comments, the store is the record, the stream carries wake signals, seats hand in JSON | fleet-iex (types), fleet-6gr (names), fleet-4j6 | ☐ |
+| fleet-iex | Seat identity: UUID v7, `<slug>-<id>` names, `fleet seat add`, the actor as a typed reference | — | ☐ |
+
+## Flight 6 — the store contract and adopting a board
+
+| Bead | What | Blocked by | Landed |
+| --- | --- | --- | --- |
+| fleet-0q4 | The store contract (`docs/store.md`), bd compiled in, external adapters one process per call, `fleet store check`; split (a)–(e) | fleet-rzixz, fleet-xie, fleet-4j6, fleet-zlk, fleet-iex | ☐ |
+| fleet-0ml | Adopt an existing board: a doctor check that reads the board through fleet, and a mapping skill | fleet-4j6, fleet-2u3.1, fleet-zlk | ☐ |
+
+## Flight 7 — the walkthrough resumes
+
+| Bead | What | Blocked by | Landed |
+| --- | --- | --- | --- |
+| fleet-alt.1 | Walkthrough section 1 continues past `store.rs`: re-run step 0 at the new SHA, re-plan, next file | flights 2–3 landed | ☐ |
+
+## Later — unbuilt requirements from the archived PRDs
+
+Epic fleet-2u3 holds one bead per requirement the archived cli, controller and
+packs PRDs carried and nothing built (fleet-2u3.1 to .14: `fleet doctor`, run
+rest grants, review size tiers, a pack registry, signed packs, a second agent
+runtime, CI on macOS and Linux, per-platform measurements, SSE, the row-moves
+journal, incidents, idle reclaim, attach, remote seats). None is specced, and
+none is on a flight until someone boards it.
 
 ## Held for fleet-zlk
 
