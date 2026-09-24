@@ -1,5 +1,6 @@
 //! The run seam, filled: the three acts the controller's run pass needs and
-//! that crate cannot make (controller PRD R35–R37).
+//! that crate cannot make — re-run a run's bundle, hold a run at its crash
+//! cap, and retire the seats a finished run spawned.
 //!
 //! WHY THE ACTS ARE HERE AND NOT IN CORE OR THE CONTROLLER. core depends on no
 //! other member, and the controller takes nothing from core but its bounded

@@ -9,8 +9,7 @@
 //! between them leaves: a line with no directory, which a re-run of this verb
 //! clears and a re-add of the same source replaces. The other order leaves a
 //! directory with no line, which `add` refuses as a name collision and this verb
-//! refuses as a source it does not hold — a state no verb clears (cli PRD
-//! § `fleet pack remove`).
+//! refuses as a source it does not hold — a state no verb clears.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -161,7 +160,7 @@ pub fn remove(packs_dir: &Path, lock_path: &Path, source: &str) -> Result<Remove
 }
 
 /// Drop the line and read the drop back. The read is what the verb exits 0 on,
-/// the same pin `add` owes its own write (packs PRD R9).
+/// the same pin `add` owes its own write.
 fn drop_line(lock_path: &Path, source: &str) -> Result<(), Refusal> {
     lock::remove(lock_path, source).map_err(Refusal::Lock)?;
     match lock::read(lock_path) {

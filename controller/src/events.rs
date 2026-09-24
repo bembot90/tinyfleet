@@ -1,5 +1,5 @@
-//! The event stream (PRD R25): append-only JSONL, one object per line,
-//! monotonically sequenced.
+//! The event stream: append-only JSONL, one object per line, monotonically
+//! sequenced.
 //!
 //! The content rule is the whole design: emit the events a person cares about —
 //! a start, a stop, a substrate that moved under the fleet — and nothing per
@@ -26,7 +26,7 @@ pub struct Event<'a> {
 /// event names the seat.
 pub const CONTROLLER: &str = "controller";
 
-/// The four events a seat's workflow emits through `fleet event` (PRD R20).
+/// The four events a seat's workflow emits through `fleet event`.
 ///
 /// The type is a string at the append, because the stream carries types this
 /// module does not enumerate and an enum there would refuse them. These names
@@ -36,7 +36,7 @@ pub const SEAT_WOKE: &str = "seat.woke";
 pub const SEAT_RESTING: &str = "seat.resting";
 pub const SEAT_HANDED_OFF: &str = "seat.handed_off";
 pub const SEAT_EXITED: &str = "seat.exited";
-/// The remedy a person writes when a seat is halted (R14). A REQUEST, like a
+/// The remedy a person writes when a seat is halted. A REQUEST, like a
 /// rest: the controller consumes it on its tick and resets the blind counter and
 /// the latch. It is a seat-emitted type because a person writes it through the
 /// seat's own event family, not because the seat's workflow emits it.
@@ -61,41 +61,41 @@ pub const SESSION_SPAWNED: &str = "session.spawned";
 pub const SESSION_RESTED: &str = "session.rested";
 pub const SESSION_NUDGED: &str = "session.nudged";
 pub const SESSION_CRASHED: &str = "session.crashed";
-/// The four this slice adds (R25). Each is written once by the layer that did
+/// The four this slice adds. Each is written once by the layer that did
 /// the thing: the effect layer revives, adopt at startup claims, the halt
 /// transition latches, and a counted blind dispatch says so.
 pub const SESSION_REVIVED: &str = "session.revived";
 pub const SESSION_ADOPTED: &str = "session.adopted";
 pub const SESSION_HALTED: &str = "session.halted";
 pub const DISPATCH_BLIND: &str = "dispatch.blind";
-/// A dispatch whose seat came up LOGGED OUT (flights PRD R13). Written once per
-/// row, at the first sighting whose transcript carries the provider's
-/// not-logged-in answer, and it carries the seat and the item the order index
-/// named. The controller only reports it: holding the item, retiring the seat
-/// and halting the flight's dispatching are the advance's.
+/// A dispatch whose seat came up LOGGED OUT. Written once per row, at the first
+/// sighting whose transcript carries the provider's not-logged-in answer, and
+/// it carries the seat and the item the order index named. The controller only
+/// reports it: holding the item, retiring the seat and halting the flight's
+/// dispatching are the advance's.
 pub const DISPATCH_FAILED: &str = "dispatch.failed";
-/// A transient seat retired (PRD R32, cli PRD § `fleet seat retire`). It carries
-/// the reclaim — the worktree's bytes, the pid, and whether `--dead` licensed
-/// it — because a retire that verified from outside owes the numbers it read.
+/// A transient seat retired. It carries the reclaim — the worktree's bytes, the
+/// pid, and whether `--dead` licensed it — because a retire that verified from
+/// outside owes the numbers it read.
 pub const SESSION_STOPPED: &str = "session.stopped";
-/// A seat retired by a flight, with what it cost (flights PRD R10, R12). It
-/// carries the reclaim `session.stopped` does and, beside it, the three cost
-/// readings and the branch and commit the worktree held — each of them null
-/// where the reading could not be taken, because a zero would read as free.
+/// A seat retired by a flight, with what it cost. It carries the reclaim
+/// `session.stopped` does and, beside it, the three cost readings and the
+/// branch and commit the worktree held — each of them null where the reading
+/// could not be taken, because a zero would read as free.
 ///
 /// A SECOND LINE AND NOT A WIDER `session.stopped`: the reclaim is what every
 /// retire owes and the cost is what a retire INSIDE A FLIGHT owes, so the two
 /// have one writer each and a hand-run retire is unchanged.
 pub const SESSION_RETIRED: &str = "session.retired";
-/// A project registered with a standalone fleet (PRD R3). Written by
+/// A project registered with a standalone fleet. Written by
 /// `fleet create --standalone`, carrying the root and the name the registry row
 /// took — the two fields a reader of the registry would otherwise have to open
 /// the file for.
 pub const PROJECT_REGISTERED: &str = "project.registered";
 
-/// The four a routine's firing writes (PRD R23). They are the ledger: the cli
-/// reads a routine's history from the stream with a sequence cursor, so there is
-/// no second file beside it and no row nobody sequenced.
+/// The four a routine's firing writes. They are the ledger: the cli reads a
+/// routine's history from the stream with a sequence cursor, so there is no
+/// second file beside it and no row nobody sequenced.
 ///
 /// A firing is `routine.fired` and then exactly one of the three terminal types;
 /// a NOT-DUE evaluation writes none of them. The payload names the routine
@@ -146,7 +146,7 @@ pub fn dispatch_failed_payload(seat: &str, item: Option<&str>, cause: &str) -> s
 }
 
 /// Whether a `seat.resting` or a `seat.exited` — the two the discriminator for a
-/// pid-less row reads as a deliberate end (PRD R10, lessons claude-code A3).
+/// pid-less row reads as a deliberate end (lessons claude-code A3).
 pub fn is_deliberate_end(kind: &str) -> bool {
     kind == SEAT_RESTING || kind == SEAT_EXITED
 }
@@ -214,7 +214,7 @@ pub fn read_after(path: &Path, after: u64) -> Vec<Record> {
         .collect()
 }
 
-/// One line of the stream as a TAIL reads it (cli PRD § `fleet event tail`).
+/// One line of the stream as a TAIL reads it.
 ///
 /// Separate from [`Record`], which is the fold's shape: a tail prints the line's
 /// own bytes and never re-serializes, because one JSON object per line exactly
@@ -393,7 +393,7 @@ impl EventLog {
             .append(true)
             .open(&self.path)?;
         // Held until `file` drops: a writer in another process must not read the
-        // same last sequence between this read and this append (PRD R25).
+        // same last sequence between this read and this append.
         file.lock()?;
         self.seq = self.seq.max(last_seq(&self.path).unwrap_or(0)) + 1;
         let id = event_id(self.seq);

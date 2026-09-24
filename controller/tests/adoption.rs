@@ -1,4 +1,4 @@
-//! A CLAIMED SESSION IS NEVER ATTACHED TO, ON ANY POLL (R10, R17).
+//! A CLAIMED SESSION IS NEVER ATTACHED TO, ON ANY POLL.
 //!
 //! A test binary of its own, because these arms drive the loop in this process
 //! and it reads the PROCESS's environment for the machine directory and the

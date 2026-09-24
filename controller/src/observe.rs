@@ -50,7 +50,7 @@ pub const FELL_BACK_TO_START: &str =
 /// What the roster said about one seat.
 ///
 /// `Unknown` is not `Absent`, and the type is what makes conflating them
-/// unrepresentable (PRD R6).
+/// unrepresentable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RosterState {
     Present,
@@ -120,14 +120,13 @@ pub struct SeatObservation {
     /// prior state. Hibernation, a stop from idle and a kill from outside the
     /// fleet read identically on every roster field (lessons claude-code A3),
     /// so none of them is here: an end the listing cannot name is one the
-    /// controller's own record answers for (R10). False on a seat no row
-    /// matched, which is a reading nobody took rather than a session that
-    /// ended.
+    /// controller's own record answers for. False on a seat no row matched,
+    /// which is a reading nobody took rather than a session that ended.
     pub state_names_an_end: bool,
 }
 
 /// The listings one poll read: the fleet's own, and one per seat that comes up
-/// under its own configuration directory (flights PRD R13, Q1e).
+/// under its own configuration directory.
 ///
 /// A session started under its own configuration directory is held by its own
 /// daemon, and THAT DAEMON'S LISTING IS THE ONLY ONE THAT NAMES IT — the
@@ -212,12 +211,11 @@ impl Rosters {
 
 /// One seat's view of one roster read.
 ///
-/// Rows are matched to seats by working directory and never by the short id
-/// (PRD R5). A working directory NAMES a seat and proves nothing about who
-/// dispatched the session (lessons claude-code B5), so two live rows in one
-/// worktree are Unknown rather than a contest: there is no honest way to pick,
-/// and picking arbitrarily is how unattributed sessions get handed to a seat as
-/// its own.
+/// Rows are matched to seats by working directory and never by the short id.
+/// A working directory NAMES a seat and proves nothing about who dispatched the
+/// session (lessons claude-code B5), so two live rows in one worktree are
+/// Unknown rather than a contest: there is no honest way to pick, and picking
+/// arbitrarily is how unattributed sessions get handed to a seat as its own.
 pub fn observe_seat(
     read: &RosterRead,
     seat: &Seat,
@@ -419,7 +417,7 @@ struct Usage {
 }
 
 /// Context for a session: the last main-chain assistant entry's input tokens
-/// plus both cache figures (PRD R7).
+/// plus both cache figures.
 ///
 /// There is no single context number in the file — the arithmetic over those
 /// three fields is the reading (lessons claude-code C2). Sidechain entries are
@@ -458,7 +456,7 @@ pub fn context_tokens_in(body: &str) -> Option<u64> {
 pub const AUTHENTICATION_FAILED: &str = "authentication_failed";
 
 /// Whether this transcript's first main-chain assistant entry is the provider's
-/// LOGGED-OUT answer (flights PRD R13).
+/// LOGGED-OUT answer.
 ///
 /// A seat started under its own configuration directory is logged out unless the
 /// credential knob is defined-but-empty beside it, and the roster cannot say so:
@@ -496,7 +494,7 @@ pub fn logged_out_first_turn(body: &str) -> bool {
 }
 
 /// Whether this poll's reading of one row is a LOGGED-OUT DISPATCH, which is the
-/// one line the controller writes about one (flights PRD R13).
+/// one line the controller writes about one.
 ///
 /// Four terms, and each of them is a different reason not to write:
 ///
@@ -523,7 +521,7 @@ pub fn logged_out_dispatch(
 }
 
 /// How many turns a session took: main-chain assistant entries carrying a usage
-/// block (flights PRD R12).
+/// block.
 ///
 /// THE SAME FILTER AS [`context_tokens_in`], ONE STEP SHORTER. A turn that made
 /// a model call is a turn whatever the call cost, so the zero-usage entry that

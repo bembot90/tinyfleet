@@ -1,7 +1,7 @@
-//! The run lifecycle's controller half (controller PRD R35–R37): a waiting run
-//! re-run once the stream has moved past where it stopped and carries a line
-//! its wake could be satisfied by, a run nothing could classify re-run to a cap
-//! and then held, and the seats a run spawned let go when it ends.
+//! The run lifecycle's controller half: a waiting run re-run once the stream
+//! has moved past where it stopped and carries a line its wake could be
+//! satisfied by, a run nothing could classify re-run to a cap and then held,
+//! and the seats a run spawned let go when it ends.
 //!
 //! WHY THE ACTS ARE A SEAM AND THE DECISION IS NOT. This crate takes nothing
 //! from core but its bounded runner (`fleet_core::process`) and the release it

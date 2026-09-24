@@ -1,5 +1,4 @@
-//! `fleet create`, `fleet start` and `fleet stop` through the shipped binary
-//! (PRD R1–R4, R28, R33; cli PRD § Lifecycle).
+//! `fleet create`, `fleet start` and `fleet stop` through the shipped binary.
 //!
 //! One rig per arm: its own scratch project, its own HOME, its own machine
 //! directory, and its own stub for the platform's service manager. NOTHING HERE
@@ -841,8 +840,8 @@ fn create_embedded_writes_the_smallest_file_that_runs_and_materializes_the_defau
     );
 }
 
-/// R3's refusal, from the other end: the controller never initialises and never
-/// rewrites a project's work-graph store.
+/// The store refusal, from the other end: the controller never initialises and
+/// never rewrites a project's work-graph store.
 #[test]
 fn create_never_touches_the_projects_work_graph_store() {
     let rig = Rig::new("store");
@@ -1035,10 +1034,10 @@ fn create_standalone_declares_the_project_registers_it_and_says_so_on_the_stream
     assert!(stderr(&out).contains("[project] name"), "{}", stderr(&out));
 }
 
-/// A DECLARED PROJECT WINS AT ITS OWN LEVEL (controller PRD § Two modes): `--standalone`
-/// registers the declaration in a directory that also carries a `fleet.toml`,
-/// because the resolver reads that directory as a standalone project and the
-/// neighbour is some other tool's file rather than this project's fleet.
+/// A DECLARED PROJECT WINS AT ITS OWN LEVEL: `--standalone` registers the
+/// declaration in a directory that also carries a `fleet.toml`, because the
+/// resolver reads that directory as a standalone project and the neighbour is
+/// some other tool's file rather than this project's fleet.
 /// `--embedded` still refuses there — the refusal is one mode's now, not both —
 /// and the keys of a file somebody wrote are ALL read, not only the one the
 /// register is keyed on.
@@ -1441,8 +1440,8 @@ fn start_refuses_an_unresolvable_agent_binary_and_loads_nothing() {
     );
 }
 
-/// `--foreground` IS THE SERVICE'S LOOP, workflows included (cli PRD § `fleet
-/// start`): a waiting run whose stream has moved is advanced under it.
+/// `--foreground` IS THE SERVICE'S LOOP, workflows included: a waiting run
+/// whose stream has moved is advanced under it.
 ///
 /// WHY THE READING IS A REFUSAL. The seam a foreground start wires is the real
 /// engine, and the engine resolves a run by asking each registered project's
@@ -1514,7 +1513,7 @@ fn the_foreground_loop_advances_a_waiting_run() {
     );
 }
 
-/// The `[seats]` table, rendered (R4).
+/// The `[seats]` table, rendered.
 #[test]
 fn the_seats_table_is_rendered_into_rows_and_a_transient_row_survives_it() {
     let rig = Rig::new("seats");
@@ -1592,8 +1591,8 @@ fn the_seats_table_is_rendered_into_rows_and_a_transient_row_survives_it() {
     assert!(!rig.root.join("a-project-worktrees").exists());
 }
 
-/// `config.json` is local and beats policy per key (R28), through the same
-/// readers the file goes through.
+/// `config.json` is local and beats policy per key, through the same readers
+/// the file goes through.
 #[test]
 fn the_seat_list_overrides_policy_per_key_and_a_zero_falls_back_to_it() {
     let rig = Rig::new("override");

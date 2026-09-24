@@ -1,4 +1,4 @@
-//! The platform layer (PRD R33): everything the operating system supplies.
+//! The platform layer: everything the operating system supplies.
 //!
 //! No operating-system name appears anywhere outside this module — the two
 //! implementations below are the only place a `cfg` on the target may be
@@ -55,13 +55,13 @@ mod linux;
 mod macos;
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-compile_error!("the controller targets macOS and Linux; Windows is not a target (PRD R33)");
+compile_error!("the controller targets macOS and Linux; Windows is not a target");
 
 /// The fleet directory for this machine.
 ///
-/// One resolution order, everywhere (PRD § The three roots): `FLEET_DIR` is the
-/// directory itself and wins outright; `FLEET_HOME` is the home it sits under;
-/// otherwise the platform's own answer under the user's home.
+/// One resolution order, everywhere: `FLEET_DIR` is the directory itself and
+/// wins outright; `FLEET_HOME` is the home it sits under; otherwise the
+/// platform's own answer under the user's home.
 pub fn machine_dir() -> PathBuf {
     resolve_machine_dir(
         env_dir("FLEET_DIR").as_deref(),
@@ -97,7 +97,7 @@ fn env_dir(key: &str) -> Option<PathBuf> {
     }
 }
 
-/// The `PATH` every child of this controller carries (PRD R19).
+/// The `PATH` every child of this controller carries.
 ///
 /// CONSTRUCTED, never inherited. A service-launched process carries a minimal
 /// search path that holds neither a package manager's prefix nor the user's
@@ -434,7 +434,7 @@ impl Service {
     }
 
     /// Load the service. NOTHING ELSE HERE STARTS IT: the write above is the
-    /// install and this is the second deliberate act (PRD R1).
+    /// install and this is the second deliberate act.
     pub fn load(&self) -> Result<(), String> {
         for argv in sys::load_argv(&self.label, &self.file.path) {
             self.run(&argv)?;
@@ -739,7 +739,7 @@ mod tests {
         assert_eq!(under_state, Path::new("/s/fleet"));
     }
 
-    /// The constructed child PATH (R19): built from the platform's own list and
+    /// The constructed child PATH: built from the platform's own list and
     /// the home passed in, and from NOTHING this process carries.
     ///
     /// The last assertion is the one that makes the rest a reading: a directory

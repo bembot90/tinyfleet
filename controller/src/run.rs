@@ -1,5 +1,4 @@
-//! `fleet observe`: the poll loop. It observes, decides, acts and publishes
-//! (PRD § Observe, decide, effect, publish).
+//! `fleet observe`: the poll loop. It observes, decides, acts and publishes.
 
 use crate::adapter::claude_code::ClaudeCode;
 use crate::adapter::{dir_key, Agent};
@@ -19,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Startup could not read what it needs. There is no last-good before the first
-/// read, so the only honest answer is to refuse and name the path (R28).
+/// read, so the only honest answer is to refuse and name the path.
 pub const EXIT_NO_POLICY: u8 = 3;
 
 pub struct Options {
@@ -67,9 +66,9 @@ pub fn observe_with(options: &Options, grant: platform::Grant) -> u8 {
 ///
 /// The seam exists because this crate takes nothing from core but its bounded
 /// runner and the release it supports — no store, no packs, no policy reader —
-/// and the three acts a run's advance needs are wired in the binary (controller
-/// PRD R35–R37). `None` is a loop that knows nothing of runs and polls exactly as it
-/// did before they existed.
+/// and the three acts a run's advance needs are wired in the binary. `None` is
+/// a loop that knows nothing of runs and polls exactly as it did before they
+/// existed.
 pub fn observe_runs(
     options: &Options,
     grant: platform::Grant,
@@ -119,10 +118,10 @@ impl Wiring {
     pub fn resolve() -> Wiring {
         let machine_dir = platform::machine_dir();
         let mut agent = ClaudeCode::new(&platform::home_dir(), &machine_dir);
-        // The binary an EFFECT execs, resolved once and never by bare name
-        // (R19). Unresolvable is not fatal: the loop observes and publishes with
+        // The binary an EFFECT execs, resolved once and never by bare name.
+        // Unresolvable is not fatal: the loop observes and publishes with
         // effects off and the projection carries the cause, which is the shape
-        // the PRD gives the grant gate.
+        // the grant gate has too.
         //
         // ONE RESOLUTION, TWO USERS. The value below is both the gate the loop
         // reads and the binary the adapter execs, because a controller that
@@ -187,7 +186,7 @@ pub enum StopHandler {
 pub struct Seams<'a> {
     pub clock: &'a dyn Clock,
     pub agent: &'a dyn Agent,
-    /// The `PATH` every child a routine's action starts carries (R19).
+    /// The `PATH` every child a routine's action starts carries.
     pub child_path: &'a str,
     /// Why no effect may be issued, or `None` for a fleet that can issue them.
     /// The binary those effects exec is resolved by the caller, so the gate this
@@ -301,7 +300,7 @@ pub struct Observer<'a> {
 
 impl<'a> Observer<'a> {
     /// Read what the loop needs before its first poll, or refuse and name the
-    /// path (R28).
+    /// path.
     ///
     /// `Err` carries the exit status the caller returns; there is no last-good
     /// before the first read, so a startup that cannot read is not a tick that
@@ -326,7 +325,7 @@ impl<'a> Observer<'a> {
         let policy_path = raw_config.fleet_toml.clone();
         let policy_mtime = policy::mtime(&policy_path);
         // The FILE's policy and the EFFECTIVE one are two values: `config.json` is
-        // local and beats policy per key (R28), so the overlay is recomputed
+        // local and beats policy per key, so the overlay is recomputed
         // wherever either document is re-read, and the file's own value is what the
         // "did policy move?" test compares.
         let file_policy = match policy::load(&policy_path) {
@@ -355,7 +354,7 @@ impl<'a> Observer<'a> {
         let table_path = sessions::path_in(&machine_dir);
         let (on_disk, table_error) = sessions::read(&table_path);
         // A table that is missing, unparseable or of a schema this build refuses is
-        // REBUILT from the stream rather than started from empty (R17): every row
+        // REBUILT from the stream rather than started from empty: every row
         // and every counter it carries was written to the stream by the layer that
         // did the thing, so the table is derivable and never a second source of
         // truth. An empty one here would forget a standing halt.
@@ -403,7 +402,7 @@ impl<'a> Observer<'a> {
         // The gate's state lives across polls: a probe that outran its bound is read
         // again rather than started again. It is built by the caller, BEFORE the
         // first poll, so the dialog it raises is answered in the minute the service
-        // loads (R1, lessons claude-code D4).
+        // loads (lessons claude-code D4).
         //
         // Once per transition into pending, never once per poll.
         let grant_said: Option<String> = None;
@@ -531,9 +530,9 @@ impl<'a> Observer<'a> {
         }
 
         // ONE LISTING PER DISTINCT CONFIGURATION DIRECTORY, and the fleet's own
-        // beside them (flights PRD R13). A seat started under its own directory
-        // is held by its own daemon and named by no other listing, so a poll
-        // that read once would publish every spawned seat absent.
+        // beside them. A seat started under its own directory is held by its
+        // own daemon and named by no other listing, so a poll that read once
+        // would publish every spawned seat absent.
         //
         // The directories come off the session table, which is what the
         // controller remembers about what it started: the seat list carries no
@@ -563,7 +562,7 @@ impl<'a> Observer<'a> {
 
         // The daemon, read ONCE for the whole poll exactly as the roster is: two
         // seats must not decide against different beliefs about whether the
-        // fleet is mid-replacement (R11).
+        // fleet is mid-replacement.
         //
         // A pid this read could not take does not overwrite the one the last
         // poll recorded: forgetting it would make the next good read compare
@@ -581,9 +580,9 @@ impl<'a> Observer<'a> {
             }
         }
 
-        // Adoption, on the first poll and against the roster this poll read
-        // (R17). Not gated on effects: it issues none, and a controller that
-        // could not exec the agent still knows which sessions it owns.
+        // Adoption, on the first poll and against the roster this poll read.
+        // Not gated on effects: it issues none, and a controller that could not
+        // exec the agent still knows which sessions it owns.
         //
         // ONCE PER PROCESS is the WRITE and never the reading: the claim goes on
         // the row, and the verdicts below ask the table for it every poll. A
@@ -593,7 +592,7 @@ impl<'a> Observer<'a> {
             self.adopted = true;
             // EVERY listing's rows, folded: a session under a per-row directory
             // is in that directory's listing alone, and a controller that
-            // restarted has to be able to claim it like any other (R13, R17).
+            // restarted has to be able to claim it like any other.
             {
                 let rows = rosters.all_rows();
                 let claimed = effect::adopt(&rows, &mut self.table, &mut self.events_log, now_ms);
@@ -666,7 +665,7 @@ impl<'a> Observer<'a> {
                 _ => None,
             };
             let context_tokens = body.as_deref().and_then(observe::context_tokens_in);
-            // A seat that came up LOGGED OUT (R13). The roster cannot say so — a
+            // A seat that came up LOGGED OUT. The roster cannot say so — a
             // logged-out session is live and idle, with a pid, exactly like one
             // waiting for work — so the transcript is the only surface that
             // carries the reading, and it is read from the same body the context
@@ -745,7 +744,7 @@ impl<'a> Observer<'a> {
             observations.push((index, observation, context_tokens));
         }
 
-        // The logged-out dispatches, one line each (R13). WRITTEN AND NOTHING
+        // The logged-out dispatches, one line each. WRITTEN AND NOTHING
         // ELSE: holding the item and retiring the seat are a workflow's, and a
         // controller that acted here would be deciding a run's business from
         // inside the poll.
@@ -771,7 +770,7 @@ impl<'a> Observer<'a> {
         // latch and the blind count are slice 4's, so they are passed as the
         // constants they are here rather than left unstated.
         // The upgrade shape: one line rather than N independent absences, once
-        // per transition into it (R15). Reported like an observation and not
+        // per transition into it. Reported like an observation and not
         // like a decision, and threaded into no seat's verdict.
         let shape = decide::fleet_shape(
             &observations
@@ -786,7 +785,7 @@ impl<'a> Observer<'a> {
             self.upgrade_shape = shape;
         }
 
-        // The clear-halt requests, consumed BEFORE the verdicts (R14), so a halt
+        // The clear-halt requests, consumed BEFORE the verdicts, so a halt
         // a person cleared does not survive one more poll and dispatch nothing
         // for another interval.
         for seat in &self.config.seats {
@@ -838,7 +837,7 @@ impl<'a> Observer<'a> {
                 // however long ago it was claimed. A pid-less row reading
                 // `done` is not such a row — it is hibernation, a stop from
                 // idle and a kill in one reading — so the claim holds it and
-                // the controller's own record ends it (R10).
+                // the controller's own record ends it.
                 adopted_and_listed: !observation.state_names_an_end
                     && observation
                         .session_id
@@ -962,7 +961,7 @@ impl<'a> Observer<'a> {
 
         // The line the cursor may not pass this tick: the oldest `seat.resting`
         // whose collection did not happen. A rest that was asked for and not
-        // collected is the PRD's alarm, and an alarm the cursor walked past
+        // collected is the alarm, and an alarm the cursor walked past
         // would be a request the fleet silently forgot.
         let mut hold_at: Option<u64> = None;
         if acting {
@@ -989,10 +988,10 @@ impl<'a> Observer<'a> {
                 }
                 document.seats[*index].outcome = outcome.as_str().to_string();
                 // The counter, moved once per poll on the state this poll SAW
-                // and the verdict it reached (R13, R14). It is computed only
-                // where effects are on: a poll that dispatched nothing has no
-                // blind dispatch to count, and counting one would halt a seat
-                // this controller never acted for.
+                // and the verdict it reached. It is computed only where effects
+                // are on: a poll that dispatched nothing has no blind dispatch
+                // to count, and counting one would halt a seat this controller
+                // never acted for.
                 let carried = self.table.seat_state(&seat.name);
                 let blind = decide::blind_after(carried.blind, observation.state, *verdict);
                 if blind != carried.blind || carried.halted != (blind >= decide::BLIND_LIMIT) {
@@ -1094,7 +1093,7 @@ impl<'a> Observer<'a> {
         }
 
         // A live version that differs from the pin is a flag to re-measure,
-        // never a failure (R29) — and one event per move, not one per poll. The
+        // never a failure — and one event per move, not one per poll. The
         // pin is the fleet's own where its file writes one, and the release
         // fleet supports where it does not.
         //
@@ -1407,7 +1406,7 @@ fn target_for<'a>(
 
 /// What the seat's own session row remembers about the dispatch that opened it:
 /// the configuration directory every act about the session is made under, and
-/// the item the order index named (flights PRD R13).
+/// the item the order index named.
 ///
 /// Read off the table and CLONED rather than borrowed, because the same table is
 /// written inside the calls that take this.
@@ -1433,7 +1432,7 @@ impl Recorded {
 ///
 /// A seat event whose actor names no configured row is DROPPED with a line, and
 /// so is a `seat.resting` for a transient row: only named seats rest, and
-/// `fleet seat retire` is the verb for the other kind (R21). `seat.woke` and
+/// `fleet seat retire` is the verb for the other kind. `seat.woke` and
 /// `seat.handed_off` are recorded as lifecycle and nothing more — neither asks
 /// for anything.
 fn fold(
@@ -1486,7 +1485,7 @@ fn fold(
 }
 
 /// The policy in force on this machine: the file's, with `config.json`'s own
-/// answers over it key by key (R28).
+/// answers over it key by key.
 ///
 /// A key the object carries that names no `[controller]` key is ignored and
 /// said once — a machine-local key nobody reads is worth a line and is not worth

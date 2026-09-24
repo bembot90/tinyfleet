@@ -1,4 +1,4 @@
-//! The one exit vocabulary every command shares (cli PRD § Exits, P0 #3).
+//! The one exit vocabulary every command shares.
 //!
 //! A script reading `$?` learns the same thing from every verb, so the table
 //! lives in one type and `main` is its only reader. A subcommand returns the
@@ -80,7 +80,7 @@ mod tests {
 
     /// One arm per row, both ways, so a renumbering has to be deliberate.
     #[test]
-    fn every_row_maps_to_the_prds_number_and_back() {
+    fn every_row_maps_to_the_tables_number_and_back() {
         for (exit, code) in [
             (Exit::Done, 0),
             (Exit::Refused, 1),

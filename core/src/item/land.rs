@@ -1,5 +1,5 @@
 //! `fleet land <item> <commit>` — the reviewer's verb, and the only writer of a
-//! landing (packs PRD R8, R9, R10, R19, R20, Q2; cli PRD § `fleet land`).
+//! landing.
 //!
 //! IT LANDS A REVIEW, NOT A DELIVERY. The gate that decides whether anything
 //! may be squashed is the item's last verdict: an `ACCEPTED` naming this exact
@@ -87,9 +87,9 @@ const LOCAL: &str = "local";
 const RETIRE_DELETES: &str =
     "; `fleet seat retire` deletes it off this note when the seat holding it goes";
 
-/// The criterion the suite's SECOND reading is printed under (flights PRD R18,
-/// Q3c). It is not one of [`CRITERIA`]: a landing that needed no rerun carries
-/// no such row, so the count is not fixed and the name cannot be positional.
+/// The criterion the suite's SECOND reading is printed under. It is not one of
+/// [`CRITERIA`]: a landing that needed no rerun carries no such row, so the
+/// count is not fixed and the name cannot be positional.
 pub const SUITE_RERUN: &str = "suite rerun";
 
 /// The line a landing ends on, which is also the one a caller greps for.
@@ -108,10 +108,10 @@ const UNTESTED: &str =
 /// The line a landing prints when the trunk moved between the land branch's cut
 /// and the push's own gate.
 ///
-/// IT IS NOT A PARK (flights PRD R17). The flight retries on its next call: the
-/// lane's lock makes the race rare, and a park would put a person in the middle
-/// of a landing nothing is wrong with. A person's `fleet land` reads the
-/// refusal under it and runs again.
+/// IT IS NOT A PARK. The flight retries on its next call: the lane's lock makes
+/// the race rare, and a park would put a person in the middle of a landing
+/// nothing is wrong with. A person's `fleet land` reads the refusal under it and
+/// runs again.
 pub const REBASE_NEEDED: &str = "REBASE NEEDED";
 
 /// The store's own directory, whose paths the staged-set gate does not judge:
@@ -274,7 +274,7 @@ pub struct Landing<'a> {
     /// Where the message file and the suite's log go: a process fact, resolved
     /// by the caller like every other one. The lane and its lock are derived
     /// from it too, which is what puts the tick's landings and a person's on
-    /// one queue (flights PRD R15).
+    /// one queue.
     pub machine_dir: &'a Path,
 }
 
@@ -286,9 +286,9 @@ pub struct Wiring<'a> {
     pub project: &'a Project,
     pub progress: &'a dyn Progress,
     pub events: &'a dyn Events,
-    /// The box's load, for the one wait a rerun takes (flights PRD R18). A
-    /// caller with no controller behind it hands [`lane::Unread`], and the
-    /// rerun then runs at once and says it did not wait.
+    /// The box's load, for the one wait a rerun takes. A caller with no
+    /// controller behind it hands [`lane::Unread`], and the rerun then runs at
+    /// once and says it did not wait.
     pub load: &'a dyn lane::Load,
     /// The `PATH` every project-declared child of this verb runs under,
     /// constructed by the caller from `platform::child_path` and never read off
@@ -428,10 +428,9 @@ fn land_in(
     let mut tree = Tree::of(landing, wiring)?;
 
     // (a2) THE LANE, taken before the fetch and held until this verb returns
-    // whatever its exit (flights PRD R15, S3b). It is `land` that takes it and
-    // not the flight, so a person's landing and the tick's queue on one object
-    // — and a landing that never reaches the trunk still holds it while it
-    // could have.
+    // whatever its exit. It is `land` that takes it and not the flight, so a
+    // person's landing and the tick's queue on one object — and a landing that
+    // never reaches the trunk still holds it while it could have.
     let _lane = lane::take(
         out,
         wiring.progress,
@@ -777,8 +776,7 @@ fn run(
         .map_err(Stop::could_not_tell)?;
 
     // (h) THE SUITE, the command the caller handed in, or none at all and the
-    // landing says NOT TESTED, with the one rerun a red gets before it refuses
-    // (R18, Q3c).
+    // landing says NOT TESTED, with the one rerun a red gets before it refuses.
     let suite_command = landing
         .test
         .map(str::trim)
@@ -922,8 +920,8 @@ fn run(
     // before anything else — so a crash between them leaves a landing note the
     // stream does not carry, and never a stream that carries a landing no note
     // stands behind. The reading precedes the landing, as it did in time.
-    // ONE `check.read` PER READING, in the order they were taken (R18). A
-    // landing that needed no rerun writes the one it always did.
+    // ONE `check.read` PER READING, in the order they were taken. A landing
+    // that needed no rerun writes the one it always did.
     if readings.is_empty() {
         announce(
             &item.id,
@@ -1063,7 +1061,7 @@ fn run(
     })
 }
 
-// ---- the gate and its one rerun (R18, Q3c) -----------------------------------
+// ---- the gate and its one rerun ----------------------------------------------
 
 /// The reading a landing's own first suite run is.
 const FIRST_READING: u64 = 1;
@@ -1140,10 +1138,10 @@ impl Reading {
 }
 
 /// The command the landing was handed, run once, and once more where the first
-/// read red (R18, Q3c).
+/// read red.
 ///
 /// THE RERUN IS UNCONDITIONAL, and that is Alberto's ruling and not this
-/// module's economy: R18 asks for a rerun of an arm the diff did not reach, and
+/// module's economy: the rerun is owed to an arm the diff did not reach, and
 /// the command is one opaque line that reports no arms, so the condition has
 /// nothing to read. Both readings go on the record either way, which is what
 /// lets a person answer the question the condition would have.
@@ -1205,8 +1203,8 @@ fn the_gate(
     }
 
     // BOTH READINGS REACH THE STREAM BEFORE THE REFUSAL, and this is the one
-    // place this verb writes an event on a path that lands nothing: R18 asks
-    // for both readings written, and a second red never gets as far as the
+    // place this verb writes an event on a path that lands nothing: both
+    // readings are owed to the record, and a second red never gets as far as the
     // note the other events wait behind.
     for reading in [&first, &second] {
         announce(
@@ -1263,9 +1261,9 @@ fn read_once(
     })
 }
 
-/// One event this verb writes (flights PRD Q4a). The landing is on the trunk
-/// and the note is on the item whatever this says, which is why the failure
-/// names both rather than reading as a landing that did not happen.
+/// One event this verb writes. The landing is on the trunk and the note is on
+/// the item whatever this says, which is why the failure names both rather than
+/// reading as a landing that did not happen.
 fn announce(
     item: &str,
     kind: &str,
@@ -1372,8 +1370,8 @@ impl Tree {
 /// The gate rows, printed as each is read and rendered again into the note.
 ///
 /// A row carries its own criterion NAME rather than taking it from its
-/// position, because the rerun adds a row in the middle (R18) and a positional
-/// name would then print every row after it under its neighbour's heading. The
+/// position, because the rerun adds a row in the middle and a positional name
+/// would then print every row after it under its neighbour's heading. The
 /// positional count is kept apart for that reason: [`Rows::read`] consumes the
 /// next name in [`CRITERIA`], [`Rows::read_named`] consumes none.
 struct Rows {
@@ -1719,10 +1717,10 @@ fn accepted_commit(item: &str, notes: &str, commit: &str, wiring: &Wiring) -> Re
 }
 
 /// The clause the landing note's first line gains when the delivery was BEHIND
-/// the trunk it landed on (flights PRD R17, S3a).
+/// the trunk it landed on.
 ///
 /// Under `advance` the squash onto a land branch cut at the fresh trunk tip IS
-/// the rebase — the landed sha is the rebased commit — so what R17 asks for
+/// the rebase — the landed sha is the rebased commit — so what is owed
 /// beyond what already happens is the RECORD: the base the delivery was cut
 /// from, beside the base it landed on, whenever the two differ. Equal bases are
 /// a delivery that was current, and the clause is empty there rather than

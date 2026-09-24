@@ -1,6 +1,6 @@
-//! The agent seam (PRD § The agent adapter). Everything the controller learns
-//! about a session goes through one trait, so the second agent is a second
-//! module and not a rewrite.
+//! The agent seam. Everything the controller learns about a session goes
+//! through one trait, so the second agent is a second module and not a
+//! rewrite.
 //!
 //! Observe needs four of the nine verbs — the listing, the transcript, the end
 //! stamp and the version, plus the daemon's own account of itself; `start`,
@@ -28,7 +28,8 @@ pub struct StartSpec {
     /// D5).
     pub plugin_dir: Option<String>,
     /// The configuration directory THIS session comes up under, or `None` for a
-    /// start that takes the adapter's own (flights PRD Q1e, R13).
+    /// start that takes the adapter's own. Every spawned seat comes up under one
+    /// of its own, holding only the pack's overlay.
     ///
     /// A directory here is the session's whole configuration space: nothing
     /// from the person's home directory — settings, memory, instructions,
@@ -87,7 +88,7 @@ pub trait Agent {
     fn remove(&self, config_dir: Option<&Path>, short_id: &str) -> RemoveAnswer;
 
     /// Bring a hibernated session back IN PLACE, by the same short id a stop
-    /// takes — same session, same id, context intact (R10).
+    /// takes — same session, same id, context intact.
     ///
     /// An ATTACH and never a resume: only a flagless full-id resume continues a
     /// session and a flagged one forks it (lessons claude-code A9), and the row
@@ -97,7 +98,7 @@ pub trait Agent {
     /// is the only thing that says which.
     fn revive(&self, config_dir: Option<&Path>, short_id: &str) -> Result<(), String>;
 
-    /// The agent daemon's own account of itself, read once per poll (R11).
+    /// The agent daemon's own account of itself, read once per poll.
     ///
     /// A whole-poll read like the roster, and for the same reason: two seats
     /// must not decide against different beliefs about whether the fleet is
@@ -121,9 +122,9 @@ pub trait Agent {
     /// The fleet's own read is one command per poll shared by every seat: two
     /// seats must not decide against different readings of the same moment. A
     /// session under its own configuration directory is held by its own daemon
-    /// and appears in NO other listing (flights PRD R13), so a row started that
-    /// way is asked for under that directory and is invisible to every other
-    /// read this trait has.
+    /// and appears in NO other listing, so a row started that way is asked for
+    /// under that directory and is invisible to every other read this trait
+    /// has.
     fn status(&self, config_dir: Option<&Path>) -> RosterRead;
 
     /// The session's transcript body, or `None` when there is nothing to read,
@@ -147,7 +148,7 @@ pub trait Agent {
     /// all, which reads as an end nobody has.
     fn ended_at(&self, config_dir: Option<&Path>, worktree: &str, session_id: &str) -> Option<u64>;
 
-    /// What the agent binary reports **this poll** (R8). A version read once at
+    /// What the agent binary reports **this poll**. A version read once at
     /// startup and republished advertises the boot version for as long as the
     /// controller lives.
     fn version(&self) -> Option<String>;
@@ -228,7 +229,7 @@ impl AgentRow {
     /// Whether the row names an end the ROSTER can name. End-of-life otherwise
     /// cannot be read off the listing at all: the controller's own record — the
     /// deliberate-end event, and the fleet's own stop and retire — is what says
-    /// a session this fleet owns is over (R10, lessons claude-code A3).
+    /// a session this fleet owns is over (lessons claude-code A3).
     pub fn names_an_end(&self) -> bool {
         matches!(self.state.as_deref(), Some(STOPPED) | Some(FAILED))
     }

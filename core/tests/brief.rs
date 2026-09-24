@@ -1,6 +1,6 @@
-//! `fleet brief` (packs PRD R5, R19): every placeholder resolved against a real
-//! pack, and the three ways it refuses — each of them with nothing on stdout,
-//! because whole-or-nothing is the whole point of the verb.
+//! `fleet brief`: every placeholder resolved against a real pack, and the three
+//! ways it refuses — each of them with nothing on stdout, because
+//! whole-or-nothing is the whole point of the verb.
 //!
 //! The store is held in memory here and the pack is a real folder, because the
 //! pack is this verb's subject and the store is not. The one arm that drives

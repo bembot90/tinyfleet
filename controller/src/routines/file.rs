@@ -1,5 +1,5 @@
 //! One routine file: `orders/<name>.toml`, read into a [`Routine`] or into the
-//! [`Defect`] that says why it is not one (PRD R22).
+//! [`Defect`] that says why it is not one.
 //!
 //! Every refusal names the file and the key. A value this reader does not
 //! understand is a defect and never an ignored line: a `schedule` on a cooldown

@@ -1,5 +1,5 @@
-//! The item verbs' `--json` document, through the shipped binary (cli PRD § The
-//! JSON envelope; MVP path row 2).
+//! The item verbs' `--json` document, through the shipped binary (MVP path row
+//! 2).
 //!
 //! Five verbs are driven here — `dispatch`, `deliver`, `review`, `hold` and
 //! `clear`. `land` is the sixth and rides `ring_land.rs`, whose three

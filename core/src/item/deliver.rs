@@ -1,5 +1,4 @@
-//! `fleet deliver` — the seat's own handoff, and the only writer of a delivery
-//! (packs PRD R6; cli PRD § `fleet deliver`).
+//! `fleet deliver` — the seat's own handoff, and the only writer of a delivery.
 //!
 //! THE REFUSALS COME BEFORE THE COMMIT. Every question this verb can answer
 //! from the record and the working tree — the branch, the unstaged file, the
@@ -46,7 +45,7 @@ pub const RING: &str = "{item} is delivered at {commit} and is yours to review. 
 
 /// The line an absent reviewer's delivery prints. The delivery stands: the
 /// reassignment recorded the handoff, and the reviewer's successor reads the
-/// item at wake (packs PRD § What every verb refuses to guess, rule 4).
+/// item at wake.
 pub const STANDS: &str = "DELIVERED, NOT RUNG";
 
 /// The line a clean tree's delivery prints. The seat staged nothing and nothing
@@ -196,7 +195,7 @@ pub fn deliver(
     })
 }
 
-/// The one event this verb writes (flights PRD Q4a).
+/// The one event this verb writes.
 ///
 /// AFTER THE READ-BACK AND BEFORE THE DOORBELL: the note is written and read
 /// back first, so a crash between the two leaves a delivery nothing announced
@@ -264,9 +263,9 @@ fn ring(
 ///
 /// `named` says which one directly, for the case a seat legitimately holds two.
 ///
-/// IT IS `ask`'s READ TOO (flights PRD S4c). A question and a delivery ask the
-/// same question of the record — which item is this worktree's — and two
-/// readers of it would be two answers the day one of them changed.
+/// IT IS `ask`'s READ TOO. A question and a delivery ask the same question of
+/// the record — which item is this worktree's — and two readers of it would be
+/// two answers the day one of them changed.
 pub fn held_item(store: &dyn Store, by: &str, named: Option<&str>) -> Result<String, Stop> {
     if let Some(named) = named {
         // Resolved once, here: the caller acts on the store's full id and

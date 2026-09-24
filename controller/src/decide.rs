@@ -1,5 +1,5 @@
-//! One verdict per seat (PRD R9, R12, R13): a pure function from what one poll
-//! saw to what the effects layer should do about it.
+//! One verdict per seat: a pure function from what one poll saw to what the
+//! effects layer should do about it.
 //!
 //! Pure and total, with every term passed in. Nothing here reads a file, a
 //! clock or the roster, so every arm of the table is reachable from a fixture
@@ -8,7 +8,7 @@
 
 use crate::observe::RosterState;
 
-/// Consecutive blind dispatches tolerated before the seat is left down (R14).
+/// Consecutive blind dispatches tolerated before the seat is left down.
 ///
 /// One miss is ordinary latency, two tolerates a slow poll, three means the loop
 /// is not waiting on latency. A constant rather than a policy key: the number is
@@ -16,7 +16,7 @@ use crate::observe::RosterState;
 /// to one would turn every slow arrival into a halt.
 pub const BLIND_LIMIT: u32 = 3;
 
-/// The six verdicts (PRD § Observe, decide, effect, publish).
+/// The six verdicts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
     LeaveAlone,
@@ -43,7 +43,7 @@ impl Verdict {
 
     /// Whether carrying this verdict out creates a session. The transient filter
     /// is defined on this predicate rather than on a list of arms, so a seventh
-    /// verdict that creates one is covered by construction (PRD R12).
+    /// verdict that creates one is covered by construction.
     ///
     /// `Rest` is one of the three: it is defined as stopping a live session and
     /// bringing a fresh woken successor up, so for a spawned seat it is a
@@ -73,7 +73,7 @@ pub struct SeatInput<'a> {
     pub rest_threshold_tokens: u64,
     /// The session the seat is standing on, when there is one.
     pub session_id: Option<&'a str>,
-    /// Whether this seat's session id is already in the nudged map (R21).
+    /// Whether this seat's session id is already in the nudged map.
     pub already_nudged: bool,
     /// How long ago the newest dispatch for this seat went out, in milliseconds.
     /// `None` is a seat this controller has dispatched for and never recorded,
@@ -102,7 +102,7 @@ pub struct SeatInput<'a> {
     /// Whether this seat's worktrees hold at least one pid-less row this poll —
     /// true on every `Stopped` reading, and on an `Absent` one whose only rows
     /// the recency window aged out. The replacement hold is defined on a ROW IN
-    /// TRANSIT, and a seat with no row at all is not standing on one (R11).
+    /// TRANSIT, and a seat with no row at all is not standing on one.
     pub pidless_row: bool,
     /// Whether the agent daemon's pid differs from the one the last poll
     /// recorded. A daemon that was replaced ends every hosted process at once
@@ -142,7 +142,7 @@ pub struct SeatInput<'a> {
 /// by whoever adds it remembering the rule. `leave-alone`, `halt` and
 /// `suggest-rest` pass through untouched — a spawned seat is still observed,
 /// still reported, and can still be told it is heavy; what it cannot be is
-/// brought back (PRD R12, R21).
+/// brought back.
 pub fn decide(input: &SeatInput) -> Verdict {
     let verdict = decide_table(input);
     if input.transient && verdict.creates_a_session() {
@@ -153,7 +153,7 @@ pub fn decide(input: &SeatInput) -> Verdict {
 
 /// The table. First match wins, and the order IS the policy.
 fn decide_table(input: &SeatInput) -> Verdict {
-    // 1. Cannot-see is never treated as empty (PRD R6). It outranks everything,
+    // 1. Cannot-see is never treated as empty. It outranks everything,
     //    the halt guard included: a controller that cannot read the fleet has no
     //    business acting on any belief about it.
     if input.state == RosterState::Unknown {
@@ -180,7 +180,7 @@ fn decide_table(input: &SeatInput) -> Verdict {
         return Verdict::Rest;
     }
 
-    // 4. A dispatch is out and its window has not closed (R13's first half).
+    // 4. A dispatch is out and its window has not closed.
     //    Dispatching again here is the amplifier: the roster reads the same
     //    absence every poll, so without this a seat is dispatched once per poll
     //    for as long as arrival takes. A SIGHTING is what closes the window,
@@ -190,7 +190,7 @@ fn decide_table(input: &SeatInput) -> Verdict {
     }
 
     // 4b. The daemon was replaced moments ago and is re-hosting its sessions
-    //     (R11, lessons claude-code A10). Every hosted row goes pid-less at once
+    //     (lessons claude-code A10). Every hosted row goes pid-less at once
     //     and comes back within about a minute, so a pid-less row here is a
     //     session in transit rather than a seat that needs anything.
     //
@@ -213,7 +213,7 @@ fn decide_table(input: &SeatInput) -> Verdict {
         return Verdict::LeaveAlone;
     }
 
-    // 5. A pid-less row that is not a newborn (R10). The roster cannot tell a
+    // 5. A pid-less row that is not a newborn. The roster cannot tell a
     //    hibernated session from a deliberately stopped one, so the
     //    discriminator is an event the ending ritual wrote plus a context guard.
     if input.state == RosterState::Stopped {
@@ -260,8 +260,8 @@ fn decide_table(input: &SeatInput) -> Verdict {
         return Verdict::SpawnWoken;
     }
 
-    // 7. Suggested once per session and never enforced (R21, lessons claude-code
-    //    C5). Keying the dedupe on the session id re-arms it for a successor
+    // 7. Suggested once per session and never enforced (lessons claude-code C5).
+    //    Keying the dedupe on the session id re-arms it for a successor
     //    with no bookkeeping of its own.
     if is_live(input.state) && !input.already_nudged {
         if let Some(tokens) = input.context_tokens {
@@ -299,7 +299,7 @@ fn arrival_window_open(input: &SeatInput) -> bool {
 /// and the verdict cannot disagree about which leave-alone this is.
 pub const REPLACEMENT_HELD: &str = "replacement window: held";
 
-/// Whether the agent daemon is inside a replacement window this poll (R11).
+/// Whether the agent daemon is inside a replacement window this poll.
 ///
 /// Two readings, either of which names one. The uptime is the primary: a daemon
 /// younger than the arrival window is one that has just replaced another, and it
@@ -430,7 +430,7 @@ fn daemon_age(input: &SeatInput) -> String {
     }
 }
 
-/// The blind counter after this poll (R13, R14).
+/// The blind counter after this poll.
 ///
 /// Pure, and separate from [`decide`] because it is arithmetic over the same
 /// observation rather than a verdict — but it is policy, so it is provable here
@@ -490,7 +490,7 @@ pub fn blind_after(previous: u32, state: RosterState, verdict: Verdict) -> u32 {
 /// fleet-wide event would spend the line's whole meaning on the smallest fleets.
 pub const UPGRADE_SHAPE_FLOOR: usize = 2;
 
-/// The whole-fleet shape a poll is carrying, when it is carrying one (R15).
+/// The whole-fleet shape a poll is carrying, when it is carrying one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FleetShape {
     pub pidless: usize,

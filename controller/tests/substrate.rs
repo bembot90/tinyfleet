@@ -1,4 +1,4 @@
-//! The Claude Code release the loop expects, AS THE LOOP READS IT (R29): the
+//! The Claude Code release the loop expects, AS THE LOOP READS IT: the
 //! fleet's own `[substrate]` pin where its file writes one, and otherwise the
 //! release fleet supports (`fleet_core::supported::PINNED_CLAUDE_CODE`).
 //!

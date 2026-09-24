@@ -1,5 +1,5 @@
 //! `fleet event tail` and `fleet event show`: the reader half of the event
-//! family (cli PRD § `fleet event tail`, § `fleet event show`).
+//! family.
 //!
 //! STDOUT CARRIES THE STREAM AND NOTHING ELSE — the lines as stored for a tail,
 //! the one pretty-printed event for a show — and every human-facing line goes to
@@ -7,13 +7,12 @@
 //! the stream's own bytes back, and a note about which sequence a stamp resolved
 //! to is not one of them.
 //!
-//! UNDER `--json` STDOUT CARRIES THE ENVELOPE INSTEAD (cli PRD § The JSON
-//! envelope): one document per event for a tail, one for a show, and the
-//! refusal document where the flagless verb prints only its stderr line. These
-//! are the two stream reads the SDK replays from, so the document is the record
-//! whole and not the file's bytes; the exit codes are the same either way, and
-//! the stderr line is printed under the flag too, because a person watching a
-//! run still reads it.
+//! UNDER `--json` STDOUT CARRIES THE ENVELOPE INSTEAD: one document per event
+//! for a tail, one for a show, and the refusal document where the flagless verb
+//! prints only its stderr line. These are the two stream reads the SDK replays
+//! from, so the document is the record whole and not the file's bytes; the
+//! exit codes are the same either way, and the stderr line is printed under the
+//! flag too, because a person watching a run still reads it.
 //!
 //! Both verbs are read-only: the controller reads and this module routes.
 
@@ -218,9 +217,9 @@ pub fn show(id: &str, json: bool) -> Exit {
             Exit::Done
         }
         // Ids are unique by construction, so a duplicate is a corrupted stream
-        // and a fact worth stopping on. It answers in the usage row, which is
-        // the number the PRD's verb text assigns it — the exit table has no
-        // corruption row and this verb does not add one.
+        // and a fact worth stopping on. It answers in the usage row, exit 2,
+        // naming both sequences — the exit table has no corruption row and this
+        // verb does not add one.
         many => {
             let seqs: Vec<String> = many.iter().map(|m| m.seq.to_string()).collect();
             let why = format!(
@@ -236,10 +235,9 @@ fn machine_stream() -> PathBuf {
     platform::machine_dir().join(STREAM)
 }
 
-/// The PRD's stream refusal: exit 5, with the path a caller would have to look
-/// at. It is deliberately not `routine history`'s answer to the same absence,
-/// which is a stderr line and exit 0; the verb text above is the newer rule and
-/// that verb is not touched here.
+/// The event readers' stream refusal: exit 5, with the path a caller would have
+/// to look at. It is deliberately not `routine history`'s answer to the same
+/// absence, which is a stderr line and exit 0; that verb keeps its own answer.
 fn no_stream(verb: &str, path: &Path, json: bool) -> Exit {
     let why = format!("no event stream at {}", path.display());
     refused(&format!("event {verb}"), Exit::NoCollector, &why, json)

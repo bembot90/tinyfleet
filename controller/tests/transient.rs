@@ -1,4 +1,4 @@
-//! Fixture tests for the transient-seat primitives (PRD R30–R32).
+//! Fixture tests for the transient-seat primitives.
 //!
 //! The `lessons::` module below is the contract named in
 //! `fleet/brain/lessons/*.md` § Test inventory: each fact the code in this slice
@@ -141,7 +141,7 @@ struct Rig {
     roster_fails: PathBuf,
     /// Every configuration directory a listing was asked under, appended one per
     /// line by the stub: the seam that says WHICH directory a read was made
-    /// through (flights PRD R13).
+    /// through.
     listing_dirs: PathBuf,
     stop_keeps_the_roster: PathBuf,
     calls: PathBuf,
@@ -339,7 +339,7 @@ impl Rig {
     }
 
     /// The listing THIS directory serves, which the fleet's own does not: the
-    /// seam that lets an arm tell the two reads apart (flights PRD R13).
+    /// seam that lets an arm tell the two reads apart.
     fn roster_under(&self, config_dir: &Path, body: &str) -> &Rig {
         std::fs::create_dir_all(config_dir).expect("the configuration directory is made");
         std::fs::write(config_dir.join("roster.json"), body).expect("the roster is written");
@@ -621,8 +621,8 @@ fn spawned(
 }
 
 /// The same spawn cut from a NAMED BASE rather than from the trunk ref, which
-/// is what a reviewer's and a returned builder's worktree is (flights PRD R11,
-/// R14), and carrying a model over the policy's default.
+/// is what a reviewer's and a returned builder's worktree is, and carrying a
+/// model over the policy's default.
 fn spawned_at(
     rig: &Rig,
     policy: &Policy,
@@ -761,8 +761,9 @@ fn the_belt_reads_the_five_minute_sample() {
     );
 }
 
-/// R30's first leg. The refusal prints BOTH readings, and it creates nothing:
-/// the seat list is byte-identical and the worktrees directory is empty.
+/// The load belt's first leg. The refusal prints BOTH readings, and it
+/// creates nothing: the seat list is byte-identical and the worktrees directory
+/// is empty.
 ///
 /// RED-PROVED IN THE SAME ARM by lowering the reading one unit: at 9.0 against a
 /// ceiling of 8.0 the spawn refuses, and at 8.0 it proceeds — so the refusal is
@@ -807,8 +808,8 @@ fn a_load_average_over_the_ceiling_refuses_and_creates_nothing() {
     assert_eq!(spawn.seat, "transient-1");
 }
 
-/// R30's second leg, counted off the roster: a live row in a TRANSIENT row's
-/// worktree carrying the agent's busy word.
+/// The load belt's second leg, counted off the roster: a live row in a
+/// TRANSIENT row's worktree carrying the agent's busy word.
 ///
 /// RED-PROVED by lowering the count one: at two mid-turn against a cap of one
 /// the spawn refuses, and with one of the two rows idle it proceeds.
@@ -979,7 +980,7 @@ fn a_settings_doc(worktree: &str) -> String {
 /// A transient seat's session comes up under permission rules the spawn wrote
 /// into its own worktree: the posture refuses every writing call the session
 /// holds no rule for, and a permission list cannot ride the plugin root the
-/// overlay is loaded through (packs PRD § The first slice).
+/// overlay is loaded through.
 ///
 /// Three claims, and the third is the one a later reading cannot make on its
 /// own: the document is at the path the adapter names, `{worktree}` reads as
@@ -1016,10 +1017,10 @@ fn a_spawn_writes_the_seats_permission_rules_before_its_first_turn() {
     );
 }
 
-/// The control on the arm above, and the other half of R13's shape: a spawn
-/// offered no document writes none, and a NAMED seat's start never reaches this
-/// verb at all — the loop starts it through `effect::spawn_woken`, whose
-/// worktree is a person's own.
+/// The control on the arm above, and the other half of the rule that only a
+/// spawned seat is given one: a spawn offered no document writes none, and a
+/// NAMED seat's start never reaches this verb at all — the loop starts it
+/// through `effect::spawn_woken`, whose worktree is a person's own.
 #[test]
 fn a_spawn_offered_no_settings_writes_none() {
     let rig = Rig::new("settings-none");
@@ -1114,7 +1115,7 @@ fn a_spawn_merges_the_packs_rules_into_a_settings_document_the_project_tracks() 
     );
 }
 
-/// The whole of R30's happy path, read off the machine it left behind.
+/// The whole of the spawn's happy path, read off the machine it left behind.
 #[test]
 fn a_spawn_makes_a_detached_worktree_a_row_and_a_session_and_prints_its_name() {
     let rig = Rig::new("spawn");
@@ -1356,7 +1357,7 @@ fn a_spawned_seat(rig: &Rig, policy: &Policy, status: &str) -> (String, u32) {
     (spawn.seat, pid)
 }
 
-/// R31's four refusals, each with its own status.
+/// The feed's four refusals, each with its own status.
 #[test]
 fn feed_refuses_a_named_row_an_absent_session_an_unreadable_roster_and_a_busy_one() {
     let rig = Rig::new("feed-refusals");
@@ -1425,8 +1426,8 @@ fn feed_refuses_a_named_row_an_absent_session_an_unreadable_roster_and_a_busy_on
     );
 }
 
-/// R31's happy path: the marker moves, the turn is delivered, and the move is
-/// journaled on the stream.
+/// The feed's happy path: the marker moves, the turn is delivered, and the
+/// move is journaled on the stream.
 #[test]
 fn a_live_idle_row_is_fed_and_the_occupant_marker_moves() {
     let rig = Rig::new("feed");
@@ -1498,7 +1499,7 @@ fn a_delivery_the_adapter_refuses_puts_the_occupant_marker_back() {
 
 // ---- AC4: the retire --------------------------------------------------------
 
-/// R32's happy path, verified from outside.
+/// The retire's happy path, verified from outside.
 #[test]
 fn a_retire_stops_removes_prunes_drops_both_rows_and_prints_the_reclaim() {
     let rig = Rig::new("retire");
@@ -1570,10 +1571,9 @@ fn a_retire_stops_removes_prunes_drops_both_rows_and_prints_the_reclaim() {
     );
 }
 
-/// The per-row configuration directory (flights PRD R13, Q1e): the spawn makes
-/// one and the session row names it, every listing about the seat is asked UNDER
-/// it, and the retire takes it back — after the outside probes, which read
-/// through it.
+/// The per-row configuration directory: the spawn makes one and the session row
+/// names it, every listing about the seat is asked UNDER it, and the retire
+/// takes it back — after the outside probes, which read through it.
 ///
 /// The two listings are made to DIFFER: the fleet's names no live row and the
 /// row's own names the session. On the fleet's answer alone the retire takes its
@@ -1660,8 +1660,8 @@ fn a_retire_reads_and_acts_under_the_rows_own_configuration_directory() {
     );
 }
 
-/// R32's refusals: a named seat, an unreadable roster, and a row the stop does
-/// not clear — the last of which removes NOTHING.
+/// The retire's refusals: a named seat, an unreadable roster, and a row the
+/// stop does not clear — the last of which removes NOTHING.
 #[test]
 fn retire_refuses_a_named_seat_an_unreadable_roster_and_a_row_the_stop_does_not_clear() {
     let rig = Rig::new("retire-refusals");
@@ -2457,7 +2457,7 @@ fn a_refusal_after_the_rows_are_dropped_says_they_are_gone_and_what_stands() {
 
 /// A line that cannot reach the stream is REPORTED, never swallowed: the act it
 /// journals has already happened, so a silent failure leaves the machine moved
-/// and the ledger saying nothing (R23, R25).
+/// and the ledger saying nothing.
 #[test]
 fn a_journal_line_that_cannot_land_is_a_refusal_naming_the_event() {
     let rig = Rig::new("ledger-blocked");
@@ -2572,7 +2572,7 @@ fn an_unreadable_listing_is_a_third_answer_on_every_verb_that_asks() {
     assert!(matches!(agent.status(None), RosterRead::Unreadable { .. }));
 }
 
-// ---- the priced retire (flights PRD R10, R12) --------------------------------
+// ---- the priced retire -------------------------------------------------------
 
 /// A transcript in the observe suite's own shape: four main-chain assistant
 /// entries carrying a usage block, one of them summing to zero, one sidechain
@@ -2590,8 +2590,8 @@ const A_TRANSCRIPT: &str = r#"
 {"type":"assistant","message":{"usage":{"input_tokens":40,"cache_read_input_tokens":20,"cache_creation_input_tokens":0}}}
 {"type":"assistant","message":{"usage":{"inp"#;
 
-/// R10 and R12: the cost, the branch and the commit all read BEFORE the
-/// reclaim, and `session.retired` carrying them beside the reclaim.
+/// The cost, the branch and the commit all read BEFORE the reclaim, and
+/// `session.retired` carrying them beside the reclaim.
 #[test]
 fn a_priced_retire_reads_the_cost_the_branch_and_the_commit_before_it_reclaims() {
     let rig = Rig::new("priced");
@@ -2770,7 +2770,7 @@ fn a_priced_retire_runs_the_withdrawal_the_cleanup_hands_it() {
     );
 }
 
-// ---- the base: a seat cut from a named commit (R11, R14) ---------------------
+// ---- the base: a seat cut from a named commit --------------------------------
 
 /// A spawn carrying a base cuts the worktree AT THAT COMMIT, and the base it
 /// answers with is read back off the worktree's own HEAD.

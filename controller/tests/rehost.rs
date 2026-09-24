@@ -1,4 +1,4 @@
-//! A SESSION WHOSE HOST IS REPLACED MID-RUN IS HELD, NEVER REVIVED (R10, R11).
+//! A SESSION WHOSE HOST IS REPLACED MID-RUN IS HELD, NEVER REVIVED.
 //!
 //! A controller polling beside another manager's seats reads one of their live
 //! sessions pid-less for the poll its hosted process is replaced on, with the

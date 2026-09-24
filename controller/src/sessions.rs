@@ -1,5 +1,4 @@
-//! `sessions.json` — what the controller remembers about what it started
-//! (PRD R17).
+//! `sessions.json` — what the controller remembers about what it started.
 //!
 //! Private, small and the controller's own: it holds no work item and no
 //! message, and nothing outside this binary reads it. It is not the projection,
@@ -39,8 +38,7 @@ pub struct SessionRow {
     pub first_turn: String,
     pub transient: bool,
     /// The configuration directory THIS session came up under, when it came up
-    /// under its own (flights PRD R13, Q1e). Absent on a named seat, which takes
-    /// the fleet's.
+    /// under its own. Absent on a named seat, which takes the fleet's.
     ///
     /// It is on the row because every later act about the session — the listing
     /// that can see it, its transcript, the stop and the removal that address it
@@ -81,7 +79,7 @@ pub struct SessionRow {
     pub adopted: Option<String>,
 }
 
-/// What the controller remembers about one seat ACROSS its sessions (R14, R17).
+/// What the controller remembers about one seat ACROSS its sessions.
 ///
 /// Keyed on the seat and not on a row, because that is what the halt is about: a
 /// seat whose dispatches keep going blind accumulates here through as many rows
@@ -107,7 +105,7 @@ pub struct Table {
     pub consumed_seq: u64,
     /// Seat to the session id already nudged. Keyed on the SESSION and not on
     /// the seat, so a successor is nudged once again with no bookkeeping of its
-    /// own (PRD R21).
+    /// own.
     #[serde(default)]
     pub nudged: BTreeMap<String, String>,
     /// The blind counter and the halt latch, per seat. Absent from a table an
@@ -145,7 +143,7 @@ pub fn path_in(machine_dir: &Path) -> PathBuf {
 /// TWO ANSWERS, NOT ONE. `None` for the table means NOTHING CAME OFF THE DISK,
 /// which is the caller's trigger to rebuild from the stream — and it covers the
 /// file that is absent as squarely as the one that would not parse, because a
-/// deleted table read as an empty fleet forgets a standing halt (R14, R17).
+/// deleted table read as an empty fleet forgets a standing halt.
 /// `Some(cause)` beside it is a FAULT to report, and an absent file is not one:
 /// a fleet that has started nothing has no table and nothing is wrong, so it
 /// answers no table and no cause.
@@ -449,7 +447,7 @@ impl Table {
     }
 }
 
-/// Every row and every counter, folded back out of the event stream (R17).
+/// Every row and every counter, folded back out of the event stream.
 ///
 /// This is what makes the table not a second source of truth: a table that is
 /// missing, unparseable or of a schema this build refuses is REBUILT here rather

@@ -1,4 +1,4 @@
-//! The file-access gate AS THE LOOP READS IT (R33, lessons claude-code D4).
+//! The file-access gate AS THE LOOP READS IT (lessons claude-code D4).
 //!
 //! A test binary of its own, because these arms drive `run::observe_with` and
 //! that reads the PROCESS's environment for the machine directory and the agent

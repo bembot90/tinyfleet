@@ -4,11 +4,10 @@ run = "run.sh"
 # No name key: the directory is the name, which is the shape the reference's
 # packs use.
 #
-# The flights PRD § The seat's isolation, as measured: a spawned seat's own
-# configuration directory scopes the provider's daemon, and the credential
-# store's service name takes a suffix derived from the same directory — so a
-# scratch directory is logged out unless the credential knob is defined and
-# empty beside it. That pairing is UNDOCUMENTED and therefore measured at every
-# upgrade rather than trusted, and this entry is the measurement. A release that
-# changes either half removes a flight's isolation silently: the seats come up
-# and every first turn fails.
+# A spawned seat's own configuration directory scopes the provider's daemon,
+# and the credential store's service name takes a suffix derived from the same
+# directory — so a scratch directory is logged out unless the credential knob is
+# defined and empty beside it. That pairing is UNDOCUMENTED and therefore
+# measured at every upgrade rather than trusted, and this entry is the
+# measurement. A release that changes either half removes a flight's isolation
+# silently: the seats come up and every first turn fails.

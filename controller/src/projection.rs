@@ -1,5 +1,4 @@
-//! `projection.json` — what the controller OBSERVED at `generated_at`
-//! (PRD R26).
+//! `projection.json` — what the controller OBSERVED at `generated_at`.
 //!
 //! Every field is a report of a reading. There is no pid, no handle and no
 //! running belief anywhere in the document, because a truthy pid in a state file
@@ -27,7 +26,7 @@ pub struct Projection {
     pub controller_version: String,
     /// What the agent binary reported THIS poll, and the release its behaviours
     /// were measured against. A spread between them is a flag to re-measure,
-    /// never a failure (R8, R29).
+    /// never a failure.
     pub agent_version: Option<String>,
     pub agent_version_expected: Option<String>,
     pub fleet: PolicyView,
@@ -42,7 +41,7 @@ pub struct Projection {
     pub in_flight: Option<InFlight>,
     /// Whether this loop is issuing effects at all, and why not when it is not.
     pub effects: EffectsView,
-    /// The file-access gate (R33, lessons claude-code D4): `ok` once every
+    /// The file-access gate (lessons claude-code D4): `ok` once every
     /// configured worktree has answered a listing, `pending` while any has not.
     /// The detail names the path and which of the two answers it was, and is
     /// present exactly while the state is pending.
@@ -170,10 +169,9 @@ pub struct SeatRow {
     pub decision: String,
     pub outcome: String,
     /// Consecutive blind dispatches for this seat, and whether the guard is
-    /// holding it down (R14, R26). A number and a flag, both read from the
-    /// controller's own record: a person answers a halted row with
-    /// `fleet event clear-halt`, and the count is what says how close an
-    /// unhalted one is.
+    /// holding it down. A number and a flag, both read from the controller's
+    /// own record: a person answers a halted row with `fleet event clear-halt`,
+    /// and the count is what says how close an unhalted one is.
     pub blind: u32,
     pub halted: bool,
 }

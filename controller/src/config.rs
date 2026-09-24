@@ -1,4 +1,4 @@
-//! `config.json` — the machine's list of managed seats (PRD § Seats are rows).
+//! `config.json` — the machine's list of managed seats.
 //!
 //! Local, written by `fleet` commands, and re-read whenever its mtime moves.
 //! Every writer renames a temp file over the path, so a reader sees a whole old
@@ -38,9 +38,10 @@ pub struct MachineConfig {
     /// reported and never defaulted: a session opened in the wrong directory
     /// claims work as the wrong seat.
     pub skipped: Vec<String>,
-    /// The machine's own answers for `[controller]` keys, as written (PRD R28).
-    /// Read here and applied in [`crate::policy`], so this file stays the
-    /// machine's document and the grammar of a key stays policy's.
+    /// The machine's own answers for `[controller]` keys, as written; each one
+    /// overrides `fleet.toml`'s per key. Read here and applied in
+    /// [`crate::policy`], so this file stays the machine's document and the
+    /// grammar of a key stays policy's.
     pub controller: Option<serde_json::Value>,
 }
 
@@ -222,7 +223,7 @@ pub fn drop_seat(path: &Path, name: &str) -> Result<bool, String> {
     Ok(dropped)
 }
 
-// ---- the `[seats]` render (PRD R4) ------------------------------------------
+// ---- the `[seats]` render ---------------------------------------------------
 
 /// One named seat, as `fleet start` renders it into a row.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -444,7 +445,7 @@ mod tests {
     }
 
     /// The machine's own answers for `[controller]` keys, read off the file and
-    /// handed to policy as written (R28).
+    /// handed to policy as written.
     #[test]
     fn the_machines_own_controller_answers_are_read_off_the_file() {
         let config = parse(
@@ -460,7 +461,7 @@ mod tests {
         assert!(bare.controller.is_none());
     }
 
-    /// The render (R4): an upsert by name, a named row dropped when its seat
+    /// The render: an upsert by name, a named row dropped when its seat
     /// leaves the table, and a transient row and an unknown key that survive it
     /// BYTE FOR BYTE — which is what the document-edit discipline is for.
     #[test]

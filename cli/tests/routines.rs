@@ -1,5 +1,4 @@
-//! `fleet routine list | check | run | history` against the shipped binary
-//! (PRD R24).
+//! `fleet routine list | check | run | history` against the shipped binary.
 //!
 //! Every arm runs the built `fleet` with a scratch machine directory and a
 //! scratch fleet root, and reads each exit from the child's own status. The

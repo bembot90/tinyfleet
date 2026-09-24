@@ -1,14 +1,14 @@
 //! `fleet seat nudge` — the courier verb: one message to a live session from
-//! outside any session (cli PRD § `fleet seat nudge`, packs PRD P1).
+//! outside any session.
 //!
 //! It delivers through the ring `fleet dispatch` already has, so the row
 //! lookup, the worktree choice, the roster read and the adapter's turn are one
 //! path for both callers and the provider is reached from one place.
 //!
-//! The two refusals in front of it are the PROJECTION's, in the order the PRD
-//! gives them: the collector first (exit 5), then the seat (exit 4). The
-//! projection is what makes a seat one of this fleet's, so a seat with a live
-//! session and no published row is refused here on purpose.
+//! The two refusals in front of it are the PROJECTION's, in a fixed order: the
+//! collector first (exit 5), then the seat (exit 4). The projection is what
+//! makes a seat one of this fleet's, so a seat with a live session and no
+//! published row is refused here on purpose.
 
 use std::path::Path;
 use std::time::Duration;

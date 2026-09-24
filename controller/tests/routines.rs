@@ -1,4 +1,4 @@
-//! The routine file, the three roots and the clock (PRD R22, Q1).
+//! The routine file, the three roots and the clock.
 //!
 //! Every arm here is offline: the loader is a pure function over a list of
 //! directories, and the trigger takes the instant and the check runner as
@@ -75,7 +75,8 @@ fn a_file_that_names_only_what_it_must_carries_the_defaults() {
 }
 
 /// The unattended-fleet example in the workspace README, parsed through this
-/// same loader (flights PRD R26).
+/// same loader. Core ships no routine that composes or flies, so this file is
+/// the one a person writes.
 ///
 /// THE TEXT IS READ OUT OF THE DOCUMENT and never copied here: an example
 /// beside a format is a claim about that format, and a copy of it in this file

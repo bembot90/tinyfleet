@@ -26,9 +26,9 @@ fleet-core = { path = "../core" }
 serde_json.workspace = true
 
 # clap owns the argument surface and anyhow owns the errors, in this crate only:
-# the cli PRD gives every command one dispatch with one arm per family and one
-# exit vocabulary, and both are shapes a binary holds. A library member that took
-# either would be deciding how a caller's process ends.
+# every command routes through one dispatch with one arm per family and answers
+# in one exit vocabulary, and both are shapes a binary holds. A library member
+# that took either would be deciding how a caller's process ends.
 anyhow.workspace = true
 clap.workspace = true
 

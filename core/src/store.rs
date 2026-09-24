@@ -1,5 +1,4 @@
-//! The work graph, reached through the `bd` binary and no other way (packs PRD
-//! R20).
+//! The work graph, reached through the `bd` binary and no other way.
 //!
 //! The trait is what the verbs are written against, so a suite can force a
 //! read-back that disagrees with the write beside it — the one failure a real
@@ -254,10 +253,10 @@ pub trait Store {
 
     /// A hold raised on this item, answered as the hold's own id.
     ///
-    /// The store's own object and not a question item this fleet owns (flights
-    /// PRD S4a): bd files it as a gate of type human, the held item leaves the
-    /// ready set the moment it is created, and it comes back when somebody
-    /// clears the hold. So a park needs nothing of fleet's beside the event.
+    /// The store's own object and not a question item this fleet owns: bd files
+    /// it as a gate of type human, the held item leaves the ready set the moment
+    /// it is created, and it comes back when somebody clears the hold. So a park
+    /// needs nothing of fleet's beside the event.
     fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError>;
 
     /// Every hold the store still calls open, by id.
@@ -266,7 +265,7 @@ pub trait Store {
     /// hold this is and never which item it blocks — measured on bd 1.3.0,
     /// where the blocked item appears only inside the description's prose — so
     /// a caller that wants one item's hold reads that hold's id off the item's
-    /// own park and asks this list whether it is still here (flights PRD S4a).
+    /// own park and asks this list whether it is still here.
     fn open_holds(&self) -> Result<Vec<String>, StoreError>;
 
     /// One hold cleared, which puts the item it blocked back in the ready set.
@@ -287,7 +286,7 @@ pub trait Store {
     /// 1.3.0, where two exports left every other file under `.beads` as it was
     /// in bytes, and in mtime bar the embedded engine's journal, which a bare
     /// read touches the same way — so nothing is carried forward here to keep
-    /// the export's polarity right (packs PRD R20).
+    /// the export's polarity right.
     fn export(&self, into: &Path) -> Result<(), StoreError>;
 }
 

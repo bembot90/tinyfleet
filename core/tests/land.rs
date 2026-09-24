@@ -1,5 +1,4 @@
-//! `fleet land` (packs PRD R8, R9, R19, R20, Q2) against a real work graph and
-//! a git seam that answers.
+//! `fleet land` against a real work graph and a git seam that answers.
 //!
 //! One store for the whole binary and one item per arm, as the deliver suite
 //! has it: `bd` serialises against itself on this box. The git seam is a stub
@@ -701,7 +700,7 @@ fn run_watched(
 }
 
 /// The same landing with the box's load in the arm's own hands, which is what
-/// drives the rerun's wait (flights PRD R18).
+/// drives the rerun's wait.
 #[allow(clippy::too_many_arguments)]
 fn run_loaded(
     scratch: &dyn Rooted,
@@ -2170,8 +2169,8 @@ fn a_branch_name_is_refused_before_any_git_write() {
 }
 
 /// A landing handed no test command lands on the review alone, and says NOT
-/// TESTED on the one line a script reads (Q2) — read back off the RECORD, which
-/// is where a script finds it.
+/// TESTED on the one line a script reads — read back off the RECORD, which is
+/// where a script finds it.
 #[test]
 fn a_landing_handed_no_test_says_not_tested_on_the_record() {
     let scratch = Board::new("land-suite-none");
@@ -3108,7 +3107,7 @@ fn the_landing_template_is_a_default_and_the_registry_still_resolves() {
     );
 }
 
-// ---- the lane and its lock (flights PRD R15, R16; S3b) ------------------------
+// ---- the lane and its lock ---------------------------------------------------
 
 /// Where this rig's lane and its lock sit: the machine directory the arms hand
 /// in, the default `lanes/` under it, and the project's own name under the
@@ -3362,7 +3361,7 @@ fn a_lane_already_under_the_prefixed_name_leaves_an_older_one_alone() {
     );
 }
 
-/// A LANDING THAT FINDS THE LANE HELD PRINTS THE HOLDER AND WAITS (R15, S3b).
+/// A LANDING THAT FINDS THE LANE HELD PRINTS THE HOLDER AND WAITS.
 ///
 /// The hold is a real file lock taken by this arm, and the landing runs on
 /// another thread: what is proved is that the verb did not proceed while the
@@ -3490,7 +3489,7 @@ fn a_lane_whose_lock_cannot_be_made_is_exit_3_with_nothing_written() {
     );
 }
 
-// ---- the gate's one rerun (flights PRD R18, Q3c) ------------------------------
+// ---- the gate's one rerun ----------------------------------------------------
 
 /// A test command whose exit comes from a file of rc's, one per reading, and
 /// which says which reading it is on its own stdout.
@@ -3548,7 +3547,7 @@ impl lane::Load for StubLoad {
 }
 
 /// A RED GATE IS RERUN ONCE AND A GREEN SECOND READING LANDS, with both rows in
-/// the note and both readings on the stream (R18).
+/// the note and both readings on the stream.
 #[test]
 fn a_red_gate_is_rerun_once_and_a_green_second_reading_lands_with_both_rows() {
     let scratch = &store();
@@ -3760,9 +3759,9 @@ fn the_rerun_waits_for_the_box_to_quieten_and_the_row_says_it_did() {
     assert!(!gate.contains("expired"), "and it did not expire:\n{gate}");
 }
 
-/// THE EXPIRY RERUNS ANYWAY AND SAYS SO (Q3c) — and on a busy box this is the
-/// common path and not the exceptional one, which is why it has an arm of its
-/// own rather than riding the wait's.
+/// THE EXPIRY RERUNS ANYWAY AND SAYS SO — and on a busy box this is the common
+/// path and not the exceptional one, which is why it has an arm of its own
+/// rather than riding the wait's.
 #[test]
 fn a_wait_that_expires_reruns_anyway_and_the_row_says_it_expired() {
     let scratch = &store();
@@ -3817,7 +3816,7 @@ fn a_wait_that_expires_reruns_anyway_and_the_row_says_it_expired() {
     );
 }
 
-// ---- the advance strategy's record (flights PRD R17, S3a) ---------------------
+// ---- the advance strategy's record -------------------------------------------
 
 /// A DELIVERY THAT WAS BEHIND SAYS SO ON THE NOTE'S FIRST LINE, and one that was
 /// current does not. The two are one arm because the reading that matters is

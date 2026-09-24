@@ -1,5 +1,5 @@
 //! `fleet seat spawn`, `fleet seat feed`, `fleet seat retire` — the cli half of
-//! the controller's transient-seat primitives (cli PRD § Seat).
+//! the controller's transient-seat primitives.
 //!
 //! Everything here is what only a process knows: the project the cwd resolves
 //! to, its two directories, the clock, the agent binary and the file a turn is
@@ -420,7 +420,9 @@ fn notes_of(here: &Here, item: &str) -> Option<String> {
 // ---- the spawner seam -------------------------------------------------------
 
 /// The spawner `dispatch` reaches when it is given no `--to`, which is the one
-/// the controller's primitives implement (packs PRD Q4).
+/// the controller's primitives implement. The row, the worktree, the first
+/// turn, the belt and the retire are the controller's; the order note, the
+/// brief's content and the assignment stay `dispatch`'s.
 ///
 /// It answers `Refusal` on every path this verb has, including the belt's: a
 /// dispatch whose spawn refuses withdraws the order in the same act, so the
@@ -566,8 +568,10 @@ pub(crate) fn resolved(project: Option<&str>) -> Result<Here, Stop> {
 const PERMISSIONS: &str = "overlay/per-provider/claude/permissions.json";
 
 /// The overlay directory whose files belong in a spawned seat's own
-/// CONFIGURATION space (flights PRD R13, Q1e), rather than in the worktree or on
-/// the plugin root.
+/// CONFIGURATION space, rather than in the worktree or on the plugin root. That
+/// directory holds only what the pack's overlay puts there, so nothing from the
+/// person's home directory — settings, memory, instructions, servers — reaches
+/// a spawned seat.
 ///
 /// The defaults carry none today: the guards reach a session through the plugin root
 /// and the permissions through the worktree's own settings file, so a spawned

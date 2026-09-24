@@ -1,15 +1,15 @@
 //! `fleet create`, `fleet start`, `fleet stop` — everything about them that is
-//! not argv (cli PRD § Lifecycle; PRD R1–R4, R33).
+//! not argv.
 //!
 //! THERE IS NO `fleet install`. The work an install verb would have done — the
 //! machine directory, the seat list, the `[seats]` render, the service file and
 //! the telemetry disclosure — is [`first_run`], one function `fleet start` calls
 //! before it loads anything and a later installer script can call instead.
-//! Nothing in it starts anything: load is a second deliberate act (R1).
+//! Nothing in it starts anything: load is a second deliberate act.
 //!
 //! The two writers below are the whole of what `fleet create` decides. Neither
 //! touches the project's work-graph store: the controller never initialises and
-//! never rewrites one (R3), and nothing here shells out to it.
+//! never rewrites one, and nothing here shells out to it.
 
 use crate::events::{self, EventLog, CONTROLLER};
 use crate::policy::{self, Policy};
@@ -214,7 +214,7 @@ pub fn validate_declaration(path: &Path) -> Result<String, String> {
 pub const DECLARED_KEYS: [&str; 4] = ["name", "item_prefix", "primary", "worktrees"];
 
 /// The same file, read for EVERY key a registration needs rather than the one
-/// the register is keyed on (controller PRD § Two modes).
+/// the register is keyed on.
 ///
 /// Held to this only where a person wrote the file: the declaration this verb
 /// writes itself leaves the prefix commented for the person to fill in and names
@@ -390,8 +390,8 @@ pub struct FirstRunReport {
     pub changed: bool,
 }
 
-/// The install work, in one function, with NOTHING STARTED (R1, lessons
-/// gas-city G1).
+/// The install work, in one function, with NOTHING STARTED (lessons gas-city
+/// G1).
 ///
 /// Every step is idempotent, so a second `fleet start` repeats none of it and
 /// says so line by line. The order is the one a reader needs: the directory
@@ -517,7 +517,7 @@ fn rendered_seats(run: &FirstRun) -> Result<Vec<config::RenderedSeat>, String> {
         .collect())
 }
 
-/// Telemetry: off, and asked (R2, lessons gas-city G2).
+/// Telemetry: off, and asked (lessons gas-city G2).
 ///
 /// NOTHING IS ASKED, and that is the disclosure. A question with nothing behind
 /// it — no metric is collected, none is sent, and there is no endpoint — is a

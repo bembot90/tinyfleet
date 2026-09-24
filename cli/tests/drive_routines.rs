@@ -11,7 +11,7 @@ include!("drive/rig.rs");
 
 mod common;
 
-/// The routines on the controller's own tick (PRD R22–R24, Q2).
+/// The routines on the controller's own tick.
 ///
 /// Every arm here drives the BUILT binary against the stub agent, with the
 /// routines' clock on a file this rig steps: an arm about a schedule that ran on

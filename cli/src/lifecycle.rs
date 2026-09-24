@@ -1,5 +1,5 @@
 //! `fleet create`, `fleet start`, `fleet stop` — the cli half of the lifecycle
-//! family (cli PRD § Lifecycle).
+//! family.
 //!
 //! Everything here is argv, the terminal and what only a process knows: which
 //! directory the call was made in, which executable is running, and the two
@@ -65,14 +65,13 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
     // answers are. A person answers two prompts and then meets a refusal the
     // call could have carried from the start otherwise.
     //
-    // A DECLARED PROJECT WINS AT ITS OWN LEVEL (controller PRD § Two modes): the
-    // resolver reads a directory carrying `.fleet/project.toml` as a standalone
-    // project whatever sits beside the declaration, so a fleet.toml there is
-    // not this project's fleet and `--standalone` registers the declaration
-    // rather than colliding with its neighbour. That makes this refusal the one
-    // mode's and not both, so the embedded arm below carries it instead — after
-    // the question, because a mode nobody has answered for yet cannot be
-    // refused on.
+    // A DECLARED PROJECT WINS AT ITS OWN LEVEL: the resolver reads a directory
+    // carrying `.fleet/project.toml` as a standalone project whatever sits
+    // beside the declaration, so a fleet.toml there is not this project's fleet
+    // and `--standalone` registers the declaration rather than colliding with
+    // its neighbour. That makes this refusal the one mode's and not both, so
+    // the embedded arm below carries it instead — after the question, because a
+    // mode nobody has answered for yet cannot be refused on.
     let fleet_toml = root.join(lifecycle::FLEET_TOML);
     let declared = root.join(lifecycle::PROJECT_TOML);
     if fleet_toml.is_file() && !declared.is_file() {
@@ -156,7 +155,7 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
         // collision: this verb validates its keys and registers it, and writes
         // nothing over a file somebody wrote. EVERY key, not just the one the
         // register is keyed on — a file this verb did not write is the only one
-        // whose keys nobody has checked (controller PRD § Two modes).
+        // whose keys nobody has checked.
         Mode::Standalone if declared.is_file() => {
             let name = lifecycle::validate_written_declaration(&declared).map_err(Stop::refused)?;
             ui.status(

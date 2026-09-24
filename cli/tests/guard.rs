@@ -292,8 +292,8 @@ fn a_project_with_no_fleet_toml_above_it_reads_the_machine_directory_and_its_own
 }
 
 /// A DECLARED PROJECT WINS AT ITS OWN LEVEL, for the guards as for the item
-/// verbs (controller PRD § Two modes): a directory holding both files is standalone, so
-/// the switches are the FLEET's and the bare-id target is the project's.
+/// verbs: a directory holding both files is standalone, so the switches are the
+/// FLEET's and the bare-id target is the project's.
 ///
 /// The neighbour disagrees on both — it leaves the class this machine switched
 /// off ON, and names a different prefix — which is what makes each answer below
@@ -510,7 +510,7 @@ fn the_doctor_entry_runs_both_check_lines_and_exits_with_the_first_non_zero() {
 // ---- the two classes a pack wires, through the same binary ------------------
 
 /// A declared project carrying all four target keys, which is the shape the
-/// pack's own guards read (packs PRD § Policy core reads).
+/// pack's own guards read.
 const TARGETS: &str = "[project]\nitem_prefix = \"acme\"\n\n[guards.targets]\n\
                        release_ref_glob = \"refs/heads/*release/*\"\n\
                        prod_buckets = [\"live.example.test\"]\n\

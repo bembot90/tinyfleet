@@ -1,5 +1,4 @@
-//! What a due routine DOES (PRD R23): ring a seat, file an item, or run a
-//! command.
+//! What a due routine DOES: ring a seat, file an item, or run a command.
 //!
 //! Every child an action starts gets the constructed environment — the
 //! platform's own search path and the four values a shell needs — with two
@@ -516,7 +515,7 @@ fn run_word_of(stdout: &str) -> Option<String> {
 /// own timeout, and read the run off what the verb printed.
 ///
 /// THE VERB'S EXIT IS THE OUTCOME: 0 is a run that closed or is waiting, 1 a
-/// run that failed, 3 one nobody could classify — the cli PRD's table, read
+/// run that failed, 3 one nobody could classify — the shared exit table, read
 /// back rather than re-derived from the stream. Both streams go to a log
 /// beside an exec's, and the run id rides the terminal event as `run`.
 fn run_workflow(routine: &Routine, workflow: &Run, machine: &Machine) -> Done {

@@ -127,8 +127,8 @@ mod effects {
         }
     }
 
-    /// `--reason` belongs to `rest` and to no other seat writer (cli PRD
-    /// § `fleet event rest`, against § `fleet event woke|handed-off|exited`).
+    /// `--reason` belongs to `rest` and to no other seat writer: `woke`,
+    /// `handed-off` and `exited` refuse it.
     ///
     /// The refusal is clap's, at argv, so it is reached before anything the
     /// controller would read — which is why the stream's length is the reading
@@ -195,8 +195,7 @@ mod effects {
         assert_eq!(last["payload"]["reason"], "a nap");
     }
 
-    /// The `seat` noun refuses the four writers and names the `event` one
-    /// (cli PRD P0 #7).
+    /// The `seat` noun refuses the four writers and names the `event` one.
     ///
     /// The rig publishes nothing, so `event rest` on it exits 5 — no collector.
     /// That 5 is the control the 2 needs: it is the same rig and the same seat,
@@ -590,9 +589,8 @@ mod effects {
     }
 
     /// A NAMED seat's start writes no settings into its worktree: that checkout
-    /// is a person's, and their own permission rules stay theirs (R13's shape).
-    /// Only a transient spawn renders the pack's document, and this loop makes
-    /// none.
+    /// is a person's, and their own permission rules stay theirs. Only a
+    /// transient spawn renders the pack's document, and this loop makes none.
     ///
     /// Read off the worktree the loop actually started a session in, which the
     /// arm above proves the start was issued for.
@@ -619,8 +617,9 @@ mod effects {
         );
     }
 
-    /// AC3(b), AC7 and AC8 — the rest collection, in the order the PRD fixes,
-    /// and the same collection with its stop failing.
+    /// AC3(b), AC7 and AC8 — the rest collection, in its fixed order of stop,
+    /// start the successor, remove the predecessor, and the same collection
+    /// with its stop failing.
     #[test]
     fn a_rest_is_stop_then_start_then_remove_and_a_failed_stop_retries() {
         let rig = Rig::new("effect-rest");
@@ -1044,7 +1043,7 @@ mod effects {
         let row = seat_row(&rig);
         assert_eq!(row["decision"], "halt");
         assert_eq!(row["outcome"], "halted");
-        assert_eq!(row["blind"], 3, "the R26 row carries its count: {row}");
+        assert_eq!(row["blind"], 3, "the seat row carries its count: {row}");
         assert_eq!(row["halted"], true);
         assert_eq!(
             rig.events_of("session.halted"),
@@ -1391,8 +1390,8 @@ mod effects {
     }
 
     /// An effect execs the binary the GATE resolved, on the constructed path,
-    /// and not whatever `claude` this process's own search path finds first
-    /// (PRD R19, §7).
+    /// and not whatever `claude` this process's own search path finds first: a
+    /// child's PATH is constructed, never inherited.
     ///
     /// The two are separated by putting a DIFFERENT `claude` first on the
     /// controller's `PATH` from the one the constructed path resolves, with the
@@ -1503,8 +1502,9 @@ mod effects {
     }
 }
 
-/// The per-row configuration directory, driven through the BUILT controller
-/// (flights PRD R13, Q1e; § The seat's isolation, as measured).
+/// The per-row configuration directory, driven through the BUILT controller:
+/// each spawned seat starts under a configuration directory of its own, and
+/// every read of its session has to go through that one.
 ///
 /// The unit arms in `controller/tests/observe.rs` pin the fold over values they
 /// build themselves; these drive the whole path — the listing the loop asks for,

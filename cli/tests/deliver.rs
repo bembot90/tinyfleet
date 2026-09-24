@@ -1,5 +1,5 @@
 //! `fleet deliver` through the shipped binary, against a scratch repository and
-//! a stub that stands in for the provider (packs PRD R6, R7, R10).
+//! a stub that stands in for the provider.
 //!
 //! This is where the live git path is proven: the project is a real repository,
 //! the commit the verb makes is read back out of it with git, and the delivery
@@ -501,7 +501,7 @@ fn an_empty_roster_exits_zero_and_the_delivery_stands() {
 }
 
 /// The refusals through the binary: each rc read from its own command, and the
-/// tree the same after each as before (R10).
+/// tree the same after each as before.
 #[test]
 fn the_trunk_and_an_unclean_tree_are_refused_by_the_shipped_binary() {
     let rig = Rig::new("refused");

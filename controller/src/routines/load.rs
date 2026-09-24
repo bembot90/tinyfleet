@@ -1,5 +1,5 @@
-//! The three roots a routine can come from (PRD R22): the fleet install, every
-//! installed pack, and every project.
+//! The three roots a routine can come from: the fleet install, every installed
+//! pack, and every project.
 //!
 //! A pure function over a list of roots, re-run on every tick that evaluates —
 //! a directory listing and a parse each — so a file dropped into a routines

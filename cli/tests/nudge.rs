@@ -1,5 +1,5 @@
 //! `fleet seat nudge` through the shipped binary, with the ring reaching a stub
-//! that stands in for the provider (packs PRD P1, cli PRD § `fleet seat nudge`).
+//! that stands in for the provider.
 //!
 //! The stub is `dispatch.rs`'s: `agents` serves a roster file and `-p` records
 //! the turn's argv and exits by a seam. What the projection says is a file each

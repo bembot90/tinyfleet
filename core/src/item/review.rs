@@ -1,16 +1,15 @@
-//! `fleet review` — the reviewer's read and the verdict it writes (packs PRD
-//! R7, Q1; cli PRD § `fleet review <item>`).
+//! `fleet review` — the reviewer's read and the verdict it writes.
 //!
-//! Q1 ruled core's review is THE READER: one reviewer seat, the diff against
-//! the item, the decisions walk. So the size line here is a measurement and
-//! carries no tier — core ships no T0-to-T3 scheme and no per-tier fan-out,
-//! which are the tiny pack's opinion plugging in at the packs PRD's P1
-//! ("`fleet review` size tiers with a per-tier review a pack defines").
+//! Core's review is THE READER: one reviewer seat, the diff against the item,
+//! the decisions walk. So the size line here is a measurement and carries no
+//! tier — core ships no T0-to-T3 scheme and no per-tier fan-out, which are the
+//! tiny pack's opinion and plug in as size tiers with a per-tier review a pack
+//! defines.
 //!
 //! IT NEVER LANDS. `--land` writes the ACCEPTED verdict that the landing verb
-//! then reads; the squash, the push and the close are that verb's (cli PRD
-//! § `fleet land`). A verdict is a note like every other note the verbs write,
-//! and it is read back before exit 0.
+//! then reads; the squash, the push and the close are that verb's. A verdict
+//! is a note like every other note the verbs write, and it is read back before
+//! exit 0.
 
 use std::io::Write;
 use std::path::Path;
@@ -344,7 +343,7 @@ fn accept(
     Ok(note)
 }
 
-/// The one event either writing mode appends (flights PRD Q4a).
+/// The one event either writing mode appends.
 ///
 /// AFTER THE VERDICT IS WRITTEN AND READ BACK, and before the exit: a crash
 /// between the two leaves a verdict nothing announced, which the fold reads as

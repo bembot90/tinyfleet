@@ -1,6 +1,6 @@
-//! R18 — the census. Two arms: that every table it names is one of the eight,
-//! and that every reader call site in this workspace's source names a pair the
-//! census carries.
+//! The census, which every key a verb reads has to be in. Two arms: that every
+//! table it names is one of the eight, and that every reader call site in this
+//! workspace's source names a pair the census carries.
 
 mod common;
 

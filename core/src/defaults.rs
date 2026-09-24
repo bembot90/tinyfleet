@@ -351,8 +351,8 @@ fn restore(root: &Path, aside: Option<PathBuf>) {
     }
 }
 
-/// The line written and read back, which is the read-back every verb owes its
-/// own record (packs PRD R9).
+/// The line written and read back: no verb exits 0 on a write it has not read
+/// back.
 fn pin(lock_path: &Path, entry: &lock::Entry) -> Result<(), Refusal> {
     lock::append(lock_path, entry).map_err(|e| Refusal::Lock(e.to_string()))?;
     match lock::holds(lock_path, entry) {

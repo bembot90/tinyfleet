@@ -1,4 +1,4 @@
-//! The run lifecycle's controller half (controller PRD R35–R37).
+//! The run lifecycle's controller half.
 //!
 //! Every arm here drives the pass against a real stream file in a temporary
 //! directory and a stub for the three acts. The stub WRITES WHAT THE REAL ACT

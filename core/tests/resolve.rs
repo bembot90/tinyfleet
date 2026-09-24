@@ -1,4 +1,4 @@
-//! R2 and R17 — the layers and the shadow surface, over real folders.
+//! The layers and the shadow surface, over real folders.
 
 mod common;
 

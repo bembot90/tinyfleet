@@ -1,5 +1,5 @@
 //! The landing lane: the worktree the fleet owns per project, and the lock
-//! every landing queues on (flights PRD R15, R16; S3b, S3d).
+//! every landing queues on.
 //!
 //! ONE QUEUE PER PROJECT, AND `land` IS WHAT TAKES IT. The tick's landings and
 //! a person's `fleet land` wait on the same object because both reach it the
@@ -25,7 +25,7 @@ use crate::item::{Progress, Stop};
 use crate::policy;
 
 /// `[core.flight] lanes` where the policy names none: one directory under the
-/// machine directory holding one worktree per project (flights PRD R16).
+/// machine directory holding one worktree per project.
 pub const LANES: &str = "lanes";
 
 /// What the lane's own directory is called, ahead of the project's name.
@@ -41,7 +41,7 @@ pub const LANE_PREFIX: &str = "lane-";
 pub const LOCK_SUFFIX: &str = ".lock";
 
 /// `[core.flight] rerun_wait_seconds` where the policy names none: how long the
-/// rerun waits for the box's load to fall before running anyway (R18, Q3c).
+/// rerun waits for the box's load to fall before running anyway.
 pub const RERUN_WAIT_SECONDS: u64 = 300;
 
 /// The line a landing prints when the lane is held. It opens at column zero and
@@ -317,7 +317,7 @@ fn holder_of(path: &Path) -> String {
 }
 
 /// The box's five-minute load and the ceiling it is judged against, as the
-/// caller reads them (flights PRD R18).
+/// caller reads them.
 ///
 /// A SEAM AND NOT A VALUE, because the wait exists to see the load FALL and one
 /// reading cannot show that. `None` is a leg nobody could read — never a box
@@ -343,7 +343,7 @@ impl Load for Unread {
 pub enum Waited {
     /// The load was already under the ceiling, or fell under it in time.
     Quiet(String),
-    /// The wait ran out and the rerun runs anyway (Q3c: the expiry reruns).
+    /// The wait ran out and the rerun runs anyway.
     Expired(String),
     /// No reading, so there was nothing to wait for.
     Unreadable,
@@ -365,10 +365,10 @@ impl Waited {
 /// Wait for the five-minute load to fall under the belt's ceiling, bounded by
 /// `[core.flight] rerun_wait_seconds`.
 ///
-/// THE EXPIRY RERUNS ANYWAY AND SAYS SO (Q3c). A suite that raced the box is
-/// rerun beside a quieter one where the box quietens, and on a box that never
-/// does the rerun still happens — with the row saying the wait expired, so the
-/// reader of a second red knows which kind of box it was taken on.
+/// THE EXPIRY RERUNS ANYWAY AND SAYS SO. A suite that raced the box is rerun
+/// beside a quieter one where the box quietens, and on a box that never does the
+/// rerun still happens — with the row saying the wait expired, so the reader of
+/// a second red knows which kind of box it was taken on.
 pub fn wait_for_a_quiet_box(load: &dyn Load, limit: Duration, progress: &dyn Progress) -> Waited {
     let Some((first, ceiling)) = load.read() else {
         return Waited::Unreadable;

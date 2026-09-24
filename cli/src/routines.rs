@@ -1,4 +1,4 @@
-//! `fleet routine list | check | run | history` (PRD R24).
+//! `fleet routine list | check | run | history`.
 //!
 //! One family module and one arm in the dispatch, so a second family's landing
 //! and this one's meet in one place. The four verbs are one clap enum here and
@@ -163,9 +163,9 @@ fn projects_of(fleet_root: &std::path::Path) -> Vec<(String, PathBuf)> {
 /// action carries a nudge: a verb that listed sessions to run an exec routine
 /// would refuse on a machine with no agent installed.
 fn seat_views(fleet: &Fleet, needs_roster: bool) -> Vec<SeatView> {
-    // The table read ONCE for the whole pass: the directory a spawned seat's
-    // session is held under is what a read and a ring both have to go through
-    // (flights PRD R13), and it lives on that seat's own row.
+    // The table read ONCE for the whole pass: every spawned seat's session is
+    // held under a configuration directory of its own, which a read and a ring
+    // both have to go through, and it lives on that seat's own row.
     let recorded = sessions::read(&sessions::path_in(&fleet.machine_dir)).0;
     let config_dir_of = |seat: &str| {
         recorded

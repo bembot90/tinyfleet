@@ -991,9 +991,9 @@ impl Rig {
     }
     /// Every configuration directory a listing was asked for, one per line and
     /// in call order. It is what an arm reads to say WHICH directory a read was
-    /// made under, which is the whole of the per-row isolation (flights PRD
-    /// R13): a fold that asked for every row under the fleet's own leaves this
-    /// file carrying nothing else.
+    /// made under, which is the whole of the per-row isolation — every spawned
+    /// seat under a configuration directory of its own: a fold that asked for
+    /// every row under the fleet's own leaves this file carrying nothing else.
     fn listing_dirs_path(&self) -> PathBuf {
         self.root.join("listing-dirs")
     }

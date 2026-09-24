@@ -414,7 +414,7 @@ fn to_a_transient_seat(
     }
 }
 
-/// The one event this verb writes (flights PRD Q4a).
+/// The one event this verb writes.
 ///
 /// AFTER THE READ-BACK AND BEFORE THE EXIT, always in that order: the note is
 /// the order and the event is the fold's copy of it, so a crash between them

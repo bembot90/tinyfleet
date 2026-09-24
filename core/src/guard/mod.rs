@@ -6,9 +6,9 @@
 //! every seat has a shell and every fleet has a record. The other two —
 //! release-ref and production-write — fail it, because a fifty-commit side
 //! project has no release refs and no production cloud, so they are A PACK'S
-//! guards on the same rules (packs PRD § The guards): the class lives here,
-//! which classes a provider runs is the pack's overlay to wire, and the
-//! `[guards]` table switches any of them off the same way.
+//! guards on the same rules: the class lives here, which classes a provider
+//! runs is the pack's overlay to wire, and the `[guards]` table switches any of
+//! them off the same way.
 //!
 //! Three rules hold for every class:
 //!
@@ -50,11 +50,11 @@ pub const ESCAPE_SQL_WRITE: &str = "FLEET_SQL_WRITE_OK";
 pub const ESCAPE_BARE_ID: &str = "FLEET_BARE_ID_OK";
 pub const ESCAPE_PROD_WRITE: &str = "FLEET_PROD_WRITE_OK";
 
-/// The release-ref class has no constant above and cannot have one: the packs
-/// PRD's row reads "none at this layer; a hook beneath it holds the override".
-/// A leading assignment would put a release one prefix away from a seat, and the
-/// person who cuts one does it from their own shell, where no pre-tool hook runs
-/// at all. This is the sentence a refusal with no escape prints in its place.
+/// The release-ref class has no constant above and cannot have one: there is no
+/// escape at this layer, and a hook beneath it holds the override. A leading
+/// assignment would put a release one prefix away from a seat, and the person
+/// who cuts one does it from their own shell, where no pre-tool hook runs at
+/// all. This is the sentence a refusal with no escape prints in its place.
 pub const NO_ESCAPE: &str =
     "no escape at this layer — a release is cut by a person from their own shell";
 
@@ -64,7 +64,7 @@ pub const ITEM_PREFIX_KEY: &str = "[project] item_prefix";
 /// The keys the two pack classes need, each in the project's own
 /// `[guards.targets]` table, beside the fleet's `[guards]` switches. A check
 /// whose key is absent or empty refuses nothing and says so under the check
-/// flag (packs PRD R16).
+/// flag.
 pub const RELEASE_REF_GLOB_KEY: &str = "[guards.targets] release_ref_glob";
 pub const PROD_BUCKETS_KEY: &str = "[guards.targets] prod_buckets";
 pub const PROD_PROJECTS_KEY: &str = "[guards.targets] prod_projects";
@@ -307,7 +307,7 @@ pub fn item_prefix(config: &toml::Table) -> Option<String> {
 
 /// The targets the two pack classes read, all in the project's own
 /// `[guards.targets]` table and all through the census, so the pairs a guard
-/// reads can be read out of this source without running it (packs PRD R18).
+/// reads can be read out of this source without running it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Targets {
     pub release_ref_glob: Option<String>,

@@ -1,4 +1,4 @@
-//! `fleet dispatch` (packs PRD R4, R9, R10, R20) against a real work graph.
+//! `fleet dispatch` against a real work graph.
 //!
 //! One store for the whole binary and one item per arm: `bd` serialises against
 //! itself on this box, so a store per arm buys isolation at a price and no

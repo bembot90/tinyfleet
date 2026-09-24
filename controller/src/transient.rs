@@ -1,4 +1,4 @@
-//! The transient-seat primitives (PRD R30–R32; cli PRD § Seat).
+//! The transient-seat primitives.
 //!
 //! Three verbs — `fleet seat spawn`, `fleet seat feed`, `fleet seat retire` —
 //! as three functions over the machine directory, the adapter, the policy, the
@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-/// The rows of the exit table a REFUSAL can carry, as the cli PRD names them.
+/// The rows of the exit table a REFUSAL can carry.
 /// Done is not among them: a verb that answers `Ok` carries a value and not a
 /// status, and the cli turns it into 0.
 pub const REFUSED: u8 = 1;
@@ -117,9 +117,9 @@ impl Machine<'_> {
         sessions::path_in(self.machine_dir)
     }
 
-    /// The configuration directory a spawned seat of this name comes up under
-    /// (flights PRD R13, Q1e): one per seat, under the machine directory, so
-    /// nothing from the person's home directory reaches a flight.
+    /// The configuration directory a spawned seat of this name comes up under:
+    /// one per seat, under the machine directory, so nothing from the person's
+    /// home directory reaches a flight.
     ///
     /// The LOCATION is the machine directory's and no policy key names it: a
     /// second spelling of it is a second place a stale value can live.
@@ -214,7 +214,7 @@ impl Machine<'_> {
         EventLog::open(&self.stream_path())
     }
 
-    /// One line on the stream, which is the controller's ONE ledger (R23, R25).
+    /// One line on the stream, which is the controller's ONE ledger.
     ///
     /// A failed append is reported and never swallowed: the act it journals has
     /// already happened — the marker moved, the seat was reclaimed — so a
@@ -244,8 +244,8 @@ impl Machine<'_> {
     ///
     /// `config_dir` is one row's own configuration directory, and `None` the
     /// fleet's. A session started under its own is held by its own daemon and
-    /// named by no other listing (flights PRD R13), so a verb about such a seat
-    /// reads there or sees nothing at all — which is a probe that cannot fail.
+    /// named by no other listing, so a verb about such a seat reads there or
+    /// sees nothing at all — which is a probe that cannot fail.
     fn roster_under(
         &self,
         config_dir: Option<&Path>,
@@ -364,9 +364,9 @@ impl Belt {
 
         // THE FLEET'S LISTING, and one more per transient seat that came up under
         // its own configuration directory. Such a seat is held by its own daemon
-        // and appears in no other listing (flights PRD R13), so a cap counted off
-        // the fleet's read alone would be zero however many were mid-turn — a
-        // ceiling that refuses nothing, which is what this leg exists to prevent.
+        // and appears in no other listing, so a cap counted off the fleet's
+        // read alone would be zero however many were mid-turn — a ceiling that
+        // refuses nothing, which is what this leg exists to prevent.
         //
         // ONE UNREADABLE LISTING makes the whole leg could-not-tell, as one
         // unreadable roster did: a count short by an unknown number is not a
@@ -508,7 +508,7 @@ fn override_u32(key: &str) -> Option<u32> {
     std::env::var(key).ok()?.trim().parse().ok()
 }
 
-// ---- spawn (R30) ------------------------------------------------------------
+// ---- spawn ------------------------------------------------------------------
 
 /// What a spawn was asked for. The first turn is the file's TEXT: reading the
 /// file is the caller's, because the caller is the one that knows whether a
@@ -538,7 +538,7 @@ pub struct Spawn<'a> {
     /// The commit this seat's worktree is cut from, where the caller names one.
     /// `None` cuts from [`TRUNK`], which is what every spawn did before a
     /// reviewer had to read a delivery and a returned builder had to resume
-    /// from one (flights PRD R11, R14).
+    /// from one.
     ///
     /// A base the primary cannot resolve REFUSES BEFORE ANYTHING IS MADE: the
     /// `worktree add` would otherwise leave a name claimed and a rollback to
@@ -556,7 +556,7 @@ pub struct Spawn<'a> {
 }
 
 /// Where the per-row configuration directories live, under the machine
-/// directory: one per spawned seat, named by the seat (flights PRD R13, Q1e).
+/// directory: one per spawned seat, named by the seat.
 pub const CONFIG_DIRS: &str = "config";
 
 /// The one placeholder [`spawn`] fills, in the same `{name}` grammar the pack's
@@ -579,7 +579,7 @@ pub struct Spawned {
 }
 
 /// Create a transient seat: the belt, the worktree, the row, the start, the
-/// read-back (R30).
+/// read-back.
 ///
 /// Each step is read back before the next, and the ROLLBACK WINDOW OPENS AT THE
 /// WORKTREE: everything refused above it leaves nothing behind, and a start
@@ -679,10 +679,10 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
     };
 
     // (c3) The seat's OWN configuration directory, empty but for whatever the
-    // overlay puts in a configuration space (R13, Q1e). Made here, inside the
-    // rollback window and before the start, because the start is what the
-    // directory is for and a session that came up under the person's own
-    // directory is the isolation failure this whole slice is against.
+    // overlay puts in a configuration space. Made here, inside the rollback
+    // window and before the start, because the start is what the directory is
+    // for and a session that came up under the person's own directory is the
+    // isolation failure this whole slice is against.
     let config_dir = machine.config_dir_for(&name);
     if let Err(why) = make_config_dir(&config_dir, ask.config_files) {
         return Err(rolled_back(machine, COULD_NOT_TELL, &name, &worktree, &why));
@@ -833,7 +833,7 @@ fn base_of(worktree: &Path) -> Option<String> {
     (sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit())).then_some(sha)
 }
 
-/// The seat's own configuration directory, made and read back (R13, Q1e).
+/// The seat's own configuration directory, made and read back.
 ///
 /// A directory that already stands is EMPTIED first: a spawn re-using a name a
 /// retire left behind would otherwise hand the new session the old one's state,
@@ -1088,7 +1088,7 @@ fn crashed_output(stream: &Path, after: u64, seat: &str) -> Option<String> {
         })
 }
 
-// ---- feed (R31) -------------------------------------------------------------
+// ---- feed -------------------------------------------------------------------
 
 /// What a feed left behind: the turn that was in the seat and the one that is
 /// now, so a caller can say what moved.
@@ -1100,11 +1100,11 @@ pub struct Fed {
 }
 
 /// Hand a live transient seat its next first turn, moving the occupant marker
-/// with a put-back on a delivery that failed (R31).
+/// with a put-back on a delivery that failed.
 ///
 /// THE MARKER IS THE SESSION-TABLE ROW'S `first_turn`, which the spawn set and
 /// this verb moves; the move is journaled on the event stream, which is the
-/// controller's one ledger (R23, R25), and never in a file beside it.
+/// controller's one ledger, and never in a file beside it.
 pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refusal> {
     let seats = machine.seats()?;
     let row = machine.transient_row(&seats, seat)?;
@@ -1112,9 +1112,9 @@ pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refu
     let key = dir_key(&worktree);
 
     // Under the seat's own configuration directory, for the same reason the
-    // retire reads there (flights PRD R13): the fleet's listing does not name a
-    // spawned seat's session, and a feed that read it would refuse every live
-    // seat as having none.
+    // retire reads there: the fleet's listing does not name a spawned seat's
+    // session, and a feed that read it would refuse every live seat as having
+    // none.
     let config_dir = machine.recorded_config_dir(seat);
     let under = config_dir.as_deref().map(Path::new);
     let rows = machine.roster_under(under)?;
@@ -1222,7 +1222,7 @@ fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or("")
 }
 
-// ---- retire (R32) -----------------------------------------------------------
+// ---- retire -----------------------------------------------------------------
 
 /// What a retire reclaimed, as numbers a person reads.
 #[derive(Debug)]
@@ -1272,7 +1272,7 @@ pub fn withdraws_nothing(_seat: &str) -> Result<Vec<String>, Refusal> {
 }
 
 /// End a transient seat and verify from OUTSIDE that nothing of it holds RAM or
-/// disk (R32).
+/// disk.
 ///
 /// The roster is read once, whole, at the top: an unreadable one is
 /// could-not-tell, because a session nobody could ask is a question and not an
@@ -1294,11 +1294,11 @@ pub fn retire_with(
     let worktree = machine.worktree_of(&row)?;
     let key = dir_key(&worktree).to_string();
 
-    // THE DIRECTORY THIS SEAT'S SESSION IS HELD UNDER, read off its own row
-    // (flights PRD R13). Every listing, stop and removal below is made under it:
-    // a spawned seat is named by its own daemon's listing and by no other, so
-    // the fleet's read would find no live row, take the no-session branch, and
-    // delete the worktree out from under a session still running in it.
+    // THE DIRECTORY THIS SEAT'S SESSION IS HELD UNDER, read off its own row.
+    // Every listing, stop and removal below is made under it: a spawned seat is
+    // named by its own daemon's listing and by no other, so the fleet's read
+    // would find no live row, take the no-session branch, and delete the
+    // worktree out from under a session still running in it.
     let config_dir = machine.recorded_config_dir(seat);
     let under = config_dir.as_deref().map(Path::new);
 
@@ -1528,7 +1528,7 @@ pub fn delete_branch(machine: &Machine, branch: &str) -> Result<(), String> {
     .map(|_| ())
 }
 
-// ---- the priced retire (flights PRD R10, R12) -------------------------------
+// ---- the priced retire ------------------------------------------------------
 
 /// What one seat cost, and where its work got to.
 ///
@@ -1557,8 +1557,7 @@ pub struct Priced {
     pub cost: Cost,
 }
 
-/// Retire a seat a flight spawned, reading what it cost before it goes (R10,
-/// R12).
+/// Retire a seat a flight spawned, reading what it cost before it goes.
 ///
 /// THE READINGS COME FIRST, ALL OF THEM, because each is gone the instant the
 /// removal lands: the transcript goes with the session row, the worktree with
@@ -1725,8 +1724,8 @@ fn verify_from_outside(
     pid: Option<u32>,
 ) -> Result<(), Refusal> {
     // UNDER THE SEAT'S OWN DIRECTORY, which is the only listing that could name
-    // its session (flights PRD R13): the fleet's would answer "no live row" for a
-    // spawned seat whatever was running, which is a probe that cannot fail.
+    // its session: the fleet's would answer "no live row" for a spawned seat
+    // whatever was running, which is a probe that cannot fail.
     let rows = machine.roster_under(under)?;
     if let Some(row) = rows
         .iter()

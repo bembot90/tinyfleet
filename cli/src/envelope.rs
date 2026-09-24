@@ -1,5 +1,4 @@
-//! The one JSON document every verb the SDK calls prints under `--json` (cli
-//! PRD § The JSON envelope).
+//! The one JSON document every verb the SDK calls prints under `--json`.
 //!
 //! THE DOCUMENT IS THE OUTCOME AND NOT A RENDERING OF IT — the rule `status.rs`
 //! states for its own flag. A caller parses one document and learns what

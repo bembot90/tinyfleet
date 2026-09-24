@@ -1,4 +1,4 @@
-//! The four seat events, from the writing end (PRD R20).
+//! The four seat events, from the writing end.
 //!
 //! A seat's lifecycle is not a state this controller infers — the roster cannot
 //! tell a hibernated session from a deliberately stopped one (lessons
@@ -29,10 +29,10 @@ pub const EXIT_NOT_HALTED: u8 = 1;
 
 /// How stale the projection may be before the collector counts as gone.
 ///
-/// Freshness is the collector's only liveness signal (PRD § The projection never
-/// answers liveness), so the check is the published document's age against the
-/// interval it says it is published at — three of them, which tolerates a poll
-/// spent inside a slow effect without tolerating a controller that stopped.
+/// Freshness is the collector's only liveness signal, so the check is the
+/// published document's age against the interval it says it is published at —
+/// three of them, which tolerates a poll spent inside a slow effect without
+/// tolerating a controller that stopped.
 pub const COLLECTOR_STALE_POLLS: u64 = 3;
 
 /// Write one seat event and confirm it landed.
@@ -87,7 +87,7 @@ pub fn record(
 
 /// Whether a rest can be collected, or which half failed.
 ///
-/// The order is the PRD's: no collector outranks no session, because a fleet
+/// The order is fixed: no collector outranks no session, because a fleet
 /// nobody is polling would not act on a rest for a seat that IS live either.
 fn rest_is_answerable(machine_dir: &Path, seat: &str) -> Result<(), (u8, String)> {
     let document = fresh_projection(machine_dir)?;
@@ -133,7 +133,7 @@ fn rest_is_answerable(machine_dir: &Path, seat: &str) -> Result<(), (u8, String)
     Ok(())
 }
 
-/// Whether a clear-halt can be consumed, or which half failed (R14).
+/// Whether a clear-halt can be consumed, or which half failed.
 ///
 /// The same collector check a rest takes, and for the same reason: a clear-halt
 /// is a REQUEST the controller consumes on its tick, so writing one into a fleet

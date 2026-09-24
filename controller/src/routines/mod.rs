@@ -1,5 +1,4 @@
-//! Routines: standing duties the controller's own tick evaluates and fires
-//! (PRD R22–R24).
+//! Routines: standing duties the controller's own tick evaluates and fires.
 //!
 //! One clock and one record. There is no second daemon and no per-routine service
 //! job: every routine from the fleet install, from every installed pack and from
@@ -68,8 +67,8 @@ impl Outcome {
         )
     }
 
-    /// The exit `fleet routine run` carries for this outcome, from the cli PRD's
-    /// one exit table.
+    /// The exit `fleet routine run` carries for this outcome, from the one exit
+    /// table every verb shares.
     pub fn exit_code(self) -> u8 {
         match self {
             Outcome::Delivered | Outcome::Filed | Outcome::Deduped | Outcome::Ran => 0,
@@ -89,8 +88,8 @@ pub struct SeatView {
     pub worktree: String,
     pub state: RosterState,
     /// The configuration directory this seat's session is held under, where its
-    /// own row names one (flights PRD R13). A ring that reached a spawned seat
-    /// through the fleet's directory would start a second session beside it.
+    /// own row names one. A ring that reached a spawned seat through the
+    /// fleet's directory would start a second session beside it.
     pub config_dir: Option<String>,
 }
 
@@ -176,7 +175,7 @@ impl Pass<'_> {
     }
 }
 
-/// One pass over every loaded routine (PRD R22, Q2).
+/// One pass over every loaded routine.
 ///
 /// The state is written BEFORE the action on every firing: a duty that happened
 /// and was not recorded fires again forever, and a double firing costs one turn.

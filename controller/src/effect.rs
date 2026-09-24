@@ -1,7 +1,7 @@
-//! Carrying a verdict out (PRD R16, R18, R19, R21).
+//! Carrying a verdict out.
 //!
-//! Every act here writes its own event, once, at the layer that did the thing
-//! (R25) — so a person reading the stream in the morning sees the request, its
+//! Every act here writes its own event, once, at the layer that did the thing —
+//! so a person reading the stream in the morning sees the request, its
 //! collection and its outcome as three lines rather than as silence.
 //!
 //! Every verdict the table reaches is acted on here. `halt` is the one whose act
@@ -68,7 +68,7 @@ pub struct Target<'a> {
     pub first_turn: String,
     pub transient: bool,
     /// The configuration directory this start comes up under, when it comes up
-    /// under its own (flights PRD R13). `None` takes the fleet's.
+    /// under its own. `None` takes the fleet's.
     pub config_dir: Option<String>,
     /// The work item this dispatch gave the seat, where an order named one.
     pub item: Option<String>,
@@ -83,7 +83,7 @@ pub struct Target<'a> {
     /// shape, and this layer only carries what it was handed onto the stream.
     /// `None` is a start no belt was run for, and writes `null`.
     pub belt: Option<serde_json::Value>,
-    /// The run that spawned this seat, where one did (controller PRD R37).
+    /// The run that spawned this seat, where one did.
     /// `None` is a seat spawned outside a run, and the run's own cleanup passes
     /// over it — which is what makes the key a selector and not a label.
     pub run: Option<String>,
@@ -95,7 +95,7 @@ pub struct Target<'a> {
 
 impl Target<'_> {
     /// The directory every act about this session is made under: the one the
-    /// start named, or the fleet's (flights PRD R13).
+    /// start named, or the fleet's.
     fn config_dir(&self) -> Option<&Path> {
         self.config_dir.as_deref().map(Path::new)
     }
@@ -156,7 +156,7 @@ fn open_row(table: &mut Table, target: &Target, dispatch_id: String, now_ms: u64
     });
 }
 
-/// The sentence one nudge carries (PRD R21, lessons claude-code C5).
+/// The sentence one nudge carries (lessons claude-code C5).
 ///
 /// It names the reading, the threshold it crossed and the command that answers
 /// it, because a suggestion whose recipient has to go and look up all three is
@@ -190,8 +190,8 @@ pub enum Rested {
     /// row removed. The rest is collected and the event is consumed.
     Collected,
     /// The stop did not exit 0. Nothing was started and nothing was removed, the
-    /// rest stays pending, and the next poll retries — the alarm the PRD names
-    /// is exactly this: a `seat.resting` with no `session.rested` after it.
+    /// rest stays pending, and the next poll retries. A `seat.resting` with no
+    /// `session.rested` after it is the alarm, and this is exactly that.
     StopFailed(String),
     /// The stop exited 0 and the successor's start failed. The predecessor is
     /// down, its row still stands, nothing was removed and the rest stays pending.
@@ -288,8 +288,8 @@ pub fn start_once(
     }
 }
 
-/// The rest collection, in the order the PRD fixes: stop, start the successor,
-/// then remove the predecessor (R16).
+/// The rest collection, in a fixed order: stop, start the successor, then
+/// remove the predecessor.
 ///
 /// THE ORDER IS LOAD-BEARING AND THE REMOVAL IS ONLY EVER AFTER A SUCCESSFUL
 /// STOP. A remove aimed at a live row neither refuses nor spares it, and a stop
@@ -345,7 +345,7 @@ pub fn rest(
     Rested::Collected
 }
 
-/// Bring a hibernated row back in place (R10).
+/// Bring a hibernated row back in place.
 ///
 /// The attach is addressed by the row's SHORT ID, so the session continues under
 /// the same id with its context intact — a flagged resume would fork it (lessons
@@ -415,8 +415,8 @@ pub fn revive(
     }
 }
 
-/// Claim, at startup, every session the table names that the roster still LISTS
-/// (R17).
+/// Claim, at startup, every session the table names that the roster still
+/// LISTS.
 ///
 /// LISTED AND NOT ENDED, and never the pid: a row the daemon carries without one
 /// is a session it still holds — hibernated, or between hosts — and a session
@@ -440,7 +440,7 @@ pub fn revive(
 /// restart — or a `--once` poll, which is a process per poll — writes nothing
 /// for a session an earlier start claimed.
 ///
-/// A row is claimed when it is LIVE and never by its state (R17, gas-city G7:
+/// A row is claimed when it is LIVE and never by its state (gas-city G7:
 /// "adopts every live session it names"). The state word cannot carry the
 /// question — a live idle session reads `done` (lessons claude-code A3), so a
 /// claim gated on it takes no idle seat at all — and liveness is a sighting
@@ -501,7 +501,7 @@ pub fn adopt(
     ids
 }
 
-/// The one line and the one event a halt transition writes (R14).
+/// The one line and the one event a halt transition writes.
 ///
 /// Announced ONCE per transition into the halt and never once per poll: the
 /// caller writes this only when the latch moved.
@@ -560,8 +560,8 @@ pub fn nudge(
     };
     // The session is marked WHETHER OR NOT the turn landed. The budget is one
     // nudge per session and a retry loop against a session that cannot be
-    // reached is the noise R21 exists to prevent; the event carries the failure
-    // for the person who reads the stream.
+    // reached is the noise that budget exists to prevent; the event carries the
+    // failure for the person who reads the stream.
     table.mark_nudged(target.seat_dir, session_id);
     append(
         events_log,

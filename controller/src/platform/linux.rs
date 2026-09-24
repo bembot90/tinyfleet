@@ -48,9 +48,9 @@ pub fn load_average_5m() -> Option<f64> {
     super::belt_sample(&samples[..filled.clamp(0, 3) as usize])
 }
 
-/// The process table is `/proc`, not `/bin/ps` (PRD § Two platforms). A
-/// `/proc` that is not mounted answers `None`: without it this layer cannot
-/// tell a gone process from a filesystem it cannot see.
+/// The process table is `/proc`, not `/bin/ps`. A `/proc` that is not mounted
+/// answers `None`: without it this layer cannot tell a gone process from a
+/// filesystem it cannot see.
 pub fn process_alive(pid: u32) -> Option<bool> {
     if pid == 0 || !Path::new("/proc/self").is_dir() {
         return None;

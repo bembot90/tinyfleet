@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 use crate::store::StoreError;
 
-/// The exits, as the cli PRD's table names them. A verb answers with one of
+/// The exits, one vocabulary shared by every verb. A verb answers with one of
 /// these and the cli does nothing but return it.
 pub const DONE: u8 = 0;
 pub const REFUSED: u8 = 1;
@@ -89,7 +89,7 @@ impl std::fmt::Display for Stop {
 ///
 /// `Absent` is a seat with no live session, which is not a failure: the
 /// assignment already recorded the handoff, and the seat's successor reads the
-/// order at wake (packs PRD § What every verb refuses to guess, rule 4).
+/// order at wake.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RingOutcome {
     Delivered,
@@ -141,7 +141,7 @@ pub const RUN_CANCELLED: &str = "run.cancelled";
 /// machine and not about the workflow.
 pub const RUN_CLEANED: &str = "run.cleaned";
 
-/// The item vocabulary (flights PRD § The events, Q4a).
+/// The item vocabulary.
 ///
 /// Five of these and [`CHECK_READ`] are the verbs' own: each writes exactly
 /// one, after its note has been written and read back. [`ITEM_HELD`] is
@@ -156,9 +156,9 @@ pub const ITEM_LANDED: &str = "item.landed";
 pub const ITEM_HELD: &str = "item.held";
 pub const CHECK_READ: &str = "check.read";
 
-/// The one a person's clearance writes (flights PRD R21). It is the hold's own
-/// kind and not an item's: what it says is that the object a park raised is
-/// cleared, and the item it names is how a fold ties it to a list.
+/// The one a person's clearance writes. It is the hold's own kind and not an
+/// item's: what it says is that the object a park raised is cleared, and the
+/// item it names is how a fold ties it to a list.
 pub const HOLD_CLEARED: &str = "hold.cleared";
 
 /// The value `item.reviewed` carries under `verdict`. The accept is the only
@@ -285,7 +285,7 @@ impl Progress for Silent {
 
 /// The trunk, as the local ref names it. `deliver` records the base it read
 /// and never fetches: a fetch moves what a second verb is about to gate on, and
-/// `land` is the verb that owns that (cli PRD § `fleet land`).
+/// `land` is the verb that owns that.
 pub const TRUNK: &str = "origin/main";
 
 /// The branch a delivery may not sit on.
@@ -331,8 +331,7 @@ pub trait Git {
     ///
     /// It is a SECOND operation beside [`Git::commit`] and not a flag on it,
     /// because the two verbs that commit want different sets: a delivery is the
-    /// staged set the seat chose, and a park is everything the seat has
-    /// (flights PRD S4c).
+    /// staged set the seat chose, and a park is everything the seat has.
     fn add_all(&self) -> Result<(), String>;
 
     /// The staged set committed with this message, answered as the commit the
@@ -367,9 +366,9 @@ pub fn numstat_line(line: &str) -> Option<Change> {
 /// What the controller answered when asked for a seat to give this item to.
 ///
 /// `base` is the commit the seat's worktree was cut from, read by the spawner
-/// from that worktree's own HEAD: the fact is answered by the tree it describes
-/// (flights PRD Q4a, the `item.dispatched` row). `None` where the spawner could
-/// not read it, which the event then carries absent rather than as a guess.
+/// from that worktree's own HEAD: the fact is answered by the tree it
+/// describes. `None` where the spawner could not read it, which the event then
+/// carries absent rather than as a guess.
 ///
 /// `belt` is both readings the spawn was let through on, rendered by the
 /// spawner into the lines a person reads. Core measures no machine and knows
@@ -480,7 +479,7 @@ pub fn table_at(path: &Path) -> toml::Table {
 /// The same file with the two failures kept apart, for a reader that has to
 /// tell an empty policy from one it could not read — `fleet status` prints the
 /// `[[core.flight.rules]]` table off the policy in force and answers
-/// could-not-tell where the file will not parse (cli PRD § `fleet status`).
+/// could-not-tell where the file will not parse.
 pub fn read_table(path: &Path) -> Result<toml::Table, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("{} could not be read: {e}", path.display()))?;
@@ -562,16 +561,16 @@ pub const VERDICT_MARKERS: [&str; 2] = ["ACCEPTED", "RETURNED WITH FINDINGS"];
 /// covers region).
 pub const LANDING_MARKERS: [&str; 1] = ["LANDED"];
 
-/// The one a park opens on (flights PRD R19). It shares no prefix with the
-/// three above, and it ENDS each of their regions: a park written after a
-/// delivery is a region of its own, so a reader taking the last delivery does
-/// not read the park's branch and commit as the delivery's.
+/// The one a park opens on. It shares no prefix with the three above, and it
+/// ENDS each of their regions: a park written after a delivery is a region of
+/// its own, so a reader taking the last delivery does not read the park's
+/// branch and commit as the delivery's.
 pub const PARK_MARKERS: [&str; 1] = ["PARKED"];
 
-/// The one a person's answer opens on (flights PRD R21). It ends the park it
-/// answers, which is the whole of why it is a marker at all: a park's region
-/// carries the question and its options, and an answer written inside that
-/// region would be read back as part of the question.
+/// The one a person's answer opens on. It ends the park it answers, which is
+/// the whole of why it is a marker at all: a park's region carries the question
+/// and its options, and an answer written inside that region would be read back
+/// as part of the question.
 pub const ANSWER_MARKERS: [&str; 1] = ["ANSWERED"];
 
 /// Whether this line opens a note with one of these markers, at column zero.

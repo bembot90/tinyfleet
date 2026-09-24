@@ -1,6 +1,5 @@
 //! `fleet event tail | show` against the shipped binary, and `fleet event
-//! step`, the step pair's writer (cli PRD § `fleet event tail`, § `fleet event
-//! show`, § `fleet event step`).
+//! step`, the step pair's writer.
 //!
 //! Every arm runs the built `fleet` with a scratch machine directory holding a
 //! stream this file writes, and reads each exit from the child's own status.
@@ -448,8 +447,8 @@ fn show_prints_the_one_event_and_names_an_absent_or_duplicated_id() {
     );
 }
 
-/// AC5 — no stream at the resolved path: both readers refuse in the PRD's
-/// stream row, naming the path a caller would have to look at.
+/// AC5 — no stream at the resolved path: both readers refuse with exit 5, the
+/// no-collector row, naming the path a caller would have to look at.
 #[test]
 fn a_missing_stream_refuses_both_readers_and_names_the_path() {
     let rig = Rig::new("no-stream");
@@ -475,10 +474,9 @@ fn a_missing_stream_refuses_both_readers_and_names_the_path() {
     assert_eq!(answered.stdout.len(), line(200).len() + 1);
 }
 
-/// AC6 — `--json`: the two readers the SDK replays from print the envelope
-/// (cli PRD § The JSON envelope), one document per event for a tail and one for
-/// a show, each carrying the record whole where the flagless tail carries the
-/// file's bytes.
+/// AC6 — `--json`: the two readers the SDK replays from print the envelope, one
+/// document per event for a tail and one for a show, each carrying the record
+/// whole where the flagless tail carries the file's bytes.
 #[test]
 fn the_json_readers_print_one_envelope_per_event_carrying_the_record_whole() {
     let rig = Rig::new("json-read");

@@ -989,10 +989,10 @@ pub(crate) fn open_store(root: &Path) -> Bd {
 /// A DECLARED PROJECT FIRST at each level, then the embedded file: a directory
 /// carrying its own `.fleet/project.toml` is a standalone project even where a
 /// `fleet.toml` sits beside it, because the declaration is that directory's own
-/// statement about itself and the neighbour may be some other tool's file
-/// (controller PRD § Two modes). Failing a declaration, a `fleet.toml` in the nearest
-/// directory that has one is an embedded fleet, which keeps its policy beside
-/// the work. The walk is the same one the guards take.
+/// statement about itself and the neighbour may be some other tool's file.
+/// Failing a declaration, a `fleet.toml` in the nearest directory that has one
+/// is an embedded fleet, which keeps its policy beside the work. The walk is
+/// the same one the guards take.
 pub fn resolve_at(chosen_packs_dir: Option<PathBuf>) -> Result<Here, Stop> {
     let cwd = std::env::current_dir()
         .map_err(|e| Stop::could_not_tell(format!("the current directory cannot be read: {e}")))?;
@@ -1004,7 +1004,7 @@ pub fn resolve_at(chosen_packs_dir: Option<PathBuf>) -> Result<Here, Stop> {
 ///
 /// The tick takes this one: a controller started as a service has no working
 /// directory to resolve a project from, and the directory it names is one the
-/// machine registers (controller PRD R35).
+/// machine registers.
 ///
 /// THE MACHINE DIRECTORY IS AN ARGUMENT AND NOT AN ENVIRONMENT READ. Everything
 /// this walk derives from it — the machine config, the guards, the policy file,
@@ -1257,9 +1257,10 @@ impl SeatRing {
 
         let home = platform::home_dir();
         let agent = ClaudeCode::new(&home, &self.machine_dir);
-        // A spawned seat's session is held by its own daemon and named by no
-        // other listing (flights PRD R13), so the ring reads — and rings —
-        // under the directory that seat's own session row recorded.
+        // A spawned seat's session is held by its own daemon, under the
+        // configuration directory that seat alone starts with, and named by no
+        // other listing, so the ring reads — and rings — under the directory
+        // that seat's own session row recorded.
         let config_dir = sessions::read(&sessions::path_in(&self.machine_dir))
             .0
             .and_then(|table| {
@@ -1313,7 +1314,7 @@ impl SeatRing {
 }
 
 /// The box's five-minute load against the belt's own ceiling, for the one wait a
-/// gate's rerun takes (flights PRD R18).
+/// gate's rerun takes.
 ///
 /// The ceiling is `[dispatch] load_ceiling_per_cpu` times the processor count,
 /// which is the same arithmetic the spawn belt does — one number, read twice,

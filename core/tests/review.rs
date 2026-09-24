@@ -1,4 +1,4 @@
-//! `fleet review` (packs PRD R7, Q1) against a real work graph.
+//! `fleet review` against a real work graph.
 //!
 //! The delivery each arm reads is planted as a note, because what review reads
 //! is the record and not the verb that wrote it: a review of a hand-written
@@ -809,7 +809,7 @@ fn an_item_with_no_delivery_is_refused() {
 }
 
 /// The size line is a measurement and names no tier: core is one reviewer's
-/// read at every size, and the tiers are the pack's (packs PRD P1).
+/// read at every size, and the tiers are the pack's.
 #[test]
 fn the_size_line_carries_counts_and_no_tier() {
     let line = review::rendered_size(&a_diff(), &PathBuf::from("/nowhere-at-all"));

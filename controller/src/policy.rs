@@ -1,4 +1,4 @@
-//! `fleet.toml` — policy, re-read on mtime (PRD R28).
+//! `fleet.toml` — policy, re-read on mtime.
 //!
 //! Startup refuses without it, because there is no last-good before the first
 //! read. A running loop that meets a file it cannot parse keeps last-good and
@@ -64,8 +64,8 @@ pub const DEFAULT_FIRST_TURN: &str = "/wake {seat}";
 pub const DEFAULT_NUDGE_MODEL: &str = "claude-haiku-4-5-20251001";
 
 /// The load belt's first leg: how much five-minute load average this fleet will
-/// carry per processor before a spawn is refused (PRD R30). One load unit per
-/// cpu is a machine with every core busy and nothing queued behind them.
+/// carry per processor before a spawn is refused. One load unit per cpu is a
+/// machine with every core busy and nothing queued behind them.
 pub const DEFAULT_LOAD_CEILING_PER_CPU: f64 = 1.0;
 
 /// How many times a run that nothing could classify is executed again before
@@ -107,7 +107,7 @@ pub struct Policy {
     /// sessions are long-lived wants a different figure from one whose seats
     /// turn over hourly, and neither is a number this code can choose.
     pub stopped_recency_hours: u64,
-    /// The load belt's two ceilings (R30), read here and nowhere else.
+    /// The load belt's two ceilings, read here and nowhere else.
     pub load_ceiling_per_cpu: f64,
     pub max_transient_busy: u32,
     /// The release this fleet's own file pins under `[substrate]`, as written.
@@ -125,8 +125,7 @@ pub struct Policy {
     /// handed a body and not a location for.
     pub plugin_dir: Option<PathBuf>,
     /// `[core.run] max_crashes` — the run lifecycle's cap, read here because the
-    /// controller is what counts a run's crashes and parks at the cap
-    /// (controller PRD R36).
+    /// controller is what counts a run's crashes and parks at the cap.
     pub run_max_crashes: u64,
 }
 
@@ -393,7 +392,7 @@ impl Policy {
     /// `[substrate]` pin where the file writes one, and otherwise the release
     /// fleet supports (`fleet_core::supported`). A fleet that pins nothing is
     /// not a fleet that expects nothing, so a spread there is "not the release
-    /// fleet supports" and announced the same way (R29).
+    /// fleet supports" and announced the same way.
     pub fn claude_code_expected(&self) -> String {
         named(
             self.claude_code_pin.as_deref(),
@@ -414,7 +413,7 @@ pub const SEAT_PARKED: &str = "parked";
 /// (on paper, never yet started) are `parked` here: kept and not run.
 pub const SEAT_PARKED_ALIASES: [&str; 2] = ["vacationing", "chartered"];
 
-/// One `[seats.<name>]` table (PRD R4).
+/// One `[seats.<name>]` table.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SeatEntry {
     /// The seat directory, and the identity key `config.json` is joined on.
@@ -487,7 +486,7 @@ fn parked_status(seat: &str, status: Option<&str>) -> Result<bool, String> {
     }
 }
 
-// ---- what `config.json` overrides, per key (PRD R28) ------------------------
+// ---- what `config.json` overrides, per key ----------------------------------
 
 /// The machine's local answer for any `[controller]` key.
 ///
@@ -1086,7 +1085,7 @@ mod tests {
         assert_eq!(file.overlaid(&overrides_in(None)), file);
     }
 
-    /// The `[seats]` table (R4): the three keys a row may carry, the defaults a
+    /// The `[seats]` table: the three keys a row may carry, the defaults a
     /// row that says nothing takes, and the blanks that are no value.
     #[test]
     fn a_seats_table_reads_its_rows_and_a_row_that_says_nothing_is_active() {

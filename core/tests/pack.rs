@@ -1,4 +1,4 @@
-//! R1 — the format. One arm per defect class the check knows, each built as a
+//! The pack format. One arm per defect class the check knows, each built as a
 //! real folder, plus the shipped pack read as it stands.
 
 mod common;

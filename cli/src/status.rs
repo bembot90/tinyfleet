@@ -1,4 +1,4 @@
-//! `fleet status` — the projection printed (cli PRD § `fleet status`).
+//! `fleet status` — the projection printed.
 //!
 //! IT READS FILES AND WRITES NOTHING. The projection the controller published,
 //! the policy in force and the event stream the runs are read off are the three

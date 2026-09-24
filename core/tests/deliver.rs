@@ -1,5 +1,4 @@
-//! `fleet deliver` (packs PRD R6, R9, R20) against a real work graph and a git
-//! seam that answers.
+//! `fleet deliver` against a real work graph and a git seam that answers.
 //!
 //! One store for the whole binary and one item per arm, as the dispatch suite
 //! has it: `bd` serialises against itself on this box. Each arm also takes its

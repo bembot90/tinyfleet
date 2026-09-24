@@ -48,8 +48,8 @@ pub fn command() -> Exit {
 
     // The order `fleet guard` resolves its policy in, so the two verbs answer
     // about one file: an embedded fleet's own, and — for a declared project,
-    // which wins at its own level — the FLEET's, named by the machine directory
-    // (controller PRD § Two modes).
+    // which wins at its own level — the FLEET's, named by the machine
+    // directory.
     let fleet_toml = match crate::walk_up_config(&cwd) {
         Some(crate::Found::Embedded(path)) => Some(path),
         Some(crate::Found::Declared(_)) | None => machine.as_ref().map(|m| m.fleet_toml.clone()),

@@ -17,10 +17,9 @@ path = "src/lib.rs"
 [features]
 test-support = []
 
-# Any crate, each with a work item that says why (Q1 of the controller PRD, as
-# re-ruled 2026-09-07). The work item that adds each of these is the observe
-# slice; it cannot be named here, because the boundary check forbids this
-# directory from naming the surrounding project.
+# Any crate, each added with a work item that says why. The work item that
+# adds each of these is the observe slice; it cannot be named here, because the
+# boundary check forbids this directory from naming the surrounding project.
 #
 # serde/serde_json: config.json, the projection and the event stream are JSON,
 # and all three are external contracts other programs read.

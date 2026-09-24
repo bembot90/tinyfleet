@@ -3,9 +3,8 @@
 # The provider's isolation pair, measured SESSION-FREE: the authentication status
 # under a scratch configuration directory, twice, one variable apart.
 #
-# The flights PRD § The seat's isolation, as measured. Two arms, because one arm
-# cannot tell a pair that still isolates from a provider that has stopped
-# scoping the credential at all:
+# Two arms, because one arm cannot tell a pair that still isolates from a
+# provider that has stopped scoping the credential at all:
 #
 #   the pair    the scratch directory with the credential knob DEFINED AND EMPTY
 #               beside it — a spawned seat's own start — must answer logged IN.

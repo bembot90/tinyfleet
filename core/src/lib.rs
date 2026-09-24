@@ -92,10 +92,10 @@
 //! module here that no verb calls: `shell-trap` and `record` are core's, because
 //! every seat has a shell and every fleet has a record, while `release-ref` and
 //! `production-write` are compiled in beside them and belong to a PACK — the
-//! class lives here, the wiring and the targets are the pack's and the project's
-//! (packs PRD § The guards). Every one of them is a pure function from a
-//! command's text and a resolved policy to a verdict, so a second agent runtime
-//! adds a reader of its own payload in the caller and reuses all four unchanged.
+//! class lives here, the wiring and the targets are the pack's and the
+//! project's. Every one of them is a pure function from a command's text and a
+//! resolved policy to a verdict, so a second agent runtime adds a reader of its
+//! own payload in the caller and reuses all four unchanged.
 
 pub mod add;
 pub mod defaults;

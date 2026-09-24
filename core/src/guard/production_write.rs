@@ -1,6 +1,5 @@
 //! The production-write class: three checks over one command's text, one per
-//! list the project declares (packs PRD § The guards, the production-write
-//! row).
+//! list the project declares.
 //!
 //! THE LISTS ARE THE WHOLE TARGET SET. A bucket host, a cloud project and an
 //! application name are refused because the project wrote them down, never

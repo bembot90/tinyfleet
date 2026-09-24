@@ -1,4 +1,4 @@
-//! The `seat` noun through the shipped binary (cli PRD § Seat).
+//! The `seat` noun through the shipped binary.
 //!
 //! Every exit here is read from the CHILD's own status, and every effect from
 //! the machine the child left behind — the worktree on disk, the two rows in
@@ -551,8 +551,7 @@ const PERMISSIONS: &str = "overlay/per-provider/claude/permissions.json";
 /// The rules a transient seat comes up under, through the shipped binary and
 /// against the BUNDLED pack: a session started under this fleet's posture
 /// refuses every writing call it holds no rule for, so the spawn renders the
-/// overlay's document into the seat's own worktree before the first turn
-/// (packs PRD § The first slice).
+/// overlay's document into the seat's own worktree before the first turn.
 ///
 /// The overlay is read off the tree rather than retyped, because the whole
 /// claim is that the file in the worktree is that file with two values in it —
@@ -786,8 +785,8 @@ fn a_tool_command_that_is_not_one_word_is_refused_at_the_render() {
 
 /// The document a pack ABOVE the defaults carries at the permission slot is the
 /// one a transient seat comes up under, and it replaces the default WHOLE list
-/// rather than adding to it (packs PRD § Shadowing; the registry lists the
-/// slot).
+/// rather than adding to it: a file in a higher layer shadows the same path
+/// below, and the shadow registry lists the slot.
 ///
 /// The fixture differs from [`a_pack_above_the_defaults_carrying_no_permission_rules_leaves_the_default_document_in_place`]
 /// in exactly one file, so the pair is a comparison and not two assertions: this
@@ -1059,10 +1058,9 @@ fn a_project_that_declares_neither_directory_derives_both_from_its_root() {
     );
 }
 
-/// A DECLARED PROJECT WINS AT ITS OWN LEVEL (controller PRD § Two modes): a directory
-/// carrying its own `.fleet/project.toml` resolves standalone even with a
-/// `fleet.toml` beside it, so the project's NAME and its worktrees directory are
-/// the declaration's.
+/// A DECLARED PROJECT WINS AT ITS OWN LEVEL: a directory carrying its own
+/// `.fleet/project.toml` resolves standalone even with a `fleet.toml` beside
+/// it, so the project's NAME and its worktrees directory are the declaration's.
 ///
 /// The two files disagree on both — the neighbour names the rig's own worktrees
 /// directory and leaves the name to the basename — so each assertion is a
@@ -1797,7 +1795,7 @@ fn a_retire_withdraws_an_item_the_seat_marked_in_progress() {
     );
 }
 
-// ---- the SDK's flag (cli PRD § The JSON envelope) ---------------------------
+// ---- the SDK's flag ----------------------------------------------------------
 
 /// The document a `--json` run printed on stdout, parsed, with the whole of
 /// stdout asserted to be that one document and nothing beside it.

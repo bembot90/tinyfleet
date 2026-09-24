@@ -1,4 +1,4 @@
-//! `fleet status` through the shipped binary (cli PRD § `fleet status`).
+//! `fleet status` through the shipped binary.
 //!
 //! THE FIXTURE IS THE CONTROLLER'S OWN TYPE, rendered by the controller's own
 //! writer: a projection hand-written as JSON here would pin this page against a

@@ -1,5 +1,4 @@
-//! The clock: a routine's trigger, and whether it is due at one instant (PRD
-//! R22).
+//! The clock: a routine's trigger, and whether it is due at one instant.
 //!
 //! Three answers and never two. `due`, `not-due` and `could-not-tell` are
 //! distinct all the way through — a check that timed out, could not be started

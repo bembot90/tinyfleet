@@ -43,18 +43,18 @@ pub const CENSUS: [(&str, &str); 18] = [
     // at a time still runs four workflows.
     ("core.run", "max_open"),
     // How many times a run that nothing could classify is executed again before
-    // the controller parks it (controller PRD R36). It is `[core.run]` and not a
-    // second key under `[core.flight]` for the reason `max_open` is: a crashing
-    // workflow and a crashing dispatched seat are two failures with two causes,
-    // and a fleet that tolerates one has said nothing about the other.
+    // the controller parks it. It is `[core.run]` and not a second key under
+    // `[core.flight]` for the reason `max_open` is: a crashing workflow and a
+    // crashing dispatched seat are two failures with two causes, and a fleet
+    // that tolerates one has said nothing about the other.
     ("core.run", "max_crashes"),
     // The `[[core.flight.rules]]` array, which `fleet status` prints off the
     // policy in force.
     ("core.flight", "rules"),
-    // The landing lane's two keys (flights PRD R16, R18; S3d). `lanes` is the
-    // directory the fleet's own worktrees sit in, read against the machine
-    // directory; `rerun_wait_seconds` bounds how long a rerun waits for the
-    // box's load to fall before running anyway.
+    // The landing lane's two keys. `lanes` is the directory the fleet's own
+    // worktrees sit in, read against the machine directory; `rerun_wait_seconds`
+    // bounds how long a rerun waits for the box's load to fall before running
+    // anyway.
     ("core.flight", "lanes"),
     ("core.flight", "rerun_wait_seconds"),
     ("guards", "*.enabled"),
@@ -70,7 +70,7 @@ pub const CENSUS: [(&str, &str); 18] = [
     ("permissions", "tool_commands"),
     // The targets a pack's two guard classes read: the glob the release-ref
     // class matches a push's destination against, and the three lists the
-    // production-write class reads one per check (packs PRD § The guards).
+    // production-write class reads one per check.
     // Core's own two classes need no pair here — the guards wildcard above is
     // their switch and the bare-id check's target is not a policy key.
     ("guards.targets", "release_ref_glob"),
@@ -85,9 +85,9 @@ pub const CENSUS: [(&str, &str); 18] = [
     ("guards.targets", "prod_make_goals"),
     ("guards.targets", "prod_dagger_functions"),
     ("guards.targets", "prod_workflow_refs"),
-    // Where a spawn cuts a transient seat's worktree from, and where it puts it
-    // (controller PRD R30). Both are paths, and both have an answer derived from
-    // the project root when the file names neither.
+    // Where a spawn cuts a transient seat's worktree from, and where it puts it.
+    // Both are paths, and both have an answer derived from the project root when
+    // the file names neither.
     ("project", "primary"),
     ("project", "worktrees"),
 ];

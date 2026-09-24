@@ -441,10 +441,10 @@ mod lessons {
     //! WHICH OVERLAY IS THE DOCTRINE PACK'S. The plugin root is this repository's
     //! and this repository's project is the doctrine pack's, so the list the
     //! plugin must equal is that pack's shadow of the file — which is where the
-    //! two classes a pack wires are wired (packs PRD § tiny, as the worked
-    //! example). The second arm holds the relationship between the two lists, so
-    //! a pack that dropped one of the default classes is caught here rather than in a
-    //! session that stopped refusing.
+    //! two classes a pack wires are wired. The second arm holds the
+    //! relationship between the two lists, so a pack that dropped one of the
+    //! default classes is caught here rather than in a session that stopped
+    //! refusing.
 
     use super::*;
 

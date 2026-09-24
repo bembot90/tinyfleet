@@ -1,5 +1,5 @@
 //! `fleet dispatch` through the shipped binary, with the ring reaching a stub
-//! that stands in for the provider (packs PRD R4).
+//! that stands in for the provider.
 //!
 //! The stub answers both halves the ring uses — the roster read and the one
 //! print-mode turn — and records the argv of the turn, so what the ring passed

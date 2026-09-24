@@ -215,8 +215,8 @@ pub fn remove(path: &Path, source: &str) -> Result<(), LockError> {
 }
 
 /// Whether the lock on disk carries this entry, field for field. The read-back
-/// every verb owes its own record (packs PRD R9): a write that returned `Ok` and
-/// landed nothing is the failure this answers.
+/// every verb owes its own record before it exits 0: a write that returned `Ok`
+/// and landed nothing is the failure this answers.
 pub fn holds(path: &Path, entry: &Entry) -> Result<bool, LockError> {
     Ok(read(path)?.iter().any(|e| e == entry))
 }

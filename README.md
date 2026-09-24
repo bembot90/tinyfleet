@@ -49,7 +49,7 @@ exercise.
 
 ## Flying unattended
 
-Core ships **no routine that composes or flies** (flights PRD R26).
+Core ships **no routine that composes or flies**.
 Composition is a workflow's — tiny's `preboard` writes a flight's list and its
 `takeoff` opens and flies it, both over core's `fleet run`
 (`brain/fleet-layers.md` § What moves). A fleet with nobody composing flights

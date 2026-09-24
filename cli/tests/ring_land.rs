@@ -1,5 +1,4 @@
-//! `fleet land` through the shipped binary, against a REAL remote (packs PRD
-//! R8, R10; cli PRD § `fleet land`).
+//! `fleet land` through the shipped binary, against a REAL remote.
 //!
 //! This is where the live git path is proven. The rig is three repositories: a
 //! bare one that is `origin`, a second one beside it that is the primary and
@@ -16,7 +15,7 @@
 //! did not.
 //!
 //! Every rc below is read from the child's own status and never off anything it
-//! printed (R10).
+//! printed.
 
 mod common;
 
@@ -1262,7 +1261,7 @@ fn the_bar_is_drawn_on_a_terminal_and_never_on_a_pipe() {
 
     let out = rig.on_a_pty(&["land", &rig.item, &rig.commit, "--test", SUITE]);
     // The child's own status, which `script` hands back — not inferred from
-    // anything the page says (R10).
+    // anything the page says.
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let page = stdout(&out);
     assert!(page.contains("LANDED "), "the landing succeeded:\n{page}");
@@ -1322,7 +1321,7 @@ fn make_executable(path: &Path) {
     std::fs::set_permissions(path, perms).expect("the file is made executable");
 }
 
-// ---- the lane (flights PRD R15, S3b) -----------------------------------------
+// ---- the lane: one per project, a lock `land` itself takes -------------------
 
 /// A second item on its own branch, its own file and its own accepted verdict,
 /// so two landings can be asked for at once.
@@ -1339,8 +1338,7 @@ fn a_second_item(rig: &Rig) -> (String, String) {
     (item, commit)
 }
 
-/// TWO LANDINGS ASKED FOR AT ONCE QUEUE ON THE LANE, and both land in order
-/// (R15, S3b).
+/// TWO LANDINGS ASKED FOR AT ONCE QUEUE ON THE LANE, and both land in order.
 ///
 /// THE WAIT IS SIZED TO THE LOCK AND NOT TO A CLOCK. The arm holds the first
 /// landing inside its suite until a file appears, watches the LOCK FILE for the
@@ -1453,7 +1451,7 @@ fn await_in(path: &Path, phrase: &str, what: &str) {
     }
 }
 
-// ---- the JSON envelope (cli PRD § The JSON envelope; MVP path row 2) ---------
+// ---- the JSON envelope (MVP path row 2) --------------------------------------
 
 /// Stdout as the ONE document it is under `--json`: the flag's whole promise to
 /// a caller is that the stream can be parsed rather than searched.

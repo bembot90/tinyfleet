@@ -36,7 +36,7 @@ pub struct ClaudeCode {
     pub credential_dir: String,
     /// The ABSOLUTE binary the four effect verbs exec, resolved once by
     /// [`ClaudeCode::resolve_effect_bin`] against the constructed `PATH` and
-    /// handed in (PRD R19, §7).
+    /// handed in.
     ///
     /// Separate from `bin`, which is observe's and may be a bare name: the two
     /// answer different questions, and a controller that gated on one and
@@ -121,7 +121,7 @@ impl ClaudeCode {
         }
     }
 
-    /// The binary an effect execs, resolved once (PRD R19, R33).
+    /// The binary an effect execs, resolved once.
     ///
     /// `FLEET_CLAUDE_BIN` when it names an ABSOLUTE path, and a relative one is
     /// refused rather than resolved: a relative path is read against whatever
@@ -171,10 +171,11 @@ impl ClaudeCode {
     /// differently on purpose.
     ///
     /// `config_dir` is the ONE per-child override: a start that names its own
-    /// configuration directory comes up under that one instead of the adapter's
-    /// (flights PRD Q1e, R13). The credential knob beside it is unchanged
-    /// either way — it is the operator's own configured value, and a child
-    /// whose two variables agree is the logged-out child (A11).
+    /// configuration directory comes up under that one instead of the adapter's:
+    /// each spawned seat has its own, holding only the pack's overlay. The
+    /// credential knob beside it is unchanged either way — it is the operator's
+    /// own configured value, and a child whose two variables agree is the
+    /// logged-out child (A11).
     fn with_environment(&self, program: &str, config_dir: Option<&Path>) -> Command {
         let mut cmd = Command::new(program);
         cmd.env_clear().env("PATH", &self.child_path);
@@ -217,7 +218,7 @@ impl ClaudeCode {
     }
 
     /// The four EFFECTS against the absolute binary `resolve_effect_bin`
-    /// returned, and against nothing else (§7).
+    /// returned, and against nothing else.
     ///
     /// It asks the process's search path nothing. The binary the gate checked
     /// and the binary an effect execs have to be one value, or a controller

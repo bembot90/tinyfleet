@@ -1,12 +1,12 @@
 //! `fleet` — one binary for the fleet, with one arm per family in the dispatch
-//! below and one function per family in its own module (cli PRD P0 #1).
+//! below and one function per family in its own module.
 //!
 //! `fleet status` is the reading verb of the set: it prints the projection the
 //! controller published — the roster with each seat's verdict and outcome, the
 //! grant, the halt latches, each seat's context against the rest threshold,
 //! and the `[[core.flight.rules]]` table of the policy in force. It reads the
 //! published document and the policy, never the process table, and it writes
-//! nothing at all (cli PRD § `fleet status`).
+//! nothing at all.
 
 mod claude;
 mod envelope;
@@ -38,7 +38,7 @@ use std::time::Duration;
 use ui::{Stream, Tone, Ui};
 
 /// The dispatch: one arm per family, each arm a call into the family's own
-/// function (cli PRD P0 #1). Nothing here parses; clap has already done that.
+/// function. Nothing here parses; clap has already done that.
 #[derive(Parser)]
 #[command(
     name = "fleet",
@@ -60,9 +60,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Family {
-    // The lifecycle family, in the order a person meets it (cli PRD
-    // § Lifecycle). There is no `install` verb: its work runs on the first
-    // `start`, in one function a later installer script calls.
+    // The lifecycle family, in the order a person meets it. There is no
+    // `install` verb: its work runs on the first `start`, in one function a
+    // later installer script calls.
     /// write this project's fleet and materialize its defaults
     #[command(long_about = "\
 write this project's fleet, from inside the project. It asks embedded or
@@ -131,9 +131,9 @@ woke, rest, handed-off and exited are said under `fleet event`.")]
     #[command(hide = true, disable_help_flag = true)]
     Order(OldWords),
 
-    // The item verbs are TOP-LEVEL and take no noun (cli PRD Q3): they are what
-    // a person and a seat type most, so they are the shortest to type. Each is
-    // still one arm here and one function in the family's own module.
+    // The item verbs are TOP-LEVEL and take no noun: they are what a person
+    // and a seat type most, so they are the shortest to type. Each is still one
+    // arm here and one function in the family's own module.
     /// give a ready item to a seat
     #[command(long_about = "\
 give a ready item to a seat: the order note, its machine-read index and the
@@ -446,8 +446,7 @@ controller consumes it.")]
 }
 
 /// What `rest` and `clear-halt` take: the two seat writers whose payload
-/// carries a reason, so the two that parse `--reason` (cli PRD § `fleet event
-/// rest`, § `fleet event clear-halt`).
+/// carries a reason, so the two that parse `--reason`.
 #[derive(clap::Args)]
 struct SeatEvent {
     /// the seat the event is about
@@ -608,11 +607,11 @@ fn dispatch() -> Result<Exit> {
 /// The loop, wired — the ONE place it is built, so `observe` and `start
 /// --foreground` cannot differ in what a poll advances.
 ///
-/// THE RUN SEAM IS FILLED (controller PRD R35–R37). It is built on the MACHINE
-/// DIRECTORY and on no project: a service-started controller has no working
-/// directory to resolve one from, so the engine looks each run's record up
-/// over the projects the machine registers. `None` here is a loop that never
-/// re-runs, holds or cleans a run.
+/// THE RUN SEAM IS FILLED. It is built on the MACHINE DIRECTORY and on no
+/// project: a service-started controller has no working directory to resolve
+/// one from, so the engine looks each run's record up over the projects the
+/// machine registers. `None` here is a loop that never re-runs, holds or cleans
+/// a run.
 pub fn observe_loop(once: bool) -> u8 {
     let engine = runs::Engine::on(platform::machine_dir());
     run::observe_runs(
@@ -635,7 +634,7 @@ fn observe(once: bool) -> Result<Exit> {
     Exit::from_status(status).context("fleet observe")
 }
 
-// The four seat events (PRD R20). This is argv and nothing else: which event a
+// The four seat events. This is argv and nothing else: which event a
 // verb names, which seat it is about, and the reason a rest carries. Every
 // refusal, every status and the read-back are `seat::record`'s, in the
 // controller, so the check that a rest is answerable lives beside the loop that
@@ -689,9 +688,9 @@ fn seat_command(ui: &Ui, verb: &SeatVerb) -> Exit {
 }
 
 // `seat` is what is done TO a seat and `event` is what a seat SAYS, so the four
-// lifecycle writers answer under `event` alone (cli PRD P0 #7). The four verbs
-// are named back with their rewrite rather than met by a bare unknown
-// subcommand, because they are the four a seat's ritual types.
+// lifecycle writers answer under `event` alone. The four verbs are named back
+// with their rewrite rather than met by a bare unknown subcommand, because they
+// are the four a seat's ritual types.
 fn seat_usage_error(verb: &str) -> Exit {
     eprintln!(
         "fleet seat {verb}: the seat noun is what is done to a seat — say fleet event {verb}"
@@ -996,7 +995,7 @@ fn pack_list(ui: &Ui, lock_path: Option<&Path>) -> Result<Exit> {
         Ok(entries) => {
             // The table is the standard library's and reaches stdout unstyled:
             // a listing verb prints columns, and the ui module holds no table
-            // surface for it to reach (cli PRD § fleet pack list).
+            // surface for it to reach.
             print!("{}", lock_table(&entries));
             Ok(Exit::Done)
         }
@@ -1269,7 +1268,7 @@ pub enum Found {
 /// LEVEL. A directory carrying `.fleet/project.toml` is a standalone project
 /// even where a `fleet.toml` sits beside it, because the declaration is that
 /// directory's own statement about itself and the neighbour may be some other
-/// tool's file (controller PRD § Two modes).
+/// tool's file.
 pub fn walk_up_config(start: &Path) -> Option<Found> {
     let mut here = Some(start);
     while let Some(dir) = here {
@@ -1318,10 +1317,9 @@ mod tests {
         Cli::command().debug_assert();
     }
 
-    /// The PRD's own metric: every usage line under 80 columns
-    /// (cli PRD § Success metrics). What is measured is the page a person sees,
-    /// both forms of it, because an about that fits on its own still runs over
-    /// once clap has laid the verb column out to its left.
+    /// Every usage line under 80 columns. What is measured is the page a person
+    /// sees, both forms of it, because an about that fits on its own still runs
+    /// over once clap has laid the verb column out to its left.
     #[test]
     fn every_help_line_is_under_eighty_columns() {
         fn walk(command: &mut clap::Command, path: &str) {

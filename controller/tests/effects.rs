@@ -1385,8 +1385,8 @@ fn a_removal_that_printed_a_path_is_told_from_one_that_did_not() {
 }
 
 /// A stop that does not exit 0 leaves the rest PENDING: nothing is started,
-/// nothing is removed, and no `session.rested` is written — which is the alarm
-/// the PRD names, a `seat.resting` with no collection after it.
+/// nothing is removed, and no `session.rested` is written — which is the alarm,
+/// a `seat.resting` with no collection after it.
 #[test]
 fn a_rest_whose_stop_failed_starts_nothing_and_removes_nothing() {
     let rig = Rig::new("rest-stop-failed");
@@ -1469,7 +1469,7 @@ fn a_rest_whose_start_failed_after_its_stop_landed_removes_nothing() {
 }
 
 /// One nudge marks its session whatever the turn returned, and the event carries
-/// the reading, the threshold and the outcome (PRD R21).
+/// the reading, the threshold and the outcome.
 #[test]
 fn a_nudge_marks_its_session_and_states_what_it_carried() {
     let rig = Rig::new("nudge");
@@ -1522,8 +1522,8 @@ fn a_nudge_marks_its_session_and_states_what_it_carried() {
     }
 
     // A turn that failed is still one nudge: the budget is per session, and a
-    // retry loop against a session that cannot be reached is the noise R21
-    // exists to prevent.
+    // retry loop against a session that cannot be reached is the noise that
+    // budget exists to prevent.
     rig.write_stub(1);
     let mut table = Table::default();
     let outcome = effect::nudge(

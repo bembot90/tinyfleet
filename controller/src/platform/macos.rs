@@ -213,7 +213,7 @@ pub fn load_average_5m() -> Option<f64> {
 const ESRCH: i32 = 3;
 
 /// Signal 0 is the existence probe: it validates the pid and delivers nothing.
-/// `/bin/ps` is deliberately not the source (PRD § Two platforms).
+/// `/bin/ps` is deliberately not the source.
 pub fn process_alive(pid: u32) -> Option<bool> {
     // 0 addresses the caller's whole process group rather than a process.
     if pid == 0 {

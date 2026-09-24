@@ -441,8 +441,8 @@ mod lessons {
         assert_eq!(context_tokens_in(""), None);
     }
 
-    /// The turn reader beside the window reader (flights PRD R12): the SAME
-    /// filter, one step shorter.
+    /// The turn reader beside the window reader: the SAME filter, one step
+    /// shorter.
     ///
     /// The two part company on exactly one entry shape, and the fixture is
     /// built so they must answer differently: four main-chain assistant entries
@@ -674,8 +674,8 @@ mod lessons {
     }
 }
 
-/// The grant as the projection publishes it (R26, R33): the state, the detail
-/// while it is pending, and the effects view the two of them produce.
+/// The grant as the projection publishes it: the state, the detail while it is
+/// pending, and the effects view the two of them produce.
 #[test]
 fn the_projection_publishes_the_grant_and_holds_effects_while_it_is_pending() {
     let mut pending = projection(Some("2.1.261"), None);
@@ -723,7 +723,7 @@ fn the_projection_publishes_the_grant_and_holds_effects_while_it_is_pending() {
 
 /// A pid in a state file reads as a live collector to the next person who opens
 /// it, so the published document carries no pid, no handle and no session id —
-/// on any row, in any state (PRD R26).
+/// on any row, in any state.
 #[test]
 fn the_projection_carries_no_pid_and_no_handle() {
     let read = parse_roster(
@@ -916,9 +916,9 @@ fn projection(agent_version: Option<&str>, expected: Option<&str>) -> Projection
 // ------------------------------------------------ the per-row config directory
 
 /// AC2, D1 — a spawned seat is seen through ITS OWN configuration directory and
-/// is absent from the fleet's, which is the whole cost of the isolation R13
-/// rules: a per-row directory is a per-row daemon, and a per-row daemon is a
-/// per-row roster.
+/// is absent from the fleet's, which is the whole cost of giving each spawned
+/// seat its own configuration: a per-row directory is a per-row daemon, and a
+/// per-row daemon is a per-row roster.
 ///
 /// Measured live on this box on 2026-09-12 before the code was written: the
 /// fleet's `agents --json --all` answered 9 rows and named none of the session

@@ -1,4 +1,4 @@
-//! The exit table, through the shipped binary (cli PRD § Exits, P0 #3).
+//! The exit table, through the shipped binary.
 //!
 //! One arm per row that a built verb can reach today, each rc read from the
 //! process's own status and never from what it printed. The rows the built

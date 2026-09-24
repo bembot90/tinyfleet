@@ -1,5 +1,5 @@
-//! `fleet hold` and `fleet clear` (flights PRD R19 to R22, S4) against a real
-//! work graph and a git seam that answers.
+//! `fleet hold` and `fleet clear` against a real work graph and a git seam that
+//! answers.
 //!
 //! One store for the whole binary and one item per arm, as the delivery suite
 //! has it: `bd` serialises against itself on this box. Each arm also takes its

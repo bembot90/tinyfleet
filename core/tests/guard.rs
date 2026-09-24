@@ -934,9 +934,10 @@ fn the_two_readings_the_caller_hands_in_refuse_only_when_what_they_name_is_liste
     );
 }
 
-/// R16, at the level the class itself answers it: a target that is absent or
-/// empty leaves its check refusing nothing, and the reader that the check flag
-/// prints from agrees with the judgment rather than restating it.
+/// An unconfigured target, at the level the class itself answers it: a target
+/// that is absent or empty leaves its check refusing nothing, and the reader
+/// that the check flag prints from agrees with the judgment rather than
+/// restating it.
 #[test]
 fn an_unconfigured_target_refuses_nothing_and_the_reader_says_so() {
     let empty = Policy {

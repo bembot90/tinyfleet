@@ -1,9 +1,9 @@
 # fleet/controller
 
 The controller: one boring daemon per machine that keeps a fleet of
-coding-agent seats alive, and publishes what it saw. Its contract is
-`../brain/prds/fleet-controller-prd.md`; what it knows about the agent it runs
-is `../brain/lessons/`.
+coding-agent seats alive, and publishes what it saw. Its contract is this
+code and `../docs/`; what it knows about the agent it runs is
+`../brain/lessons/`.
 
 ```
 cargo build --release        # target/release/fleet

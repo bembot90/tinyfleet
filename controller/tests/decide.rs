@@ -1,4 +1,4 @@
-//! Fixture tests for the decision table (PRD R9, R10, R12, R13).
+//! Fixture tests for the decision table.
 //!
 //! One arm per verdict and one per rule, over a pure function with every term
 //! passed in — so each rule is reached by a case where that rule ALONE decides,
@@ -77,7 +77,7 @@ fn every_verdict_has_a_case_that_produces_it() {
     assert_eq!(decide(&halted), Verdict::Halt);
 }
 
-/// Unknown is not absent (PRD R6). A roster nobody could read reaches every seat
+/// Unknown is not absent. A roster nobody could read reaches every seat
 /// as Unknown, and acting on it is acting on a fleet nobody can see.
 ///
 /// The control is the SAME input at `Absent`, which is the verdict Unknown would
@@ -103,8 +103,8 @@ fn unknown_is_leave_alone_and_the_same_input_absent_is_a_spawn() {
     assert_eq!(decide(&unknown), Verdict::LeaveAlone);
 }
 
-/// The transient filter (PRD R12), on each of the three session-creating
-/// verdicts, with the named seat's answer beside it as the control.
+/// The transient filter, on each of the three session-creating verdicts, with
+/// the named seat's answer beside it as the control.
 #[test]
 fn a_transient_row_takes_no_session_creating_verdict_and_the_other_two_pass() {
     let mut resting = quiet(RosterState::Present);
@@ -175,8 +175,8 @@ fn rest_outranks_spawn_and_spawn_outranks_suggest() {
     assert_eq!(decide(&live_and_heavy), Verdict::SuggestRest);
 }
 
-/// The halt guard outranks the spawn it guards (PRD R14's first half), or it
-/// could never fire — the runaway IS the spawn arm taken repeatedly.
+/// The halt guard outranks the spawn it guards, or it could never fire — the
+/// runaway IS the spawn arm taken repeatedly.
 #[test]
 fn the_halt_guard_outranks_the_spawn_it_guards() {
     let mut latched = quiet(RosterState::Absent);
@@ -189,8 +189,8 @@ fn the_halt_guard_outranks_the_spawn_it_guards() {
     assert_eq!(decide(&latched), Verdict::SpawnWoken);
 }
 
-/// The arrival hold (R13's first half): a dispatch that has gone out and has not
-/// been answered by a sighting holds the seat, whatever the roster says.
+/// The arrival hold: a dispatch that has gone out and has not been answered by
+/// a sighting holds the seat, whatever the roster says.
 ///
 /// Three readings, because the rule has three terms and each alone releases it:
 /// the window closing, a sighting arriving, and there being no dispatch at all.
@@ -253,8 +253,7 @@ fn a_dispatch_inside_its_window_with_no_sighting_holds_the_seat() {
     );
 }
 
-/// The discriminator for a pid-less row that is not a newborn (PRD R10), all
-/// three arms.
+/// The discriminator for a pid-less row that is not a newborn, all three arms.
 ///
 /// The roster cannot tell a hibernated session from a deliberately stopped one
 /// (lessons claude-code A3), so the answer comes from an event and a context
@@ -295,7 +294,7 @@ fn a_stopped_row_is_read_by_its_end_event_and_then_by_its_context() {
     assert_eq!(decide(&just_under), Verdict::Revive);
 }
 
-/// One nudge per session, keyed on the session id (PRD R21).
+/// One nudge per session, keyed on the session id.
 ///
 /// The second reading is the same seat at the same weight with the flag set, and
 /// the third is that flag cleared — which is what a NEW session id does, since
@@ -393,7 +392,7 @@ fn a_rest_whose_session_is_already_gone_becomes_the_successor_it_asked_for() {
     assert_eq!(decide(&live), Verdict::Rest);
 }
 
-/// The replacement window (R11): a pid-less row is HELD while the daemon is
+/// The replacement window: a pid-less row is HELD while the daemon is
 /// mid-replacement, and dispatched against once the window closes.
 ///
 /// Two readings open it and either alone does — an uptime under the arrival
@@ -635,7 +634,7 @@ fn a_held_seats_line_names_which_hold_and_the_daemons_is_the_one_read_first() {
     assert_eq!(hold(&quiet(RosterState::Stopped)), None);
 }
 
-/// Every transition `blind_after` has, each moved by one term (R13, R14).
+/// Every transition `blind_after` has, each moved by one term.
 #[test]
 fn the_blind_counter_decays_on_a_sighting_and_climbs_on_a_dispatch() {
     // A sighting decrements by one and never clears: a flapping roster that
@@ -707,7 +706,7 @@ fn three_blind_dispatches_reach_the_limit_and_the_next_verdict_is_the_halt() {
     assert_eq!(decide(&seat), Verdict::Halt);
 }
 
-/// The upgrade shape (R15): half the seats or more on pid-less rows, and never
+/// The upgrade shape: half the seats or more on pid-less rows, and never
 /// fewer than two.
 #[test]
 fn the_upgrade_shape_is_half_the_fleet_and_never_fewer_than_two() {
