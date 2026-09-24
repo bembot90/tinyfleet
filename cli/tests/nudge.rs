@@ -33,9 +33,10 @@ struct Rig {
     nudge_argv: PathBuf,
     nudge_exit: PathBuf,
     nudge_sleep: PathBuf,
-    /// The seat's machine name: what the projection, the ring and the stream
-    /// name it by. The verb is handed the seat's own name, [`NAME`], and
-    /// resolves it to this.
+    /// The seat's machine name: what a sentence names it by, and what its
+    /// session is addressed by where no session row recorded another. The
+    /// projection and the stream key it on [`SEAT_ID`]. The verb is handed the
+    /// seat's own name, [`NAME`], and resolves it.
     seat: String,
 }
 
@@ -72,21 +73,47 @@ impl Rig {
             machine,
             worktree,
         };
-        std::fs::write(
-            rig.machine.join("config.json"),
-            format!(
-                r#"{{"fleet_toml": {fleet_toml}, "children": [
-                     {{"id": "{SEAT_ID}", "name": "{NAME}",
-                      "worktrees": {{"a-project": {worktree}}}}}
-                   ]}}"#,
-                fleet_toml = json_string(&rig.project.join("fleet.toml").display().to_string()),
-                worktree = json_string(&rig.worktree.display().to_string()),
-            ),
-        )
-        .expect("the machine config is written");
+        rig.named(NAME);
         rig.write_stub();
         rig.roster("[]");
         rig
+    }
+
+    /// The seat list, with the seat's row carrying this name.
+    fn named(&self, name: &str) -> &Rig {
+        std::fs::write(
+            self.machine.join("config.json"),
+            format!(
+                r#"{{"fleet_toml": {fleet_toml}, "children": [
+                     {{"id": "{SEAT_ID}", "name": "{name}",
+                      "worktrees": {{"a-project": {worktree}}}}}
+                   ]}}"#,
+                fleet_toml = json_string(&self.project.join("fleet.toml").display().to_string()),
+                worktree = json_string(&self.worktree.display().to_string()),
+            ),
+        )
+        .expect("the machine config is written");
+        self
+    }
+
+    /// A session table holding one row for the seat, keyed by its id and
+    /// recording the name its session was started under.
+    fn session_row(&self, session_name: &str) -> &Rig {
+        std::fs::write(
+            self.machine.join("sessions.json"),
+            format!(
+                r#"{{"schema": 2, "sessions": [{{
+                     "seat": "{SEAT_ID}", "project": "a-project", "worktree": {worktree},
+                     "name": "{session_name}", "model": "a-model", "posture": "auto",
+                     "first_turn": "/wake {session_name}", "transient": false,
+                     "dispatch_id": "a-dispatch", "dispatched_at": 1000,
+                     "session_id": "abcdef", "short_id": "s0"
+                   }}]}}"#,
+                worktree = json_string(&self.worktree.display().to_string()),
+            ),
+        )
+        .expect("the session table is written");
+        self
     }
 
     /// The stub: `agents` is the roster read, `-p` is the one print-mode turn.
@@ -142,13 +169,12 @@ impl Rig {
     }
 
     /// The projection, as the collector would have published it `age` seconds
-    /// ago, with one row for this seat in `state`.
+    /// ago, with one row for this seat in `state`, keyed by its id.
     fn projection(&self, state: &str, age: u64) -> &Rig {
         self.publish(&format!(
             r#"{{"version": 1, "generated_at": "{at}", "fleet": {{"poll_seconds": {POLL_SECONDS}}},
-                 "seats": [{{"seat_dir": "{seat}", "roster_state": "{state}"}}]}}"#,
+                 "seats": [{{"seat_dir": "{SEAT_ID}", "roster_state": "{state}"}}]}}"#,
             at = stamp_secs_ago(age),
-            seat = self.seat,
         ))
     }
 
@@ -243,14 +269,18 @@ fn a_live_row_and_a_fresh_projection_carry_the_text_and_say_sent() {
     let argv = rig.nudge_argv();
     assert!(argv.contains(TEXT), "the text is carried verbatim:\n{argv}");
     assert!(
-        argv.contains(&rig.seat),
-        "the seat is addressed by the machine name its name resolved to:\n{argv}"
+        argv.contains(&format!("session named `{}`", rig.seat)),
+        "a seat no session row names is addressed by its machine name:\n{argv}"
     );
 
     let events = rig.nudged_events();
     assert_eq!(events.len(), 1, "one event: {events:?}");
     let event = &events[0];
-    assert_eq!(event["actor"], serde_json::json!(rig.seat));
+    assert_eq!(
+        event["actor"],
+        serde_json::json!(SEAT_ID),
+        "the line's actor is the seat's id"
+    );
     assert_eq!(event["payload"]["outcome"], serde_json::json!("sent"));
     assert_eq!(event["payload"]["source"], serde_json::json!("seat nudge"));
     assert_eq!(event["payload"]["session"], serde_json::json!("abcdef"));
@@ -260,6 +290,37 @@ fn a_live_row_and_a_fresh_projection_carry_the_text_and_say_sent() {
         serde_json::Value::Null,
         "the threshold nudge's keys are what tell the two apart, and this is not one"
     );
+}
+
+/// A seat renamed since its session started is still ADDRESSED BY THE NAME THE
+/// SESSION WAS STARTED UNDER — the one its newest session row recorded — and
+/// never by the name the seat carries now: the live session answers to its
+/// `--name`, and a ring addressed by the new one reaches nobody.
+///
+/// Orla's session came up as `orla-93b9739a`; the policy names her Wren now, so
+/// her machine name is `wren-93b9739a`. She is nudged by her new name.
+#[test]
+fn a_renamed_seat_is_rung_by_the_session_name_its_row_recorded() {
+    let rig = Rig::new("renamed");
+    rig.named("Wren");
+    rig.session_row("orla-93b9739a");
+    rig.live().projection("present", 0);
+
+    let out = rig.run(&["seat", "nudge", "wren", "--text", TEXT]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+
+    let argv = rig.nudge_argv();
+    assert!(
+        argv.contains("session named `orla-93b9739a`"),
+        "the session is addressed by the name it was started under:\n{argv}"
+    );
+    assert!(
+        !argv.contains("wren-93b9739a"),
+        "and never by the machine name the rename gives:\n{argv}"
+    );
+    let events = rig.nudged_events();
+    assert_eq!(events.len(), 1, "one event: {events:?}");
+    assert_eq!(events[0]["actor"], serde_json::json!(SEAT_ID));
 }
 
 #[test]

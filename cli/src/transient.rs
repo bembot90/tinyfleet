@@ -16,6 +16,7 @@ use fleet_core::item::brief::Packs;
 use fleet_core::item::land::{self, Release};
 use fleet_core::item::{render, Spawn, SpawnOutcome, Spawner, Stop, COULD_NOT_TELL};
 use fleet_core::seat;
+use fleet_core::seat::identity::SeatId;
 use fleet_core::store::Store;
 
 use crate::envelope;
@@ -175,7 +176,7 @@ pub fn feed_command(args: &FeedArgs) -> Exit {
         Err(stop) => return stopped(FEED, &stop, args.json),
     };
     let seat = match seat_named(&here.machine_dir, &args.seat) {
-        Ok(seat) => seat,
+        Ok(row) => row.machine_name(),
         Err(stop) => return stopped(FEED, &stop, args.json),
     };
     let first_turn = match turn_text(&args.first_turn) {
@@ -229,10 +230,11 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
         Ok(here) => here,
         Err(stop) => return stopped(RETIRE, &stop, args.json),
     };
-    let seat = match seat_named(&here.machine_dir, &args.seat) {
-        Ok(seat) => seat,
+    let row = match seat_named(&here.machine_dir, &args.seat) {
+        Ok(row) => row,
         Err(stop) => return stopped(RETIRE, &stop, args.json),
     };
+    let seat = row.machine_name();
     let home = platform::home_dir();
     let agent = match effect_agent(&here, &home) {
         Ok(agent) => agent,
@@ -252,7 +254,7 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
     // BEFORE the retire drops the row that names it. Neither is a reading this
     // verb refuses over: a seat nobody can name an item for retires exactly as
     // it always did and keeps its branch.
-    let dispatched = held_item(&here, &seat);
+    let dispatched = held_item(&here, &row.id);
     let notes = dispatched
         .as_deref()
         .and_then(|item| notes_of(&here, item))
@@ -411,10 +413,10 @@ pub(crate) fn as_refusal(stop: Stop) -> Refusal {
 }
 
 /// The item this seat's newest session row was dispatched, where one names it.
-fn held_item(here: &Here, seat: &str) -> Option<String> {
+fn held_item(here: &Here, seat: &SeatId) -> Option<String> {
     sessions::read(&sessions::path_in(&here.machine_dir))
         .0?
-        .newest_for(seat)?
+        .newest_for(&seat.to_string())?
         .item
         .clone()
 }
@@ -572,25 +574,23 @@ pub(crate) fn resolved(project: Option<&str>) -> Result<Here, Stop> {
     Ok(here)
 }
 
-/// The machine name of the one row a seat argument names — its full id, eight
-/// or more of its hex digits, its name or its machine name — resolved through
-/// the seat list before anything is asked of the controller.
+/// The one row a seat argument names — its full id, eight or more of its hex
+/// digits, its name or its machine name — resolved through the seat list
+/// before anything is asked of the controller.
 ///
-/// THE MACHINE NAME IS WHAT IS HANDED ON, because the session table, the
-/// stream and the projection are still keyed on it. A refusal is the
-/// resolver's own, with the exit it carries; a seat list nobody could read is
-/// could-not-tell, never a fleet with no seats.
-pub(crate) fn seat_named(machine_dir: &Path, arg: &str) -> Result<String, Stop> {
+/// THE ROW IS WHAT IS HANDED ON: its id is what the session table, the stream
+/// and the projection key the seat on, and its machine name is what a sentence
+/// and the work graph name it by. A refusal is the resolver's own, with the
+/// exit it carries; a seat list nobody could read is could-not-tell, never a
+/// fleet with no seats.
+pub(crate) fn seat_named(machine_dir: &Path, arg: &str) -> Result<config::Seat, Stop> {
     let path = machine_dir.join("config.json");
     let machine = config::read(&path).map_err(|why| {
         Stop::could_not_tell(format!(
             "the seat list could not be read, so no seat can be named: {why}"
         ))
     })?;
-    machine
-        .resolve(arg)
-        .map(config::Seat::machine_name)
-        .map_err(Stop::from)
+    machine.resolve(arg).cloned().map_err(Stop::from)
 }
 
 /// The slot the pack layers carry a transient seat's permission rules in.

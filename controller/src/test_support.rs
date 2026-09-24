@@ -222,7 +222,7 @@ impl Default for StubAgent {
 
 impl Agent for StubAgent {
     fn start(&self, spec: &StartSpec, _watch: Duration) -> StartOutcome {
-        self.record(StubAgent::START, spec.seat_dir.clone());
+        self.record(StubAgent::START, spec.name.clone());
         self.starts
             .lock()
             .expect("the stub agent's own lock")
@@ -257,13 +257,13 @@ impl Agent for StubAgent {
     fn nudge(
         &self,
         _config_dir: Option<&Path>,
-        seat_dir: &str,
+        session_name: &str,
         _worktree: &str,
         _model: &str,
         _prompt: &str,
         _timeout: Duration,
     ) -> Result<(), String> {
-        self.record(StubAgent::NUDGE, seat_dir);
+        self.record(StubAgent::NUDGE, session_name);
         self.answers().nudge
     }
 

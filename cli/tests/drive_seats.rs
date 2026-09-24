@@ -113,10 +113,13 @@ fn a_poll_publishes_the_seat_and_the_context_it_is_carrying() {
     assert_eq!(published["agent_version_expected"], "9.9.9");
     assert_eq!(published["fleet"]["poll_seconds"], 1);
     assert!(published["fleet"]["mtime"].as_str().is_some());
-    assert_eq!(published["seats"][0]["seat_dir"], SEAT);
-    assert!(
-        published["seats"][0].get("chosen_name").is_none(),
-        "the projection publishes no chosen_name, whatever the row's name: {}",
+    assert_eq!(
+        published["seats"][0]["seat_dir"], SEAT_ID,
+        "the row is keyed by the seat's id"
+    );
+    assert_eq!(
+        published["seats"][0]["chosen_name"], "Orla",
+        "beside the seat's own name: {}",
         published["seats"][0]
     );
     assert_eq!(published["seats"][0]["roster_state"], "present");
@@ -142,8 +145,8 @@ fn a_poll_publishes_the_seat_and_the_context_it_is_carrying() {
 /// an existing field is a leak the shape holds still for. The set is the one
 /// this fixture's state produces, which the positive control above fixes: the
 /// two cause keys are absent exactly because this row is a found seat that is
-/// neither Unknown nor prompt-blocked, and `chosen_name` because the loop
-/// publishes none since seat identity, whatever name the row carries.
+/// neither Unknown nor prompt-blocked, and `chosen_name` is present because the
+/// seat has a name of its own.
 #[test]
 fn a_published_row_carries_neither_the_seats_model_nor_its_transience() {
     let rig = Rig::new("publish-no-porter-intent");
@@ -158,7 +161,7 @@ fn a_published_row_carries_neither_the_seats_model_nor_its_transience() {
     // this the absences below would pass over a document that never reached the
     // shape a leak rides.
     let row = &rig.projection()["seats"][0];
-    assert_eq!(row["seat_dir"], SEAT);
+    assert_eq!(row["seat_dir"], SEAT_ID);
     assert_eq!(row["roster_state"], "present");
 
     let keys: BTreeSet<&str> = row
@@ -171,6 +174,7 @@ fn a_published_row_carries_neither_the_seats_model_nor_its_transience() {
         keys,
         BTreeSet::from([
             "seat_dir",
+            "chosen_name",
             "roster_state",
             "context_tokens",
             "project",

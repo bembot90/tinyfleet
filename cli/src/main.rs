@@ -694,11 +694,11 @@ fn event_command(verb: &EventVerb) -> Result<Exit> {
         EventVerb::Show { id, json } => return Ok(stream::show(id, *json)),
     };
 
-    // The seat argument through the seat list's resolver first, and its
-    // machine name from here on: the stream and the projection are keyed on it.
+    // The seat argument through the seat list's resolver first, and its id
+    // from here on: the stream and the projection are keyed on it.
     let machine_dir = platform::machine_dir();
     let seat = match transient::seat_named(&machine_dir, seat) {
-        Ok(seat) => seat,
+        Ok(row) => row.id,
         Err(stop) => {
             eprintln!("fleet event {name}: {}", stop.message);
             return Exit::from_status(stop.code).with_context(|| format!("fleet event {name}"));

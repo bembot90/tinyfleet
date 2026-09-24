@@ -16,8 +16,10 @@ pub mod claude_code;
 /// takes the agent's default rather than the fleet's (lessons claude-code A5).
 #[derive(Clone, Debug)]
 pub struct StartSpec {
-    pub seat_dir: String,
+    /// The seat's id, as its hyphenated string.
+    pub seat: String,
     pub worktree: String,
+    /// The session's name: `--name`, and what its start log is named by.
     pub name: String,
     pub model: String,
     pub posture: String,
@@ -106,10 +108,12 @@ pub trait Agent {
     fn daemon(&self) -> DaemonRead;
 
     /// One print-mode turn that asks a session to carry one message to another.
+    /// `session_name` is the addressed session's name, which names the turn's
+    /// log.
     fn nudge(
         &self,
         config_dir: Option<&Path>,
-        seat_dir: &str,
+        session_name: &str,
         worktree: &str,
         model: &str,
         prompt: &str,

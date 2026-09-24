@@ -412,10 +412,9 @@ fn a_nudge_to_a_seat_by_its_name_fires_at_that_seats_row() {
         "[order]\ndescription = \"d\"\ntrigger = \"cron\"\nschedule = \"* * * * *\"\n\
          [action.nudge]\nseat = \"Orla\"\ntext = \"t\"\nauthority = \"a\"\n",
     );
-    let view = |id: &str, seat_dir: &str, worktree: &str| SeatView {
+    let view = |id: &str, session_name: &str, worktree: &str| SeatView {
         id: SeatId::parse(id).unwrap(),
-        seat_dir: seat_dir.to_string(),
-        display_name: seat_dir.to_string(),
+        session_name: session_name.to_string(),
         worktree: worktree.to_string(),
         state: RosterState::Present,
         config_dir: None,

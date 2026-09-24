@@ -79,6 +79,27 @@ impl Rig {
         self.machine.join("projection.json")
     }
 
+    /// The machine's seat list, one row per `(id, name)`: what `--seat`
+    /// resolves its argument through.
+    fn list(&self, seats: &[(&str, &str)]) {
+        let rows: Vec<serde_json::Value> = seats
+            .iter()
+            .map(|(id, name)| {
+                serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "worktrees": { "demo": format!("/wt/{name}") },
+                })
+            })
+            .collect();
+        let body = serde_json::json!({
+            "fleet_toml": self.policy_file().display().to_string(),
+            "children": rows,
+        });
+        std::fs::write(self.machine.join("config.json"), body.to_string())
+            .expect("the seat list is written");
+    }
+
     /// The document, written by the controller's own renderer.
     fn publish(&self, document: &Projection) -> String {
         let body = projection::render(document).expect("the projection renders");
@@ -327,17 +348,31 @@ fn a_stale_projection_a_pending_grant_and_no_rules() {
     assert!(page.contains("no rules are set"), "{page}");
 }
 
+/// Two seats' ids, keying their rows on the seat list and in the projection.
+const BUILDER_1: &str = "01a0d1f1-0aec-765f-9abe-5c21e8a04b17";
+const BUILDER_2: &str = "01a0d1f1-0aec-765f-9abe-2b7c1d0e4f58";
+
+/// A row keyed by the seat's id, beside the seat's own name, as the loop
+/// publishes it.
+fn seat_named(id: &str, name: &str) -> SeatRow {
+    let mut row = seat(id);
+    row.chosen_name = Some(name.to_string());
+    row.worktree = Some(format!("/wt/{name}"));
+    row
+}
+
 /// AC2, the flags: `--json` is the file's bytes and nothing else; `--seat`
 /// is one seat's two rows; an unknown seat is 1; both flags together are 2.
 #[test]
 fn the_two_flags_print_what_they_name_and_refuse_what_they_cannot() {
     let rig = Rig::new("flags");
-    let mut row = seat("builder-1");
+    rig.list(&[(BUILDER_1, "builder-1"), (BUILDER_2, "builder-2")]);
+    let mut row = seat_named(BUILDER_1, "builder-1");
     row.context_tokens = Some(500);
     let bytes = rig.publish(&document(
         &rig.policy_file(),
         &fleet_controller::clock::now_stamp(),
-        vec![row, seat("builder-2")],
+        vec![row, seat_named(BUILDER_2, "builder-2")],
     ));
 
     let json = rig.run(&["status", "--json"]);
@@ -353,7 +388,10 @@ fn the_two_flags_print_what_they_name_and_refuse_what_they_cannot() {
     let one_page = stdout(&one);
     let rows: Vec<&str> = one_page.lines().map(str::trim_end).collect();
     assert_eq!(rows.len(), 2, "two rows and nothing else: {rows:?}");
-    assert!(rows[0].starts_with("builder-1"), "{rows:?}");
+    assert!(
+        rows[0].starts_with(&format!("{BUILDER_1} (builder-1)")),
+        "{rows:?}"
+    );
     assert!(
         rows[1].contains("500 tokens, 50% of the threshold, 500 left"),
         "{rows:?}"
@@ -375,6 +413,59 @@ fn the_two_flags_print_what_they_name_and_refuse_what_they_cannot() {
     assert_eq!(both.status.code(), Some(2), "{}", stderr(&both));
     assert!(both.stdout.is_empty(), "usage goes to stderr, never stdout");
     assert!(stderr(&both).contains("Usage:"), "{}", stderr(&both));
+}
+
+/// `--seat` resolves its argument through the seat list, as every seat argument
+/// does: a name matches WITHOUT REGARD TO CASE, and the row printed is the one
+/// the projection keys by the id it resolved to.
+#[test]
+fn status_seat_resolves_its_argument_and_matches_a_name_in_any_case() {
+    let rig = Rig::new("seat-any-case");
+    rig.list(&[(BUILDER_1, "Orla"), (BUILDER_2, "Kite")]);
+    let mut orla = seat_named(BUILDER_1, "Orla");
+    orla.context_tokens = Some(500);
+    rig.publish(&document(
+        &rig.policy_file(),
+        &fleet_controller::clock::now_stamp(),
+        vec![orla, seat_named(BUILDER_2, "Kite")],
+    ));
+
+    let out = rig.run(&["status", "--seat", "ORLA"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let page = stdout(&out);
+    let rows: Vec<&str> = page.lines().map(str::trim_end).collect();
+    assert_eq!(rows.len(), 2, "Orla's two rows and nothing else: {rows:?}");
+    assert!(
+        rows[0].starts_with(&format!("{BUILDER_1} (Orla)")),
+        "{rows:?}"
+    );
+    assert!(
+        rows[1].contains("500 tokens, 50% of the threshold, 500 left"),
+        "{rows:?}"
+    );
+    assert!(!page.contains("Kite"), "and no other seat's row: {page}");
+
+    // The same seat by its machine name and by its short id.
+    for arg in ["orla-e8a04b17", "e8a04b17"] {
+        let by = rig.run(&["status", "--seat", arg]);
+        assert_eq!(by.status.code(), Some(0), "{arg}: {}", stderr(&by));
+        assert!(stdout(&by).starts_with(BUILDER_1), "{arg}: {}", stdout(&by));
+    }
+
+    // A seat the list carries and the projection does not is refused naming
+    // its machine name.
+    rig.publish(&document(
+        &rig.policy_file(),
+        &fleet_controller::clock::now_stamp(),
+        vec![seat_named(BUILDER_2, "Kite")],
+    ));
+    let missing = rig.run(&["status", "--seat", "orla"]);
+    assert_eq!(missing.status.code(), Some(1), "{}", stderr(&missing));
+    assert!(
+        stderr(&missing).contains("the projection carries no row for `orla-e8a04b17`"),
+        "{}",
+        stderr(&missing)
+    );
 }
 
 /// AC2, the refusals: no projection is 5 with nothing on stdout, an

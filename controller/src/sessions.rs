@@ -8,14 +8,23 @@
 //! What it is not: a second source of truth. Every row here is derivable from
 //! the event stream, and a missing, unparseable or foreign table is REBUILT from
 //! it by [`rebuild`] — never trusted and never invented.
+//!
+//! EVERY SEAT KEY HERE IS THE SEAT'S ID, as its hyphenated string: the rows,
+//! the nudge ledger and the latches. A name is a person's and free to change,
+//! and a table keyed by one forgets a halt the day the seat is renamed.
 
 use crate::platform;
+use fleet_core::seat::identity::SeatRef;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Bumped by any breaking change to the shape below.
-pub const SCHEMA: u32 = 1;
+///
+/// 2 is the table keyed by the seat id. A table of 1 is keyed by the machine
+/// name, and it is refused like any other schema this build does not read — so
+/// the loop rebuilds it from the stream, and nothing migrates it.
+pub const SCHEMA: u32 = 2;
 
 pub const FILE: &str = "sessions.json";
 
@@ -27,11 +36,14 @@ pub const FILE: &str = "sessions.json";
 /// sighted carries none of them, which is exactly what the arrival window reads.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct SessionRow {
+    /// The seat's id, which is what every lookup here keys on.
     pub seat: String,
     pub project: String,
     pub worktree: String,
-    /// The display name the start passed, which is how a person addresses the
-    /// seat and not how this controller keys it.
+    /// The session name the start passed as `--name`, which is what the live
+    /// session answers to. Every later ring and nudge addresses the session by
+    /// this and not by the seat's name today: a seat renamed since its start is
+    /// still running under the name it was started with.
     pub name: String,
     pub model: String,
     pub posture: String,
@@ -103,12 +115,12 @@ pub struct Table {
     /// into a verdict already.
     #[serde(default)]
     pub consumed_seq: u64,
-    /// Seat to the session id already nudged. Keyed on the SESSION and not on
-    /// the seat, so a successor is nudged once again with no bookkeeping of its
-    /// own.
+    /// Seat id to the session id already nudged. Keyed on the SESSION and not
+    /// on the seat, so a successor is nudged once again with no bookkeeping of
+    /// its own.
     #[serde(default)]
     pub nudged: BTreeMap<String, String>,
-    /// The blind counter and the halt latch, per seat. Absent from a table an
+    /// The blind counter and the halt latch, per seat id. Absent from a table an
     /// older build wrote, which reads as a fleet nothing has gone blind on —
     /// the same thing a fresh table says.
     #[serde(default)]
@@ -309,7 +321,8 @@ impl Table {
             .any(|row| row.adopted.as_deref() == Some(session_id))
     }
 
-    /// The newest row this controller opened for a seat, sighted or not.
+    /// The newest row this controller opened for a seat, sighted or not. `seat`
+    /// is the seat's id, as every key here is.
     pub fn newest_for(&self, seat: &str) -> Option<&SessionRow> {
         self.sessions
             .iter()
@@ -334,6 +347,20 @@ impl Table {
             .iter()
             .filter(|row| row.seat == seat && row.session_id.is_some())
             .max_by_key(|row| row.first_seen_at.unwrap_or(row.dispatched_at))
+    }
+
+    /// The name this seat's live session answers to: the one its newest row
+    /// RECORDED at start, and the seat's machine name where no row names one.
+    ///
+    /// Never the seat's name today. A session is addressed by the `--name` it
+    /// was started under, and a seat renamed since is still running under the
+    /// old one — a ring addressed by the new name reaches nobody.
+    pub fn session_name(&self, seat: &SeatRef) -> String {
+        self.newest_for(&seat.id.to_string())
+            .map(|row| row.name.trim())
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| seat.machine_name())
     }
 
     pub fn push(&mut self, row: SessionRow) {
@@ -463,9 +490,15 @@ impl Table {
 /// the arrival window is arithmetic over that stamp. A `session.rested` closes
 /// the predecessor it names; a `dispatch.blind` moves
 /// the seat's counter to the count it carries; a `session.halted` sets the
-/// latch; a `seat.clear_halt` clears both. The cursor is the last sequence
-/// folded, so the next tick reads from the line after it and no event is
-/// consumed twice.
+/// latch; a `seat.clear_halt` clears both; and a `session.nudged` the loop's
+/// own threshold wrote marks its session nudged, so a lost table does not nudge
+/// a session twice. The cursor is the last sequence folded, so the next tick
+/// reads from the line after it and no event is consumed twice.
+///
+/// Every line is keyed on its ACTOR, which on these types is the seat's id. A
+/// line an older build wrote carries the machine name there instead, and the
+/// rows it opens are keyed on a string no seat's id matches: nothing migrates
+/// them, and nothing acts on them.
 ///
 /// The daemon pid is deliberately NOT folded and starts at `None`: the stream
 /// carries no daemon reading, and `None` reads as no replacement rather than as
@@ -584,6 +617,15 @@ pub fn rebuild(events_path: &Path) -> Table {
             // takes, replayed.
             crate::events::SEAT_CLEAR_HALT => {
                 table.set_seat_state(&seat, SeatState::default());
+            }
+            // The loop's own nudge, which is the one line carrying the
+            // threshold. A courier's `fleet seat nudge` and a feed write the
+            // same type and neither marks the session live, so neither does
+            // the replay.
+            crate::events::SESSION_NUDGED if payload.get("threshold").is_some() => {
+                if let Some(session_id) = text("session") {
+                    table.mark_nudged(&seat, &session_id);
+                }
             }
             _ => {}
         }
@@ -772,6 +814,183 @@ mod tests {
         );
     }
 
+    /// Two seats' ids, the shape every actor on a seat's line carries.
+    const ORLA: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
+    const KITE: &str = "01a0d1f1-0aec-765f-9abe-2b7c1d0e4f58";
+
+    /// A table of schema 1 is the one keyed by the machine name, and it is
+    /// refused like any schema this build does not read: nothing is taken from
+    /// it, so the caller rebuilds from the stream and nothing migrates.
+    #[test]
+    fn a_schema_one_table_is_refused_and_the_stream_rebuilds_it_on_the_id() {
+        let dir = scratch("schema-one");
+        let path = path_in(&dir);
+        std::fs::write(
+            &path,
+            r#"{"schema": 1, "consumed_seq": 3, "nudged": {"orla-93b9739a": "a-session"},
+                "seats": {"orla-93b9739a": {"blind": 3, "halted": true}}, "sessions": []}"#,
+        )
+        .unwrap();
+        let (table, why) = read(&path);
+        assert!(table.is_none(), "nothing is taken from a schema-1 table");
+        assert_eq!(
+            why.unwrap_or_default(),
+            format!("{} is schema 1 and this controller reads 2", path.display())
+        );
+
+        let stream = stream_of(
+            &dir,
+            "events.jsonl",
+            &[line_by(
+                1,
+                ORLA,
+                "ev-spawned",
+                "2026-09-12T10:00:00Z",
+                crate::events::SESSION_SPAWNED,
+                spawned_payload(),
+            )],
+        );
+        let rebuilt = rebuild(&stream);
+        assert_eq!(rebuilt.schema, SCHEMA);
+        assert_eq!(
+            rebuilt.newest_for(ORLA).map(|row| row.dispatch_id.as_str()),
+            Some("ev-spawned"),
+            "the rebuilt row is keyed on the id its line's actor carries: {:?}",
+            rebuilt.sessions
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The rebuild keys every row, every nudge mark and every latch on the line's
+    /// actor, which is the seat's id — and one seat's lines move nothing of
+    /// another's.
+    #[test]
+    fn the_rebuild_keys_rows_nudges_and_halt_state_on_the_id_actor() {
+        let dir = scratch("id-actor");
+        let ts = "2026-09-12T10:00:00Z";
+        let nudged = serde_json::json!({
+            "session": "a-session", "context_tokens": 900, "threshold": 100, "outcome": "sent",
+        });
+        // A courier's line, which carries no threshold: the live table marks
+        // nothing for it, and neither does the replay.
+        let couriered = serde_json::json!({
+            "session": "kites-session", "source": "seat nudge", "outcome": "sent",
+        });
+        let path = stream_of(
+            &dir,
+            "events.jsonl",
+            &[
+                line_by(
+                    1,
+                    ORLA,
+                    "ev-1",
+                    ts,
+                    crate::events::SESSION_SPAWNED,
+                    spawned_payload(),
+                ),
+                line_by(2, ORLA, "ev-2", ts, crate::events::SESSION_NUDGED, nudged),
+                line_by(
+                    3,
+                    ORLA,
+                    "ev-3",
+                    ts,
+                    crate::events::SESSION_HALTED,
+                    serde_json::json!({ "blind": 3 }),
+                ),
+                line_by(
+                    4,
+                    KITE,
+                    "ev-4",
+                    ts,
+                    crate::events::SESSION_NUDGED,
+                    couriered,
+                ),
+            ],
+        );
+
+        let table = rebuild(&path);
+        assert_eq!(
+            table
+                .sessions
+                .iter()
+                .map(|row| row.seat.as_str())
+                .collect::<Vec<_>>(),
+            vec![ORLA],
+            "one row, keyed on the id"
+        );
+        assert!(table.is_nudged(ORLA, "a-session"), "{:?}", table.nudged);
+        assert!(
+            !table.is_nudged(KITE, "kites-session"),
+            "a courier's line marks nothing: {:?}",
+            table.nudged
+        );
+        assert!(table.seat_state(ORLA).halted);
+        assert_eq!(table.seat_state(ORLA).blind, crate::decide::BLIND_LIMIT);
+        assert_eq!(
+            table.seat_state(KITE),
+            SeatState::default(),
+            "and Orla's halt is not Kite's"
+        );
+        assert!(
+            table.newest_for("orla-93b9739a").is_none()
+                && !table.seat_state("orla-93b9739a").halted,
+            "nothing is found by the machine name"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A seat renamed between two polls is the same id, so its nudge mark and
+    /// its halt stand — and its session is still addressed by the name the start
+    /// recorded, not by the one the seat carries now.
+    #[test]
+    fn a_rename_between_polls_keeps_the_nudge_mark_the_halt_and_the_session_name() {
+        use fleet_core::seat::identity::{Kind, SeatId};
+        let id = SeatId::parse(ORLA).unwrap();
+        let orla = SeatRef {
+            id,
+            name: Some("Orla".to_string()),
+            kind: Kind::Agent,
+        };
+        let mut table = Table::default();
+        assert_eq!(
+            table.session_name(&orla),
+            "orla-93b9739a",
+            "no row yet: the seat's machine name"
+        );
+        table.push(SessionRow {
+            name: orla.machine_name(),
+            ..a_row(ORLA, "/wt/orla", 100)
+        });
+        table.mark_nudged(ORLA, "a-session");
+        table.set_seat_state(
+            ORLA,
+            SeatState {
+                blind: 3,
+                halted: true,
+            },
+        );
+
+        let wren = SeatRef {
+            name: Some("Wren".to_string()),
+            ..orla.clone()
+        };
+        assert_eq!(
+            wren.machine_name(),
+            "wren-93b9739a",
+            "the rename moved the machine name"
+        );
+        let key = wren.id.to_string();
+        assert!(table.is_nudged(&key, "a-session"));
+        assert!(table.seat_state(&key).halted);
+        assert_eq!(
+            table.session_name(&wren),
+            "orla-93b9739a",
+            "the session answers to the name it was started under"
+        );
+    }
+
     /// A `session.adopted` folds onto the row its session was spawned into and
     /// never opens a second one for the same session.
     #[test]
@@ -840,12 +1059,24 @@ mod tests {
     /// same second carry the same stamp — which is a fixture that cannot tell
     /// the two lines apart on the value being asserted.
     fn line(seq: u64, id: &str, ts: &str, kind: &str, payload: serde_json::Value) -> String {
+        line_by(seq, "s1", id, ts, kind, payload)
+    }
+
+    /// The same line, by the actor the arm names.
+    fn line_by(
+        seq: u64,
+        actor: &str,
+        id: &str,
+        ts: &str,
+        kind: &str,
+        payload: serde_json::Value,
+    ) -> String {
         serde_json::json!({
             "id": id,
             "seq": seq,
             "ts": ts,
             "type": kind,
-            "actor": "s1",
+            "actor": actor,
             "payload": payload,
         })
         .to_string()
@@ -999,8 +1230,8 @@ mod tests {
 
     /// A `session.revived` line no row matches opens one FROM THAT LINE, so the
     /// four identity fields are the line's rather than empty strings — an empty
-    /// display name is an argv defect at the next start, not a cosmetic gap
-    /// (`effect::Target::display_name`'s doc). Reachable from a TRIMMED stream:
+    /// session name is an argv defect at the next start, not a cosmetic gap
+    /// (`effect::Target::session_name`'s doc). Reachable from a TRIMMED stream:
     /// this fold reads from sequence 0 and the live loop always writes a
     /// row-opening line before the revive that attaches to it.
     #[test]

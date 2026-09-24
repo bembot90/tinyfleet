@@ -80,16 +80,16 @@ impl Outcome {
     }
 }
 
-/// One seat as a routine's ring reads it: where it works, what a person calls it,
-/// and what the roster said about it this tick.
+/// One seat as a routine's ring reads it: where it works, the name its session
+/// answers to, and what the roster said about it this tick.
 #[derive(Clone, Debug)]
 pub struct SeatView {
     /// The seat, and what a nudge action finds its view by.
     pub id: SeatId,
-    /// The seat's machine name: the directory, the session and the actor are
-    /// all still keyed on it.
-    pub seat_dir: String,
-    pub display_name: String,
+    /// The name the seat's session answers to: the one its newest session row
+    /// recorded at start, else its machine name
+    /// (`sessions::Table::session_name`). The ring addresses it by this.
+    pub session_name: String,
     pub worktree: String,
     pub state: RosterState,
     /// The configuration directory this seat's session is held under, where its

@@ -137,7 +137,7 @@ impl Machine<'_> {
     }
 
     /// The directory a seat's own session row names, where it names one. The
-    /// table is keyed on the seat's machine name.
+    /// table is keyed on the seat's id.
     fn recorded_config_dir(&self, seat: &str) -> Option<String> {
         sessions::read(&self.table_path())
             .0?
@@ -409,7 +409,7 @@ impl Belt {
             .filter(|seat| {
                 recorded
                     .as_ref()
-                    .and_then(|table| table.newest_for(&seat.machine_name()))
+                    .and_then(|table| table.newest_for(&seat.id.to_string()))
                     .and_then(|row| row.config_dir.as_ref())
                     .is_none()
             })
@@ -424,7 +424,7 @@ impl Belt {
         for seat in seats.iter().filter(|seat| seat.transient) {
             let Some(config_dir) = recorded
                 .as_ref()
-                .and_then(|table| table.newest_for(&seat.machine_name()))
+                .and_then(|table| table.newest_for(&seat.id.to_string()))
                 .and_then(|row| row.config_dir.clone())
             else {
                 continue;
@@ -742,9 +742,11 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
     }
     let mut log = machine.log();
     let before = log.seq();
+    // A seat nobody has started yet has no row to have recorded a session name
+    // on, so its session is named by its machine name.
     let target = Target {
-        seat_dir: &name,
-        display_name: name.clone(),
+        seat: claimed.id,
+        session_name: name.clone(),
         project: machine.project,
         worktree: &worktree_arg,
         model,
@@ -781,7 +783,7 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
         // A14: the child exited inside the watch window and said why in-band.
         // The output file is named from the line the adapter itself wrote, so
         // the path in the refusal is the one the crash event carries.
-        let output = crashed_output(&machine.stream_path(), before, &name);
+        let output = crashed_output(&machine.stream_path(), before, &claimed.id.to_string());
         return Err(rolled_back(
             machine,
             REFUSED,
@@ -812,7 +814,7 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
             machine.table_path().display()
         ))
     })?;
-    if written.newest_for(&name).is_none() {
+    if written.newest_for(&claimed.id.to_string()).is_none() {
         return Err(Refusal::could_not_tell(format!(
             "the session table carries no row for {name} after its start"
         )));
@@ -1117,7 +1119,8 @@ fn rolled_back(
     )
 }
 
-/// The output file the `session.crashed` line this start wrote names.
+/// The output file the `session.crashed` line this start wrote names. `seat` is
+/// the seat's id, which is the line's actor.
 fn crashed_output(stream: &Path, after: u64, seat: &str) -> Option<String> {
     events::read_after(stream, after)
         .into_iter()
@@ -1152,10 +1155,11 @@ pub struct Fed {
 pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refusal> {
     let seats = machine.seats()?;
     let row = machine.transient_row(&seats, seat)?;
-    // From here the seat is its machine name, which is what the session table,
-    // the stream and the agent's own session are still keyed on.
+    // From here the session table and the stream are asked by the seat's id,
+    // and every sentence names it by its machine name.
     let name = row.machine_name();
     let seat = name.as_str();
+    let seat_id = row.id.to_string();
     let worktree = machine.worktree_of(&row)?;
     let key = dir_key(&worktree);
 
@@ -1163,7 +1167,7 @@ pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refu
     // retire reads there: the fleet's listing does not name a spawned seat's
     // session, and a feed that read it would refuse every live seat as having
     // none.
-    let config_dir = machine.recorded_config_dir(seat);
+    let config_dir = machine.recorded_config_dir(&seat_id);
     let under = config_dir.as_deref().map(Path::new);
     let rows = machine.roster_under(under)?;
     let live = rows
@@ -1191,7 +1195,8 @@ pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refu
     // delivery to the put-back below: a second feed landing between the move
     // and its put-back would have its own move undone by this one.
     let (held, mut table) = machine.table_under_lock()?;
-    let Some(marker) = table.newest_for_mut(seat) else {
+    let session_name = table.session_name(&row.as_ref());
+    let Some(marker) = table.newest_for_mut(&seat_id) else {
         return Err(Refusal::refused(format!(
             "the session table carries no row for `{seat}`, so there is no occupant marker to \
              move"
@@ -1204,7 +1209,7 @@ pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refu
     let mut log = machine.log();
     let delivered = machine.agent.nudge(
         under,
-        seat,
+        &session_name,
         &worktree,
         &machine.policy.nudge_model,
         first_turn,
@@ -1219,7 +1224,7 @@ pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refu
     let journalled = machine.journal(
         &mut log,
         events::SESSION_NUDGED,
-        seat,
+        &seat_id,
         serde_json::json!({
             "worktree": worktree,
             "prior_first_turn": first_line(&prior),
@@ -1233,7 +1238,7 @@ pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refu
         // The row goes back to the turn that was in the seat, and the put-back
         // is a SECOND line rather than a rewrite of the first: the stream is
         // append-only and the attempt is part of what happened.
-        if let Some(marker) = table.newest_for_mut(seat) {
+        if let Some(marker) = table.newest_for_mut(&seat_id) {
             marker.first_turn = prior.clone();
         }
         machine.write_table(&held, &table)?;
@@ -1241,7 +1246,7 @@ pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refu
         machine.journal(
             &mut log,
             events::SESSION_NUDGED,
-            seat,
+            &seat_id,
             serde_json::json!({
                 "worktree": worktree,
                 "prior_first_turn": first_line(first_turn),
@@ -1339,10 +1344,11 @@ pub fn retire_with(
 ) -> Result<Reclaimed, Refusal> {
     let seats = machine.seats()?;
     let row = machine.transient_row(&seats, seat)?;
-    // From here the seat is its machine name, which is what the session table,
-    // the stream and the record's assignee are still keyed on.
+    // From here the session table and the stream are asked by the seat's id,
+    // and the record's assignee and every sentence by its machine name.
     let name = row.machine_name();
     let seat = name.as_str();
+    let seat_id = row.id.to_string();
     let worktree = machine.worktree_of(&row)?;
     let key = dir_key(&worktree).to_string();
 
@@ -1351,7 +1357,7 @@ pub fn retire_with(
     // named by its own daemon's listing and by no other, so the fleet's read
     // would find no live row, take the no-session branch, and delete the
     // worktree out from under a session still running in it.
-    let config_dir = machine.recorded_config_dir(seat);
+    let config_dir = machine.recorded_config_dir(&seat_id);
     let under = config_dir.as_deref().map(Path::new);
 
     let rows = machine.roster_under(under)?;
@@ -1378,7 +1384,9 @@ pub fn retire_with(
     // machine would wait out a whole retire.
     let recorded_short_id = {
         let table = machine.table_now()?;
-        table.newest_for(seat).and_then(|row| row.short_id.clone())
+        table
+            .newest_for(&seat_id)
+            .and_then(|row| row.short_id.clone())
     };
 
     let short_id = match (&live, dead) {
@@ -1487,7 +1495,7 @@ pub fn retire_with(
     // other seat's row on the copy this edits is the one on disk now, and not
     // the one this verb read before the stop.
     let (held, mut table) = machine.table_under_lock()?;
-    table.sessions.retain(|row| row.seat != seat);
+    table.sessions.retain(|row| row.seat != seat_id);
     machine.write_table(&held, &table)?;
     drop(held);
 
@@ -1532,7 +1540,7 @@ pub fn retire_with(
     machine.journal(
         &mut log,
         events::SESSION_STOPPED,
-        seat,
+        &seat_id,
         serde_json::json!({
             "worktree": worktree,
             "bytes": bytes,
@@ -1647,10 +1655,11 @@ pub fn priced_with(
 ) -> Result<Priced, Refusal> {
     let seats = machine.seats()?;
     let row = machine.transient_row(&seats, seat)?;
-    // From here the seat is its machine name, which is what the session table
-    // and the stream are still keyed on.
+    // From here the session table and the stream are asked by the seat's id,
+    // and the line's payload names it by its machine name.
     let name = row.machine_name();
     let seat = name.as_str();
+    let seat_id = row.id.to_string();
     let worktree = machine.worktree_of(&row)?;
 
     // The session row, for the id the transcript is keyed by and the stamp the
@@ -1658,7 +1667,7 @@ pub fn priced_with(
     let (session_id, dispatched_at) = {
         let path = machine.table_path();
         let (table, _) = sessions::read(&path);
-        match table.as_ref().and_then(|table| table.newest_for(seat)) {
+        match table.as_ref().and_then(|table| table.newest_for(&seat_id)) {
             Some(row) => (row.session_id.clone(), Some(row.dispatched_at)),
             None => (None, None),
         }
@@ -1667,14 +1676,14 @@ pub fn priced_with(
     // UNDER THE SEAT'S OWN CONFIGURATION DIRECTORY, which is where a spawned
     // seat's transcript is: a read under the default resolves no file at all,
     // which would price every seat this fleet spawned as unread.
-    let config_dir = machine.recorded_config_dir(seat);
+    let config_dir = machine.recorded_config_dir(&seat_id);
     let under = config_dir.as_deref().map(Path::new);
     let transcript = session_id
         .as_deref()
         .and_then(|session| machine.agent.transcript(under, &worktree, session));
     let commit = head_of(Path::new(&worktree));
 
-    let reclaimed = retire_with(machine, seat, false, withdrawal)?;
+    let reclaimed = retire_with(machine, &seat_id, false, withdrawal)?;
 
     // The branch is the RETIRE's own reading, taken before the same removal
     // every reading above is taken before, and read off what it answered rather
@@ -1698,7 +1707,7 @@ pub fn priced_with(
     machine.journal(
         &mut log,
         events::SESSION_RETIRED,
-        seat,
+        &seat_id,
         serde_json::json!({
             "seat": seat,
             "item": item,

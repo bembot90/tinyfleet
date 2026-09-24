@@ -124,7 +124,7 @@ mod effects {
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         let last = rig.events().pop().expect("the stream carries the rest");
         assert_eq!(last["type"], "seat.resting");
-        assert_eq!(last["actor"], SEAT);
+        assert_eq!(last["actor"], SEAT_ID);
         assert_eq!(last["payload"]["reason"], "a nap");
 
         // The other three verbs, each exiting 0 and each advancing the sequence
@@ -143,7 +143,7 @@ mod effects {
             assert_eq!(out.status.code(), Some(0), "{verb}: {}", stderr(&out));
             let line = rig.events().pop().expect("the stream carries the record");
             assert_eq!(line["type"], kind);
-            assert_eq!(line["actor"], SEAT);
+            assert_eq!(line["actor"], SEAT_ID);
             let seq = line["seq"].as_u64().expect("the line carries a seq");
             assert_eq!(
                 seq,
@@ -218,7 +218,7 @@ mod effects {
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         let last = rig.events().pop().expect("the stream carries the rest");
         assert_eq!(last["type"], "seat.resting");
-        assert_eq!(last["actor"], SEAT);
+        assert_eq!(last["actor"], SEAT_ID);
         assert_eq!(last["payload"]["reason"], "a nap");
     }
 
@@ -415,12 +415,13 @@ mod effects {
             .expect("the built binary runs");
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
 
-        // Around the refusal: the event written into the file by hand. The
-        // consumer drops it with one line and issues nothing.
+        // Around the refusal: the event written into the file by hand, by the
+        // seat's id as every seat line is. The consumer drops it with one line
+        // and issues nothing.
         append_event(
             &rig,
             "seat.resting",
-            SEAT,
+            SEAT_ID,
             serde_json::json!({"reason": "x"}),
         );
         let out = rig.observe();
@@ -473,11 +474,13 @@ mod effects {
         );
         assert_eq!(rig.events_of("session.spawned"), 1);
 
-        // AC7 — the row the dispatch opened, before anything has sighted it.
+        // AC7 — the row the dispatch opened, before anything has sighted it:
+        // keyed by the seat's id, and recording the name the session was
+        // started under.
         let table = rig.sessions();
-        assert_eq!(table["schema"], 1);
+        assert_eq!(table["schema"], 2);
         let row = &table["sessions"][0];
-        assert_eq!(row["seat"], SEAT);
+        assert_eq!(row["seat"], SEAT_ID);
         assert_eq!(row["name"], SEAT);
         assert_eq!(row["model"], "claude-opus-5");
         assert_eq!(row["posture"], "auto");
@@ -520,6 +523,55 @@ mod effects {
         assert_eq!(row["session_id"], "the-successor");
         assert_eq!(row["short_id"], "the-successor");
         assert!(row["first_seen_at"].as_u64().is_some());
+    }
+
+    /// A seat with no name of its own is `agent-<short>` in every name a start
+    /// derives — its session's `--name`, the first turn's argument and its start
+    /// log — while the line the start writes carries the seat's full id.
+    #[test]
+    fn an_unnamed_seats_start_is_named_agent_short_and_its_line_carries_the_id() {
+        let rig = Rig::new("effect-unnamed");
+        rig.write_config(&format!(
+            r#"{{"fleet_toml": "{}", "children": [
+                 {{"id":"{SEAT_ID}","worktrees":{{"demo":"{}"}}}}
+               ]}}"#,
+            rig.policy_path().display(),
+            rig.worktree().display()
+        ));
+        rig.write_roster("[]");
+
+        let out = rig.observe();
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert_eq!(seat_row(&rig)["outcome"], "spawned");
+        assert_eq!(
+            seat_row(&rig)["seat_dir"],
+            SEAT_ID,
+            "the row is the seat's id"
+        );
+
+        let named = "agent-93b9739a";
+        let argv = rig.start_argv();
+        assert_eq!(flag_value(&argv, "--name"), named);
+        assert_eq!(argv.last(), Some(&format!("/wake {named}")));
+
+        let logs: Vec<String> = std::fs::read_dir(rig.machine().join("starts"))
+            .expect("the starts directory is there")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(logs.len(), 1, "one start, one log: {logs:?}");
+        assert!(
+            logs[0].starts_with(&format!("{named}-")) && logs[0].ends_with(".log"),
+            "the start log is named by the session: {logs:?}"
+        );
+
+        let spawned = rig
+            .events()
+            .into_iter()
+            .find(|e| e["type"] == "session.spawned")
+            .expect("the start wrote its event");
+        assert_eq!(spawned["actor"], SEAT_ID, "the line's actor is the full id");
+        assert_eq!(spawned["payload"]["name"], named);
     }
 
     /// The plugin root end to end through the BUILT binary: the policy names a
@@ -679,7 +731,7 @@ mod effects {
             "the cursor moved past the event this tick consumed: {table}"
         );
         assert_eq!(table["sessions"].as_array().map(Vec::len), Some(1));
-        assert_eq!(table["sessions"][0]["seat"], SEAT);
+        assert_eq!(table["sessions"][0]["seat"], SEAT_ID);
 
         // AC8 — the in-flight field is CLEARED once the effect returned.
         assert!(
@@ -825,7 +877,7 @@ mod effects {
         let out = rig.observe();
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         assert_eq!(rig.events_of("session.nudged"), 2);
-        assert_eq!(rig.sessions()["nudged"][SEAT], "cd34");
+        assert_eq!(rig.sessions()["nudged"][SEAT_ID], "cd34");
     }
 
     /// AC3(e) — a start that exits non-zero inside the watch window is a failure
@@ -1030,7 +1082,7 @@ mod effects {
             rig.projection()
         );
         assert_eq!(rig.events_of("dispatch.blind"), 1);
-        assert_eq!(rig.sessions()["seats"][SEAT]["blind"], 1);
+        assert_eq!(rig.sessions()["seats"][SEAT_ID]["blind"], 1);
 
         // And the failed attach opened no window: the row still carries its
         // session, so the next poll decides about the same pid-less row again.
@@ -1218,7 +1270,7 @@ mod effects {
             .find(|e| e["type"] == "session.adopted")
             .expect("the event is in the stream");
         assert_eq!(adopted["payload"]["session"], "a-session");
-        assert_eq!(adopted["actor"], SEAT);
+        assert_eq!(adopted["actor"], SEAT_ID);
         assert_eq!(
             rig.calls().len(),
             before,
@@ -1300,7 +1352,7 @@ mod effects {
             assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         }
         assert_eq!(rig.events_of("session.halted"), 1);
-        assert_eq!(rig.sessions()["seats"][SEAT]["halted"], true);
+        assert_eq!(rig.sessions()["seats"][SEAT_ID]["halted"], true);
         assert_eq!(rig.sessions()["daemon_pid"], 4242);
 
         write(&rig.machine().join("sessions.json"), "{not json at all");
@@ -1355,7 +1407,7 @@ mod effects {
             assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         }
         assert_eq!(rig.events_of("session.halted"), 1);
-        assert_eq!(rig.sessions()["seats"][SEAT]["halted"], true);
+        assert_eq!(rig.sessions()["seats"][SEAT_ID]["halted"], true);
 
         // The control that the file was there to lose: the poll below reads a
         // path that resolves to nothing.
@@ -1394,26 +1446,55 @@ mod effects {
     }
 
     /// A seat event whose actor names no configured row is dropped with a line.
+    ///
+    /// The actor is matched on the seat's id: another seat's id is no row of
+    /// this list, and neither is this seat's own machine name — the shape a line
+    /// an older build wrote carries.
     #[test]
     fn a_seat_event_for_a_row_the_seat_list_does_not_carry_is_dropped() {
-        let rig = Rig::new("effect-unknown-actor");
+        const ANOTHER: &str = "01a0d1f1-0aec-765f-9abe-0000000000ff";
+        for actor in [ANOTHER, SEAT] {
+            let rig = Rig::new("effect-unknown-actor");
+            rig.write_roster(&live_row(&rig.worktree(), "ab12"));
+            assert_eq!(rig.observe().status.code(), Some(0));
+
+            append_event(
+                &rig,
+                "seat.resting",
+                actor,
+                serde_json::json!({"reason": "x"}),
+            );
+            let out = rig.observe();
+            assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+            assert!(
+                stderr(&out).contains(&format!(
+                    "dropping a seat.resting whose actor `{actor}` names no seat row"
+                )),
+                "the drop is stated: {}",
+                stderr(&out)
+            );
+            assert!(rig.calls().is_empty(), "{actor}: {:?}", rig.calls());
+        }
+
+        // The control: the same line by this seat's id is taken, and asks for a
+        // rest the next poll collects.
+        let rig = Rig::new("effect-known-actor");
         rig.write_roster(&live_row(&rig.worktree(), "ab12"));
         assert_eq!(rig.observe().status.code(), Some(0));
-
         append_event(
             &rig,
             "seat.resting",
-            "nobody",
+            SEAT_ID,
             serde_json::json!({"reason": "x"}),
         );
         let out = rig.observe();
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         assert!(
-            stderr(&out).contains("names no seat row"),
-            "the drop is stated: {}",
+            !stderr(&out).contains("names no seat row"),
+            "{}",
             stderr(&out)
         );
-        assert!(rig.calls().is_empty(), "{:?}", rig.calls());
+        assert_eq!(seat_row(&rig)["decision"], "rest", "{}", seat_row(&rig));
     }
 
     /// An effect execs the binary the GATE resolved, on the constructed path,
@@ -1558,8 +1639,8 @@ mod isolation {
     /// and the item the order index named, sighted by nothing yet.
     fn table_naming(config_dir: &Path, item: &str, worktree: &Path) -> String {
         format!(
-            r#"{{"schema":1,"consumed_seq":0,"nudged":{{}},"seats":{{}},"sessions":[
-                 {{"seat":"{SEAT}","project":"demo","worktree":"{}",
+            r#"{{"schema":2,"consumed_seq":0,"nudged":{{}},"seats":{{}},"sessions":[
+                 {{"seat":"{SEAT_ID}","project":"demo","worktree":"{}",
                    "name":"{SEAT}","model":"a-model","posture":"dontAsk",
                    "first_turn":"a brief","transient":true,
                    "config_dir":"{}","item":"{}",
@@ -1704,7 +1785,7 @@ mod isolation {
             .into_iter()
             .find(|e| e["type"] == "dispatch.failed")
             .expect("the line is on the stream");
-        assert_eq!(line["actor"], SEAT);
+        assert_eq!(line["actor"], SEAT_ID);
         assert_eq!(line["payload"]["seat"], SEAT);
         assert_eq!(line["payload"]["item"], "an-item");
         assert_eq!(line["payload"]["cause"], "authentication_failed");

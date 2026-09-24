@@ -866,14 +866,15 @@ fn the_cap_the_pass_is_handed_is_the_one_it_counts_against() {
 /// run is untouched, and one `run.cleaned` carries the count.
 #[test]
 fn a_closed_run_retires_the_seats_it_spawned_and_no_others() {
+    // Every actor on a session line is the seat's full id.
+    const S1: &str = "01a0d1f1-0aec-765f-9abe-1a1a1a1a1a1a";
+    const S2: &str = "01a0d1f1-0aec-765f-9abe-2b2b2b2b2b2b";
+    const S7: &str = "01a0d1f1-0aec-765f-9abe-7c7c7c7c7c7c";
+    const S9: &str = "01a0d1f1-0aec-765f-9abe-9d9d9d9d9d9d";
     let scratch = Scratch::new("ac3");
     let stream = scratch.stream();
     let mut log = EventLog::open(&stream);
-    for (seat, run) in [
-        ("s1", Some("r3")),
-        ("s2", Some("r3")),
-        ("s9", Some("other")),
-    ] {
+    for (seat, run) in [(S1, Some("r3")), (S2, Some("r3")), (S9, Some("other"))] {
         log.append(
             events::SESSION_SPAWNED,
             seat,
@@ -885,7 +886,7 @@ fn a_closed_run_retires_the_seats_it_spawned_and_no_others() {
     // which is the shape a spawn from a shell writes.
     log.append(
         events::SESSION_SPAWNED,
-        "s7",
+        S7,
         serde_json::json!({ "worktree": "/w", "run": serde_json::Value::Null }),
     )
     .expect("the spawn lands");
@@ -908,16 +909,16 @@ fn a_closed_run_retires_the_seats_it_spawned_and_no_others() {
     assert_eq!(
         *stub.retires.borrow(),
         vec![
-            ("s1".to_string(), "r3".to_string()),
-            ("s2".to_string(), "r3".to_string())
+            (S1.to_string(), "r3".to_string()),
+            (S2.to_string(), "r3".to_string())
         ],
-        "the run's two seats, and neither the other run's nor the runless one"
+        "the run's two seats, by id, and neither the other run's nor the runless one"
     );
     let retired: Vec<String> = of_kind(&stream, events::SESSION_RETIRED)
         .into_iter()
         .map(|record| record.actor)
         .collect();
-    assert_eq!(retired, vec!["s1".to_string(), "s2".to_string()]);
+    assert_eq!(retired, vec![S1.to_string(), S2.to_string()]);
     let cleaned = of_kind(&stream, runs::RUN_CLEANED);
     assert_eq!(cleaned.len(), 1);
     assert_eq!(cleaned[0].payload["run"], "r3");

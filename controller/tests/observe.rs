@@ -798,11 +798,11 @@ fn the_projection_carries_no_model_and_no_transient() {
     );
 
     let mut document = projection(Some("2.1.261"), Some("2.1.261"));
-    // No `chosen_name`: the loop publishes none since seat identity, and the
-    // field stays absent until the projection drops it.
+    // The row the loop publishes: keyed by the seat's id, beside the seat's own
+    // name — which this seat has none of.
     document.seats = vec![SeatRow::from_observation(
-        &configured.machine_name(),
-        None,
+        &configured.id.to_string(),
+        configured.name.as_deref(),
         &seen,
         Some(1234),
     )];
@@ -811,10 +811,10 @@ fn the_projection_carries_no_model_and_no_transient() {
     // The positive control: the row IS this seat's, so the absences below are
     // the projection's silence and not an empty document.
     let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(parsed["seats"][0]["seat_dir"], "agent-93b9739a");
+    assert_eq!(parsed["seats"][0]["seat_dir"], configured.id.to_string());
     assert!(
         parsed["seats"][0].get("chosen_name").is_none(),
-        "a seat publishes no chosen_name: {body}"
+        "a seat with no name of its own publishes none: {body}"
     );
     assert_eq!(parsed["seats"][0]["roster_state"], "present");
 

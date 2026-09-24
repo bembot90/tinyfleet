@@ -356,29 +356,29 @@ fn a_session_that_is_re_hosted_between_polls_is_held_and_the_seat_never_seen_liv
 
     let lines = rig.lines();
     assert_eq!(
-        rig.lines_reading(&format!("session.revived {HOSTED}")),
+        rig.lines_reading(&format!("session.revived {HOSTED_ID}")),
         0,
         "no tick attached to the re-hosting session: {lines:?}"
     );
     assert_eq!(
-        rig.lines_reading(&format!("session.spawned {HOSTED}")),
+        rig.lines_reading(&format!("session.spawned {HOSTED_ID}")),
         0,
         "nor started a second session beside it: {lines:?}"
     );
     assert_eq!(
-        rig.lines_reading(&format!("dispatch.blind {HOSTED}")),
+        rig.lines_reading(&format!("dispatch.blind {HOSTED_ID}")),
         0,
         "and the counter did not move, because nothing was dispatched: {lines:?}"
     );
     assert_eq!(
-        rig.decision(HOSTED),
+        rig.decision(HOSTED_ID),
         "leave-alone",
         "the tick that read it listed again left it alone: {lines:?}"
     );
 
     // The control, and with it the only attach the whole run issued.
     assert_eq!(
-        rig.lines_reading(&format!("session.revived {NEVER_LIVE}")),
+        rig.lines_reading(&format!("session.revived {NEVER_LIVE_ID}")),
         1,
         "the seat no sighting covers took the revive, exactly once: {lines:?}"
     );

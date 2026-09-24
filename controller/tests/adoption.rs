@@ -195,8 +195,8 @@ impl Rig {
         write(
             &self.machine.join("sessions.json"),
             &format!(
-                "{{\"schema\": 1, \"sessions\": [{{\
-                 \"seat\": \"{OWNED}\", \"project\": \"{PROJECT}\", \"worktree\": \"{}\", \
+                "{{\"schema\": 2, \"sessions\": [{{\
+                 \"seat\": \"{OWNED_ID}\", \"project\": \"{PROJECT}\", \"worktree\": \"{}\", \
                  \"name\": \"A Seat\", \"model\": \"claude-opus-5\", \"posture\": \"auto\", \
                  \"first_turn\": \"/wake {OWNED}\", \"transient\": false, \
                  \"dispatch_id\": \"an-earlier-dispatch\", \"dispatched_at\": 1000, \
@@ -501,12 +501,12 @@ fn a_restart_leaves_a_claimed_pid_less_row_alone_and_revives_the_one_it_does_not
     assert_eq!(run::observe_with(&Options { once: true }, rig.grant()), 0);
     let after_one = rig.session_lines();
     assert!(
-        after_one.contains(&format!("session.adopted {OWNED}")),
+        after_one.contains(&format!("session.adopted {OWNED_ID}")),
         "the first poll claimed the live session the table names: {after_one:?}"
     );
-    assert_eq!(rig.decision(OWNED), "leave-alone");
+    assert_eq!(rig.decision(OWNED_ID), "leave-alone");
     assert_eq!(
-        rig.decision(UNOWNED),
+        rig.decision(UNOWNED_ID),
         "revive",
         "the control took the arm the claimed seat was spared: {after_one:?}"
     );
@@ -518,21 +518,21 @@ fn a_restart_leaves_a_claimed_pid_less_row_alone_and_revives_the_one_it_does_not
     // The second poll, from a loop that starts again knowing only what the
     // session table on disk carries — which is where the claim now lives.
     assert_eq!(run::observe_with(&Options { once: true }, rig.grant()), 0);
-    assert_eq!(rig.decision(OWNED), "leave-alone");
+    assert_eq!(rig.decision(OWNED_ID), "leave-alone");
 
     let lines = rig.session_lines();
     assert_eq!(
-        rig.lines_reading(&format!("session.revived {OWNED}")),
+        rig.lines_reading(&format!("session.revived {OWNED_ID}")),
         0,
         "neither poll attached to the claimed session: {lines:?}"
     );
     assert_eq!(
-        rig.lines_reading(&format!("session.spawned {OWNED}")),
+        rig.lines_reading(&format!("session.spawned {OWNED_ID}")),
         0,
         "nor started a second session beside it: {lines:?}"
     );
     assert_eq!(
-        rig.lines_reading(&format!("session.adopted {OWNED}")),
+        rig.lines_reading(&format!("session.adopted {OWNED_ID}")),
         1,
         "and the claim was taken once, not once per poll: {lines:?}"
     );
@@ -604,20 +604,20 @@ fn one_controller_polling_twice_revives_a_claimed_pid_less_row_on_neither_tick()
 
     let lines = rig.session_lines();
     assert_eq!(
-        rig.lines_reading(&format!("session.revived {OWNED}")),
+        rig.lines_reading(&format!("session.revived {OWNED_ID}")),
         0,
         "no tick attached to the claimed session: {lines:?}"
     );
     assert_eq!(
-        rig.lines_reading(&format!("session.adopted {OWNED}")),
+        rig.lines_reading(&format!("session.adopted {OWNED_ID}")),
         1,
         "the claim was taken on the first tick and not retaken: {lines:?}"
     );
-    assert_eq!(rig.decision(OWNED), "leave-alone");
+    assert_eq!(rig.decision(OWNED_ID), "leave-alone");
 
     // The control, and with it the only attach the whole run issued.
     assert_eq!(
-        rig.lines_reading(&format!("session.revived {UNOWNED}")),
+        rig.lines_reading(&format!("session.revived {UNOWNED_ID}")),
         1,
         "the seat no claim covers took the revive: {lines:?}"
     );
@@ -651,17 +651,17 @@ fn a_live_idle_session_is_claimed_at_its_first_sighting() {
 
     let lines = rig.session_lines();
     assert_eq!(
-        rig.lines_reading(&format!("session.adopted {OWNED}")),
+        rig.lines_reading(&format!("session.adopted {OWNED_ID}")),
         1,
         "the live row was claimed, `done` on it and all: {lines:?}"
     );
     assert_eq!(
-        rig.lines_reading(&format!("session.revived {OWNED}")),
+        rig.lines_reading(&format!("session.revived {OWNED_ID}")),
         0,
         "and nothing was attached to a session that is already up: {lines:?}"
     );
     assert_eq!(
-        rig.decision(UNOWNED),
+        rig.decision(UNOWNED_ID),
         "revive",
         "the control reached the arm the sighting spared the other seat: {lines:?}"
     );
@@ -690,12 +690,12 @@ fn a_claimed_session_that_has_gone_pid_less_is_left_alone() {
 
     let lines = rig.session_lines();
     assert_eq!(
-        rig.decision(OWNED),
+        rig.decision(OWNED_ID),
         "leave-alone",
         "the claim holds a session the daemon still lists: {lines:?}"
     );
     assert_eq!(
-        rig.lines_reading(&format!("session.revived {OWNED}")),
+        rig.lines_reading(&format!("session.revived {OWNED_ID}")),
         0,
         "and no attach was issued: {lines:?}"
     );
@@ -705,7 +705,7 @@ fn a_claimed_session_that_has_gone_pid_less_is_left_alone() {
         rig.attaches()
     );
     assert_eq!(
-        rig.decision(UNOWNED),
+        rig.decision(UNOWNED_ID),
         "revive",
         "the control reached the revive arm: {lines:?}"
     );
@@ -728,17 +728,17 @@ fn a_claimed_session_whose_row_names_an_end_is_revived() {
 
     let lines = rig.session_lines();
     assert_eq!(
-        rig.decision(OWNED),
+        rig.decision(OWNED_ID),
         "revive",
         "the claim does not hold a seat whose row names an end: {lines:?}"
     );
     assert_eq!(
-        rig.lines_reading(&format!("session.revived {OWNED}")),
+        rig.lines_reading(&format!("session.revived {OWNED_ID}")),
         1,
         "and the attach was issued: {lines:?}"
     );
     assert_eq!(
-        rig.lines_reading(&format!("session.adopted {OWNED}")),
+        rig.lines_reading(&format!("session.adopted {OWNED_ID}")),
         0,
         "a pid-less row is not claimed again either: {lines:?}"
     );
@@ -765,12 +765,12 @@ fn an_unclaimed_pid_less_done_row_is_revived() {
 
     let lines = rig.session_lines();
     assert_eq!(
-        rig.decision(OWNED),
+        rig.decision(OWNED_ID),
         "revive",
         "nothing claims this session, so the discriminator takes it: {lines:?}"
     );
     assert_eq!(
-        rig.lines_reading(&format!("session.adopted {OWNED}")),
+        rig.lines_reading(&format!("session.adopted {OWNED_ID}")),
         0,
         "and a pid-less row is not claimed on the way past: {lines:?}"
     );

@@ -12,6 +12,7 @@ use crate::adapter::{Agent, RemoveAnswer, StartOutcome, StartSpec};
 use crate::events::{self, EventLog};
 use crate::policy::Policy;
 use crate::sessions::{SessionRow, Table};
+use fleet_core::seat::identity::SeatId;
 use std::path::Path;
 use std::time::Duration;
 
@@ -56,11 +57,15 @@ impl Outcome {
 /// Everything one seat's effect needs to know about that seat, gathered by the
 /// caller so this layer reads nothing for itself.
 pub struct Target<'a> {
-    pub seat_dir: &'a str,
-    /// The name a person addresses the seat by, lowercased, falling back to the
-    /// seat directory — never an empty string, which would put an empty element
-    /// in argv and make `--name` swallow the flag after it.
-    pub display_name: String,
+    /// The seat, and the actor every line this effect writes carries.
+    pub seat: SeatId,
+    /// The name the seat's session answers to: the one its newest session row
+    /// recorded at start, and the seat's machine name where no row names one
+    /// (`sessions::Table::session_name`). It is the start's `--name`, the first
+    /// turn's argument and the address of every nudge — never an empty string,
+    /// which would put an empty element in argv and make `--name` swallow the
+    /// flag after it.
+    pub session_name: String,
     pub project: &'a str,
     pub worktree: &'a str,
     pub model: String,
@@ -101,14 +106,6 @@ impl Target<'_> {
     }
 }
 
-/// The seat's display name: the chosen one lowercased, else the directory.
-pub fn display_name(chosen: Option<&str>, seat_dir: &str) -> String {
-    match chosen.map(str::trim) {
-        Some(name) if !name.is_empty() => name.to_lowercase(),
-        _ => seat_dir.to_string(),
-    }
-}
-
 /// Start a woken session for this seat, and open its row.
 ///
 /// On a failed start there is NO ROW. A row for a session that never came up is
@@ -136,10 +133,10 @@ pub fn spawn_woken(
 /// sighting fields stay absent until the roster shows the session (A7).
 fn open_row(table: &mut Table, target: &Target, dispatch_id: String, now_ms: u64) {
     table.push(SessionRow {
-        seat: target.seat_dir.to_string(),
+        seat: target.seat.to_string(),
         project: target.project.to_string(),
         worktree: target.worktree.to_string(),
-        name: target.display_name.clone(),
+        name: target.session_name.clone(),
         model: target.model.clone(),
         posture: target.posture.clone(),
         first_turn: target.first_turn.clone(),
@@ -162,10 +159,14 @@ fn open_row(table: &mut Table, target: &Target, dispatch_id: String, now_ms: u64
 /// it, because a suggestion whose recipient has to go and look up all three is
 /// one that costs more attention than it saves. It suggests and never enforces:
 /// there is deliberately no path from the threshold to an automatic rest.
-pub fn nudge_text(display_name: &str, tokens: u64, threshold: u64, seat_dir: &str) -> String {
+///
+/// The seat is named by its session's name in both places. The command's
+/// argument resolves through the machine-name rule, which matches on the id
+/// part alone, so it names the seat even after the seat is renamed.
+pub fn nudge_text(session_name: &str, tokens: u64, threshold: u64, seat: &str) -> String {
     format!(
-        "{display_name}: context at {tokens} tokens, over the rest threshold {threshold} — \
-         rest when your work allows: fleet event rest {seat_dir} --reason <why>"
+        "{session_name}: context at {tokens} tokens, over the rest threshold {threshold} — \
+         rest when your work allows: fleet event rest {seat} --reason <why>"
     )
 }
 
@@ -175,9 +176,9 @@ pub fn nudge_text(display_name: &str, tokens: u64, threshold: u64, seat_dir: &st
 /// session it addresses is one the agent can already see; the instruction is to
 /// send EXACTLY ONE message and nothing else, because a turn that takes
 /// initiative here is a second voice in a seat's session that nobody asked for.
-pub fn nudge_prompt(display_name: &str, text: &str) -> String {
+pub fn nudge_prompt(session_name: &str, text: &str) -> String {
     format!(
-        "Send exactly one message to the session named `{display_name}` through the \
+        "Send exactly one message to the session named `{session_name}` through the \
          cross-session send tool, with this text verbatim and nothing added:\n\n{text}\n\n\
          Send that one message and then stop. Do not act on the message yourself, do not \
          open any file, and do not reply here with anything but whether the send returned."
@@ -240,9 +241,9 @@ pub fn start_once(
     // controller makes goes through this one construction, so a second builder
     // of a target cannot forget it and the two cannot disagree.
     let spec = StartSpec {
-        seat_dir: target.seat_dir.to_string(),
+        seat: target.seat.to_string(),
         worktree: target.worktree.to_string(),
-        name: target.display_name.clone(),
+        name: target.session_name.clone(),
         model: target.model.clone(),
         posture: target.posture.clone(),
         first_turn: target.first_turn.clone(),
@@ -257,7 +258,7 @@ pub fn start_once(
             let payload = serde_json::json!({
                 "worktree": target.worktree,
                 "project": target.project,
-                "name": target.display_name,
+                "name": target.session_name,
                 "model": target.model,
                 "posture": target.posture,
                 "first_turn": target.first_turn,
@@ -272,7 +273,7 @@ pub fn start_once(
             Ok(append(
                 events_log,
                 events::SESSION_SPAWNED,
-                target.seat_dir,
+                &target.seat.to_string(),
                 payload,
             ))
         }
@@ -280,7 +281,7 @@ pub fn start_once(
             append(
                 events_log,
                 events::SESSION_CRASHED,
-                target.seat_dir,
+                &target.seat.to_string(),
                 crashed_payload(PHASE_START, &cause, &log),
             );
             Err(cause)
@@ -334,7 +335,7 @@ pub fn rest(
     append(
         events_log,
         events::SESSION_RESTED,
-        target.seat_dir,
+        &target.seat.to_string(),
         serde_json::json!({
             "predecessor": target.session_id,
             "predecessor_address": short_id,
@@ -367,7 +368,7 @@ pub fn revive(
         eprintln!(
             "fleet observe: {} is due a revive and its row carries no short id, which is the \
              address an attach takes; nothing is done and the row is left to the next poll",
-            target.seat_dir
+            target.session_name
         );
         return Outcome::None;
     };
@@ -379,7 +380,7 @@ pub fn revive(
     let dispatch_id = append(
         events_log,
         events::SESSION_REVIVED,
-        target.seat_dir,
+        &target.seat.to_string(),
         serde_json::json!({
             "session": session_id,
             "address": short_id,
@@ -389,7 +390,7 @@ pub fn revive(
             // attach is its own dispatch, so a rebuild that meets this line
             // with no row to match — a trimmed stream — opens one from these
             // rather than from empty strings.
-            "name": target.display_name,
+            "name": target.session_name,
             "model": target.model,
             "posture": target.posture,
             "first_turn": target.first_turn,
@@ -504,27 +505,30 @@ pub fn adopt(
 /// The one line and the one event a halt transition writes.
 ///
 /// Announced ONCE per transition into the halt and never once per poll: the
-/// caller writes this only when the latch moved.
-pub fn halted(seat_dir: &str, blind: u32, events_log: &mut EventLog) {
+/// caller writes this only when the latch moved. The line names the seat by its
+/// machine name, which is what a person types back; the event's actor is its
+/// id.
+pub fn halted(seat: &SeatId, machine_name: &str, blind: u32, events_log: &mut EventLog) {
     eprintln!(
-        "fleet observe: {seat_dir} has gone blind on {blind} consecutive dispatches and is HELD \
-         DOWN; nothing further is dispatched for it until `fleet event clear-halt {seat_dir}`"
+        "fleet observe: {machine_name} has gone blind on {blind} consecutive dispatches and is \
+         HELD DOWN; nothing further is dispatched for it until `fleet event clear-halt \
+         {machine_name}`"
     );
     append(
         events_log,
         events::SESSION_HALTED,
-        seat_dir,
+        &seat.to_string(),
         serde_json::json!({ "blind": blind }),
     );
 }
 
 /// The event a counted blind dispatch writes, carrying the count it moved to —
 /// which is what a rebuild folds the counter back out of.
-pub fn blind_dispatch(seat_dir: &str, blind: u32, verdict: &str, events_log: &mut EventLog) {
+pub fn blind_dispatch(seat: &SeatId, blind: u32, verdict: &str, events_log: &mut EventLog) {
     append(
         events_log,
         events::DISPATCH_BLIND,
-        seat_dir,
+        &seat.to_string(),
         serde_json::json!({ "blind": blind, "verdict": verdict }),
     );
 }
@@ -541,17 +545,17 @@ pub fn nudge(
         return Outcome::None;
     };
     let text = nudge_text(
-        &target.display_name,
+        &target.session_name,
         tokens,
         policy.rest_threshold_tokens,
-        target.seat_dir,
+        &target.session_name,
     );
     let sent = agent.nudge(
         target.config_dir(),
-        target.seat_dir,
+        &target.session_name,
         target.worktree,
         &policy.nudge_model,
-        &nudge_prompt(&target.display_name, &text),
+        &nudge_prompt(&target.session_name, &text),
         Duration::from_secs(policy.nudge_timeout_seconds),
     );
     let outcome = match &sent {
@@ -562,11 +566,12 @@ pub fn nudge(
     // nudge per session and a retry loop against a session that cannot be
     // reached is the noise that budget exists to prevent; the event carries the
     // failure for the person who reads the stream.
-    table.mark_nudged(target.seat_dir, session_id);
+    let seat = target.seat.to_string();
+    table.mark_nudged(&seat, session_id);
     append(
         events_log,
         events::SESSION_NUDGED,
-        target.seat_dir,
+        &seat,
         serde_json::json!({
             "session": session_id,
             "context_tokens": tokens,

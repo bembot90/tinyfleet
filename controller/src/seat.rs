@@ -9,6 +9,7 @@
 use crate::clock;
 use crate::config;
 use crate::events::{self, EventLog};
+use fleet_core::seat::identity::SeatId;
 use std::path::Path;
 
 /// The refusals `rest` has, each its own status because each has its own fix.
@@ -45,17 +46,38 @@ pub const COLLECTOR_STALE_POLLS: u64 = 3;
 /// THE WRITE IS READ BACK BEFORE THIS ANSWERS 0. A caller acting on a 0 stops
 /// working and waits for a successor, so "it was written" has to be a reading of
 /// the file and not of this process's own intent.
+///
+/// The line's actor is the seat's id, and so is the projection row a refusal
+/// reads. Every sentence names the seat by its machine name, off the seat list,
+/// which is what a person types back — and by the id where the list will not
+/// read.
 pub fn record(
     machine_dir: &Path,
     kind: &str,
-    seat: &str,
+    seat: &SeatId,
     reason: Option<&str>,
 ) -> Result<String, (u8, String)> {
+    let row = config::read(&machine_dir.join("config.json"))
+        .ok()
+        .and_then(|config| config.by_id(seat).cloned());
+    let key = seat.to_string();
+    let named = Named {
+        key: &key,
+        name: row
+            .as_ref()
+            .map(config::Seat::machine_name)
+            .unwrap_or_else(|| key.clone()),
+        // A list that cannot be read answers not transient: refusing a named
+        // seat's rest over an unreadable file would leave the one kind of seat
+        // that does rest unable to ask.
+        transient: row.as_ref().is_some_and(|row| row.transient),
+    };
+    let seat = named.name.as_str();
     if kind == events::SEAT_RESTING {
-        rest_is_answerable(machine_dir, seat)?;
+        rest_is_answerable(machine_dir, &named)?;
     }
     if kind == events::SEAT_CLEAR_HALT {
-        clear_halt_is_answerable(machine_dir, seat)?;
+        clear_halt_is_answerable(machine_dir, &named)?;
     }
     let payload = match kind {
         events::SEAT_RESTING | events::SEAT_CLEAR_HALT => {
@@ -65,11 +87,11 @@ pub fn record(
     };
     let stream = machine_dir.join("events.jsonl");
     let mut log = EventLog::open(&stream);
-    if let Err(e) = log.append(kind, seat, payload) {
+    if let Err(e) = log.append(kind, &key, payload) {
         return Err((1, format!("could not append to {}: {e}", stream.display())));
     }
     match events::read_after(&stream, log.seq().saturating_sub(1)).last() {
-        Some(record) if record.kind == kind && record.actor == seat => {
+        Some(record) if record.kind == kind && record.actor == key => {
             Ok(format!("{kind} {seat} — seq {}", record.seq))
         }
         other => Err((
@@ -85,18 +107,28 @@ pub fn record(
     }
 }
 
+/// One seat as a record names it: the id the stream and the projection key it
+/// on, the machine name its sentences say, and whether the seat list marks it
+/// transient.
+struct Named<'a> {
+    key: &'a str,
+    name: String,
+    transient: bool,
+}
+
 /// Whether a rest can be collected, or which half failed.
 ///
 /// The order is fixed: no collector outranks no session, because a fleet
 /// nobody is polling would not act on a rest for a seat that IS live either.
-fn rest_is_answerable(machine_dir: &Path, seat: &str) -> Result<(), (u8, String)> {
+fn rest_is_answerable(machine_dir: &Path, named: &Named) -> Result<(), (u8, String)> {
     let document = fresh_projection(machine_dir)?;
+    let seat = named.name.as_str();
 
     let seats = document["seats"]
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let row = seats.iter().find(|row| row["seat_dir"] == seat);
+    let row = seats.iter().find(|row| row["seat_dir"] == named.key);
     let state = match row {
         None => None,
         Some(row) => row["roster_state"].as_str(),
@@ -121,7 +153,7 @@ fn rest_is_answerable(machine_dir: &Path, seat: &str) -> Result<(), (u8, String)
     // seat's model nor its transience — it reports what was OBSERVED, and which
     // kind of seat a row is is a configuration — so this reads the same
     // `config.json` the controller parses it from.
-    if is_transient(machine_dir, seat) {
+    if named.transient {
         return Err((
             EXIT_TRANSIENT,
             format!(
@@ -141,13 +173,14 @@ fn rest_is_answerable(machine_dir: &Path, seat: &str) -> Result<(), (u8, String)
 /// second half is the seat's own halt flag, read from the published row — a
 /// clear for a seat that is not halted is a typo, and the state it read is what
 /// tells the person which seat they meant.
-fn clear_halt_is_answerable(machine_dir: &Path, seat: &str) -> Result<(), (u8, String)> {
+fn clear_halt_is_answerable(machine_dir: &Path, named: &Named) -> Result<(), (u8, String)> {
     let document = fresh_projection(machine_dir)?;
+    let seat = named.name.as_str();
     let seats = document["seats"]
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let row = seats.iter().find(|row| row["seat_dir"] == seat);
+    let row = seats.iter().find(|row| row["seat_dir"] == named.key);
     match row {
         Some(row) if row["halted"].as_bool() == Some(true) => Ok(()),
         Some(row) => Err((
@@ -217,22 +250,4 @@ fn fresh_projection(machine_dir: &Path) -> Result<serde_json::Value, (u8, String
         }
     }
     Ok(document)
-}
-
-/// Whether the seat list marks this row transient. A list that cannot be read
-/// answers `false`: refusing a named seat's rest over an unreadable file would
-/// leave the one kind of seat that does rest unable to ask.
-///
-/// `seat` is the machine name the verb resolved its argument to, which is what
-/// the stream and the projection are still keyed on.
-fn is_transient(machine_dir: &Path, seat: &str) -> bool {
-    config::read(&machine_dir.join("config.json"))
-        .ok()
-        .map(|config| {
-            config
-                .seats
-                .iter()
-                .any(|row| row.machine_name() == seat && row.transient)
-        })
-        .unwrap_or(false)
 }

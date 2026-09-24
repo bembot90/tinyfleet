@@ -394,6 +394,43 @@ fn a_live_row_in_the_seats_worktree_is_rung_with_the_item_and_the_brief() {
     assert_eq!(orders["seat"], serde_json::json!(rig.seat));
 }
 
+/// The ring addresses the session by the name its newest session row RECORDED
+/// at start, and not by the seat's machine name today: a seat renamed since its
+/// session started is still answering to the old name. The seat here was
+/// started as `orla-93b9739a`, and the seat list names it otherwise now.
+#[test]
+fn a_ring_addresses_the_session_by_the_name_its_row_recorded() {
+    let project = Project::shared();
+    let rig = Rig::new("recorded-name");
+    rig.live();
+    std::fs::write(
+        rig.machine.join("sessions.json"),
+        format!(
+            r#"{{"schema": 2, "sessions": [{{
+                 "seat": "{SEAT_ID}", "project": "a-project", "worktree": {worktree},
+                 "name": "orla-93b9739a", "model": "a-model", "posture": "auto",
+                 "first_turn": "/wake orla-93b9739a", "transient": false,
+                 "dispatch_id": "a-dispatch", "dispatched_at": 1000
+               }}]}}"#,
+            worktree = json_string(&rig.worktree.display().to_string()),
+        ),
+    )
+    .expect("the session table is written");
+    let item = project.item("a ready item for a renamed seat");
+
+    let out = rig.run(&["dispatch", &item, "--to", &rig.seat, "--by", "lead-1"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let argv = rig.nudge_argv();
+    assert!(
+        argv.contains("session named `orla-93b9739a`"),
+        "the ring addresses the name the session was started under:\n{argv}"
+    );
+    assert!(
+        !argv.contains(&format!("{}-93b9739a", rig.seat)),
+        "and not the machine name the seat carries now:\n{argv}"
+    );
+}
+
 #[test]
 fn an_empty_roster_exits_four_and_the_three_writes_stand() {
     let project = Project::shared();

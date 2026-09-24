@@ -18,6 +18,7 @@ use fleet_controller::observe::RosterState;
 use fleet_controller::platform;
 use fleet_controller::policy::{self, Policy};
 use fleet_controller::sessions::{self, SessionRow, Table};
+use fleet_core::seat::identity::SeatId;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -235,10 +236,18 @@ fn a_policy() -> Policy {
         .expect("the policy parses")
 }
 
+/// The seat every arm here is about: the id its table rows, nudge mark, latches
+/// and stream lines are keyed on.
+const S1: &str = "01a0d1f1-0aec-765f-9abe-4f5e6a7b8c91";
+
+fn s1() -> SeatId {
+    SeatId::parse(S1).expect("the fixture's id parses")
+}
+
 fn a_target<'a>(worktree: &'a str, short: Option<&'a str>) -> Target<'a> {
     Target {
-        seat_dir: "s1",
-        display_name: "orla".to_string(),
+        seat: s1(),
+        session_name: "orla".to_string(),
         project: "demo",
         worktree,
         model: "claude-opus-5".to_string(),
@@ -422,7 +431,7 @@ mod lessons {
         let rig = Rig::new("start-names-the-model");
         let worktree = rig.worktree().display().to_string();
         let spec = StartSpec {
-            seat_dir: "s1".to_string(),
+            seat: S1.to_string(),
             worktree: worktree.clone(),
             name: "orla".to_string(),
             model: "claude-opus-5".to_string(),
@@ -669,7 +678,7 @@ mod lessons {
         // which is the one place the PATH is set, and the value it recorded is
         // the constructed one to the byte.
         let spec = StartSpec {
-            seat_dir: "s1".to_string(),
+            seat: S1.to_string(),
             worktree: rig.worktree().display().to_string(),
             name: "orla".to_string(),
             model: "claude-opus-5".to_string(),
@@ -794,7 +803,7 @@ mod lessons {
     fn start_output_goes_to_a_file() {
         let rig = Rig::new("start-output");
         let spec = StartSpec {
-            seat_dir: "s1".to_string(),
+            seat: S1.to_string(),
             worktree: rig.worktree().display().to_string(),
             name: "orla".to_string(),
             model: "claude-opus-5".to_string(),
@@ -1094,7 +1103,7 @@ mod lessons {
     fn a_restart_adopts_and_says_so() {
         let rig = Rig::new("lesson-g7");
         let mut table = Table::default();
-        table.push(a_row_for("s1", "/wt/s1", 100, Some("a-session")));
+        table.push(a_row_for(S1, "/wt/s1", 100, Some("a-session")));
         table.push(a_row_for("s2", "/wt/s2", 200, Some("a-hibernated-session")));
         table.push(a_row_for("s3", "/wt/s3", 300, Some("a-stopped-session")));
         table.push(a_row_for("s4", "/wt/s4", 400, Some("a-gone-session")));
@@ -1148,7 +1157,7 @@ mod lessons {
         let stream = rig.machine().join("events.jsonl");
         let mut log = rig.log();
 
-        effect::halted("s1", decide::BLIND_LIMIT, &mut log);
+        effect::halted(&s1(), "orla-4f5e6a7b8c91", decide::BLIND_LIMIT, &mut log);
         assert_eq!(
             rig.events_of(events::SESSION_HALTED),
             1,
@@ -1157,8 +1166,8 @@ mod lessons {
 
         // The table is not consulted: the hold comes back out of the stream.
         let rebuilt = sessions::rebuild(&stream);
-        assert!(rebuilt.seat_state("s1").halted);
-        assert_eq!(rebuilt.seat_state("s1").blind, decide::BLIND_LIMIT);
+        assert!(rebuilt.seat_state(S1).halted);
+        assert_eq!(rebuilt.seat_state(S1).blind, decide::BLIND_LIMIT);
         assert_eq!(
             rebuilt.daemon_pid, None,
             "and the daemon pid starts at none, which reads as no replacement"
@@ -1168,16 +1177,16 @@ mod lessons {
         // the ORDER that decides — a clear before the halt leaves the hold
         // standing.
         let mut log = rig.log();
-        log.append(events::SEAT_CLEAR_HALT, "s1", serde_json::json!({}))
+        log.append(events::SEAT_CLEAR_HALT, S1, serde_json::json!({}))
             .expect("the request lands");
         let cleared = sessions::rebuild(&stream);
-        assert!(!cleared.seat_state("s1").halted);
-        assert_eq!(cleared.seat_state("s1").blind, 0);
+        assert!(!cleared.seat_state(S1).halted);
+        assert_eq!(cleared.seat_state(S1).blind, 0);
 
         let mut log = rig.log();
-        effect::halted("s1", decide::BLIND_LIMIT, &mut log);
+        effect::halted(&s1(), "orla-4f5e6a7b8c91", decide::BLIND_LIMIT, &mut log);
         assert!(
-            sessions::rebuild(&stream).seat_state("s1").halted,
+            sessions::rebuild(&stream).seat_state(S1).halted,
             "a halt after the clear is a hold again"
         );
     }
@@ -1189,7 +1198,7 @@ mod lessons {
 fn a_second_adopt_over_the_same_table_claims_nothing() {
     let rig = Rig::new("adopt-once");
     let mut table = Table::default();
-    table.push(a_row_for("s1", "/wt/s1", 100, Some("a-session")));
+    table.push(a_row_for(S1, "/wt/s1", 100, Some("a-session")));
     let mut log = rig.log();
     let roster: Vec<AgentRow> = serde_json::from_str(
         r#"[{"sessionId":"a-session","id":"ab12","cwd":"/wt/s1","pid":4242}]"#,
@@ -1288,7 +1297,7 @@ fn an_adapter_with_no_effect_binary_refuses_every_verb_and_execs_nothing() {
     let ungated = rig.agent_with_effect_bin(None);
     let worktree = rig.worktree().display().to_string();
     let spec = StartSpec {
-        seat_dir: "s1".to_string(),
+        seat: S1.to_string(),
         worktree: worktree.clone(),
         name: "orla".to_string(),
         model: "claude-opus-5".to_string(),
@@ -1436,7 +1445,7 @@ fn a_rest_whose_start_failed_after_its_stop_landed_removes_nothing() {
     std::fs::set_permissions(rig.stub_path(), std::fs::Permissions::from_mode(0o755)).unwrap();
     let worktree = rig.worktree().display().to_string();
     let mut table = Table::default();
-    let mut predecessor = a_row_for("s1", &worktree, 500, Some("a-session"));
+    let mut predecessor = a_row_for(S1, &worktree, 500, Some("a-session"));
     predecessor.short_id = Some("ab12".to_string());
     table.push(predecessor);
     let mut log = rig.log();
@@ -1485,9 +1494,9 @@ fn a_nudge_marks_its_session_and_states_what_it_carried() {
         &mut table,
     );
     assert_eq!(outcome, effect::Outcome::Nudged);
-    assert!(table.is_nudged("s1", "a-session"));
+    assert!(table.is_nudged(S1, "a-session"));
     assert!(
-        !table.is_nudged("s1", "another-session"),
+        !table.is_nudged(S1, "another-session"),
         "the mark is the session's and not the seat's"
     );
 
@@ -1512,7 +1521,7 @@ fn a_nudge_marks_its_session_and_states_what_it_carried() {
     for needle in [
         "orla",
         "700000",
-        "fleet event rest s1",
+        "fleet event rest orla",
         "exactly one message",
     ] {
         assert!(
@@ -1534,7 +1543,7 @@ fn a_nudge_marks_its_session_and_states_what_it_carried() {
         &mut table,
     );
     assert_eq!(outcome, effect::Outcome::Failed);
-    assert!(table.is_nudged("s1", "a-session"));
+    assert!(table.is_nudged(S1, "a-session"));
     let failed = rig
         .events()
         .into_iter()
@@ -1745,7 +1754,7 @@ fn a_rebuilt_row_carries_the_dispatch_the_live_table_holds() {
 
     // The revive, on the row a sighting filled — which is how every row the
     // controller opened gets its session id, the roster being the only source.
-    assert!(table.sight("s1", &worktree, "a-session", Some("ab12"), spawn_ms + 10));
+    assert!(table.sight(S1, &worktree, "a-session", Some("ab12"), spawn_ms + 10));
     let revive_ms = fleet_controller::clock::now_ms();
     assert_eq!(
         effect::revive(

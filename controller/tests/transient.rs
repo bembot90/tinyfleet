@@ -523,13 +523,24 @@ impl Rig {
         std::fs::read_to_string(&self.start_argv).expect("the stub recorded an argv")
     }
 
+    /// The id a seat's machine name resolves to on the seat list, which is
+    /// what the session table keys its rows on. Taken while the row stands.
+    fn id_of(&self, seat: &str) -> String {
+        config::read(&self.config_path())
+            .expect("the seat list parses")
+            .resolve(seat)
+            .expect("the seat list names the seat")
+            .id
+            .to_string()
+    }
+
     /// A roster row, as the agent's listing shapes one.
     /// The session id onto the seat's table row, which is what a first sighting
     /// fills and what a transcript is keyed by.
     fn sight(&self, seat: &str, session_id: &str) {
         let mut table = self.table();
         let row = table
-            .newest_for_mut(seat)
+            .newest_for_mut(&self.id_of(seat))
             .expect("the spawn wrote a row for this seat");
         row.session_id = Some(session_id.to_string());
         sessions::write(&self.table_path(), &table).expect("the table is written back");
@@ -539,7 +550,7 @@ impl Rig {
     /// time is measured from.
     fn dispatched_at(&self, seat: &str) -> u64 {
         self.table()
-            .newest_for(seat)
+            .newest_for(&self.id_of(seat))
             .expect("the spawn wrote a row for this seat")
             .dispatched_at
     }
@@ -559,7 +570,7 @@ impl Rig {
     ) -> PathBuf {
         let config_dir = self
             .table()
-            .newest_for(seat)
+            .newest_for(&self.id_of(seat))
             .and_then(|row| row.config_dir.clone())
             .map(PathBuf::from)
             .expect("the spawn recorded the seat's own configuration directory");
@@ -1254,19 +1265,26 @@ fn a_spawn_makes_a_detached_worktree_a_row_and_a_session_and_prints_its_name() {
     assert_eq!(flag("--model"), Some("a-model"));
     assert_eq!(flag("--name"), Some(seat));
 
-    // The session-table row, and the one event.
+    // The session-table row, keyed on the seat's id, and the one event, whose
+    // actor is that id.
     let table = rig.table();
     let opened = table
-        .newest_for(seat)
+        .newest_for(&row.id.to_string())
         .expect("the table carries the row this start opened");
     assert!(opened.transient);
     assert_eq!(opened.worktree, worktree.display().to_string());
+    assert_eq!(
+        opened.name, seat,
+        "the session is named by the machine name"
+    );
     assert!(
         opened.first_turn.starts_with("the first turn"),
         "the occupant marker is the turn's text: {:?}",
         opened.first_turn
     );
-    assert_eq!(rig.events_of(events::SESSION_SPAWNED).len(), 1);
+    let spawned_lines = rig.events_of(events::SESSION_SPAWNED);
+    assert_eq!(spawned_lines.len(), 1);
+    assert_eq!(spawned_lines[0]["actor"], row.id.to_string());
     assert!(rig.events_of(events::SESSION_CRASHED).is_empty());
 
     // A second spawn mints a seat of its own and its own directory.
@@ -1516,9 +1534,10 @@ fn a_live_idle_row_is_fed_and_the_occupant_marker_moves() {
         "the file's text reached the agent: {argv}"
     );
 
+    let id = rig.id_of(&seat);
     let marker = rig
         .table()
-        .newest_for(&seat)
+        .newest_for(&id)
         .expect("the row stands")
         .first_turn
         .clone();
@@ -1526,6 +1545,7 @@ fn a_live_idle_row_is_fed_and_the_occupant_marker_moves() {
 
     let nudged = rig.events_of(events::SESSION_NUDGED);
     assert_eq!(nudged.len(), 1, "one line for one move: {nudged:?}");
+    assert_eq!(nudged[0]["actor"], id, "the line's actor is the seat's id");
     assert_eq!(
         nudged[0]["payload"]["prior_first_turn"],
         "the turn it came up with"
@@ -1586,6 +1606,11 @@ fn a_retire_stops_removes_prunes_drops_both_rows_and_prints_the_reclaim() {
 
     let agent = rig.agent();
     let machine = machine_of(&rig, &agent, &policy);
+    let id = rig.id_of(&seat);
+    assert!(
+        rig.table().newest_for(&id).is_some(),
+        "the row stands before"
+    );
     let reclaimed = transient::retire(&machine, &seat, false).expect("the retire lands");
 
     assert_eq!(reclaimed.pid, Some(pid));
@@ -1624,12 +1649,13 @@ fn a_retire_stops_removes_prunes_drops_both_rows_and_prints_the_reclaim() {
         "the seat-list row is dropped"
     );
     assert!(
-        rig.table().newest_for(&seat).is_none(),
+        rig.table().newest_for(&id).is_none(),
         "and so is the session-table row"
     );
 
     let stopped = rig.events_of(events::SESSION_STOPPED);
     assert_eq!(stopped.len(), 1, "one line: {stopped:?}");
+    assert_eq!(stopped[0]["actor"], id, "the line's actor is the seat's id");
     assert_eq!(stopped[0]["payload"]["pid"], pid);
     assert_eq!(stopped[0]["payload"]["dead"], false);
     assert_eq!(stopped[0]["payload"]["bytes"], reclaimed.bytes.unwrap());
@@ -1707,7 +1733,7 @@ fn a_retire_reads_and_acts_under_the_rows_own_configuration_directory() {
     );
     assert_eq!(
         rig.table()
-            .newest_for(&seat)
+            .newest_for(&rig.id_of(&seat))
             .and_then(|row| row.config_dir.clone())
             .as_deref(),
         Some(config_dir.display().to_string().as_str()),
@@ -2095,7 +2121,7 @@ fn a_verbs_write_of_the_session_table_waits_on_its_lock() {
 
     assert_eq!(
         rig.table()
-            .newest_for(&seat)
+            .newest_for(&rig.id_of(&seat))
             .map(|row| row.first_turn.as_str()),
         Some("the next turn"),
         "and the move it was waiting to make is on the file"
@@ -2149,12 +2175,16 @@ fn two_verbs_writing_the_session_table_lose_no_row() {
 
     let table = rig.table();
     assert_eq!(
-        table.newest_for(&one).map(|row| row.first_turn.as_str()),
+        table
+            .newest_for(&rig.id_of(&one))
+            .map(|row| row.first_turn.as_str()),
         Some("the turn for one"),
         "the first seat's move survived the second's write"
     );
     assert_eq!(
-        table.newest_for(&two).map(|row| row.first_turn.as_str()),
+        table
+            .newest_for(&rig.id_of(&two))
+            .map(|row| row.first_turn.as_str()),
         Some("the turn for two"),
         "and the second's survived the first's"
     );
@@ -2253,12 +2283,14 @@ fn a_spawn_in_its_watch_window_does_not_block_a_feed() {
 
     let table = rig.table();
     assert_eq!(
-        table.newest_for(&fed).map(|row| row.first_turn.as_str()),
+        table
+            .newest_for(&rig.id_of(&fed))
+            .map(|row| row.first_turn.as_str()),
         Some("the next turn"),
         "the feed's move survived the spawn's write"
     );
     assert!(
-        table.newest_for(&second).is_some(),
+        table.newest_for(&rig.id_of(&second)).is_some(),
         "and the spawn's own row is on the same file: {:?}",
         table.sessions
     );
@@ -2280,6 +2312,9 @@ fn a_retire_in_its_stop_does_not_block_a_feed() {
     let policy = a_policy();
     let (going, pid) = a_spawned_seat(&rig, &policy, "idle");
     let (fed, _) = a_spawned_seat(&rig, &policy, "idle");
+    // Taken while both rows stand: the retire drops the going seat's.
+    let (going_id, fed_id) = (rig.id_of(&going), rig.id_of(&fed));
+    assert!(rig.table().newest_for(&going_id).is_some());
     let leaving = rig.worktrees.join(&going).display().to_string();
     let staying = rig.worktrees.join(&fed).display().to_string();
     rig.roster(&format!(
@@ -2344,12 +2379,12 @@ fn a_retire_in_its_stop_does_not_block_a_feed() {
 
     let table = rig.table();
     assert_eq!(
-        table.newest_for(&fed).map(|row| row.first_turn.as_str()),
+        table.newest_for(&fed_id).map(|row| row.first_turn.as_str()),
         Some("the next turn"),
         "the feed's move survived the retire's write"
     );
     assert!(
-        table.newest_for(&going).is_none(),
+        table.newest_for(&going_id).is_none(),
         "and the retired seat's row is off the same file: {:?}",
         table.sessions
     );
@@ -2373,8 +2408,9 @@ fn a_feed_moves_the_newest_row_for_the_seat_and_not_the_first_in_file_order() {
     // `newest_for` answers the appended one. (With the rows the other way round
     // both rules give the same answer and the arm measures nothing.)
     let mut table = rig.table();
+    let id = rig.id_of(&seat);
     let older_first_turn = table
-        .newest_for(&seat)
+        .newest_for(&id)
         .expect("the spawn's row is there")
         .first_turn
         .clone();
@@ -2383,7 +2419,7 @@ fn a_feed_moves_the_newest_row_for_the_seat_and_not_the_first_in_file_order() {
         first_turn: "the turn the successor came up with".to_string(),
         dispatch_id: "a-later-dispatch".to_string(),
         ..table
-            .newest_for(&seat)
+            .newest_for(&id)
             .expect("the spawn's row is there")
             .clone()
     };
@@ -2433,7 +2469,9 @@ fn a_dead_seats_retire_removes_the_session_row_by_the_address_the_table_holds() 
 
     // The table's row gets the address a sighting would have written onto it.
     let mut table = rig.table();
-    let row = table.newest_for_mut(&seat).expect("the row is there");
+    let row = table
+        .newest_for_mut(&rig.id_of(&seat))
+        .expect("the row is there");
     row.session_id = Some("a-session".to_string());
     row.short_id = Some("ab12".to_string());
     sessions::write(&rig.table_path(), &table).expect("the table is written");
@@ -2596,7 +2634,7 @@ fn a_journal_line_that_cannot_land_is_a_refusal_naming_the_event() {
     // 1: the marker is where the feed moved it.
     assert_eq!(
         rig.table()
-            .newest_for(&seat)
+            .newest_for(&rig.id_of(&seat))
             .map(|row| row.first_turn.as_str()),
         Some("the next turn"),
         "the marker moved, and the ledger is what could not be written"
@@ -2739,6 +2777,7 @@ fn a_priced_retire_reads_the_cost_the_branch_and_the_commit_before_it_reclaims()
     let now = dispatched_at + 90_000;
     let agent = rig.agent();
     let machine = machine_of(&rig, &agent, &policy);
+    let id = rig.id_of(&seat);
     let priced = transient::priced(&machine, &seat, "an-item", now).expect("the retire lands");
 
     assert_eq!(
@@ -2768,7 +2807,7 @@ fn a_priced_retire_reads_the_cost_the_branch_and_the_commit_before_it_reclaims()
     assert!(priced.reclaimed.bytes.is_some_and(|bytes| bytes > 0));
     assert!(!Path::new(&worktree).exists(), "the worktree is gone");
     assert!(
-        rig.table().newest_for(&seat).is_none(),
+        rig.table().newest_for(&id).is_none(),
         "and so is the session-table row"
     );
 
@@ -2788,7 +2827,10 @@ fn a_priced_retire_reads_the_cost_the_branch_and_the_commit_before_it_reclaims()
     assert_eq!(payload["commit"], head);
     assert_eq!(payload["pid"], pid, "and the reclaim beside it");
     assert_eq!(payload["bytes"], priced.reclaimed.bytes.unwrap());
-    assert_eq!(retired[0]["actor"], seat);
+    assert_eq!(
+        retired[0]["actor"], id,
+        "the line's actor is the seat's id, and its payload names the machine name"
+    );
 }
 
 /// A transcript nobody can read prices nothing and the retire STILL RUNS: a

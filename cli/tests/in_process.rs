@@ -305,7 +305,11 @@ fn one_tick_reaches_the_agent_for_every_call_the_poll_makes_and_publishes_its_ou
 
     let starts = stub.starts();
     assert_eq!(starts.len(), 1, "one seat, one start: {:?}", stub.verbs());
-    assert_eq!(starts[0].seat_dir, SEAT);
+    assert_eq!(starts[0].seat, SEAT_ID, "the start carries the seat's id");
+    assert_eq!(
+        starts[0].name, SEAT,
+        "and its session is named by the machine name"
+    );
     assert_eq!(
         Path::new(&starts[0].worktree),
         rig.worktree,
@@ -313,7 +317,7 @@ fn one_tick_reaches_the_agent_for_every_call_the_poll_makes_and_publishes_its_ou
     );
 
     let document = rig.projection();
-    assert_eq!(document["seats"][0]["seat_dir"], SEAT, "{document}");
+    assert_eq!(document["seats"][0]["seat_dir"], SEAT_ID, "{document}");
     assert_eq!(document["seats"][0]["outcome"], "spawned", "{document}");
     assert_eq!(
         document["agent_version"],

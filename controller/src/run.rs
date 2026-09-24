@@ -539,16 +539,13 @@ impl<'a> Observer<'a> {
         // controller remembers about what it started: the seat list carries no
         // such field, and a directory derived from the seat's name here would be
         // a second spelling that a spawn could already have decided otherwise.
-        //
-        // The table is still keyed on the machine name, so it is asked by that;
-        // everything this loop keeps about a seat is keyed on its id.
         let recorded_dirs: BTreeMap<SeatId, String> = self
             .config
             .seats
             .iter()
             .filter_map(|seat| {
                 self.table
-                    .newest_for(&seat.machine_name())
+                    .newest_for(&seat.id.to_string())
                     .and_then(|row| row.config_dir.clone())
                     .map(|dir| (seat.id, dir))
             })
@@ -618,15 +615,7 @@ impl<'a> Observer<'a> {
         // The stream, from the line after the cursor. Read BEFORE deciding, so
         // what a seat asked for between polls is in hand when its verdict is
         // reached.
-        //
-        // A stream line's actor is still the seat's machine name, so the fold
-        // is handed the one map from that name to the id it is keyed on.
-        let known: BTreeMap<String, SeatId> = self
-            .config
-            .seats
-            .iter()
-            .map(|s| (s.machine_name(), s.id))
-            .collect();
+        let known: BTreeSet<SeatId> = self.config.seats.iter().map(|s| s.id).collect();
         let transient: BTreeSet<SeatId> = self
             .config
             .seats
@@ -643,9 +632,11 @@ impl<'a> Observer<'a> {
 
         let mut observations: Vec<(usize, SeatObservation, Option<u64>)> = Vec::new();
         let mut seats = Vec::with_capacity(self.config.seats.len());
-        let mut logged_out: Vec<(String, Option<String>)> = Vec::new();
+        let mut logged_out: Vec<(SeatId, String, Option<String>)> = Vec::new();
         for (index, seat) in self.config.seats.iter().enumerate() {
             let machine_name = seat.machine_name();
+            // What the session table and the projection key this seat on.
+            let key = seat.id.to_string();
             // The seat's own directory, threaded through every read about it:
             // the listing that can see it, the end its stopped-row window is
             // judged on, and the transcript its context is read from.
@@ -689,7 +680,7 @@ impl<'a> Observer<'a> {
             // rule is against.
             let sighted = self
                 .table
-                .newest_for(&machine_name)
+                .newest_for(&key)
                 .is_none_or(|row| row.first_seen_at.is_some());
             if observe::logged_out_dispatch(
                 seat.transient,
@@ -698,10 +689,9 @@ impl<'a> Observer<'a> {
                 body.as_deref(),
             ) {
                 logged_out.push((
+                    seat.id,
                     machine_name.clone(),
-                    self.table
-                        .newest_for(&machine_name)
-                        .and_then(|row| row.item.clone()),
+                    self.table.newest_for(&key).and_then(|row| row.item.clone()),
                 ));
             }
             // A sighting answers a dispatch's arrival window, and it is the
@@ -724,7 +714,7 @@ impl<'a> Observer<'a> {
                     (&observation.session_id, &observation.worktree)
                 {
                     table_moved |= self.table.sight(
-                        &machine_name,
+                        &key,
                         dir_key(worktree),
                         session_id,
                         observation.short_id.as_deref(),
@@ -746,11 +736,11 @@ impl<'a> Observer<'a> {
                     self.pidless_since.remove(&seat.id);
                 }
             }
-            // No `chosen_name`: the key is the shape seat identity retired, and
-            // it stays absent on every row until the projection drops it.
+            // The row is the seat's id, beside the seat's own name where it has
+            // one.
             seats.push(SeatRow::from_observation(
-                &machine_name,
-                None,
+                &key,
+                seat.name.as_deref(),
                 &observation,
                 context_tokens,
             ));
@@ -761,18 +751,18 @@ impl<'a> Observer<'a> {
         // ELSE: holding the item and retiring the seat are a workflow's, and a
         // controller that acted here would be deciding a run's business from
         // inside the poll.
-        for (seat, item) in &logged_out {
+        for (seat, machine_name, item) in &logged_out {
             if let Err(e) = self.events_log.append(
                 events::DISPATCH_FAILED,
-                seat,
+                &seat.to_string(),
                 events::dispatch_failed_payload(
-                    seat,
+                    machine_name,
                     item.as_deref(),
                     observe::AUTHENTICATION_FAILED,
                 ),
             ) {
                 eprintln!(
-                    "fleet observe: {seat} came up logged out and the line could not be \
+                    "fleet observe: {machine_name} came up logged out and the line could not be \
                      appended: {e}"
                 );
             }
@@ -810,12 +800,12 @@ impl<'a> Observer<'a> {
                 continue;
             }
             let machine_name = seat.machine_name();
-            let was = self.table.seat_state(&machine_name);
+            let key = seat.id.to_string();
+            let was = self.table.seat_state(&key);
             if was.blind == 0 && !was.halted {
                 continue;
             }
-            self.table
-                .set_seat_state(&machine_name, SeatState::default());
+            self.table.set_seat_state(&key, SeatState::default());
             table_moved = true;
             eprintln!(
                 "fleet observe: {machine_name}'s blind counter reset from {} and its halt lifted \
@@ -828,9 +818,10 @@ impl<'a> Observer<'a> {
         for (index, observation, context_tokens) in &observations {
             let seat = &self.config.seats[*index];
             let machine_name = seat.machine_name();
+            let key = seat.id.to_string();
             let asked = pending.get(&seat.id).cloned().unwrap_or_default();
-            let newest = self.table.newest_for(&machine_name);
-            let carried = self.table.seat_state(&machine_name);
+            let newest = self.table.newest_for(&key);
+            let carried = self.table.seat_state(&key);
             let input = SeatInput {
                 seat_dir: &machine_name,
                 state: observation.state,
@@ -844,7 +835,7 @@ impl<'a> Observer<'a> {
                 already_nudged: observation
                     .session_id
                     .as_deref()
-                    .map(|id| self.table.is_nudged(&machine_name, id))
+                    .map(|id| self.table.is_nudged(&key, id))
                     .unwrap_or(false),
                 dispatch_age_ms: newest.map(|row| now_ms.saturating_sub(row.dispatched_at)),
                 sighted: newest.map(|row| row.session_id.is_some()).unwrap_or(false),
@@ -1009,14 +1000,14 @@ impl<'a> Observer<'a> {
                 // are on: a poll that dispatched nothing has no blind dispatch
                 // to count, and counting one would halt a seat this controller
                 // never acted for.
-                let machine_name = seat.machine_name();
-                let carried = self.table.seat_state(&machine_name);
+                let key = seat.id.to_string();
+                let carried = self.table.seat_state(&key);
                 let blind = decide::blind_after(carried.blind, observation.state, *verdict);
                 if blind != carried.blind || carried.halted != (blind >= decide::BLIND_LIMIT) {
                     let halted = carried.halted || blind >= decide::BLIND_LIMIT;
                     if blind > carried.blind {
                         effect::blind_dispatch(
-                            &machine_name,
+                            &seat.id,
                             blind,
                             verdict.as_str(),
                             &mut self.events_log,
@@ -1024,10 +1015,9 @@ impl<'a> Observer<'a> {
                     }
                     // Once per transition INTO the halt, never once per poll.
                     if halted && !carried.halted {
-                        effect::halted(&machine_name, blind, &mut self.events_log);
+                        effect::halted(&seat.id, &seat.machine_name(), blind, &mut self.events_log);
                     }
-                    self.table
-                        .set_seat_state(&machine_name, SeatState { blind, halted });
+                    self.table.set_seat_state(&key, SeatState { blind, halted });
                     document.seats[*index].blind = blind;
                     document.seats[*index].halted = halted;
                     table_moved = true;
@@ -1077,7 +1067,12 @@ impl<'a> Observer<'a> {
                     machine_dir: &self.machine_dir,
                     child_path: self.seams.child_path,
                     policy: &self.policy,
-                    seats: &seat_views(&self.config.seats, &observations, &recorded_dirs),
+                    seats: &seat_views(
+                        &self.config.seats,
+                        &observations,
+                        &recorded_dirs,
+                        &self.table,
+                    ),
                     // THE SAME GATE the per-seat effects take. A routine's ring
                     // is an effect — it starts a turn in a seat's worktree —
                     // and a pending grant means no effect is issued, so a pass
@@ -1266,15 +1261,9 @@ fn act(
         Verdict::Halt => Outcome::Halted,
         Verdict::Revive | Verdict::SpawnWoken | Verdict::Rest | Verdict::SuggestRest => {
             let machine_name = seat.machine_name();
-            let recorded = Recorded::of(table, &machine_name);
-            let Some(target) = target_for(
-                policy,
-                seat,
-                &machine_name,
-                observation,
-                context_tokens,
-                recorded,
-            ) else {
+            let recorded = Recorded::of(table, seat);
+            let Some(target) = target_for(policy, seat, observation, context_tokens, recorded)
+            else {
                 eprintln!(
                     "fleet observe: {machine_name} is due {} and names no one worktree, so there \
                      is nowhere to start it; nothing is done",
@@ -1283,7 +1272,7 @@ fn act(
                 return Outcome::None;
             };
             document.in_flight = Some(InFlight {
-                seat: machine_name.clone(),
+                seat: seat.id.to_string(),
                 effect: verdict.as_str().to_string(),
             });
             write_projection(machine_dir, document);
@@ -1355,8 +1344,8 @@ fn projects_of(fleet_root: &Path) -> Vec<(String, PathBuf)> {
     vec![(name, fleet_root.to_path_buf())]
 }
 
-/// The seat rows a routine's ring reads: where each seat works, what a person
-/// calls it, and what the roster said this tick.
+/// The seat rows a routine's ring reads: where each seat works, the name its
+/// session answers to, and what the roster said this tick.
 ///
 /// The worktree is the CONFIGURED one — the first project's, in the alphabetical
 /// order the seat list is parsed into — because a routine names a seat and not a
@@ -1365,17 +1354,16 @@ fn seat_views(
     seats: &[Seat],
     observations: &[(usize, SeatObservation, Option<u64>)],
     recorded_dirs: &BTreeMap<SeatId, String>,
+    table: &Table,
 ) -> Vec<routines::SeatView> {
     observations
         .iter()
         .filter_map(|(index, observation, _)| {
             let seat = seats.get(*index)?;
             let (_, worktree) = seat.worktrees.first()?;
-            let machine_name = seat.machine_name();
             Some(routines::SeatView {
                 id: seat.id,
-                display_name: effect::display_name(None, &machine_name),
-                seat_dir: machine_name,
+                session_name: table.session_name(&seat.as_ref()),
                 worktree: dir_key(worktree).to_string(),
                 state: observation.state,
                 config_dir: recorded_dirs.get(&seat.id).cloned(),
@@ -1389,7 +1377,6 @@ fn seat_views(
 fn target_for<'a>(
     policy: &Policy,
     seat: &'a Seat,
-    machine_name: &'a str,
     observation: &'a SeatObservation,
     context_tokens: Option<u64>,
     recorded: Recorded,
@@ -1407,12 +1394,12 @@ fn target_for<'a>(
     };
     let model = policy.model_for(seat.model.as_deref());
     Some(Target {
-        seat_dir: machine_name,
-        display_name: effect::display_name(None, machine_name),
+        seat: seat.id,
         project,
         worktree: dir_key(worktree),
         posture: policy.posture_for(seat.transient).to_string(),
-        first_turn: policy.first_turn_for(machine_name),
+        first_turn: policy.first_turn_for(&recorded.session_name),
+        session_name: recorded.session_name,
         model,
         transient: seat.transient,
         config_dir: recorded.config_dir,
@@ -1432,25 +1419,26 @@ fn target_for<'a>(
 }
 
 /// What the seat's own session row remembers about the dispatch that opened it:
-/// the configuration directory every act about the session is made under, and
-/// the item the order index named.
+/// the configuration directory every act about the session is made under, the
+/// item the order index named, and the name the session was started under.
 ///
 /// Read off the table and CLONED rather than borrowed, because the same table is
 /// written inside the calls that take this.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct Recorded {
     config_dir: Option<String>,
     item: Option<String>,
+    /// `sessions::Table::session_name`: the row's, else the machine name.
+    session_name: String,
 }
 
 impl Recorded {
-    fn of(table: &Table, seat: &str) -> Recorded {
-        match table.newest_for(seat) {
-            Some(row) => Recorded {
-                config_dir: row.config_dir.clone(),
-                item: row.item.clone(),
-            },
-            None => Recorded::default(),
+    fn of(table: &Table, seat: &Seat) -> Recorded {
+        let row = table.newest_for(&seat.id.to_string());
+        Recorded {
+            config_dir: row.and_then(|row| row.config_dir.clone()),
+            item: row.and_then(|row| row.item.clone()),
+            session_name: table.session_name(&seat.as_ref()),
         }
     }
 }
@@ -1463,11 +1451,12 @@ impl Recorded {
 /// `seat.handed_off` are recorded as lifecycle and nothing more — neither asks
 /// for anything.
 ///
-/// The actor a line carries is the seat's machine name, and `known` maps it to
-/// the id the answer is keyed on.
+/// The actor a line carries is the seat's id, and `known` is the ids of the
+/// seat list's rows. An actor that is no id at all — a line an older build
+/// wrote under the machine name — names no row either.
 fn fold(
     stream: &[events::Record],
-    known: &BTreeMap<String, SeatId>,
+    known: &BTreeSet<SeatId>,
     transient: &BTreeSet<SeatId>,
 ) -> BTreeMap<SeatId, Pending> {
     let mut pending: BTreeMap<SeatId, Pending> = BTreeMap::new();
@@ -1475,14 +1464,17 @@ fn fold(
         if !events::SEAT_TYPES.contains(&record.kind.as_str()) {
             continue;
         }
-        let Some(id) = known.get(record.actor.as_str()) else {
+        let Some(id) = SeatId::parse(&record.actor)
+            .ok()
+            .filter(|id| known.contains(id))
+        else {
             eprintln!(
                 "fleet observe: dropping a {} whose actor `{}` names no seat row",
                 record.kind, record.actor
             );
             continue;
         };
-        if record.kind == events::SEAT_RESTING && transient.contains(id) {
+        if record.kind == events::SEAT_RESTING && transient.contains(&id) {
             eprintln!(
                 "fleet observe: dropping a {} for `{}`, which is a transient row; only named \
                  seats rest",
@@ -1490,7 +1482,7 @@ fn fold(
             );
             continue;
         }
-        let entry = pending.entry(*id).or_default();
+        let entry = pending.entry(id).or_default();
         if record.kind == events::SEAT_RESTING {
             entry.rest = true;
             entry.rest_seq = Some(entry.rest_seq.unwrap_or(record.seq).min(record.seq));

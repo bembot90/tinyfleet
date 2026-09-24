@@ -43,8 +43,10 @@ impl Seat {
         }
     }
 
-    /// `<slug>-<short>`: the seat's directory, its session's name and the
-    /// actor its stream lines carry, all of which are still keyed on it.
+    /// `<slug>-<short>`: the seat's worktree and configuration directory, the
+    /// name its first session is started under, and how a sentence names it.
+    /// Nothing is keyed on it: the session table, the stream's actor and the
+    /// projection's row are the id.
     pub fn machine_name(&self) -> String {
         self.as_ref().machine_name()
     }

@@ -365,7 +365,13 @@ fn a_row_pushed_under_the_lock_between_two_polls_survives_the_second_poll() {
     // The row the loop is carrying: written BEFORE the loop starts, which is the
     // one read it takes of this file.
     let mut opening = fleet_controller::sessions::Table::default();
-    opening.push(table_row(SEAT, &rig.worktree(), "dispatch-carried", 1_000));
+    opening.push(table_row(
+        SEAT_ID,
+        SEAT,
+        &rig.worktree(),
+        "dispatch-carried",
+        1_000,
+    ));
     fleet_controller::sessions::write(&table_path, &opening).expect("the opening table is written");
 
     rig.driving(|ticks| {
@@ -389,6 +395,7 @@ fn a_row_pushed_under_the_lock_between_two_polls_survives_the_second_poll() {
             let mut theirs =
                 theirs.unwrap_or_else(|| panic!("the other writer's read of the table: {why:?}"));
             theirs.push(table_row(
+                "01a0d1f1-0aec-765f-9abe-00001b7e4c09",
                 "agent-1b7e4c09",
                 &rig.worktree(),
                 "dispatch-under-the-lock",
@@ -433,10 +440,12 @@ fn a_row_pushed_under_the_lock_between_two_polls_survives_the_second_poll() {
     );
 }
 
-/// One row, shaped the way a spawn's own `open_row` shapes it: unsighted, and
-/// carrying the configuration directory the dispatch chose.
+/// One row, shaped the way a spawn's own `open_row` shapes it: keyed by the
+/// seat's id, named by the session's name, unsighted, and carrying the
+/// configuration directory the dispatch chose.
 fn table_row(
     seat: &str,
+    name: &str,
     worktree: &Path,
     dispatch_id: &str,
     dispatched_at: u64,
@@ -445,7 +454,7 @@ fn table_row(
         seat: seat.to_string(),
         project: "demo".to_string(),
         worktree: worktree.display().to_string(),
-        name: seat.to_string(),
+        name: name.to_string(),
         model: "a-model".to_string(),
         posture: "auto".to_string(),
         first_turn: "/wake".to_string(),

@@ -276,9 +276,9 @@ fn fold(stream: &[Record]) -> BTreeMap<String, Folded> {
                     state.hold = payload_str(record, "hold");
                 }
             }
-            // The seat is the line's ACTOR on both of the arms below, which is
-            // what lets a spawn and a retirement of one seat be read as the same
-            // subject. A `session.spawned` carrying no run key was spawned
+            // The seat is the line's ACTOR on both of the arms below — its id —
+            // which is what lets a spawn and a retirement of one seat be read
+            // as the same subject. A `session.spawned` carrying no run key was spawned
             // outside a run and enters no run's set — which is what makes the
             // key a selector and not a label.
             events::SESSION_SPAWNED => {
@@ -289,9 +289,9 @@ fn fold(stream: &[Record]) -> BTreeMap<String, Folded> {
                         .insert(record.actor.clone());
                 }
             }
-            // TAKEN IN STREAM ORDER AND NOT AS A FILTER AT THE END: a seat name
-            // can be spawned, retired and spawned again, and a set subtracted
-            // afterwards would drop the live one along with the dead.
+            // TAKEN IN STREAM ORDER AND NOT AS A FILTER AT THE END: a set
+            // subtracted afterwards would drop a live seat along with a dead one
+            // wherever one actor is spawned, retired and spawned again.
             events::SESSION_RETIRED | events::SESSION_STOPPED => {
                 for state in runs.values_mut() {
                     state.spawned.remove(&record.actor);

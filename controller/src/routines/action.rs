@@ -150,7 +150,7 @@ pub fn argv_of(routine: &Routine, machine: &Machine) -> Vec<String> {
     if let Some(nudge) = &action.nudge {
         let seat = view_of(nudge, machine);
         let (worktree, display) = match seat {
-            Some(row) => (row.worktree.clone(), row.display_name.clone()),
+            Some(row) => (row.worktree.clone(), row.session_name.clone()),
             None => (String::new(), nudge.seat.clone()),
         };
         return vec![
@@ -225,10 +225,10 @@ fn run_nudge(nudge: &super::file::Nudge, machine: &Machine) -> Done {
     let text = nudge_text(nudge);
     let sent = agent.nudge(
         seat.config_dir.as_deref().map(Path::new),
-        &seat.seat_dir,
+        &seat.session_name,
         &seat.worktree,
         &machine.policy.nudge_model,
-        &crate::effect::nudge_prompt(&seat.display_name, &text),
+        &crate::effect::nudge_prompt(&seat.session_name, &text),
         Duration::from_secs(machine.policy.nudge_timeout_seconds),
     );
     match sent {

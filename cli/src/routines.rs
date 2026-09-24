@@ -166,16 +166,13 @@ fn projects_of(fleet_root: &std::path::Path) -> Vec<(String, PathBuf)> {
 fn seat_views(fleet: &Fleet, needs_roster: bool) -> Vec<SeatView> {
     // The table read ONCE for the whole pass: every spawned seat's session is
     // held under a configuration directory of its own, which a read and a ring
-    // both have to go through, and it lives on that seat's own row.
-    //
-    // The table is still keyed on the seat's machine name, so it is asked by
-    // that; the seat itself is found by its id.
+    // both have to go through, and it lives on that seat's own row — as does the
+    // name the ring addresses its session by.
     let recorded = sessions::read(&sessions::path_in(&fleet.machine_dir)).0;
     let config_dir_of = |seat: &SeatId| {
-        let name = fleet.seats.iter().find(|s| s.id == *seat)?.machine_name();
         recorded
             .as_ref()
-            .and_then(|table| table.newest_for(&name))
+            .and_then(|table| table.newest_for(&seat.to_string()))
             .and_then(|row| row.config_dir.clone())
     };
     let read = if needs_roster {
@@ -224,11 +221,13 @@ fn seat_views(fleet: &Fleet, needs_roster: bool) -> Vec<SeatView> {
                 }
                 None => observe::RosterState::Absent,
             };
-            let machine_name = seat.machine_name();
+            let session_name = match &recorded {
+                Some(table) => table.session_name(&seat.as_ref()),
+                None => seat.machine_name(),
+            };
             Some(SeatView {
                 id: seat.id,
-                display_name: fleet_controller::effect::display_name(None, &machine_name),
-                seat_dir: machine_name,
+                session_name,
                 worktree: dir_key(worktree).to_string(),
                 state,
                 config_dir: config_dir_of(&seat.id),

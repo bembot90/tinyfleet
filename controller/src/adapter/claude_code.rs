@@ -427,7 +427,7 @@ impl Agent for ClaudeCode {
     /// exit's (A7).
     fn start(&self, spec: &StartSpec, watch: Duration) -> StartOutcome {
         self.sweep_adopted();
-        let log = self.start_log_path(&spec.seat_dir);
+        let log = self.start_log_path(&spec.name);
         let log_name = log.display().to_string();
         let mut cmd = match self.effect_command_under(spec.config_dir.as_deref().map(Path::new)) {
             Ok(cmd) => cmd,
@@ -535,13 +535,13 @@ impl Agent for ClaudeCode {
     fn nudge(
         &self,
         config_dir: Option<&Path>,
-        seat_dir: &str,
+        session_name: &str,
         worktree: &str,
         model: &str,
         prompt: &str,
         timeout: Duration,
     ) -> Result<(), String> {
-        let log = self.nudge_log_path(seat_dir);
+        let log = self.nudge_log_path(session_name);
         let mut cmd = self.effect_command_under(config_dir)?;
         cmd.args(["-p", "--model", model, prompt])
             .current_dir(worktree);
@@ -669,23 +669,23 @@ impl ClaudeCode {
         ))
     }
 
-    /// Where one call's words go: named by the seat and the moment, so two
+    /// Where one call's words go: named by the session and the moment, so two
     /// calls for one seat never write over each other and an operator reading
     /// the directory can tell which is which.
-    pub fn start_log_path(&self, seat_dir: &str) -> PathBuf {
-        self.log_path(STARTS_DIR, seat_dir)
+    pub fn start_log_path(&self, session_name: &str) -> PathBuf {
+        self.log_path(STARTS_DIR, session_name)
     }
 
-    pub fn nudge_log_path(&self, seat_dir: &str) -> PathBuf {
-        self.log_path(NUDGES_DIR, seat_dir)
+    pub fn nudge_log_path(&self, session_name: &str) -> PathBuf {
+        self.log_path(NUDGES_DIR, session_name)
     }
 
-    fn log_path(&self, dir: &str, seat_dir: &str) -> PathBuf {
+    fn log_path(&self, dir: &str, session_name: &str) -> PathBuf {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
             .unwrap_or(0);
-        let safe: String = seat_dir
+        let safe: String = session_name
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
             .collect();

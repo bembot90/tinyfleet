@@ -1238,14 +1238,15 @@ impl SeatRing {
             Err(cause) => return rang_nobody(cause),
         };
         // THE ROW THROUGH THE RESOLVER, so a ring names its seat the way every
-        // other seat argument does. From here the seat is its machine name,
-        // which is what the session table and the agent's session are keyed on.
+        // other seat argument does. From here the session table is asked by the
+        // seat's id, and a sentence names it by its machine name.
         let row = match machine.resolve(seat) {
             Ok(row) => row,
             Err(unresolved) => return rang_nobody(unresolved.to_string()),
         };
         let name = row.machine_name();
         let seat = name.as_str();
+        let key = row.id.to_string();
         // A seat may hold worktrees for several projects; the one this order is
         // about is the session to ring, and the first is the answer only where
         // the project names none.
@@ -1269,13 +1270,18 @@ impl SeatRing {
         // configuration directory that seat alone starts with, and named by no
         // other listing, so the ring reads — and rings — under the directory
         // that seat's own session row recorded.
-        let config_dir = sessions::read(&sessions::path_in(&self.machine_dir))
-            .0
-            .and_then(|table| {
-                table
-                    .newest_for(seat)
-                    .and_then(|row| row.config_dir.clone())
-            });
+        let table = sessions::read(&sessions::path_in(&self.machine_dir)).0;
+        let config_dir = table
+            .as_ref()
+            .and_then(|table| table.newest_for(&key))
+            .and_then(|row| row.config_dir.clone());
+        // THE NAME THE SESSION WAS STARTED UNDER, off the same row: a seat
+        // renamed since is still answering to it, and a ring addressed by the
+        // seat's name today reaches nobody.
+        let session_name = match &table {
+            Some(table) => table.session_name(&row.as_ref()),
+            None => row.machine_name(),
+        };
         let under = config_dir.as_deref().map(Path::new);
         let rows = match agent.status(under) {
             RosterRead::Readable(rows) => rows,
@@ -1307,10 +1313,10 @@ impl SeatRing {
         let agent = agent.with_effect_bin(effect_bin);
         let outcome = match agent.nudge(
             under,
-            seat,
+            &session_name,
             &worktree,
             &policy.nudge_model,
-            &effect::nudge_prompt(&effect::display_name(None, seat), text),
+            &effect::nudge_prompt(&session_name, text),
             timeout.unwrap_or_else(|| Duration::from_secs(policy.nudge_timeout_seconds)),
         ) {
             Ok(()) => RingOutcome::Delivered,

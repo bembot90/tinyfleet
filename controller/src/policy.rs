@@ -331,9 +331,10 @@ pub fn parse(body: &str) -> Result<Policy, String> {
 }
 
 impl Policy {
-    /// The first turn a seat's session is started with.
-    pub fn first_turn_for(&self, seat_dir: &str) -> String {
-        self.first_turn.replace("{seat}", seat_dir)
+    /// The first turn a seat's session is started with, with `{seat}` filled
+    /// by the session's name.
+    pub fn first_turn_for(&self, session_name: &str) -> String {
+        self.first_turn.replace("{seat}", session_name)
     }
 
     /// The posture a row of this kind is started under.

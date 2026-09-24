@@ -87,7 +87,7 @@ fn run(args: &StatusArgs, out: &mut dyn Write) -> Result<Exit, Stop> {
 
     let read = Read::taken(&machine_dir, &body.document);
     if let Some(seat) = args.seat.as_deref() {
-        one_seat(out, &body.document, &read, seat)?;
+        one_seat(out, &machine_dir, &body.document, &read, seat)?;
         return Ok(said(&read.unread()));
     }
 
@@ -633,20 +633,29 @@ fn said_of(value: Option<&serde_json::Value>) -> String {
 }
 
 /// `--seat <name>`: the roster row and the context row, and nothing else.
+///
+/// The argument goes through the seat list's resolver, as every seat argument
+/// does — so it matches a name without regard to case, a machine name and the
+/// id — and the projection's row is the one keyed by the id it resolved to.
 fn one_seat(
     out: &mut dyn Write,
+    machine_dir: &Path,
     document: &Projection,
     read: &Read,
     seat: &str,
 ) -> Result<(), Stop> {
-    let Some(row) = document
-        .seats
-        .iter()
-        .find(|row| row.seat_dir == seat || row.chosen_name.as_deref() == Some(seat))
-    else {
+    let machine = config::read(&machine_dir.join(CONFIG)).map_err(|why| {
+        Stop::could_not_tell(format!(
+            "the seat list could not be read, so no seat can be named: {why}"
+        ))
+    })?;
+    let named = machine.resolve(seat).map_err(Stop::from)?;
+    let key = named.id.to_string();
+    let Some(row) = document.seats.iter().find(|row| row.seat_dir == key) else {
         return Err(Stop::refused(format!(
-            "the projection carries no row for `{seat}` — the collector is what makes a seat one \
-             of this fleet's"
+            "the projection carries no row for `{}` — the collector is what makes a seat one \
+             of this fleet's",
+            named.machine_name()
         )));
     };
     let threshold = read

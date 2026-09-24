@@ -60,6 +60,7 @@ pub struct Projection {
 
 #[derive(Serialize, Deserialize)]
 pub struct InFlight {
+    /// The seat's id, as its row's `seat_dir` carries it.
     pub seat: String,
     pub effect: String,
 }
@@ -139,7 +140,9 @@ pub struct PolicyView {
 
 #[derive(Serialize, Deserialize)]
 pub struct SeatRow {
+    /// The seat's id, as its hyphenated string: what a reader finds the row by.
     pub seat_dir: String,
+    /// The seat's own name, absent where it has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chosen_name: Option<String>,
     pub roster_state: String,

@@ -535,7 +535,7 @@ fn a_fleet_that_went_pid_less_inside_a_runs_land_step_is_held_on_the_poll_after_
         "and it retired nothing: {cleaned}"
     );
 
-    for seat in SEATS {
+    for seat in SEAT_IDS {
         assert_eq!(
             rig.lines_reading(&format!("session.revived {seat}")),
             0,
@@ -590,7 +590,7 @@ fn a_fleet_that_stays_pid_less_through_the_window_is_revived_once_each_at_its_cl
     fly(&rig, &stub, &clock, &runs);
 
     let lines = rig.lines();
-    for seat in SEATS {
+    for seat in SEAT_IDS {
         assert_eq!(
             rig.lines_reading(&format!("session.revived {seat}")),
             1,

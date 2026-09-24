@@ -56,18 +56,21 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
         Ok(here) => here,
         Err(stop) => return stopped(&stop.message, stop.code),
     };
-    // The argument through the seat list's resolver, and its machine name
-    // from here on: the projection, the ring and the stream are keyed on it.
-    let seat = match crate::transient::seat_named(&here.machine_dir, &args.seat) {
-        Ok(seat) => seat,
+    // The argument through the seat list's resolver, and its id from here on:
+    // the projection, the ring and the stream are keyed on it. Every sentence
+    // names the seat by its machine name.
+    let row = match crate::transient::seat_named(&here.machine_dir, &args.seat) {
+        Ok(row) => row,
         Err(stop) => return stopped(&stop.message, stop.code),
     };
+    let key = row.id.to_string();
+    let seat = row.machine_name();
 
     let document = match fresh_projection(&here.machine_dir) {
         Ok(document) => document,
         Err(why) => return stopped(&why, Exit::NoCollector.code()),
     };
-    if let Err(why) = published_live(&document, &seat) {
+    if let Err(why) = published_live(&document, &key, &seat) {
         return stopped(&why, Exit::NoSession.code());
     }
 
@@ -75,7 +78,7 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
         machine_dir: here.machine_dir.clone(),
         project: here.project.name.clone(),
     };
-    let rung = ring.ring_with(&seat, &args.text, args.timeout.map(Duration::from_secs));
+    let rung = ring.ring_with(&key, &args.text, args.timeout.map(Duration::from_secs));
     let (outcome, exit) = match &rung.outcome {
         RingOutcome::Delivered => ("sent".to_string(), Exit::Done),
         RingOutcome::Failed(cause) => (format!("failed: {cause}"), Exit::Refused),
@@ -97,7 +100,7 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
     let mut log = EventLog::open(&stream);
     if let Err(e) = log.append(
         events::SESSION_NUDGED,
-        &seat,
+        &key,
         serde_json::json!({
             "session": rung.session,
             "by": actor(),
@@ -168,13 +171,14 @@ fn fresh_projection(machine_dir: &Path) -> Result<serde_json::Value, String> {
     }
 }
 
-/// The seat's published row, and whether the collector saw a live session on it.
-fn published_live(document: &serde_json::Value, seat: &str) -> Result<(), String> {
+/// The seat's published row, found by its id, and whether the collector saw a
+/// live session on it. `seat` is the machine name the sentences say.
+fn published_live(document: &serde_json::Value, key: &str, seat: &str) -> Result<(), String> {
     let seats = document["seats"]
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let Some(row) = seats.iter().find(|row| row["seat_dir"] == seat) else {
+    let Some(row) = seats.iter().find(|row| row["seat_dir"] == key) else {
         return Err(format!(
             "the projection carries no row for `{seat}` — the collector is what makes a seat one \
              of this fleet's, so a session it has not published is not one this verb rings"
