@@ -6,12 +6,19 @@
 //! store will not produce on demand and the one the verbs must survive.
 //!
 //! Every read decodes the FIRST JSON value of the answer and ignores what
-//! trails it: `bd show --json` answers a top-level array and closes with a
+//! trails it: `bd show --json` answers one top-level value and closes with a
 //! newline, and a decoder that demands the whole text be one value refuses a
 //! well-formed answer over its last byte.
+//!
+//! Every `bd` call carries `BD_JSON_ENVELOPE=1`, so a JSON answer comes as
+//! `{"schema_version": N, "data": …}` — the shape bd v2.0 makes the default —
+//! and that first value is opened in ONE place, [`opened`], before anything
+//! reads it. A bd that predates the envelope answers the bare value, and that
+//! reads the same.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The binary every write and read goes through when the caller names no
 /// other, resolved on the process's own `PATH`.
@@ -20,6 +27,19 @@ pub const BD: &str = "bd";
 /// Where the store's export goes, relative to the project root. It is a passive
 /// file the work graph regenerates, never a second copy anything reads back.
 pub const EXPORT: &str = ".beads/issues.jsonl";
+
+/// The newest `schema_version` this binary reads — the one bd 1.2.2 answers on
+/// every JSON call, enveloped or not. A higher one is warned about once and
+/// read anyway, which is beads' own advice to a consumer.
+pub const SCHEMA_VERSION: u64 = 1;
+
+/// The variable that opts a `bd` call into the envelope before v2.0 makes it
+/// the default.
+const ENVELOPE: &str = "BD_JSON_ENVELOPE";
+
+/// Whether this process has already said the store answers a newer schema, so
+/// a verb that makes a hundred reads says it once.
+static WARNED: AtomicBool = AtomicBool::new(false);
 
 /// One item as a read answers it.
 ///
@@ -247,8 +267,14 @@ impl Bd {
     }
 
     /// One call, with its status read from the command itself.
+    ///
+    /// The envelope is asked for on EVERY call and not only on the JSON reads:
+    /// bd applies it to a `--json` answer alone — measured on 1.2.2, where the
+    /// rendering, the export and a write's own line were byte-identical with
+    /// it and without — so one setting here cannot leave a read out.
     fn run(&self, args: &[&str]) -> Result<Output, StoreError> {
         Command::new(&self.bin)
+            .env(ENVELOPE, "1")
             .arg("-C")
             .arg(&self.root)
             .args(args)
@@ -280,6 +306,12 @@ impl Bd {
         ))
     }
 
+    /// The JSON a call answered, opened out of its envelope.
+    fn json(&self, args: &[&str], out: &Output) -> Option<serde_json::Value> {
+        first_value(&String::from_utf8_lossy(&out.stdout))
+            .map(|value| opened(value, || self.named(args)))
+    }
+
     /// One call that has to succeed, its answer handed back whole.
     fn answered(&self, args: &[&str]) -> Result<Output, StoreError> {
         let out = self.run(args)?;
@@ -297,11 +329,10 @@ impl Bd {
     /// answer, and refuse every answer on a fleet with nothing parked.
     fn listed(&self, args: &[&str]) -> Result<Vec<serde_json::Value>, StoreError> {
         let out = self.answered(args)?;
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        match first_value(&stdout) {
+        match self.json(args, &out) {
             Some(serde_json::Value::Array(rows)) => Ok(rows),
             Some(serde_json::Value::Null) => Ok(Vec::new()),
-            None if stdout.trim().is_empty() => Ok(Vec::new()),
+            None if String::from_utf8_lossy(&out.stdout).trim().is_empty() => Ok(Vec::new()),
             _ => Err(StoreError::Unreadable(format!(
                 "{} did not answer a list: {}",
                 self.named(args),
@@ -314,7 +345,7 @@ impl Bd {
     /// name whatever else landed in the store between the two calls.
     fn created_id(&self, args: &[&str]) -> Result<String, StoreError> {
         let out = self.answered(args)?;
-        first_value(&String::from_utf8_lossy(&out.stdout))
+        self.json(args, &out)
             .as_ref()
             .and_then(|value| value.get("id"))
             .and_then(|id| id.as_str())
@@ -355,6 +386,63 @@ fn tail(out: &Output) -> String {
 pub fn first_value(text: &str) -> Option<serde_json::Value> {
     let mut stream = serde_json::Deserializer::from_str(text).into_iter::<serde_json::Value>();
     stream.next().and_then(Result::ok)
+}
+
+/// The answer inside bd's JSON envelope, or the value itself where it carries
+/// none.
+///
+/// A `schema_version` above [`SCHEMA_VERSION`] is WARNED ABOUT AND READ: a
+/// newer bd adds keys far more often than it moves one, and a store that
+/// refused every answer from it would stop the fleet over a field nothing here
+/// reads. `from` names the call for that warning, and is asked only when one
+/// is due.
+pub fn opened(value: serde_json::Value, from: impl FnOnce() -> String) -> serde_json::Value {
+    let serde_json::Value::Object(mut answer) = value else {
+        return value;
+    };
+    let newer = answer
+        .get("schema_version")
+        .and_then(|v| v.as_u64())
+        .filter(|version| *version > SCHEMA_VERSION);
+    if let Some(version) = newer {
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "fleet: {} answered schema_version {version}, newer than the \
+                 {SCHEMA_VERSION} this binary knows — reading it anyway",
+                from()
+            );
+        }
+    }
+    // BOTH KEYS make an envelope. A bare error carries `schema_version` beside
+    // `error` and no `data` — measured on 1.2.2 with the envelope off — and is
+    // handed back whole for `show` to read.
+    if answer.contains_key("schema_version") && answer.contains_key("data") {
+        return answer.remove("data").unwrap_or_default();
+    }
+    serde_json::Value::Object(answer)
+}
+
+/// The row an opened `show` answer holds, or the store's word that there is
+/// none. The one reading of that answer, which the fake store's `show` makes
+/// too.
+///
+/// An error CARRYING A CODE is classified by it: `not_found` is the record's
+/// answer, and any other code is a store that did not answer. An error with NO
+/// code is read by its key alone, as an item that is not there — measured on
+/// bd 1.2.2, whose missing id answers an error and no code.
+pub fn shown(item: &str, value: serde_json::Value) -> Result<serde_json::Value, StoreError> {
+    let Some(row) = sole(value) else {
+        return Err(StoreError::Missing(format!("{item} is not in the store")));
+    };
+    if let Some(error) = row.get("error").and_then(|e| e.as_str()) {
+        return match row.get("code").and_then(|c| c.as_str()) {
+            None | Some("not_found") => Err(StoreError::Missing(format!("{item}: {error}"))),
+            Some(code) => Err(StoreError::Unreadable(format!(
+                "{item} could not be read ({code}): {error}"
+            ))),
+        };
+    }
+    Ok(row)
 }
 
 /// The one element a `show` answers about. The answer is an array of one; an
@@ -438,19 +526,14 @@ impl Store for Bd {
         // the error object, which is the record's answer and not a refusal.
         let args = ["show", item, "--json"];
         let out = self.run(&args)?;
-        let Some(value) = first_value(&String::from_utf8_lossy(&out.stdout)) else {
+        let Some(value) = self.json(&args, &out) else {
             return Err(StoreError::Unreadable(format!(
                 "{} answered no JSON: {}",
                 self.named(&args),
                 tail(&out)
             )));
         };
-        let Some(row) = sole(value) else {
-            return Err(StoreError::Missing(format!("{item} is not in the store")));
-        };
-        if let Some(error) = row.get("error").and_then(|e| e.as_str()) {
-            return Err(StoreError::Missing(format!("{item}: {error}")));
-        }
+        let row = shown(item, value)?;
         if !out.status.success() {
             return Err(self.refused(&args, &out));
         }

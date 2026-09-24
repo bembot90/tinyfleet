@@ -13,16 +13,21 @@
 //! therefore takes `PATH_LOCK`, the arms wanting the real binary included: an
 //! arm reading a real store while another has the shim in front of it would be
 //! reading the shim.
+//!
+//! The ENVELOPE arms answer in the shape bd gives with `BD_JSON_ENVELOPE=1`,
+//! the shape v2.0 makes the default, copied from bd 1.2.2's own answers: each
+//! read decodes through it, and the shim records that every call asked for it.
 
 mod common;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use common::capped::{calls, capped_bd, Held};
 use common::Fixture;
-use fleet_core::store::{Bd, Store};
+use fleet_core::item::{Stop, COULD_NOT_TELL, REFUSED};
+use fleet_core::store::{Bd, NewItem, Store, StoreError};
 
 /// Serialises every arm in this binary, because the seam they share is the
 /// process's `PATH` and there is one of those.
@@ -282,4 +287,235 @@ fn a_seat_listing_lifts_the_row_cap() {
         ]],
         "the seat's listing must carry `-n 0`, or it answers the first 50 rows only"
     );
+}
+
+/// A `bd` that answers each verb from `answers/<key>.json` under `dir` — the
+/// key is `show-<id>`, `gate-<sub>` or the verb itself — and records, one line
+/// per call, what `BD_JSON_ENVELOPE` it was handed. Where `<key>.err` is
+/// there too, it goes to stderr and the call exits 1, as a JSON error does.
+fn envelope_bd(dir: &Fixture, log: &Path) -> PathBuf {
+    let bin = dir.path("bd");
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\n\
+             printf '%s\\n' \"${{BD_JSON_ENVELOPE-unset}}\" >> '{log}'\n\
+             shift 2\n\
+             case \"$1\" in\n\
+             show|gate) key=\"$1-$2\" ;;\n\
+             *) key=\"$1\" ;;\n\
+             esac\n\
+             answers='{answers}'\n\
+             cat \"$answers/$key.json\" || exit 1\n\
+             [ -e \"$answers/$key.err\" ] || exit 0\n\
+             cat \"$answers/$key.err\" >&2\n\
+             exit 1\n",
+            log = log.display(),
+            answers = dir.path("answers").display(),
+        ),
+    )
+    .expect("the shim is written");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+        .expect("the shim is executable");
+    bin
+}
+
+/// What the shim was handed for the envelope, one entry per call.
+fn envelopes(log: &Path) -> Vec<String> {
+    std::fs::read_to_string(log)
+        .expect("the shim recorded its calls")
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every read decodes an answer in envelope form, and every call asks for it.
+///
+/// The show answer carries a line after the envelope, which the FIRST-value
+/// fence reads past as it read past the bare array's newline.
+#[test]
+fn every_read_opens_the_envelope() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-envelope");
+    let log = dir.path("envelope");
+    let bin = envelope_bd(&dir, &log);
+    dir.file(
+        "answers/ready.json",
+        r#"{"data": [{"id": "fx-ready", "created_at": "2026-09-23T23:30:39Z", "labels": ["a"]}], "schema_version": 1}"#,
+    )
+    .file(
+        "answers/show-fx-held.json",
+        "{\"data\": [{\"id\": \"fx-held\", \"title\": \"a held item\", \"status\": \"open\", \
+         \"assignee\": \"a-seat\", \"metadata\": {\"orders\": {\"by\": \"an-architect\"}}}], \
+         \"schema_version\": 1}\nTip: a line after the answer\n",
+    )
+    .file(
+        "answers/list.json",
+        r#"{"data": [{"id": "fx-listed", "status": "open", "metadata": {"orders": {"by": "an-architect"}}}], "schema_version": 1}"#,
+    )
+    .file(
+        "answers/gate-list.json",
+        r#"{"data": [{"id": "fx-gate", "status": "open"}], "schema_version": 1}"#,
+    )
+    .file(
+        "answers/create.json",
+        r#"{"data": {"id": "fx-new", "status": "open"}, "schema_version": 1}"#,
+    )
+    .file(
+        "answers/gate-create.json",
+        r#"{"data": {"id": "fx-raised", "issue_type": "gate"}, "schema_version": 1}"#,
+    );
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+    let store = Bd::at_bin(&root, &bin);
+
+    let ready = store.ready().expect("the ready answer decodes");
+    assert_eq!(ready.len(), 1, "one ready row: {ready:?}");
+    assert!(format!("{ready:?}").contains("fx-ready"), "{ready:?}");
+
+    let held = store.show("fx-held").expect("the show answer decodes");
+    assert_eq!(held.id, "fx-held");
+    assert_eq!(held.title, "a held item");
+    assert_eq!(held.assignee.as_deref(), Some("a-seat"));
+    assert_eq!(
+        held.orders.and_then(|orders| orders.by).as_deref(),
+        Some("an-architect")
+    );
+
+    assert_eq!(
+        store.open_labelled("a").expect("the list answer decodes"),
+        vec![String::from("fx-listed")]
+    );
+    let rows = store
+        .assigned_to("a-seat")
+        .expect("the seat listing decodes");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].id, "fx-listed");
+    assert!(rows[0].has_orders_key, "the row's own metadata is read");
+
+    assert_eq!(
+        store.open_gates().expect("the gate list decodes"),
+        vec![String::from("fx-gate")]
+    );
+    let filed = store
+        .create(
+            &NewItem {
+                title: "t",
+                description: "d",
+                item_type: "task",
+                labels: &[],
+            },
+            "the-test",
+        )
+        .expect("the create answer decodes");
+    assert_eq!(filed, "fx-new");
+    assert_eq!(
+        store
+            .gate("fx-held", "why", "the-test")
+            .expect("the gate answer decodes"),
+        "fx-raised"
+    );
+
+    let asked = envelopes(&log);
+    assert_eq!(asked.len(), 7, "one line per call: {asked:?}");
+    assert!(
+        asked.iter().all(|value| value == "1"),
+        "every call asks for the envelope: {asked:?}"
+    );
+}
+
+/// An empty gate listing is `null` inside the envelope — measured on 1.2.2 —
+/// and reads as no gates, as the bare `null` did.
+#[test]
+fn an_empty_listing_inside_the_envelope_is_no_rows() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-envelope-empty");
+    let log = dir.path("envelope");
+    let bin = envelope_bd(&dir, &log);
+    dir.file(
+        "answers/gate-list.json",
+        "{\"data\": null, \"schema_version\": 1}\n",
+    );
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+
+    assert_eq!(
+        Bd::at_bin(&root, &bin)
+            .open_gates()
+            .expect("an empty listing is an answer"),
+        Vec::<String>::new()
+    );
+}
+
+/// A not_found error is an item that is not there (exit 1), and so is an
+/// error with no code at all, which is what bd 1.2.2 answers. Any other code
+/// is a store that did not answer (exit 3).
+#[test]
+fn a_show_error_is_classified_by_its_code() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-envelope-errors");
+    let log = dir.path("envelope");
+    let bin = envelope_bd(&dir, &log);
+    dir.file(
+        "answers/show-fx-uncoded.json",
+        r#"{"data": {"error": "no issues found matching the provided IDs"}, "schema_version": 1}"#,
+    )
+    .file(
+        "answers/show-fx-uncoded.err",
+        "Error fetching fx-uncoded: no issue found matching \"fx-uncoded\"\n",
+    )
+    .file(
+        "answers/show-fx-coded.json",
+        r#"{"data": {"error": "no issue found", "code": "not_found", "hint": "check the id"}, "schema_version": 1}"#,
+    )
+    .file("answers/show-fx-coded.err", "Error: no issue found\n")
+    .file(
+        "answers/show-fx-broken.json",
+        r#"{"data": {"error": "the database is locked", "code": "database_error"}, "schema_version": 1}"#,
+    )
+    .file("answers/show-fx-broken.err", "Error: the database is locked\n");
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+    let store = Bd::at_bin(&root, &bin);
+
+    for item in ["fx-uncoded", "fx-coded"] {
+        let answer = store.show(item).expect_err("the store holds no such item");
+        assert!(
+            matches!(answer, StoreError::Missing(_)),
+            "{item}: {answer:?}"
+        );
+        assert_eq!(Stop::from(answer).code, REFUSED, "{item}");
+    }
+
+    let answer = store
+        .show("fx-broken")
+        .expect_err("the store did not answer");
+    assert!(
+        matches!(&answer, StoreError::Unreadable(why) if why.contains("database_error")),
+        "{answer:?}"
+    );
+    assert_eq!(Stop::from(answer).code, COULD_NOT_TELL);
+}
+
+/// A schema_version above the one this binary knows is read anyway: beads'
+/// consumer advice is to warn and parse, and a key added in a newer schema is
+/// one nothing here reads.
+#[test]
+fn a_newer_schema_is_read_anyway() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-envelope-newer");
+    let log = dir.path("envelope");
+    let bin = envelope_bd(&dir, &log);
+    dir.file(
+        "answers/show-fx-later.json",
+        r#"{"data": [{"id": "fx-later", "title": "from a newer bd", "status": "open", "a_new_key": 7}], "schema_version": 2}"#,
+    );
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+
+    let read = Bd::at_bin(&root, &bin)
+        .show("fx-later")
+        .expect("a newer schema is still read");
+    assert_eq!(read.title, "from a newer bd");
 }

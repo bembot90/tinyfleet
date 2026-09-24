@@ -430,6 +430,12 @@ impl Store for FakeStore {
         self.moving(item, |held| held.title = title.to_string())
     }
 
+    /// The answer `bd show --json` gives under the envelope — the row as an
+    /// array of one, or an error coded `not_found` as beads' contract spells
+    /// it — opened and read by the same functions the real store's `show` goes
+    /// through, so the fake cannot classify an answer the real store classifies
+    /// differently. bd 1.2.2's own error carries no code, and the real half of
+    /// the contract suite is what reads that one.
     fn show(&self, item: &str) -> Result<Item, StoreError> {
         if let Some(refused) = self.refuse() {
             return refused;
@@ -439,13 +445,26 @@ impl Store for FakeStore {
             .lock()
             .expect("the items are not poisoned")
             .get(item)
-            .cloned()
-            .ok_or_else(|| StoreError::Missing(format!("{item} is not here")))?;
-        let metadata = self.metadata_of(&held);
-        let reason = self.close_reason(item);
+            .cloned();
+        let data = match &held {
+            Some(held) => {
+                let metadata = self.metadata_of(held);
+                let reason = self.close_reason(item);
+                serde_json::json!([row_of(held, &metadata, reason.as_deref())])
+            }
+            None => serde_json::json!({
+                "error": "no issues found matching the provided IDs",
+                "code": "not_found",
+            }),
+        };
+        let answer = serde_json::json!({
+            "schema_version": crate::store::SCHEMA_VERSION,
+            "data": data,
+        });
+        let opened = crate::store::opened(answer, || String::from("the board held in memory"));
         Ok(crate::store::item_from(
             item,
-            &row_of(&held, &metadata, reason.as_deref()),
+            &crate::store::shown(item, opened)?,
         ))
     }
 
