@@ -58,7 +58,7 @@ dependencies are the real blockers.
 | fleet-iex.7 | A transient spawn mints a fresh seat id that is never reused; transient-N and its lowest-free counter go | fleet-iex.1, fleet-iex.2 | ☑ |
 | fleet-iex.5 | Key the machine's seat list (config.json) by the seat id: rows carry id, kind and the seat's own name, and every read… | fleet-iex.2, fleet-iex.7 | ☑ |
 | fleet-iex.6 | Key sessions.json, the stream's seat actor and the projection's seat by id, derive every name from <slug>-<short>, an… | fleet-iex.5 | ☑ |
-| fleet-iex.11 | The work graph holds seat ids, part 1: dispatch and brief resolve --to to a seat id, the assignee and fleet.orders.se… | fleet-iex.6 | ☐ |
+| fleet-iex.11 | The work graph holds seat ids, part 1: dispatch and brief resolve --to to a seat id, the assignee and fleet.orders.se… | fleet-iex.6 | ☑ |
 | fleet-iex.12 | The work graph holds seat ids, part 2: [core] reviewer resolves to a seat id, deliver reassigns to it, review returns… | fleet-iex.11 | ☐ |
 | fleet-iex.8 | The actor is a typed reference at the cli: --by and FLEET_ACTOR take a seat or kind:id, BEADS_ACTOR is no longer read… | fleet-iex.12 | ☐ |
 | fleet-iex.9 | Core's verbs take the typed actor: bd gets its <kind>:<id> string, and every seat-only check refuses a non-seat actor… | fleet-iex.8 | ☐ |
