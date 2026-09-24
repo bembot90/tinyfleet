@@ -540,10 +540,7 @@ impl Store for FakeStore {
             "data": data,
         });
         let opened = crate::store::opened(answer, || String::from("the board held in memory"));
-        Ok(crate::store::item_from(
-            item,
-            &crate::store::shown(item, opened, &said)?,
-        ))
+        crate::store::item_from(item, &crate::store::shown(item, opened, &said)?)
     }
 
     fn show_text(&self, item: &str) -> Result<String, StoreError> {

@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""bd-wire-types — the bd adapter's wire types, generated from beads' own spec.
+
+    fleet/tools/bd-wire-types <bd-tag> [--dir core/src/store]
+
+beads publishes the shapes `bd --json` prints as OpenAPI components in
+internal/httpapi/spec/openapi.v0.yaml, pinned to the Go types the CLI encodes
+(its lines 225-226 name them), in every release since v1.3.0. This script reads
+that file AT THE TAG fleet pins bd to and writes two files into <dir>:
+
+  bd_wire.schema.json  the FRAGMENT: the components the adapter reads —
+                       Issue, IssueDetails, IssueWithCounts and
+                       IssueWithDependencyMetadata — and every component they
+                       $ref, as one JSON Schema document, with fleet's
+                       overrides applied (below). Committed: it is exactly the
+                       generator's input, so `cargo typify` over it alone
+                       reproduces the Rust.
+  bd_wire.rs           cargo-typify's output over the fragment, under a header
+                       naming the tag and the fragment's sha256. The adapter's
+                       pin-stamp test holds both to the pinned bd.
+
+The trigger is moving fleet's bd pin: rerun this at the new tag and the diff of
+the two files is the wire change the move brings.
+
+FLEET'S OVERRIDES, each one made to the fragment and recorded in it — beads'
+own value moved under an `x-bd-*` key beside the change, so the committed file
+still says what beads' contract is:
+
+  * `required` is dropped from every schema (kept as `x-bd-required`): the
+    adapter reads every key as one bd may omit — a `show` falls back to the id
+    it asked for, a listing skips a row naming no id, and a dependency naming no
+    type or status is kept as a blocker — so a row missing a key beads calls
+    required must still decode.
+  * `format: date-time` is dropped (kept as `x-bd-format`), so a timestamp is
+    the text bd printed and the generated code needs no chrono.
+  * every array may also be `null` (beads' type kept as `x-bd-type`): the store
+    has spelled an absent list as `null` and not `[]`, and a `Vec` refuses a
+    `null`.
+  * an issue's `metadata` object is any JSON value (beads' schema kept as
+    `x-bd-schema`; a dependency's `metadata`, a string, is left alone): it
+    stays raw, so the order index keeps its three states — absent, an object,
+    and present but unreadable — and a row whose metadata is not an object at
+    all, which beads' spec says the store can hold, still decodes.
+
+Needs: cargo-typify (`cargo install cargo-typify`), rustfmt, and Python's
+PyYAML. Each is checked for before anything is fetched and named when missing.
+
+Exit 0 when both files are written, 2 when they could not be.
+"""
+import argparse
+import copy
+import hashlib
+import json
+import subprocess
+import sys
+import tempfile
+import urllib.request
+from pathlib import Path
+
+SPEC = "https://raw.githubusercontent.com/gastownhall/beads/{tag}/internal/httpapi/spec/openapi.v0.yaml"
+ROOTS = ("Issue", "IssueDetails", "IssueWithCounts", "IssueWithDependencyMetadata")
+FRAGMENT = "bd_wire.schema.json"
+OUTPUT = "bd_wire.rs"
+
+
+def refuse(message):
+    print(f"bd-wire-types: {message}", file=sys.stderr)
+    sys.exit(2)
+
+
+def repo_root():
+    out = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+    )
+    if out.returncode != 0:
+        refuse("not inside a git checkout — nowhere to write")
+    return Path(out.stdout.strip())
+
+
+def typify_version():
+    """cargo-typify's own version line, or a refusal naming how to get it."""
+    try:
+        out = subprocess.run(["cargo", "typify", "--version"], capture_output=True, text=True)
+    except FileNotFoundError:
+        refuse("cargo is not on PATH")
+    if out.returncode != 0:
+        refuse("cargo-typify is not installed — `cargo install cargo-typify`")
+    return out.stdout.strip()
+
+
+def checked_tools():
+    try:
+        import yaml  # noqa: F401
+    except ImportError:
+        refuse("PyYAML is not importable — `python3 -m pip install pyyaml`")
+    try:
+        subprocess.run(["rustfmt", "--version"], capture_output=True, check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        refuse("rustfmt is not on PATH — `rustup component add rustfmt`")
+    return typify_version()
+
+
+def fetched(tag):
+    url = SPEC.format(tag=tag)
+    try:
+        with urllib.request.urlopen(url, timeout=60) as answer:
+            return answer.read().decode("utf-8")
+    except Exception as why:  # a refusal names the URL whatever went wrong
+        refuse(f"{url} could not be fetched: {why}")
+
+
+def refs(node):
+    """Every $ref under a node, in document order."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "$ref":
+                yield value
+            else:
+                yield from refs(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from refs(value)
+
+
+def closure(schemas):
+    """The roots and every component they reach, in the spec's own order, so
+    the fragment reads in the order a person reading the spec meets them."""
+    reached = set()
+    todo = list(ROOTS)
+    while todo:
+        name = todo.pop()
+        if name in reached:
+            continue
+        if name not in schemas:
+            refuse(f"the spec names no component {name}")
+        reached.add(name)
+        todo.extend(ref.rsplit("/", 1)[-1] for ref in refs(schemas[name]))
+    return [name for name in schemas if name in reached]
+
+
+def rewritten(node):
+    """The node with each `#/components/schemas/X` pointing at `#/definitions/X`."""
+    if isinstance(node, dict):
+        return {
+            key: (
+                value.replace("#/components/schemas/", "#/definitions/")
+                if key == "$ref"
+                else rewritten(value)
+            )
+            for key, value in node.items()
+        }
+    if isinstance(node, list):
+        return [rewritten(value) for value in node]
+    return node
+
+
+def overridden(schema):
+    """One component with fleet's overrides applied (see the module doc)."""
+    schema = copy.deepcopy(schema)
+    if "required" in schema:
+        schema["x-bd-required"] = schema.pop("required")
+    for name, prop in schema.get("properties", {}).items():
+        # Issue's `metadata` and not Dependency's, which is a string.
+        if name == "metadata" and prop.get("type") == "object":
+            raw = {k: v for k, v in prop.items() if k == "description"}
+            raw["x-bd-schema"] = {k: v for k, v in prop.items() if k != "description"}
+            schema["properties"][name] = raw
+            continue
+        if prop.get("format") == "date-time":
+            prop["x-bd-format"] = prop.pop("format")
+        if prop.get("type") == "array":
+            prop["x-bd-type"] = prop["type"]
+            prop["type"] = ["array", "null"]
+    return schema
+
+
+def fragment(tag, spec_text):
+    import yaml
+
+    spec = yaml.safe_load(spec_text)
+    schemas = spec.get("components", {}).get("schemas", {})
+    names = closure(schemas)
+    return {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "$comment": (
+            f"Generated by fleet/tools/bd-wire-types from gastownhall/beads "
+            f"internal/httpapi/spec/openapi.v0.yaml at {tag}: the components "
+            f"{', '.join(ROOTS)} and every component they $ref. Do not edit by "
+            "hand. Fleet's overrides are named in the script and each keeps "
+            "beads' own value under an x-bd-* key beside it."
+        ),
+        "definitions": {name: overridden(rewritten(schemas[name])) for name in names},
+    }
+
+
+def header(tag, digest, typify):
+    return (
+        "//! bd's wire types, GENERATED by `tools/bd-wire-types` from beads'\n"
+        "//! internal/httpapi/spec/openapi.v0.yaml. Do not edit by hand: move the bd\n"
+        "//! pin, rerun the script, and read its diff as the wire change.\n"
+        "//!\n"
+        "//! The input is the fragment beside this file, and the pin-stamp test holds\n"
+        "//! the two lines below to it and to `store::PINNED_BD`.\n"
+        "//!\n"
+        f"//! bd-tag: {tag}\n"
+        f"//! fragment-sha256: {digest}\n"
+        f"//! generator: {typify} --no-builder\n"
+        "\n"
+        "// typify emits an `error` module whatever the schema, and a fragment with\n"
+        "// no constrained value never constructs its type.\n"
+        "#![allow(dead_code)]\n"
+        "\n"
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(description="the bd adapter's wire types, from beads' spec")
+    parser.add_argument("tag", help="the beads release tag fleet pins bd to, e.g. v1.3.0")
+    parser.add_argument(
+        "--dir",
+        default="core/src/store",
+        help="where the fragment and the Rust go, relative to the checkout (default: %(default)s)",
+    )
+    args = parser.parse_args()
+
+    typify = checked_tools()
+    root = repo_root()
+    into = root / args.dir
+    if not into.is_dir():
+        refuse(f"{into} is not a directory")
+
+    text = json.dumps(fragment(args.tag, fetched(args.tag)), indent=2, ensure_ascii=False) + "\n"
+    (into / FRAGMENT).write_text(text, encoding="utf-8")
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    with tempfile.TemporaryDirectory() as scratch:
+        generated = Path(scratch) / OUTPUT
+        out = subprocess.run(
+            ["cargo", "typify", "--no-builder", "-o", str(generated), str(into / FRAGMENT)],
+            capture_output=True,
+            text=True,
+        )
+        if out.returncode != 0:
+            refuse(f"cargo typify refused the fragment: {out.stderr.strip()}")
+        body = generated.read_text(encoding="utf-8")
+
+    rust = into / OUTPUT
+    rust.write_text(header(args.tag, digest, typify) + body, encoding="utf-8")
+    out = subprocess.run(["rustfmt", "--edition", "2021", str(rust)], capture_output=True, text=True)
+    if out.returncode != 0:
+        refuse(f"rustfmt refused {rust}: {out.stderr.strip()}")
+
+    print(f"bd-wire-types: {args.tag} → {rust.relative_to(root)} (fragment sha256 {digest})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

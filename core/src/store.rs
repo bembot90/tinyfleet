@@ -21,7 +21,12 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use serde::Deserialize;
+
 use crate::process::{deadline_cause, run_bounded};
+
+mod bd_cli;
+mod bd_wire;
 
 /// The binary every write and read goes through when the caller names no
 /// other, resolved on the process's own `PATH`.
@@ -391,24 +396,37 @@ impl Bd {
         Ok(out)
     }
 
-    /// One listing, as its rows.
+    /// One listing, as its rows, each decoded into the wire type bd's spec
+    /// names for that answer. A row that does not decode is a store that did
+    /// not answer something readable.
     ///
     /// AN EMPTY LISTING MAY ANSWER `null` AND NOT `[]` — measured on bd 1.3.0
     /// for `gate list` — or nothing at all, and both read as no rows: a decoder
     /// demanding an array would read "nothing here" as a store that would not
     /// answer, and refuse every answer on a fleet with nothing parked.
-    fn listed(&self, args: &[&str]) -> Result<Vec<serde_json::Value>, StoreError> {
+    fn listed<Row: serde::de::DeserializeOwned>(
+        &self,
+        args: &[&str],
+    ) -> Result<Vec<Row>, StoreError> {
         let out = self.answered(args)?;
-        match self.json(args, &out) {
-            Some(serde_json::Value::Array(rows)) => Ok(rows),
-            Some(serde_json::Value::Null) => Ok(Vec::new()),
-            None if String::from_utf8_lossy(&out.stdout).trim().is_empty() => Ok(Vec::new()),
-            _ => Err(StoreError::Unreadable(format!(
-                "{} did not answer a list: {}",
-                self.named(args),
-                tail(&out)
-            ))),
-        }
+        let rows = match self.json(args, &out) {
+            Some(rows @ serde_json::Value::Array(_)) => rows,
+            Some(serde_json::Value::Null) => return Ok(Vec::new()),
+            None if String::from_utf8_lossy(&out.stdout).trim().is_empty() => return Ok(Vec::new()),
+            _ => {
+                return Err(StoreError::Unreadable(format!(
+                    "{} did not answer a list: {}",
+                    self.named(args),
+                    tail(&out)
+                )))
+            }
+        };
+        serde_json::from_value(rows).map_err(|why| {
+            StoreError::Unreadable(format!(
+                "{} answered a row bd's wire types do not read: {why}",
+                self.named(args)
+            ))
+        })
     }
 
     /// The id off a write's OWN answer. A second read for the newest item would
@@ -554,8 +572,8 @@ pub fn shown(
     let Some(row) = sole(value) else {
         return Err(StoreError::Missing(format!("{item} is not in the store")));
     };
-    if let Some(error) = row.get("error").and_then(|e| e.as_str()) {
-        return match row.get("code").and_then(|c| c.as_str()) {
+    if let Ok(bd_cli::CliError { error, code }) = bd_cli::CliError::deserialize(&row) {
+        return match code.as_deref() {
             None | Some("not_found") => Err(StoreError::Missing(match ambiguous(said) {
                 Some(matches) => format!(
                     "`{item}` matches more than one item — {matches} — and more of the id says \
@@ -608,13 +626,11 @@ fn sole(value: serde_json::Value) -> Option<serde_json::Value> {
     }
 }
 
-fn text_field(row: &serde_json::Value, key: &str) -> Option<String> {
-    row.get(key)?.as_str().map(str::to_string)
-}
-
-/// The order index off a document, and whether the key was there at all.
-fn orders_of(row: &serde_json::Value) -> (Option<Orders>, bool) {
-    let Some(held) = row.get("metadata").and_then(|m| m.get("orders")) else {
+/// The order index off a document's metadata, and whether the key was there at
+/// all. The metadata is bd's raw JSON and not a typed map, so an `orders`
+/// holding something that is not an object still reads as present.
+fn orders_of(metadata: Option<&serde_json::Value>) -> (Option<Orders>, bool) {
+    let Some(held) = metadata.and_then(|m| m.get("orders")) else {
         return (None, false);
     };
     if held.is_null() {
@@ -650,29 +666,20 @@ const BLOCKING: [&str; 3] = ["blocks", "conditional-blocks", "waits-for"];
 /// The dependencies that still stand between this item and a start: an entry
 /// the store reports closed has been answered, and one of a type bd's ready set
 /// does not honour never stood, so neither is a blocker.
-fn blockers_of(row: &serde_json::Value) -> Vec<String> {
-    let Some(entries) = row.get("dependencies").and_then(|d| d.as_array()) else {
-        return Vec::new();
-    };
+fn blockers_of(entries: &[bd_wire::IssueWithDependencyMetadata]) -> Vec<String> {
     entries
         .iter()
-        .filter(|entry| {
-            entry
-                .get("status")
-                .and_then(|s| s.as_str())
-                .map(|status| status != "closed")
-                .unwrap_or(true)
-        })
+        .filter(|entry| entry.status.as_deref() != Some("closed"))
         // An entry that names no type is kept, the same cautious reading as a
         // missing status.
         .filter(|entry| {
             entry
-                .get("dependency_type")
-                .and_then(|t| t.as_str())
+                .dependency_type
+                .as_deref()
                 .map(|kind| BLOCKING.contains(&kind))
                 .unwrap_or(true)
         })
-        .filter_map(|entry| text_field(entry, "id"))
+        .filter_map(|entry| entry.id.clone())
         .collect()
 }
 
@@ -683,9 +690,9 @@ impl Store for Bd {
         // truncated list reads exactly like a whole one, so past a hundred
         // ready rows a ready item would be refused as not ready.
         Ok(self
-            .listed(&["ready", "--json", "-n", "0"])?
-            .iter()
-            .filter_map(|row| text_field(row, "id"))
+            .listed::<bd_wire::IssueWithCounts>(&["ready", "--json", "-n", "0"])?
+            .into_iter()
+            .filter_map(|row| row.id)
             .collect())
     }
 
@@ -706,7 +713,7 @@ impl Store for Bd {
         if !out.status.success() {
             return Err(self.refused(&args, &out));
         }
-        Ok(item_from(item, &row))
+        item_from(item, &row)
     }
 
     /// `-q`, which the JSON reads do not need and this one does: the human
@@ -727,11 +734,11 @@ impl Store for Bd {
     /// past the `[core.run] max_open` cap it is measured against.
     fn open_labelled(&self, label: &str) -> Result<Vec<String>, StoreError> {
         Ok(self
-            .listed(&[
+            .listed::<bd_wire::IssueWithCounts>(&[
                 "list", "--label", label, "--status", "open", "--json", "-n", "0",
             ])?
-            .iter()
-            .filter_map(|row| text_field(row, "id"))
+            .into_iter()
+            .filter_map(|row| row.id)
             .collect())
     }
 
@@ -763,15 +770,15 @@ impl Store for Bd {
     /// and the next seat of that name inherits them.
     fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
         Ok(self
-            .listed(&["list", "-a", seat, "--json", "-n", "0"])?
-            .iter()
+            .listed::<bd_wire::IssueWithCounts>(&["list", "-a", seat, "--json", "-n", "0"])?
+            .into_iter()
             .filter_map(|row| {
                 Some(AssignedItem {
-                    id: text_field(row, "id")?,
-                    title: text_field(row, "title").unwrap_or_default(),
-                    status: text_field(row, "status").unwrap_or_default(),
-                    has_orders_key: orders_of(row).1,
-                    item_type: text_field(row, "issue_type").unwrap_or_default(),
+                    has_orders_key: orders_of(row.metadata.as_ref()).1,
+                    id: row.id?,
+                    title: row.title.unwrap_or_default(),
+                    status: row.status.unwrap_or_default(),
+                    item_type: row.issue_type.unwrap_or_default(),
                 })
             })
             .collect())
@@ -863,9 +870,9 @@ impl Store for Bd {
     /// already resolved.
     fn open_gates(&self) -> Result<Vec<String>, StoreError> {
         Ok(self
-            .listed(&["gate", "list", "--json", "-n", "0"])?
-            .iter()
-            .filter_map(|row| text_field(row, "id"))
+            .listed::<bd_wire::Issue>(&["gate", "list", "--json", "-n", "0"])?
+            .into_iter()
+            .filter_map(|row| row.id)
             .collect())
     }
 
@@ -900,45 +907,38 @@ impl Store for Bd {
     }
 }
 
-/// The item's own labels, absent when the key is absent — which the store
-/// spells as `null` and not as an empty array.
-fn labels_of(row: &serde_json::Value) -> Vec<String> {
-    row.get("labels")
-        .and_then(|l| l.as_array())
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|entry| entry.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// One document, read into the fields a verb asserts on.
-pub fn item_from(id: &str, row: &serde_json::Value) -> Item {
-    let (orders, has_orders_key) = orders_of(row);
-    Item {
-        item_type: text_field(row, "issue_type").unwrap_or_default(),
-        labels: labels_of(row),
+/// One document, read into the fields a verb asserts on, through bd's own wire
+/// type. A row that does not decode into it is a store that did not answer
+/// something readable.
+pub fn item_from(id: &str, row: &serde_json::Value) -> Result<Item, StoreError> {
+    let wire = bd_wire::IssueDetails::deserialize(row).map_err(|why| {
+        StoreError::Unreadable(format!(
+            "{id} answered a row bd's wire types do not read: {why}"
+        ))
+    })?;
+    let (orders, has_orders_key) = orders_of(wire.metadata.as_ref());
+    Ok(Item {
+        item_type: wire.issue_type.unwrap_or_default(),
+        // The item's own labels, absent when the key is absent — which the
+        // store spells as `null` and not as an empty array.
+        labels: wire.labels.unwrap_or_default(),
         // The same read `orders_of` makes, one key over: absent when the key
         // is absent, so a run that wrote nothing is told from one that wrote
         // an empty object.
-        run: row
-            .get("metadata")
+        run: wire
+            .metadata
+            .as_ref()
             .and_then(|m| m.get("run"))
             .filter(|held| !held.is_null())
             .cloned(),
-        id: text_field(row, "id").unwrap_or_else(|| id.to_string()),
-        title: text_field(row, "title").unwrap_or_default(),
-        status: text_field(row, "status").unwrap_or_default(),
-        assignee: text_field(row, "assignee"),
-        notes: row
-            .get("notes")
-            .and_then(|n| n.as_str())
-            .map(str::to_string),
+        id: wire.id.unwrap_or_else(|| id.to_string()),
+        title: wire.title.unwrap_or_default(),
+        status: wire.status.unwrap_or_default(),
+        assignee: wire.assignee,
+        notes: wire.notes,
         orders,
         has_orders_key,
-        blockers: blockers_of(row),
+        blockers: blockers_of(wire.dependencies.as_deref().unwrap_or_default()),
         document: row.to_string(),
-    }
+    })
 }

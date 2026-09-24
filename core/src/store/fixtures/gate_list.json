@@ -1,0 +1,18 @@
+{
+  "data": [
+    {
+      "id": "fx-lhc",
+      "title": "Gate: human",
+      "description": "Ad-hoc gate blocking fx-gjy\n\nReason: waiting on a person",
+      "status": "open",
+      "priority": 2,
+      "issue_type": "gate",
+      "owner": "fx@example.invalid",
+      "created_at": "2026-09-24T05:32:26Z",
+      "created_by": "rec",
+      "updated_at": "2026-09-24T05:32:26Z",
+      "await_type": "human"
+    }
+  ],
+  "schema_version": 1
+}

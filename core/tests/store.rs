@@ -714,7 +714,8 @@ fn depending_on(kind: Option<&str>) -> serde_json::Value {
 /// what an item is "blocked by".
 #[test]
 fn an_open_discovered_from_link_is_not_a_blocker() {
-    let item = item_from("fx-down", &depending_on(Some("discovered-from")));
+    let item =
+        item_from("fx-down", &depending_on(Some("discovered-from"))).expect("the row decodes");
     assert!(
         item.blockers.is_empty(),
         "bd answers an item whose only open link is discovered-from as ready: {:?}",
@@ -724,7 +725,7 @@ fn an_open_discovered_from_link_is_not_a_blocker() {
 
 #[test]
 fn an_open_blocks_dependency_is_a_blocker() {
-    let item = item_from("fx-down", &depending_on(Some("blocks")));
+    let item = item_from("fx-down", &depending_on(Some("blocks"))).expect("the row decodes");
     assert_eq!(item.blockers, vec![String::from("fx-up")]);
 }
 
@@ -732,6 +733,6 @@ fn an_open_blocks_dependency_is_a_blocker() {
 /// what kind of link it is may be one that blocks.
 #[test]
 fn a_dependency_of_no_stated_type_is_a_blocker() {
-    let item = item_from("fx-down", &depending_on(None));
+    let item = item_from("fx-down", &depending_on(None)).expect("the row decodes");
     assert_eq!(item.blockers, vec![String::from("fx-up")]);
 }
