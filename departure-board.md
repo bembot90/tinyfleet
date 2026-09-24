@@ -43,9 +43,9 @@ dependencies are the real blockers.
 
 | Bead | What | Blocked by | Landed |
 | --- | --- | --- | --- |
-| fleet-6gr | Gates become holds, clearances and checks; `fleet hold` / `fleet clear`; `[gates]` split; routines evaluate the trigger; split at pickup | — | ☐ |
+| fleet-6gr | Gates become holds, clearances and checks; `fleet hold` / `fleet clear`; `[gates]` split; routines evaluate the trigger; split at pickup | — | ☑ |
 | fleet-4j6 | Namespace fleet's keys (`fleet.orders`, `fleet.run`, label `fleet:run`), clean break; carries fleet-y3l's RERUN fix | — | ☑ |
-| fleet-g68 | Archive cli, controller and packs PRDs, flights as superseded, bench stays live; restate every citation as its constraint | fleet-d11 | ☐ |
+| fleet-g68 | Archive cli, controller and packs PRDs, flights as superseded, bench stays live; restate every citation as its constraint | fleet-d11 | ☑ |
 
 ## Flight 5 — the record and seat identity (designs ruled; implementation beads split at the flight's start)
 
