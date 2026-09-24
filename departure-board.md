@@ -51,7 +51,7 @@ dependencies are the real blockers.
 
 | Bead | What | Blocked by | Landed |
 | --- | --- | --- | --- |
-| fleet-iex.1 | Add core's seat identity: the uuid crate, SeatId, Kind, the [seats.<id>] reader, identity.toml, and the one resolver… | — | ☐ |
+| fleet-iex.1 | Add core's seat identity: the uuid crate, SeatId, Kind, the [seats.<id>] reader, identity.toml, and the one resolver… | — | ☑ |
 | fleet-iex.2 | fleet start reads [seats.<id>] through core's roster: agent seats render as <slug>-<short> rows carrying id and kind,… | fleet-iex.1 | ☐ |
 | fleet-iex.3 | Add `fleet seat add --agent|--human`: it mints or lists a seat as one [seats.<id>] table in the fleet's own fleet.tom… | fleet-iex.1, fleet-iex.2 | ☐ |
 | fleet-iex.4 | fleet create lists its creator as a human seat and stops printing the hand-written first-seat block | fleet-iex.3 | ☐ |
@@ -66,7 +66,7 @@ dependencies are the real blockers.
 | fleet-iex.13 | A seat appears as {id, name?, kind} in the projection, the event payloads, every seat-bearing --json document and the… | fleet-iex.6, fleet-iex.7, fleet-iex.11 | ☐ |
 | fleet-iex.14 | Rewrite docs/ for seat identity: ids and names, identity.toml, fleet seat add, <slug>-<short> names, the typed actor… | fleet-iex.4, fleet-iex.6, fleet-iex.7, fleet-iex.10, fleet-iex.12, fleet-iex.13 | ☐ |
 | fleet-iex.15 | Rewrite the tiny pack's rituals and core's default assets for seat identity: homes under seats/<slug>-<short>/, the n… | fleet-iex.6, fleet-iex.7, fleet-iex.8, fleet-iex.11 | ☐ |
-| fleet-2u3.15 | doctor core: one module finds the doctor checks through the layers and runs each one bounded; fleet run's runtime che… | — | ☐ |
+| fleet-2u3.15 | doctor core: one module finds the doctor checks through the layers and runs each one bounded; fleet run's runtime che… | — | ☑ |
 | fleet-2u3.1 | fleet doctor: run every installed pack's and the defaults' doctor checks on demand | fleet-2u3.15 | ☐ |
 
 ## Flight 6 — the record (fleet-zlk, split verb by verb)
