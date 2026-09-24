@@ -22,7 +22,7 @@ nothing else.
 | Where | What it answers | Evidence for a docs claim? |
 | --- | --- | --- |
 | `docs/` | what fleet does, as a user sees it | — |
-| `brain/` | why fleet is shaped this way and where it is going: the vision, the layers, the ADRs, the naming table, the lessons, the PRDs for work not built, and under `brain/archive/` the PRDs for built work, kept as history | no |
+| `brain/` | why fleet is shaped this way and where it is going: the vision, the layers, the naming table, the lessons, the PRDs for work not built, and under `brain/archive/` the PRDs for built work and the flights ADR, kept as history | no |
 | the walkthrough skill | how the code does it, taught line by line in sittings | no |
 | `README.md` at the root | working on this repository: the crates, the make targets, driving the plugin from a checkout | no |
 | the code under `cli/`, `core/`, `controller/` and `packs/`, and the tests beside it | what actually happens | **yes** |
