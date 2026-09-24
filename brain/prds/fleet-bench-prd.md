@@ -1,3 +1,5 @@
+**Unbuilt, and requirement 6 rests on what no longer exists.** Requirement 6 makes a bench run a flight, and it rests on `fleet fly` and formulas, which no longer exist; the flights and packs PRDs this page cites are archived under `brain/archive/prds/`.
+
 # PRD: Fleet-Bench
 
 **One sentence:** Fleet-Bench is a benchmark of *model × formula* on a

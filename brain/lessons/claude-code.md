@@ -2,9 +2,10 @@
 
 What fleet knows about the Claude Code substrate, measured rather than read.
 
-Every requirement in the controller PRD marked **R** rests on a measurement
-taken somewhere else. This file is where those measurements live as fleet's
-own knowledge, so a builder implementing a requirement can cite the fact
+The controller is built on measurements taken somewhere else; the PRD it was
+built from, archived under `../archive/prds/`, marks each requirement that
+rests on one **R**. This file is where those measurements live as fleet's own
+knowledge, so a builder changing the behaviour one fences can cite the fact
 instead of trusting the letter beside it.
 
 **Every fact here is version-scoped.** Claude Code's session lifecycle is
@@ -22,8 +23,8 @@ the scaffold and the slices read. A fact with nothing to exercise says
 `none — <why>`.
 
 **Reading the entries.** *Fact* is the measurement in one paragraph. *Implies*
-names the PRD requirement the fact feeds, by R-number, and says what the
-requirement owes it.
+names the archived PRD's requirement the fact fed, by R-number, and says what
+the requirement owed it.
 
 ---
 

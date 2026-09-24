@@ -2,10 +2,10 @@
 
 **Status: the layers are ruled.** Drafted from a sitting on 2026-09-17; the fifteen questions it left open were ruled the same day (the rulings section at the bottom carries each one with its date), and three of them were sent to the workflows sitting, which ruled them the same evening (Q6, Q9 and Q10 below; the workflows section is rewritten in the definite).
 This page fixes the seams: which pieces are substrate, which are features
-built on the substrate, and which are opinions shipped as packs. It is the
-map the PRDs under `prds/` will be re-read against once the questions at the
-bottom are answered. Where this page and a PRD disagree today, the PRD is
-what is built and this page is where it is going.
+built on the substrate, and which are opinions shipped as packs. The PRDs
+it was drawn against are archived under `archive/prds/` as history. Where
+this page and the code disagree, the code, which `docs/` describes, is what
+is built, and this page is where it is going.
 
 The vision page says what fleet is. `integrations.md` says where you can
 reach in. This page says where each piece lives and why, so that the

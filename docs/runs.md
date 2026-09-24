@@ -262,6 +262,20 @@ When a run closes, fails or is parked, the controller retires every transient
 seat the run spawned, releases the items those seats still held, and writes
 `run.cleaned` with the count, once per run and also when the count is zero.
 
+Each seat it retires gets a `session.retired` line on the stream beside the
+retire's own `session.stopped`, carrying what the seat cost:
+
+- `context_tokens`: the size of the context the session's last turn carried;
+- `turns`: how many turns the session took;
+- `wall_ms`: milliseconds from the session's start to the retire;
+- `branch` and `commit`: the branch and the commit the seat's worktree
+  stood on;
+- `transcript`: whether the session's transcript could be read.
+
+Its `item` is the run, and it also carries the seat, the worktree and what
+the retire reclaimed. A reading fleet could not take is null, never zero,
+and the seat is retired all the same.
+
 ## Questions a run asks
 
 A workflow asks a person a question with a gate on its own run record (the

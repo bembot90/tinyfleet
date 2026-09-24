@@ -447,6 +447,23 @@ error. `fleet seat spawn`:
    on `--model <id>` or the default model, under `transient_posture`, with a
    configuration directory of its own in the machine directory.
 
+The seat's configuration directory is `config/<seat>` in the machine
+directory. The spawn empties it, then fills it with the files the installed
+packs and the defaults carry under `overlay/per-provider/claude/config/`;
+the packs fleet ships carry none there, so it starts empty. The settings,
+memory, instructions and servers in your own agent configuration therefore
+do not reach the seat. The session starts with `CLAUDE_CONFIG_DIR` set to
+that directory, and with `CLAUDE_SECURESTORAGE_CONFIG_DIR` set to the
+`CLAUDE_CONFIG_DIR` the spawning command ran with, or empty where it had
+none, so the seat finds the login your own configuration stored. A named
+seat has no directory of its own: it runs under the `CLAUDE_CONFIG_DIR` the
+controller runs with, or `~/.claude` where that is not set.
+
+When a transient seat's first turn answers that it is not logged in, the
+controller writes one `dispatch.failed` on the stream, naming the seat, the
+item it was given, and the cause `authentication_failed`. It does nothing
+else about it.
+
 A start that fails within `start_watch_seconds` exits 1 and undoes the
 worktree, the row and the configuration directory, naming each and the file
 the start's output went to; it never deletes a branch.

@@ -497,6 +497,27 @@ git merge-base origin/main <redelivered>
 Where the delivery's base is not the base it lands on, the first line adds
 `; rebased from <base>` after the squashed commit.
 
+### The lane
+
+Every landing in a project queues on one lock, the project's lane, whether
+you run `fleet land` yourself or a workflow runs it. The lock is the file
+`lanes/lane-<project>.lock` in the machine directory. `[core.flight] lanes`
+in the policy file names another directory to keep it in, read against the
+machine directory when the path is relative.
+
+A landing takes the lane before its first fetch and holds it until it exits,
+whatever the exit. While another landing holds it, the landing prints the
+holder's item and the time it took the lane, then waits for it with no
+deadline:
+
+```text
+waiting on the lane: <other-item> since <time>
+```
+
+Where `lanes/<project>` exists in that directory and `lanes/lane-<project>`
+does not, a landing moves the first to the second, lock and all, before it
+takes the lane; one holding a `.git` is moved with `git worktree move`.
+
 ### The suite
 
 `--test <command>` is the only suite a landing runs; the project's policy
@@ -554,6 +575,11 @@ worktree, detaches it onto `origin/main` and deletes `land/<item>`; any
 `RETURN FOR REBASE` and the conflicted paths. A trunk that moved prints
 `REBASE NEEDED: origin/main moved (<n>)`. Both exit 1.
 
+A landing that refuses before the push writes no note on the item and puts
+no hold on it: the item stays open, held by you, with its verdict standing.
+You run `fleet land` again, or return the item, as the table under
+[When it refuses](#when-it-refuses) says.
+
 Once the push has run, nothing is put back, whether or not the push
 succeeded. A rejected push prints what the remote said, exits 1, and leaves
 the worktree on `land/<item>`; the remote's output is kept in `push.out`. A
@@ -592,6 +618,29 @@ verb also writes to the event stream, which
 | `land` | `gate.read` per suite reading, or one reading `none` without `--test`, then `item.landed` |
 | `ask` | `item.parked` |
 | `answer` | `gate.resolved` |
+
+### What each event carries
+
+An item's events carry the item under `item`, first. Their actor is the name
+the verb acted as; on a line the controller writes it is `controller`.
+
+| Event | Written by | Payload |
+| --- | --- | --- |
+| `item.dispatched` | `dispatch` | `item`, `seat`, and, where the dispatch spawned the seat, `base`: the commit the seat's worktree was cut from |
+| `item.delivered` | `deliver` | `item`, `commit`, `branch`, `base` |
+| `item.reviewed` | `review --land` | `item`, `commit`, `verdict` (`accepted`), `accepted` (how many decisions the delivery lists), `overruled` (0) |
+| `item.returned` | `review --return` | `item`, `commit`, `findings` (how many findings the return numbers) |
+| `check.read` | `land` | `item`; `suite`, the `--test` command; `rc`, what it exited; `verdict`, `green` or `red`; `reading`, 1 or 2; `log`, the reading's log file; `path`, the search path the command ran under |
+| `item.landed` | `land` | `item`; `sha` and `base`, the landed commit and the trunk commit it landed on, as the push printed them; `squash_of`, the accepted commit; `run`, the run whose record carried the landing; `test`, the `--test` command |
+| `item.held` | `hold`, and the controller when it holds a run | `item`, `reason`, `branch`, `commit`, and `hold`, the hold's id |
+| `hold.cleared` | `clear`, and `fleet cancel` once for each hold it clears | `item`, `hold`, and `letter`, the option chosen |
+
+A landing handed no `--test` writes one `check.read` with `suite`, `rc`,
+`log` and `path` null and `verdict` `none`, and its `item.landed` carries
+`test` null. `run` is null on a landing a seat made in its own name. `rc` is
+null where the command was killed by a signal. `fleet hold` writes `reason`
+as `ask`; the controller writes its reason for the hold, with `branch` and
+`commit` null. `fleet cancel` writes `letter` null.
 
 ### `--json`
 

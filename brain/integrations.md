@@ -7,9 +7,11 @@ of the vision page's "Primitives, not features": every place you can reach
 in, what each one lets you do, and why the controller and the log are what
 make all of them possible.
 
-The page describes fleet as its PRDs rule it (`prds/`). Which commands are
-built and which are on the board is the cli PRD's business; the shapes here
-are settled.
+The page describes the shapes fleet is built to, and the shapes are settled.
+Which commands are built, and what each one does, is the code's business,
+and `docs/` describes it; what is not built yet is on the board. The PRDs
+the page was first written from are archived under `archive/prds/` as
+history.
 
 ---
 

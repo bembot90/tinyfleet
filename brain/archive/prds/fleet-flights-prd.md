@@ -1,3 +1,5 @@
+**Superseded, not maintained.** Archived on 2026-09-24: flights as this PRD defines them are superseded by workflows (`fleet run`, and the tiny pack's takeoff workflow in `packs/tiny/workflows/takeoff.ts`); the page is the record of what was decided, and nobody updates it. The code and `docs/` are the source of truth for what fleet does.
+
 # PRD: fleet-flights
 
 **One sentence:** a flight is a function from pinned inputs to a landed set and

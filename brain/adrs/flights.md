@@ -1,7 +1,10 @@
 # ADR: flights
 
 Accepted 2026-09-09; the definition it decided is
-`../prds/fleet-flights-prd.md`.
+`../archive/prds/fleet-flights-prd.md`, archived 2026-09-24 as superseded by
+workflows. Every PRD this record cites is archived beside it, under
+`../archive/prds/`, as history; the code and `docs/` are the source of truth
+for what fleet does.
 
 **Superseded in part, 2026-09-17 (workflows-formula-fate; fleet-layers.md Q10
 and § What moves).** S1's engine and S5's three verbs —
@@ -1164,9 +1167,9 @@ system-packs, the herdr provider, the Gastown config recipes. Every Gas City
 claim is the docs' or the trial's on gc 1.4.1; nothing was re-run against a live
 city tonight.
 
-Our side is read from `fleet/brain/prds/fleet-flights-prd.md` and the controller
-PRD at 6d6b5d57c; the full record is on the work item that carries the sitting
-and the epic's rulings.
+Our side is read from `fleet-flights-prd.md` (archived since, under
+`../archive/prds/`) and the controller PRD at 6d6b5d57c; the full record is
+on the work item that carries the sitting and the epic's rulings.
 
 ## Record
 
@@ -1174,4 +1177,5 @@ The rulings live on the work graph: on the fleet epic, in its notes, each in the
 keyed grammar the sittings used — section 5's question is recorded there as
 `flights-s6-item-life` — and on the work item that carries the sitting, where
 the founder's directions are recorded verbatim. This file is the rendering of
-that record, and the definition it decided is `../prds/fleet-flights-prd.md`.
+that record, and the definition it decided is
+`../archive/prds/fleet-flights-prd.md`.

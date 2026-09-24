@@ -53,8 +53,9 @@ the words go to three things and nothing else:
   what a seat, a pack, a dispatch note, the projection or a replayed workflow
   step is here, what invariant it holds, what breaks when it does not.
 - **Decisions** — why the code has this shape and not the obvious other one:
-  the constraint, the PRD requirement or the bead behind it, quoted by id when
-  it exists, and what the alternative would have cost.
+  the constraint the code's own comment states, the behaviour `docs/`
+  describes, or the bead behind it, quoted by id when it exists, and what the
+  alternative would have cost.
 - **Dependency boundaries** — how a library, a platform service or a tool
   interacts with *our* code: what we hand it, what it does with that, what
   comes back, what we rely on it never doing, and where that reliance is
@@ -85,10 +86,11 @@ they hold by answering a check.
    grep with its count; "this has no test" is the suite listing; "this
    duplicates X" names X by `path:line`. A finding carries `file:line` and its
    evidence or it is not a finding. **Chesterton's fence before any cut**: the
-   reason cited beside the code is read and quoted — a PRD requirement
-   (`cli PRD § Exits`, `flights PRD R13`) from its page under `brain/prds/`, an
-   item id by `bd show` — and a cut that removes a fence says why the reason
-   no longer applies, or it is not filed.
+   reason for the code is read and quoted from the code and `docs/` — the
+   constraint the comment beside it states, the behaviour the area file under
+   `docs/` describes, an item id by `bd show` — and a cut that removes a fence
+   says why the reason no longer applies, or it is not filed. The PRDs under
+   `brain/archive/prds/` are history and fence nothing.
 4. **His words go on the bead verbatim** — every question he asks, and his
    answer to every retrieval check — and so does your answer. The sitting bead
    is the record (tinytown's ruling R6); a lesson that lives only in the
@@ -293,9 +295,9 @@ AskUserQuestion"*. A section is a run of short messages, never one long one:
    at a time: a header, a type, a function, or a few short neighbours
    together, no more than a screen of his editor (about 20–60 lines). Each
    step is its range by `path:from-to`, then what those lines do and **why
-   they are shaped that way**: the constraint, the PRD requirement or bead,
-   the boundary with a dependency. A concept, decision or boundary is
-   explained at the step where it first appears, once. A range that holds
+   they are shaped that way**: the constraint, the behaviour `docs/`
+   describes or the bead, the boundary with a dependency. A concept, decision
+   or boundary is explained at the step where it first appears, once. A range that holds
    nothing to explain (a derive block, a list of imports) gets one line
    saying so, or is folded into the next range. **Then the message ends**,
    and "next" (or a question) opens the next step. A range the walk skips,
@@ -362,8 +364,9 @@ constraint the code cannot show, and past tense about the code (what it used
 to do, how a bug happened, what was tried) is history that belongs on the
 item; the conventions `README.md` states that the code violates — core never
 depends on the controller, tests that drive the built binary live in
-`cli/tests` and library fixture tests beside their library; and the decisions
-in `brain/prds/` the code cites and no longer honours.
+`cli/tests` and library fixture tests beside their library; and a constraint
+the code's own comment states, or behaviour `docs/` describes, that the code
+no longer honours.
 
 **The concision ladder** (from `DietrichGebert/ponytail`, Alberto's pointer
 for this half), asked of every piece of code that looks like it works: does
@@ -396,8 +399,8 @@ guard), *Required* (the scope should not stay without it), *Optional*, *Nit*,
 *FYI*.
 
 **The KEPT list.** Things you considered cutting and left alone, with the
-reason — a fence whose bead or PRD requirement still holds, a shape that looks
-wrong and is load-bearing. It goes on the bead with the summary, and it is
+reason — a fence whose bead or stated constraint still holds, a shape that
+looks wrong and is load-bearing. It goes on the bead with the summary, and it is
 half the teaching: *why the code is the way it is* is what he came for. A
 sitting with an empty KEPT list did not look hard enough.
 
@@ -433,7 +436,7 @@ FINDING from walkthrough <sitting-id>, <date>, <path:line>.
 
 <the finding line, verbatim>
 
-Fence: <the PRD requirement or bead cited beside the code, read and quoted, and why its reason no longer applies — or "none cited">
+Fence: <the constraint the code's comment states, the docs/ behaviour or the bead, read and quoted, and why its reason no longer applies — or "none cited">
 Evidence: <the measurement>
 Remedy: <the change>
 

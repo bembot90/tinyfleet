@@ -1,3 +1,5 @@
+**History, not maintained.** Archived on 2026-09-24: this PRD is the record of what was decided, and nobody updates it. The code and `docs/` are the source of truth for what fleet does.
+
 # PRD: fleet-controller
 
 **One sentence:** one boring daemon per machine that keeps a fleet of coding-agent

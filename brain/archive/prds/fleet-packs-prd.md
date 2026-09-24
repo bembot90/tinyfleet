@@ -1,3 +1,5 @@
+**History, not maintained.** Archived on 2026-09-24: this PRD is the record of what was decided, and nobody updates it. The code and `docs/` are the source of truth for what fleet does.
+
 # PRD: fleet-packs
 
 **One sentence:** everything with an opinion is a pack, one pack ships, and

@@ -6,8 +6,9 @@ Gas City is the closest thing to fleet that exists. It was installed on a real
 machine for one evening, by one person typing every command as a first-timer
 would, with a second pair of eyes reading the box after each step — twelve arms
 across install, adoption, restart, crash, idle, nudge, orders, events and the
-stream. That evening is the only reason several requirements in the controller
-PRD are marked **T** rather than guessed at, and it is why fleet's install
+stream. That evening is the only reason several requirements in the PRD the
+controller was built from (archived under `../archive/prds/`) are marked **T**
+rather than guessed at, and it is why fleet's install
 refuses eight things that evening measured.
 
 **Every fact here is version-scoped**, the same as the agent-substrate

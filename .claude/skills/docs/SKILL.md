@@ -22,7 +22,7 @@ nothing else.
 | Where | What it answers | Evidence for a docs claim? |
 | --- | --- | --- |
 | `docs/` | what fleet does, as a user sees it | — |
-| `brain/` | why fleet is shaped this way and where it is going: the vision, the layers, the PRDs, the ADRs, the naming table, the lessons | no |
+| `brain/` | why fleet is shaped this way and where it is going: the vision, the layers, the ADRs, the naming table, the lessons, the PRDs for work not built, and under `brain/archive/` the PRDs for built work, kept as history | no |
 | the walkthrough skill | how the code does it, taught line by line in sittings | no |
 | `README.md` at the root | working on this repository: the crates, the make targets, driving the plugin from a checkout | no |
 | the code under `cli/`, `core/`, `controller/` and `packs/`, and the tests beside it | what actually happens | **yes** |
@@ -224,8 +224,9 @@ $ fleet <verb> <item>
    Build that commit (`cargo build`) and use `target/debug/fleet`.
 2. **Read the code before the prose.** Start at the command's entry in
    `cli/src/main.rs` and follow it to what decides the behaviour; read the
-   tests beside it, which state what somebody made sure of. Doc comments,
-   PRDs and README.md tell you where to look, never what is true.
+   tests beside it, which state what somebody made sure of. Doc comments and
+   README.md tell you where to look, never what is true; the archived PRDs
+   under `brain/archive/prds/` are history, and say only what was intended.
 3. **Run what can be run, in a scratch fleet.** Point every run at scratch
    directories so nothing touches the machine's fleet or the person's home:
    the command's own path flags where it has them (`--lock`, `--packs-dir`),
