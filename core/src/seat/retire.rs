@@ -20,6 +20,8 @@
 
 use crate::item::deliver::holds;
 use crate::item::Stop;
+use crate::seat::actor::Actor;
+use crate::seat::identity::SeatId;
 use crate::store::{AssignedItem, Store, StoreError};
 
 /// The line a withdrawal leaves, so an item whose seat was retired reads as one
@@ -63,16 +65,20 @@ pub fn held(store: &dyn Store, seat: &str) -> Result<Vec<AssignedItem>, Stop> {
 /// BEFORE the act that drops the seat's row: a withdrawal that could not be
 /// written must not become an order held by a seat that no longer exists.
 ///
-/// `seat` is the row's full id, which the write is fenced on because it is the
-/// assignee; `label` is how the note and every sentence name the seat.
+/// `seat` is the row's id, which the write is fenced on because it is the
+/// assignee; `label` is how the note and every sentence name the seat; `by`
+/// is who retires it, and its string form is what the note and every write
+/// carry.
 pub fn withdraw(
     store: &dyn Store,
     items: &[AssignedItem],
-    seat: &str,
+    seat: &SeatId,
     label: &str,
-    by: &str,
+    by: &Actor,
 ) -> Result<(), Stop> {
     let line = format!("{WITHDRAWN}: {label} retired by {by}; the item is open and unassigned");
+    let seat = seat.to_string();
+    let by = by.to_string();
     for row in items {
         let item = row.id.as_str();
         if row.status != "open" && row.status != "in_progress" {
@@ -85,13 +91,13 @@ pub fn withdraw(
             ));
         }
         store
-            .withdraw_order(item, seat, &row.status, by)
+            .withdraw_order(item, &seat, &row.status, &by)
             .map_err(|e| match e {
                 StoreError::Moved(why) => moved_on(item, label, &why),
                 other => nothing_written(item, &other.to_string()),
             })?;
         store
-            .note(item, &line, by)
+            .note(item, &line, &by)
             .map_err(|e| halfway(item, &e.to_string()))?;
         let read = store.show(item)?;
         if read.has_orders_key {

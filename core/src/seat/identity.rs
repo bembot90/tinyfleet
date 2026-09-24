@@ -515,21 +515,6 @@ impl Directory {
             .map(SeatRef::machine_name)
             .unwrap_or_else(|| id.to_string())
     }
-
-    /// The seat an actor string names: a typed `seat:<full id>` as given, and
-    /// otherwise the one listed seat the text resolves to.
-    ///
-    /// A BRIDGE until the verbs take the typed actor. The cli hands a verb the
-    /// typed form, and a seat's is taken as given, as the cli took it — the
-    /// identity this very call minted is in no directory yet. Every other kind
-    /// is no seat, and so is a missing or an ambiguous answer: the caller says
-    /// so rather than guessing whose work it holds.
-    pub fn seat_of(&self, by: &str) -> Option<SeatId> {
-        match super::actor::Actor::typed(by) {
-            Some(typed) => typed.ok().and_then(|actor| actor.seat_id()),
-            None => self.resolve_listed(by).ok().map(|seat| seat.id),
-        }
-    }
 }
 
 // ---- the machine's own identity -----------------------------------------------

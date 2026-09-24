@@ -12,6 +12,7 @@ use common::{shared_store, Fixture, Scratch, StubEvents};
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
 use fleet_core::item::dispatch::{self, Order, Wiring};
 use fleet_core::item::{table_at, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner};
+use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
 use fleet_core::seat::retire;
 use fleet_core::store::{AssignedItem, Bd, Item, Orders, Store};
@@ -25,11 +26,17 @@ const POLICY: &str = "[guards]\nrecord = { enabled = false }\n";
 /// The builder's checks [`Rig::render`] hands the brief, as a dispatch would.
 const TOUCHED: &str = "make check";
 
-const ORDER: &str = "dispatched by lead-1 — orders given";
-/// Who gave [`ORDER`], and when, as the order index records it.
-const BY: &str = "lead-1";
+const ORDER: &str = "dispatched by run:lead-1 — orders given";
+/// Who gave [`ORDER`], and when, as the order index records it: a run, in the
+/// typed form every write carries.
+const BY: &str = "run:lead-1";
 const AT: &str = "2026-09-23T10:00:00Z";
 const ITEM: &str = "fx-1";
+
+/// [`BY`], typed.
+fn by() -> Actor {
+    Actor::typed(BY).expect("typed").expect("a run")
+}
 
 struct Rig {
     fixture: Fixture,
@@ -146,7 +153,7 @@ fn store_with(notes: Option<&str>) -> FakeStore {
     store
 }
 
-/// A store holding the item as a dispatch by `lead-1` leaves it: the order note
+/// A store holding the item as a dispatch by `run:lead-1` leaves it: the order note
 /// and the order index beside it, which is the half the brief is gated on.
 fn ordered() -> FakeStore {
     let store = store_with(Some(ORDER));
@@ -626,7 +633,7 @@ impl Rig {
             &Order {
                 item: ITEM,
                 to,
-                by: BY,
+                by: &by(),
                 at: AT,
                 brief: None,
                 base: None,
@@ -674,7 +681,8 @@ fn a_withdrawn_order_is_refused_and_writes_nothing() {
         status: String::from("open"),
         ..AssignedItem::default()
     };
-    retire::withdraw(&retired, &[row], ORLA, SEAT, BY).expect("the retire withdraws");
+    let orla = SeatId::parse(ORLA).expect("Orla's id parses");
+    retire::withdraw(&retired, &[row], &orla, SEAT, &by()).expect("the retire withdraws");
 
     // The refused spawn's: dispatched to no seat, withdrawn in the same act.
     let refused = store_with(None);

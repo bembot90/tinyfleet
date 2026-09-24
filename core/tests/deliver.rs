@@ -15,13 +15,14 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use common::{fleet_of, full, keys_agree, Graph, Rooted, StubEvents};
+use common::{fleet_of, full, keys_agree, seat_actor, Graph, Rooted, StubEvents};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::deliver::{self, Delivered, Delivery, Wiring};
 use fleet_core::item::{
     control_token, label_value, last_delivery, Change, Git, Project, Ring, RingOutcome, Stop,
     ITEM_DELIVERED, TRUNK,
 };
+use fleet_core::seat::actor::Actor;
 use fleet_core::store::{AssignedItem, Item, Store, StoreError};
 
 const REVIEWER: &str = "a-reviewer";
@@ -316,7 +317,8 @@ fn deliver_with(
         &mut Vec::new(),
         &Delivery {
             item,
-            by,
+            // The arm's own seat, by the name its id is derived from.
+            by: &seat_actor(by),
             note,
             at: AT,
         },
@@ -385,7 +387,7 @@ fn a_clean_delivery_commits_reassigns_and_writes_the_note_it_rendered() {
         .trim_end()
         .replace(
             "DELIVERED <sha> — <seat>",
-            &format!("DELIVERED {SHA} — {seat}"),
+            &format!("DELIVERED {SHA} — {}", seat_actor(seat)),
         )
         .replace("commit:  <pending>", &format!("commit:  {SHA}"))
         .replace("branch:  <pending>", &format!("branch:  {BRANCH}"))
@@ -416,7 +418,11 @@ fn a_clean_delivery_commits_reassigns_and_writes_the_note_it_rendered() {
     // The one event, carrying the three values the note's own machine lines do.
     assert_eq!(events.count(), 1, "exactly one event");
     let (actor, payload) = events.one(ITEM_DELIVERED);
-    assert_eq!(actor, seat, "the actor is the seat delivering");
+    assert_eq!(
+        actor,
+        seat_actor(seat).to_string(),
+        "the actor is the seat delivering, typed"
+    );
     keys_agree(ITEM_DELIVERED, &payload, &[]);
     assert_eq!(payload["item"], serde_json::json!(item));
     assert_eq!(payload["commit"], serde_json::json!(SHA));
@@ -623,7 +629,7 @@ fn a_clean_tree_ahead_of_the_base_delivers_head_and_commits_nothing() {
         &mut Vec::new(),
         &Delivery {
             item: Some(&item),
-            by: seat,
+            by: &seat_actor(seat),
             note: &note,
             at: AT,
         },
@@ -839,7 +845,7 @@ fn a_reviewer_named_by_name_is_assigned_by_its_full_id_and_a_stranger_is_refused
             &mut Vec::new(),
             &Delivery {
                 item: Some(&item),
-                by: seat,
+                by: &seat_actor(seat),
                 note: &note,
                 at: AT,
             },
@@ -996,7 +1002,11 @@ fn a_seat_holding_no_ordered_item_is_refused_and_two_are_named() {
     )
     .expect_err("an unordered item is not a delivery");
     assert_eq!(stop.code, 1, "{}", stop.message);
-    assert!(stop.message.contains(seat), "{}", stop.message);
+    assert!(
+        stop.message.contains(&seat_actor(seat).to_string()),
+        "{}",
+        stop.message
+    );
 
     let first = an_ordered_item(scratch, "the first ordered item", seat);
     let second = an_ordered_item(scratch, "the second ordered item", seat);
@@ -1022,13 +1032,13 @@ fn a_seat_holding_no_ordered_item_is_refused_and_two_are_named() {
     );
 }
 
-/// THE ACTOR IS RESOLVED TO A SEAT, and the item found is the one assigned to
-/// that seat's ID: `--by orla` — a name, as a person or an older session says
-/// it — finds Orla's item, which carries her id and never her name. An actor
-/// that is no seat of this fleet holds nothing, and without `--item` is
-/// refused rather than read as a seat that was given nothing.
+/// ONLY A SEAT HOLDS WORK, AND THE KIND SAYS WHICH ACTOR IS ONE. A seat's
+/// typed actor finds the item assigned to its id; a run holds nothing, so a
+/// run's delivery without `--item` is refused naming the flag — before the
+/// commit and before any write — and the same run naming the item delivers it
+/// as it always did, signing the note with its own string form.
 #[test]
-fn a_name_finds_the_item_assigned_to_its_id_and_a_stranger_is_no_seat() {
+fn a_run_is_no_seat_and_delivers_only_the_item_it_names() {
     let scratch = &store();
     let item = an_ordered_item(scratch, "an item Orla holds", "Orla");
     assert_eq!(
@@ -1036,9 +1046,9 @@ fn a_name_finds_the_item_assigned_to_its_id_and_a_stranger_is_no_seat() {
         Some(full("Orla").as_str()),
         "the premise: the item is assigned to her id"
     );
-    let note = a_note(scratch, "by-name", WHOLE);
+    let note = a_note(scratch, "by-kind", WHOLE);
     let fleet = fleet_of(&["Orla", REVIEWER]);
-    let run = |by: &str, item: Option<&str>| {
+    let run = |by: &Actor, item: Option<&str>, git: &StubGit| {
         deliver::deliver(
             &mut Vec::new(),
             &mut Vec::new(),
@@ -1050,7 +1060,7 @@ fn a_name_finds_the_item_assigned_to_its_id_and_a_stranger_is_no_seat() {
             },
             &Wiring {
                 store: scratch.store(),
-                git: &StubGit::clean(),
+                git,
                 packs: &packs(scratch),
                 project: &project(scratch),
                 ring: &StubRing::answering(RingOutcome::Delivered),
@@ -1059,23 +1069,61 @@ fn a_name_finds_the_item_assigned_to_its_id_and_a_stranger_is_no_seat() {
             },
         )
     };
+    let typed = |text: &str| Actor::typed(text).expect("typed").expect("good");
 
-    let stop = run("run-x", None).expect_err("run-x is no seat");
+    let a_run = typed("run:r1");
+    let git = StubGit::clean();
+    let stop = run(&a_run, None, &git).expect_err("run:r1 is no seat");
     assert_eq!(stop.code, 1, "{}", stop.message);
     assert_eq!(
         stop.message,
-        "run-x is not a seat of this fleet, so it holds nothing — pass --item <id>"
+        "run:r1 is not a seat, so it holds nothing — pass --item <id>"
+    );
+    assert!(
+        !git.calls().iter().any(|call| call.starts_with("commit ")),
+        "nothing was committed: {:?}",
+        git.calls()
     );
     assert_eq!(
         read(scratch, &item).assignee.as_deref(),
         Some(full("Orla").as_str()),
         "the refusal wrote nothing"
     );
+    // The same by kind, and never by the id: a routine or the controller
+    // whose id is Orla's own is still no seat.
+    for other in [
+        typed("routine:nightly"),
+        typed(&format!("controller:{}", full("Orla"))),
+    ] {
+        let stop = run(&other, None, &StubGit::clean()).expect_err("no seat");
+        assert_eq!(
+            stop.message,
+            format!("{other} is not a seat, so it holds nothing — pass --item <id>")
+        );
+    }
 
-    let delivered = run("orla", None).expect("orla finds her item");
+    // THE CONTROL: Orla's own typed actor finds the item assigned to her id.
+    let delivered = run(&seat_actor("Orla"), None, &StubGit::clean()).expect("Orla finds her item");
     assert_eq!(delivered.item, item, "the item assigned to Orla's id");
     assert_eq!(
         read(scratch, &item).assignee.as_deref(),
+        Some(full(REVIEWER).as_str())
+    );
+
+    // WITH --item, A RUN DELIVERS as it did: the note is signed with its
+    // string form.
+    let second = an_ordered_item(scratch, "an item a run delivers", "Orla");
+    let delivered = run(&a_run, Some(&second), &StubGit::clean()).expect("the run names it");
+    assert_eq!(delivered.item, second);
+    assert!(
+        delivered
+            .note
+            .starts_with(&format!("DELIVERED {SHA} — run:r1")),
+        "{}",
+        delivered.note
+    );
+    assert_eq!(
+        read(scratch, &second).assignee.as_deref(),
         Some(full(REVIEWER).as_str())
     );
 }
@@ -1171,7 +1219,7 @@ fn an_absent_reviewer_and_a_failed_ring_both_leave_the_delivery_standing() {
             &mut err,
             &Delivery {
                 item: Some(&item),
-                by: &seat,
+                by: &seat_actor(&seat),
                 note: &note,
                 at: AT,
             },

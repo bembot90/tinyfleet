@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use common::holding::{holding_bd, standing, LEFT_BEHIND};
-use common::{fleet_of, full, keys_agree, shared_store, Rooted, Scratch, StubEvents};
+use common::{full, keys_agree, seat_actor, shared_store, Rooted, Scratch, StubEvents};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::hold::{self, Clearance, Question, Wiring};
 use fleet_core::item::run;
@@ -25,7 +25,7 @@ use fleet_core::item::{
     last_answer, last_park, Change, Git, Project, Stop, ANSWER_MARKERS, HOLD_CLEARED, ITEM_HELD,
     PARK_MARKERS,
 };
-use fleet_core::seat::identity::Directory;
+use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::store::{AssignedItem, Bd, Item, NewItem, Store, StoreError};
 use fleet_core::test_support::Board;
 
@@ -312,7 +312,8 @@ fn hold_with(
         &mut Vec::new(),
         &Question {
             item,
-            by,
+            // The arm's own seat, by the name its id is derived from.
+            by: &seat_actor(by),
             note,
             at: AT,
         },
@@ -322,9 +323,6 @@ fn hold_with(
             packs: seams.packs,
             project: seams.project,
             events: seams.events,
-            // The arm's own seat, listed under the name it asks by: what a
-            // question resolves `by` to is the delivery suite's subject.
-            seats: &fleet_of(&[by]),
         },
     )
 }
@@ -342,7 +340,7 @@ fn clear_with(
             item,
             letter,
             text,
-            by,
+            by: &seat_actor(by),
         },
         &Wiring {
             store: seams.store,
@@ -350,9 +348,6 @@ fn clear_with(
             packs: seams.packs,
             project: seams.project,
             events: seams.events,
-            // A clearance is a person's act on the record and asks for nobody's
-            // held item.
-            seats: &Directory::default(),
         },
     )
 }
@@ -399,7 +394,7 @@ fn a_clean_hold_commits_the_whole_tree_raises_the_hold_and_parks() {
         &mut out,
         &Question {
             item: None,
-            by: seat,
+            by: &seat_actor(seat),
             note: &note,
             at: AT,
         },
@@ -409,7 +404,6 @@ fn a_clean_hold_commits_the_whole_tree_raises_the_hold_and_parks() {
             packs: &packs(scratch),
             project: &project(scratch),
             events: &events,
-            seats: &fleet_of(&[seat]),
         },
     )
     .expect("the question is asked");
@@ -494,7 +488,11 @@ fn a_clean_hold_commits_the_whole_tree_raises_the_hold_and_parks() {
     // (d) THE ONE EVENT, with the five keys the table names.
     assert_eq!(events.count(), 1, "exactly one event");
     let (actor, payload) = events.one(ITEM_HELD);
-    assert_eq!(actor, seat, "the actor is the seat that asked");
+    assert_eq!(
+        actor,
+        seat_actor(seat).to_string(),
+        "the actor is the seat that asked, typed"
+    );
     keys_agree(ITEM_HELD, &payload, &[]);
     assert_eq!(payload["item"], serde_json::json!(item));
     assert_eq!(payload["reason"], serde_json::json!("ask"));
@@ -692,7 +690,7 @@ fn a_runs_record_parks_off_the_trunk_and_performs_no_git_act() {
     // seat's does.
     assert_eq!(events.count(), 1, "exactly one event");
     let (actor, payload) = events.one(ITEM_HELD);
-    assert_eq!(actor, seat);
+    assert_eq!(actor, seat_actor(seat).to_string());
     keys_agree(ITEM_HELD, &payload, &[]);
     assert_eq!(payload["item"], serde_json::json!(item));
     assert_eq!(payload["reason"], serde_json::json!("ask"));
@@ -814,7 +812,7 @@ fn a_seat_holding_no_ordered_item_is_refused() {
 
     assert_eq!(stop.code, 1, "{}", stop.message);
     assert!(
-        stop.message.contains(seat) && stop.message.contains(&item),
+        stop.message.contains(&seat_actor(seat).to_string()) && stop.message.contains(&item),
         "the refusal names the seat and what it does hold: {}",
         stop.message
     );
@@ -1148,7 +1146,7 @@ fn a_clearance_writes_the_answer_clears_the_hold_and_announces_it() {
             item: &item,
             letter: "A",
             text: None,
-            by: "a-person",
+            by: &seat_actor("a-person"),
         },
         &Wiring {
             store: &scratch.store,
@@ -1156,7 +1154,6 @@ fn a_clearance_writes_the_answer_clears_the_hold_and_announces_it() {
             packs: &packs(scratch),
             project: &project(scratch),
             events: &events,
-            seats: &Directory::default(),
         },
     )
     .expect("the answer is written");
@@ -1168,7 +1165,11 @@ fn a_clearance_writes_the_answer_clears_the_hold_and_announces_it() {
         last_answer(&notes_of(&scratch.store, &item)).expect("the item carries an answer");
     assert_eq!(answered, cleared.note);
     assert!(
-        answered.starts_with(&format!("{} {hold_id} — a-person", ANSWER_MARKERS[0])),
+        answered.starts_with(&format!(
+            "{} {hold_id} — {}",
+            ANSWER_MARKERS[0],
+            seat_actor("a-person")
+        )),
         "{answered}"
     );
     assert!(answered.contains("letter:  A"), "{answered}");
@@ -1197,7 +1198,7 @@ fn a_clearance_writes_the_answer_clears_the_hold_and_announces_it() {
 
     assert_eq!(events.count(), 1, "exactly one event");
     let (actor, payload) = events.one(HOLD_CLEARED);
-    assert_eq!(actor, "a-person");
+    assert_eq!(actor, seat_actor("a-person").to_string());
     keys_agree(HOLD_CLEARED, &payload, &[]);
     assert_eq!(payload["item"], serde_json::json!(item));
     assert_eq!(payload["hold"], serde_json::json!(hold_id));
@@ -1386,7 +1387,10 @@ fn a_run_held_at_the_crash_cap_is_cleared_like_any_other_park() {
             run: &run,
             reason: CAPPED_REASON,
             directory: &directory,
-            by: "controller",
+            by: &Actor {
+                kind: ActorKind::Controller,
+                id: full("this-machine"),
+            },
         },
         &scratch.store,
         &packs(scratch),

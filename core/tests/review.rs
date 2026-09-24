@@ -13,7 +13,9 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use common::{agent, fleet_of, full, keys_agree, shared_store, Rooted, Scratch, StubEvents};
+use common::{
+    agent, fleet_of, full, keys_agree, seat_actor, shared_store, Rooted, Scratch, StubEvents,
+};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::deliver::BASE;
 use fleet_core::item::review::{self, Mode, Verdict, Wiring};
@@ -371,7 +373,7 @@ fn run_through(
         &mut err,
         &Verdict {
             item,
-            by: REVIEWER,
+            by: &seat_actor(REVIEWER),
             mode,
         },
         &Wiring {
@@ -503,7 +505,7 @@ fn land_walks_every_call_the_delivery_numbered_and_writes_the_count() {
     // The one event, its counts the walk's own.
     assert_eq!(events.count(), 1, "exactly one event");
     let (actor, payload) = events.one(ITEM_REVIEWED);
-    assert_eq!(actor, REVIEWER);
+    assert_eq!(actor, seat_actor(REVIEWER).to_string());
     keys_agree(ITEM_REVIEWED, &payload, &[]);
     assert_eq!(payload["item"], serde_json::json!(item));
     assert_eq!(payload["commit"], serde_json::json!(SHA));
@@ -514,7 +516,7 @@ fn land_walks_every_call_the_delivery_numbered_and_writes_the_count() {
     let verdict =
         review::last_verdict(&notes(&scratch.store, &item)).expect("a verdict is written");
     assert!(
-        verdict.starts_with(&format!("ACCEPTED {SHA} — {REVIEWER}")),
+        verdict.starts_with(&format!("ACCEPTED {SHA} — {}", seat_actor(REVIEWER))),
         "{verdict}"
     );
     assert!(verdict.contains("D1 ACCEPT"), "{verdict}");
@@ -625,7 +627,7 @@ fn a_return_writes_the_findings_count_first_and_hands_the_item_back() {
 
     assert_eq!(events.count(), 1, "exactly one event");
     let (actor, payload) = events.one(ITEM_RETURNED);
-    assert_eq!(actor, REVIEWER);
+    assert_eq!(actor, seat_actor(REVIEWER).to_string());
     keys_agree(ITEM_RETURNED, &payload, &[]);
     assert_eq!(payload["item"], serde_json::json!(item));
     assert_eq!(payload["commit"], serde_json::json!(SHA));
@@ -639,7 +641,7 @@ fn a_return_writes_the_findings_count_first_and_hands_the_item_back() {
     let mut lines = verdict.lines();
     assert_eq!(
         lines.next(),
-        Some(format!("RETURNED WITH FINDINGS {SHA} — {REVIEWER}").as_str())
+        Some(format!("RETURNED WITH FINDINGS {SHA} — {}", seat_actor(REVIEWER)).as_str())
     );
     assert_eq!(
         lines.next(),

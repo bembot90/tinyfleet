@@ -518,6 +518,79 @@ fn an_item_assignee_is_filed_with_the_full_id_it_resolves_to() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A ROUTINE FILES AS ITSELF. The create and the note that says the item was
+/// filed by a routine both carry `--actor routine:<name>` — the typed actor
+/// the store's audit trail records, and never one word every routine on the
+/// machine shares.
+#[test]
+fn a_routine_files_its_item_and_its_note_as_routine_colon_its_name() {
+    use fleet_controller::policy;
+    use fleet_controller::routines::{action, action::Machine, Outcome};
+
+    let root = scratch("item-actor");
+    let stubs = root.join("stubs");
+    std::fs::create_dir_all(&stubs).unwrap();
+    // A `bd` that records each call's argv, one call after each `---`, and
+    // answers a create with the id it filed.
+    let log = root.join("bd-argv.txt");
+    let bd = stubs.join("bd");
+    std::fs::write(
+        &bd,
+        format!(
+            "#!/bin/sh\n\
+             {{ echo ---; printf '%s\\n' \"$@\"; }} >> '{log}'\n\
+             case \" $* \" in *' create '*) echo '{{\"id\":\"fx-9\"}}' ;; esac\n",
+            log = log.display()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bd, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let child_path = format!("{}:/usr/bin:/bin", stubs.display());
+    let policy = policy::parse("").expect("the empty policy is the defaults");
+    let machine = Machine {
+        machine_dir: &root,
+        child_path: &child_path,
+        policy: &policy,
+        seats: &[],
+        agent: None,
+        effects_off: None,
+    };
+    let routine = routine_of(
+        "[order]\ndescription = \"d\"\ntrigger = \"cron\"\nschedule = \"* * * * *\"\n\
+         [action.item]\ntitle = \"t\"\n",
+    );
+
+    let done = action::run(&routine, &machine, "2026-09-18T00:00:00Z");
+    assert_eq!(done.outcome, Outcome::Filed, "{}", done.detail);
+    let recorded = std::fs::read_to_string(&log).unwrap();
+    let calls: Vec<Vec<&str>> = recorded
+        .split("---\n")
+        .filter(|call| !call.is_empty())
+        .map(|call| call.lines().collect())
+        .collect();
+    let of = |verb: &str| {
+        calls
+            .iter()
+            .find(|argv| argv.get(2) == Some(&verb))
+            .unwrap_or_else(|| panic!("a `{verb}` call was made: {calls:?}"))
+    };
+    for verb in ["create", "note"] {
+        assert!(
+            of(verb)
+                .windows(2)
+                .any(|pair| pair == ["--actor", "routine:a-routine"]),
+            "the {verb} carries the routine's typed actor: {:?}",
+            of(verb)
+        );
+    }
+    assert_eq!(calls.len(), 2, "the create and the note, and nothing else");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// The item table's own vocabulary, each value refused by name.
 #[test]
 fn an_item_refuses_a_priority_a_type_a_when_and_a_dedupe_it_does_not_know() {

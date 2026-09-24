@@ -24,6 +24,7 @@ use crate::item::{
     control_token, render, Events, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner, Stop,
     ITEM_DISPATCHED, NO_SESSION, REFUSED,
 };
+use crate::seat::actor::Actor;
 use crate::seat::identity::{Directory, Kind, SeatId, SeatRef};
 use crate::store::{keys, Item, Orders, Store, StoreError};
 
@@ -54,7 +55,9 @@ pub const NOT_TOLD: &str = "DISPATCH COULD NOT TELL — the spawn could not be o
 pub struct Order<'a> {
     pub item: &'a str,
     pub to: Option<&'a str>,
-    pub by: &'a str,
+    /// Who gives the order. Its string form is what the note, the index and
+    /// every write carry.
+    pub by: &'a Actor,
     /// The clock, taken by the caller: core reads none.
     pub at: &'a str,
     /// A brief already written, handed to the spawn as the first turn instead
@@ -151,7 +154,7 @@ pub fn dispatch(
     order: &Order,
     wiring: &Wiring,
 ) -> Result<Given, Refused> {
-    let note = note_text(wiring.packs, order.by).map_err(Refused::stopped)?;
+    let note = note_text(wiring.packs, &order.by.to_string()).map_err(Refused::stopped)?;
 
     // Before the first write: the brief refuses on the same reading, and an
     // order written ahead of a brief that cannot render is one nobody reads.
@@ -284,7 +287,7 @@ fn to_named_seat(
     let label = wiring.seats.label(&named.id);
     wiring
         .store
-        .assign(order.item, seat, order.by)
+        .assign(order.item, seat, &order.by.to_string())
         .map_err(|e| wrote_nothing(order.item, "the assignee", &e))?;
     write_order(order, wiring, note, Some(seat), true)?;
     read_back(order, wiring, note, Some(seat), Some(seat))?;
@@ -388,7 +391,7 @@ fn to_a_transient_seat(
                 })?;
             wiring
                 .store
-                .assign(order.item, &seat, order.by)
+                .assign(order.item, &seat, &order.by.to_string())
                 .map_err(|e| {
                     Refused::stopped(Stop::could_not_tell(format!(
                         "{} was ordered and `{seat}` was spawned, and the assignment did not \
@@ -475,7 +478,7 @@ fn announce(
         .events
         .append(
             ITEM_DISPATCHED,
-            order.by,
+            &order.by.to_string(),
             serde_json::Value::Object(payload),
         )
         .map_err(|e| {
@@ -492,11 +495,11 @@ fn withdraw(err: &mut dyn Write, order: &Order, wiring: &Wiring, cause: &str) ->
     let line = format!("{WITHDRAWN}: {cause}");
     wiring
         .store
-        .unset_orders(order.item, order.by)
+        .unset_orders(order.item, &order.by.to_string())
         .map_err(|e| stands(order.item, &format!("the index could not be unset: {e}")))?;
     wiring
         .store
-        .note(order.item, &line, order.by)
+        .note(order.item, &line, &order.by.to_string())
         .map_err(|e| {
             stands(
                 order.item,
@@ -523,7 +526,7 @@ fn not_told(err: &mut dyn Write, order: &Order, wiring: &Wiring, cause: &str) ->
     let line = format!("{NOT_TOLD}: {cause}");
     wiring
         .store
-        .note(order.item, &line, order.by)
+        .note(order.item, &line, &order.by.to_string())
         .map_err(|e| {
             stands(
                 order.item,
@@ -555,13 +558,13 @@ fn write_order(
     if first {
         wiring
             .store
-            .note(order.item, note, order.by)
+            .note(order.item, note, &order.by.to_string())
             .map_err(|e| wrote_nothing(order.item, "the order note", &e))?;
     }
     let payload = index_payload(order, seat);
     wiring
         .store
-        .set_orders(order.item, &payload, order.by)
+        .set_orders(order.item, &payload, &order.by.to_string())
         .map_err(|e| {
             stands(
                 order.item,
@@ -574,7 +577,7 @@ fn write_order(
 /// dispatch to a transient seat carries no seat until the spawn answers with
 /// one.
 pub fn index_payload(order: &Order, seat: Option<&str>) -> String {
-    index(order.by, KIND, seat, order.at)
+    index(&order.by.to_string(), KIND, seat, order.at)
 }
 
 /// The order index, as the one function that writes its shape: a second place
@@ -629,8 +632,9 @@ fn read_back(
             &index_repair(order, seat),
         ));
     };
+    let by = order.by.to_string();
     let wanted: [(&str, Option<&str>, Option<&str>); 4] = [
-        ("by", Some(order.by), index.by.as_deref()),
+        ("by", Some(by.as_str()), index.by.as_deref()),
         ("kind", Some(KIND), index.kind.as_deref()),
         ("seat", seat, index.seat.as_deref()),
         ("at", Some(order.at), index.at.as_deref()),

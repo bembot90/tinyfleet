@@ -232,7 +232,7 @@ pub struct CancelArgs {
 /// the machine's stream.
 pub fn cancel_command(args: &CancelArgs) -> Exit {
     let cancelled = resolve_at(args.packs_dir.clone()).and_then(|here| {
-        let by = acting("cancel", args.by.as_deref(), &here)?.to_string();
+        let by = acting("cancel", args.by.as_deref(), &here)?;
         let store = open_store(&here.project.root);
         let events = StreamEvents {
             path: here.machine_dir.join(EVENTS),
@@ -300,7 +300,7 @@ fn run_the_workflow(parsed: &RunArgs, out: &mut dyn Write) -> Result<workflow_ru
     }
 
     let here = resolve_at(parsed.packs_dir.clone())?;
-    let by = acting("run", parsed.by.as_deref(), &here)?.to_string();
+    let by = acting("run", parsed.by.as_deref(), &here)?;
     let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let events = StreamEvents {
@@ -358,7 +358,7 @@ fn run_land(
     err: &mut dyn Write,
 ) -> Result<Landed, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
-    let by = acting("land", parsed.by.as_deref(), &here)?.to_string();
+    let by = acting("land", parsed.by.as_deref(), &here)?;
     let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
@@ -455,7 +455,7 @@ pub fn clear_command(args: &ClearArgs) -> Exit {
 
 fn run_hold(parsed: &HoldArgs, out: &mut dyn Write) -> Result<hold::Held, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
-    let by = acting("hold", parsed.by.as_deref(), &here)?.to_string();
+    let by = acting("hold", parsed.by.as_deref(), &here)?;
     let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
@@ -480,14 +480,13 @@ fn run_hold(parsed: &HoldArgs, out: &mut dyn Write) -> Result<hold::Held, Stop> 
             packs: &packs,
             project: &here.project,
             events: &events,
-            seats: &here.seats,
         },
     )
 }
 
 fn run_clear(parsed: &ClearArgs, out: &mut dyn Write) -> Result<hold::Cleared, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
-    let by = acting("clear", parsed.by.as_deref(), &here)?.to_string();
+    let by = acting("clear", parsed.by.as_deref(), &here)?;
     let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
@@ -511,7 +510,6 @@ fn run_clear(parsed: &ClearArgs, out: &mut dyn Write) -> Result<hold::Cleared, S
             packs: &packs,
             project: &here.project,
             events: &events,
-            seats: &here.seats,
         },
     )
 }
@@ -544,7 +542,7 @@ fn run_deliver(
     err: &mut dyn Write,
 ) -> Result<deliver::Delivered, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
-    let by = acting("deliver", parsed.by.as_deref(), &here)?.to_string();
+    let by = acting("deliver", parsed.by.as_deref(), &here)?;
     let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
@@ -586,7 +584,7 @@ fn run_review(
     err: &mut dyn Write,
 ) -> Result<review::Read, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
-    let by = acting("review", parsed.by.as_deref(), &here)?.to_string();
+    let by = acting("review", parsed.by.as_deref(), &here)?;
     let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
@@ -732,7 +730,7 @@ fn run_dispatch(
     err: &mut dyn Write,
 ) -> Result<dispatch::Given, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
-    let by = acting("dispatch", parsed.by.as_deref(), &here)?.to_string();
+    let by = acting("dispatch", parsed.by.as_deref(), &here)?;
     let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let ring = SeatRing {

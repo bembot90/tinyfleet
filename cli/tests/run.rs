@@ -32,6 +32,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use common::hermetic::Hermetic;
 use fleet_core::item::pins;
 use fleet_core::item::run as workflow_run;
+use fleet_core::seat::actor::{Actor, ActorKind};
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -41,6 +42,14 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 const BY: &str = "seat:01a0d1f1-0aec-765f-9abe-000000001ead";
 /// Who clears and cancels a run by hand: another seat, typed the same way.
 const PERSON: &str = "seat:01a0d1f1-0aec-765f-9abe-00000000fe25";
+
+/// The controller's run pass, as it acts: under a machine's identity.
+fn the_controller() -> Actor {
+    Actor {
+        kind: ActorKind::Controller,
+        id: String::from("01a0d1f1-0aec-765f-9abe-00000000c0de"),
+    }
+}
 
 /// The runtime the scratch pack pins, and the version its stub prints.
 const RUNTIME: &str = "fx-runtime";
@@ -1741,7 +1750,7 @@ fn a_rerun_reads_the_settings_the_run_was_opened_with_and_not_the_edited_file() 
         &mut said,
         &workflow_run::Again {
             run: &id,
-            by: BY,
+            by: &Actor::typed(BY).expect("typed").expect("a seat"),
             at: "2026-09-22T00:00:00Z",
             machine_dir: &rig.machine,
             fleet_bin: Path::new(env!("CARGO_BIN_EXE_fleet")),
@@ -1802,7 +1811,7 @@ fn rerun_in_this_process(
         &mut Vec::new(),
         &workflow_run::Again {
             run: id,
-            by: "controller",
+            by: &the_controller(),
             at: "2026-09-23T00:00:00Z",
             machine_dir: &rig.machine,
             fleet_bin: Path::new(env!("CARGO_BIN_EXE_fleet")),
@@ -1956,7 +1965,7 @@ fn a_run_held_at_the_cap(rig: &Rig, noted: bool) -> (String, String) {
                 run: &id,
                 reason: "executed 3 time(s) and nothing could classify the last one",
                 directory: &rig.machine.join(workflow_run::RUNS).join(&id),
-                by: "controller",
+                by: &the_controller(),
             },
             &store,
             &packs,

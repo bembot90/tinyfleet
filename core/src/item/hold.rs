@@ -40,7 +40,7 @@ use crate::item::{
     control_token, label_value, last_answer, last_park, marker_block, opens_with, render, Events,
     Git, Project, Stop, ANSWER_MARKERS, HOLD_CLEARED, ITEM_HELD, PARK_MARKERS, TRUNK_BRANCH,
 };
-use crate::seat::identity::Directory;
+use crate::seat::actor::Actor;
 use crate::store::{Item, Store, BD};
 
 /// The park-note grammar, in core's pack and shadowable like every other asset.
@@ -84,8 +84,8 @@ pub const HOLD: &str = "hold";
 pub struct Question<'a> {
     /// The item, where the seat holds more than one and named it.
     pub item: Option<&'a str>,
-    /// The seat asking.
-    pub by: &'a str,
+    /// Who is asking: a seat, or a run parking its own record.
+    pub by: &'a Actor,
     /// The note the seat wrote, in the pack's question grammar.
     pub note: &'a Path,
     /// The clock, taken by the caller: core reads none.
@@ -100,8 +100,6 @@ pub struct Wiring<'a> {
     pub packs: &'a Packs,
     pub project: &'a Project,
     pub events: &'a dyn Events,
-    /// The seats this fleet knows, which the question's `by` is found among.
-    pub seats: &'a Directory,
 }
 
 /// The park made, for a caller that wants to say what happened.
@@ -116,7 +114,9 @@ pub struct Held {
 }
 
 pub fn hold(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result<Held, Stop> {
-    let item = held_item(wiring.store, question.by, question.item, wiring.seats)?;
+    let item = held_item(wiring.store, question.by, question.item)?;
+    // The string form every write and the event carry.
+    let by = question.by.to_string();
     // WHICH OF THE TWO PARKS THIS IS, off the record the store already answers:
     // the run label is the only mark that tells a run's record from every other
     // item, and a run's park touches no git at all.
@@ -176,24 +176,21 @@ pub fn hold(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result
             &format!("the open holds could not be read before the hold was raised: {e}"),
         )
     })?;
-    let hold = wiring
-        .store
-        .hold(&item, &written, question.by)
-        .map_err(|e| {
-            let stop = parked(&item, &commit, &format!("the hold was not raised: {e}"));
-            Stop {
-                message: format!(
-                    "{}{}",
-                    stop.message,
-                    left_behind(wiring.store, &before, question.by)
-                ),
-                ..stop
-            }
-        })?;
+    let hold = wiring.store.hold(&item, &written, &by).map_err(|e| {
+        let stop = parked(&item, &commit, &format!("the hold was not raised: {e}"));
+        Stop {
+            message: format!(
+                "{}{}",
+                stop.message,
+                left_behind(wiring.store, &before, &by)
+            ),
+            ..stop
+        }
+    })?;
 
     // (c) THE PARK NOTE, read back as the last park region.
     let note = park_note(wiring.packs, &item, ASK, &branch, &commit, &hold, &written)?;
-    wiring.store.note(&item, &note, question.by).map_err(|e| {
+    wiring.store.note(&item, &note, &by).map_err(|e| {
         held(
             &item,
             &commit,
@@ -208,7 +205,7 @@ pub fn hold(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result
         .events
         .append(
             ITEM_HELD,
-            question.by,
+            &by,
             serde_json::json!({
                 "item": item,
                 "reason": ASK,
@@ -390,7 +387,7 @@ pub struct Capped<'a> {
     /// The run's own directory, where the logs a person reads before
     /// clearing are.
     pub directory: &'a Path,
-    pub by: &'a str,
+    pub by: &'a Actor,
 }
 
 /// The hold on a run's record at `[core.run] max_crashes` and the park note
@@ -413,7 +410,8 @@ pub struct Capped<'a> {
 pub fn park_at_the_cap(capped: &Capped, store: &dyn Store, packs: &Packs) -> Result<String, Stop> {
     let record = store.show(capped.run)?;
     let question = cap_question(capped);
-    let hold = store.hold(capped.run, &question, capped.by).map_err(|e| {
+    let by = capped.by.to_string();
+    let hold = store.hold(capped.run, &question, &by).map_err(|e| {
         Stop::could_not_tell(format!(
             "the hold was not raised: {e}\n  {} carries no park",
             capped.run
@@ -430,12 +428,12 @@ pub fn park_at_the_cap(capped: &Capped, store: &dyn Store, packs: &Packs) -> Res
     )
     .and_then(|note| {
         store
-            .note(capped.run, &note, capped.by)
+            .note(capped.run, &note, &by)
             .map_err(|e| Stop::could_not_tell(format!("the park note did not land: {e}")))?;
         read_back(capped.run, &note, store)
     });
     noted.map(|()| hold.clone()).map_err(|stop| {
-        let withdrawn = match store.clear_hold(&hold, capped.by) {
+        let withdrawn = match store.clear_hold(&hold, &by) {
             Ok(()) => format!("the hold {hold} is withdrawn and the next poll parks it again"),
             Err(e) => format!(
                 "the hold {hold} STANDS on {} with no park naming it, and withdrawing it failed: \
@@ -482,7 +480,7 @@ pub struct Clearance<'a> {
     /// What they said beyond the letter, where the options did not carry it.
     pub text: Option<&'a str>,
     /// Who cleared it.
-    pub by: &'a str,
+    pub by: &'a Actor,
 }
 
 /// The clearance written, for a caller that wants to say what happened.
@@ -552,8 +550,11 @@ pub fn clear(out: &mut dyn Write, clearance: &Clearance, wiring: &Wiring) -> Res
         )));
     }
 
-    let note = answer_note(wiring.packs, &hold, clearance.by, letter, clearance.text)?;
-    wiring.store.note(clearance.item, &note, clearance.by)?;
+    // The string form the note signs with, every write carries and the event
+    // names: the answer a run's landing reads its licence off.
+    let by = clearance.by.to_string();
+    let note = answer_note(wiring.packs, &hold, &by, letter, clearance.text)?;
+    wiring.store.note(clearance.item, &note, &by)?;
     let seen = wiring
         .store
         .show(clearance.item)?
@@ -568,7 +569,7 @@ pub fn clear(out: &mut dyn Write, clearance: &Clearance, wiring: &Wiring) -> Res
         )));
     }
 
-    wiring.store.clear_hold(&hold, clearance.by)?;
+    wiring.store.clear_hold(&hold, &by)?;
     let still = wiring.store.open_holds()?;
     if still.contains(&hold) {
         return Err(Stop::could_not_tell(format!(
@@ -582,7 +583,7 @@ pub fn clear(out: &mut dyn Write, clearance: &Clearance, wiring: &Wiring) -> Res
         .events
         .append(
             HOLD_CLEARED,
-            clearance.by,
+            &by,
             serde_json::json!({
                 "item": clearance.item,
                 "hold": hold,

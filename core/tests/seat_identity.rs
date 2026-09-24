@@ -541,40 +541,29 @@ fn a_label_is_the_machine_name_of_a_known_seat_and_else_the_id() {
     assert_eq!(dir.label(&stranger), stranger.to_string());
 }
 
-/// The actor bridge: a name, a machine name or an id of a listed seat is that
-/// seat, and anything a resolve would miss or find twice is no seat at all.
-#[test]
-fn an_actor_is_a_seat_only_where_it_resolves_to_one_listed_seat() {
-    let mut dir = directory();
-    assert_eq!(dir.seat_of("Orla"), Some(id(ORLA)));
-    assert_eq!(dir.seat_of("kite-cafef00d"), Some(id(KITE)));
-    assert_eq!(dir.seat_of(NAMELESS), Some(id(NAMELESS)));
-    assert_eq!(dir.seat_of("run-x"), None);
-    dir.listed.push(seat(
-        "44444444-aaaa-7bbb-8ccc-0000feedface",
-        Some("orla"),
-        Kind::Agent,
-    ));
-    assert_eq!(dir.seat_of("orla"), None, "two seats answer to it");
-}
-
-/// The typed form the cli now hands a verb: `seat:<full id>` is that seat as
-/// given, listed or not — the machine's identity minted by this very call is
-/// in no directory yet — and every other kind is no seat.
+/// THE SEAT AN ACTOR IS, BY KIND, with no directory asked: `seat:<full id>` is
+/// that seat whether or not any fleet lists it — the machine's identity minted
+/// by this very call is on no roster yet — a seat's id is read in either case,
+/// and every other kind is no seat at all, whatever its id looks like.
 #[test]
 fn a_typed_seat_actor_is_its_id_and_any_other_kind_is_no_seat() {
-    let dir = directory();
-    assert_eq!(dir.seat_of(&format!("seat:{ORLA}")), Some(id(ORLA)));
+    let seat_of = |text: &str| {
+        Actor::typed(text)
+            .and_then(Result::ok)
+            .and_then(|actor| actor.seat_id())
+    };
+    assert_eq!(seat_of(&format!("seat:{ORLA}")), Some(id(ORLA)));
     assert_eq!(
-        dir.seat_of(&format!("seat:{}", ORLA.to_uppercase())),
+        seat_of(&format!("seat:{}", ORLA.to_uppercase())),
         Some(id(ORLA))
     );
     let stranger = "66666666-aaaa-7bbb-8ccc-0000000000aa";
-    assert_eq!(dir.seat_of(&format!("seat:{stranger}")), Some(id(stranger)));
-    assert_eq!(dir.seat_of("seat:orla"), None, "a bad id is no seat");
-    assert_eq!(dir.seat_of("run:fleet-abc"), None);
-    assert_eq!(dir.seat_of("routine:nightly"), None);
-    assert_eq!(dir.seat_of(&format!("controller:{ORLA}")), None);
+    assert_eq!(seat_of(&format!("seat:{stranger}")), Some(id(stranger)));
+    assert_eq!(seat_of("seat:orla"), None, "a bad id is no seat");
+    assert_eq!(seat_of("run:fleet-abc"), None);
+    assert_eq!(seat_of("routine:nightly"), None);
+    assert_eq!(seat_of(&format!("controller:{ORLA}")), None);
+    assert_eq!(seat_of("Orla"), None, "a bare name is no typed actor");
 }
 
 // ---- identity ---------------------------------------------------------------

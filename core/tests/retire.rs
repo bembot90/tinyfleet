@@ -12,6 +12,8 @@ mod common;
 use common::capped::{calls, capped_bd, Held};
 use common::Fixture;
 use fleet_core::item::{COULD_NOT_TELL, REFUSED};
+use fleet_core::seat::actor::Actor;
+use fleet_core::seat::identity::SeatId;
 use fleet_core::seat::retire::{self, WITHDRAWN};
 use fleet_core::store::{AssignedItem, Bd, Item, Orders, Store};
 use fleet_core::test_support::FakeStore;
@@ -21,7 +23,20 @@ use fleet_core::test_support::FakeStore;
 const SEAT: &str = "018f6a2c-1d3e-7a4b-9c5d-00000c3a5e71";
 /// That seat's machine name, which is how the withdrawal note names it.
 const LABEL: &str = "agent-0c3a5e71";
-const BY: &str = "an-architect";
+/// Who retires it, in the typed form the note and every write carry.
+const BY: &str = "seat:018f6a2c-1d3e-7a4b-9c5d-0000a1b2c3d4";
+/// A seat the board holds nothing against.
+const NOBODY: &str = "018f6a2c-1d3e-7a4b-9c5d-00004a8c1e37";
+
+fn seat() -> SeatId {
+    SeatId::parse(SEAT).expect("the seat's id parses")
+}
+
+fn by() -> Actor {
+    Actor::typed(BY)
+        .expect("typed")
+        .expect("the retirer is a seat")
+}
 
 const HELD: &str = "fx-held";
 const UNORDERED: &str = "fx-unordered";
@@ -78,7 +93,7 @@ fn a_retire_withdraws_every_open_ordered_item_the_seat_still_holds() {
         "the query names one item"
     );
 
-    retire::withdraw(&store, &held, SEAT, LABEL, BY).expect("the withdrawal lands");
+    retire::withdraw(&store, &held, &seat(), LABEL, &by()).expect("the withdrawal lands");
 
     let after = read(&store, HELD);
     assert!(
@@ -118,7 +133,7 @@ fn a_retire_reopens_an_item_the_seat_marked_in_progress() {
 
     let held = retire::held(&store, SEAT).expect("the board answers");
     assert_eq!(ids_of(&held), vec![HELD.to_string()], "the query names it");
-    retire::withdraw(&store, &held, SEAT, LABEL, BY).expect("the withdrawal lands");
+    retire::withdraw(&store, &held, &seat(), LABEL, &by()).expect("the withdrawal lands");
 
     let after = read(&store, HELD);
     assert_eq!(after.status, "open", "the claimed item reads open");
@@ -149,7 +164,8 @@ fn a_retire_whose_item_was_closed_after_the_listing_is_refused_and_reopens_nothi
         .close(HELD, "landed", SEAT)
         .expect("the seat lands its item after the listing");
 
-    let stop = retire::withdraw(&store, &held, SEAT, LABEL, BY).expect_err("the item was closed");
+    let stop =
+        retire::withdraw(&store, &held, &seat(), LABEL, &by()).expect_err("the item was closed");
 
     assert_eq!(
         stop.code, REFUSED,
@@ -184,7 +200,7 @@ fn a_retire_handed_a_closed_row_writes_nothing() {
         ..AssignedItem::default()
     };
 
-    let stop = retire::withdraw(&store, &[row], SEAT, LABEL, BY).expect_err("a closed row");
+    let stop = retire::withdraw(&store, &[row], &seat(), LABEL, &by()).expect_err("a closed row");
 
     assert!(
         stop.message.contains(CLOSED) && stop.message.contains("listed closed"),
@@ -204,7 +220,7 @@ fn a_retire_leaves_what_the_seat_does_not_hold_under_an_open_order() {
     let store = board();
 
     let held = retire::held(&store, SEAT).expect("the board answers");
-    retire::withdraw(&store, &held, SEAT, LABEL, BY).expect("the withdrawal lands");
+    retire::withdraw(&store, &held, &seat(), LABEL, &by()).expect("the withdrawal lands");
 
     for untouched in [UNORDERED, CLOSED, ANOTHER] {
         let after = read(&store, untouched);
@@ -254,7 +270,7 @@ fn a_retire_leaves_another_writers_orders_key_untouched() {
         vec![HELD.to_string()],
         "the query names fleet's order alone"
     );
-    retire::withdraw(&store, &held, SEAT, LABEL, BY).expect("the withdrawal lands");
+    retire::withdraw(&store, &held, &seat(), LABEL, &by()).expect("the withdrawal lands");
 
     let theirs = read(&store, THEIRS);
     assert_eq!(
@@ -301,7 +317,7 @@ fn a_retire_withdraws_an_ordered_epic_the_seat_still_names() {
         "the query names the ordered epic beside the ordered task"
     );
 
-    retire::withdraw(&store, &held, SEAT, LABEL, BY).expect("the withdrawal lands");
+    retire::withdraw(&store, &held, &seat(), LABEL, &by()).expect("the withdrawal lands");
 
     let after = read(&store, EPIC);
     assert!(
@@ -316,10 +332,10 @@ fn a_retire_withdraws_an_ordered_epic_the_seat_still_names() {
 fn a_retire_of_a_seat_holding_nothing_ordered_writes_nothing() {
     let store = board();
 
-    let held = retire::held(&store, "agent-4a8c1e37").expect("the board answers");
+    let held = retire::held(&store, NOBODY).expect("the board answers");
     assert!(held.is_empty(), "the seat holds nothing: {held:?}");
-    retire::withdraw(&store, &held, "agent-4a8c1e37", "agent-4a8c1e37", BY)
-        .expect("nothing to withdraw");
+    let nobody = SeatId::parse(NOBODY).expect("the id parses");
+    retire::withdraw(&store, &held, &nobody, "agent-4a8c1e37", &by()).expect("nothing to withdraw");
 
     assert!(
         store.wrote().is_empty(),
@@ -341,7 +357,7 @@ fn a_retire_withdrawing_one_item_makes_one_update_and_one_note() {
     let store = board();
 
     let held = retire::held(&store, SEAT).expect("the board answers");
-    retire::withdraw(&store, &held, SEAT, LABEL, BY).expect("the withdrawal lands");
+    retire::withdraw(&store, &held, &seat(), LABEL, &by()).expect("the withdrawal lands");
 
     let wrote = store.wrote();
     assert_eq!(
@@ -371,8 +387,8 @@ fn a_retire_whose_withdrawal_does_not_land_refuses_and_names_the_item() {
     let held = retire::held(&store, SEAT).expect("the board answers");
     store.ignore_writes();
 
-    let stop =
-        retire::withdraw(&store, &held, SEAT, LABEL, BY).expect_err("the read-back disagrees");
+    let stop = retire::withdraw(&store, &held, &seat(), LABEL, &by())
+        .expect_err("the read-back disagrees");
 
     assert_eq!(
         stop.code, COULD_NOT_TELL,
@@ -404,7 +420,8 @@ fn a_retire_whose_item_moved_to_another_seat_is_refused_and_writes_nothing() {
         .assign(HELD, "agent-9d2b4f60", "the-test")
         .expect("another seat takes the item after the listing");
 
-    let stop = retire::withdraw(&store, &held, SEAT, LABEL, BY).expect_err("the holder moved");
+    let stop =
+        retire::withdraw(&store, &held, &seat(), LABEL, &by()).expect_err("the holder moved");
 
     assert_eq!(
         stop.code, REFUSED,
@@ -492,7 +509,7 @@ fn a_retire_withdraws_an_ordered_item_past_the_fiftieth_row() {
         "the query names the ordered item at row 51"
     );
 
-    retire::withdraw(&store, &held, SEAT, LABEL, BY).expect("the withdrawal lands");
+    retire::withdraw(&store, &held, &seat(), LABEL, &by()).expect("the withdrawal lands");
 
     let after = store
         .show("fx-row-51")

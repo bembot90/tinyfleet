@@ -15,13 +15,15 @@
 //! takes minutes says where it is while it is there.
 //!
 //! A RUN'S LANDING IS THE REVIEWER'S ACT, CARRIED BY THE RUN. A workflow calls
-//! every verb as the run — the `by` it hands in is the run's record id — while
+//! every verb as the run — the actor it hands in is `run:<record id>` — while
 //! `deliver` hands every item to the `[core] reviewer`, so on a workflow's
 //! landing the holder is always that seat and the caller is always the run. A
-//! landing called by a run's record therefore closes AS the reviewer: the
-//! holder check reads that seat, the close and `item.landed` carry it with the
-//! run named beside it, and what licenses the act is the reviewer's own answer
-//! to the hold this run raised. A seat's own landing acts as itself, by its id.
+//! landing called by a run therefore closes AS the reviewer: the holder check
+//! reads that seat, the close and `item.landed` carry it with the run named
+//! beside it, and what licenses the act is the reviewer's own answer to the
+//! hold this run raised. A seat's own landing acts as itself, by its id. Which
+//! of the two a landing is, is the actor's KIND; a routine or the controller
+//! lands nothing.
 //!
 //! IT RUNS IN THE REVIEWER'S OWN WORKTREE, WHEREVER IT WAS CALLED FROM. A
 //! workflow's verbs all run at the registered project's root, which on a box
@@ -268,8 +270,8 @@ pub struct Landing<'a> {
     pub test: Option<&'a str>,
     /// What the close says beyond the landed sha.
     pub reason: Option<&'a str>,
-    /// The reviewer.
-    pub by: &'a str,
+    /// Who lands it: a seat in its own name, or a run as the reviewer.
+    pub by: &'a Actor,
     /// The clock, taken by the caller: core reads none. It stamps the lane's
     /// lock, so a landing that waits can say since when.
     pub at: &'a str,
@@ -297,8 +299,8 @@ pub struct Wiring<'a> {
     /// this process. Empty means the caller has none and the children inherit
     /// this process's environment unchanged.
     pub child_path: &'a str,
-    /// The seats this fleet knows: what `[core] reviewer`, the caller and the
-    /// delivery's builder are each resolved among.
+    /// The seats this fleet knows: what `[core] reviewer` is resolved among,
+    /// and what a sentence names a seat by.
     pub seats: &'a Directory,
 }
 
@@ -551,28 +553,30 @@ fn run(
             item.id
         )));
     }
-    // WHO CLOSES THIS ITEM, as a seat id. A seat closes as itself, its actor
-    // resolved among the listed seats. A run closes as the `[core] reviewer`:
-    // the landing is that seat's act, on that seat's worktree, under a hold
-    // that seat cleared, and the run is only what carried it. An actor that is
-    // neither is nobody an item can be held by.
-    let by_run = caller_run(wiring.store, landing.by)?;
-    let closer: SeatId = match &by_run {
-        Some(_) => reviewer_of(wiring.project, wiring.seats)?.id,
-        None => wiring.seats.seat_of(landing.by).ok_or_else(|| {
-            Stop::refused(format!(
-                "{} is neither a seat of this fleet nor a run — whoever closes an item lands its \
-                 work",
-                landing.by
-            ))
-        })?,
+    // WHO CLOSES THIS ITEM, as a seat id, decided by the actor's KIND and never
+    // by reading its text. A seat closes as itself. A run closes as the `[core]
+    // reviewer`: the landing is that seat's act, on that seat's worktree, under
+    // a hold that seat cleared, and the run is only what carried it. A routine
+    // or the controller is nobody an item can be held by.
+    let (closer, by_run): (SeatId, Option<Item>) = match landing.by.kind {
+        ActorKind::Run => {
+            let record = run_record(wiring.store, landing.by)?;
+            (reviewer_of(wiring.project, wiring.seats)?.id, Some(record))
+        }
+        ActorKind::Seat => match landing.by.seat_id() {
+            Some(seat) => (seat, None),
+            None => return Err(neither(landing.by)),
+        },
+        ActorKind::Routine | ActorKind::Controller => return Err(neither(landing.by)),
     };
-    // The id every write below is made under: the note, the events and the
-    // close are the closer's.
-    let actor = closer.to_string();
+    // The closer's id, which the holder is compared with, the trailer and the
+    // note name and the close is made under; and the actor the note and the
+    // events are written by — the closer, in its typed form.
+    let closer_id = closer.to_string();
+    let actor = Actor::seat(closer).to_string();
     let closer_named = wiring.seats.label(&closer);
     match item.assignee.as_deref() {
-        Some(seat) if seat == actor => {}
+        Some(seat) if seat == closer_id => {}
         Some(seat) => {
             return Err(Stop::refused(format!(
                 "{} is held by `{}` and not by `{closer_named}` — whoever closes an item lands \
@@ -597,8 +601,8 @@ fn run(
     // The name the landing is written under wherever one is asked for and two
     // are the fact: the seat a person reads and the id a script can pass.
     let landed_by = match &by_run {
-        Some(record) => format!("{closer_named} ({actor}) through run {}", record.id),
-        None => format!("{closer_named} ({actor})"),
+        Some(record) => format!("{closer_named} ({closer_id}) through run {}", record.id),
+        None => format!("{closer_named} ({closer_id})"),
     };
     let notes = item.notes.clone().unwrap_or_default();
     let accepted = accepted_commit(&item.id, &notes, commit, wiring)?;
@@ -610,15 +614,17 @@ fn run(
         ))
     })?;
     let work_branch = label_value(&delivery, BRANCH).filter(|b| !b.is_empty());
-    // The builder as the seat the delivery's own line names, by its id; a
-    // delivery a run made names the run, which is no seat, and is kept as
-    // written.
+    // The builder as the actor the delivery's own line names: a seat by its
+    // full id, and any other kind — a run's delivery names the run — in its
+    // string form, as written.
     let builder = match after_dash(&delivery) {
-        Some(who) => wiring
-            .seats
-            .seat_of(&who)
-            .map_or(who, |seat| seat.to_string()),
-        None => actor.clone(),
+        Some(who) => match Actor::typed(&who) {
+            Some(Ok(typed)) => typed
+                .seat_id()
+                .map_or_else(|| typed.to_string(), |seat| seat.to_string()),
+            _ => who,
+        },
+        None => closer_id.clone(),
     };
     rows.read(
         out,
@@ -803,7 +809,7 @@ fn run(
         ))
     })?;
     let message_path = work_dir.join("message");
-    std::fs::write(&message_path, message(&item, &marker, &actor, &builder)).map_err(|e| {
+    std::fs::write(&message_path, message(&item, &marker, &closer_id, &builder)).map_err(|e| {
         Stop::could_not_tell(format!(
             "the commit message at {} could not be written: {e}",
             message_path.display()
@@ -1026,9 +1032,14 @@ fn run(
         Some(text) if !text.trim().is_empty() => format!("{landed} — {}", text.trim()),
         _ => landed,
     };
+    // THE CLOSE IS MADE UNDER THE HOLDER'S OWN ASSIGNEE STRING, the closer's
+    // bare id, and not its typed form: bd 1.3.0 closes an assigned item only
+    // for an actor equal to its assignee — measured, `cannot close X: assignee
+    // is "<id>", actor is "seat:<id>"` — and the holder check above has
+    // already said the closer is that seat.
     wiring
         .store
-        .close(&item.id, &reason, &actor)
+        .close(&item.id, &reason, &closer_id)
         .map_err(|e| rerun(&item.id, &sha, &e.to_string()))?;
     let closed = read(wiring.store, &item.id)?;
     if closed.status != "closed" {
@@ -1786,40 +1797,35 @@ fn rebased_from(delivery: &str, landed_on: &str) -> String {
     format!("; rebased from {base}")
 }
 
-/// The run whose record called this landing, or `None` where a seat called it
-/// in its own name.
+/// The record of the run that called this landing.
 ///
-/// A workflow calls every verb as the RUN: the `by` it hands in is the run's
-/// record id, and the `fleet:run` label on the item the store answers for that
-/// id is the only mark that tells one from every other item — the same
-/// discriminator `hold` reads to tell a run's park from a seat's. A `by` the store has no item
-/// for is a seat name, which is not an id at all; a store that could not answer
-/// is a could-not-tell and never a seat.
-///
-/// THE TYPED FORM IS READ HERE TOO, until the verbs take the typed actor: the
-/// cli hands a workflow's `run:<id>` through as that string, so the record is
-/// the id after the prefix, and an actor of any other kind is no run at all.
-fn caller_run(store: &dyn Store, by: &str) -> Result<Option<Item>, Stop> {
-    let by = match Actor::typed(by) {
-        Some(Ok(actor)) if actor.kind == ActorKind::Run => actor.id,
-        Some(_) => return Ok(None),
-        None => by.to_string(),
-    };
-    let by = by.as_str();
-    match store.show(by) {
-        Ok(record) => {
-            let of_a_run = record.labels.iter().any(|label| label == run::LABEL);
-            Ok(of_a_run.then_some(record))
-        }
-        Err(StoreError::Missing(_)) => Ok(None),
+/// A workflow calls every verb as `run:<id>`, and the `fleet:run` label on the
+/// item the store answers for that id is the only mark that tells a run's
+/// record from every other item — the same discriminator `hold` reads to tell
+/// a run's park from a seat's. An id the store holds no item for, or one whose
+/// item carries no label, is refused: the actor said it was a run, and it is
+/// not one. A store that could not answer is a could-not-tell.
+fn run_record(store: &dyn Store, by: &Actor) -> Result<Item, Stop> {
+    let named_no_run = || Stop::refused(format!("{by} names no run record"));
+    match store.show(&by.id) {
+        Ok(record) if record.labels.iter().any(|label| label == run::LABEL) => Ok(record),
+        Ok(_) | Err(StoreError::Missing(_)) => Err(named_no_run()),
         // A read never answers `Moved`, which only a fenced write does.
         Err(StoreError::Unreadable(why) | StoreError::Moved(why)) => {
             Err(Stop::could_not_tell(format!(
-            "the store could not say whether `{by}` is a run's record: {why} — a run's landing \
-             acts as the reviewer and a seat's as itself, and this is where the two are told apart"
-        )))
+                "the store could not say whether `{}` is a run's record: {why} — a run's landing \
+                 acts as the reviewer, and this is where its record is read",
+                by.id
+            )))
         }
     }
+}
+
+/// The refusal of an actor that is neither a seat nor a run.
+fn neither(by: &Actor) -> Stop {
+    Stop::refused(format!(
+        "fleet land acts as a seat or as a run — {by} is neither"
+    ))
 }
 
 /// The reviewer's own answer to the hold this run raised, which is the whole
@@ -1827,9 +1833,10 @@ fn caller_run(store: &dyn Store, by: &str) -> Result<Option<Item>, Stop> {
 ///
 /// The hold is raised on the RUN's record and cleared there, so that record is
 /// where the answer is read; the landing the answer licenses is on the item.
-/// Whoever answered is resolved among the listed seats and compared with the
-/// reviewer by id, so the reviewer's name, machine name and id each answer as
-/// the one seat they are.
+/// Whoever answered is read as the typed actor `clear` signed with, and
+/// licenses the landing only where it is a seat and that seat is the reviewer:
+/// an answer signed by any other seat, by another kind, or with text that is
+/// no typed actor at all is refused, naming what it says.
 fn licensed(record: &Item, reviewer: SeatId, seats: &Directory) -> Result<(), Stop> {
     let wanted = seats.label(&reviewer);
     let notes = record.notes.clone().unwrap_or_default();
@@ -1840,19 +1847,23 @@ fn licensed(record: &Item, reviewer: SeatId, seats: &Directory) -> Result<(), St
             record.id
         )));
     };
-    match after_dash(&answer) {
-        Some(who) if seats.seat_of(&who) == Some(reviewer) => Ok(()),
-        Some(who) => Err(Stop::refused(format!(
-            "run {}'s last hold was cleared by `{who}` and not by `{wanted}` — a run lands as \
-             the `[core] reviewer` and on that seat's own answer",
-            record.id
-        ))),
-        None => Err(Stop::could_not_tell(format!(
+    let Some(who) = after_dash(&answer) else {
+        return Err(Stop::could_not_tell(format!(
             "run {}'s last answer names nobody after its em dash — who answered is what licenses \
              the landing",
             record.id
-        ))),
+        )));
+    };
+    let answered = Actor::typed(&who).and_then(Result::ok);
+    if answered.as_ref().and_then(Actor::seat_id) == Some(reviewer) {
+        return Ok(());
     }
+    let who = answered.map_or(who, |actor| actor.to_string());
+    Err(Stop::refused(format!(
+        "run {}'s last hold was cleared by `{who}` and not by `{wanted}` — a run lands as the \
+         `[core] reviewer` and on that seat's own answer",
+        record.id
+    )))
 }
 
 /// What a note's own first line names after its em dash: the seat on a

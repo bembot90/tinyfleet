@@ -799,6 +799,12 @@ pub fn agent(name: &str) -> fleet_core::seat::identity::SeatRef {
     }
 }
 
+/// The typed actor an arm's seat acts as: `seat:<its full id>`, which is what
+/// every write and every event the seat makes carries.
+pub fn seat_actor(name: &str) -> fleet_core::seat::actor::Actor {
+    fleet_core::seat::actor::Actor::seat(seat_id(name))
+}
+
 /// A fleet of agent seats by name, each listed and running here.
 pub fn fleet_of(names: &[&str]) -> fleet_core::seat::identity::Directory {
     let running: Vec<_> = names.iter().map(|name| agent(name)).collect();

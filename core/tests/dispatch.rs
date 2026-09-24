@@ -24,14 +24,22 @@ use fleet_core::item::{
     control_token, render, table_at, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner,
     ITEM_DISPATCHED,
 };
+use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::{Directory, Kind, SeatRef};
 use fleet_core::store::{AssignedItem, Item, Store, StoreError};
 
 const POLICY: &str = "[guards]\n";
 /// The builder's checks every arm's order hands over, as a workflow would.
 const TOUCHED: &str = "make check";
-const BY: &str = "lead-1";
+/// Who gives every order here: a lead's seat, in the typed form every write
+/// carries.
+const BY: &str = "seat:01a0d1f1-0aec-765f-9abe-0000001ead01";
 const AT: &str = "2026-09-08T18:46:55Z";
+
+/// [`BY`], typed.
+fn by() -> Actor {
+    Actor::typed(BY).expect("typed").expect("a seat")
+}
 
 // ---- the seams ---------------------------------------------------------------
 
@@ -283,7 +291,7 @@ impl Rig {
             &Order {
                 item,
                 to,
-                by: BY,
+                by: &by(),
                 at: AT,
                 brief: None,
                 base: None,
@@ -311,6 +319,71 @@ impl Rig {
             out: String::from_utf8(out).expect("stdout is utf-8"),
         }
     }
+}
+
+/// THE STORE IS HANDED THE TYPED ACTOR. A dispatch by `seat:<id>` leaves bd's
+/// own audit actor `seat:<id>` on every mutation it makes of the item — read
+/// off bd's events journal, the only reader bd 1.3.0 gives that names who made
+/// an update — and the index and the note read back through `bd show --json`
+/// carry the same string.
+#[test]
+fn a_dispatch_by_a_seat_leaves_bd_the_seats_typed_actor() {
+    let rig = Rig::ringed("audit");
+    let Graph::Real(scratch, _) = &rig.graph else {
+        unreachable!("the ring is bd");
+    };
+    let journal = scratch.bd(&["config", "set", "events-journal", "true"]);
+    assert!(
+        journal.status.success(),
+        "bd config set: {}",
+        String::from_utf8_lossy(&journal.stderr)
+    );
+    let item = rig.graph.item("an item a seat dispatches");
+    let answer = rig.run(
+        &item,
+        Some("orla"),
+        &[String::from("Orla")],
+        rig.graph.store(),
+        &StubRing::answering(RingOutcome::Delivered),
+        &StubSpawner::answering(SpawnOutcome::Refused(String::from("unused"))),
+    );
+    assert_eq!(answer.code, None, "{}", answer.why);
+
+    let shown: serde_json::Value =
+        serde_json::from_str(scratch.json(&item).trim()).expect("bd show answers JSON");
+    let shown = shown.get(0).unwrap_or(&shown);
+    assert_eq!(
+        shown["metadata"]["fleet.orders"]["by"],
+        serde_json::json!(BY),
+        "the index read back through bd show --json: {shown}"
+    );
+    assert!(
+        shown["notes"]
+            .as_str()
+            .is_some_and(|notes| notes.contains(&note_for(&rig, BY))),
+        "the order note names the typed actor: {shown}"
+    );
+
+    let exported = scratch.bd(&["events", "export"]);
+    assert!(
+        exported.status.success(),
+        "bd events export: {}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    let actors: Vec<String> = String::from_utf8_lossy(&exported.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|row| row["issue_id"] == serde_json::json!(item) && row["op"] != "create")
+        .map(|row| row["actor"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert!(
+        actors.len() >= 3,
+        "the assignee, the note and the index are each a mutation: {actors:?}"
+    );
+    assert!(
+        actors.iter().all(|actor| actor == BY),
+        "bd's audit actor on every write the dispatch made is {BY}: {actors:?}"
+    );
 }
 
 /// The note the rig's own copy of the template renders for this dispatcher.
@@ -1589,7 +1662,7 @@ mod transient {
             &Order {
                 item: &item,
                 to: None,
-                by: BY,
+                by: &by(),
                 at: AT,
                 brief: None,
                 base: None,

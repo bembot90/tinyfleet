@@ -20,6 +20,7 @@ use crate::item::{
     control_token, label_value, last_delivery, render, Change, Events, Git, Project, Ring,
     RingOutcome, Stop, ITEM_RETURNED, ITEM_REVIEWED, VERDICT_ACCEPTED, VERDICT_MARKERS,
 };
+use crate::seat::actor::Actor;
 use crate::seat::identity::Directory;
 use crate::store::{Item, Store};
 
@@ -49,7 +50,7 @@ pub enum Mode<'a> {
 pub struct Verdict<'a> {
     pub item: &'a str,
     /// The reviewer.
-    pub by: &'a str,
+    pub by: &'a Actor,
     pub mode: Mode<'a>,
 }
 
@@ -321,7 +322,7 @@ fn accept(
         &block(&wiring.packs.read(VERDICT)?, VERDICT_MARKERS[0])?,
         &[
             ("commit", commit),
-            ("reviewer", verdict.by),
+            ("reviewer", &verdict.by.to_string()),
             ("item", &item.id),
             ("size", size),
             ("decisions", &walk(delivery)),
@@ -364,7 +365,7 @@ fn announce(
 ) -> Result<(), Stop> {
     wiring
         .events
-        .append(kind, verdict.by, payload)
+        .append(kind, &verdict.by.to_string(), payload)
         .map_err(|e| {
             Stop::could_not_tell(format!(
                 "{kind} did not reach the stream: {e}\n  the verdict on {item} STANDS"
@@ -415,7 +416,7 @@ fn retur(
         &block(&wiring.packs.read(VERDICT)?, VERDICT_MARKERS[1])?,
         &[
             ("commit", commit),
-            ("reviewer", verdict.by),
+            ("reviewer", &verdict.by.to_string()),
             ("item", &item.id),
             ("size", size),
             ("findings", &count.to_string()),
@@ -432,7 +433,7 @@ fn retur(
         &item.id,
         item.assignee.as_deref().unwrap_or_default(),
         &builder,
-        verdict.by,
+        &verdict.by.to_string(),
     )?;
     write_verdict(&item.id, &note, Some(&builder), verdict, wiring)?;
     announce(
@@ -479,7 +480,7 @@ fn write_verdict(
     verdict: &Verdict,
     wiring: &Wiring,
 ) -> Result<(), Stop> {
-    wiring.store.note(item, note, verdict.by)?;
+    wiring.store.note(item, note, &verdict.by.to_string())?;
     let read = read(wiring.store, item)?;
     if let Some(wanted) = assignee {
         if read.assignee.as_deref() != Some(wanted) {

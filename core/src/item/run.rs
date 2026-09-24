@@ -52,6 +52,7 @@ use crate::lock;
 use crate::pack::{self, Runtime};
 use crate::policy;
 use crate::resolve::Layer;
+use crate::seat::actor::Actor;
 use crate::settings;
 use crate::store::{keys, Item, NewItem, Store, StoreError};
 
@@ -160,7 +161,7 @@ pub struct Order<'a> {
     pub workflow: &'a str,
     /// `--input key=value`, in the order the caller gave them.
     pub inputs: &'a [(String, String)],
-    pub by: &'a str,
+    pub by: &'a Actor,
     /// The clock, taken by the caller: core reads none.
     pub at: &'a str,
     /// Where the run directory goes: a process fact, resolved by the caller
@@ -303,13 +304,13 @@ pub fn run(out: &mut dyn Write, order: &Order, wiring: &Wiring) -> Result<Ran, S
         path: &path,
     };
     let hash = pin_and_bundle(pinning, order, wiring)
-        .map_err(|stop| never_started(&id, stop, order.by, wiring))?;
+        .map_err(|stop| never_started(&id, stop, &order.by.to_string(), wiring))?;
 
     wiring
         .events
         .append(
             RUN_STARTED,
-            order.by,
+            &order.by.to_string(),
             serde_json::json!({
                 "run": id,
                 "hash": hash,
@@ -346,7 +347,7 @@ pub fn run(out: &mut dyn Write, order: &Order, wiring: &Wiring) -> Result<Ran, S
 /// environment for.
 pub struct Again<'a> {
     pub run: &'a str,
-    pub by: &'a str,
+    pub by: &'a Actor,
     /// The clock, taken by the caller: core reads none.
     pub at: &'a str,
     pub machine_dir: &'a Path,
@@ -466,7 +467,7 @@ pub fn rerun(out: &mut dyn Write, again: &Again, wiring: &Wiring) -> Result<Ende
         .events
         .append(
             RUN_STARTED,
-            again.by,
+            &again.by.to_string(),
             serde_json::json!({
                 "run": started.run,
                 "hash": started.hash,
@@ -499,7 +500,7 @@ pub fn hashed_files() -> Vec<String> {
 pub struct Cancel<'a> {
     pub run: &'a str,
     /// Who is cancelling it.
-    pub by: &'a str,
+    pub by: &'a Actor,
 }
 
 /// The run cancelled, and the holds the cancel cleared on its record.
@@ -539,6 +540,8 @@ pub fn cancel(
     events: &dyn Events,
 ) -> Result<Cancelled, Stop> {
     let run = cancel.run;
+    // The string form every write and every line carries.
+    let by = cancel.by.to_string();
     let record = store.show(run).map_err(|e| match e {
         StoreError::Missing(why) => Stop::refused(format!(
             "{run} is not an item this project's store holds — {why}"
@@ -573,21 +576,19 @@ pub fn cancel(
         .cloned()
         .collect();
     for hold in &holds {
-        store.clear_hold(hold, cancel.by).map_err(|e| {
+        store.clear_hold(hold, &by).map_err(|e| {
             Stop::could_not_tell(format!(
                 "{hold} on {run} was not cleared: {e}\n  {run} is NOT cancelled"
             ))
         })?;
     }
 
-    store
-        .close(run, "the run cancelled", cancel.by)
-        .map_err(|e| {
-            Stop::could_not_tell(format!(
-                "{run}'s record did not close: {e}\n  {} cleared and {run} is NOT cancelled",
-                named_holds(&holds)
-            ))
-        })?;
+    store.close(run, "the run cancelled", &by).map_err(|e| {
+        Stop::could_not_tell(format!(
+            "{run}'s record did not close: {e}\n  {} cleared and {run} is NOT cancelled",
+            named_holds(&holds)
+        ))
+    })?;
     let read_back = read(store, run)?;
     if read_back.status != CLOSED {
         return Err(disagrees(run, "status", CLOSED, &read_back.status));
@@ -601,13 +602,13 @@ pub fn cancel(
         ))
     };
     events
-        .append(RUN_CANCELLED, cancel.by, serde_json::json!({ "run": run }))
+        .append(RUN_CANCELLED, &by, serde_json::json!({ "run": run }))
         .map_err(written)?;
     for hold in &holds {
         events
             .append(
                 HOLD_CLEARED,
-                cancel.by,
+                &by,
                 serde_json::json!({ "item": run, "hold": hold, "letter": serde_json::Value::Null }),
             )
             .map_err(written)?;
@@ -1148,18 +1149,21 @@ fn file_the_record(order: &Order, resolved: &Resolved, wiring: &Wiring) -> Resul
                 item_type: RECORD_TYPE,
                 labels: &[LABEL],
             },
-            order.by,
+            &order.by.to_string(),
         )
         .map_err(|e| {
             Stop::could_not_tell(format!(
                 "the run's record was not filed: {e}\n  NOTHING was written"
             ))
         })?;
-    wiring.store.set_title(&id, &id, order.by).map_err(|e| {
-        Stop::could_not_tell(format!(
-            "{id} is filed and the title did not land: {e}\n  the record STANDS"
-        ))
-    })?;
+    wiring
+        .store
+        .set_title(&id, &id, &order.by.to_string())
+        .map_err(|e| {
+            Stop::could_not_tell(format!(
+                "{id} is filed and the title did not land: {e}\n  the record STANDS"
+            ))
+        })?;
     Ok(id)
 }
 
@@ -1184,7 +1188,7 @@ fn write_the_pins(
     let payload = keys::stamped(keys::RUN, object).to_string();
     wiring
         .store
-        .set_metadata(id, &payload, order.by)
+        .set_metadata(id, &payload, &order.by.to_string())
         .map_err(|e| {
             Stop::could_not_tell(format!(
                 "the pins did not land on {id}: {e}\n  the run directory is WRITTEN and the \
@@ -1470,7 +1474,11 @@ fn execute(
     if ended.retires_the_record() {
         wiring
             .store
-            .close(&started.run, &format!("the run {}", ended.word()), order.by)
+            .close(
+                &started.run,
+                &format!("the run {}", ended.word()),
+                &order.by.to_string(),
+            )
             .map_err(|e| {
                 Stop::could_not_tell(format!(
                     "{} {} and the record did not close: {e}\n  the run directory is WRITTEN, \
@@ -1482,7 +1490,7 @@ fn execute(
     }
     wiring
         .events
-        .append(ended.kind(), order.by, payload)
+        .append(ended.kind(), &order.by.to_string(), payload)
         .map_err(|e| {
             Stop::could_not_tell(format!(
                 "{} {} and {} did not reach the stream: {e}\n  the record STANDS",

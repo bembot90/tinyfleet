@@ -235,7 +235,7 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
     // Who the withdrawal is written by, resolved before anything moves: the
     // retire is somebody's act, and a verb always has an actor.
     let by = match acting(RETIRE, args.by.as_deref(), &here) {
-        Ok(by) => by.to_string(),
+        Ok(by) => by,
         Err(stop) => return stopped(RETIRE, &stop, args.json),
     };
     let row = match seat_named(&here.machine_dir, &args.seat) {
@@ -298,7 +298,7 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
         if held.is_empty() {
             return Ok(Vec::new());
         }
-        seat::retire::withdraw(&store, &held, &id, &here.seats.label(&row.id), &by)
+        seat::retire::withdraw(&store, &held, &row.id, &here.seats.label(&row.id), &by)
             .map_err(as_refusal)?;
         Ok(held.into_iter().map(|row| row.id).collect())
     };

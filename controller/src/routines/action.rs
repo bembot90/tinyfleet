@@ -56,6 +56,13 @@ pub fn routine_label(name: &str) -> String {
     format!("routine:{name}")
 }
 
+/// Who a routine acts as: `routine:<name>`, the typed actor its every write to
+/// the work graph carries — the `--by` of the verbs it runs, and the
+/// `--actor` of the items it files and the notes it leaves on them.
+pub fn routine_actor(name: &str) -> String {
+    format!("routine:{name}")
+}
+
 /// The environment every child of an action carries.
 pub fn child_command(program: &str, machine: &Machine) -> Command {
     let mut cmd = Command::new(program);
@@ -253,7 +260,7 @@ fn item_argv(binary: &str, routine: &Routine, item: &Item) -> Vec<String> {
         item.title.clone(),
         "--json".to_string(),
         "--actor".to_string(),
-        ACTOR.to_string(),
+        routine_actor(&routine.name),
     ];
     if let Some(text) = &item.description {
         argv.push("--description".to_string());
@@ -282,9 +289,6 @@ fn item_argv(binary: &str, routine: &Routine, item: &Item) -> Vec<String> {
     argv.push(labels.join(","));
     argv
 }
-
-/// The actor every write a routine makes to the work graph carries.
-pub const ACTOR: &str = "fleet-controller";
 
 fn file_item(routine: &Routine, item: &Item, machine: &Machine, now_stamp: &str) -> Done {
     let Some(binary) = platform::resolve_on_path(&path_for_children(machine.child_path), "bd")
@@ -391,7 +395,7 @@ fn file_item(routine: &Routine, item: &Item, machine: &Machine, now_stamp: &str)
         &created,
         &format!("filed by routine {} at {now_stamp}", routine.name),
         "--actor",
-        ACTOR,
+        &routine_actor(&routine.name),
     ]);
     let noted = platform::run_bounded(note, bound);
     let trail = match noted {
@@ -500,7 +504,7 @@ fn run_argv(binary: &str, routine: &Routine, workflow: &Run) -> Vec<String> {
         argv.push(format!("{key}={value}"));
     }
     argv.push("--by".to_string());
-    argv.push(format!("routine:{}", routine.name));
+    argv.push(routine_actor(&routine.name));
     argv
 }
 

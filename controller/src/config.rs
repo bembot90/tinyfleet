@@ -623,8 +623,11 @@ mod tests {
             dir.resolve_running("alberto").is_err(),
             "a person runs nowhere"
         );
-        assert_eq!(dir.seat_of("alberto"), Some(id(ME)));
-        assert_eq!(dir.seat_of("agent-7e3fa2c0"), Some(id(SPAWNED)));
+        assert_eq!(dir.resolve_listed("alberto").map(|s| s.id), Ok(id(ME)));
+        assert_eq!(
+            dir.resolve_listed("agent-7e3fa2c0").map(|s| s.id),
+            Ok(id(SPAWNED))
+        );
 
         let broken: toml::Table = "[seats.orla]\nkind = \"agent\"\n".parse().unwrap();
         let dir = directory(&config.seats, &broken, &machine_dir);

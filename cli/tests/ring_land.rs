@@ -570,7 +570,7 @@ impl Rig {
     /// pays most of.
     fn a_delivered_item(&self, title: &str, branch: &str, file: &str, commit: &str) -> String {
         let delivery = format!(
-            "DELIVERED {commit} — {BUILDER}\n\
+            "DELIVERED {commit} — seat:{BUILDER_ID}\n\
              commit:  {commit}\n\
              branch:  {branch}\n\
              base:    origin/main at {commit}, fetched at 2026-09-12T00:00:00Z\n\
@@ -960,7 +960,11 @@ fn a_green_landing_moves_the_bare_and_closes_the_item() {
     assert_eq!(reading["rc"], serde_json::json!(0));
     assert_eq!(reading["verdict"].as_str(), Some("green"));
     assert_eq!(reading["reading"], serde_json::json!(1));
-    assert_eq!(events[2]["actor"].as_str(), Some(REVIEWER_ID));
+    assert_eq!(
+        events[2]["actor"].as_str(),
+        Some(format!("seat:{REVIEWER_ID}").as_str()),
+        "the landing is the reviewer's act, typed"
+    );
     assert_eq!(landing["sha"].as_str(), Some(landed.as_str()));
     assert_eq!(
         landing["squash_of"].as_str(),

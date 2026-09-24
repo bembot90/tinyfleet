@@ -30,6 +30,7 @@ use crate::item::{
     Stop, DELIVERY_MARKERS, ITEM_DELIVERED, TRUNK, TRUNK_BRANCH,
 };
 use crate::policy;
+use crate::seat::actor::Actor;
 use crate::seat::identity::{Directory, SeatRef};
 use crate::store::{AssignedItem, Item, Store};
 
@@ -59,8 +60,8 @@ pub const AS_IS: &str = "DELIVERED AS-IS";
 pub struct Delivery<'a> {
     /// The item, where the seat holds more than one and named it.
     pub item: Option<&'a str>,
-    /// The seat delivering.
-    pub by: &'a str,
+    /// Who is delivering: a seat, or a run acting on the item it names.
+    pub by: &'a Actor,
     /// The note the seat wrote, in the pack's delivery-note grammar.
     pub note: &'a Path,
     /// The clock, taken by the caller: core reads none.
@@ -75,7 +76,7 @@ pub struct Wiring<'a> {
     pub project: &'a Project,
     pub ring: &'a dyn Ring,
     pub events: &'a dyn Events,
-    /// The seats this fleet knows, which `--by` is found among.
+    /// The seats this fleet knows, which `[core] reviewer` is found among.
     pub seats: &'a Directory,
 }
 
@@ -141,10 +142,12 @@ pub fn deliver(
     let written = read_note(delivery.note)?;
     grammar_holds(&wiring.packs.read(DELIVERY_NOTE)?, &written)?;
 
-    let item = held_item(wiring.store, delivery.by, delivery.item, wiring.seats)?;
+    let item = held_item(wiring.store, delivery.by, delivery.item)?;
     let reviewer = reviewer_of(wiring.project, wiring.seats)?;
     let reviewer = reviewer.id.to_string();
 
+    // The string form every write and the event carry.
+    let by = delivery.by.to_string();
     let as_is = standing.is_some();
     let commit = match standing {
         Some(head) => head,
@@ -164,17 +167,14 @@ pub fn deliver(
         )));
     }
 
-    wiring
-        .store
-        .assign(&item, &reviewer, delivery.by)
-        .map_err(|e| {
-            committed(
-                &item,
-                &commit,
-                &format!("the reassignment did not land: {e}"),
-            )
-        })?;
-    wiring.store.note(&item, &note, delivery.by).map_err(|e| {
+    wiring.store.assign(&item, &reviewer, &by).map_err(|e| {
+        committed(
+            &item,
+            &commit,
+            &format!("the reassignment did not land: {e}"),
+        )
+    })?;
+    wiring.store.note(&item, &note, &by).map_err(|e| {
         committed(
             &item,
             &commit,
@@ -219,7 +219,7 @@ fn announce(
         .events
         .append(
             ITEM_DELIVERED,
-            delivery.by,
+            &delivery.by.to_string(),
             serde_json::json!({
                 "item": item,
                 "commit": commit,
@@ -273,26 +273,21 @@ fn ring(
 /// the record — which item is this worktree's — and two readers of it would be
 /// two answers the day one of them changed.
 ///
-/// THE ACTOR IS FOUND AMONG THE LISTED SEATS, because work is assigned to a
-/// seat's id and `by` is whatever the actor string says: a name, a machine
-/// name or an id. One that is no seat of this fleet holds nothing, and is
-/// refused rather than read as a seat nobody gave anything — the refusal names
-/// the flag that says which item instead.
-pub fn held_item(
-    store: &dyn Store,
-    by: &str,
-    named: Option<&str>,
-    seats: &Directory,
-) -> Result<String, Stop> {
+/// ONLY A SEAT HOLDS WORK, and whether the actor is one is its KIND: work is
+/// assigned to a seat's id, and [`Actor::seat_id`] is that id or nothing. A
+/// run, a routine or the controller holds nothing, and is refused rather than
+/// read as a seat nobody gave anything — the refusal names the flag that says
+/// which item instead.
+pub fn held_item(store: &dyn Store, by: &Actor, named: Option<&str>) -> Result<String, Stop> {
     if let Some(named) = named {
         // Resolved once, here: the caller acts on the store's full id and
         // never on the part of it that was typed.
         let item = read(store, named)?;
         return Ok(item.id);
     }
-    let Some(seat) = seats.seat_of(by) else {
+    let Some(seat) = by.seat_id() else {
         return Err(Stop::refused(format!(
-            "{by} is not a seat of this fleet, so it holds nothing — pass --item <id>"
+            "{by} is not a seat, so it holds nothing — pass --item <id>"
         )));
     };
     let Holds { open, held, .. } = holds(store, &seat.to_string())?;

@@ -17,11 +17,13 @@ use std::path::{Path, PathBuf};
 
 use fleet_controller::runs::Runs;
 use fleet_controller::transient::Refusal;
-use fleet_controller::{clock, config, events, platform, transient};
+use fleet_controller::{clock, config, platform, transient};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::hold;
 use fleet_core::item::run as workflow_run;
 use fleet_core::seat;
+use fleet_core::seat::actor::{Actor, ActorKind};
+use fleet_core::seat::identity::{identity_or_mint, SeatId};
 use fleet_core::store::{Bd, Store};
 
 use crate::item::{resolve_from, Here, StreamEvents, EVENTS};
@@ -107,6 +109,19 @@ impl Engine {
         roots
     }
 
+    /// Who the pass's acts are made by [ASSUMES D8]: the controller, under this
+    /// machine's own identity — minted here where the machine has none yet, as
+    /// a verb run on it with no actor would mint it. Every write the three acts
+    /// make to a work graph, and every line they add to the stream, carries it.
+    fn controller(&self) -> Result<Actor, String> {
+        let (identity, _) = identity_or_mint(&self.machine_dir)
+            .map_err(|why| format!("could not tell who acts: {why}"))?;
+        Ok(Actor {
+            kind: ActorKind::Controller,
+            id: identity.id.to_string(),
+        })
+    }
+
     /// The project whose store holds this run's record, resolved.
     ///
     /// THE STORE IS THE INDEX and the walk stops at the first answer: a run id
@@ -135,6 +150,7 @@ impl Engine {
 impl Runs for Engine {
     fn rerun(&self, run: &str) -> Result<(), String> {
         let here = self.project_holding(run)?;
+        let by = self.controller()?;
         let store = self.stores.open(&here.project.root);
         let packs =
             Packs::under(&here.packs_dir, &here.defaults_dir).map_err(|stop| stop.message)?;
@@ -151,7 +167,7 @@ impl Runs for Engine {
             &mut std::io::stderr(),
             &workflow_run::Again {
                 run,
-                by: events::CONTROLLER,
+                by: &by,
                 at: &at,
                 machine_dir: &self.machine_dir,
                 fleet_bin: &fleet_bin,
@@ -175,6 +191,7 @@ impl Runs for Engine {
     /// because the note is written in the park grammar they carry.
     fn hold(&self, run: &str, reason: &str) -> Result<String, String> {
         let here = self.project_holding(run)?;
+        let by = self.controller()?;
         let store = self.stores.open(&here.project.root);
         let packs =
             Packs::under(&here.packs_dir, &here.defaults_dir).map_err(|stop| stop.message)?;
@@ -184,7 +201,7 @@ impl Runs for Engine {
                 run,
                 reason,
                 directory: &directory,
-                by: events::CONTROLLER,
+                by: &by,
             },
             store.as_ref(),
             &packs,
@@ -194,6 +211,7 @@ impl Runs for Engine {
 
     fn retire(&self, seat: &str, run: &str) -> Result<(), String> {
         let here = self.project_holding(run)?;
+        let by = self.controller()?;
         let agent = effect_agent(&here, &self.home).map_err(|stop| stop.message)?;
         let policy = policy_of(&here).map_err(|stop| stop.message)?;
         let at = Where::of(&here).map_err(|stop| stop.message)?;
@@ -214,12 +232,7 @@ impl Runs for Engine {
                     code: unresolved.code(),
                     message: unresolved.to_string(),
                 })?;
-            withdrawn_from(
-                store.as_ref(),
-                &row.id.to_string(),
-                &here.seats.label(&row.id),
-                events::CONTROLLER,
-            )
+            withdrawn_from(store.as_ref(), &row.id, &here.seats.label(&row.id), &by)
         };
         // THE PRICED RETIRE and not the bare one: a seat a run spawned costs
         // what any spawned seat costs, and the run is the item it was working
@@ -240,15 +253,15 @@ impl Runs for Engine {
 /// question below has stopped answering since — a question, and never a seat
 /// that was given nothing.
 ///
-/// `seat` is the seat's full id, which is what the order was assigned to, and
+/// `seat` is the seat's id, which is what the order was assigned to, and
 /// `label` how the withdrawal note names it.
 fn withdrawn_from(
     store: &dyn Store,
-    seat: &str,
+    seat: &SeatId,
     label: &str,
-    by: &str,
+    by: &Actor,
 ) -> Result<Vec<String>, Refusal> {
-    let held = seat::retire::held(store, seat).map_err(as_refusal)?;
+    let held = seat::retire::held(store, &seat.to_string()).map_err(as_refusal)?;
     if held.is_empty() {
         return Ok(Vec::new());
     }
@@ -272,6 +285,20 @@ mod tests {
     /// name, which the note says.
     const SEAT: &str = "018f6a2c-1d3e-7a4b-9c5d-00000c3a5e71";
     const LABEL: &str = "agent-0c3a5e71";
+    /// This machine's identity, which the controller acts under.
+    const MACHINE: &str = "018f6a2c-1d3e-7a4b-9c5d-0000a1b2c3d4";
+
+    fn seat() -> SeatId {
+        SeatId::parse(SEAT).expect("the seat's id parses")
+    }
+
+    /// The pass's own actor, as [`Engine::controller`] builds it.
+    fn controller() -> Actor {
+        Actor {
+            kind: ActorKind::Controller,
+            id: MACHINE.to_string(),
+        }
+    }
     const PARKED: &str = "fx-parked";
 
     /// The state the leak lives in: a run's item PARKED, so it is still open
@@ -299,7 +326,7 @@ mod tests {
     fn the_cleanups_withdrawal_releases_the_parked_item_the_seat_holds() {
         let store = a_parked_item();
 
-        let withdrawn = withdrawn_from(&store, SEAT, LABEL, events::CONTROLLER)
+        let withdrawn = withdrawn_from(&store, &seat(), LABEL, &controller())
             .expect("the board answers and the withdrawal lands");
         assert_eq!(withdrawn, vec![PARKED.to_string()]);
 
@@ -317,8 +344,19 @@ mod tests {
         assert_eq!(after.status, "open", "the work itself is still to be done");
         assert_eq!(
             after.notes.unwrap_or_default(),
-            format!("{WITHDRAWN}: {LABEL} retired by controller; the item is open and unassigned"),
+            format!(
+                "{WITHDRAWN}: {LABEL} retired by controller:{MACHINE}; the item is open and \
+                 unassigned"
+            ),
             "the withdrawal says who took it, and the cleanup is the controller"
+        );
+        assert!(
+            store
+                .wrote()
+                .iter()
+                .all(|line| line.ends_with(&format!(" controller:{MACHINE}"))),
+            "every write is the controller's, typed: {:?}",
+            store.wrote()
         );
     }
 
@@ -329,7 +367,7 @@ mod tests {
         let store = FakeStore::default();
 
         let withdrawn =
-            withdrawn_from(&store, SEAT, LABEL, events::CONTROLLER).expect("the board answers");
+            withdrawn_from(&store, &seat(), LABEL, &controller()).expect("the board answers");
 
         assert!(withdrawn.is_empty(), "{withdrawn:?}");
         assert!(
@@ -348,7 +386,7 @@ mod tests {
             ..FakeStore::default()
         };
 
-        let refused = withdrawn_from(&store, SEAT, LABEL, events::CONTROLLER)
+        let refused = withdrawn_from(&store, &seat(), LABEL, &controller())
             .expect_err("an unreadable board is a question");
 
         assert_eq!(refused.code, COULD_NOT_TELL);
@@ -357,6 +395,30 @@ mod tests {
             "{}",
             refused.message
         );
+    }
+
+    /// [ASSUMES D8] The pass acts as the controller under THIS MACHINE'S
+    /// identity: minted by the first act where the machine has none, and read
+    /// back unchanged by every act after it.
+    #[test]
+    fn the_engine_acts_as_the_controller_under_this_machines_identity() {
+        let dir = std::env::temp_dir().join(format!("fleet-runs-actor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let engine = Engine::on(dir.join("machine"));
+
+        let first = engine.controller().expect("the identity is minted");
+        let (identity, minted) =
+            identity_or_mint(&dir.join("machine")).expect("the identity reads back");
+        assert!(!minted, "the engine's first act minted it");
+        assert_eq!(first.kind, ActorKind::Controller);
+        assert_eq!(first.id, identity.id.to_string());
+        assert_eq!(first.to_string(), format!("controller:{}", identity.id));
+        assert_eq!(
+            engine.controller().expect("the identity reads"),
+            first,
+            "every act after the first is the same controller"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The `PATH` a launchd agent is started with, which is the whole of this

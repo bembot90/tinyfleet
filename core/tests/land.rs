@@ -19,7 +19,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use common::{agent, full, keys_agree, shared_store, Rooted, Scratch, StubEvents};
+use common::{agent, full, keys_agree, seat_actor, shared_store, Rooted, Scratch, StubEvents};
 use fleet_core::item::brief::{Packs, DELIVERY_NOTE};
 use fleet_core::item::land::{
     self, LandGit, Landed, Landing, Progress, Pushed, Squashed, Wiring, CRITERIA, LANDING_NOTE,
@@ -32,6 +32,7 @@ use fleet_core::item::{
     Git, Project, Stop, CHECK_READ, ITEM_LANDED, LANDING_MARKERS, TRUNK, TRUNK_BRANCH,
     VERDICT_MARKERS,
 };
+use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
 use fleet_core::store::{AssignedItem, Bd, Item, Store, StoreError};
 use fleet_core::test_support::Board;
@@ -541,6 +542,12 @@ fn fleet() -> Directory {
     }
 }
 
+/// The reviewer as it acts: `seat:<its id>`, which every write and every event
+/// of a landing it closes carries.
+fn as_reviewer() -> Actor {
+    Actor::seat(reviewer().id)
+}
+
 /// How the note names the closer: the seat a person reads and the id a script
 /// can pass.
 fn closer_named() -> String {
@@ -590,7 +597,7 @@ fn a_delivery(commit: &str) -> String {
 
 fn a_delivery_on(commit: &str, branch: &str) -> String {
     format!(
-        "DELIVERED {commit} — {BUILDER}\n\
+        "DELIVERED {commit} — {}\n\
          commit:  {commit}\n\
          branch:  {branch}\n\
          base:    {TRUNK} at {OLD}, fetched at 2026-09-12T00:00:00Z\n\
@@ -600,7 +607,8 @@ fn a_delivery_on(commit: &str, branch: &str) -> String {
          spec corrections: none\n\
          not proven: what this arm did not run\n\
          decisions: none\n\
-         covers: R8"
+         covers: R8",
+        seat_actor(BUILDER)
     )
 }
 
@@ -806,14 +814,26 @@ fn run_against(
     load: &dyn lane::Load,
 ) -> Ran {
     run_against_path(
-        scratch, store, git, item, commit, also, reason, project, test, events, load, "", REVIEWER,
+        scratch,
+        store,
+        git,
+        item,
+        commit,
+        also,
+        reason,
+        project,
+        test,
+        events,
+        load,
+        "",
+        &as_reviewer(),
     )
 }
 
 /// The landing with the CONSTRUCTED CHILD PATH in the arm's hands as well —
 /// `""` is the caller that constructed none, which is what every arm above
 /// hands in — and the CALLER, which is the reviewer everywhere but the run
-/// arms, where it is a run's own record id.
+/// arms, where it is `run:<the run's record id>`.
 #[allow(clippy::too_many_arguments)]
 fn run_against_path(
     scratch: &dyn Rooted,
@@ -828,7 +848,7 @@ fn run_against_path(
     events: &StubEvents,
     load: &dyn lane::Load,
     child_path: &str,
-    by: &str,
+    by: &Actor,
 ) -> Ran {
     let packs = packs(scratch);
     let steps = Steps::default();
@@ -900,7 +920,11 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_note_and_closes() {
     let kinds: Vec<String> = events.all().into_iter().map(|(kind, _, _)| kind).collect();
     assert_eq!(kinds, vec![CHECK_READ.to_string(), ITEM_LANDED.to_string()]);
     let (actor, reading) = events.one(CHECK_READ);
-    assert_eq!(actor, REVIEWER_ID, "the reviewer, by its id");
+    assert_eq!(
+        actor,
+        format!("seat:{REVIEWER_ID}"),
+        "the reviewer, by its typed id"
+    );
     keys_agree(CHECK_READ, &reading, &[]);
     assert_eq!(reading["item"], serde_json::json!(item));
     assert_eq!(reading["suite"], serde_json::json!("exit 0"));
@@ -908,7 +932,7 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_note_and_closes() {
     assert_eq!(reading["verdict"], serde_json::json!("green"));
     assert_eq!(reading["reading"], serde_json::json!(1));
     let (actor, landing) = events.one(ITEM_LANDED);
-    assert_eq!(actor, REVIEWER_ID);
+    assert_eq!(actor, format!("seat:{REVIEWER_ID}"));
     keys_agree(ITEM_LANDED, &landing, &[]);
     assert_eq!(landing["item"], serde_json::json!(item));
     assert_eq!(landing["sha"], serde_json::json!(LANDED));
@@ -4041,7 +4065,7 @@ fn a_behind_delivery_names_its_own_base_and_a_current_one_does_not() {
         &scratch.store,
         "an item delivered behind the trunk",
         &format!(
-            "DELIVERED {SHA} — {BUILDER}\n\
+            "DELIVERED {SHA} — {}\n\
              commit:  {SHA}\n\
              branch:  {WORK}\n\
              base:    {TRUNK} at {OTHER}, fetched at 2026-09-12T00:00:00Z\n\
@@ -4051,7 +4075,8 @@ fn a_behind_delivery_names_its_own_base_and_a_current_one_does_not() {
              spec corrections: none\n\
              not proven: what this arm did not run\n\
              decisions: none\n\
-             covers: R8"
+             covers: R8",
+            seat_actor(BUILDER)
         ),
         Some(("ACCEPTED", SHA)),
     );
@@ -4251,7 +4276,7 @@ fn the_suite_runs_under_the_constructed_path_and_the_reading_names_it() {
             &green,
             &lane::Unread,
             &constructed,
-            REVIEWER,
+            &as_reviewer(),
         );
         let red_ran = run_against_path(
             scratch,
@@ -4266,7 +4291,7 @@ fn the_suite_runs_under_the_constructed_path_and_the_reading_names_it() {
             &red,
             &lane::Unread,
             "",
-            REVIEWER,
+            &as_reviewer(),
         );
         (green_ran, red_ran)
     });
@@ -4323,8 +4348,11 @@ fn the_suite_runs_under_the_constructed_path_and_the_reading_names_it() {
 // ---- a run's landing ---------------------------------------------------------
 
 /// The hold a run raises on its own record, as `hold` writes it and `clear`
-/// clears it. `answered_by` is `None` for the run nobody answered.
+/// clears it. `answered_by` is `None` for the run nobody answered, and
+/// otherwise the text the answer is signed with — `clear` signs with the
+/// clearer's typed actor.
 fn a_run(store: &dyn Store, answered_by: Option<&str>) -> String {
+    let reviewer = as_reviewer().to_string();
     let run = store
         .create(
             &fleet_core::store::NewItem {
@@ -4333,7 +4361,7 @@ fn a_run(store: &dyn Store, answered_by: Option<&str>) -> String {
                 item_type: "task",
                 labels: &[fleet_core::item::run::LABEL],
             },
-            REVIEWER,
+            &reviewer,
         )
         .expect("the run's record is filed");
     store
@@ -4348,7 +4376,7 @@ fn a_run(store: &dyn Store, answered_by: Option<&str>) -> String {
                  A. accept and land\n\
                  B. return to the builder"
             ),
-            REVIEWER,
+            &reviewer,
         )
         .expect("the park is on the run");
     if let Some(who) = answered_by {
@@ -4363,14 +4391,22 @@ fn a_run(store: &dyn Store, answered_by: Option<&str>) -> String {
     run
 }
 
-/// The landing as a WORKFLOW calls it: the `by` is the run's record id, which
-/// is the whole of what tells one from a seat's own landing.
+/// The run a workflow's verbs act as: `run:<its record id>`.
+fn the_run(record: &str) -> Actor {
+    Actor {
+        kind: ActorKind::Run,
+        id: record.to_string(),
+    }
+}
+
+/// The landing as a WORKFLOW calls it: the caller is the run, typed, which is
+/// the whole of what tells one from a seat's own landing.
 fn run_as(
     scratch: &dyn Rooted,
     store: &dyn Store,
     git: &StubGit,
     item: &str,
-    by: &str,
+    by: &Actor,
     events: &StubEvents,
 ) -> Ran {
     run_against_path(
@@ -4390,11 +4426,12 @@ fn run_as(
     )
 }
 
-/// A RUN LANDS AS THE REVIEWER, WITH THE RUN NAMED BESIDE IT. The caller is the
-/// run's record, the item is held by the `[core] reviewer` — `deliver` hands
-/// every item to that seat, so on a workflow's landing the holder is never the
-/// caller — and the run carries that reviewer's own answer. The landing stands,
-/// and each of the three places one name is asked for carries both.
+/// A RUN LANDS AS THE REVIEWER, WITH THE RUN NAMED BESIDE IT. The caller is
+/// `run:<record id>`, the item is held by the `[core] reviewer` — `deliver`
+/// hands every item to that seat, so on a workflow's landing the holder is
+/// never the caller — and the run carries that reviewer's own answer. The
+/// landing stands, and each of the three places one name is asked for carries
+/// both.
 #[test]
 fn a_run_lands_as_the_reviewer_and_names_the_run_beside_it() {
     let board = store();
@@ -4404,11 +4441,18 @@ fn a_run_lands_as_the_reviewer_and_names_the_run_beside_it() {
         "an item a run lands",
         Some(("ACCEPTED", SHA)),
     );
-    let run = a_run(&scratch.store, Some(REVIEWER));
+    let run = a_run(&scratch.store, Some(&as_reviewer().to_string()));
     let events = StubEvents::default();
 
     let git = StubGit::clean();
-    let ran = run_as(scratch, &scratch.store, &git, &item, &run, &events);
+    let ran = run_as(
+        scratch,
+        &scratch.store,
+        &git,
+        &item,
+        &the_run(&run),
+        &events,
+    );
     let landed = ran.landed.as_ref().unwrap_or_else(|stop| {
         panic!("a run's landing was refused: {}\n{}", stop.message, ran.out);
     });
@@ -4416,12 +4460,13 @@ fn a_run_lands_as_the_reviewer_and_names_the_run_beside_it() {
 
     // `item.landed`: the reviewer is the actor whose act it is, and `run` is
     // what carried it. The stub's caller is neither name by accident — the run
-    // id is what was handed in, and the reviewer is what came back.
+    // is what was handed in, and the reviewer is what came back.
     assert_ne!(run, REVIEWER_ID);
     let (actor, landing) = events.one(ITEM_LANDED);
     assert_eq!(
-        actor, REVIEWER_ID,
-        "the landing is the reviewer's act, by its id"
+        actor,
+        format!("seat:{REVIEWER_ID}"),
+        "the landing is the reviewer's act, by its typed id"
     );
     keys_agree(ITEM_LANDED, &landing, &[]);
     assert_eq!(landing["run"], serde_json::json!(run));
@@ -4435,7 +4480,8 @@ fn a_run_lands_as_the_reviewer_and_names_the_run_beside_it() {
         .unwrap_or_else(|| panic!("the item was closed: {wrote:?}"));
     assert_eq!(
         closed,
-        &format!("close {item} landed {LANDED} through run {run} {REVIEWER_ID}")
+        &format!("close {item} landed {LANDED} through run {run} {REVIEWER_ID}"),
+        "the close is made under the holder's own assignee string, which bd fences it on"
     );
 
     // The note a person reads afterwards names both on its own first line.
@@ -4448,33 +4494,45 @@ fn a_run_lands_as_the_reviewer_and_names_the_run_beside_it() {
     );
 }
 
-/// THE TYPED FORM IS A RUN TOO. The cli hands a workflow's `--by run:<id>`
-/// through as that string, so the record is read by the id after the prefix
-/// and the landing stands exactly as the bare id's does above.
+/// A RUN IS A RUN BY ITS RECORD. `run:<id>` must name an item the store holds
+/// under the run label: an id naming an ordinary item, and one naming nothing
+/// at all, are each refused with the actor's own text, and nothing is fetched
+/// or written.
 #[test]
-fn a_run_typed_as_run_colon_id_lands_as_the_reviewer() {
+fn a_run_whose_id_names_no_run_record_is_refused() {
     let board = store();
     let scratch = &board;
     let item = an_item(
         &scratch.store,
-        "an item a typed run lands",
+        "an item a false run tries to land",
         Some(("ACCEPTED", SHA)),
     );
-    let run = a_run(&scratch.store, Some(REVIEWER));
-    let events = StubEvents::default();
+    let ordinary = an_item(&scratch.store, "an item that is no run", None);
 
-    let git = StubGit::clean();
-    let typed = format!("run:{run}");
-    let ran = run_as(scratch, &scratch.store, &git, &item, &typed, &events);
-    ran.landed.as_ref().unwrap_or_else(|stop| {
-        panic!(
-            "a typed run's landing was refused: {}\n{}",
-            stop.message, ran.out
+    for id in [ordinary.as_str(), "fx-nothing"] {
+        let before = scratch.store.wrote().len();
+        let git = StubGit::clean();
+        let ran = run_as(
+            scratch,
+            &scratch.store,
+            &git,
+            &item,
+            &the_run(id),
+            &StubEvents::default(),
         );
-    });
-    let (actor, landing) = events.one(ITEM_LANDED);
-    assert_eq!(actor, REVIEWER_ID, "the landing is the reviewer's act");
-    assert_eq!(landing["run"], serde_json::json!(run), "the run by its id");
+        assert_eq!(ran.code(), Some(1), "{id}: {}", ran.why());
+        assert_eq!(ran.why(), format!("run:{id} names no run record"));
+        assert!(
+            git.calls().iter().all(|call| !call.starts_with("fetch")),
+            "{id}: nothing was fetched: {:?}",
+            git.calls()
+        );
+        assert_eq!(
+            scratch.store.wrote().len(),
+            before,
+            "{id}: nothing was written"
+        );
+    }
 }
 
 /// THE HOLDER GATE STILL HOLDS UNDER A RUN. It compares the item's assignee to
@@ -4494,7 +4552,7 @@ fn a_runs_landing_is_refused_an_item_another_seat_holds() {
         .store
         .assign(&item, &full(BUILDER), REVIEWER)
         .expect("the builder holds it");
-    let run = a_run(&scratch.store, Some(REVIEWER));
+    let run = a_run(&scratch.store, Some(&as_reviewer().to_string()));
 
     let git = StubGit::clean();
     let ran = run_as(
@@ -4502,7 +4560,7 @@ fn a_runs_landing_is_refused_an_item_another_seat_holds() {
         &scratch.store,
         &git,
         &item,
-        &run,
+        &the_run(&run),
         &StubEvents::default(),
     );
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
@@ -4544,7 +4602,7 @@ fn a_runs_landing_is_refused_where_nobody_cleared_its_hold() {
         &scratch.store,
         &git,
         &item,
-        &unanswered,
+        &the_run(&unanswered),
         &StubEvents::default(),
     );
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
@@ -4564,14 +4622,14 @@ fn a_runs_landing_is_refused_where_nobody_cleared_its_hold() {
 
     // THE CONTROL, on the same board and the same item: the one thing that
     // changed is that somebody answered, and the landing stands.
-    let answered = a_run(&scratch.store, Some(REVIEWER));
+    let answered = a_run(&scratch.store, Some(&as_reviewer().to_string()));
     let git = StubGit::clean();
     let ran = run_as(
         scratch,
         &scratch.store,
         &git,
         &item,
-        &answered,
+        &the_run(&answered),
         &StubEvents::default(),
     );
     assert!(
@@ -4581,13 +4639,13 @@ fn a_runs_landing_is_refused_where_nobody_cleared_its_hold() {
     );
 }
 
-/// THE LICENCE IS THE REVIEWER'S ANSWER, WHATEVER IT CALLED ITSELF. Whoever
-/// cleared the run's hold is resolved among the listed seats and compared with
-/// the reviewer by id: an answer signed with the reviewer's machine name is
-/// that seat's and licenses the landing, and one signed by another seat is
-/// refused naming both.
+/// THE LICENCE IS THE REVIEWER'S OWN SEAT'S ANSWER, READ AS THE TYPED ACTOR
+/// `clear` signed it with. An answer signed by another seat is refused naming
+/// both; so is one signed with the reviewer's machine name, which is no typed
+/// actor at all and so names no seat; and the reviewer's `seat:<id>` — in
+/// either case — licenses the landing.
 #[test]
-fn a_runs_licence_is_the_reviewers_answer_by_any_name_and_another_seats_is_refused() {
+fn a_runs_licence_is_the_reviewers_seat_and_any_other_answer_is_refused() {
     let board = store();
     let scratch = &board;
 
@@ -4596,97 +4654,123 @@ fn a_runs_licence_is_the_reviewers_answer_by_any_name_and_another_seats_is_refus
         "an item another seat answered for",
         Some(("ACCEPTED", SHA)),
     );
-    let foreign = a_run(&scratch.store, Some(BUILDER));
-    let git = StubGit::clean();
-    let ran = run_as(
-        scratch,
-        &scratch.store,
-        &git,
-        &item,
-        &foreign,
-        &StubEvents::default(),
-    );
-    assert_eq!(ran.code(), Some(1), "{}", ran.why());
-    assert_eq!(
-        ran.why(),
-        format!(
-            "run {foreign}'s last hold was cleared by `{BUILDER}` and not by `{}` — a run lands as \
-             the `[core] reviewer` and on that seat's own answer",
-            reviewer().machine_name()
-        )
-    );
-    assert!(
-        git.calls()
-            .iter()
-            .all(|call| !call.starts_with("push_head")),
-        "nothing was pushed: {:?}",
-        git.calls()
-    );
+    let builder = seat_actor(BUILDER).to_string();
+    let untyped = reviewer().machine_name();
+    for signed in [builder.as_str(), untyped.as_str()] {
+        let foreign = a_run(&scratch.store, Some(signed));
+        let git = StubGit::clean();
+        let ran = run_as(
+            scratch,
+            &scratch.store,
+            &git,
+            &item,
+            &the_run(&foreign),
+            &StubEvents::default(),
+        );
+        assert_eq!(ran.code(), Some(1), "{signed}: {}", ran.why());
+        assert_eq!(
+            ran.why(),
+            format!(
+                "run {foreign}'s last hold was cleared by `{signed}` and not by `{}` — a run \
+                 lands as the `[core] reviewer` and on that seat's own answer",
+                reviewer().machine_name()
+            )
+        );
+        assert!(
+            git.calls()
+                .iter()
+                .all(|call| !call.starts_with("push_head")),
+            "{signed}: nothing was pushed: {:?}",
+            git.calls()
+        );
+    }
 
-    // THE CONTROL, on the same item: the reviewer answered under its machine
-    // name, which resolves to the same id the policy's name does.
-    let by_machine_name = a_run(&scratch.store, Some(&reviewer().machine_name()));
+    // THE CONTROL, on the same item: the reviewer's typed id, as a person
+    // might paste it in capitals, is the same seat.
+    let upper = format!("seat:{}", REVIEWER_ID.to_uppercase());
+    let by_seat = a_run(&scratch.store, Some(&upper));
     let git = StubGit::clean();
     let ran = run_as(
         scratch,
         &scratch.store,
         &git,
         &item,
-        &by_machine_name,
+        &the_run(&by_seat),
         &StubEvents::default(),
     );
     assert!(
         ran.landed.is_ok(),
-        "the reviewer's answer, by its machine name: {}",
+        "the reviewer's answer, by its typed id: {}",
         ran.why()
     );
 }
 
-/// A SEAT'S OWN LANDING IS MADE BY A SEAT. The caller is resolved among the
-/// listed seats, so the reviewer landing under its id closes as the same seat
-/// its name does; a caller that is neither a seat nor a run's record is
-/// refused before anything is read off the trunk.
+/// A LANDING IS A SEAT'S OR A RUN'S, BY KIND. A routine and the controller are
+/// neither, and each is refused with its own text before anything is fetched
+/// or written — whatever its id says, even the reviewer's own.
 #[test]
-fn a_caller_that_is_neither_a_seat_nor_a_run_is_refused() {
+fn a_routine_or_the_controller_is_refused_by_kind() {
     let board = store();
     let scratch = &board;
     let item = an_item(
         &scratch.store,
-        "an item a stranger tries to land",
+        "an item a routine tries to land",
         Some(("ACCEPTED", SHA)),
     );
 
-    let git = StubGit::clean();
-    let ran = run_as(
-        scratch,
-        &scratch.store,
-        &git,
-        &item,
-        "a-stranger",
-        &StubEvents::default(),
-    );
-    assert_eq!(ran.code(), Some(1), "{}", ran.why());
-    assert_eq!(
-        ran.why(),
-        "a-stranger is neither a seat of this fleet nor a run — whoever closes an item lands its \
-         work"
-    );
-    assert!(
-        git.calls().iter().all(|call| !call.starts_with("fetch")),
-        "nothing was fetched: {:?}",
-        git.calls()
-    );
+    for (actor, text) in [
+        (
+            Actor {
+                kind: ActorKind::Routine,
+                id: String::from("x"),
+            },
+            String::from("routine:x"),
+        ),
+        (
+            Actor {
+                kind: ActorKind::Controller,
+                id: REVIEWER_ID.to_string(),
+            },
+            format!("controller:{REVIEWER_ID}"),
+        ),
+    ] {
+        let before = scratch.store.wrote().len();
+        let git = StubGit::clean();
+        let ran = run_as(
+            scratch,
+            &scratch.store,
+            &git,
+            &item,
+            &actor,
+            &StubEvents::default(),
+        );
+        assert_eq!(ran.code(), Some(1), "{text}: {}", ran.why());
+        assert_eq!(
+            ran.why(),
+            format!("fleet land acts as a seat or as a run — {text} is neither")
+        );
+        assert!(
+            git.calls().iter().all(|call| !call.starts_with("fetch")),
+            "{text}: nothing was fetched: {:?}",
+            git.calls()
+        );
+        assert_eq!(
+            scratch.store.wrote().len(),
+            before,
+            "{text}: nothing was written"
+        );
+    }
 
-    // THE CONTROL: the reviewer, by its full id, lands it as the seat it is.
+    // THE CONTROL: the reviewer's own seat lands it as the seat it is.
     let events = StubEvents::default();
     let ran = run_as(
         scratch,
         &scratch.store,
         &StubGit::clean(),
         &item,
-        REVIEWER_ID,
+        &as_reviewer(),
         &events,
     );
-    assert!(ran.landed.is_ok(), "the reviewer by id: {}", ran.why());
-    assert_eq!(events.one(ITEM_LANDED).0, REVIEWER_ID);
+    assert!(ran.landed.is_ok(), "the reviewer's seat: {}", ran.why());
+    assert_eq!(events.one(ITEM_LANDED).0, format!("seat:{REVIEWER_ID}"));
 }
