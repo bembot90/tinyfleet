@@ -501,6 +501,41 @@ fn a_show_error_is_classified_by_its_code() {
     assert_eq!(Stop::from(answer).code, COULD_NOT_TELL);
 }
 
+/// An id naming more than one item answers the same JSON error a missing one
+/// does — measured on bd 1.2.2 — and is told apart by stderr alone, which
+/// names the matches. It is still the record's answer (exit 1), and the
+/// refusal carries every match bd listed.
+#[test]
+fn an_ambiguous_show_is_missing_and_names_the_matches_off_stderr() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-envelope-ambiguous");
+    let log = dir.path("envelope");
+    let bin = envelope_bd(&dir, &log);
+    dir.file(
+        "answers/show-63.json",
+        r#"{"data": {"error": "no issues found matching the provided IDs"}, "schema_version": 1}"#,
+    )
+    .file(
+        "answers/show-63.err",
+        "Error fetching 63: ambiguous ID \"63\" matches 2 issues: [fx-63h fx-63u]\nUse more \
+         characters to disambiguate\n",
+    );
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+
+    let answer = Bd::at_bin(&root, &bin)
+        .show("63")
+        .expect_err("an ambiguous id is no one item");
+    assert_eq!(
+        answer,
+        StoreError::Missing(String::from(
+            "`63` matches more than one item — fx-63h, fx-63u — and more of the id says which \
+             one this is"
+        ))
+    );
+    assert_eq!(Stop::from(answer).code, REFUSED);
+}
+
 /// A schema_version above the one this binary knows is read anyway: beads'
 /// consumer advice is to warn and parse, and a key added in a newer schema is
 /// one nothing here reads.

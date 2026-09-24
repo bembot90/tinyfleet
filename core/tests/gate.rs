@@ -490,6 +490,66 @@ fn a_clean_ask_commits_the_whole_tree_raises_the_gate_and_parks() {
     assert_eq!(payload["gate"], serde_json::json!(asked.gate));
 }
 
+/// `--item` naming its item by a suffix parks under the full id: the verb
+/// resolves the argument once and every write, the gate, the commit and the
+/// event carry the id the store answered.
+#[test]
+fn an_item_named_by_its_suffix_is_parked_under_its_full_id() {
+    let scratch = &store();
+    let seat = "g-suffix";
+    let item = an_ordered_item(&scratch.store, "an item named by its suffix", seat);
+    let suffix = item.strip_prefix("fx-").expect("the board files under fx-");
+    scratch.forget_writes();
+    let note = a_note(scratch, "suffix", QUESTION);
+    let git = StubGit::holding_work();
+    let events = StubEvents::default();
+
+    let asked = ask_with(
+        Some(suffix),
+        &note,
+        seat,
+        &Seams {
+            store: &scratch.store,
+            git: &git,
+            project: &project(scratch),
+            packs: &packs(scratch),
+            events: &events,
+        },
+    )
+    .expect("the question is asked");
+
+    assert_eq!(asked.item, item);
+    let wrote = scratch.store.wrote();
+    for verb in ["gate", "note"] {
+        assert!(
+            wrote
+                .iter()
+                .any(|line| line.starts_with(&format!("{verb} {item} "))),
+            "{verb} is written under {item}: {wrote:?}"
+        );
+    }
+    assert!(
+        !wrote
+            .iter()
+            .any(|line| line.split(' ').nth(1) == Some(suffix)),
+        "no write names the suffix: {wrote:?}"
+    );
+    assert!(
+        git.calls()
+            .iter()
+            .any(|call| call.starts_with(&format!("commit {item}: parked"))),
+        "the commit subject names the full id: {:?}",
+        git.calls()
+    );
+    let park = last_park(&notes_of(&scratch.store, &item)).expect("the item carries a park");
+    assert!(
+        park.starts_with(&format!("{} {item} — ask", PARK_MARKERS[0])),
+        "{park}"
+    );
+    let (_, payload) = events.one(ITEM_PARKED);
+    assert_eq!(payload["item"], serde_json::json!(item));
+}
+
 #[test]
 fn a_tree_with_nothing_to_commit_parks_on_head() {
     let scratch = &store();

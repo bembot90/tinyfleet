@@ -338,6 +338,43 @@ fn row_of(
     serde_json::Value::Object(row)
 }
 
+/// The ids a `show` argument names, by the rule bd 1.2.2 resolves one with —
+/// measured on a scratch board. A whole id names itself. Else a whole HASH, the
+/// part after the prefix, names its item (`6gr` is `fleet-6gr`, even with a
+/// child `fleet-6gr.1` beside it). Else every id whose hash HOLDS the argument
+/// is named, with a leading prefix taken off the argument first (`fx-63` names
+/// what `63` does, and `x-e` names nothing). One id is the item, more than one
+/// an ambiguity, none a missing id.
+fn named<'a>(ids: impl Iterator<Item = &'a String> + Clone, given: &str) -> Vec<String> {
+    let parts = |id: &'a str| id.split_once('-').unwrap_or(("", id));
+    let needle = |prefix: &str| {
+        given
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_prefix('-'))
+            .unwrap_or(given)
+    };
+    if let Some(whole) = ids.clone().find(|id| id.as_str() == given) {
+        return vec![whole.clone()];
+    }
+    let hashed: Vec<String> = ids
+        .clone()
+        .filter(|id| {
+            let (prefix, hash) = parts(id);
+            hash == needle(prefix)
+        })
+        .cloned()
+        .collect();
+    if !hashed.is_empty() {
+        return hashed;
+    }
+    ids.filter(|id| {
+        let (prefix, hash) = parts(id);
+        hash.contains(needle(prefix))
+    })
+    .cloned()
+    .collect()
+}
+
 impl Store for FakeStore {
     /// The seeded ids, plus every item this store holds that it calls ready:
     /// open, with no dependency standing and no gate raised against it. A
@@ -436,26 +473,51 @@ impl Store for FakeStore {
     /// through, so the fake cannot classify an answer the real store classifies
     /// differently. bd 1.2.2's own error carries no code, and the real half of
     /// the contract suite is what reads that one.
+    ///
+    /// THE ARGUMENT IS RESOLVED AS bd RESOLVES IT, by [`named`], and an
+    /// ambiguous one answers what bd 1.2.2 answers: the error with no code, and
+    /// the matches on stderr alone. Only this read resolves; every write here
+    /// takes a whole id, so a verb that wrote under the text it was typed is a
+    /// refusal on this board and never a write that quietly landed.
     fn show(&self, item: &str) -> Result<Item, StoreError> {
         if let Some(refused) = self.refuse() {
             return refused;
         }
-        let held = self
-            .items
-            .lock()
-            .expect("the items are not poisoned")
-            .get(item)
-            .cloned();
-        let data = match &held {
-            Some(held) => {
+        let matches = {
+            let items = self.items.lock().expect("the items are not poisoned");
+            named(items.keys(), item)
+                .into_iter()
+                .filter_map(|id| items.get(&id).cloned())
+                .collect::<Vec<Item>>()
+        };
+        let (data, said) = match matches.as_slice() {
+            [held] => {
                 let metadata = self.metadata_of(held);
-                let reason = self.close_reason(item);
-                serde_json::json!([row_of(held, &metadata, reason.as_deref())])
+                let reason = self.close_reason(&held.id);
+                (
+                    serde_json::json!([row_of(held, &metadata, reason.as_deref())]),
+                    String::new(),
+                )
             }
-            None => serde_json::json!({
-                "error": "no issues found matching the provided IDs",
-                "code": "not_found",
-            }),
+            [] => (
+                serde_json::json!({
+                    "error": "no issues found matching the provided IDs",
+                    "code": "not_found",
+                }),
+                format!("Error fetching {item}: no issue found matching \"{item}\"\n"),
+            ),
+            many => (
+                serde_json::json!({ "error": "no issues found matching the provided IDs" }),
+                format!(
+                    "Error fetching {item}: ambiguous ID \"{item}\" matches {} issues: [{}]\nUse \
+                     more characters to disambiguate\n",
+                    many.len(),
+                    many.iter()
+                        .map(|held| held.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ),
+            ),
         };
         let answer = serde_json::json!({
             "schema_version": crate::store::SCHEMA_VERSION,
@@ -464,7 +526,7 @@ impl Store for FakeStore {
         let opened = crate::store::opened(answer, || String::from("the board held in memory"));
         Ok(crate::store::item_from(
             item,
-            &crate::store::shown(item, opened)?,
+            &crate::store::shown(item, opened, &said)?,
         ))
     }
 

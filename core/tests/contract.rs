@@ -42,6 +42,7 @@ type Check = fn(&dyn Store, &Path, &str);
 /// which [`the_table_names_every_check`] is what refuses.
 const CHECKS: &[(&str, Check)] = &[
     ("create then show", create_then_show),
+    ("show by hash", show_by_hash),
     ("show of an absent item", show_of_an_absent_item),
     ("assign", assign),
     ("note", note),
@@ -94,6 +95,20 @@ fn create_then_show(store: &dyn Store, _: &Path, which: &str) {
         "{which}: an item nobody has assigned carries no assignee at all"
     );
     assert_eq!(read.notes, None, "{which}: and no notes");
+}
+
+/// An item named by its hash alone — the part after the prefix, which is what
+/// a person types — reads as the item, and the answer carries the FULL id: it
+/// is what every verb acts on once it has resolved its argument.
+fn show_by_hash(store: &dyn Store, _: &Path, which: &str) {
+    let item = filed(store, "an item read by its hash");
+    let (_, hash) = item
+        .split_once('-')
+        .expect("the store files under a prefix");
+
+    let read = store.show(hash).expect("the item reads by its hash");
+    assert_eq!(read.id, item, "{which}: the answer carries the full id");
+    assert_eq!(read.title, "an item read by its hash", "{which}");
 }
 
 fn show_of_an_absent_item(store: &dyn Store, _: &Path, which: &str) {
@@ -322,6 +337,11 @@ fn export(store: &dyn Store, root: &Path, which: &str) {
 #[test]
 fn a_create_answers_an_id_the_next_read_answers_the_new_items_fields_for() {
     in_memory("contract-create", create_then_show);
+}
+
+#[test]
+fn a_read_by_hash_answers_the_item_under_its_full_id() {
+    in_memory("contract-hash", show_by_hash);
 }
 
 #[test]

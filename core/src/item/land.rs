@@ -518,7 +518,16 @@ fn run(
 
     // (c) THE RECORD. What the item says about itself, and the verdict that is
     // the whole licence to squash anything.
+    //
+    // THE ITEM IS RESOLVED HERE, ONCE, and the landing names the id the store
+    // answered from this line on: the note, the events, the land branch and
+    // the close all carry the full id, whatever part of it was typed.
     let item = read(wiring.store, landing.item)?;
+    let resolved = item.id.clone();
+    let landing = &Landing {
+        item: &resolved,
+        ..*landing
+    };
     if item.status == "closed" {
         return Err(Stop::refused(format!(
             "{} is closed — a landing closes an item and cannot close one twice",

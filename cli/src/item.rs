@@ -582,10 +582,10 @@ pub fn review_command(args: &ReviewArgs) -> Exit {
     match run_review(args, &by, &mut human, &mut err) {
         // `--show` writes no verdict and moves the item nowhere, so its state is
         // null: the absent value and not a fourth word for "it did not move".
-        Ok(_) => answered(
+        Ok(read) => answered(
             "review",
             serde_json::json!({
-                "item": args.item,
+                "item": read.item,
                 "state": match (&args.returned, args.land) {
                     (Some(_), _) => Some(state(ITEM_RETURNED)),
                     (None, true) => Some(state(ITEM_REVIEWED)),
@@ -707,7 +707,7 @@ pub fn dispatch_command(args: &DispatchArgs) -> Exit {
         Ok(given) => answered(
             "dispatch",
             serde_json::json!({
-                "item": args.item,
+                "item": given.item,
                 "state": state(ITEM_DISPATCHED),
                 "seat": given.seat,
             }),

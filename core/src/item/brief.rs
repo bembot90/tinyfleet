@@ -274,7 +274,10 @@ pub fn for_item(
     seat: &str,
     touched: Option<&str>,
 ) -> Result<usize, Stop> {
+    // Resolved once: the rendering, the refusals and the brief's own id read
+    // the id the store answered, never the part of it that was typed.
     let record = store.show(item)?;
+    let item = record.id.as_str();
     let Some(index) = record.orders.as_ref() else {
         return Err(Stop::refused(if record.has_orders_key {
             format!(

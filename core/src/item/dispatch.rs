@@ -136,6 +136,9 @@ pub struct Wiring<'a> {
 
 /// The order given, for a caller that wants to say what happened.
 pub struct Given {
+    /// The id the order was given under: the store's full one, whatever part
+    /// of it the caller typed.
+    pub item: String,
     pub note: String,
     pub brief_path: PathBuf,
     pub seat: Option<String>,
@@ -156,7 +159,17 @@ pub fn dispatch(
     // Before the first write: the brief refuses on the same reading, and an
     // order written ahead of a brief that cannot render is one nobody reads.
     wiring.project.refuse_moved().map_err(Refused::stopped)?;
-    refuse_unless_dispatchable(order, wiring).map_err(Refused::stopped)?;
+
+    // THE ITEM IS RESOLVED ONCE, HERE, and the order names the id the store
+    // answered from this line on. The store resolves a partial id itself, so
+    // the ready list compared against the typed text refused a ready item,
+    // and every write under it would be a second spelling of the item.
+    let item = read(wiring.store, order.item).map_err(Refused::stopped)?;
+    let order = &Order {
+        item: &item.id,
+        ..*order
+    };
+    refuse_unless_dispatchable(order, &item, wiring).map_err(Refused::stopped)?;
 
     let given = match order.to {
         Some(seat) => to_named_seat(err, order, wiring, &note, seat).map_err(Refused::stopped)?,
@@ -179,24 +192,24 @@ pub fn dispatch(
     Ok(given)
 }
 
-/// The five refusals, in order, each of them before any write.
-fn refuse_unless_dispatchable(order: &Order, wiring: &Wiring) -> Result<(), Stop> {
+/// The five refusals, in order, each of them before any write. `item` is the
+/// record the order's id was resolved from.
+fn refuse_unless_dispatchable(order: &Order, item: &Item, wiring: &Wiring) -> Result<(), Stop> {
     let ready = wiring.store.ready()?;
-    let item = read(wiring.store, order.item)?;
 
     if !ready.iter().any(|id| id == order.item) {
         return Err(Stop::refused(format!(
             "{} is not ready — {}",
             order.item,
-            why_not_ready(&item)
+            why_not_ready(item)
         )));
     }
-    refuse_an_epic(&item)?;
+    refuse_an_epic(item)?;
     if item.has_orders_key {
         return Err(Stop::refused(format!(
             "{} already carries an order — {}",
             order.item,
-            standing(&item)
+            standing(item)
         )));
     }
 
@@ -276,6 +289,7 @@ fn to_named_seat(
 
     match wiring.ring.ring(seat, &text) {
         RingOutcome::Delivered => Ok(Given {
+            item: order.item.to_string(),
             note: note.to_string(),
             brief_path,
             seat: Some(seat.to_string()),
@@ -361,6 +375,7 @@ fn to_a_transient_seat(
                 write_brief(wiring, order, note, TRANSIENT).map_err(Refused::stopped)?;
             }
             Ok(Given {
+                item: order.item.to_string(),
                 note: note.to_string(),
                 brief_path,
                 seat: Some(seat),

@@ -780,6 +780,207 @@ fn a_ring_that_finds_no_live_session_leaves_the_order_standing() {
     assert!(rig.briefs().join(format!("{item}.md")).is_file());
 }
 
+// ---- an item named by part of its id -----------------------------------------
+
+/// A SUFFIX IS RESOLVED ONCE, at the verb's entry, and every write after it
+/// carries the id the store answered: the store resolves a partial id itself,
+/// so a ready check against the typed text refused a ready item as not ready,
+/// and a write under it would be a second spelling of the item.
+#[test]
+fn a_suffix_is_dispatched_under_the_full_id_it_resolves_to() {
+    let rig = Rig::new("suffix");
+    let item = rig.graph.item("an item named by its suffix");
+    let suffix = item.strip_prefix("fx-").expect("the board files under fx-");
+    let Graph::Memory(board) = &rig.graph else {
+        unreachable!("the rig is in memory");
+    };
+    board.forget_writes();
+    let seat = String::from("s-suffix");
+    let ring = StubRing::answering(RingOutcome::Delivered);
+    let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
+
+    let answer = rig.run(
+        suffix,
+        Some(&seat),
+        std::slice::from_ref(&seat),
+        rig.graph.store(),
+        &ring,
+        &spawner,
+    );
+    assert_eq!(answer.code, None, "{}", answer.why);
+
+    let read = rig.graph.store().show(&item).expect("the item reads back");
+    assert_eq!(read.assignee.as_deref(), Some(seat.as_str()));
+    assert_eq!(
+        brief::order_line(read.notes.as_deref()).as_deref(),
+        Some(note_for(&rig, BY).as_str()),
+        "the order note is on the full id's item"
+    );
+    let index = read.orders.expect("the index is an object");
+    assert_eq!(index.seat.as_deref(), Some(seat.as_str()));
+    assert_eq!(index.at.as_deref(), Some(AT));
+
+    let wrote = board.store.wrote();
+    for verb in ["assign", "note", "set_orders"] {
+        assert!(
+            wrote
+                .iter()
+                .any(|line| line.starts_with(&format!("{verb} {item} "))),
+            "{verb} is written under {item}: {wrote:?}"
+        );
+    }
+    assert!(
+        !wrote
+            .iter()
+            .any(|line| line.split(' ').nth(1) == Some(suffix)),
+        "no write names the suffix: {wrote:?}"
+    );
+
+    let (_, payload) = rig.events.one(ITEM_DISPATCHED);
+    assert_eq!(payload["item"], serde_json::json!(item));
+    let calls = ring.calls();
+    assert_eq!(calls.len(), 1);
+    assert!(
+        calls[0].1.starts_with(&format!("{item} is yours"))
+            && calls[0].1.contains(&format!("{item}.md")),
+        "the ring names the full id and its brief: {}",
+        calls[0].1
+    );
+    assert!(rig.briefs().join(format!("{item}.md")).is_file());
+}
+
+/// An argument naming more than one item is refused with the ones it named,
+/// read off `bd`'s own words — its JSON carries no more than "no issues found",
+/// and the matches are on stderr. Through `bd`, because that shape is `bd`'s.
+///
+/// A parent and its child make the ambiguity certain whatever else the shared
+/// board holds: all but the last character of the parent's hash is in both ids,
+/// and too short to be anybody's whole hash.
+#[test]
+fn an_ambiguous_suffix_is_refused_naming_the_items_it_matches() {
+    let rig = Rig::ringed("ambiguous");
+    let parent = rig.graph.item("a parent a suffix matches");
+    let out = rig.graph.bd(&[
+        "create",
+        "--title",
+        "its child, which the same suffix matches",
+        "--description",
+        "a scratch item",
+        "--type",
+        "task",
+        "--parent",
+        &parent,
+        "--json",
+    ]);
+    assert!(
+        out.status.success(),
+        "bd create --parent: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let child = fleet_core::store::first_value(&String::from_utf8_lossy(&out.stdout))
+        .and_then(|value| value.get("id")?.as_str().map(str::to_string))
+        .expect("the child is filed with an id");
+    let hash = parent
+        .strip_prefix("fx-")
+        .expect("the board files under fx-");
+    let suffix = &hash[..hash.len() - 1];
+
+    let before = rig.graph.json(&parent);
+    let seat = String::from("s-ambiguous");
+    let ring = StubRing::answering(RingOutcome::Delivered);
+    let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
+    let answer = rig.run(
+        suffix,
+        Some(&seat),
+        std::slice::from_ref(&seat),
+        rig.graph.store(),
+        &ring,
+        &spawner,
+    );
+
+    assert_eq!(answer.code, Some(1), "{}", answer.why);
+    assert!(
+        answer
+            .why
+            .contains(&format!("`{suffix}` matches more than one item"))
+            && answer.why.contains(&child)
+            && answer.why.matches(parent.as_str()).count() >= 2,
+        "the refusal names at least the parent and the child: {}",
+        answer.why
+    );
+    assert_eq!(rig.graph.json(&parent), before, "the item is untouched");
+    assert!(ring.calls().is_empty());
+    assert_eq!(rig.events.count(), 0, "a refusal appends nothing");
+}
+
+/// The board held in memory tells the same ambiguity the same way: it answers
+/// `bd`'s JSON and `bd`'s stderr, and the one reading of both is the store's.
+#[test]
+fn the_board_in_memory_refuses_an_ambiguous_suffix_the_same_way() {
+    let rig = Rig::new("ambiguous-memory");
+    let Graph::Memory(board) = &rig.graph else {
+        unreachable!("the rig is in memory");
+    };
+    board
+        .store
+        .creates
+        .lock()
+        .expect("the queue is not poisoned")
+        .extend([String::from("fx-63h"), String::from("fx-63u")]);
+    let first = rig.graph.item("one item a suffix matches");
+    let second = rig.graph.item("another item the same suffix matches");
+    let wrote = board.store.wrote();
+
+    let seat = String::from("s-ambiguous-memory");
+    let ring = StubRing::answering(RingOutcome::Delivered);
+    let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
+    let answer = rig.run(
+        "63",
+        Some(&seat),
+        std::slice::from_ref(&seat),
+        rig.graph.store(),
+        &ring,
+        &spawner,
+    );
+
+    assert_eq!(answer.code, Some(1), "{}", answer.why);
+    assert!(
+        answer.why.contains("`63` matches more than one item")
+            && answer.why.contains(&first)
+            && answer.why.contains(&second),
+        "the refusal names both: {}",
+        answer.why
+    );
+    assert_eq!(board.store.wrote(), wrote, "the store was written nothing");
+    assert_eq!(rig.events.count(), 0, "a refusal appends nothing");
+}
+
+#[test]
+fn a_suffix_nothing_matches_is_refused() {
+    let rig = Rig::new("unmatched");
+    rig.graph.item("an item the suffix does not match");
+    let Graph::Memory(board) = &rig.graph else {
+        unreachable!("the rig is in memory");
+    };
+    let wrote = board.store.wrote();
+    let seat = String::from("s-unmatched");
+    let ring = StubRing::answering(RingOutcome::Delivered);
+    let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
+    let answer = rig.run(
+        "zzzz",
+        Some(&seat),
+        std::slice::from_ref(&seat),
+        rig.graph.store(),
+        &ring,
+        &spawner,
+    );
+
+    assert_eq!(answer.code, Some(1), "{}", answer.why);
+    assert!(answer.why.contains("zzzz"), "{}", answer.why);
+    assert_eq!(board.store.wrote(), wrote, "the store was written nothing");
+    assert_eq!(rig.events.count(), 0, "a refusal appends nothing");
+}
+
 /// The shared store's sweep, over a root of its own: the system temp directory
 /// holds other runs' stores, and those are not this arm's to judge.
 #[test]

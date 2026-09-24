@@ -64,6 +64,9 @@ pub struct Wiring<'a> {
 
 /// What the review read and wrote.
 pub struct Read {
+    /// The item reviewed, by the store's full id, whatever part of it the
+    /// caller typed.
+    pub item: String,
     pub commit: String,
     pub size: String,
     /// The verdict written, where a mode wrote one.
@@ -76,17 +79,19 @@ pub fn review(
     verdict: &Verdict,
     wiring: &Wiring,
 ) -> Result<Read, Stop> {
+    // Resolved once: everything below names `item.id`, the store's full id,
+    // and never `verdict.item`, the part of it that was typed.
     let item = read(wiring.store, verdict.item)?;
     let Some(delivery) = item.notes.as_deref().and_then(last_delivery) else {
         return Err(Stop::refused(format!(
             "{} carries no delivery — a review reads one and there is none to read",
-            verdict.item
+            item.id
         )));
     };
     let Some(commit) = label_value(&delivery, COMMIT).filter(|sha| !sha.is_empty()) else {
         return Err(Stop::refused(format!(
             "the delivery on {} names no `{COMMIT}:` — a review takes a commit, never a branch",
-            verdict.item
+            item.id
         )));
     };
 
@@ -106,6 +111,7 @@ pub fn review(
     };
 
     Ok(Read {
+        item: item.id,
         commit,
         size,
         verdict: written,

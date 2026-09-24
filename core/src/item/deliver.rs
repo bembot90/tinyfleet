@@ -269,6 +269,8 @@ fn ring(
 /// readers of it would be two answers the day one of them changed.
 pub fn held_item(store: &dyn Store, by: &str, named: Option<&str>) -> Result<String, Stop> {
     if let Some(named) = named {
+        // Resolved once, here: the caller acts on the store's full id and
+        // never on the part of it that was typed.
         let item = read(store, named)?;
         return Ok(item.id);
     }

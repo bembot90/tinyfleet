@@ -556,6 +556,9 @@ pub fn cancel(
             Stop::could_not_tell(format!("{run} could not be read: {why}"))
         }
     })?;
+    // Resolved once: the close, the events and the line name the record's own
+    // id from here on, whatever part of it was typed.
+    let run = record.id.as_str();
     if !record.labels.iter().any(|label| label == LABEL) {
         return Err(Stop::refused(format!(
             "{run} is not a run's record — it carries no `{LABEL}` label, and `fleet cancel` ends \

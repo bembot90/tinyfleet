@@ -146,6 +146,11 @@ pub trait Store {
     /// store's own order.
     fn ready(&self) -> Result<Vec<String>, StoreError>;
 
+    /// One item, which the argument may name by PART of its id: bd resolves a
+    /// partial id itself — measured on 1.2.2, a whole id, then a whole hash,
+    /// then a substring of one — and the answer's `id` is the full one. So a
+    /// verb taking an item resolves it here once, at its entry, and acts on
+    /// [`Item::id`] from then on and never on the typed text.
     fn show(&self, item: &str) -> Result<Item, StoreError>;
 
     /// The open items carrying this label, by id.
@@ -423,25 +428,55 @@ pub fn opened(value: serde_json::Value, from: impl FnOnce() -> String) -> serde_
 
 /// The row an opened `show` answer holds, or the store's word that there is
 /// none. The one reading of that answer, which the fake store's `show` makes
-/// too.
+/// too. `said` is what the call wrote on stderr.
 ///
 /// An error CARRYING A CODE is classified by it: `not_found` is the record's
 /// answer, and any other code is a store that did not answer. An error with NO
 /// code is read by its key alone, as an item that is not there — measured on
 /// bd 1.2.2, whose missing id answers an error and no code.
-pub fn shown(item: &str, value: serde_json::Value) -> Result<serde_json::Value, StoreError> {
+///
+/// AN ARGUMENT NAMING MORE THAN ONE ITEM is the record's answer too, and is
+/// told from one naming none by stderr alone: bd 1.2.2 answers both with the
+/// same JSON error, and only its stderr says `ambiguous ID … matches N issues:
+/// [...]`. So the refusal names the matches bd listed, and a verb that acts on
+/// one item never guesses which.
+pub fn shown(
+    item: &str,
+    value: serde_json::Value,
+    said: &str,
+) -> Result<serde_json::Value, StoreError> {
     let Some(row) = sole(value) else {
         return Err(StoreError::Missing(format!("{item} is not in the store")));
     };
     if let Some(error) = row.get("error").and_then(|e| e.as_str()) {
         return match row.get("code").and_then(|c| c.as_str()) {
-            None | Some("not_found") => Err(StoreError::Missing(format!("{item}: {error}"))),
+            None | Some("not_found") => Err(StoreError::Missing(match ambiguous(said) {
+                Some(matches) => format!(
+                    "`{item}` matches more than one item — {matches} — and more of the id says \
+                     which one this is"
+                ),
+                None => format!("{item}: {error}"),
+            })),
             Some(code) => Err(StoreError::Unreadable(format!(
                 "{item} could not be read ({code}): {error}"
             ))),
         };
     }
     Ok(row)
+}
+
+/// The items bd named for an ambiguous id, off its stderr line — `Error
+/// fetching 0: ambiguous ID "0" matches 14 issues: [fleet-0zs fleet-01c …]`,
+/// measured on 1.2.2 — joined for a refusal, or that whole line where it names
+/// none in brackets. `None` where stderr says nothing of an ambiguity.
+fn ambiguous(said: &str) -> Option<String> {
+    let line = said.lines().find(|line| line.contains("ambiguous ID"))?;
+    let listed = line
+        .split_once('[')
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(ids, _)| ids.split_whitespace().collect::<Vec<_>>().join(", "))
+        .filter(|ids| !ids.is_empty());
+    Some(listed.unwrap_or_else(|| line.trim().to_string()))
 }
 
 /// The one element a `show` answers about. The answer is an array of one; an
@@ -552,7 +587,7 @@ impl Store for Bd {
                 tail(&out)
             )));
         };
-        let row = shown(item, value)?;
+        let row = shown(item, value, &String::from_utf8_lossy(&out.stderr))?;
         if !out.status.success() {
             return Err(self.refused(&args, &out));
         }

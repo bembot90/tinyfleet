@@ -504,8 +504,14 @@ pub struct Replied {
 }
 
 pub fn answer(out: &mut dyn Write, reply: &Reply, wiring: &Wiring) -> Result<Replied, Stop> {
+    // Resolved once: from here on the reply names the id the store answered,
+    // so the note, the event and every refusal carry the full one.
     let read = wiring.store.show(reply.item)?;
-    let notes = read.notes.unwrap_or_default();
+    let reply = &Reply {
+        item: &read.id,
+        ..*reply
+    };
+    let notes = read.notes.clone().unwrap_or_default();
     let Some(park) = last_park(&notes) else {
         return Err(Stop::refused(format!(
             "{} carries no park — an answer settles a question somebody asked, and this item has \

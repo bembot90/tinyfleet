@@ -870,6 +870,71 @@ fn a_seat_holding_no_ordered_item_is_refused_and_two_are_named() {
     );
 }
 
+/// `--item` naming its item by a suffix delivers under the full id: the verb
+/// resolves the argument once and every write, the commit, the event and the
+/// ring carry the id the store answered.
+#[test]
+fn an_item_named_by_its_suffix_is_delivered_under_its_full_id() {
+    let scratch = &store();
+    let seat = "s-suffix";
+    let item = an_ordered_item(scratch, "an item named by its suffix", seat);
+    let suffix = item.strip_prefix("fx-").expect("the board files under fx-");
+    let Graph::Memory(board) = scratch else {
+        unreachable!("the rig is in memory");
+    };
+    board.forget_writes();
+    let note = a_note(scratch, "suffix", WHOLE);
+    let git = StubGit::clean();
+    let ring = StubRing::answering(RingOutcome::Delivered);
+    let events = StubEvents::default();
+
+    let delivered = deliver_with(
+        Some(suffix),
+        &note,
+        seat,
+        &Seams {
+            store: scratch.store(),
+            git: &git,
+            ring: &ring,
+            project: &project(scratch),
+            packs: &packs(scratch),
+            events: &events,
+        },
+    )
+    .expect("the delivery is made");
+
+    assert_eq!(delivered.item, item);
+    let wrote = board.store.wrote();
+    for verb in ["assign", "note"] {
+        assert!(
+            wrote
+                .iter()
+                .any(|line| line.starts_with(&format!("{verb} {item} "))),
+            "{verb} is written under {item}: {wrote:?}"
+        );
+    }
+    assert!(
+        !wrote
+            .iter()
+            .any(|line| line.split(' ').nth(1) == Some(suffix)),
+        "no write names the suffix: {wrote:?}"
+    );
+    assert!(
+        git.calls()
+            .iter()
+            .any(|call| call.starts_with(&format!("commit {item}:"))),
+        "the commit subject names the full id: {:?}",
+        git.calls()
+    );
+    let (_, payload) = events.one(ITEM_DELIVERED);
+    assert_eq!(payload["item"], serde_json::json!(item));
+    let rung = ring.calls();
+    assert!(
+        rung.len() == 1 && rung[0].1.starts_with(&item),
+        "the ring names the full id: {rung:?}"
+    );
+}
+
 /// The two rings that are not a delivery: neither changes the exit, because the
 /// reassignment already recorded the handoff.
 #[test]

@@ -91,6 +91,17 @@ impl Rig {
     /// The same render with the builder's gate in the arm's own hands, `None`
     /// being the dispatch that was handed none.
     fn render_touched(&self, store: &dyn Store, seat: &str, touched: Option<&str>) -> Rendered {
+        self.render_as(store, ITEM, seat, touched)
+    }
+
+    /// The same render with the item named as the arm types it.
+    fn render_as(
+        &self,
+        store: &dyn Store,
+        item: &str,
+        seat: &str,
+        touched: Option<&str>,
+    ) -> Rendered {
         let mut out: Vec<u8> = Vec::new();
         let mut err: Vec<u8> = Vec::new();
         let answer = brief::for_item(
@@ -99,7 +110,7 @@ impl Rig {
             &self.packs,
             &self.project,
             store,
-            ITEM,
+            item,
             seat,
             touched,
         );
@@ -772,6 +783,24 @@ fn a_dispatched_item_still_gets_its_brief() {
         rendered.body,
         "and it is the brief the dispatch handed its seat, byte for byte"
     );
+}
+
+/// An item named by its suffix gets the brief its full id gets, byte for byte:
+/// the verb resolves the argument once and reads the rendering, the order and
+/// the brief's own id off the id the store answered.
+#[test]
+fn a_suffix_gets_the_brief_of_the_full_id_it_resolves_to() {
+    let rig = Rig::new("suffix");
+    let store = ordered();
+    let whole = rig.render(&store, SEAT);
+    assert_eq!(whole.code, None, "{}", whole.why);
+
+    let suffix = ITEM
+        .strip_prefix("fx-")
+        .expect("the item is filed under fx-");
+    let named = rig.render_as(&store, suffix, SEAT, Some(TOUCHED));
+    assert_eq!(named.code, None, "{}", named.why);
+    assert_eq!(named.body, whole.body, "the brief of the full id");
 }
 
 #[test]
