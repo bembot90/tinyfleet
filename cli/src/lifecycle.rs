@@ -16,9 +16,11 @@ use fleet_controller::lifecycle::{self, FirstRun, Mode, ProjectAt};
 use fleet_controller::{config, events, platform, policy as controller};
 use fleet_core::defaults;
 use fleet_core::item::Stop;
+use fleet_core::seat::identity;
 
 use crate::exit::Exit;
 use crate::item::{derived_worktrees_dir, resolve_at, resolve_from};
+use crate::seat_add::{self, Listed};
 use crate::ui::{Prompt, Stream, Tone, Ui};
 
 /// What `create` takes. The two flags are the two questions' answers, for a
@@ -186,43 +188,68 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
         }
     };
 
-    if mode == Mode::Standalone {
-        // The declaration's own name, which is the project's: a file somebody
-        // wrote may name it something other than its directory.
-        let name = lifecycle::validate_declaration(&declared).map_err(Stop::refused)?;
-        // THE SEAT LIST BEFORE THE FIRST START. Where `--fleet` named the fleet
-        // and no start has written the record yet, this verb writes the record
-        // `start`'s first run writes — the same one writer — so declaring a
-        // project to a fleet is one act and not a start either side of it. The
-        // rows stay `start`'s: this writes `children` empty, exactly as a first
-        // run does, and the next start renders what is registered.
-        let seats = machine_dir.join("config.json");
-        if let MachineFleet::Named(fleet_toml) =
-            registered_fleet(&machine_dir, named_fleet.as_deref())?
-        {
-            if lifecycle::write_seat_list(&seats, &fleet_toml).map_err(Stop::could_not_tell)? {
-                ui.status(
-                    Stream::Err,
-                    Tone::Good,
-                    "fleet:",
-                    &format!("registered on this machine — {}", fleet_toml.display()),
-                    Some(&seats.display().to_string()),
-                );
+    // The fleet's own policy file: the one `[seats]` lives in. In standalone
+    // mode it is not the file this call wrote — a `[seats]` table in a
+    // project's declaration does nothing.
+    let fleet_file = match mode {
+        Mode::Embedded => fleet_toml.clone(),
+        Mode::Standalone => {
+            // The declaration's own name, which is the project's: a file
+            // somebody wrote may name it something other than its directory.
+            let name = lifecycle::validate_declaration(&declared).map_err(Stop::refused)?;
+            // THE SEAT LIST BEFORE THE FIRST START. Where `--fleet` named the
+            // fleet and no start has written the record yet, this verb writes
+            // the record `start`'s first run writes — the same one writer — so
+            // declaring a project to a fleet is one act and not a start either
+            // side of it. The rows stay `start`'s: this writes `children`
+            // empty, exactly as a first run does, and the next start renders
+            // what is registered.
+            let seats = machine_dir.join("config.json");
+            let fleet_file = match registered_fleet(&machine_dir, named_fleet.as_deref())? {
+                MachineFleet::Registered(fleet_file) => fleet_file,
+                MachineFleet::Named(fleet_file) => {
+                    if lifecycle::write_seat_list(&seats, &fleet_file)
+                        .map_err(Stop::could_not_tell)?
+                    {
+                        ui.status(
+                            Stream::Err,
+                            Tone::Good,
+                            "fleet:",
+                            &format!("registered on this machine — {}", fleet_file.display()),
+                            Some(&seats.display().to_string()),
+                        );
+                    }
+                    fleet_file
+                }
+            };
+            let fresh =
+                lifecycle::register(&machine_dir, &root, &name).map_err(Stop::could_not_tell)?;
+            if fresh {
+                lifecycle::registered_event(&machine_dir, &root, &name)
+                    .map_err(Stop::could_not_tell)?;
             }
+            ui.status(
+                Stream::Err,
+                Tone::Good,
+                "registered",
+                &format!("{name} at {}", root.display()),
+                Some(&machine_dir.join(lifecycle::PROJECTS).display().to_string()),
+            );
+            fleet_file
         }
-        let fresh =
-            lifecycle::register(&machine_dir, &root, &name).map_err(Stop::could_not_tell)?;
-        if fresh {
-            lifecycle::registered_event(&machine_dir, &root, &name)
-                .map_err(Stop::could_not_tell)?;
+    };
+
+    // THE PERSON WHO RAN THIS IS THE FLEET'S FIRST SEAT, a human one, listed
+    // through `fleet seat add --human`'s own writer. Nobody is asked for a
+    // name. Before the defaults, so a machine directory this call cannot write
+    // in is met here, with the sentence that says what is left to do.
+    let creator = creator(&machine_dir, &fleet_file)?;
+    if mode == Mode::Embedded {
+        // The file was written by this call a moment ago, so a listing that
+        // fails in it is this call's failure and not the fleet's.
+        if let Err(why) = &creator.listed {
+            return Err(lists_nobody(why));
         }
-        ui.status(
-            Stream::Err,
-            Tone::Good,
-            "registered",
-            &format!("{name} at {}", root.display()),
-            Some(&machine_dir.join(lifecycle::PROJECTS).display().to_string()),
-        );
     }
 
     let defaults = defaults_into(&machine_dir)?;
@@ -263,38 +290,7 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
         Some(&defaults.root.display().to_string()),
     );
     say_retired(ui, &defaults);
-    // THE FIRST SEAT IS AN EDIT AND NOT A VERB: the command surface holds no
-    // seat-creating verb, and starting a named seat is the person's.
-    //
-    // It is an edit to the FLEET's own policy file, which in standalone mode is
-    // not the file this call wrote: `[seats]` and `[core]` do nothing in a
-    // project's declaration, so the line names the file the machine's seat list
-    // names and says so when it cannot read one.
-    let seat = "a-seat";
-    let edit = match mode {
-        Mode::Embedded => written.display().to_string(),
-        Mode::Standalone => config::read(&machine_dir.join("config.json"))
-            .map(|machine| machine.fleet_toml.display().to_string())
-            .unwrap_or_else(|_| {
-                format!(
-                    "the fleet's own fleet.toml, named by {}",
-                    machine_dir.join("config.json").display()
-                )
-            }),
-    };
-    ui.status(
-        Stream::Err,
-        Tone::Flat,
-        "first seat:",
-        &format!("add this to {edit}, then make its worktree"),
-        None,
-    );
-    eprintln!(
-        "\n    [seats.{seat}]\n    model = \"{model}\"\n\n    [core]\n    reviewer = \"{seat}\"\n\n\
-         \x20   git worktree add {worktree} <a branch>\n",
-        model = controller::DEFAULT_MODEL,
-        worktree = derived_worktrees_dir(&root).join(seat).display(),
-    );
+    say_creator(ui, &creator, &machine_dir);
     ui.status(
         Stream::Err,
         Tone::Good,
@@ -326,10 +322,87 @@ fn already_a_fleet(fleet_toml: &Path) -> Stop {
     ))
 }
 
+/// What became of listing the person who ran `create`.
+struct Creator {
+    /// The listing, or why the fleet's file could not take it.
+    listed: Result<Listed, String>,
+    /// True where THIS call minted the machine's identity.
+    minted: bool,
+    /// The fleet's own policy file, the one the listing is in.
+    file: PathBuf,
+}
+
+/// The person who ran `create`, listed in the fleet's own file.
+///
+/// THE IDENTITY IS MINTED FIRST AND ON ITS OWN, so the two failures stay apart:
+/// an identity this machine cannot read or mint is the call's exit 3 in either
+/// mode, and a fleet file that cannot take the listing is the caller's to
+/// weigh — the embedded one this call just wrote, or a standalone fleet's that
+/// somebody else did.
+fn creator(machine_dir: &Path, fleet_file: &Path) -> Result<Creator, Stop> {
+    let (_, minted) = identity::identity_or_mint(machine_dir).map_err(lists_nobody)?;
+    Ok(Creator {
+        listed: seat_add::list_human(fleet_file, machine_dir, None).map_err(|stop| stop.message),
+        minted,
+        file: fleet_file.to_path_buf(),
+    })
+}
+
+/// The exit 3 a fleet with nobody listed in it leaves, naming the verb that
+/// finishes it.
+fn lists_nobody(why: impl std::fmt::Display) -> Stop {
+    Stop::could_not_tell(format!(
+        "the fleet was written and lists nobody: {why} — fleet seat add --human finishes it"
+    ))
+}
+
+/// The seat line, and the identity line where this call minted one.
+fn say_creator(ui: &Ui, creator: &Creator, machine_dir: &Path) {
+    let file = creator.file.display().to_string();
+    match &creator.listed {
+        Ok(Listed::Added { seat, .. }) => ui.status(
+            Stream::Err,
+            Tone::Good,
+            "seat:",
+            &format!(
+                "you — human {}, listed as [seats.{}]",
+                seat.machine_name(),
+                seat.id
+            ),
+            Some(&file),
+        ),
+        Ok(Listed::AlreadyListed { seat }) => ui.status(
+            Stream::Err,
+            Tone::Flat,
+            "seat:",
+            &format!("you — human {}, already listed", seat.machine_name()),
+            Some(&file),
+        ),
+        // A LINE AND NOT A REFUSAL: the project is declared and registered, and
+        // the fleet's file is somebody else's to put right.
+        Err(why) => ui.status(
+            Stream::Err,
+            Tone::Bad,
+            "seat:",
+            &format!("not listed — {why}; fleet seat add --human lists you"),
+            None,
+        ),
+    }
+    if creator.minted {
+        ui.status(
+            Stream::Err,
+            Tone::Flat,
+            "identity:",
+            "minted — who acts here when no --by is given",
+            Some(&machine_dir.join(identity::IDENTITY).display().to_string()),
+        );
+    }
+}
+
 /// Which fleet a `--standalone` project is being declared to.
 enum MachineFleet {
-    /// The seat list is there and names a readable policy file.
-    Registered,
+    /// The seat list is there and names this readable policy file.
+    Registered(PathBuf),
     /// No seat list yet, and `--fleet` named this readable policy file — the
     /// caller writes the record before it registers the project.
     Named(PathBuf),
@@ -350,7 +423,9 @@ enum MachineFleet {
 fn registered_fleet(machine_dir: &Path, named: Option<&Path>) -> Result<MachineFleet, Stop> {
     let seats = machine_dir.join("config.json");
     match config::read(&seats) {
-        Ok(machine) if machine.fleet_toml.is_file() => Ok(MachineFleet::Registered),
+        Ok(machine) if machine.fleet_toml.is_file() => {
+            Ok(MachineFleet::Registered(machine.fleet_toml))
+        }
         Ok(machine) => Err(Stop::refused(format!(
             "{} names {}, which is not a readable file — run `fleet start` where that fleet's \
              own file is",

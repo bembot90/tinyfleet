@@ -12,6 +12,7 @@
 
 use fleet_controller::events::EventLog;
 use fleet_controller::runs;
+use fleet_core::seat::identity::{self, MachineIdentity, SeatId};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -65,6 +66,12 @@ enabled = false
 #   status = \"active\"
 [seats]
 ";
+
+/// The embedded file once `create` has listed its creator: [`EMBEDDED`] and one
+/// human table after it, keyed by the machine's identity.
+fn embedded_listing(id: &SeatId) -> String {
+    format!("{EMBEDDED}\n[seats.{id}]\nkind = \"human\"\n")
+}
 
 /// What `fleet create --standalone` writes, byte for byte, for one project.
 fn standalone_text(name: &str, item_prefix: Option<&str>, root: &Path, worktrees: &Path) -> String {
@@ -388,6 +395,13 @@ impl Rig {
         let out = self.run(&["create", "--embedded", "--agent", AGENT]);
         assert_eq!(code(&out), 0, "create: {}", stderr(&out));
         self
+    }
+
+    /// The identity `create` minted in this rig's machine directory.
+    fn identity(&self) -> MachineIdentity {
+        identity::read_identity(&self.machine)
+            .expect("identity.toml reads")
+            .expect("identity.toml is there")
     }
 
     /// The policy file with one more line in it.
@@ -772,7 +786,11 @@ fn create_embedded_writes_the_smallest_file_that_runs_and_materializes_the_defau
     assert_eq!(code(&out), 0, "{}", stderr(&out));
 
     let written = std::fs::read_to_string(rig.project.join("fleet.toml")).unwrap();
-    assert_eq!(written, EMBEDDED, "the file is not the expected text");
+    assert_eq!(
+        written,
+        embedded_listing(&rig.identity().id),
+        "the file is not the expected text"
+    );
 
     // NOTHING under packs: `create` installs no pack, and the word core names
     // no directory a person could meet.
@@ -840,8 +858,7 @@ fn create_embedded_writes_the_smallest_file_that_runs_and_materializes_the_defau
         "embedded fleet",
         "shell-trap on, record on",
         "off — nothing leaves this machine",
-        "[seats.a-seat]",
-        "git worktree add",
+        "seat: you — human",
         "fleet start",
     ] {
         assert!(
@@ -854,6 +871,191 @@ fn create_embedded_writes_the_smallest_file_that_runs_and_materializes_the_defau
         "stdout is a script's: {}",
         stdout(&out)
     );
+}
+
+/// The person who ran `create` is the fleet's first seat, a human one, listed
+/// under the identity the call minted — and nobody is handed a table to write.
+#[test]
+fn create_embedded_lists_its_creator_as_a_human_seat_under_a_minted_identity() {
+    let rig = Rig::new("creator");
+    let identity_file = rig.machine.join(identity::IDENTITY);
+    assert!(!identity_file.exists(), "the rig starts with no identity");
+
+    let out = rig.run(&["create", "--embedded", "--agent", AGENT]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    // The id is READ from the minted file, so the table is checked against the
+    // identity this machine now answers to and not one this arm made up.
+    let mine = rig.identity();
+    let fleet_toml = rig.project.join("fleet.toml");
+    assert_eq!(
+        std::fs::read_to_string(&fleet_toml).unwrap(),
+        embedded_listing(&mine.id),
+        "the file is EMBEDDED followed by one human table"
+    );
+
+    let said = stderr(&out);
+    assert!(
+        said.contains(&format!(
+            "seat: you — human human-{}, listed as [seats.{}] — {}",
+            mine.id.short(),
+            mine.id,
+            fleet_toml.display()
+        )),
+        "the seat line names the table and the file: {said}"
+    );
+    assert!(
+        said.contains(&format!(
+            "identity: minted — who acts here when no --by is given — {}",
+            identity_file.display()
+        )),
+        "the mint is said, with its path: {said}"
+    );
+    for gone in ["first seat:", "[seats.a-seat]", "git worktree add"] {
+        assert!(
+            !said.contains(gone),
+            "the hand-written first-seat block is gone, and {gone:?} is in: {said}"
+        );
+    }
+
+    // A SECOND create on the same machine, in another project, lists the same
+    // person: the identity is the machine's, and it is minted once.
+    let second = rig.root.join("b-project");
+    std::fs::create_dir_all(&second).unwrap();
+    let out = rig
+        .command(&["create", "--embedded", "--agent", AGENT])
+        .current_dir(&second)
+        .output()
+        .expect("the built binary runs");
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(
+        std::fs::read_to_string(second.join("fleet.toml")).unwrap(),
+        embedded_listing(&mine.id),
+        "the second fleet lists the same identity"
+    );
+    assert_eq!(rig.identity(), mine, "the identity is not re-minted");
+    let said = stderr(&out);
+    assert!(
+        said.contains(&format!("listed as [seats.{}]", mine.id)),
+        "{said}"
+    );
+    assert!(
+        !said.contains("identity:") && !said.contains("minted"),
+        "nothing was minted, so nothing says so: {said}"
+    );
+}
+
+/// A standalone project declared to a fleet that already lists this machine's
+/// person: the listing is said and not refused, and the fleet's file is left
+/// byte for byte as it was.
+#[test]
+fn create_standalone_into_a_fleet_that_already_lists_the_identity_says_so_and_writes_nothing() {
+    let rig = Rig::new("standalone-listed");
+    let fleet = rig.root.join("the-fleet");
+    std::fs::create_dir_all(&fleet).unwrap();
+    let out = rig
+        .command(&["create", "--embedded", "--agent", AGENT])
+        .current_dir(&fleet)
+        .output()
+        .expect("the built binary runs");
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let policy = fleet.join("fleet.toml");
+    let before = std::fs::read(&policy).unwrap();
+    let mine = rig.identity();
+
+    let out = rig.run(&[
+        "create",
+        "--standalone",
+        "--agent",
+        AGENT,
+        "--fleet",
+        &fleet.display().to_string(),
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stderr(&out);
+    assert!(
+        said.contains(&format!(
+            "seat: you — human human-{}, already listed",
+            mine.id.short()
+        )),
+        "{said}"
+    );
+    assert_eq!(
+        std::fs::read(&policy).unwrap(),
+        before,
+        "the fleet's file is byte-unchanged"
+    );
+    assert!(!said.contains("identity:"), "nothing was minted: {said}");
+}
+
+/// A fleet's file this verb cannot read as a roster is not a refusal of the
+/// declaration: the project is registered, the seat line says why nobody was
+/// listed and which verb lists them, and the call answers 0.
+#[test]
+fn create_standalone_into_a_fleet_whose_seats_do_not_read_says_so_and_answers_0() {
+    let rig = Rig::new("standalone-unread");
+    let fleet = rig.root.join("the-fleet");
+    let policy = fleet.join("fleet.toml");
+    write(&policy, "[seats.alpha]\nkind = \"agent\"\n");
+    let before = std::fs::read(&policy).unwrap();
+
+    let out = rig.run(&[
+        "create",
+        "--standalone",
+        "--agent",
+        AGENT,
+        "--fleet",
+        &fleet.display().to_string(),
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stderr(&out);
+    assert!(said.contains("seat: not listed — "), "{said}");
+    assert!(
+        said.contains("[seats.alpha] is keyed by a name"),
+        "the why is the roster's: {said}"
+    );
+    assert!(
+        said.contains("; fleet seat add --human lists you"),
+        "{said}"
+    );
+    assert!(said.contains("registered"), "{said}");
+    assert_eq!(
+        std::fs::read(&policy).unwrap(),
+        before,
+        "nothing was written"
+    );
+}
+
+/// An identity that cannot be minted is a fleet that lists nobody: exit 3,
+/// said, and the fleet.toml the call wrote stays written without a human
+/// table.
+#[test]
+fn create_embedded_with_an_unwritable_machine_directory_exits_3_and_lists_nobody() {
+    use std::os::unix::fs::PermissionsExt;
+    let rig = Rig::new("unmintable");
+    std::fs::create_dir_all(&rig.machine).unwrap();
+    std::fs::set_permissions(&rig.machine, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let out = rig.run(&["create", "--embedded", "--agent", AGENT]);
+    // Writable again BEFORE any assertion, so a failing arm still cleans up.
+    std::fs::set_permissions(&rig.machine, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(code(&out), 3, "{}", stderr(&out));
+    let said = stderr(&out);
+    assert!(
+        said.contains("fleet create: the fleet was written and lists nobody: "),
+        "{said}"
+    );
+    assert!(
+        said.contains(" — fleet seat add --human finishes it"),
+        "{said}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(rig.project.join("fleet.toml")).unwrap(),
+        EMBEDDED,
+        "the fleet.toml is there, without a human table"
+    );
+    assert!(!rig.machine.join(identity::IDENTITY).exists());
 }
 
 /// The store refusal, from the other end: the controller never initialises and
@@ -936,26 +1138,24 @@ fn create_standalone_declares_the_project_registers_it_and_says_so_on_the_stream
 
     // THE DONE MESSAGE IN STANDALONE MODE reports only what this call did. The
     // guards and telemetry lines belong to a policy file this mode does not
-    // write, and the seat edit belongs to the FLEET's own file: a `[seats]` or
-    // a `[core]` table in a project's declaration does nothing at all.
+    // write, and the seat belongs to the FLEET's own file: a `[seats]` table in
+    // a project's declaration does nothing at all. The host's own create listed
+    // this machine's person there already, so this one says so.
     let said = stderr(&out);
     let fleet_toml = host.project.join("fleet.toml").display().to_string();
     assert!(said.contains("standalone fleet"), "{said}");
     assert!(
-        said.contains(&format!("add this to {fleet_toml}")),
-        "the seat edit names the fleet's own file, not the declaration: {said}"
+        said.contains(&format!("already listed — {fleet_toml}")),
+        "the seat line names the fleet's own file, not the declaration: {said}"
     );
     assert!(
-        !said.contains(&second.join(".fleet/project.toml").display().to_string()[..]) || {
-            // The declaration is named as what was written; what it must not be
-            // named as is the file to add the seat to.
-            !said.contains(&format!(
-                "add this to {}",
-                second.join(".fleet/project.toml").display()
-            ))
-        },
+        !said.contains(&format!(
+            "listed — {}",
+            second.join(".fleet/project.toml").display()
+        )),
         "{said}"
     );
+    assert!(!said.contains("first seat:"), "{said}");
     assert!(
         !said.contains("shell-trap on"),
         "this mode wrote no guards table to report: {said}"
@@ -981,10 +1181,11 @@ fn create_standalone_declares_the_project_registers_it_and_says_so_on_the_stream
     assert!(embedded.contains("telemetry:"), "{embedded}");
     assert!(
         embedded.contains(&format!(
-            "add this to {}",
+            "listed as [seats.{}] — {}",
+            host.identity().id,
             third.join("fleet.toml").display()
         )),
-        "an embedded fleet's seat edit is its own file: {embedded}"
+        "an embedded fleet's seat is listed in its own file: {embedded}"
     );
 
     let register = std::fs::read_to_string(host.machine.join("projects.toml")).unwrap();
@@ -1616,8 +1817,9 @@ fn the_seats_table_is_rendered_into_rows_and_a_transient_row_survives_it() {
         rows.iter().all(|r| r.get("chosen_name").is_none()),
         "no row carries chosen_name: {after}"
     );
+    // Two people: Orla, and the one `create` listed for the machine it ran on.
     assert!(
-        stderr(&out).contains("1 human seat(s) listed and not rendered"),
+        stderr(&out).contains("2 human seat(s) listed and not rendered"),
         "{}",
         stderr(&out)
     );
@@ -1640,7 +1842,7 @@ fn the_seats_table_is_rendered_into_rows_and_a_transient_row_survives_it() {
     );
 
     // The worktree directory is NOT created: starting a named seat is the
-    // person's, and the done message names the git command.
+    // person's, and `fleet seat add --agent` names the git command.
     assert!(!rig.root.join("a-project-worktrees").exists());
 }
 

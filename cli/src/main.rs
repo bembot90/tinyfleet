@@ -69,8 +69,8 @@ enum Family {
     #[command(long_about = "\
 write this project's fleet, from inside the project. It asks embedded or
 standalone and which agent, writes the file for the mode, materializes the
-defaults this binary carries and pins them, and names the edit that creates
-the first seat. It installs no pack.
+defaults this binary carries and pins them, and lists you as the fleet's
+first seat, a human one — nobody is asked for a name. It installs no pack.
 
 It never initialises and never rewrites the project's work-graph store.")]
     Create(lifecycle::CreateArgs),

@@ -61,6 +61,7 @@ impl Rig {
 
         let out = rig.run(&["create", "--embedded", "--agent", "claude_code"]);
         assert_eq!(out.status.code(), Some(0), "create: {}", stderr(&out));
+        rig.as_before_its_creator_was_listed();
         rig
     }
 
@@ -134,6 +135,24 @@ impl Rig {
 
     fn identity_file(&self) -> PathBuf {
         self.machine.join(identity::IDENTITY)
+    }
+
+    /// The fleet as `create` wrote it and the machine as it was before:
+    /// `create` lists whoever ran it through this verb's own writer, minting
+    /// the identity, and the arms here are about THIS verb doing both. The
+    /// creator's table is cut off the end — exactly the text the writer
+    /// appends, or the rig refuses — and identity.toml is taken away.
+    fn as_before_its_creator_was_listed(&self) {
+        let mine = identity::read_identity(&self.machine)
+            .expect("the identity reads")
+            .expect("create minted one");
+        let body = self.policy();
+        let table = identity::seat_table(&mine.as_ref(), None);
+        let before = body
+            .strip_suffix(&table)
+            .unwrap_or_else(|| panic!("create's fleet.toml does not end in {table:?}: {body}"));
+        write(&self.policy_file(), before);
+        std::fs::remove_file(self.identity_file()).expect("the minted identity is removed");
     }
 }
 

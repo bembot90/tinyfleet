@@ -13,6 +13,11 @@
 //! does not model. The new document is read as a roster before it is written
 //! and the written one read again before the verb answers 0, the discipline
 //! `fleet_controller::lifecycle::register` is under.
+//!
+//! A PERSON'S SEAT HAS ONE WRITER, [`list_human`], and `fleet create` lists
+//! whoever ran it through the same one.
+
+use std::path::Path;
 
 use fleet_controller::platform;
 use fleet_core::item::Stop;
@@ -124,6 +129,33 @@ fn add(args: &AddArgs) -> Result<Added, Stop> {
         Some(given) => Some(named(given)?),
         None => None,
     };
+    let path = &here.policy_file;
+    let file = path.display().to_string();
+
+    if args.human {
+        return match list_human(path, &here.machine_dir, name)? {
+            Listed::Added { seat, minted } => Ok(Added {
+                seat,
+                file,
+                minted: minted.then(|| {
+                    here.machine_dir
+                        .join(identity::IDENTITY)
+                        .display()
+                        .to_string()
+                }),
+                worktrees: None,
+            }),
+            // [ASSUMES D11] Asked for by name, a listing that is already there
+            // is refused: this verb's one act is the table it did not write.
+            Listed::AlreadyListed { seat } => Err(Stop::refused(format!(
+                "this machine's identity {} ({}) is already [seats.{}] in {file}",
+                seat.machine_name(),
+                seat.id,
+                seat.id
+            ))),
+        };
+    }
+
     // A blank is no value, exactly as the roster reads one: a `model = ""`
     // written here would read back as no model, and the read-back would refuse
     // the row it had just written.
@@ -134,76 +166,105 @@ fn add(args: &AddArgs) -> Result<Added, Stop> {
         .filter(|m| !m.is_empty());
     // Asked before the lock, so a `[project] worktrees` the verb cannot read is
     // refused while nothing is written, rather than after the seat is listed.
-    let worktrees = if args.agent {
-        Some(here.worktrees_dir()?.display().to_string())
-    } else {
-        None
-    };
+    let worktrees = here.worktrees_dir()?.display().to_string();
 
-    let path = &here.policy_file;
-    let file = path.display().to_string();
-    // UNDER THE LOCK, because this is a read-modify-write and the atomic rename
-    // under it is not: two adds that each read the same file would leave one
-    // row.
     let _held = platform::lock_beside(path).map_err(Stop::could_not_tell)?;
+    let (body, seats) = read_roster(path)?;
+    if let Some(name) = &name {
+        not_held(&seats, name)?;
+    }
+    let seat = SeatRef {
+        id: SeatId::mint(),
+        name,
+        kind: Kind::Agent,
+    };
+    append(path, body, &seat, model)?;
+
+    Ok(Added {
+        seat,
+        file,
+        minted: None,
+        worktrees: Some(worktrees),
+    })
+}
+
+/// What listing this machine's person in a fleet's file came to.
+pub(crate) enum Listed {
+    /// The table was appended and read back. `minted` is true where THIS call
+    /// minted the machine's identity.
+    Added { seat: SeatRef, minted: bool },
+    /// The identity already has a table there — this one, as the file states
+    /// it — and the file is left as it was.
+    AlreadyListed { seat: SeatRef },
+}
+
+/// This machine's identity listed in `policy_file` as a human seat, with
+/// `identity.toml` minted under `machine_dir` where there is none.
+///
+/// THE ONE WRITER A PERSON'S SEAT HAS. `fleet seat add --human` calls it and
+/// refuses [`Listed::AlreadyListed`]; `fleet create` calls it for whoever ran
+/// it, with no name, and says the listing and moves on. The row's name is
+/// `name` where one is given, else the identity's own, and `identity.toml` is
+/// never written a name.
+pub(crate) fn list_human(
+    policy_file: &Path,
+    machine_dir: &Path,
+    name: Option<String>,
+) -> Result<Listed, Stop> {
+    let _held = platform::lock_beside(policy_file).map_err(Stop::could_not_tell)?;
+    let (body, seats) = read_roster(policy_file)?;
+    if let Some(name) = &name {
+        not_held(&seats, name)?;
+    }
+    let (mine, minted) = identity::identity_or_mint(machine_dir).map_err(Stop::could_not_tell)?;
+    // [ASSUMES D11] A person is listed once: a second listing of the same id
+    // would be a second table under one key, which is not TOML.
+    if let Some(listed) = seats.iter().find(|s| s.seat.id == mine.id) {
+        return Ok(Listed::AlreadyListed {
+            seat: listed.seat.clone(),
+        });
+    }
+    let name = match name {
+        Some(given) => Some(given),
+        None => {
+            if let Some(own) = &mine.name {
+                not_held(&seats, own)?;
+            }
+            mine.name
+        }
+    };
+    let seat = SeatRef {
+        id: mine.id,
+        name,
+        kind: Kind::Human,
+    };
+    append(policy_file, body, &seat, None)?;
+    Ok(Listed::Added { seat, minted })
+}
+
+/// The file's text and the seats it lists.
+///
+/// READ UNDER THE LOCK the caller holds (`platform::lock_beside`), because an
+/// add is a read-modify-write and the atomic rename under it is not: two adds
+/// that each read the same file would leave one row.
+fn read_roster(path: &Path) -> Result<(String, Vec<Seat>), Stop> {
+    let file = path.display();
     let body =
         std::fs::read_to_string(path).map_err(|e| Stop::could_not_tell(format!("{file}: {e}")))?;
     let seats =
         identity::roster_in(&body).map_err(|why| Stop::could_not_tell(format!("{file}: {why}")))?;
-    if let Some(name) = &name {
-        not_held(&seats, name)?;
-    }
+    Ok((body, seats))
+}
 
-    let (seat, minted) = if args.agent {
-        let seat = SeatRef {
-            id: SeatId::mint(),
-            name,
-            kind: Kind::Agent,
-        };
-        (seat, None)
-    } else {
-        let (mine, minted) =
-            identity::identity_or_mint(&here.machine_dir).map_err(Stop::could_not_tell)?;
-        // [ASSUMES D11] A person is listed once: a second listing of the same
-        // id would be a second table under one key, which is not TOML.
-        if let Some(listed) = seats.iter().find(|s| s.seat.id == mine.id) {
-            return Err(Stop::refused(format!(
-                "this machine's identity {} ({}) is already [seats.{}] in {file}",
-                listed.seat.machine_name(),
-                mine.id,
-                mine.id
-            )));
-        }
-        // The row's name is the flag's, else the identity's own; the verb
-        // never writes a name into identity.toml.
-        let name = match name {
-            Some(given) => Some(given),
-            None => {
-                if let Some(own) = &mine.name {
-                    not_held(&seats, own)?;
-                }
-                mine.name
-            }
-        };
-        let seat = SeatRef {
-            id: mine.id,
-            name,
-            kind: Kind::Human,
-        };
-        let minted = minted.then(|| {
-            here.machine_dir
-                .join(identity::IDENTITY)
-                .display()
-                .to_string()
-        });
-        (seat, minted)
-    };
-
+/// `seat`'s table appended to `body`, written over `path` and read back, under
+/// the same lock [`read_roster`] was read under.
+fn append(path: &Path, body: String, seat: &SeatRef, model: Option<&str>) -> Result<(), Stop> {
+    let file = path.display();
     let mut whole = body;
     if !whole.is_empty() && !whole.ends_with('\n') {
         whole.push('\n');
     }
-    whole.push_str(&identity::seat_table(&seat, model));
+    whole.push_str(&identity::seat_table(seat, model));
     // Read as a roster BEFORE it is written: a file this verb made unparsable is
     // a fleet that cannot start again.
     identity::roster_in(&whole)
@@ -219,7 +280,7 @@ fn add(args: &AddArgs) -> Result<Added, Stop> {
         .is_some_and(|seats| {
             seats
                 .iter()
-                .any(|s| s.seat == seat && s.model.as_deref() == model)
+                .any(|s| s.seat == *seat && s.model.as_deref() == model)
         });
     if !back {
         return Err(Stop::could_not_tell(format!(
@@ -227,13 +288,7 @@ fn add(args: &AddArgs) -> Result<Added, Stop> {
             seat.id
         )));
     }
-
-    Ok(Added {
-        seat,
-        file,
-        minted,
-        worktrees,
-    })
+    Ok(())
 }
 
 /// The name, trimmed, or the usage error that says why it cannot be one.
