@@ -53,9 +53,9 @@ dependencies are the real blockers.
 | --- | --- | --- | --- |
 | fleet-iex.1 | Add core's seat identity: the uuid crate, SeatId, Kind, the [seats.<id>] reader, identity.toml, and the one resolver… | — | ☑ |
 | fleet-iex.2 | fleet start reads [seats.<id>] through core's roster: agent seats render as <slug>-<short> rows carrying id and kind,… | fleet-iex.1 | ☑ |
-| fleet-iex.3 | Add `fleet seat add --agent|--human`: it mints or lists a seat as one [seats.<id>] table in the fleet's own fleet.tom… | fleet-iex.1, fleet-iex.2 | ☐ |
+| fleet-iex.3 | Add `fleet seat add --agent|--human`: it mints or lists a seat as one [seats.<id>] table in the fleet's own fleet.tom… | fleet-iex.1, fleet-iex.2 | ☑ |
 | fleet-iex.4 | fleet create lists its creator as a human seat and stops printing the hand-written first-seat block | fleet-iex.3 | ☐ |
-| fleet-iex.7 | A transient spawn mints a fresh seat id that is never reused; transient-N and its lowest-free counter go | fleet-iex.1, fleet-iex.2 | ☐ |
+| fleet-iex.7 | A transient spawn mints a fresh seat id that is never reused; transient-N and its lowest-free counter go | fleet-iex.1, fleet-iex.2 | ☑ |
 | fleet-iex.5 | Key the machine's seat list (config.json) by the seat id: rows carry id, kind and the seat's own name, and every read… | fleet-iex.2, fleet-iex.7 | ☐ |
 | fleet-iex.6 | Key sessions.json, the stream's seat actor and the projection's seat by id, derive every name from <slug>-<short>, an… | fleet-iex.5 | ☐ |
 | fleet-iex.11 | The work graph holds seat ids, part 1: dispatch and brief resolve --to to a seat id, the assignee and fleet.orders.se… | fleet-iex.6 | ☐ |
