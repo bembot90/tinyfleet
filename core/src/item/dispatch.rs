@@ -19,6 +19,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::item::brief::{self, Packs, Subject, ORDER_MARK, TRANSIENT};
+use crate::item::deliver::holds;
 use crate::item::{
     control_token, render, Events, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner, Stop,
     ITEM_DISPATCHED, NO_SESSION, REFUSED,
@@ -207,11 +208,11 @@ fn refuse_unless_dispatchable(order: &Order, wiring: &Wiring) -> Result<(), Stop
             }
         )));
     }
-    let held: Vec<String> = wiring
-        .store
-        .assigned_to(seat)?
+    // What the seat HOLDS, in deliver's own reading: an item merely assigned
+    // to it — an epic, a bug nobody ordered — is not work it was given.
+    let held: Vec<String> = holds(wiring.store, seat)?
+        .held
         .into_iter()
-        .filter(|row| row.status == "open" || row.status == "in_progress")
         .map(|row| format!("{} ({})", row.id, row.status))
         .collect();
     if !held.is_empty() {

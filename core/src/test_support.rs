@@ -501,6 +501,7 @@ impl Store for FakeStore {
                         .metadata_of(item)
                         .get("orders")
                         .is_some_and(|held| !held.is_null()),
+                    item_type: item.item_type.clone(),
                 });
             }
         }

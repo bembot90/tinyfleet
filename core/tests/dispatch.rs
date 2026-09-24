@@ -497,15 +497,35 @@ fn a_seat_the_machine_does_not_run_is_refused() {
     assert_eq!(rig.graph.json(&item), before, "the item is untouched");
 }
 
+/// An order already on the item, as a dispatch would have left it.
+fn ordered(rig: &Rig, item: &str, seat: &str) {
+    rig.graph
+        .store()
+        .set_orders(
+            item,
+            &dispatch::index("someone", dispatch::KIND, Some(seat), "then", None),
+            "someone",
+        )
+        .expect("the order index lands");
+}
+
 #[test]
 fn a_seat_already_holding_an_item_is_refused() {
     let rig = Rig::new("busy");
     let seat = String::from("s-busy");
-    let held = rig.graph.item("the item this seat is already on");
-    rig.graph.assign(&held, &seat);
-    rig.graph.status(&held, "in_progress");
+    let claimed = rig.graph.item("the item this seat is already on");
+    rig.graph.assign(&claimed, &seat);
+    ordered(&rig, &claimed, &seat);
+    rig.graph.status(&claimed, "in_progress");
+    let given = rig
+        .graph
+        .item("a second item it was given and has not started");
+    rig.graph.assign(&given, &seat);
+    ordered(&rig, &given, &seat);
+    let stale = rig.graph.item("an item assigned to it that nobody ordered");
+    rig.graph.assign(&stale, &seat);
 
-    let item = rig.graph.item("a second item nobody may give it");
+    let item = rig.graph.item("a third item nobody may give it");
     let before = rig.graph.json(&item);
     let ring = StubRing::answering(RingOutcome::Delivered);
     let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
@@ -519,12 +539,59 @@ fn a_seat_already_holding_an_item_is_refused() {
     );
 
     assert_eq!(answer.code, Some(1), "{}", answer.why);
+    for (held, status) in [(&claimed, "in_progress"), (&given, "open")] {
+        assert!(
+            answer.why.contains(&format!("{held} ({status})")),
+            "each ordered item it holds is named with its status: {}",
+            answer.why
+        );
+    }
     assert!(
-        answer.why.contains(&held),
-        "the item it holds is named: {}",
+        !answer.why.contains(&stale),
+        "an item nobody ordered is not a hold: {}",
         answer.why
     );
     assert_eq!(rig.graph.json(&item), before, "the item is untouched");
+}
+
+/// The switch sitting's refusal (tinytown-tnkuq.23): a seat whose only
+/// assigned items are a bug nobody ordered and an epic still naming it is
+/// holding nothing, and a dispatch to it proceeds.
+///
+/// The epic CARRIES AN ORDER here, so what lets it through is its type and not
+/// the missing key the bug is let through on.
+#[test]
+fn a_seat_assigned_only_unordered_work_and_an_epic_is_dispatched() {
+    let rig = Rig::new("stale");
+    let seat = String::from("s-stale");
+    let bug = rig
+        .graph
+        .item("a bug assigned a month ago and never ordered");
+    rig.graph.assign(&bug, &seat);
+    let epic = rig
+        .graph
+        .item("an epic still carrying the seat as assignee");
+    rig.graph.item_type(&epic, "epic");
+    rig.graph.assign(&epic, &seat);
+    ordered(&rig, &epic, &seat);
+
+    let item = rig.graph.item("the item the seat is given now");
+    let ring = StubRing::answering(RingOutcome::Delivered);
+    let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
+    let answer = rig.run(
+        &item,
+        Some(&seat),
+        std::slice::from_ref(&seat),
+        rig.graph.store(),
+        &ring,
+        &spawner,
+    );
+
+    assert_eq!(answer.code, None, "{}", answer.why);
+    let read = rig.graph.store().show(&item).expect("the item reads back");
+    assert_eq!(read.assignee.as_deref(), Some(seat.as_str()));
+    assert!(read.orders.is_some(), "the order is written");
+    assert_eq!(ring.calls().len(), 1, "the seat is rung");
 }
 
 #[test]

@@ -117,6 +117,8 @@ pub struct Row {
     /// row. The same third answer [`Item::has_orders_key`] carries — a key
     /// holding something that is not an object is present and unreadable.
     pub has_orders_key: bool,
+    /// The type, as the listing spells it (`issue_type`), read off this row.
+    pub item_type: String,
 }
 
 /// The two ways a store call ends badly, which are two different exits: an
@@ -620,6 +622,7 @@ impl Store for Bd {
                     id: text_field(row, "id")?,
                     status: text_field(row, "status").unwrap_or_default(),
                     has_orders_key: orders_of(row).1,
+                    item_type: text_field(row, "issue_type").unwrap_or_default(),
                 })
             })
             .collect())

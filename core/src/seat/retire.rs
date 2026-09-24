@@ -8,9 +8,10 @@
 //! refused for an item it never saw. The retire is the act that frees the name,
 //! so it is the act that owes the name a clean record.
 //!
-//! The query is [`crate::item::deliver`]'s own — every OPEN item assigned to
-//! the seat that carries an orders key — so what is withdrawn here is exactly
-//! what the next seat of that name would be refused over.
+//! The query is the `ordered` half of [`crate::item::deliver::holds`] — every
+//! OPEN item assigned to the seat that carries an orders key, whatever its
+//! type — so what is withdrawn here is every order the next seat of that name
+//! would inherit.
 //!
 //! IT IS COUNTED IN STORE CALLS, because every retire pays it and a fleet
 //! retires a seat per dispatched item: ONE call to read the board, then one
@@ -18,7 +19,7 @@
 //! WITHDRAWN. A seat holding nothing ordered — which is most of them — makes
 //! the one read and stops.
 
-use crate::item::deliver::open;
+use crate::item::deliver::holds;
 use crate::item::Stop;
 use crate::store::Store;
 
@@ -37,10 +38,9 @@ pub const WITHDRAWN: &str = "ORDER WITHDRAWN at retire";
 /// seat holding nothing ordered is retired exactly as it was before this
 /// existed.
 pub fn held(store: &dyn Store, seat: &str) -> Result<Vec<String>, Stop> {
-    Ok(store
-        .assigned_to(seat)?
+    Ok(holds(store, seat)?
+        .ordered
         .into_iter()
-        .filter(|row| open(row) && row.has_orders_key)
         .map(|row| row.id)
         .collect())
 }

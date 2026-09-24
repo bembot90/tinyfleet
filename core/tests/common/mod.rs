@@ -843,6 +843,17 @@ impl Graph {
         }
     }
 
+    /// The type, as the store spells it. The trait carries no verb for it, so
+    /// the real half writes it through the binary.
+    pub fn item_type(&self, item: &str, kind: &str) {
+        match self {
+            Graph::Memory(board) => board.amend(item, |held| held.item_type = kind.to_string()),
+            Graph::Real(_, _) => {
+                self.wrote(&["update", item, "--type", kind, "--actor", "the-test"])
+            }
+        }
+    }
+
     /// A call to the binary itself, which a ring arm's own readings take: the
     /// store's gate listing carries fields no trait method answers.
     pub fn bd(&self, args: &[&str]) -> std::process::Output {

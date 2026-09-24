@@ -25,6 +25,7 @@ const HELD: &str = "fx-held";
 const UNORDERED: &str = "fx-unordered";
 const CLOSED: &str = "fx-closed";
 const ANOTHER: &str = "fx-another-seat";
+const EPIC: &str = "fx-epic";
 
 fn item(id: &str, status: &str, assignee: &str, ordered: bool) -> Item {
     Item {
@@ -122,6 +123,37 @@ fn a_retire_leaves_what_the_seat_does_not_hold_under_an_open_order() {
     );
 }
 
+/// AN EPIC IS NEVER HELD, AND ITS ORDER IS STILL WITHDRAWN: dispatch and
+/// deliver do not count an epic as work the seat carries, but an order left
+/// on one is still an order standing against the name, and the next seat of
+/// that name would inherit it.
+#[test]
+fn a_retire_withdraws_an_ordered_epic_the_seat_still_names() {
+    let store = board();
+    store.seed(Item {
+        item_type: String::from("epic"),
+        ..item(EPIC, "open", SEAT, true)
+    });
+
+    let mut held = retire::held(&store, SEAT).expect("the board answers");
+    held.sort();
+    assert_eq!(
+        held,
+        vec![EPIC.to_string(), HELD.to_string()],
+        "the query names the ordered epic beside the ordered task"
+    );
+
+    retire::withdraw(&store, &held, SEAT, BY).expect("the withdrawal lands");
+
+    let after = read(&store, EPIC);
+    assert!(
+        !after.has_orders_key && after.assignee.as_deref().unwrap_or("").trim().is_empty(),
+        "the epic reads unordered and unassigned: {}",
+        after.document
+    );
+    assert_eq!(after.status, "open", "the epic stays open");
+}
+
 #[test]
 fn a_retire_of_a_seat_holding_nothing_ordered_writes_nothing() {
     let store = board();
@@ -213,6 +245,7 @@ fn a_retire_that_cannot_read_the_board_refuses_rather_than_reading_no_hold() {
                 id: HELD.to_string(),
                 status: String::from("open"),
                 has_orders_key: true,
+                item_type: String::from("task"),
             }],
         )]
         .into_iter()

@@ -259,12 +259,9 @@ fn ring(
 
 // ---- the item ----------------------------------------------------------------
 
-/// The item this worktree is acting on: the one open item the seat holds that
-/// carries an order.
+/// The item this worktree is acting on: the one item the seat [`holds`].
 ///
-/// A row carries an id and a status and nothing else, so the order index is one
-/// read per open row. `named` says which one directly, for the case a seat
-/// legitimately holds two.
+/// `named` says which one directly, for the case a seat legitimately holds two.
 ///
 /// IT IS `ask`'s READ TOO (flights PRD S4c). A question and a delivery ask the
 /// same question of the record — which item is this worktree's — and two
@@ -274,28 +271,19 @@ pub fn held_item(store: &dyn Store, by: &str, named: Option<&str>) -> Result<Str
         let item = read(store, named)?;
         return Ok(item.id);
     }
-    let held = store
-        .assigned_to(by)?
-        .into_iter()
-        .filter(open)
-        .collect::<Vec<Row>>();
-
-    let mut ordered = Vec::new();
-    for row in &held {
-        if read(store, &row.id)?.has_orders_key {
-            ordered.push(row.id.clone());
-        }
-    }
-    match ordered.len() {
-        1 => Ok(ordered.remove(0)),
+    let Holds { open, held, .. } = holds(store, by)?;
+    let mut held: Vec<String> = held.into_iter().map(|row| row.id).collect();
+    match held.len() {
+        1 => Ok(held.remove(0)),
         0 => Err(Stop::refused(format!(
-            "`{by}` holds no open ordered item{} — work is given, and an act on an item answers              an order",
-            if held.is_empty() {
+            "`{by}` holds no open ordered item{} — work is given, and an act on an item answers \
+             an order",
+            if open.is_empty() {
                 String::new()
             } else {
                 format!(
-                    " (it holds {}, none of them ordered)",
-                    held.iter()
+                    " (it holds {}, none of them an ordered item that is not an epic)",
+                    open.iter()
                         .map(|row| row.id.as_str())
                         .collect::<Vec<_>>()
                         .join(", ")
@@ -304,16 +292,68 @@ pub fn held_item(store: &dyn Store, by: &str, named: Option<&str>) -> Result<Str
         ))),
         _ => Err(Stop::refused(format!(
             "`{by}` holds {} ordered items — {} — and `--item <id>` says which one this is",
-            ordered.len(),
-            ordered.join(", ")
+            held.len(),
+            held.join(", ")
         ))),
     }
 }
 
+/// The type an item that only groups others carries. An epic is never work a
+/// seat holds: it stays open while its children are built, and an assignee left
+/// on it names whoever last touched it, not a seat carrying it.
+const EPIC: &str = "epic";
+
+/// What a seat is carrying, off ONE listing and no per-row read.
+pub(crate) struct Holds {
+    /// Every open row assigned to the seat.
+    pub(crate) open: Vec<Row>,
+    /// Of those, every one that carries an orders key, whatever its type: the
+    /// orders standing against the seat's name.
+    pub(crate) ordered: Vec<Row>,
+    /// Of those, every one that is not an epic: what the seat HOLDS.
+    pub(crate) held: Vec<Row>,
+}
+
+/// THE ONE READING of what a seat holds: an open item assigned to it that
+/// carries an orders key and is not an epic. [`held_item`] and dispatch's
+/// one-item-at-a-time refusal both ask it, and an item one of them counted and
+/// the other did not is a seat refused a dispatch over work nobody gave it — a
+/// bug assigned a month ago and never ordered, an epic still naming an old
+/// assignee.
+///
+/// A retire asks the wider half, `ordered`: an order left standing against a
+/// retired name is inherited by the next seat of that name whatever the item's
+/// type, so a retire withdraws an ordered epic that no seat holds.
+///
+/// Whether a row is ordered and whether it is an epic are both read off the
+/// row: the listing answers each row's metadata and type, so the whole reading
+/// is one call.
+pub(crate) fn holds(store: &dyn Store, seat: &str) -> Result<Holds, Stop> {
+    let rows = store
+        .assigned_to(seat)?
+        .into_iter()
+        .filter(open)
+        .collect::<Vec<Row>>();
+    let ordered = rows
+        .iter()
+        .filter(|row| row.has_orders_key)
+        .cloned()
+        .collect::<Vec<Row>>();
+    let held = ordered
+        .iter()
+        .filter(|row| row.item_type != EPIC)
+        .cloned()
+        .collect();
+    Ok(Holds {
+        open: rows,
+        ordered,
+        held,
+    })
+}
+
 /// The statuses a seat is working under. `in_progress` is the same holding as
-/// `open` here and in dispatch's own read: a seat that claimed its item has not
-/// stopped holding it.
-pub(crate) fn open(row: &Row) -> bool {
+/// `open`: a seat that claimed its item has not stopped holding it.
+fn open(row: &Row) -> bool {
     row.status == "open" || row.status == "in_progress"
 }
 
