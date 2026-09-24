@@ -1164,6 +1164,7 @@ fn the_four_lifecycle_words_under_seat_still_name_the_event_spelling() {
     assert_eq!(
         listed,
         vec![
+            "add".to_string(),
             "spawn".to_string(),
             "feed".to_string(),
             "retire".to_string(),

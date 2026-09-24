@@ -18,6 +18,7 @@ mod nudge;
 mod prime;
 mod routines;
 mod runs;
+mod seat_add;
 mod status;
 mod step;
 mod stream;
@@ -334,8 +335,8 @@ its own line and the next part still prints.")]
     Prime,
 }
 
-/// The verbs done TO a seat — three of them to a transient one and the courier
-/// to any — plus the four lifecycle words kept as hidden arms.
+/// The verbs done TO a seat — the add that lists one, three to a transient one
+/// and the courier to any — plus the four lifecycle words kept as hidden arms.
 ///
 /// The four are HIDDEN and not absent: they are what a seat's ritual types, and
 /// a bare "unrecognized subcommand" would leave the person to guess the `event`
@@ -343,6 +344,15 @@ its own line and the next part still prints.")]
 /// would advertise verbs this noun does not answer.
 #[derive(Subcommand)]
 enum SeatVerb {
+    /// add a seat to this fleet: a fresh id, its kind, a name if given
+    #[command(long_about = "\
+add a seat to the fleet's own fleet.toml: one [seats.<id>] table, appended
+and read back before it answers 0. --agent mints a fresh id for a seat the
+controller runs; --human lists this machine's identity, minting it into
+identity.toml in the machine directory where there is none. Nobody is asked
+for a name. It prints the seat's id.")]
+    Add(seat_add::AddArgs),
+
     /// create a transient seat and start its session
     #[command(long_about = "\
 create a transient seat: the load belt first, then a worktree cut from the
@@ -700,6 +710,7 @@ fn event_command(verb: &EventVerb) -> Result<Exit> {
 // one.
 fn seat_command(ui: &Ui, verb: &SeatVerb) -> Exit {
     match verb {
+        SeatVerb::Add(args) => seat_add::command(args),
         SeatVerb::Spawn(args) => transient::spawn_command(args),
         SeatVerb::Feed(args) => transient::feed_command(args),
         SeatVerb::Retire(args) => transient::retire_command(args),

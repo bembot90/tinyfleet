@@ -780,7 +780,7 @@ fn turn_text(path: &Path) -> Result<String, Stop> {
     })
 }
 
-fn stopped(verb: &str, stop: &Stop, json: bool) -> Exit {
+pub(crate) fn stopped(verb: &str, stop: &Stop, json: bool) -> Exit {
     refusing(verb, stop.code, &stop.message, json)
 }
 
