@@ -101,16 +101,8 @@ pub trait Ring {
     fn ring(&self, seat: &str, text: &str) -> RingOutcome;
 }
 
-/// The flight record's three kinds, as the events table names them. Nothing in
-/// this crate writes any of them: the verbs that did left core with the run
-/// lifecycle's arrival (fleet-layers.md § What moves, workflows-formula-fate).
-pub const FLIGHT_PLANNED: &str = "flight.planned";
-pub const FLIGHT_OPENED: &str = "flight.opened";
-pub const FLIGHT_CLOSED: &str = "flight.closed";
-
-/// The one a run's front half writes, named here beside the flight's opening
-/// because the two are the same act on the two lifecycles: every input pinned,
-/// the directory hashed, and the record standing.
+/// The one a run's front half writes: every input pinned, the directory
+/// hashed, and the record standing.
 pub const RUN_STARTED: &str = "run.started";
 
 /// The four the back half writes, one per row of the exit table the workflow
@@ -172,15 +164,6 @@ pub const GATE_RESOLVED: &str = "gate.resolved";
 /// verdict that kind names: a return is `item.returned` and not a second
 /// verdict value.
 pub const VERDICT_ACCEPTED: &str = "accepted";
-
-/// The value `item.dispatched` carries under `role` for a REVIEWER's spawn
-/// (flights PRD R14).
-///
-/// A builder's dispatch carries no role at all, because the role a spawn has
-/// when nothing says otherwise is the one the whole vocabulary is written
-/// around: an absent key is a builder, and a reader that had to tell two role
-/// values apart would be reading a distinction only this one event makes.
-pub const ROLE_REVIEWER: &str = "reviewer";
 
 /// Every item and gate kind, in the order the events table lists them.
 pub const ITEM_KINDS: [&str; 9] = [
@@ -424,8 +407,7 @@ pub struct Spawn<'a> {
     /// cannot act on. Nothing below this seam reads the work graph.
     pub item: &'a str,
     /// The commit the seat's worktree is cut from, where the caller names one
-    /// (flights PRD R11, R14): a reviewer reads the delivery and a returned
-    /// builder resumes from it. `None` cuts from the trunk.
+    /// — `fleet seat spawn --base`. `None` cuts from the trunk.
     pub base: Option<&'a str>,
     /// The model this seat runs on, where the caller names one. `None` leaves
     /// the fleet's policy default.
@@ -455,7 +437,9 @@ pub struct Project {
 
 impl Project {
     /// A refusal where either file still sets a test command, naming each key
-    /// and where it is set instead ([`crate::policy::MOVED`]).
+    /// and where it is set instead ([`crate::policy::MOVED`]) — or a key
+    /// nothing reads any more, naming it to delete
+    /// ([`crate::policy::RETIRED`]).
     ///
     /// Read by every verb that would have read one — `land`, the brief, a
     /// spawn's rules and `run` — BEFORE it writes anything, so a fleet whose
@@ -670,19 +654,6 @@ pub fn last_answer(notes: &str) -> Option<String> {
             &PARK_MARKERS,
         ],
     )
-}
-
-/// Where the last line one of these markers opens sits, as a line index.
-///
-/// Two regions are told apart by WHICH CAME LAST and not by their content, so
-/// an answer standing over a park is this answered against this park's — and a
-/// park raised again after an answer is not.
-pub fn last_marker_at(notes: &str, markers: &[&str]) -> Option<usize> {
-    notes
-        .lines()
-        .collect::<Vec<&str>>()
-        .iter()
-        .rposition(|line| opens_with(line, markers))
 }
 
 /// A template's block for one marker: the paragraph it opens. What follows the

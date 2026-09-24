@@ -38,7 +38,6 @@ fn item(id: &str, status: &str, assignee: &str, ordered: bool) -> Item {
             kind: Some(String::from("dispatch")),
             seat: Some(SEAT.to_string()),
             at: Some(String::from("2026-09-14T10:40:39Z")),
-            ordinal: None,
         }),
         has_orders_key: ordered,
         ..Item::default()

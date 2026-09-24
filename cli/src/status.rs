@@ -205,7 +205,7 @@ fn effective_policy(policy_file: &Path, machine_dir: &Path) -> Result<Policy, St
 
 /// One `[[core.flight.rules]]` entry as the page prints it.
 struct RuleRow {
-    /// The match clause, in the words the matcher reads it by.
+    /// The match clause, in words a person reads it by.
     clause: String,
     /// The keys this rule sets, in [`rules::KEYS`] order.
     sets: Vec<String>,
@@ -226,7 +226,7 @@ fn rule_rows(value: Option<&core_policy::Value>) -> Vec<RuleRow> {
     entries
         .iter()
         // An entry that is not a table declares no clause and no value, which
-        // is the matcher's own reading of one, so neither counts a rule.
+        // is nothing to print, so neither counts a rule.
         .filter_map(|entry| entry.as_table())
         .map(|rule| {
             let filled = rules::Effective {
@@ -245,8 +245,8 @@ fn rule_rows(value: Option<&core_policy::Value>) -> Vec<RuleRow> {
         .collect()
 }
 
-/// The clause in the same two halves the matcher tests: the item's own type and
-/// its own labels, both optional, neither inherited.
+/// The clause in its two halves: the item's own type and its own labels, both
+/// optional, neither inherited.
 fn clause_of(value: Option<&core_policy::Value>) -> String {
     let Some(clause) = value else {
         return String::from("every item");

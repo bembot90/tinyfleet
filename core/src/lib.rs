@@ -37,12 +37,8 @@
 //! answer written on the item, the gate resolved and `gate.resolved` written,
 //! each read back. A letter the options do not name is still an answer with
 //! `--text`, because the person deciding may see a third way the seat did not.
-//! Neither verb rings anybody and neither dispatches: the flight retires the
-//! asking seat, and the next flight that lists the item is what resumes it —
-//! cut from the parked commit, its brief carrying a RESUME section with the
-//! question, the options and the answer. An item whose park is answered and
-//! whose verdict already accepted the parked commit reads accepted in the fold
-//! and goes to the landing with no seat at all.
+//! Neither verb rings anybody and neither dispatches: what resumes a parked
+//! item is whatever dispatches it next.
 //!
 //! `review` is the reviewer's read and the verdict it writes. It prints a size
 //! line that is a measurement and carries no tier — core is one reviewer's read

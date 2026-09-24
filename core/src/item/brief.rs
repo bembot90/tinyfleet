@@ -22,12 +22,6 @@ pub const DISPATCH_NOTE: &str = "assets/dispatch-note.md";
 pub const DELIVERY_NOTE: &str = "assets/delivery-note.md";
 pub const RULES: &str = "assets/rules.md";
 
-/// The fifth, read by nothing this verb does: the first turn a SPAWNED REVIEWER
-/// gets (flights PRD R14). It is a template in the pack rather than prose in the
-/// flight's code, and it is in the shadow registry, because the contract a
-/// reviewer works under is a pack's opinion the same way a builder's is.
-pub const REVIEW_BRIEF: &str = "assets/review-brief.md";
-
 /// What `{seat}` reads as before a seat exists to name.
 pub const TRANSIENT: &str = "(transient)";
 
@@ -45,12 +39,6 @@ pub const DERIVE_TOUCHED: &str = concat!(
     "targets and run only the suites whose sources your diff reaches. The whole suite\n",
     "is the reviewer's, and running it here buys the landing nothing.",
 );
-
-/// The value a reviewer's `{suite}` takes where the review was handed no test
-/// command: `land` then runs none, and says NOT TESTED on its note.
-pub const NO_TEST: &str =
-    "no test command was handed to this review — `fleet land` runs none, and its note says NOT \
-     TESTED";
 
 /// The installed packs, ordered and resolved once.
 pub struct Packs {
@@ -181,53 +169,6 @@ pub fn text(packs: &Packs, project: &Project, subject: &Subject) -> Result<Strin
     .map_err(|name| {
         Stop::could_not_tell(format!(
             "`{BRIEF}` writes `{{{name}}}`, which is not a placeholder this verb resolves"
-        ))
-    })
-}
-
-/// What a reviewer's brief says about one delivery.
-///
-/// IT NAMES NO SEAT (decision D1). The reviewer's blindness in this slice is
-/// what the mechanism gives — a fresh seat, no session shared with the builder,
-/// rung by nobody — and the delivery region below carries the builder's own
-/// first line, which is a fact of the record the reviewer reads either way. What
-/// is NOT copied here is the order note: a second rendering of it would be a
-/// second copy of a fact the item already holds.
-pub struct Delivery<'a> {
-    pub id: &'a str,
-    /// The item as a person reads it, verbatim.
-    pub text: &'a str,
-    /// The last delivery region of the item's notes.
-    pub delivery: &'a str,
-    /// The size line `review` prints, measured by the caller.
-    pub size: &'a str,
-    /// The command the landing will run, as the caller handed it, or `None`
-    /// for [`NO_TEST`].
-    pub test: Option<&'a str>,
-}
-
-/// The reviewer's brief, assembled whole, from the pack's own template.
-pub fn review_text(packs: &Packs, project: &Project, subject: &Delivery) -> Result<String, Stop> {
-    project.refuse_moved()?;
-    let template = packs.read(REVIEW_BRIEF)?;
-    let rules = packs.read(RULES)?;
-    let suite = command_or(subject.test, NO_TEST);
-
-    render(
-        &template,
-        &[
-            ("item_id", subject.id),
-            ("item", subject.text),
-            ("delivery", subject.delivery),
-            ("size", subject.size),
-            ("project", &project.name),
-            ("suite", suite),
-            ("rules", &rules),
-        ],
-    )
-    .map_err(|name| {
-        Stop::could_not_tell(format!(
-            "`{REVIEW_BRIEF}` writes `{{{name}}}`, which is not a placeholder this verb resolves"
         ))
     })
 }

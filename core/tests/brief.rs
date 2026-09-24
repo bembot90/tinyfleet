@@ -291,81 +291,6 @@ fn every_placeholder_of_the_template_resolves() {
 }
 
 /// Every `{name}` the template carries, by the renderer's own grammar.
-/// The REVIEWER's brief: every placeholder resolves, the pack it sits in still
-/// checks out, and the registry names it (flights PRD R14, decision D2).
-///
-/// The registry half is the existence test: a row naming a path the pack does
-/// not hold is a defect of the pack publishing the registry.
-#[test]
-fn the_review_brief_resolves_whole_and_the_registry_names_it() {
-    let rig = Rig::new("review-brief");
-    let review = |test: Option<&str>| {
-        brief::review_text(
-            &rig.packs,
-            &rig.project,
-            &brief::Delivery {
-                id: ITEM,
-                text: "fx-1 · a ready item\n",
-                delivery: "DELIVERED abc1234 — a-builder\ncommit:  abc1234\n",
-                size: "size: 3 file(s), +40, -2 — tests: yes, executable: no",
-                test,
-            },
-        )
-        .expect("the reviewer's brief renders whole")
-    };
-    let body = review(Some("make the-whole-suite"));
-
-    for wanted in [
-        ITEM,
-        "fx-1 · a ready item",
-        "a-project",
-        "make the-whole-suite",
-        "size: 3 file(s), +40, -2",
-        "DELIVERED abc1234",
-        "fleet review fx-1 --land",
-        "fleet review fx-1 --return",
-        // one line out of rules.md, which every brief carries
-        "The commit, never the branch.",
-    ] {
-        assert!(
-            body.contains(wanted),
-            "the reviewer's brief carries `{wanted}`:\n{body}"
-        );
-    }
-    assert!(
-        !body.contains("{"),
-        "and nothing is left unresolved:\n{body}"
-    );
-    // A review handed no test command names the absence where the command
-    // goes, and it is the landing's own NOT TESTED it names.
-    let untested = review(None);
-    assert!(
-        untested.contains(brief::NO_TEST) && untested.contains("NOT TESTED"),
-        "the reviewer's brief names the absence:\n{untested}"
-    );
-    assert!(!untested.contains("make the-whole-suite"));
-
-    // The template's own placeholder list, read off the shipped file: a name
-    // the renderer does not offer would be a refusal rather than a literal, so
-    // this is the guard against a template that grew one.
-    let template = shipped(brief::REVIEW_BRIEF);
-    let mut names = placeholders(&template);
-    names.sort();
-    names.dedup();
-    assert_eq!(
-        names,
-        vec!["delivery", "item", "item_id", "project", "rules", "size", "suite"],
-        "the template writes exactly the placeholders the renderer resolves"
-    );
-
-    // The registry that publishes it, off the same embedded set.
-    let registry = shipped(fleet_core::registry::REGISTRY);
-    assert!(
-        registry.contains("assets/review-brief.md"),
-        "and the registry names it:\n{registry}"
-    );
-}
-
 fn placeholders(template: &str) -> Vec<String> {
     let mut names = Vec::new();
     let mut rest = template;
@@ -840,7 +765,7 @@ fn the_real_store_renders_the_same_brief_as_the_one_held_in_memory() {
     let item = scratch.item("a ready item");
     let out = scratch.bd(&["note", &item, ORDER, "--actor", BY]);
     assert!(out.status.success(), "the order note is written");
-    let index = dispatch::index(BY, dispatch::KIND, None, AT, None);
+    let index = dispatch::index(BY, dispatch::KIND, None, AT);
     let out = scratch.bd(&["update", &item, "--metadata", &index, "--actor", BY]);
     assert!(out.status.success(), "the order index is written");
 

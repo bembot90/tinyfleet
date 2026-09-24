@@ -31,12 +31,6 @@ use crate::store::{Item, Store, StoreError};
 /// form for giving work.
 pub const KIND: &str = "dispatch";
 
-/// The kind a flight writes when it hands a DELIVERED item to a reviewer seat
-/// (flights PRD R14). It is an order like any other — the seat holds the item
-/// and `fleet review` runs against one it holds — and the kind is what tells a
-/// reader which of the two the seat was given.
-pub const REVIEW_KIND: &str = "review";
-
 /// What the ring carries. It says where to look and never what to do: the
 /// record is the item, and a message that summarised it would be a second copy
 /// of the order that could disagree with the first.
@@ -63,17 +57,16 @@ pub struct Order<'a> {
     /// The clock, taken by the caller: core reads none.
     pub at: &'a str,
     /// A brief already written, handed to the spawn as the first turn instead
-    /// of one rendered here (flights PRD Q1, § The flight directory).
+    /// of one rendered here.
     ///
-    /// A flight's brief is PINNED at takeoff and the directory's hash covers
-    /// it, so the file the seat reads has to be that file and not a re-render
-    /// of an item that has moved since. The order itself is unchanged: the note
-    /// and the index are written here either way, and the pinned brief says so
-    /// rather than standing in for one.
+    /// A caller that pinned a brief needs the seat to read that file and not a
+    /// re-render of an item that has moved since. The order itself is
+    /// unchanged: the note and the index are written here either way, and the
+    /// pinned brief says so rather than standing in for one.
     pub brief: Option<&'a Path>,
     /// The commit the spawned seat's worktree is cut from, where the caller
-    /// names one (flights PRD R11, R14). It rides BESIDE the pinned brief
-    /// because both are the flight's, and both reach the spawn in one act.
+    /// names one. It rides BESIDE the pinned brief because both reach the
+    /// spawn in one act.
     pub base: Option<&'a str>,
     /// The model the spawned seat runs on, where the caller names one; `None`
     /// leaves the fleet's policy default.
@@ -85,13 +78,13 @@ pub struct Order<'a> {
     pub touched: Option<&'a str>,
 }
 
-/// A dispatch that stopped, with the one outcome a flight has to tell from the
+/// A dispatch that stopped, with the one outcome a caller has to tell from the
 /// others carried as a value.
 ///
 /// A spawn the belt refused is a HOLD — the order withdrawn, the item retried
 /// on the next call — and every other stop is not. A caller that read the two
 /// apart by matching the refusal's prose would go quiet the day the sentence
-/// changed (flights PRD R9).
+/// changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refused {
     pub stop: Stop,
@@ -528,20 +521,12 @@ fn write_order(
 /// dispatch to a transient seat carries no seat until the spawn answers with
 /// one.
 pub fn index_payload(order: &Order, seat: Option<&str>) -> String {
-    index(order.by, KIND, seat, order.at, None)
+    index(order.by, KIND, seat, order.at)
 }
 
-/// The order index, as the one function that writes its shape.
-///
-/// A flight writes two orders this verb cannot: the reviewer's, whose item
-/// already carries an order, and a return's, whose ordinal says which resume it
-/// is. Both are the same four fields plus the ordinal, and a second place that
-/// built them would be a second shape the read-back could disagree with.
-///
-/// `ordinal` is ABSENT ON A FIRST DISPATCH rather than 1: the count a reader
-/// wants is the fold's, and a key written only where there is something to say
-/// cannot go stale against it.
-pub fn index(by: &str, kind: &str, seat: Option<&str>, at: &str, ordinal: Option<u64>) -> String {
+/// The order index, as the one function that writes its shape: a second place
+/// that built it would be a second shape the read-back could disagree with.
+pub fn index(by: &str, kind: &str, seat: Option<&str>, at: &str) -> String {
     let mut index = serde_json::Map::new();
     index.insert("by".into(), by.into());
     index.insert("kind".into(), kind.into());
@@ -549,9 +534,6 @@ pub fn index(by: &str, kind: &str, seat: Option<&str>, at: &str, ordinal: Option
         index.insert("seat".into(), seat.into());
     }
     index.insert("at".into(), at.into());
-    if let Some(ordinal) = ordinal {
-        index.insert("ordinal".into(), ordinal.into());
-    }
     serde_json::Value::Object(
         [("orders".to_string(), serde_json::Value::Object(index))]
             .into_iter()

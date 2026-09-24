@@ -18,7 +18,7 @@ fn the_census_names_only_the_six_tables() {
     }
     assert_eq!(
         policy::CENSUS.len(),
-        25,
+        18,
         "the census is read, not empty — a shrunk list would satisfy the arm above saying nothing"
     );
 }
@@ -85,44 +85,70 @@ fn the_gates_table_names_every_list_the_production_write_class_reads() {
     assert!(!policy::in_census("gates", "prod_workflows"));
 }
 
-/// The flight keys `fly` reads at takeoff, and the one the superseded frame
-/// left behind.
+/// The flight table's three keys something still reads: the rules `fleet
+/// status` prints, and the landing lane's two — where the fleet's own worktree
+/// for a project goes, and how long a rerun waits for the box.
 #[test]
-fn the_flight_table_carries_the_takeoff_keys_and_not_the_superseded_one() {
-    for key in [
-        "max_open",
-        "max_seats",
-        "review",
-        "escape_window_days",
-        "rules",
-        // The cap a crashed item's re-dispatches are counted against (flights
-        // PRD R34), read off the same pinned snapshot.
-        "max_crashes",
-        // The landing lane's two (flights PRD R16, R18): where the fleet's own
-        // worktree for a project goes, and how long a rerun waits for the box.
-        "lanes",
-        "rerun_wait_seconds",
-    ] {
+fn the_flight_table_carries_only_the_keys_something_reads() {
+    for key in ["rules", "lanes", "rerun_wait_seconds"] {
         assert!(
             policy::in_census("core.flight", key),
-            "[core.flight] {key} is read at takeoff and the census does not name it"
+            "[core.flight] {key} is read and the census does not name it"
         );
     }
     assert!(
         !policy::in_census("core.flight", "max_items"),
-        "the plan is the list, so no verb reads a cap on how many items `fly` may take"
-    );
-    assert!(
-        policy::in_census("project", "trunk"),
-        "[project] trunk is the strategy `fly` refuses by name"
+        "no verb reads a cap on how many items a flight may take"
     );
     // The run's own cap sits in its own table, and neither spelling reaches the
-    // other's: a fleet raising one has not raised the other.
+    // other's.
     assert!(policy::in_census("core.run", "max_open"));
     assert!(
         !policy::in_census("core.flight", "max_runs"),
         "the run's cap is `[core.run] max_open` and not a key under the flight's table"
     );
+}
+
+/// The keys the flight engine read, left behind when it moved out of core:
+/// none is a pair any verb may read, and each is one [`policy::RETIRED`] names
+/// — so a file still setting one is refused by name rather than read as absent
+/// by a person who believes it is in force.
+#[test]
+fn the_keys_nothing_reads_are_not_in_the_census_and_each_is_refused_by_name() {
+    for (table, key) in [
+        ("core", "max_returns"),
+        ("core.flight", "max_open"),
+        ("core.flight", "max_seats"),
+        ("core.flight", "review"),
+        ("core.flight", "escape_window_days"),
+        ("core.flight", "max_crashes"),
+        ("project", "trunk"),
+    ] {
+        assert!(
+            !policy::in_census(table, key),
+            "[{table}] {key} is not a pair a verb may read"
+        );
+        let config: toml::Table = format!("[{table}]\n{key} = 3\n")
+            .parse()
+            .expect("the fixture config parses");
+        let found = policy::moved(&config);
+        assert_eq!(found.len(), 1, "[{table}] {key} is found set: {found:?}");
+        assert_eq!(
+            found[0].to_string(),
+            format!("[{table}] {key} is no longer read — delete it"),
+            "the line names the key and says to delete it"
+        );
+    }
+    assert_eq!(policy::RETIRED.len(), 7);
+
+    // The control: the keys beside them that ARE read are not refused, in the
+    // same tables — so the seven answers above are about the list rather than
+    // about a lookup that refuses any key under a table it names.
+    let read: toml::Table = "[core]\nreviewer = \"a-reviewer\"\n\n[core.flight]\n\
+                             lanes = \"/l\"\n\n[project]\nprimary = \"/p\"\n"
+        .parse()
+        .expect("the fixture config parses");
+    assert_eq!(policy::moved(&read), Vec::new());
 }
 
 /// The `project` table's two paths, which a spawn resolves the worktrees

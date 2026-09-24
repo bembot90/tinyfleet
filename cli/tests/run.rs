@@ -1607,6 +1607,33 @@ fn a_policy_setting_a_gates_test_command_opens_no_run_and_names_where_it_moved()
     }
 }
 
+/// A policy that still sets a key NOTHING READS opens no run: the refusal names
+/// the key and says to delete it, before anything is written — a cap nothing
+/// enforces is one a person believes is in force. One key at the top of the
+/// policy and one a table down, so the refusal is not a reading of one table.
+#[test]
+fn a_policy_setting_a_key_nothing_reads_opens_no_run_and_names_it() {
+    for (label, section, named) in [
+        (
+            "returns",
+            "[core]\nmax_returns = 3\n",
+            "[core] max_returns is no longer read — delete it",
+        ),
+        (
+            "seats",
+            "[core.flight]\nmax_seats = 2\n",
+            "[core.flight] max_seats is no longer read — delete it",
+        ),
+    ] {
+        let rig = Rig::new(
+            &format!("retired-{label}"),
+            &Pack::running(ECHOES_AND_WAITS),
+            &policy_setting(section),
+        );
+        refuses(&rig, &["run", &rig.workflow(ONE), "--by", BY], named);
+    }
+}
+
 /// The stream a re-run in this process appends to: the same file, through the
 /// same log type, the binary's own writer uses.
 struct Stream(PathBuf);

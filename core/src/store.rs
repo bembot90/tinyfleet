@@ -99,11 +99,6 @@ pub struct Orders {
     pub kind: Option<String>,
     pub seat: Option<String>,
     pub at: Option<String>,
-    /// Which resume this order is, where the writer named one: a return's
-    /// dispatch carries the return ordinal (flights PRD R11). Absent on a first
-    /// dispatch, because the count a reader wants is the fold's and a key that
-    /// said `1` would be a second copy of it.
-    pub ordinal: Option<u64>,
 }
 
 /// One item assigned to a seat, as the seat's list answers it.
@@ -517,7 +512,6 @@ fn orders_of(row: &serde_json::Value) -> (Option<Orders>, bool) {
             kind: read("kind"),
             seat: read("seat"),
             at: read("at"),
-            ordinal: table.get("ordinal").and_then(serde_json::Value::as_u64),
         }),
         true,
     )

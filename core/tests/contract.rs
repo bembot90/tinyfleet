@@ -215,10 +215,6 @@ fn orders(store: &dyn Store, _: &Path, which: &str) {
     assert_eq!(index.kind.as_deref(), Some("dispatch"), "{which}");
     assert_eq!(index.seat.as_deref(), Some("a-seat"), "{which}");
     assert_eq!(index.at.as_deref(), Some("2026-09-13T00:00:00Z"), "{which}");
-    assert_eq!(
-        index.ordinal, None,
-        "{which}: a key nobody wrote is absent and not zero"
-    );
 
     store.unset_orders(&item, BY).expect("the withdrawal lands");
     let read = store.show(&item).expect("the item reads");

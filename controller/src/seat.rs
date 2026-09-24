@@ -169,10 +169,9 @@ fn clear_halt_is_answerable(machine_dir: &Path, seat: &str) -> Result<(), (u8, S
 /// Whether a collector is plainly consuming this machine's fleet.
 ///
 /// THE COLLECTOR'S OWN RULE and not a second one beside it: it answers off the
-/// same [`fresh_projection`] a rest is refused by, so `fleet fly` deciding
-/// whether to run the advance in the foreground and `fleet event rest` deciding
-/// whether anybody would read it cannot disagree about whether a controller is
-/// up (flights PRD R7, S1b).
+/// same [`fresh_projection`] a rest is refused by, so a caller asking whether a
+/// controller is up and `fleet event rest` deciding whether anybody would read
+/// it cannot disagree.
 ///
 /// A projection that is absent, unparsable, undatable or older than
 /// [`COLLECTOR_STALE_POLLS`] intervals all answer `false` — none of them may be

@@ -261,7 +261,6 @@ mod tests {
                 kind: Some(String::from("run")),
                 seat: Some(SEAT.to_string()),
                 at: Some(String::from("2026-09-14T10:40:39Z")),
-                ordinal: None,
             }),
             has_orders_key: true,
             ..Item::default()

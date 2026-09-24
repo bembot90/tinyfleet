@@ -33,9 +33,8 @@ pub const TABLES: [&str; 6] = [
 
 /// The pairs the verbs and the guards may read. `guards` is a map keyed by guard
 /// name, so its entry is the pattern every guard's row matches.
-pub const CENSUS: [(&str, &str); 25] = [
+pub const CENSUS: [(&str, &str); 18] = [
     ("core", "reviewer"),
-    ("core", "max_returns"),
     // The runs open at once. It is `[core.run]` and not a second key under
     // `[core.flight]` because a run is not a flight: the two caps are set by
     // different people for different reasons, and a fleet that flies one flight
@@ -47,20 +46,9 @@ pub const CENSUS: [(&str, &str); 25] = [
     // workflow and a crashing dispatched seat are two failures with two causes,
     // and a fleet that tolerates one has said nothing about the other.
     ("core.run", "max_crashes"),
-    // The flight keys `fly` reads at takeoff. `max_open` caps the open
-    // flights, `review` names the review policy pinned into the snapshot,
-    // `escape_window_days` rides the same snapshot, and `rules` is the
-    // `[[core.flight.rules]]` array the matcher fills an item's absent keys
-    // from (flights PRD R4, S5b).
-    ("core.flight", "max_open"),
-    ("core.flight", "max_seats"),
-    ("core.flight", "review"),
-    ("core.flight", "escape_window_days"),
+    // The `[[core.flight.rules]]` array, which `fleet status` prints off the
+    // policy in force.
     ("core.flight", "rules"),
-    // How many times a crashed item is re-dispatched before it parks (flights
-    // PRD R34). The advance reads it off the flight's own pinned snapshot, like
-    // every other cap in force.
-    ("core.flight", "max_crashes"),
     // The landing lane's two keys (flights PRD R16, R18; S3d). `lanes` is the
     // directory the fleet's own worktrees sit in, read against the machine
     // directory; `rerun_wait_seconds` bounds how long a rerun waits for the
@@ -100,9 +88,6 @@ pub const CENSUS: [(&str, &str); 25] = [
     // the project root when the file names neither.
     ("project", "primary"),
     ("project", "worktrees"),
-    // The trunk strategy, default `advance`; `fly` refuses any other value by
-    // name (flights PRD R5).
-    ("project", "trunk"),
 ];
 
 /// The pairs a policy file may NOT set, each with where its value is set
@@ -129,42 +114,84 @@ pub const MOVED: [(&str, &str, &str); 2] = [
     ),
 ];
 
-/// A pair [`MOVED`] names, found set in a policy file.
+/// The pairs a policy file may NOT set because nothing reads them any more:
+/// the keys the flight engine read, left behind when it moved out of core.
+///
+/// Refused for [`MOVED`]'s reason — a key nothing reads is a gate a person
+/// believes is in force — and with nowhere to set the value instead, because
+/// nothing in the fleet enforces it now.
+pub const RETIRED: [(&str, &str); 7] = [
+    ("core", "max_returns"),
+    ("core.flight", "max_open"),
+    ("core.flight", "max_seats"),
+    ("core.flight", "review"),
+    ("core.flight", "escape_window_days"),
+    ("core.flight", "max_crashes"),
+    ("project", "trunk"),
+];
+
+/// A pair [`MOVED`] or [`RETIRED`] names, found set in a policy file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Moved {
     pub table: &'static str,
     pub key: &'static str,
-    /// Where the value is set instead, as a person reads it.
-    pub to: &'static str,
+    /// Where the value is set instead, as a person reads it. `None` is a
+    /// [`RETIRED`] pair, whose value is set nowhere.
+    pub to: Option<&'static str>,
 }
 
 impl fmt::Display for Moved {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "[{}] {} is not project policy, and nothing reads it — a test command is the \
-             workflow's: set {}, and delete the key",
-            self.table, self.key, self.to
-        )
+        match self.to {
+            Some(to) => write!(
+                f,
+                "[{}] {} is not project policy, and nothing reads it — a test command is the \
+                 workflow's: set {to}, and delete the key",
+                self.table, self.key
+            ),
+            None => write!(
+                f,
+                "[{}] {} is no longer read — delete it",
+                self.table, self.key
+            ),
+        }
     }
 }
 
-/// Every [`MOVED`] pair this config sets, in that table's order.
+/// Every [`MOVED`] pair this config sets, in that table's order, then every
+/// [`RETIRED`] one in its own.
 ///
 /// A key present with ANY value counts, an empty string included: the refusal
 /// is about where the setting lives, and a blank one in the old place is still
 /// a person looking for it there.
 pub fn moved(config: &toml::Table) -> Vec<Moved> {
-    MOVED
-        .iter()
-        .filter(|(table, key, _)| {
-            config
-                .get(*table)
-                .and_then(toml::Value::as_table)
-                .is_some_and(|t| t.contains_key(*key))
-        })
-        .map(|(table, key, to)| Moved { table, key, to })
+    let moved = MOVED.iter().map(|(table, key, to)| Moved {
+        table,
+        key,
+        to: Some(to),
+    });
+    let retired = RETIRED.iter().map(|(table, key)| Moved {
+        table,
+        key,
+        to: None,
+    });
+    moved
+        .chain(retired)
+        .filter(|found| sets(config, found.table, found.key))
         .collect()
+}
+
+/// Whether the config holds this key under this table, a dotted table walked
+/// one segment at a time.
+fn sets(config: &toml::Table, table: &str, key: &str) -> bool {
+    let mut here = config;
+    for segment in table.split('.') {
+        match here.get(segment).and_then(toml::Value::as_table) {
+            Some(next) => here = next,
+            None => return false,
+        }
+    }
+    here.contains_key(key)
 }
 
 /// A pair no census row covers. The reader hands this back instead of the

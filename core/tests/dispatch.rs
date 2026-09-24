@@ -566,7 +566,7 @@ fn ordered(rig: &Rig, item: &str, seat: &str) {
         .store()
         .set_orders(
             item,
-            &dispatch::index("someone", dispatch::KIND, Some(seat), "then", None),
+            &dispatch::index("someone", dispatch::KIND, Some(seat), "then"),
             "someone",
         )
         .expect("the order index lands");

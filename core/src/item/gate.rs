@@ -1,6 +1,5 @@
 //! `fleet ask` and `fleet answer` — the seat's blocking question and the reply
-//! that settles it, over the store's own gate (flights PRD R19 to R22, S4; cli
-//! PRD § `fleet ask`, § `fleet answer`).
+//! that settles it, over the store's own gate.
 //!
 //! ONE OBJECT AND ONE EVENT. A park is the store's gate on the item plus
 //! `item.parked`, whoever raised it, so one listing shows everything owed and
@@ -36,12 +35,10 @@ use std::path::Path;
 use crate::item::brief::Packs;
 use crate::item::deliver::held_item;
 use crate::item::dispatch::refuse_an_epic;
-use crate::item::review::last_verdict;
 use crate::item::run;
 use crate::item::{
-    control_token, label_value, last_answer, last_marker_at, last_park, marker_block, opens_with,
-    render, Events, Git, Project, Stop, ANSWER_MARKERS, GATE_RESOLVED, ITEM_PARKED, PARK_MARKERS,
-    TRUNK_BRANCH, VERDICT_MARKERS,
+    control_token, label_value, last_answer, last_park, marker_block, opens_with, render, Events,
+    Git, Project, Stop, ANSWER_MARKERS, GATE_RESOLVED, ITEM_PARKED, PARK_MARKERS, TRUNK_BRANCH,
 };
 use crate::store::{Item, Store, BD};
 
@@ -71,24 +68,14 @@ pub const ANSWER_NOTE: &str = "assets/answer-note.md";
 /// text lives inside a park region rather than opening one of its own.
 pub const QUESTION_MARKERS: [&str; 1] = ["QUESTION"];
 
-/// The section a resumed seat's brief carries, whose block is in the park note's
-/// own template (flights PRD R22, decision D2).
-pub const RESUME_SECTION: &str = "RESUME";
-
 /// What the park note's reason reads as for each of the parks raised here: a
-/// seat's own question, a gate the item declared before takeoff, and a run the
-/// controller stopped executing at `[core.run] max_crashes`, named by the key
-/// that stopped it.
+/// seat's own question, and a run the controller stopped executing at
+/// `[core.run] max_crashes`, named by the key that stopped it.
 pub const ASK: &str = "ask";
-pub const DECLARED: &str = "gate";
 pub const CAPPED: &str = "max_crashes";
 
-/// The three labels the park note and the answer note carry their values under.
-pub const BRANCH: &str = "branch";
-pub const COMMIT: &str = "commit";
+/// The label the park note carries the gate an answer resolves under.
 pub const GATE: &str = "gate";
-pub const LETTER: &str = "letter";
-pub const TEXT: &str = "text";
 
 // ---- the question ------------------------------------------------------------
 
@@ -655,131 +642,6 @@ fn answer_note(
             "`{ANSWER_NOTE}` writes `{{{name}}}`, which is not a placeholder this verb resolves"
         ))
     })
-}
-
-// ---- the resume (R22) --------------------------------------------------------
-
-/// What an answered park hands the next takeoff: where to cut the seat, and
-/// what to tell it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Resume {
-    pub branch: String,
-    pub commit: String,
-    pub letter: String,
-    pub question: String,
-    /// Each option as one rendered line, in the question's own order.
-    pub options: Vec<String>,
-    /// The letter with the option it named and whatever was said beyond it.
-    pub answer: String,
-}
-
-/// The park this item is resuming from: its last one, where a person's answer
-/// stands AFTER it.
-///
-/// The two are told apart by which came last and not by their content, so a
-/// park raised again after an answer is not an answered park.
-pub fn resume_of(notes: &str) -> Option<Resume> {
-    let parked = last_marker_at(notes, &PARK_MARKERS)?;
-    let answered = last_marker_at(notes, &ANSWER_MARKERS)?;
-    if answered < parked {
-        return None;
-    }
-    let park = last_park(notes)?;
-    let reply = last_answer(notes)?;
-    let letter = label_value(&reply, LETTER)?;
-    let said = label_value(&reply, TEXT).filter(|text| text != UNREAD);
-    let options = options_in(&park);
-    let named = options
-        .iter()
-        .find(|(carried, _)| carried.to_string() == letter)
-        .map(|(_, text)| text.clone());
-    Some(Resume {
-        branch: label_value(&park, BRANCH)?,
-        commit: label_value(&park, COMMIT)?,
-        answer: match (named, said) {
-            (Some(option), Some(said)) => format!("{letter}. {option} — {said}"),
-            (Some(option), None) => format!("{letter}. {option}"),
-            (None, Some(said)) => format!("{letter} — {said}"),
-            (None, None) => letter.clone(),
-        },
-        letter,
-        question: question_in(&park),
-        options: options
-            .iter()
-            .map(|(carried, said)| format!("{carried}. {said}"))
-            .collect(),
-    })
-}
-
-/// The question a park region carries, with its marker stripped.
-fn question_in(park: &str) -> String {
-    park.lines()
-        .map(str::trim_start)
-        .find(|line| opens_with(line, &QUESTION_MARKERS))
-        .map(|line| line[QUESTION_MARKERS[0].len()..].trim().to_string())
-        .unwrap_or_else(|| UNREAD.to_string())
-}
-
-/// The section a resumed seat reads above its item, from the park note's own
-/// template (decision D2).
-pub fn resume_section(packs: &Packs, item: &str, resume: &Resume) -> Result<String, Stop> {
-    let template = packs.read(PARK_NOTE)?;
-    let block = marker_block(&template, RESUME_SECTION).ok_or_else(|| {
-        Stop::could_not_tell(format!(
-            "`{PARK_NOTE}` carries no `{RESUME_SECTION}` block — the pack's park grammar names one"
-        ))
-    })?;
-    render(
-        &block,
-        &[
-            ("item", item),
-            ("commit", &resume.commit),
-            ("branch", &resume.branch),
-            ("question", &resume.question),
-            ("options", &resume.options.join("\n")),
-            ("answer", &resume.answer),
-        ],
-    )
-    .map_err(|name| {
-        Stop::could_not_tell(format!(
-            "`{PARK_NOTE}` writes `{{{name}}}`, which is not a placeholder this verb resolves"
-        ))
-    })
-}
-
-/// The commit a resumed item lands at WITH NO SEAT: its park is answered and
-/// its last verdict is an ACCEPTED naming the commit that park recorded
-/// (flights PRD R22).
-///
-/// A verdict that stands over the work a park preserved is a verdict nothing
-/// has invalidated — the commit is the same one — so what the item is owed is
-/// the landing and not another builder.
-pub fn accepted_over_the_park(notes: &str) -> Option<String> {
-    let resume = resume_of(notes)?;
-    let verdict = last_verdict(notes)?;
-    let first = verdict.lines().next()?;
-    if !opens_with(first, &[VERDICT_MARKERS[0]]) || !first.contains(&resume.commit) {
-        return None;
-    }
-    Some(resume.commit)
-}
-
-/// Whether a person has already answered a park this item took for this reason.
-///
-/// The guard a DECLARED gate is read against (R23): a step parks its item once,
-/// and an item resumed past its own gate must not meet it again on the flight
-/// that resumed it.
-pub fn answered_at(notes: &str, reason: &str) -> bool {
-    let lines: Vec<&str> = notes.lines().collect();
-    let Some(parked) = lines
-        .iter()
-        .rposition(|line| opens_with(line, &PARK_MARKERS) && line.trim_end().ends_with(reason))
-    else {
-        return false;
-    };
-    lines[parked + 1..]
-        .iter()
-        .any(|line| opens_with(line, &ANSWER_MARKERS))
 }
 
 // ---- the stops ---------------------------------------------------------------

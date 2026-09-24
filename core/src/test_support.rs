@@ -285,9 +285,6 @@ fn orders_json(orders: &Orders) -> serde_json::Value {
             index.insert(String::from(key), serde_json::Value::String(value.clone()));
         }
     }
-    if let Some(ordinal) = orders.ordinal {
-        index.insert(String::from("ordinal"), serde_json::Value::from(ordinal));
-    }
     serde_json::Value::Object(index)
 }
 

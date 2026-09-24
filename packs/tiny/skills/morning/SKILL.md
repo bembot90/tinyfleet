@@ -73,9 +73,8 @@ its log; answering it means reading the log, not the summary.
 ### 4. Escapes
 
 An escape is a defect found after its item landed. **No verb lists them** — you
-read them off the store's own graph: items filed within the window
-`[core.flight] escape_window_days` sets, traced back to the landing they came
-off. They are not gates and nothing parks on them, but they are what the person
+read them off the store's own graph: items filed since the last morning,
+traced back to the landing they came off. They are not gates and nothing parks on them, but they are what the person
 most wants to see first thing, so each goes in the list beside that landing.
 
 ### 5. Hand over one list, and stop

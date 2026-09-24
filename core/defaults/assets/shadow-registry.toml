@@ -46,10 +46,6 @@ path = "assets/brief.md"
 purpose = "the first turn a dispatched seat reads, and the contract it works under"
 
 [[shadow]]
-path = "assets/review-brief.md"
-purpose = "the first turn a spawned reviewer reads, carrying the delivery, the size line, the item and the one verdict it may write"
-
-[[shadow]]
 path = "assets/dispatch-note.md"
 purpose = "the one line an order writes on an item, and the words a reader greps for"
 
@@ -67,7 +63,7 @@ purpose = "the note a landing renders, with the one line a script reads the land
 
 [[shadow]]
 path = "assets/park-note.md"
-purpose = "the note a park renders, carrying the question, the branch, the commit and the gate the answer resolves, and the RESUME section a resumed seat's brief carries"
+purpose = "the note a park renders, carrying the question, the branch, the commit and the gate the answer resolves"
 
 [[shadow]]
 path = "assets/question-note.md"

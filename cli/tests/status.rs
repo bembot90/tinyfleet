@@ -23,9 +23,6 @@ const POLICY_WITH_RULES: &str = "\
 [controller]
 rest_threshold_tokens = 1000
 
-[core.flight]
-max_open = 1
-
 [[core.flight.rules]]
 match = { type = \"task\", labels = [\"flight\"] }
 review = \"none\"
@@ -38,9 +35,6 @@ gate = \"review\"
 const POLICY_WITHOUT_RULES: &str = "\
 [controller]
 rest_threshold_tokens = 1000
-
-[core.flight]
-max_open = 1
 ";
 
 struct Rig {
