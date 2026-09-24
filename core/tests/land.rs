@@ -33,7 +33,7 @@ use fleet_core::item::{
     Git, Project, Stop, GATE_READ, ITEM_LANDED, LANDING_MARKERS, TRUNK, TRUNK_BRANCH,
     VERDICT_MARKERS,
 };
-use fleet_core::store::{Bd, Item, Row, Store, StoreError};
+use fleet_core::store::{AssignedItem, Bd, Item, Store, StoreError};
 use fleet_core::test_support::Board;
 
 const REVIEWER: &str = "a-reviewer";
@@ -417,7 +417,7 @@ impl Store for Doctored<'_> {
         self.inner.show_text(item)
     }
 
-    fn assigned_to(&self, seat: &str) -> Result<Vec<Row>, StoreError> {
+    fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
         self.inner.assigned_to(seat)
     }
 

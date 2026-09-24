@@ -86,7 +86,7 @@ pub struct Item {
 pub struct NewItem<'a> {
     pub title: &'a str,
     pub description: &'a str,
-    /// The store's own spelling — `task` for a flight's record.
+    /// The store's own spelling — `task` for a run's record.
     pub item_type: &'a str,
     pub labels: &'a [&'a str],
 }
@@ -106,9 +106,9 @@ pub struct Orders {
     pub ordinal: Option<u64>,
 }
 
-/// One row of a seat's list.
+/// One item assigned to a seat, as the seat's list answers it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Row {
+pub struct AssignedItem {
     pub id: String,
     pub status: String,
     /// Whether `metadata` carried an `orders` key, read off THIS ROW and not
@@ -149,15 +149,11 @@ pub trait Store {
     fn show(&self, item: &str) -> Result<Item, StoreError>;
 
     /// The open items carrying this label, by id.
-    ///
-    /// Ids and not documents: the list read answers no `metadata`, so a caller
-    /// that needs an item's flight object reads it with [`Store::show`] and
-    /// this answers which items to ask about.
     fn open_labelled(&self, label: &str) -> Result<Vec<String>, StoreError>;
 
     /// One item filed, answered as the id the store gave it.
     ///
-    /// A flight's record is titled by its own id, which nothing knows until
+    /// A run's record is titled by its own id, which nothing knows until
     /// this returns — so the title in [`NewItem`] is what the record carries
     /// until the caller retitles it, and the caller's read-back is what says
     /// the second write landed.
@@ -169,8 +165,8 @@ pub trait Store {
     /// so a seat and a person read the same text.
     fn show_text(&self, item: &str) -> Result<String, StoreError>;
 
-    /// Every row the store holds against this seat.
-    fn assigned_to(&self, seat: &str) -> Result<Vec<Row>, StoreError>;
+    /// Every item the store holds against this seat.
+    fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError>;
 
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError>;
 
@@ -184,7 +180,7 @@ pub trait Store {
     ///
     /// It is the SIBLING of that method and not a generalisation of it: the
     /// write MERGES at the top level — measured on bd 1.2.2, where a second
-    /// write of a different key kept the first — so a flight's object never
+    /// write of a different key kept the first — so a run's object never
     /// erases the order index beside it, and the two keys keep one writer each.
     fn set_metadata(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError>;
 
@@ -575,8 +571,8 @@ impl Store for Bd {
 
     /// `-n 0` for the same reason the ready read carries it: this answer's
     /// default cap is 50 rows and a truncated list reads exactly like a whole
-    /// one, so past fifty open flight records a plan would be admitted onto a
-    /// list an open flight already holds.
+    /// one, so past fifty open run records a run would be started past the
+    /// `[core.run] max_open` cap it is measured against.
     fn open_labelled(&self, label: &str) -> Result<Vec<String>, StoreError> {
         Ok(self
             .listed(&[
@@ -613,12 +609,12 @@ impl Store for Bd {
     /// default cap is 50 rows and a truncated list reads exactly like a whole
     /// one, so past fifty items on one seat a retire misses the orders beyond
     /// row 50 and the next seat of that name inherits them.
-    fn assigned_to(&self, seat: &str) -> Result<Vec<Row>, StoreError> {
+    fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
         Ok(self
             .listed(&["list", "-a", seat, "--json", "-n", "0"])?
             .iter()
             .filter_map(|row| {
-                Some(Row {
+                Some(AssignedItem {
                     id: text_field(row, "id")?,
                     status: text_field(row, "status").unwrap_or_default(),
                     has_orders_key: orders_of(row).1,

@@ -23,7 +23,7 @@ use fleet_core::item::{
     control_token, label_value, last_delivery, Change, Git, Project, Ring, RingOutcome, Stop,
     ITEM_DELIVERED, TRUNK,
 };
-use fleet_core::store::{Item, Row, Store, StoreError};
+use fleet_core::store::{AssignedItem, Item, Store, StoreError};
 
 const REVIEWER: &str = "a-reviewer";
 const AT: &str = "2026-09-09T04:05:06Z";
@@ -177,7 +177,7 @@ impl Store for Doctored<'_> {
         self.inner.show_text(item)
     }
 
-    fn assigned_to(&self, seat: &str) -> Result<Vec<Row>, StoreError> {
+    fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
         self.inner.assigned_to(seat)
     }
 

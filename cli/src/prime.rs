@@ -228,8 +228,8 @@ fn print_items(project_root: &Path, seat: &str) {
 ///
 /// NOT `fleet_core::store::Bd`, which makes this same call: that reader waits
 /// on `bd` without a bound, and a session-start hook needs a deadline (see
-/// `ITEMS_TIMEOUT`). It also answers `Row { id, status }`, and this line
-/// carries the title.
+/// `ITEMS_TIMEOUT`). It also answers `AssignedItem`, which carries no title,
+/// and this line carries the title.
 fn items(project_root: &Path, seat: &str) -> Result<Vec<(String, String)>, String> {
     let bin = resolve_bd()?;
     let mut cmd = Command::new(bin);

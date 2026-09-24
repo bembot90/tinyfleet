@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use crate::store::{Item, NewItem, Orders, Row, Store, StoreError};
+use crate::store::{AssignedItem, Item, NewItem, Orders, Store, StoreError};
 
 /// Names one board's directory apart from the next in the same process.
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -53,7 +53,7 @@ pub struct FakeStore {
     pub metadata: Mutex<BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
     pub text: Mutex<BTreeMap<String, String>>,
     /// Rows answered for a seat on top of the items assigned to it here.
-    pub held: BTreeMap<String, Vec<Row>>,
+    pub held: BTreeMap<String, Vec<AssignedItem>>,
     pub writes: Mutex<Vec<String>>,
     /// The gates raised, in the order they were raised: the item and the
     /// question. The nth gate's id is `gate-<n>`, so a note naming one and the
@@ -478,7 +478,7 @@ impl Store for FakeStore {
             .unwrap_or_default())
     }
 
-    fn assigned_to(&self, seat: &str) -> Result<Vec<Row>, StoreError> {
+    fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
         if let Some(refused) = self.refuse() {
             return refused;
         }
@@ -491,7 +491,7 @@ impl Store for FakeStore {
         {
             let mine = item.assignee.as_deref() == Some(seat);
             if mine && !rows.iter().any(|row| row.id == item.id) {
-                rows.push(Row {
+                rows.push(AssignedItem {
                     id: item.id.clone(),
                     status: item.status.clone(),
                     // Off the METADATA this store would answer a read with, and
@@ -676,7 +676,7 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     fn show_text(&self, item: &str) -> Result<String, StoreError> {
         (**self).show_text(item)
     }
-    fn assigned_to(&self, seat: &str) -> Result<Vec<Row>, StoreError> {
+    fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
         (**self).assigned_to(seat)
     }
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {

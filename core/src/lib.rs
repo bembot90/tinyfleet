@@ -81,11 +81,7 @@
 //! `run` is the whole run lifecycle over a workflow a pack carries: the
 //! resolution through the layers, the run directory with every input pinned and
 //! hashed onto the record, the pack's bundle and run commands, and the exit
-//! table its process answers on. `fleet plan`, `fleet fly`, `fleet autopilot`
-//! and the flight advance left core with it (fleet-layers.md § What moves,
-//! workflows-formula-fate): composition is a workflow's, and what a flight
-//! pinned, locked, capped and resumed is what a run pins, locks, caps and
-//! re-runs.
+//! table its process answers on.
 //!
 //! `seat` is the record half of the verbs that end a seat, and `retire` is
 //! the one it carries: the orders the seat still holds are withdrawn — the

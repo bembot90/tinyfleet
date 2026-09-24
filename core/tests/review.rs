@@ -20,7 +20,7 @@ use fleet_core::item::review::{self, Mode, Verdict, Wiring};
 use fleet_core::item::{
     Change, Git, Project, Ring, RingOutcome, ITEM_RETURNED, ITEM_REVIEWED, VERDICT_ACCEPTED,
 };
-use fleet_core::store::{Bd, Item, Row, Store, StoreError};
+use fleet_core::store::{AssignedItem, Bd, Item, Store, StoreError};
 use fleet_core::test_support::Board;
 
 const AT: &str = "2026-09-09T04:05:06Z";
@@ -189,7 +189,7 @@ impl Store for Doctored<'_> {
         self.inner.show_text(item)
     }
 
-    fn assigned_to(&self, seat: &str) -> Result<Vec<Row>, StoreError> {
+    fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
         self.inner.assigned_to(seat)
     }
 

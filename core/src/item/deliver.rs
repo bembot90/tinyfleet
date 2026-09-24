@@ -31,7 +31,7 @@ use crate::item::{
     Stop, DELIVERY_MARKERS, ITEM_DELIVERED, TRUNK, TRUNK_BRANCH,
 };
 use crate::policy;
-use crate::store::{Item, Row, Store};
+use crate::store::{AssignedItem, Item, Store};
 
 /// The three lines the verb fills. Everything else in the grammar is the
 /// seat's.
@@ -302,12 +302,12 @@ pub fn held_item(store: &dyn Store, by: &str, named: Option<&str>) -> Result<Str
 /// What a seat is carrying, off ONE listing and no per-row read.
 pub(crate) struct Holds {
     /// Every open row assigned to the seat.
-    pub(crate) open: Vec<Row>,
+    pub(crate) open: Vec<AssignedItem>,
     /// Of those, every one that carries an orders key, whatever its type: the
     /// orders standing against the seat's name.
-    pub(crate) ordered: Vec<Row>,
+    pub(crate) ordered: Vec<AssignedItem>,
     /// Of those, every one that is not an epic: what the seat HOLDS.
-    pub(crate) held: Vec<Row>,
+    pub(crate) held: Vec<AssignedItem>,
 }
 
 /// THE ONE READING of what a seat holds: an open item assigned to it that
@@ -329,12 +329,12 @@ pub(crate) fn holds(store: &dyn Store, seat: &str) -> Result<Holds, Stop> {
         .assigned_to(seat)?
         .into_iter()
         .filter(open)
-        .collect::<Vec<Row>>();
+        .collect::<Vec<AssignedItem>>();
     let ordered = rows
         .iter()
         .filter(|row| row.has_orders_key)
         .cloned()
-        .collect::<Vec<Row>>();
+        .collect::<Vec<AssignedItem>>();
     // An epic is never work a seat holds: it stays open while its children are
     // built, and an assignee left on it names whoever last touched it, not a
     // seat carrying it.
@@ -352,7 +352,7 @@ pub(crate) fn holds(store: &dyn Store, seat: &str) -> Result<Holds, Stop> {
 
 /// The statuses a seat is working under. `in_progress` is the same holding as
 /// `open`: a seat that claimed its item has not stopped holding it.
-fn open(row: &Row) -> bool {
+fn open(row: &AssignedItem) -> bool {
     row.status == "open" || row.status == "in_progress"
 }
 

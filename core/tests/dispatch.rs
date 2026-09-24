@@ -22,7 +22,7 @@ use fleet_core::item::{
     control_token, render, table_at, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner,
     ITEM_DISPATCHED,
 };
-use fleet_core::store::{Item, Row, Store, StoreError};
+use fleet_core::store::{AssignedItem, Item, Store, StoreError};
 
 const POLICY: &str = "[guards]\n";
 /// The builder's gate every arm's order hands over, as a workflow would.
@@ -131,7 +131,7 @@ impl Store for Doctored<'_> {
         self.inner.show_text(item)
     }
 
-    fn assigned_to(&self, seat: &str) -> Result<Vec<Row>, StoreError> {
+    fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
         self.inner.assigned_to(seat)
     }
 

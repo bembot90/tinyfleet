@@ -25,7 +25,7 @@ use fleet_core::item::{
     last_answer, last_park, Change, Git, Project, Stop, ANSWER_MARKERS, GATE_RESOLVED, ITEM_PARKED,
     PARK_MARKERS,
 };
-use fleet_core::store::{Bd, Item, NewItem, Row, Store, StoreError};
+use fleet_core::store::{AssignedItem, Bd, Item, NewItem, Store, StoreError};
 use fleet_core::test_support::Board;
 
 const AT: &str = "2026-09-13T04:05:06Z";
@@ -161,7 +161,7 @@ impl Store for Swallowing<'_> {
         self.inner.show_text(item)
     }
 
-    fn assigned_to(&self, seat: &str) -> Result<Vec<Row>, StoreError> {
+    fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
         self.inner.assigned_to(seat)
     }
 

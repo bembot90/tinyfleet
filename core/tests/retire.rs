@@ -13,7 +13,7 @@ use common::capped::{calls, capped_bd, Held};
 use common::Fixture;
 use fleet_core::item::COULD_NOT_TELL;
 use fleet_core::seat::retire::{self, WITHDRAWN};
-use fleet_core::store::{Bd, Item, Orders, Row, Store};
+use fleet_core::store::{AssignedItem, Bd, Item, Orders, Store};
 use fleet_core::test_support::FakeStore;
 
 /// The name the incident wore: a transient seat retired while an item it was
@@ -241,7 +241,7 @@ fn a_retire_that_cannot_read_the_board_refuses_rather_than_reading_no_hold() {
         unreadable: Some(String::from("`bd` could not be run")),
         held: [(
             SEAT.to_string(),
-            vec![Row {
+            vec![AssignedItem {
                 id: HELD.to_string(),
                 status: String::from("open"),
                 has_orders_key: true,
