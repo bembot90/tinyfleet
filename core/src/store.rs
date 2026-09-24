@@ -62,7 +62,8 @@ pub struct Item {
     /// cannot say: a key holding something that is not an object is present and
     /// unreadable, and a withdrawal has to tell that from absent.
     pub has_orders_key: bool,
-    /// The open items this one depends on, by id.
+    /// The open items that block this one by a type bd's ready set honours —
+    /// one of `BLOCKING` — by id.
     pub blockers: Vec<String>,
     /// The type, as the store spells it: the JSON key is `issue_type` and a
     /// rule matches on this value.
@@ -489,8 +490,19 @@ fn orders_of(row: &serde_json::Value) -> (Option<Orders>, bool) {
     )
 }
 
+/// The dependency types bd's ready set honours as blocking, MEASURED on bd
+/// 1.2.2 in a scratch board: one item per type, each depending on one open
+/// item, then `bd ready --json -n 0`. These three took their item out of the
+/// ready set, and a gate raised by `bd gate create --blocks` is a `blocks`
+/// edge. `parent-child`, `related`, `relates-to`, `discovered-from`, `tracks`,
+/// `until`, `caused-by`, `validates`, `supersedes` and a type bd does not know
+/// left it ready — a `parent-child` edge passes on a blocked parent's
+/// blockers, and is not one itself.
+const BLOCKING: [&str; 3] = ["blocks", "conditional-blocks", "waits-for"];
+
 /// The dependencies that still stand between this item and a start: an entry
-/// the store reports closed has been answered and is not a blocker.
+/// the store reports closed has been answered, and one of a type bd's ready set
+/// does not honour never stood, so neither is a blocker.
 fn blockers_of(row: &serde_json::Value) -> Vec<String> {
     let Some(entries) = row.get("dependencies").and_then(|d| d.as_array()) else {
         return Vec::new();
@@ -502,6 +514,15 @@ fn blockers_of(row: &serde_json::Value) -> Vec<String> {
                 .get("status")
                 .and_then(|s| s.as_str())
                 .map(|status| status != "closed")
+                .unwrap_or(true)
+        })
+        // An entry that names no type is kept, the same cautious reading as a
+        // missing status.
+        .filter(|entry| {
+            entry
+                .get("dependency_type")
+                .and_then(|t| t.as_str())
+                .map(|kind| BLOCKING.contains(&kind))
                 .unwrap_or(true)
         })
         .filter_map(|entry| text_field(entry, "id"))

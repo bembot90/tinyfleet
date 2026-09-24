@@ -17,6 +17,9 @@
 //! The ENVELOPE arms answer in the shape bd gives with `BD_JSON_ENVELOPE=1`,
 //! the shape v2.0 makes the default, copied from bd 1.2.2's own answers: each
 //! read decodes through it, and the shim records that every call asked for it.
+//!
+//! The DECODE arms at the end hand `item_from` a row in the shape bd answers
+//! and run no binary, so they take no lock.
 
 mod common;
 
@@ -27,7 +30,7 @@ use std::sync::{Mutex, MutexGuard};
 use common::capped::{calls, capped_bd, Held};
 use common::Fixture;
 use fleet_core::item::{Stop, COULD_NOT_TELL, REFUSED};
-use fleet_core::store::{Bd, NewItem, Store, StoreError};
+use fleet_core::store::{item_from, Bd, NewItem, Store, StoreError};
 
 /// Serialises every arm in this binary, because the seam they share is the
 /// process's `PATH` and there is one of those.
@@ -518,4 +521,52 @@ fn a_newer_schema_is_read_anyway() {
         .show("fx-later")
         .expect("a newer schema is still read");
     assert_eq!(read.title, "from a newer bd");
+}
+
+/// A `show` row in the shape bd 1.2.2 answers, holding one dependency on an
+/// open item, of `kind` — or of no stated type at all when `kind` is `None`.
+fn depending_on(kind: Option<&str>) -> serde_json::Value {
+    let mut dependency = serde_json::json!({
+        "id": "fx-up",
+        "title": "upstream",
+        "status": "open",
+        "issue_type": "task",
+    });
+    if let Some(kind) = kind {
+        dependency["dependency_type"] = kind.into();
+    }
+    serde_json::json!({
+        "id": "fx-down",
+        "title": "downstream",
+        "status": "open",
+        "issue_type": "task",
+        "dependencies": [dependency],
+    })
+}
+
+/// A link bd's ready set does not honour blocks nothing, however open the item
+/// at its far end — and `why_not_ready` reads `blockers` back to a person as
+/// what an item is "blocked by".
+#[test]
+fn an_open_discovered_from_link_is_not_a_blocker() {
+    let item = item_from("fx-down", &depending_on(Some("discovered-from")));
+    assert!(
+        item.blockers.is_empty(),
+        "bd answers an item whose only open link is discovered-from as ready: {:?}",
+        item.blockers
+    );
+}
+
+#[test]
+fn an_open_blocks_dependency_is_a_blocker() {
+    let item = item_from("fx-down", &depending_on(Some("blocks")));
+    assert_eq!(item.blockers, vec![String::from("fx-up")]);
+}
+
+/// The cautious reading, as for a missing status: an entry that does not say
+/// what kind of link it is may be one that blocks.
+#[test]
+fn a_dependency_of_no_stated_type_is_a_blocker() {
+    let item = item_from("fx-down", &depending_on(None));
+    assert_eq!(item.blockers, vec![String::from("fx-up")]);
 }
