@@ -166,18 +166,24 @@ Deno.test("AC1 takeoff — two items through spawn, until, review and land: four
     "review",
     "land",
   ]);
-  assertEquals(seen[0], ["dispatch", "it-1", "--by", s.env.runId, "--json"]);
+  assertEquals(seen[0], [
+    "dispatch",
+    "it-1",
+    "--by",
+    `run:${s.env.runId}`,
+    "--json",
+  ]);
   assertEquals(seen[1], [
     "review",
     "it-1",
     "--land",
     "--by",
-    s.env.runId,
+    `run:${s.env.runId}`,
     "--json",
   ]);
   assertEquals(
     seen[2],
-    ["land", "it-1", "aaa1111", "--by", s.env.runId, "--json"],
+    ["land", "it-1", "aaa1111", "--by", `run:${s.env.runId}`, "--json"],
     "the landed sha is the delivery's commit",
   );
   assertEquals(seen[5][2], "bbb2222");
@@ -282,7 +288,7 @@ Deno.test("AC1 hold — under review=hold every verdict is a hold: the flight wa
   assertEquals(await replay(takeoff, s.env, stdin), { code: 0 });
   const findings = `${s.env.runDir}/${FINDINGS_DIR}/it-1.md`;
   assertEquals(await calls(s), [
-    ["dispatch", "it-1", "--by", runId, "--json"],
+    ["dispatch", "it-1", "--by", `run:${runId}`, "--json"],
     [
       "hold",
       "--item",
@@ -290,10 +296,10 @@ Deno.test("AC1 hold — under review=hold every verdict is a hold: the flight wa
       "--note",
       `${s.env.runDir}/holds/1.md`,
       "--by",
-      runId,
+      `run:${runId}`,
       "--json",
     ],
-    ["review", "it-1", "--return", findings, "--by", runId, "--json"],
+    ["review", "it-1", "--return", findings, "--by", `run:${runId}`, "--json"],
   ], "B is a return, and nothing lands");
   assertMatch(await Deno.readTextFile(findings), /^RETURNED it-1 at aaa1111$/m);
   assertEquals(closes(await lines(s)).map((l) => l.payload.name), [
@@ -407,7 +413,7 @@ Deno.test("AC1 an item taken back — its delivery sits at or below the seq the 
   assertEquals(verbs(await calls(s)), ["hold", "review", "land"]);
   assertEquals(
     (await calls(s))[2],
-    ["land", "it-1", "aaa1111", "--by", runId, "--json"],
+    ["land", "it-1", "aaa1111", "--by", `run:${runId}`, "--json"],
     "the item lands on the commit it was delivered at, with no builder cut",
   );
 });

@@ -35,7 +35,10 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 const REVIEWER: &str = "ij-a-reviewer";
 /// The reviewer seat's id, which keys its row and its `[seats.<id>]` table.
 const REVIEWER_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
-const BY: &str = "an-architect";
+/// Who dispatches here: a seat typed whole, which a verb takes as given.
+const BY: &str = "seat:01a0d1f1-0aec-765f-9abe-0000a2c417ec";
+/// Who clears a hold by hand, typed the same way.
+const PERSON: &str = "seat:01a0d1f1-0aec-765f-9abe-00000000fe25";
 /// The id of the seat the rig's second dispatch names.
 const OTHER_TARGET_ID: &str = "01a0d1f1-0aec-765f-9abe-00007e3fa2c0";
 const POLICY: &str = "[core]\nreviewer = \"ij-a-reviewer\"\n\n\
@@ -71,7 +74,8 @@ B. take it from the pack instead
 /// `dispatch` is the verb this arm reads because its rendering carries no value
 /// the rig varies — the note is the pack's own text with the dispatcher's name
 /// in it — so the fixture is bytes rather than a template with the ids put back.
-const TRUNK_DISPATCH_STDOUT: &str = "dispatched by an-architect — orders given\n";
+const TRUNK_DISPATCH_STDOUT: &str =
+    "dispatched by seat:01a0d1f1-0aec-765f-9abe-0000a2c417ec — orders given\n";
 
 fn defaults_into(machine: &Path) -> PathBuf {
     let root = machine.join(fleet_core::defaults::DIR);
@@ -381,7 +385,7 @@ impl Rig {
 
     fn run(&self, args: &[&str]) -> Output {
         self.command(args)
-            .env("BEADS_ACTOR", &self.seat)
+            .env("FLEET_ACTOR", &self.seat)
             .output()
             .expect("the built binary runs")
     }
@@ -561,7 +565,7 @@ fn hold_and_clear_print_the_hold_one_raised_and_the_other_cleared() {
         rig.notes_of(&item)
     );
 
-    let out = rig.run(&["clear", &item, "B", "--by", "a-person", "--json"]);
+    let out = rig.run(&["clear", &item, "B", "--by", PERSON, "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let data = data_of(&out, "clear");
     assert_eq!(data["item"], serde_json::json!(item), "{data}");
@@ -606,7 +610,7 @@ fn a_refused_verb_prints_the_refusal_shape_and_the_exit_code_it_always_had() {
         ("deliver", vec!["deliver", "--note", &note]),
         ("review", vec!["review", &item, "--by", REVIEWER]),
         ("hold", vec!["hold", "--note", &question]),
-        ("clear", vec!["clear", &item, "A", "--by", "a-person"]),
+        ("clear", vec!["clear", &item, "A", "--by", PERSON]),
     ];
 
     for (verb, args) in calls {
@@ -644,39 +648,39 @@ fn a_refused_verb_prints_the_refusal_shape_and_the_exit_code_it_always_had() {
     }
 }
 
-/// The usage class, which is refused BEFORE any work: no `--by` and no actor in
-/// the environment is exit 2, and the document says `usage` where the one above
-/// says `refused`.
+/// The usage class, which is refused BEFORE any work: an empty `--by` names no
+/// seat at all, which is exit 2, and the document says `usage` where the one
+/// above says `refused`. A verb always has an actor otherwise — with no `--by`
+/// it is `FLEET_ACTOR` or the machine's identity — so this is the one actor
+/// refusal left in the usage row.
 ///
 /// The control the arm above needs: a `code` that never varied would read as
 /// correct in both.
-///
-/// NO RIG: the refusal is each verb's first act, before it resolves a machine
-/// directory or reads a board, so the binary runs over `hermetic_nowhere` from
-/// the temp directory, and the note paths it is handed are never opened. A verb
-/// that reached for a board first would find none there and answer a different
-/// exit.
 #[test]
-fn a_missing_by_is_the_usage_row_before_the_verb_does_anything() {
+fn an_empty_by_is_the_usage_row_before_the_verb_writes_anything() {
+    let rig = Rig::new("usage");
+    let item = rig.a_ready_item();
+    let question = rig.question.display().to_string();
+    let note = rig.note.display().to_string();
     let calls: [(&str, Vec<&str>); 5] = [
-        ("dispatch", vec!["dispatch", "no-such-item-0"]),
-        ("deliver", vec!["deliver", "--note", "no-such-note.md"]),
-        ("review", vec!["review", "no-such-item-0"]),
-        ("hold", vec!["hold", "--note", "no-such-question.md"]),
-        ("clear", vec!["clear", "no-such-item-0", "A"]),
+        ("dispatch", vec!["dispatch", &item, "--to", &rig.target]),
+        ("deliver", vec!["deliver", "--note", &note]),
+        ("review", vec!["review", &item]),
+        ("hold", vec!["hold", "--note", &question]),
+        ("clear", vec!["clear", &item, "A"]),
     ];
 
+    let stream = rig.machine.join("events.jsonl");
+    let lines = || {
+        std::fs::read_to_string(&stream)
+            .map(|body| body.lines().count())
+            .unwrap_or(0)
+    };
+    let before = lines();
     for (verb, args) in calls {
         let mut with_flag = args.clone();
-        with_flag.push("--json");
-        let out = Command::new(env!("CARGO_BIN_EXE_fleet"))
-            .args(&with_flag)
-            .current_dir(std::env::temp_dir())
-            .hermetic_nowhere()
-            .env_remove("BEADS_ACTOR")
-            .env_remove("FLEET_ACTOR")
-            .output()
-            .expect("the built binary runs");
+        with_flag.extend(["--by", "", "--json"]);
+        let out = rig.run(&with_flag);
         assert_eq!(
             out.status.code(),
             Some(2),
@@ -685,14 +689,13 @@ fn a_missing_by_is_the_usage_row_before_the_verb_does_anything() {
         );
         let refusal = refusal_of(&out, verb);
         assert_eq!(refusal["code"], serde_json::json!("usage"), "{verb}");
-        assert!(
-            refusal["why"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("--by <name>"),
+        assert_eq!(
+            refusal["why"],
+            serde_json::json!("--by names no seat — the argument is empty"),
             "{verb}: the refusal names the flag: {refusal}"
         );
     }
+    assert_eq!(lines(), before, "nothing reached the stream");
 }
 
 /// The old spellings of the pair, `ask` and `answer`, are the usage row naming

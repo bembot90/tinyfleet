@@ -486,9 +486,9 @@ fn fleet_binary(machine: &Machine) -> Option<String> {
         .map(|path| path.display().to_string())
 }
 
-/// `fleet run <workflow> [--input key=value]… --by <routine>`: the routine is
-/// the runner, so `run.started` carries its name as the actor the way the
-/// routine's own events do, and one actor reads across the four.
+/// `fleet run <workflow> [--input key=value]… --by routine:<name>`: the routine
+/// is the runner, so `run.started` carries it as the actor, typed — a bare name
+/// would be read as a seat argument, and a routine is no seat.
 fn run_argv(binary: &str, routine: &Routine, workflow: &Run) -> Vec<String> {
     let mut argv = vec![
         binary.to_string(),
@@ -500,7 +500,7 @@ fn run_argv(binary: &str, routine: &Routine, workflow: &Run) -> Vec<String> {
         argv.push(format!("{key}={value}"));
     }
     argv.push("--by".to_string());
-    argv.push(routine.name.clone());
+    argv.push(format!("routine:{}", routine.name));
     argv
 }
 

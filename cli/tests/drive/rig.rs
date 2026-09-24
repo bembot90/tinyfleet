@@ -1086,6 +1086,17 @@ impl Rig {
             .expect("the start recorded its FLEET_BIN")
     }
 
+    /// The `FLEET_ACTOR` the last start was handed — who the session's own
+    /// bare verbs act as. Empty is a start that carried none.
+    fn start_actor_path(&self) -> PathBuf {
+        self.root.join("start-actor")
+    }
+
+    fn start_actor(&self) -> String {
+        std::fs::read_to_string(self.start_actor_path())
+            .expect("the start recorded its FLEET_ACTOR")
+    }
+
     /// A copy of the recording stub under the ONE NAME the default seam resolves,
     /// planted where the CONSTRUCTED path finds it — the home's `.local/bin`,
     /// which `platform::child_path` carries and which this rig owns because it
@@ -1493,6 +1504,8 @@ impl Rig {
         let start_bin = start_bin.display();
         let start_fleet_bin = self.start_fleet_bin_path();
         let start_fleet_bin = start_fleet_bin.display();
+        let start_actor = self.start_actor_path();
+        let start_actor = start_actor.display();
         let start_argv = self.start_argv_path();
         let start_argv = start_argv.display();
         let start_cwd = self.start_cwd_path();
@@ -1557,6 +1570,7 @@ impl Rig {
                  \x20 --bg)\n\
                  \x20   printf '%s' \"$0\" > '{start_bin}'\n\
                  \x20   printf '%s' \"${{FLEET_BIN-}}\" > '{start_fleet_bin}'\n\
+                 \x20   printf '%s' \"${{FLEET_ACTOR-}}\" > '{start_actor}'\n\
                  \x20   printf '%s\\n' \"$@\" > '{start_argv}'\n\
                  \x20   pwd > '{start_cwd}'\n\
                  \x20   printf '%s' \"$PATH\" > '{start_path}'\n\
@@ -1853,7 +1867,7 @@ impl Rig {
         for (key, value) in
             common::hermetic::vars(&self.home(), &self.machine(), Some(&self.stub_path()))
         {
-            env.set(key, Some(value));
+            env.set(key, value);
         }
         // The routines' clock seam is always pointed at this rig's own file. An
         // arm that never writes it leaves the routines on the machine's clock,
@@ -1948,7 +1962,7 @@ impl Rig {
         for (key, value) in
             common::hermetic::vars(&self.home(), &self.machine(), Some(&self.stub_path()))
         {
-            env.set(key, Some(value));
+            env.set(key, value);
         }
         env.set(
             "FLEET_ORDERS_CLOCK",

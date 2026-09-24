@@ -305,10 +305,11 @@ impl Rig {
     }
 
     fn take_the_environment(&self, claude_bin: Option<&Path>) {
-        for (key, value) in common::hermetic::in_process_vars(&self.root, &self.machine, claude_bin)
-        {
-            std::env::set_var(key, value);
-        }
+        common::hermetic::export(common::hermetic::in_process_vars(
+            &self.root,
+            &self.machine,
+            claude_bin,
+        ));
         platform::clear_stop();
     }
 

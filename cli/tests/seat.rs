@@ -35,6 +35,10 @@ const HELD: [(&str, &str); 2] = [("FLEET_LOAD_AVERAGE", "3.75"), ("FLEET_CPUS", 
 /// The id of the one named — not transient — row an arm writes by hand.
 const NAMED_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
 
+/// Who the dispatches here are given by: a seat typed whole, which a verb takes
+/// as given — these rigs list no roster for a name to resolve over.
+const ARCHITECT: &str = "seat:01a0d1f1-0aec-765f-9abe-0000a2c417ec";
+
 /// A pid no process on this box holds, read the way the verb under test reads
 /// it.
 ///
@@ -1468,7 +1472,7 @@ fn dispatch_without_a_seat_spawns_through_the_real_spawner_and_assigns_the_name(
         "dispatch",
         &item,
         "--by",
-        "an-architect",
+        ARCHITECT,
         "--packs-dir",
         &rig.machine.join("packs").display().to_string(),
     ]);
@@ -1498,7 +1502,7 @@ fn dispatch_without_a_seat_spawns_through_the_real_spawner_and_assigns_the_name(
     let events = rig.events();
     let last = events.last().expect("the stream carries the dispatch");
     assert_eq!(last["type"].as_str(), Some("item.dispatched"), "{last}");
-    assert_eq!(last["actor"].as_str(), Some("an-architect"));
+    assert_eq!(last["actor"].as_str(), Some(ARCHITECT));
     assert_eq!(last["payload"]["item"].as_str(), Some(item.as_str()));
     assert_eq!(
         last["payload"]["seat"],
@@ -1543,7 +1547,7 @@ fn a_named_dispatch_writes_the_event_with_no_base() {
         "--to",
         "s-cli-named",
         "--by",
-        "an-architect",
+        ARCHITECT,
         "--packs-dir",
         &rig.machine.join("packs").display().to_string(),
     ]);
@@ -1609,7 +1613,7 @@ fn a_dispatch_that_starts_nothing_prints_no_belt_legs() {
             "--to",
             "s-cli-belts",
             "--by",
-            "an-architect",
+            ARCHITECT,
             "--packs-dir",
             &rig.machine.join("packs").display().to_string(),
         ],
@@ -1618,7 +1622,7 @@ fn a_dispatch_that_starts_nothing_prints_no_belt_legs() {
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        "dispatched by an-architect — orders given\n",
+        format!("dispatched by {ARCHITECT} — orders given\n"),
         "a dispatch that started nothing measured nothing, and says so by \
          printing nothing about it"
     );
@@ -1641,7 +1645,7 @@ fn a_dispatch_prints_the_belts_two_legs_and_the_stream_carries_its_readings() {
             "dispatch",
             &item,
             "--by",
-            "an-architect",
+            ARCHITECT,
             "--packs-dir",
             &rig.machine.join("packs").display().to_string(),
         ],
@@ -1650,9 +1654,11 @@ fn a_dispatch_prints_the_belts_two_legs_and_the_stream_carries_its_readings() {
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        "dispatched by an-architect — orders given\n\
-         \x20 load average (5m)       : 3.75 (ceiling 4.00 = 4 cpu x 1.00)\n\
-         \x20 transient seats mid-turn: 0 (cap 3)\n",
+        format!(
+            "dispatched by {ARCHITECT} — orders given\n\
+             \x20 load average (5m)       : 3.75 (ceiling 4.00 = 4 cpu x 1.00)\n\
+             \x20 transient seats mid-turn: 0 (cap 3)\n"
+        ),
         "the order line, then the belt's two legs in `seat spawn`'s own words"
     );
 
@@ -1704,7 +1710,7 @@ fn dispatch_under_the_load_override_refuses_and_withdraws_the_order() {
             "dispatch",
             &item,
             "--by",
-            "an-architect",
+            ARCHITECT,
             "--packs-dir",
             &rig.machine.join("packs").display().to_string(),
         ])
@@ -1775,7 +1781,7 @@ fn a_dispatched_seat(rig: &Rig) -> (String, String) {
         "dispatch",
         &item,
         "--by",
-        "an-architect",
+        ARCHITECT,
         "--packs-dir",
         &rig.machine.join("packs").display().to_string(),
     ]);
@@ -1979,7 +1985,7 @@ fn a_retire_withdraws_the_order_the_seat_still_holds() {
     // APPENDS, and an item whose record was replaced would read as one nobody
     // was ever given.
     assert!(
-        notes.contains("dispatched by an-architect"),
+        notes.contains(&format!("dispatched by {ARCHITECT}")),
         "the order note it answers stands: {notes}"
     );
 }

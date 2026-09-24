@@ -12,6 +12,7 @@ use crate::adapter::{Agent, RemoveAnswer, StartOutcome, StartSpec};
 use crate::events::{self, EventLog};
 use crate::policy::Policy;
 use crate::sessions::{SessionRow, Table};
+use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
 use std::path::Path;
 use std::time::Duration;
@@ -244,6 +245,7 @@ pub fn start_once(
         seat: target.seat.to_string(),
         worktree: target.worktree.to_string(),
         name: target.session_name.clone(),
+        actor: Actor::seat(target.seat).to_string(),
         model: target.model.clone(),
         posture: target.posture.clone(),
         first_turn: target.first_turn.clone(),

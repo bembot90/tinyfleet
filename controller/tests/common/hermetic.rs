@@ -6,8 +6,11 @@
 //! RUNNING machine directory and execs the account's real agent binary. The
 //! three roots, the agent binary and the refusal flag are named here,
 //! unconditionally, in ONE list — a second copy of the list is a second thing
-//! to remember to change. A rig driving the loop in the test process takes
-//! [`in_process_vars`], which is that list plus the agent's config directory.
+//! to remember to change. The same list STRIPS the actor a session is started
+//! with ([`FLEET_ACTOR`]), so no arm acts as the seat that ran the suite. A rig
+//! driving the loop in the test process takes [`in_process_vars`], which is
+//! that list plus the agent's config directory, and puts either on itself with
+//! [`export`].
 //!
 //! Included by `#[path]` into each crate's `tests/common` rather than copied,
 //! and the only file under `fleet/*/tests` that spells any of the names.
@@ -32,6 +35,14 @@ pub const CLAUDE_BIN: &str = "FLEET_CLAUDE_BIN";
 /// `fleet_controller::adapter::claude_code::configured_bin`.
 pub const HERMETIC: &str = "FLEET_TEST_HERMETIC";
 
+/// Who a verb acts as where the call names no `--by`. The controller sets it
+/// on every session it starts, to `seat:<id>`, so a suite run from inside a
+/// fleet-started session inherits that seat — and every arm naming no actor
+/// would act as it, where on a person's shell the same arm acts as the
+/// machine's identity. STRIPPED, never set: an arm whose subject is the actor
+/// sets it itself, after the block.
+pub const FLEET_ACTOR: &str = "FLEET_ACTOR";
+
 /// The agent's config directory, read BEFORE the home beside it
 /// (`fleet_controller::adapter::claude_code::config_dir_from`), so a rig whose
 /// transcripts live under its own `home/.claude` is read out of the operator's
@@ -45,7 +56,8 @@ pub const HERMETIC: &str = "FLEET_TEST_HERMETIC";
 pub const CONFIG_DIR: &str = "CLAUDE_CONFIG_DIR";
 
 /// The block, as name/value pairs, for a rig that holds the environment itself
-/// rather than putting it on a `Command`.
+/// rather than putting it on a `Command`. A `None` value is a name the block
+/// REMOVES rather than sets.
 ///
 /// `claude_bin` is the rig's own stub where it has one. `None` names the
 /// REFUSING stub instead: the variable is set either way, so the resolution
@@ -55,17 +67,18 @@ pub fn vars(
     home: &Path,
     machine: &Path,
     claude_bin: Option<&Path>,
-) -> Vec<(&'static str, OsString)> {
+) -> Vec<(&'static str, Option<OsString>)> {
     let bin = match claude_bin {
         Some(bin) => bin.to_path_buf(),
         None => refusing_stub(),
     };
     vec![
-        (HOME, home.as_os_str().to_owned()),
-        (FLEET_HOME, home.as_os_str().to_owned()),
-        (FLEET_DIR, machine.as_os_str().to_owned()),
-        (CLAUDE_BIN, bin.into_os_string()),
-        (HERMETIC, OsString::from("1")),
+        (HOME, Some(home.as_os_str().to_owned())),
+        (FLEET_HOME, Some(home.as_os_str().to_owned())),
+        (FLEET_DIR, Some(machine.as_os_str().to_owned())),
+        (CLAUDE_BIN, Some(bin.into_os_string())),
+        (HERMETIC, Some(OsString::from("1"))),
+        (FLEET_ACTOR, None),
     ]
 }
 
@@ -76,10 +89,20 @@ pub fn in_process_vars(
     home: &Path,
     machine: &Path,
     claude_bin: Option<&Path>,
-) -> Vec<(&'static str, OsString)> {
+) -> Vec<(&'static str, Option<OsString>)> {
     let mut block = vars(home, machine, claude_bin);
-    block.push((CONFIG_DIR, home.join(".claude").into_os_string()));
+    block.push((CONFIG_DIR, Some(home.join(".claude").into_os_string())));
     block
+}
+
+/// A block put on THIS process: each value set and each stripped name removed.
+pub fn export(block: Vec<(&'static str, Option<OsString>)>) {
+    for (key, value) in block {
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
 }
 
 /// The env block on a `Command`, in the chain the rig already writes.
@@ -95,7 +118,10 @@ pub trait Hermetic {
 impl Hermetic for Command {
     fn hermetic(&mut self, home: &Path, machine: &Path, claude_bin: Option<&Path>) -> &mut Self {
         for (key, value) in vars(home, machine, claude_bin) {
-            self.env(key, value);
+            match value {
+                Some(value) => self.env(key, value),
+                None => self.env_remove(key),
+            };
         }
         self
     }

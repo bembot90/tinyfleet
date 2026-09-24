@@ -86,9 +86,7 @@ impl Rig {
                 rig.worktree.display()
             ),
         );
-        for (key, value) in common::hermetic::vars(&rig.root, &rig.machine, None) {
-            std::env::set_var(key, value);
-        }
+        common::hermetic::export(common::hermetic::vars(&rig.root, &rig.machine, None));
         // The stop flag is process-wide and the arm below raises it, so every
         // rig starts from a fleet nobody has asked to stop.
         platform::clear_stop();

@@ -39,8 +39,9 @@ The run handle carries seven verbs beside `step`, `now`, `random` and
 `input`. Each is one numbered step whose exec runs the fleet binary with
 `--json` and records the envelope's `data` as the step's result, so a re-run
 returns what the first run was told and spawns nothing. Every act is
-attributed `--by` the run id — the run's child starts with a cleared
-environment, and the run is the one name every act under it can carry. A
+attributed `--by run:<id>`, the run typed as an actor — the run's child starts
+with a cleared environment, and the run is the one name every act under it can
+carry. A
 refusal envelope (`ok: false`) is a thrown `Refusal` carrying the verb, the
 refusal code and its why; the wrapper turns it into exit 1 with the reason
 `{"verb", "code", "why"}` on stdout's last line.

@@ -26,7 +26,8 @@ use fleet_core::item::{
     RingOutcome, Stop, HOLD_CLEARED, ITEM_DELIVERED, ITEM_DISPATCHED, ITEM_HELD, ITEM_LANDED,
     ITEM_RETURNED, ITEM_REVIEWED, TRUNK,
 };
-use fleet_core::seat::identity::Directory;
+use fleet_core::seat::actor::Actor;
+use fleet_core::seat::identity::{identity_or_mint, roster, Directory, IDENTITY};
 use fleet_core::store::Bd;
 
 use crate::envelope;
@@ -51,7 +52,7 @@ pub struct DispatchArgs {
     /// the seat it goes to; without it, a transient one
     #[arg(long, value_name = "SEAT")]
     pub to: Option<String>,
-    /// who is dispatching; else FLEET_ACTOR or BEADS_ACTOR
+    /// who dispatches; else FLEET_ACTOR, else this machine
     #[arg(long, value_name = "NAME")]
     pub by: Option<String>,
     /// the builder's checks, named in its brief
@@ -91,7 +92,7 @@ pub struct DeliverArgs {
     /// the item, where the seat holds more than one
     #[arg(long, value_name = "ID")]
     pub item: Option<String>,
-    /// who is delivering; else FLEET_ACTOR or BEADS_ACTOR
+    /// who is delivering; else FLEET_ACTOR, else this machine
     #[arg(long, value_name = "NAME")]
     pub by: Option<String>,
     /// print the outcome as one JSON document
@@ -112,7 +113,7 @@ pub struct HoldArgs {
     /// the item, where the seat holds more than one
     #[arg(long, value_name = "ID")]
     pub item: Option<String>,
-    /// who is asking; else FLEET_ACTOR or BEADS_ACTOR
+    /// who is asking; else FLEET_ACTOR, else this machine
     #[arg(long, value_name = "NAME")]
     pub by: Option<String>,
     /// print the outcome as one JSON document
@@ -133,7 +134,7 @@ pub struct ClearArgs {
     /// what was decided, where the options did not carry it
     #[arg(long, value_name = "TEXT")]
     pub text: Option<String>,
-    /// who is clearing it; else FLEET_ACTOR or BEADS_ACTOR
+    /// who is answering; else FLEET_ACTOR, else this machine
     #[arg(long, value_name = "NAME")]
     pub by: Option<String>,
     /// print the outcome as one JSON document
@@ -158,7 +159,7 @@ pub struct ReviewArgs {
     /// write the RETURNED verdict from this findings file
     #[arg(long = "return", value_name = "FILE")]
     pub returned: Option<PathBuf>,
-    /// who is reviewing; else FLEET_ACTOR or BEADS_ACTOR
+    /// who is reviewing; else FLEET_ACTOR, else this machine
     #[arg(long, value_name = "NAME")]
     pub by: Option<String>,
     /// print the outcome as one JSON document
@@ -186,7 +187,7 @@ pub struct LandArgs {
     /// the command run on the rebased tree before the push
     #[arg(long, value_name = "COMMAND")]
     pub test: Option<String>,
-    /// who is landing; else FLEET_ACTOR or BEADS_ACTOR
+    /// who is landing; else FLEET_ACTOR, else this machine
     #[arg(long, value_name = "NAME")]
     pub by: Option<String>,
     /// print the outcome as one JSON document
@@ -206,7 +207,7 @@ pub struct RunArgs {
     /// one pinned input, key=value; repeatable
     #[arg(long = "input", value_name = "KEY=VALUE")]
     pub inputs: Vec<String>,
-    /// who is running it; else FLEET_ACTOR or BEADS_ACTOR
+    /// who runs it; else FLEET_ACTOR, else this machine
     #[arg(long, value_name = "NAME")]
     pub by: Option<String>,
     /// where the packs are installed
@@ -219,7 +220,7 @@ pub struct RunArgs {
 pub struct CancelArgs {
     /// the run's id, which is its record's
     pub run: String,
-    /// who is cancelling it; else FLEET_ACTOR or BEADS_ACTOR
+    /// who cancels it; else FLEET_ACTOR, else this machine
     #[arg(long, value_name = "NAME")]
     pub by: Option<String>,
     /// where the packs are installed
@@ -230,14 +231,8 @@ pub struct CancelArgs {
 /// The cancel verb: the project resolved, then core's cancel over its store and
 /// the machine's stream.
 pub fn cancel_command(args: &CancelArgs) -> Exit {
-    let Some(by) = args.by.clone().or_else(actor) else {
-        eprintln!(
-            "fleet cancel: no name — pass --by <name>, or set FLEET_ACTOR or BEADS_ACTOR. A \
-             cancel names who ended the run."
-        );
-        return Exit::Usage;
-    };
     let cancelled = resolve_at(args.packs_dir.clone()).and_then(|here| {
+        let by = acting("cancel", args.by.as_deref(), &here)?.to_string();
         let store = open_store(&here.project.root);
         let events = StreamEvents {
             path: here.machine_dir.join(EVENTS),
@@ -274,16 +269,8 @@ pub fn cancel_command(args: &CancelArgs) -> Exit {
 /// from one that finished without reading the stream; a wait is `Done` because
 /// a run that asked to be woken has not gone wrong.
 pub fn run_command(args: &RunArgs) -> Exit {
-    let Some(by) = args.by.clone().or_else(actor) else {
-        eprintln!(
-            "fleet run: no runner — pass --by <name>, or set FLEET_ACTOR or BEADS_ACTOR. A run \
-             names who started it."
-        );
-        return Exit::Usage;
-    };
-
     let mut err = std::io::stderr();
-    match run_the_workflow(args, &by, &mut std::io::stdout()) {
+    match run_the_workflow(args, &mut std::io::stdout()) {
         Ok(ended) => match ended {
             workflow_run::Ended::Closed | workflow_run::Ended::Waiting => Exit::Done,
             workflow_run::Ended::Failed => Exit::Refused,
@@ -296,11 +283,7 @@ pub fn run_command(args: &RunArgs) -> Exit {
     }
 }
 
-fn run_the_workflow(
-    parsed: &RunArgs,
-    by: &str,
-    out: &mut dyn Write,
-) -> Result<workflow_run::Ended, Stop> {
+fn run_the_workflow(parsed: &RunArgs, out: &mut dyn Write) -> Result<workflow_run::Ended, Stop> {
     let mut inputs: Vec<(String, String)> = Vec::with_capacity(parsed.inputs.len());
     for given in &parsed.inputs {
         let Some((key, value)) = given.split_once('=') else {
@@ -317,6 +300,7 @@ fn run_the_workflow(
     }
 
     let here = resolve_at(parsed.packs_dir.clone())?;
+    let by = acting("run", parsed.by.as_deref(), &here)?.to_string();
     let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let events = StreamEvents {
@@ -332,7 +316,7 @@ fn run_the_workflow(
         &workflow_run::Order {
             workflow: &parsed.workflow,
             inputs: &inputs,
-            by,
+            by: &by,
             at: &stamp,
             machine_dir: &here.machine_dir,
             fleet_bin: &fleet_bin,
@@ -351,19 +335,9 @@ fn run_the_workflow(
 }
 
 pub fn land_command(ui: &Ui, args: &LandArgs) -> Exit {
-    let Some(by) = args.by.clone().or_else(actor) else {
-        return refused(
-            "land",
-            Exit::Usage,
-            "no reviewer — pass --by <name>, or set FLEET_ACTOR or BEADS_ACTOR. A landing names \
-             who made it.",
-            args.json,
-        );
-    };
-
     let mut err = std::io::stderr();
     let mut human = Human::under(args.json);
-    match run_land(ui, args, &by, &mut human, &mut err) {
+    match run_land(ui, args, &mut human, &mut err) {
         Ok(landed) => answered(
             "land",
             serde_json::json!({
@@ -380,11 +354,11 @@ pub fn land_command(ui: &Ui, args: &LandArgs) -> Exit {
 fn run_land(
     ui: &Ui,
     parsed: &LandArgs,
-    by: &str,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<Landed, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
+    let by = acting("land", parsed.by.as_deref(), &here)?.to_string();
     let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
@@ -412,7 +386,7 @@ fn run_land(
             also: &parsed.also,
             test: parsed.test.as_deref(),
             reason: parsed.reason.as_deref(),
-            by,
+            by: &by,
             at: &stamp,
             machine_dir: &here.machine_dir,
         },
@@ -431,19 +405,9 @@ fn run_land(
 }
 
 pub fn deliver_command(args: &DeliverArgs) -> Exit {
-    let Some(by) = args.by.clone().or_else(actor) else {
-        return refused(
-            "deliver",
-            Exit::Usage,
-            "no seat — pass --by <name>, or set FLEET_ACTOR or BEADS_ACTOR. A delivery names who \
-             made it.",
-            args.json,
-        );
-    };
-
     let mut err = std::io::stderr();
     let mut human = Human::under(args.json);
-    match run_deliver(args, &by, &mut human, &mut err) {
+    match run_deliver(args, &mut human, &mut err) {
         Ok(made) => answered(
             "deliver",
             serde_json::json!({
@@ -458,18 +422,8 @@ pub fn deliver_command(args: &DeliverArgs) -> Exit {
 }
 
 pub fn hold_command(args: &HoldArgs) -> Exit {
-    let Some(by) = args.by.clone().or_else(actor) else {
-        return refused(
-            "hold",
-            Exit::Usage,
-            "no seat — pass --by <name>, or set FLEET_ACTOR or BEADS_ACTOR. A park names the seat \
-             that asked.",
-            args.json,
-        );
-    };
-
     let mut human = Human::under(args.json);
-    match run_hold(args, &by, &mut human) {
+    match run_hold(args, &mut human) {
         Ok(held) => answered(
             "hold",
             serde_json::json!({
@@ -484,18 +438,8 @@ pub fn hold_command(args: &HoldArgs) -> Exit {
 }
 
 pub fn clear_command(args: &ClearArgs) -> Exit {
-    let Some(by) = args.by.clone().or_else(actor) else {
-        return refused(
-            "clear",
-            Exit::Usage,
-            "no name — pass --by <name>, or set FLEET_ACTOR or BEADS_ACTOR. A clearance names who \
-             gave it.",
-            args.json,
-        );
-    };
-
     let mut human = Human::under(args.json);
-    match run_clear(args, &by, &mut human) {
+    match run_clear(args, &mut human) {
         Ok(cleared) => answered(
             "clear",
             serde_json::json!({
@@ -509,8 +453,9 @@ pub fn clear_command(args: &ClearArgs) -> Exit {
     }
 }
 
-fn run_hold(parsed: &HoldArgs, by: &str, out: &mut dyn Write) -> Result<hold::Held, Stop> {
+fn run_hold(parsed: &HoldArgs, out: &mut dyn Write) -> Result<hold::Held, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
+    let by = acting("hold", parsed.by.as_deref(), &here)?.to_string();
     let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
@@ -525,7 +470,7 @@ fn run_hold(parsed: &HoldArgs, by: &str, out: &mut dyn Write) -> Result<hold::He
         out,
         &hold::Question {
             item: parsed.item.as_deref(),
-            by,
+            by: &by,
             note: &parsed.note,
             at: &stamp,
         },
@@ -540,8 +485,9 @@ fn run_hold(parsed: &HoldArgs, by: &str, out: &mut dyn Write) -> Result<hold::He
     )
 }
 
-fn run_clear(parsed: &ClearArgs, by: &str, out: &mut dyn Write) -> Result<hold::Cleared, Stop> {
+fn run_clear(parsed: &ClearArgs, out: &mut dyn Write) -> Result<hold::Cleared, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
+    let by = acting("clear", parsed.by.as_deref(), &here)?.to_string();
     let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
@@ -557,7 +503,7 @@ fn run_clear(parsed: &ClearArgs, by: &str, out: &mut dyn Write) -> Result<hold::
             item: &parsed.item,
             letter: &parsed.letter,
             text: parsed.text.as_deref(),
-            by,
+            by: &by,
         },
         &hold::Wiring {
             store: &store,
@@ -571,19 +517,9 @@ fn run_clear(parsed: &ClearArgs, by: &str, out: &mut dyn Write) -> Result<hold::
 }
 
 pub fn review_command(args: &ReviewArgs) -> Exit {
-    let Some(by) = args.by.clone().or_else(actor) else {
-        return refused(
-            "review",
-            Exit::Usage,
-            "no reviewer — pass --by <name>, or set FLEET_ACTOR or BEADS_ACTOR. A verdict names \
-             who wrote it.",
-            args.json,
-        );
-    };
-
     let mut err = std::io::stderr();
     let mut human = Human::under(args.json);
-    match run_review(args, &by, &mut human, &mut err) {
+    match run_review(args, &mut human, &mut err) {
         // `--show` writes no verdict and moves the item nowhere, so its state is
         // null: the absent value and not a fourth word for "it did not move".
         Ok(read) => answered(
@@ -604,11 +540,11 @@ pub fn review_command(args: &ReviewArgs) -> Exit {
 
 fn run_deliver(
     parsed: &DeliverArgs,
-    by: &str,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<deliver::Delivered, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
+    let by = acting("deliver", parsed.by.as_deref(), &here)?.to_string();
     let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
@@ -628,7 +564,7 @@ fn run_deliver(
         err,
         &deliver::Delivery {
             item: parsed.item.as_deref(),
-            by,
+            by: &by,
             note: &parsed.note,
             at: &stamp,
         },
@@ -646,11 +582,11 @@ fn run_deliver(
 
 fn run_review(
     parsed: &ReviewArgs,
-    by: &str,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<review::Read, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
+    let by = acting("review", parsed.by.as_deref(), &here)?.to_string();
     let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
@@ -678,7 +614,7 @@ fn run_review(
         err,
         &review::Verdict {
             item: &parsed.item,
-            by,
+            by: &by,
             mode,
         },
         &review::Wiring {
@@ -694,22 +630,9 @@ fn run_review(
 }
 
 pub fn dispatch_command(args: &DispatchArgs) -> Exit {
-    let by = match args.by.clone().or_else(actor) {
-        Some(by) => by,
-        None => {
-            return refused(
-                "dispatch",
-                Exit::Usage,
-                "no dispatcher — pass --by <name>, or set FLEET_ACTOR or BEADS_ACTOR. An order \
-                 names who gave it.",
-                args.json,
-            );
-        }
-    };
-
     let mut err = std::io::stderr();
     let mut human = Human::under(args.json);
-    match run_dispatch(args, &by, &mut human, &mut err) {
+    match run_dispatch(args, &mut human, &mut err) {
         Ok(given) => answered(
             "dispatch",
             serde_json::json!({
@@ -805,11 +728,11 @@ fn state(kind: &str) -> &str {
 
 fn run_dispatch(
     parsed: &DispatchArgs,
-    by: &str,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<dispatch::Given, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
+    let by = acting("dispatch", parsed.by.as_deref(), &here)?.to_string();
     let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let ring = SeatRing {
@@ -833,7 +756,7 @@ fn run_dispatch(
         &Order {
             item: &parsed.item,
             to: parsed.to.as_deref(),
-            by,
+            by: &by,
             at: &stamp,
             // A HAND-RUN DISPATCH PINS NOTHING: the brief is rendered from the
             // item as it stands now, which is what a person running this verb
@@ -1207,17 +1130,74 @@ fn basename(dir: &Path) -> String {
         .unwrap_or_else(|| dir.display().to_string())
 }
 
-/// The dispatcher's name from the environment, where the flag did not carry it.
-pub(crate) fn actor() -> Option<String> {
-    for key in ["FLEET_ACTOR", "BEADS_ACTOR"] {
-        if let Ok(value) = std::env::var(key) {
-            let value = value.trim().to_string();
-            if !value.is_empty() {
-                return Some(value);
-            }
-        }
+/// The variable a verb reads its actor from where `--by` did not carry one.
+/// The controller sets it to `seat:<id>` on every session it starts.
+pub(crate) const FLEET_ACTOR: &str = "FLEET_ACTOR";
+
+/// `FLEET_ACTOR`, trimmed, where it holds anything at all.
+pub(crate) fn fleet_actor() -> Option<String> {
+    std::env::var(FLEET_ACTOR)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Who acts, resolved once at this boundary: `--by`, else `FLEET_ACTOR`, else
+/// this machine's identity.
+///
+/// A VERB ALWAYS HAS AN ACTOR. Typed text — `<kind>:<id>` — is taken as given,
+/// and anything else is a seat argument, resolved over the fleet's listed
+/// seats: the roster, the machine's transient rows and this machine's
+/// identity. With neither source the verb acts as the machine's identity,
+/// minted where it has none, and says so on one line when the roster does not
+/// list it: a person the fleet does not know is still somebody, and the line
+/// names the verb that makes them known.
+pub(crate) fn acting(verb: &str, by: Option<&str>, here: &Here) -> Result<Actor, Stop> {
+    let given = match by {
+        Some(by) => Some(("--by", by.to_string())),
+        None => fleet_actor().map(|value| (FLEET_ACTOR, value)),
+    };
+    if let Some((source, text)) = given {
+        return match Actor::typed(&text) {
+            Some(typed) => typed.map_err(Stop::refused),
+            None => here
+                .seats
+                .resolve_listed(&text)
+                .map(|seat| Actor::seat(seat.id))
+                .map_err(|unresolved| {
+                    let stop = Stop::from(unresolved);
+                    Stop {
+                        message: format!("{source} {}", stop.message),
+                        ..stop
+                    }
+                }),
+        };
     }
-    None
+
+    let (identity, minted) = identity_or_mint(&here.machine_dir)
+        .map_err(|why| Stop::could_not_tell(format!("could not tell who acts: {why}")))?;
+    let listed = roster(&here.project.guards)
+        .unwrap_or_default()
+        .iter()
+        .any(|seat| seat.seat.id == identity.id);
+    if !listed {
+        let minted = if minted {
+            format!(
+                "this machine had no identity, so one was minted at {}; ",
+                here.machine_dir.join(IDENTITY).display()
+            )
+        } else {
+            String::new()
+        };
+        eprintln!(
+            "fleet {verb}: {minted}acting as this machine's identity {} ({}), which {} does not \
+             list — fleet seat add --human lists it",
+            identity.as_ref().machine_name(),
+            identity.id,
+            here.policy_file.display()
+        );
+    }
+    Ok(Actor::seat(identity.id))
 }
 
 // ---- the two seams ----------------------------------------------------------

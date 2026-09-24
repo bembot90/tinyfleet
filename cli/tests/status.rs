@@ -1017,7 +1017,7 @@ fn a_run_that_exits_one_is_on_the_page() {
         Err(_) => stubs.display().to_string(),
     };
     let ran = Command::new(env!("CARGO_BIN_EXE_fleet"))
-        .args(["run", "status-fails", "--by", "lead-1", "--packs-dir"])
+        .args(["run", "status-fails", "--by", "run:lead-1", "--packs-dir"])
         .arg(rig.machine.join("packs"))
         .current_dir(&rig.project)
         .hermetic(&rig.root.join("home"), &rig.machine, None)

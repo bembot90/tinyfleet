@@ -31,8 +31,36 @@ const MODEL: &str = "a-cheap-model";
 /// of its own, which is what `--to` names it by and what the order is written
 /// against, so the shared board still holds one seat's work per arm.
 const SEAT_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
+
+/// The person every arm dispatches as: a human seat on the fleet's roster, so
+/// `--by lead-1` resolves to it and the order carries it as `seat:<id>`.
+const LEAD_ID: &str = "01a0d1f1-0aec-765f-9abe-00000000000a";
+/// An agent seat the actor arms name by its name.
+const ORLA_ID: &str = "01a0d1f1-0aec-765f-9abe-00000000000b";
+/// Two seats one name answers to, for the ambiguous actor.
+const TWIN_A: &str = "01a0d1f1-0aec-765f-9abe-00000000000c";
+const TWIN_B: &str = "01a0d1f1-0aec-765f-9abe-00000000000d";
+/// A machine identity the roster lists, which the arm about the once-line's
+/// absence writes into its own machine directory.
+const LISTED_IDENTITY: &str = "01a0d1f1-0aec-765f-9abe-00000000000e";
+
 const POLICY: &str = "[controller]\nnudge_model = \"a-cheap-model\"\n\
-                      nudge_timeout_seconds = 20\n";
+                      nudge_timeout_seconds = 20\n\
+                      [seats.01a0d1f1-0aec-765f-9abe-00000000000a]\n\
+                      kind = \"human\"\nname = \"lead-1\"\n\
+                      [seats.01a0d1f1-0aec-765f-9abe-00000000000b]\n\
+                      kind = \"agent\"\nname = \"Orla\"\n\
+                      [seats.01a0d1f1-0aec-765f-9abe-00000000000c]\n\
+                      kind = \"agent\"\nname = \"twin\"\n\
+                      [seats.01a0d1f1-0aec-765f-9abe-00000000000d]\n\
+                      kind = \"agent\"\nname = \"twin\"\n\
+                      [seats.01a0d1f1-0aec-765f-9abe-00000000000e]\n\
+                      kind = \"human\"\nname = \"the-person\"\n";
+
+/// The order's `by` for an arm that dispatches `--by lead-1`.
+fn lead() -> String {
+    format!("seat:{LEAD_ID}")
+}
 
 fn defaults_into(machine: &Path) -> PathBuf {
     let root = machine.join(fleet_core::defaults::DIR);
@@ -153,6 +181,19 @@ impl Project {
             .status
             .success());
         item
+    }
+
+    /// The item closed, so the seat it was given to holds nothing again: an arm
+    /// that dispatches to its one seat more than once frees it in between.
+    fn done(&self, item: &str) {
+        let closed = self.bd(&[
+            "close", item, "--reason", "done", "--actor", "an-arm", "--force",
+        ]);
+        assert!(
+            closed.status.success(),
+            "bd close: {}",
+            String::from_utf8_lossy(&closed.stderr)
+        );
     }
 
     /// The three fields a dispatch writes, read back off the store.
@@ -353,7 +394,7 @@ fn a_live_row_in_the_seats_worktree_is_rung_with_the_item_and_the_brief() {
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        "dispatched by lead-1 — orders given\n"
+        format!("dispatched by {} — orders given\n", lead())
     );
     // The builder's checks the call handed in are the ones the brief names.
     let brief = std::fs::read_to_string(rig.machine.join("briefs").join(format!("{item}.md")))
@@ -494,7 +535,7 @@ fn a_ring_the_provider_refuses_exits_one_and_the_three_writes_stand() {
     let (assignee, notes, orders) = project.order_of(&item);
     assert_eq!(assignee.as_deref(), Some(SEAT_ID));
     assert!(notes.contains("orders given"), "{notes}");
-    assert_eq!(orders["by"], serde_json::json!("lead-1"));
+    assert_eq!(orders["by"], serde_json::json!(lead()));
 }
 
 /// AC2's third clause: a spawn the controller refuses withdraws the order in
@@ -576,32 +617,273 @@ fn an_unresolvable_agent_binary_exits_three_and_the_order_stands() {
     );
 }
 
-#[test]
-fn a_dispatcher_the_call_does_not_name_is_a_usage_error() {
-    let rig = Rig::new("nameless");
-    let out = Command::new(env!("CARGO_BIN_EXE_fleet"))
-        .args(["dispatch", "fx-1", "--to", &rig.seat])
-        .current_dir(&Project::shared().root)
-        .hermetic(&rig.root.join("home"), &rig.machine, None)
-        .env_remove("FLEET_ACTOR")
-        .env_remove("BEADS_ACTOR")
-        .output()
-        .expect("the built binary runs");
-    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
-    assert!(stderr(&out).contains("--by"), "{}", stderr(&out));
+/// The dispatch a verb gives with no `--by` and no `FLEET_ACTOR`: the command
+/// every actor arm below starts from. The hermetic block strips the actor the
+/// environment carries, which the arm after this one proves.
+fn nameless(rig: &Rig, args: &[&str]) -> Command {
+    nameless_under(rig, args, None)
+}
 
-    // The control: the same call with the environment naming an actor gets past
-    // the usage gate and refuses on the record instead.
-    let out = Command::new(env!("CARGO_BIN_EXE_fleet"))
-        .args(["dispatch", "fx-nope", "--to", &rig.seat])
+/// The same, with `FLEET_ACTOR` set on the command BEFORE the hermetic block
+/// is put on it — the way a suite run from inside a fleet-started session
+/// inherits one.
+fn nameless_under(rig: &Rig, args: &[&str], inherited: Option<&str>) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_fleet"));
+    if let Some(actor) = inherited {
+        command.env("FLEET_ACTOR", actor);
+    }
+    command
+        .args(args)
         .arg("--packs-dir")
         .arg(rig.machine.join("packs"))
         .current_dir(&Project::shared().root)
-        .hermetic(&rig.root.join("home"), &rig.machine, None)
-        .env("BEADS_ACTOR", "lead-1")
+        .hermetic(&rig.root.join("home"), &rig.machine, Some(&rig.stub))
+        .env("FLEET_LOAD_AVERAGE", "0.1")
+        .env("FLEET_CPUS", "8");
+    command
+}
+
+/// THE SUITE NEVER ACTS AS THE SEAT THAT RAN IT. A session the controller
+/// started carries `FLEET_ACTOR=seat:<id>`, and every rig's hermetic block
+/// strips it: a verb the rig runs with no `--by` acts as the rig's machine
+/// identity, never as the inherited seat.
+#[test]
+fn an_inherited_fleet_actor_is_stripped_by_the_hermetic_block() {
+    let project = Project::shared();
+    let rig = Rig::new("inherited-actor");
+    rig.live();
+    let item = project.item("a ready item a suite inside a seat dispatches");
+    let inherited = format!("seat:{ORLA_ID}");
+
+    let out = nameless_under(
+        &rig,
+        &["dispatch", &item, "--to", &rig.seat],
+        Some(&inherited),
+    )
+    .output()
+    .expect("the built binary runs");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let (_, _, orders) = project.order_of(&item);
+    assert_ne!(
+        orders["by"],
+        serde_json::json!(inherited),
+        "the inherited seat acted"
+    );
+    assert_eq!(
+        orders["by"],
+        serde_json::json!(format!("seat:{}", identity_of(&rig))),
+        "the machine's identity acts, not the inherited seat"
+    );
+}
+
+/// The id in this rig's machine identity, as the verb left it.
+fn identity_of(rig: &Rig) -> String {
+    fleet_core::seat::identity::read_identity(&rig.machine)
+        .expect("the identity reads")
+        .expect("the machine has an identity")
+        .id
+        .to_string()
+}
+
+/// A VERB ALWAYS HAS AN ACTOR: with no `--by` and no `FLEET_ACTOR` it acts as
+/// this machine's identity, minted here where the machine had none, and says
+/// so on one stderr line naming the verb that lists it.
+#[test]
+fn a_dispatcher_the_call_does_not_name_is_this_machines_identity() {
+    let project = Project::shared();
+    let rig = Rig::new("nameless");
+    rig.live();
+    let item = project.item("a ready item nobody named the dispatcher of");
+    assert!(!rig.machine.join("identity.toml").exists());
+
+    let out = nameless(&rig, &["dispatch", &item, "--to", &rig.seat])
         .output()
         .expect("the built binary runs");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+
+    let id = identity_of(&rig);
+    let (_, _, orders) = project.order_of(&item);
+    assert_eq!(orders["by"], serde_json::json!(format!("seat:{id}")));
+
+    let said = stderr(&out);
+    let short = &id[id.len() - 8..];
+    let once = format!(
+        "fleet dispatch: this machine had no identity, so one was minted at {}; acting as this \
+         machine's identity human-{short} ({id}), which {} does not list — fleet seat add --human \
+         lists it\n",
+        rig.machine.join("identity.toml").display(),
+        // The walk resolves from the working directory, which the platform
+        // hands back canonical.
+        std::fs::canonicalize(project.root.join("fleet.toml"))
+            .expect("the policy file resolves")
+            .display()
+    );
+    assert!(said.contains(&once), "{said}");
+    assert_eq!(said.matches("fleet seat add --human").count(), 1, "{said}");
+
+    // The second call reads the identity the first minted: no mint prefix.
+    project.done(&item);
+    let item = project.item("a second item the same machine dispatches");
+    let out = nameless(&rig, &["dispatch", &item, "--to", &rig.seat])
+        .output()
+        .expect("the built binary runs");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains(&format!(
+            "fleet dispatch: acting as this machine's identity human-{short} ({id})"
+        )),
+        "{}",
+        stderr(&out)
+    );
+    let (_, _, orders) = project.order_of(&item);
+    assert_eq!(orders["by"], serde_json::json!(format!("seat:{id}")));
+}
+
+/// The retired variable is spelled in two halves so this suite, like the
+/// code, carries the whole name nowhere (`git grep` over the crates finds
+/// none of it).
+const RETIRED_ACTOR_VARIABLE: &str = concat!("BEADS", "_ACTOR");
+
+/// The variable bd once read for its actor is read by no verb: set alone, the
+/// verb acts as the machine's identity and never as the name it holds.
+#[test]
+fn the_retired_actor_variable_is_not_read() {
+    let project = Project::shared();
+    let rig = Rig::new("retired-variable");
+    rig.live();
+    let item = project.item("a ready item under the retired variable");
+
+    let out = nameless(&rig, &["dispatch", &item, "--to", &rig.seat])
+        .env(RETIRED_ACTOR_VARIABLE, "someone")
+        .output()
+        .expect("the built binary runs");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let (_, notes, orders) = project.order_of(&item);
+    assert_eq!(
+        orders["by"],
+        serde_json::json!(format!("seat:{}", identity_of(&rig)))
+    );
+    assert!(!notes.contains("someone"), "{notes}");
+}
+
+/// The grammar of `--by` and `FLEET_ACTOR`: a seat argument resolves over the
+/// roster to `seat:<id>`, a typed actor is taken as given, and what resolves to
+/// no one seat — or is typed with a bad id — is refused before anything is
+/// written.
+#[test]
+fn an_actor_is_a_seat_argument_or_a_typed_actor() {
+    let project = Project::shared();
+    let rig = Rig::new("actor-forms");
+    rig.live();
+
+    let given = |by: &[&str], env: Option<&str>| {
+        let item = project.item("a ready item an actor arm dispatches");
+        let mut call = nameless(&rig, &["dispatch", &item, "--to", &rig.seat]);
+        call.args(by);
+        if let Some(actor) = env {
+            call.env("FLEET_ACTOR", actor);
+        }
+        let out = call.output().expect("the built binary runs");
+        (item, out)
+    };
+    // The seat takes one item at a time, so each dispatch that lands frees it.
+
+    let (item, out) = given(&["--by", "orla"], None);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        project.order_of(&item).2["by"],
+        serde_json::json!(format!("seat:{ORLA_ID}"))
+    );
+    assert!(
+        !stderr(&out).contains("fleet seat add --human"),
+        "a named actor is not the identity: {}",
+        stderr(&out)
+    );
+    project.done(&item);
+
+    let (item, out) = given(&[], Some("orla"));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        project.order_of(&item).2["by"],
+        serde_json::json!(format!("seat:{ORLA_ID}"))
+    );
+    project.done(&item);
+
+    let (item, out) = given(&["--by", "run:fleet-abc"], None);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(project.order_of(&item).2["by"], "run:fleet-abc");
+    project.done(&item);
+
+    let (item, out) = given(&["--by", "nobody"], None);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let said = stderr(&out);
+    assert!(
+        said.contains("fleet dispatch: --by nobody names no seat — the seats are "),
+        "{said}"
+    );
+    for id in [LEAD_ID, ORLA_ID, TWIN_A, TWIN_B] {
+        assert!(said.contains(id), "the seats are listed: {said}");
+    }
+    assert_eq!(project.order_of(&item).2, serde_json::Value::Null);
+
+    let (item, out) = given(&[], Some("nobody"));
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("fleet dispatch: FLEET_ACTOR nobody names no seat"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(project.order_of(&item).2, serde_json::Value::Null);
+
+    let (item, out) = given(&["--by", "twin"], None);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let said = stderr(&out);
+    assert!(said.contains("--by twin names 2 seats"), "{said}");
+    assert!(said.contains(TWIN_A) && said.contains(TWIN_B), "{said}");
+    assert_eq!(project.order_of(&item).2, serde_json::Value::Null);
+
+    let (item, out) = given(&["--by", "seat:not-a-uuid"], None);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("`seat:not-a-uuid` is a typed actor with a bad id — "),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(project.order_of(&item).2, serde_json::Value::Null);
+}
+
+/// An identity the roster lists is a person the fleet knows: the verb acts as
+/// it and says nothing about `fleet seat add --human`.
+#[test]
+fn a_listed_identity_acts_without_the_once_line() {
+    let project = Project::shared();
+    let rig = Rig::new("listed-identity");
+    rig.live();
+    std::fs::write(
+        rig.machine.join("identity.toml"),
+        format!("id = \"{LISTED_IDENTITY}\"\nkind = \"human\"\n"),
+    )
+    .expect("the identity is written");
+    let item = project.item("a ready item a listed person dispatches");
+
+    let out = nameless(&rig, &["dispatch", &item, "--to", &rig.seat])
+        .output()
+        .expect("the built binary runs");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        !stderr(&out).contains("fleet seat add --human"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        !stderr(&out).contains("acting as this machine's identity"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        project.order_of(&item).2["by"],
+        serde_json::json!(format!("seat:{LISTED_IDENTITY}"))
+    );
 }
 
 #[test]

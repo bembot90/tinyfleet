@@ -21,6 +21,10 @@ pub struct StartSpec {
     pub worktree: String,
     /// The session's name: `--name`, and what its start log is named by.
     pub name: String,
+    /// Who the session's own verbs act as, `seat:<id>`, handed to it as
+    /// `FLEET_ACTOR` [ASSUMES D7]: a seat's bare `fleet deliver` is the seat's
+    /// act and never the machine's person's.
+    pub actor: String,
     pub model: String,
     pub posture: String,
     pub first_turn: String,

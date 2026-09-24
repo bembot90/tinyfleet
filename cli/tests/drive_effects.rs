@@ -667,6 +667,21 @@ mod effects {
         );
     }
 
+    /// A start hands the session `FLEET_ACTOR=seat:<id>` [ASSUMES D7], so the
+    /// seat's own bare `fleet deliver` acts as the seat and never as the
+    /// machine's person. Read off what the stub agent's start was given.
+    #[test]
+    fn a_start_hands_the_session_its_seat_as_fleet_actor() {
+        let rig = Rig::new("effect-fleet-actor");
+        rig.write_roster("[]");
+
+        let out = rig.observe();
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert_eq!(seat_row(&rig)["outcome"], "spawned");
+
+        assert_eq!(rig.start_actor(), format!("seat:{SEAT_ID}"));
+    }
+
     /// A NAMED seat's start writes no settings into its worktree: that checkout
     /// is a person's, and their own permission rules stay theirs. Only a
     /// transient spawn renders the pack's document, and this loop makes none.

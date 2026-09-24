@@ -35,7 +35,12 @@ use fleet_core::item::run as workflow_run;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
-const BY: &str = "lead-1";
+/// Who starts the runs here: a seat typed whole, which a verb takes as given
+/// — these rigs write policies of their own and list no roster to resolve a
+/// name over.
+const BY: &str = "seat:01a0d1f1-0aec-765f-9abe-000000001ead";
+/// Who clears and cancels a run by hand: another seat, typed the same way.
+const PERSON: &str = "seat:01a0d1f1-0aec-765f-9abe-00000000fe25";
 
 /// The runtime the scratch pack pins, and the version its stub prints.
 const RUNTIME: &str = "fx-runtime";
@@ -1839,7 +1844,7 @@ fn a_cancelled_waiting_run_is_closed_announced_and_never_executed_again() {
     assert!(is_open(&rig, &id), "a waiting run holds its record open");
 
     let from = rig.stream_length();
-    let out = rig.run(&["cancel", &id, "--by", "a-person"]);
+    let out = rig.run(&["cancel", &id, "--by", PERSON]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(stdout(&out).trim(), format!("{id} — cancelled"));
     assert!(
@@ -1855,7 +1860,7 @@ fn a_cancelled_waiting_run_is_closed_announced_and_never_executed_again() {
     );
     let cancelled = only(&rig, from, fleet_core::item::RUN_CANCELLED);
     assert_eq!(cancelled["payload"]["run"].as_str(), Some(id.as_str()));
-    assert_eq!(cancelled["actor"].as_str(), Some("a-person"));
+    assert_eq!(cancelled["actor"].as_str(), Some(PERSON));
     let keys: Vec<&str> = cancelled["payload"]
         .as_object()
         .expect("the payload is an object")
@@ -1979,7 +1984,7 @@ fn a_run_held_at_the_crash_cap_clears_through_fleet_clear() {
     assert!(open_holds(&rig).contains(&hold), "{hold} stands");
 
     let from = rig.stream_length();
-    let out = rig.run(&["clear", &id, "B", "--by", "a-person"]);
+    let out = rig.run(&["clear", &id, "B", "--by", PERSON]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let cleared = only(&rig, from, fleet_core::item::HOLD_CLEARED);
     assert_eq!(cleared["payload"]["item"].as_str(), Some(id.as_str()));
@@ -2003,7 +2008,7 @@ fn a_cancel_clears_the_hold_on_a_held_runs_record_and_closes_it() {
     assert!(open_holds(&rig).contains(&bare), "{bare} stands");
 
     let from = rig.stream_length();
-    let out = rig.run(&["cancel", &id, "--by", "a-person"]);
+    let out = rig.run(&["cancel", &id, "--by", PERSON]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(
         stdout(&out).trim(),
@@ -2027,7 +2032,7 @@ fn a_cancel_clears_the_hold_on_a_held_runs_record_and_closes_it() {
 
 /// The refusals, each exit 1 on the record as it stands and each leaving it so:
 /// an id the store does not hold, an item that is not a run's record, and a run
-/// already closed. No name to act as is usage, exit 2.
+/// already closed. An empty `--by` is usage, exit 2.
 #[test]
 fn a_cancel_refuses_what_is_not_an_open_run() {
     let rig = Rig::new(
@@ -2076,10 +2081,13 @@ fn a_cancel_refuses_what_is_not_an_open_run() {
     assert!(said.contains(&id), "{said}");
     none_of(&rig, from, fleet_core::item::RUN_CANCELLED);
 
-    let out = rig.run_with(
-        &["cancel", &id],
-        &[("FLEET_ACTOR", ""), ("BEADS_ACTOR", "")],
-    );
+    // A verb always has an actor, so the one usage refusal left is an empty
+    // `--by`: a seat argument that names nothing at all.
+    let out = rig.run(&["cancel", &id, "--by", ""]);
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
-    assert!(stderr(&out).contains("--by"), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("fleet cancel: --by names no seat — the argument is empty"),
+        "{}",
+        stderr(&out)
+    );
 }

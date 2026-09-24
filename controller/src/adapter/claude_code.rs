@@ -279,6 +279,10 @@ pub const NUDGES_DIR: &str = "nudges";
 /// controller started by a service manager has none to pass, and one started
 /// from inside a seat would hand on that seat's binary rather than its own. It
 /// is set from this process's own executable instead.
+///
+/// `FLEET_ACTOR` is not here for the second of those reasons: a controller
+/// started from inside a seat would make every session it starts that seat. A
+/// start sets it from its own spec, and no other call sets it at all.
 pub const PASSED_THROUGH: [&str; 4] = ["HOME", "USER", "TMPDIR", "LANG"];
 
 /// The binary the adapter runs, with the environment passed in, so the order is
@@ -309,6 +313,10 @@ pub const CLAUDE_BIN_VAR: &str = "FLEET_CLAUDE_BIN";
 /// this adapter is handed. Spelled here and not taken from the item layer's
 /// own constant, because this crate names nothing of the project around it.
 pub const FLEET_BIN_VAR: &str = "FLEET_BIN";
+
+/// The variable a started session's verbs read their actor from, set to the
+/// start's own `seat:<id>`.
+pub const FLEET_ACTOR_VAR: &str = "FLEET_ACTOR";
 
 /// This process's own executable, as the absolute path the shim requires.
 ///
@@ -438,6 +446,10 @@ impl Agent for ClaudeCode {
                 }
             }
         };
+        // WHO THE SESSION ACTS AS, on the start and on nothing else [ASSUMES
+        // D7]: its own bare verbs are the seat's. A nudge's print-mode turn
+        // writes nothing, so it carries no actor.
+        cmd.env(FLEET_ACTOR_VAR, &spec.actor);
         cmd.args([
             "--bg",
             "--name",

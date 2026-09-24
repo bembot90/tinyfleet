@@ -51,6 +51,7 @@ use crate::item::{
     TRUNK_BRANCH, VERDICT_MARKERS,
 };
 use crate::policy;
+use crate::seat::actor::{Actor, ActorKind};
 use crate::seat::identity::{Directory, SeatId};
 use crate::store::{Item, Store, StoreError, EXPORT};
 
@@ -1794,7 +1795,17 @@ fn rebased_from(delivery: &str, landed_on: &str) -> String {
 /// discriminator `hold` reads to tell a run's park from a seat's. A `by` the store has no item
 /// for is a seat name, which is not an id at all; a store that could not answer
 /// is a could-not-tell and never a seat.
+///
+/// THE TYPED FORM IS READ HERE TOO, until the verbs take the typed actor: the
+/// cli hands a workflow's `run:<id>` through as that string, so the record is
+/// the id after the prefix, and an actor of any other kind is no run at all.
 fn caller_run(store: &dyn Store, by: &str) -> Result<Option<Item>, Stop> {
+    let by = match Actor::typed(by) {
+        Some(Ok(actor)) if actor.kind == ActorKind::Run => actor.id,
+        Some(_) => return Ok(None),
+        None => by.to_string(),
+    };
+    let by = by.as_str();
     match store.show(by) {
         Ok(record) => {
             let of_a_run = record.labels.iter().any(|label| label == run::LABEL);

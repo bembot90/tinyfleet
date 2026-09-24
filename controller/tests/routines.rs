@@ -1293,7 +1293,7 @@ fn fire_run_routine(
     let argv = std::fs::read_to_string(machine_dir.join("fleet-argv.txt")).unwrap();
     assert_eq!(
         argv,
-        format!("run\n{workflow}\n--input\nwho=the-arm\n--by\nnightly\n"),
+        format!("run\n{workflow}\n--input\nwho=the-arm\n--by\nroutine:nightly\n"),
         "the verb, the workflow, each input as a pair and the routine as the runner"
     );
     let cwd = std::fs::read_to_string(machine_dir.join("fleet-cwd.txt")).unwrap();
@@ -1353,8 +1353,8 @@ fn a_run_action_calls_the_run_verb_and_the_run_id_rides_the_terminal_event() {
         opening.payload
     );
     assert_eq!(
-        stream[1].actor, "nightly",
-        "the run names the routine as its runner"
+        stream[1].actor, "routine:nightly",
+        "the run names the routine as its runner, typed"
     );
     let run_id = stream[1].payload["run"].as_str().unwrap().to_string();
 
@@ -1435,6 +1435,9 @@ fn a_run_action_with_no_fleet_on_the_child_path_is_could_not_tell() {
 
     // The dry run's argv names the verb by its bare name where nothing resolves.
     let argv = action::argv_of(&routine, &machine);
-    assert_eq!(argv, vec!["fleet", "run", "takeoff", "--by", "a-routine"]);
+    assert_eq!(
+        argv,
+        vec!["fleet", "run", "takeoff", "--by", "routine:a-routine"]
+    );
     let _ = std::fs::remove_dir_all(&root);
 }

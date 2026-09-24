@@ -21,19 +21,13 @@ use fleet_core::store::Store;
 
 use crate::envelope;
 use crate::exit::Exit;
-use crate::item::{open_store, resolve_at, Here};
+use crate::item::{acting, open_store, resolve_at, Here};
 
 /// The three verb names the envelope's documents carry, which are also the
 /// words each verb's own stderr line names itself by.
 const SPAWN: &str = "seat spawn";
 const FEED: &str = "seat feed";
 const RETIRE: &str = "seat retire";
-
-/// Who a withdrawal is written by where the call names nobody and the
-/// environment holds no actor. It is the FLEET and not a person: the retire is
-/// what takes the order back, and a seat name borrowed for the actor would put
-/// the act on somebody who did not make it.
-const RETIRED_BY: &str = "fleet";
 
 /// What `seat spawn` takes.
 #[derive(clap::Args)]
@@ -82,7 +76,7 @@ pub struct RetireArgs {
     /// license a seat whose session is already gone
     #[arg(long)]
     pub dead: bool,
-    /// who is retiring it; else FLEET_ACTOR or BEADS_ACTOR
+    /// who is retiring it; else FLEET_ACTOR, else this machine
     #[arg(long, value_name = "NAME")]
     pub by: Option<String>,
     /// the project this directory must resolve to
@@ -238,6 +232,12 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
         Ok(here) => here,
         Err(stop) => return stopped(RETIRE, &stop, args.json),
     };
+    // Who the withdrawal is written by, resolved before anything moves: the
+    // retire is somebody's act, and a verb always has an actor.
+    let by = match acting(RETIRE, args.by.as_deref(), &here) {
+        Ok(by) => by.to_string(),
+        Err(stop) => return stopped(RETIRE, &stop, args.json),
+    };
     let row = match seat_named(&here.machine_dir, &args.seat) {
         Ok(row) => row,
         Err(stop) => return stopped(RETIRE, &stop, args.json),
@@ -273,11 +273,6 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
     // verb can still stop: the name this frees is the one the next spawn takes,
     // and an order left standing against it is one that seat would inherit.
     let store = open_store(&here.project.root);
-    let by = args
-        .by
-        .clone()
-        .or_else(crate::item::actor)
-        .unwrap_or_else(|| RETIRED_BY.to_string());
     // THE ROW'S ID, which is what the order was assigned to; the note and the
     // sentences name the seat by its machine name. The retire hands its
     // withdrawal the name it resolved, which is this same row.

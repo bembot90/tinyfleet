@@ -140,7 +140,13 @@ Deno.test("AC1 spawn — fleet dispatch <item> --by <run> --json, the seat in th
     data,
     (run) => run.spawn({ role: "builder", item: "it-1" }),
   );
-  assertEquals(seen, [["dispatch", "it-1", "--by", s.env.runId, "--json"]]);
+  assertEquals(seen, [[
+    "dispatch",
+    "it-1",
+    "--by",
+    `run:${s.env.runId}`,
+    "--json",
+  ]]);
 
   const t = await scratch();
   await can(t, "dispatch", { stdout: envelope("dispatch", data) });
@@ -202,7 +208,7 @@ Deno.test("spawn — a delivery a verdict returned, or a landing closed, is not 
     assertEquals(got, data, `a delivery then ${after} is dispatched`);
     assertEquals(
       await calls(s),
-      [["dispatch", "it-1", "--by", s.env.runId, "--json"]],
+      [["dispatch", "it-1", "--by", `run:${s.env.runId}`, "--json"]],
       `a delivery then ${after} is no RETAKEN`,
     );
   }
@@ -279,7 +285,7 @@ Deno.test("AC1 deliver — fleet deliver --item <item> --note <file> --by <run> 
     "--note",
     note,
     "--by",
-    s.env.runId,
+    `run:${s.env.runId}`,
     "--json",
   ]]);
 });
@@ -299,7 +305,7 @@ Deno.test("AC1 review — accepted is --land and { returned } is --return <file>
     "it-1",
     "--land",
     "--by",
-    s.env.runId,
+    `run:${s.env.runId}`,
     "--json",
   ]);
 
@@ -319,7 +325,7 @@ Deno.test("AC1 review — accepted is --land and { returned } is --return <file>
     "--return",
     findings,
     "--by",
-    t.env.runId,
+    `run:${t.env.runId}`,
     "--json",
   ]);
 });
@@ -339,7 +345,7 @@ Deno.test("AC1 land — fleet land <item> <sha> --by <run> --json, the landed sh
     "it-1",
     "abc1234",
     "--by",
-    s.env.runId,
+    `run:${s.env.runId}`,
     "--json",
   ]]);
 });
@@ -380,7 +386,7 @@ Deno.test("AC2 hold — the question note, fleet hold on the run's record item, 
     "--note",
     note,
     "--by",
-    runId,
+    `run:${runId}`,
     "--json",
   ]]);
   let all = await lines(s);
@@ -508,7 +514,7 @@ Deno.test("AC1 start — fleet run <name> --by <run> --input k=v, Waiting on the
     "run",
     "child",
     "--by",
-    runId,
+    `run:${runId}`,
     "--input",
     "city=Lisbon",
     "--input",
@@ -718,7 +724,7 @@ Deno.test("a verb runs from the project root under a run-directory cwd: the fake
   assertEquals(recorded.map((l) => l.payload.name), ["spawn it-1"]);
   assertEquals(recorded[0].payload.result, data);
   assertEquals(await calls(s), [
-    ["dispatch", "it-1", "--by", s.env.runId, "--json"],
+    ["dispatch", "it-1", "--by", `run:${s.env.runId}`, "--json"],
   ]);
 
   // The control: the same fake canned to expect the run directory instead

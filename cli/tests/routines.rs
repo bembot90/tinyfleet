@@ -584,7 +584,10 @@ fn a_run_action_fires_the_run_verb_against_a_scratch_pack_and_the_events_wrap() 
         .expect("run.started names the run")
         .to_string();
     assert!(run_id.starts_with("fx-"), "{run_id}");
-    assert_eq!(stream[1]["actor"], "takeoff", "the routine is the runner");
+    assert_eq!(
+        stream[1]["actor"], "routine:takeoff",
+        "the routine is the runner, typed"
+    );
     assert_eq!(stream[1]["payload"]["workflow"], "rt-hello");
     assert_eq!(stream[2]["payload"]["run"], run_id.as_str());
     assert!(
@@ -625,7 +628,7 @@ fn a_run_action_fires_the_run_verb_against_a_scratch_pack_and_the_events_wrap() 
     assert!(verb.ends_with("/fleet"), "{verb}");
     assert!(
         body.contains(
-            "argv run\nargv rt-hello\nargv --input\nargv who=the-arm\nargv --by\nargv takeoff\n"
+            "argv run\nargv rt-hello\nargv --input\nargv who=the-arm\nargv --by\nargv routine:takeoff\n"
         ),
         "{body}"
     );

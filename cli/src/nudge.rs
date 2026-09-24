@@ -22,7 +22,7 @@ use fleet_controller::{clock, policy as controller};
 use fleet_core::item::RingOutcome;
 
 use crate::exit::Exit;
-use crate::item::{actor, SeatRing};
+use crate::item::{acting, SeatRing};
 use crate::ui::{Stream, Tone, Ui};
 
 /// The published document this verb refuses without.
@@ -65,6 +65,12 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
     };
     let key = row.id.to_string();
     let seat = row.machine_name();
+    // Who sent it, resolved as every writing verb's actor is: the verb has no
+    // `--by`, so `FLEET_ACTOR`, else this machine's identity.
+    let by = match acting("seat nudge", None, &here) {
+        Ok(by) => by.to_string(),
+        Err(stop) => return stopped(&stop.message, stop.code),
+    };
 
     let document = match fresh_projection(&here.machine_dir) {
         Ok(document) => document,
@@ -103,7 +109,7 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
         &key,
         serde_json::json!({
             "session": rung.session,
-            "by": actor(),
+            "by": by,
             "source": SOURCE,
             "outcome": outcome,
         }),

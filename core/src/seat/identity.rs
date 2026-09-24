@@ -516,13 +516,19 @@ impl Directory {
             .unwrap_or_else(|| id.to_string())
     }
 
-    /// The seat an actor string names, where it names exactly one listed seat.
+    /// The seat an actor string names: a typed `seat:<full id>` as given, and
+    /// otherwise the one listed seat the text resolves to.
     ///
-    /// A BRIDGE until the actor is typed: a missing or an ambiguous answer is
-    /// "not a seat", and the caller says so rather than guessing whose work it
-    /// holds.
+    /// A BRIDGE until the verbs take the typed actor. The cli hands a verb the
+    /// typed form, and a seat's is taken as given, as the cli took it — the
+    /// identity this very call minted is in no directory yet. Every other kind
+    /// is no seat, and so is a missing or an ambiguous answer: the caller says
+    /// so rather than guessing whose work it holds.
     pub fn seat_of(&self, by: &str) -> Option<SeatId> {
-        self.resolve_listed(by).ok().map(|seat| seat.id)
+        match super::actor::Actor::typed(by) {
+            Some(typed) => typed.ok().and_then(|actor| actor.seat_id()),
+            None => self.resolve_listed(by).ok().map(|seat| seat.id),
+        }
     }
 }
 

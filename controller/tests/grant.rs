@@ -126,9 +126,7 @@ impl Rig {
             ),
         );
         executable(&stub);
-        for (key, value) in common::hermetic::vars(&rig.root, &rig.machine, Some(&stub)) {
-            std::env::set_var(key, value);
-        }
+        common::hermetic::export(common::hermetic::vars(&rig.root, &rig.machine, Some(&stub)));
         rig
     }
 

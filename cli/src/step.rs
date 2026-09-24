@@ -17,6 +17,7 @@ use clap::ValueEnum;
 use fleet_controller::events::{self, EventLog};
 use fleet_controller::platform;
 use fleet_core::item::{STEP_CLOSED, STEP_STARTED};
+use fleet_core::seat::actor::Actor;
 
 /// The two halves of a step, as the positional word.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -67,9 +68,10 @@ pub struct StepArgs {
 
 /// Write one step event and confirm it landed.
 ///
-/// The actor is `FLEET_ACTOR` or `BEADS_ACTOR` where one is set, else the run
-/// id: the run's child is started with a cleared environment, so the run is
-/// the one name every writer under it can be attributed to.
+/// The actor is FLEET_ACTOR, else the run (run:<id>): the run's child is
+/// started with a cleared environment, so the run is the one name every writer
+/// under it can be attributed to. The variable is read as a typed actor only —
+/// a step has no roster to resolve a seat argument over.
 pub fn record(args: &StepArgs) -> Exit {
     let payload = match payload(args) {
         Ok(payload) => payload,
@@ -79,7 +81,16 @@ pub fn record(args: &StepArgs) -> Exit {
         }
     };
     let kind = args.phase.kind();
-    let actor = item::actor().unwrap_or_else(|| args.run.clone());
+    let actor = match item::fleet_actor() {
+        None => format!("run:{}", args.run),
+        Some(given) => match Actor::typed(&given) {
+            Some(Ok(actor)) => actor.to_string(),
+            _ => {
+                eprintln!("fleet event step: FLEET_ACTOR {given} is not kind:id");
+                return Exit::Usage;
+            }
+        },
+    };
     let stream = platform::machine_dir().join(STREAM);
     let mut log = EventLog::open(&stream);
     if let Err(e) = log.append(kind, &actor, payload) {

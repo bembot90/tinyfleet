@@ -127,9 +127,7 @@ impl Rig {
                 rig.never_live.display()
             ),
         );
-        for (key, value) in common::hermetic::vars(&rig.root, &rig.machine, None) {
-            std::env::set_var(key, value);
-        }
+        common::hermetic::export(common::hermetic::vars(&rig.root, &rig.machine, None));
         platform::clear_stop();
         rig
     }

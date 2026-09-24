@@ -377,7 +377,7 @@ impl Rig {
             .env("GIT_AUTHOR_EMAIL", "fleet@example.invalid")
             .env("GIT_COMMITTER_NAME", "fleet tests")
             .env("GIT_COMMITTER_EMAIL", "fleet@example.invalid")
-            .env("BEADS_ACTOR", &self.seat)
+            .env("FLEET_ACTOR", &self.seat)
             .output()
             .expect("the built binary runs")
     }
@@ -458,7 +458,11 @@ fn a_live_reviewer_is_rung_with_the_item_and_the_commit_the_delivery_made() {
         .cloned()
         .expect("the stream carries the delivery");
     assert_eq!(last["type"].as_str(), Some("item.delivered"), "{last}");
-    assert_eq!(last["actor"].as_str(), Some(rig.seat.as_str()));
+    // The seat named itself by name; the cli hands the verb its id, typed.
+    assert_eq!(
+        last["actor"].as_str(),
+        Some(format!("seat:{}", rig.seat_id()).as_str())
+    );
     assert_eq!(last["payload"]["item"].as_str(), Some(item.as_str()));
     assert_eq!(last["payload"]["commit"].as_str(), Some(head.as_str()));
     assert_eq!(
@@ -606,7 +610,7 @@ fn review_land_writes_the_accept_on_the_record_and_the_event_on_the_stream() {
         .unwrap_or_default()
         .to_string();
     assert!(
-        notes.contains(&format!("ACCEPTED {head} — {REVIEWER}")),
+        notes.contains(&format!("ACCEPTED {head} — seat:{REVIEWER_ID}")),
         "the verdict is on the record: {notes}"
     );
 
@@ -616,7 +620,10 @@ fn review_land_writes_the_accept_on_the_record_and_the_event_on_the_stream() {
         .cloned()
         .expect("the stream carries the verdict");
     assert_eq!(last["type"].as_str(), Some("item.reviewed"), "{last}");
-    assert_eq!(last["actor"].as_str(), Some(REVIEWER));
+    assert_eq!(
+        last["actor"].as_str(),
+        Some(format!("seat:{REVIEWER_ID}").as_str())
+    );
     assert_eq!(last["payload"]["item"].as_str(), Some(item.as_str()));
     assert_eq!(last["payload"]["commit"].as_str(), Some(head.as_str()));
     assert_eq!(last["payload"]["verdict"].as_str(), Some("accepted"));

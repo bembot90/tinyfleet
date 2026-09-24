@@ -592,8 +592,9 @@ fn the_json_readers_refuse_in_the_envelopes_refusal_shape() {
 /// `fleet event step <started|closed>`: the one writer of the step pair, for a
 /// workflow's own process. Both halves land on the stream with the run, the
 /// number and the name; a close carries its result as one JSON value or the
-/// sha of the result file; the actor is the run where no actor variable is
-/// set; and the SDK's own read — `event tail --json --type step.closed` — gets
+/// sha of the result file; the actor is the run, typed `run:<id>`, where no
+/// `FLEET_ACTOR` is set and the typed actor it names where one is; and the
+/// SDK's own read — `event tail --json --type step.closed` — gets
 /// every close back and nothing else.
 #[test]
 fn the_step_writer_appends_both_halves_on_the_run_and_the_json_tail_reads_the_closes_back() {
@@ -608,15 +609,14 @@ fn the_step_writer_appends_both_halves_on_the_run_and_the_json_tail_reads_the_cl
         serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {line}"))
     };
 
-    // The fallback actor: the run, because the child a run starts carries no
-    // actor variable. Both are removed rather than assumed absent, since the
-    // suite's own environment may set either.
+    // The fallback actor: the run, typed, because the child a run starts
+    // carries no actor variable. It is removed rather than assumed absent,
+    // since the suite's own environment may set it.
     let started = rig
         .command(&[
             "event", "step", "started", "--run", run, "--n", "1", "--name", "fetch",
         ])
         .env_remove("FLEET_ACTOR")
-        .env_remove("BEADS_ACTOR")
         .output()
         .expect("the built binary runs");
     assert_eq!(code(&started), Some(0), "{}", err(&started));
@@ -627,7 +627,11 @@ fn the_step_writer_appends_both_halves_on_the_run_and_the_json_tail_reads_the_cl
     );
     let first = stream(1);
     assert_eq!(first["type"], "step.started");
-    assert_eq!(first["actor"], run, "the run is the actor: {first}");
+    assert_eq!(
+        first["actor"],
+        format!("run:{run}"),
+        "the run is the actor: {first}"
+    );
     assert_eq!(first["payload"]["run"], run);
     assert_eq!(first["payload"]["n"], 1);
     assert_eq!(first["payload"]["name"], "fetch");
@@ -651,13 +655,13 @@ fn the_step_writer_appends_both_halves_on_the_run_and_the_json_tail_reads_the_cl
             "--result",
             "{\"rows\":[1,2],\"ok\":true}",
         ])
-        .env("FLEET_ACTOR", "the-workflow")
+        .env("FLEET_ACTOR", "routine:x")
         .output()
         .expect("the built binary runs");
     assert_eq!(code(&closed), Some(0), "{}", err(&closed));
     let second = stream(2);
     assert_eq!(second["type"], "step.closed");
-    assert_eq!(second["actor"], "the-workflow");
+    assert_eq!(second["actor"], "routine:x");
     assert_eq!(second["payload"]["n"], 1);
     assert_eq!(second["payload"]["name"], "fetch");
     assert_eq!(
@@ -754,6 +758,21 @@ fn the_step_writer_appends_both_halves_on_the_run_and_the_json_tail_reads_the_cl
             err(&refused)
         );
     }
+    // An actor variable that is not `<kind>:<id>` is the fourth: a bare name
+    // is no actor a step can be written under.
+    let bare = rig
+        .command(&[
+            "event", "step", "started", "--run", run, "--n", "4", "--name", "x",
+        ])
+        .env("FLEET_ACTOR", "the-workflow")
+        .output()
+        .expect("the built binary runs");
+    assert_eq!(code(&bare), Some(2), "{}", err(&bare));
+    assert!(
+        err(&bare).contains("fleet event step: FLEET_ACTOR the-workflow is not kind:id"),
+        "{}",
+        err(&bare)
+    );
     assert_eq!(
         std::fs::read_to_string(rig.stream())
             .unwrap()

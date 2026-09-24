@@ -25,9 +25,10 @@
 // The verbs — spawn, deliver, review, land, hold, until and start — are each
 // one step whose exec runs the binary with `--json` and records the envelope's
 // `data`; a refusal envelope is a thrown `Refusal`, exit 1 with the code in the
-// reason. Every act a verb takes is attributed `--by` the run id, and the two
-// verbs that leave something open across a Waiting exit — a hold's question, a
-// start's child run — find their own record on a re-run by that actor: the k-th
+// reason. Every act a verb takes is attributed `--by run:<id>`, the run typed as
+// an actor, and the two verbs that leave something open across a Waiting exit —
+// a hold's question, a start's child run — find their own record on a re-run by
+// that actor: the k-th
 // park or the k-th run this run raised is the k-th hold or start call, so
 // neither holds nor starts twice.
 
@@ -319,6 +320,9 @@ export async function workflow(
 
 class Handle implements Run {
   readonly id: string;
+  /** The run as an actor, typed: what every verb is attributed `--by`, and
+   * what its own lines on the stream carry. */
+  private readonly actor: string;
   private n = 0;
   private holds = 0;
   private starts = 0;
@@ -329,6 +333,7 @@ class Handle implements Run {
     private readonly closed: Map<number, Closed>,
   ) {
     this.id = env.runId;
+    this.actor = `run:${env.runId}`;
   }
 
   async step<T>(name: string, exec: () => T | Promise<T>): Promise<T> {
@@ -454,7 +459,7 @@ class Handle implements Run {
   hold(question: string, options: string[]): Promise<string> {
     const k = ++this.holds;
     return this.step(`hold ${question}`, async () => {
-      const parks = (await this.tail({ type: ITEM_HELD, seat: this.id }))
+      const parks = (await this.tail({ type: ITEM_HELD, seat: this.actor }))
         .filter((r) => r.payload.item === this.id);
       let hold: string;
       if (parks.length >= k) {
@@ -518,9 +523,9 @@ class Handle implements Run {
   ): Promise<{ run: string }> {
     const k = ++this.starts;
     return this.step(`start ${name}`, async () => {
-      let mine = await this.tail({ type: RUN_STARTED, seat: this.id });
+      let mine = await this.tail({ type: RUN_STARTED, seat: this.actor });
       if (mine.length < k) {
-        const args = ["run", name, "--by", this.id];
+        const args = ["run", name, "--by", this.actor];
         for (const [key, value] of Object.entries(inputs)) {
           const text = typeof value === "string"
             ? value
@@ -528,10 +533,10 @@ class Handle implements Run {
           args.push("--input", `${key}=${text}`);
         }
         await this.fleet(args);
-        mine = await this.tail({ type: RUN_STARTED, seat: this.id });
+        mine = await this.tail({ type: RUN_STARTED, seat: this.actor });
         if (mine.length < k) {
           throw new Error(
-            `start: fleet run ${name} exited 0 and no ${RUN_STARTED} by ${this.id} followed on the stream`,
+            `start: fleet run ${name} exited 0 and no ${RUN_STARTED} by ${this.actor} followed on the stream`,
           );
         }
       }
@@ -563,10 +568,10 @@ class Handle implements Run {
     });
   }
 
-  /** One verb under `--json`, `--by` this run: the envelope's data, or the
+  /** One verb under `--json`, `--by run:<id>`: the envelope's data, or the
    * refusal thrown. */
   private async verb<T>(args: string[]): Promise<T> {
-    const full = [...args, "--by", this.id, "--json"];
+    const full = [...args, "--by", this.actor, "--json"];
     const ran = await spawnFleet(this.env, full);
     const envelope = lastDocument(ran.stdout);
     if (envelope !== null && envelope.ok === false) {

@@ -10,6 +10,13 @@
 import type { Env } from "../mod.ts";
 import { type Line, lines as stored } from "./stream.ts";
 
+// THE ACTOR A SESSION IS STARTED WITH IS STRIPPED, off this process and so
+// off every binary an arm spawns — the real one and the fake alike. The
+// controller sets FLEET_ACTOR=seat:<id> on every session it starts, and a
+// suite run from inside one would otherwise write its steps as that seat
+// rather than as the run, which is what a run's own cleared child does.
+Deno.env.delete("FLEET_ACTOR");
+
 const here = import.meta.dirname!;
 const workspace = `${here}/../../../../..`;
 

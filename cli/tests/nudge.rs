@@ -199,7 +199,7 @@ impl Rig {
             .args(args)
             .current_dir(&self.project)
             .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub))
-            .env("BEADS_ACTOR", "a-caller")
+            .env("FLEET_ACTOR", "run:a-caller")
             .output()
             .expect("the built binary runs")
     }
@@ -284,7 +284,7 @@ fn a_live_row_and_a_fresh_projection_carry_the_text_and_say_sent() {
     assert_eq!(event["payload"]["outcome"], serde_json::json!("sent"));
     assert_eq!(event["payload"]["source"], serde_json::json!("seat nudge"));
     assert_eq!(event["payload"]["session"], serde_json::json!("abcdef"));
-    assert_eq!(event["payload"]["by"], serde_json::json!("a-caller"));
+    assert_eq!(event["payload"]["by"], serde_json::json!("run:a-caller"));
     assert_eq!(
         event["payload"]["context_tokens"],
         serde_json::Value::Null,

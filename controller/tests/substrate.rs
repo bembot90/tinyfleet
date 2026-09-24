@@ -74,10 +74,11 @@ impl Rig {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
             .expect("the stub is executable");
-        for (key, value) in common::hermetic::in_process_vars(&rig.root, &rig.machine, Some(&stub))
-        {
-            std::env::set_var(key, value);
-        }
+        common::hermetic::export(common::hermetic::in_process_vars(
+            &rig.root,
+            &rig.machine,
+            Some(&stub),
+        ));
         rig
     }
 

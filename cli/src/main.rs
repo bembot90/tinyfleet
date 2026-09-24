@@ -457,7 +457,7 @@ seat is not halted (1), printing the state it read from the projection."
 record one half of a numbered step of a run, for a workflow's own process to
 call: `started` before the step runs, `closed` after it, carrying the result
 as one JSON value or, over the SDK's size cap, the sha256 of the result file
-in the run directory. The actor is FLEET_ACTOR or BEADS_ACTOR, else the run.
+in the run directory. The actor is FLEET_ACTOR, else the run (run:<id>).
 The SDK reads the pair back through `fleet event tail --json`; nothing in the
 controller consumes it.")]
     Step(step::StepArgs),

@@ -558,6 +558,25 @@ fn an_actor_is_a_seat_only_where_it_resolves_to_one_listed_seat() {
     assert_eq!(dir.seat_of("orla"), None, "two seats answer to it");
 }
 
+/// The typed form the cli now hands a verb: `seat:<full id>` is that seat as
+/// given, listed or not — the machine's identity minted by this very call is
+/// in no directory yet — and every other kind is no seat.
+#[test]
+fn a_typed_seat_actor_is_its_id_and_any_other_kind_is_no_seat() {
+    let dir = directory();
+    assert_eq!(dir.seat_of(&format!("seat:{ORLA}")), Some(id(ORLA)));
+    assert_eq!(
+        dir.seat_of(&format!("seat:{}", ORLA.to_uppercase())),
+        Some(id(ORLA))
+    );
+    let stranger = "66666666-aaaa-7bbb-8ccc-0000000000aa";
+    assert_eq!(dir.seat_of(&format!("seat:{stranger}")), Some(id(stranger)));
+    assert_eq!(dir.seat_of("seat:orla"), None, "a bad id is no seat");
+    assert_eq!(dir.seat_of("run:fleet-abc"), None);
+    assert_eq!(dir.seat_of("routine:nightly"), None);
+    assert_eq!(dir.seat_of(&format!("controller:{ORLA}")), None);
+}
+
 // ---- identity ---------------------------------------------------------------
 
 #[test]

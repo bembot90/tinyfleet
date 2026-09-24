@@ -4448,6 +4448,35 @@ fn a_run_lands_as_the_reviewer_and_names_the_run_beside_it() {
     );
 }
 
+/// THE TYPED FORM IS A RUN TOO. The cli hands a workflow's `--by run:<id>`
+/// through as that string, so the record is read by the id after the prefix
+/// and the landing stands exactly as the bare id's does above.
+#[test]
+fn a_run_typed_as_run_colon_id_lands_as_the_reviewer() {
+    let board = store();
+    let scratch = &board;
+    let item = an_item(
+        &scratch.store,
+        "an item a typed run lands",
+        Some(("ACCEPTED", SHA)),
+    );
+    let run = a_run(&scratch.store, Some(REVIEWER));
+    let events = StubEvents::default();
+
+    let git = StubGit::clean();
+    let typed = format!("run:{run}");
+    let ran = run_as(scratch, &scratch.store, &git, &item, &typed, &events);
+    ran.landed.as_ref().unwrap_or_else(|stop| {
+        panic!(
+            "a typed run's landing was refused: {}\n{}",
+            stop.message, ran.out
+        );
+    });
+    let (actor, landing) = events.one(ITEM_LANDED);
+    assert_eq!(actor, REVIEWER_ID, "the landing is the reviewer's act");
+    assert_eq!(landing["run"], serde_json::json!(run), "the run by its id");
+}
+
 /// THE HOLDER GATE STILL HOLDS UNDER A RUN. It compares the item's assignee to
 /// the reviewer the run acts as, both as seat ids, so an item another seat's
 /// id holds is refused exactly as a seat's own landing of it would be — and
