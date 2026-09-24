@@ -14,9 +14,9 @@ use fleet_controller::adapter::{dir_key, Agent};
 use fleet_controller::policy::Policy;
 use fleet_controller::routines::action::Machine;
 use fleet_controller::routines::file::Routine;
-use fleet_controller::routines::gate::Due;
 use fleet_controller::routines::load::Registry;
-use fleet_controller::routines::{self, action, gate, load, state, Outcome, SeatView};
+use fleet_controller::routines::trigger::Due;
+use fleet_controller::routines::{self, action, load, state, trigger, Outcome, SeatView};
 use fleet_controller::{clock, config, events, observe, platform, policy, sessions};
 use std::path::{Path, PathBuf};
 
@@ -33,10 +33,10 @@ pub enum Verb {
     /// every routine loaded, with its next due and its last outcome
     List,
 
-    /// evaluate one routine's gate now, without firing it
+    /// evaluate one routine's trigger now, without firing it
     #[command(long_about = "\
-evaluate one routine's gate now and print the three-valued answer: 0 due, 1 not
-due, 3 could not tell. Writes nothing.")]
+evaluate one routine's trigger now and print the three-valued answer: 0 due, 1
+not due, 3 could not tell. Writes nothing.")]
     Check {
         /// the routine's name
         name: String,
@@ -51,11 +51,11 @@ due, 3 could not tell. Writes nothing.")]
     /// fire one routine now and print the event row it produced
     #[command(long_about = "\
 fire one routine now, outside its schedule, and print the event row.
---force bypasses the gate and never the lock; --dry-run writes nothing at all.")]
+--force overrides the trigger, never the lock; --dry-run writes nothing at all.")]
     Run {
         /// the routine's name
         name: String,
-        /// fire it whether or not the gate says it is due
+        /// fire it whether or not its trigger is due
         #[arg(long)]
         force: bool,
         /// say what would happen and write nothing
@@ -99,8 +99,8 @@ fn usage(why: &str) -> Exit {
     Exit::Usage
 }
 
-/// A status the gate and the action layers state as a number, read back into
-/// the table. A number outside it is those layers' own defect and reads as
+/// A status the trigger and the action layers state as a number, read back
+/// into the table. A number outside it is those layers' own defect and reads as
 /// could-not-tell rather than as a status this module invented.
 fn exit_of(code: u8) -> Exit {
     Exit::from_status(code).unwrap_or(Exit::CouldNotTell)
@@ -323,7 +323,7 @@ fn check(name: &str, now_at: Option<&str>, last_fired: Option<&str>) -> Exit {
 
     let seats = seat_views(&fleet, false);
     let machine = machine_of(&fleet, &seats, None, None);
-    let answer = gate::gate(routine, now, fired, &|routine| {
+    let answer = trigger::evaluate(routine, now, fired, &|routine| {
         action::run_check(routine, &machine)
     });
     println!("{} — {}", answer.word(), answer.reason());
@@ -374,7 +374,7 @@ fn run(name: &str, force: bool, dry_run: bool) -> Exit {
         return Exit::Refused;
     };
 
-    // The lock, before anything else. `--force` bypasses the gate and never
+    // The lock, before anything else. `--force` overrides the trigger and never
     // this: two processes running one duty at once is what it is here for.
     match state::read_lock(&fleet.machine_dir, name) {
         state::Lock::Held(pid) => {
@@ -430,7 +430,7 @@ fn run(name: &str, force: bool, dry_run: bool) -> Exit {
         let answer = if force {
             Due::Due("--force".to_string())
         } else {
-            gate::gate(routine, now, fired, &|routine| {
+            trigger::evaluate(routine, now, fired, &|routine| {
                 action::run_check(routine, &machine)
             })
         };

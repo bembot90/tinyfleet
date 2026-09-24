@@ -216,14 +216,14 @@ evaluation with no restart.
 
 A file carries `[order]` and one `[action.<kind>]` and no third table, and every
 value this reader does not understand is a **defect** with the file and the key
-named — a misspelled key would be a duty that silently never runs, and a gate
+named — a misspelled key would be a duty that silently never runs, and a trigger
 parameter under the wrong trigger is a plan its author believes in and nothing
 reads. A defective file never fires and is a `DEFECT` row in `fleet routine list`.
 The three triggers are `cron` (five fields against LOCAL wall-clock truncated to
 the minute, `*`, `*/N`, an integer or a comma list, 0 and 7 both Sunday, a range
 refused with the list that replaces it), `cooldown` (`now - last_fired` against
 an interval) and `condition` (a command under `sh -c` in the routine's project
-root). The gate's answer is **three-valued and never rounded**: a check that
+root). The trigger's answer is **three-valued and never rounded**: a check that
 outran `check_timeout`, one that could not be started, and one that exited a
 status the routine names in `check_unknown_exit` are all *could-not-tell*, which
 is what keeps a duty whose instrument is out from reading as a quiet one. The
@@ -251,9 +251,9 @@ happened and was not recorded fires again forever, and a double firing costs one
 turn.
 
 `fleet routine list | check <name> | run <name> | history [<name>]` are the four
-verbs. `check` evaluates the gate now, running a condition for real, and writes
+verbs. `check` evaluates the trigger now, running a condition for real, and writes
 nothing; `run` takes the routine's lock, fires it outside its schedule and prints
-the event row it produced, with `--force` bypassing the gate and never the lock
+the event row it produced, with `--force` overriding the trigger and never the lock
 and `--dry-run` writing nothing at all; `history` reads the routine events back
 off the stream. A `run` holding a routine's lock makes the tick skip that routine
 with one line and no event.

@@ -6,34 +6,8 @@
 //! routine is a plan its author believes in and nothing reads, and a misspelled
 //! key is a duty that silently never runs.
 
+use super::trigger::Trigger;
 use std::path::{Path, PathBuf};
-
-/// The three clocks a routine can be on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Trigger {
-    Cron,
-    Cooldown,
-    Condition,
-}
-
-impl Trigger {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Trigger::Cron => "cron",
-            Trigger::Cooldown => "cooldown",
-            Trigger::Condition => "condition",
-        }
-    }
-
-    fn parse(word: &str) -> Option<Trigger> {
-        match word {
-            "cron" => Some(Trigger::Cron),
-            "cooldown" => Some(Trigger::Cooldown),
-            "condition" => Some(Trigger::Condition),
-            _ => None,
-        }
-    }
-}
 
 /// Where a routine was loaded from, as it is published and printed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -176,9 +150,9 @@ pub const DEFAULT_POLL_SECONDS: u64 = 600;
 /// The item types the work graph takes.
 pub const ITEM_TYPES: [&str; 6] = ["bug", "feature", "task", "epic", "chore", "decision"];
 
-/// The keys `[order]` carries, and the trigger each gate key belongs to. A key
-/// outside this table is a defect; a key under the wrong trigger is a defect
-/// too, and this is the one place either question is answered.
+/// The keys `[order]` carries, and the trigger each trigger parameter belongs
+/// to. A key outside this table is a defect; a key under the wrong trigger is
+/// a defect too, and this is the one place either question is answered.
 const ROUTINE_KEYS: [(&str, Option<Trigger>); 10] = [
     ("description", None),
     ("trigger", None),
@@ -323,8 +297,8 @@ pub fn parse(
         return defective(reasons);
     };
 
-    // The trigger first: every gate key below is read against it, so a file
-    // that does not name one cannot be judged at all.
+    // The trigger first: every trigger parameter below is read against it, so
+    // a file that does not name one cannot be judged at all.
     let trigger = match routine.get("trigger") {
         Some(toml::Value::String(word)) => match Trigger::parse(word) {
             Some(trigger) => Some(trigger),
@@ -408,7 +382,7 @@ pub fn parse(
     match trigger {
         Some(Trigger::Cron) => match routine.get("schedule") {
             Some(toml::Value::String(text)) => {
-                if let Err(why) = crate::routines::gate::validate_cron(text) {
+                if let Err(why) = crate::routines::trigger::validate_cron(text) {
                     reasons.push(format!("[order] schedule {why}"));
                 }
                 schedule = Some(text.clone());

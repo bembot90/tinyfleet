@@ -214,7 +214,7 @@ fn run_fires_a_routine_prints_its_event_row_and_refuses_one_that_is_not_due() {
     assert!(err(&again).contains("is not due"), "{}", err(&again));
     assert!(out(&again).is_empty(), "a refusal prints no row");
 
-    // --force bypasses the gate.
+    // --force overrides the trigger.
     let forced = rig.fleet(&["routine", "run", "beat", "--force"]);
     assert_eq!(forced.status.code(), Some(0), "{}", err(&forced));
     assert!(
@@ -234,7 +234,7 @@ fn run_fires_a_routine_prints_its_event_row_and_refuses_one_that_is_not_due() {
 }
 
 #[test]
-fn a_dry_run_prints_the_gate_and_the_argv_and_writes_nothing_at_all() {
+fn a_dry_run_prints_the_trigger_s_answer_and_the_argv_and_writes_nothing_at_all() {
     let rig = Rig::new("dry");
     rig.routine("beat", &ticking("beat.txt"));
     // A firing first, so there IS a state file and a stream to compare against:

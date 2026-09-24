@@ -13,18 +13,18 @@
 
 pub mod action;
 pub mod file;
-pub mod gate;
 pub mod load;
 pub mod state;
+pub mod trigger;
 
 use crate::clock;
 use crate::events::{self, EventLog};
 use crate::observe::RosterState;
 use file::Routine;
-use gate::Due;
 use serde::{Deserialize, Serialize};
 use state::{RoutineState, State};
 use std::path::Path;
+use trigger::Due;
 
 /// A file holding the instant every routine clock reads, for a caller driving the
 /// tick against a clock of its own. Unset is this machine's own.
@@ -141,7 +141,7 @@ pub fn rows(registry: &load::Registry, state: &State, now: u64) -> Vec<RoutineRo
                 name: routine.name.clone(),
                 source: routine.source.as_string(),
                 trigger: routine.trigger.as_str().to_string(),
-                next_due: gate::next_due(routine, now, last_fired, last_evaluated)
+                next_due: trigger::next_due(routine, now, last_fired, last_evaluated)
                     .map(clock::stamp_secs),
                 last_outcome: entry.last_outcome.clone(),
                 last_fired: entry.last_fired.clone(),
@@ -188,7 +188,7 @@ pub fn tick(registry: &load::Registry, pass: &mut Pass, now: u64) {
             .last_evaluated
             .as_deref()
             .and_then(clock::secs_of_stamp);
-        if !gate::is_due_an_evaluation(routine, now, last_evaluated) {
+        if !trigger::is_due_an_evaluation(routine, now, last_evaluated) {
             continue;
         }
         // A run holding the lock owns this routine for as long as it holds it.
@@ -201,7 +201,7 @@ pub fn tick(registry: &load::Registry, pass: &mut Pass, now: u64) {
         }
         let last_fired = entry.last_fired.as_deref().and_then(clock::secs_of_stamp);
         let machine = &pass.machine;
-        let answer = gate::gate(routine, now, last_fired, &|routine| {
+        let answer = trigger::evaluate(routine, now, last_fired, &|routine| {
             action::run_check(routine, machine)
         });
         match answer {
@@ -228,7 +228,7 @@ pub fn tick(registry: &load::Registry, pass: &mut Pass, now: u64) {
     }
 }
 
-/// A gate that could not answer: the state moves, the streak grows, and one
+/// A trigger that could not answer: the state moves, the streak grows, and one
 /// event says which instrument was unreadable.
 pub fn record_could_not_tell(
     routine: &Routine,

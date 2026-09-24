@@ -1,13 +1,13 @@
 //! The routine file, the three roots and the clock (PRD R22, Q1).
 //!
 //! Every arm here is offline: the loader is a pure function over a list of
-//! directories, and the gate takes the instant and the check runner as
+//! directories, and the trigger takes the instant and the check runner as
 //! arguments, so nothing below asks this machine what time it is or runs a
 //! command it did not write.
 
-use fleet_controller::routines::file::{self, Action, Loaded, Routine, Source, Trigger, When};
-use fleet_controller::routines::gate::{self, CheckOutcome, Due, LocalMinute};
+use fleet_controller::routines::file::{self, Action, Loaded, Routine, Source, When};
 use fleet_controller::routines::load;
+use fleet_controller::routines::trigger::{self, CheckOutcome, Due, LocalMinute, Trigger};
 use std::path::{Path, PathBuf};
 
 /// The seat list every arm validates a ring against, unless it says otherwise.
@@ -200,11 +200,11 @@ fn every_required_key_that_is_absent_is_refused_by_name() {
     }
 }
 
-/// A gate parameter under the wrong trigger, one arm per parameter. It is a
+/// A trigger parameter under the wrong trigger, one arm per parameter. It is a
 /// defect and never an ignored line: an `interval` on a cron routine is a plan its
 /// author believes in and nothing reads.
 #[test]
-fn a_gate_parameter_under_the_wrong_trigger_is_a_defect() {
+fn a_trigger_parameter_under_the_wrong_trigger_is_a_defect() {
     for (key, value, belongs, under) in [
         ("schedule", "\"* * * * *\"", "cron", "cooldown"),
         ("interval", "\"1m\"", "cooldown", "cron"),
@@ -657,31 +657,31 @@ fn at(minute: i8, hour: i8, day: i8, month: i8, weekday: i8) -> LocalMinute {
 #[test]
 fn each_cron_field_form_matches_the_minute_it_names() {
     let noon = at(30, 12, 15, 6, 1);
-    assert_eq!(gate::cron_matches("* * * * *", &noon), Ok(true));
-    assert_eq!(gate::cron_matches("30 12 15 6 1", &noon), Ok(true));
-    assert_eq!(gate::cron_matches("31 12 15 6 1", &noon), Ok(false));
-    assert_eq!(gate::cron_matches("0,30 12 15 6 1", &noon), Ok(true));
-    assert_eq!(gate::cron_matches("0,29 * * * *", &noon), Ok(false));
-    assert_eq!(gate::cron_matches("*/15 * * * *", &noon), Ok(true));
-    assert_eq!(gate::cron_matches("*/7 * * * *", &noon), Ok(false));
-    assert_eq!(gate::cron_matches("* */6 * * *", &noon), Ok(true));
-    assert_eq!(gate::cron_matches("* * * 6 *", &noon), Ok(true));
-    assert_eq!(gate::cron_matches("* * * 7 *", &noon), Ok(false));
-    assert!(gate::cron_matches("1-5 * * * *", &noon).is_err());
+    assert_eq!(trigger::cron_matches("* * * * *", &noon), Ok(true));
+    assert_eq!(trigger::cron_matches("30 12 15 6 1", &noon), Ok(true));
+    assert_eq!(trigger::cron_matches("31 12 15 6 1", &noon), Ok(false));
+    assert_eq!(trigger::cron_matches("0,30 12 15 6 1", &noon), Ok(true));
+    assert_eq!(trigger::cron_matches("0,29 * * * *", &noon), Ok(false));
+    assert_eq!(trigger::cron_matches("*/15 * * * *", &noon), Ok(true));
+    assert_eq!(trigger::cron_matches("*/7 * * * *", &noon), Ok(false));
+    assert_eq!(trigger::cron_matches("* */6 * * *", &noon), Ok(true));
+    assert_eq!(trigger::cron_matches("* * * 6 *", &noon), Ok(true));
+    assert_eq!(trigger::cron_matches("* * * 7 *", &noon), Ok(false));
+    assert!(trigger::cron_matches("1-5 * * * *", &noon).is_err());
 }
 
 /// Sunday is 0 and 7 alike, and no other day answers to both.
 #[test]
 fn sunday_is_zero_and_seven_and_no_other_day_is_two_numbers() {
     let sunday = at(0, 0, 1, 1, 0);
-    assert_eq!(gate::cron_matches("* * * * 0", &sunday), Ok(true));
-    assert_eq!(gate::cron_matches("* * * * 7", &sunday), Ok(true));
-    assert_eq!(gate::cron_matches("* * * * 1", &sunday), Ok(false));
+    assert_eq!(trigger::cron_matches("* * * * 0", &sunday), Ok(true));
+    assert_eq!(trigger::cron_matches("* * * * 7", &sunday), Ok(true));
+    assert_eq!(trigger::cron_matches("* * * * 1", &sunday), Ok(false));
 
     let monday = at(0, 0, 2, 1, 1);
-    assert_eq!(gate::cron_matches("* * * * 1", &monday), Ok(true));
-    assert_eq!(gate::cron_matches("* * * * 0", &monday), Ok(false));
-    assert_eq!(gate::cron_matches("* * * * 7", &monday), Ok(false));
+    assert_eq!(trigger::cron_matches("* * * * 1", &monday), Ok(true));
+    assert_eq!(trigger::cron_matches("* * * * 0", &monday), Ok(false));
+    assert_eq!(trigger::cron_matches("* * * * 7", &monday), Ok(false));
 }
 
 /// The instant is read AS ITS MINUTE: every second inside one minute is the
@@ -692,21 +692,21 @@ fn an_instant_is_read_as_the_minute_it_falls_in() {
     // minutes, which is every zone this reads.
     let boundary = 1_788_600_000;
     assert_eq!(boundary % 60, 0, "the fixture starts on a minute");
-    let first = gate::local_minute_of(boundary).expect("this machine has a zone");
+    let first = trigger::local_minute_of(boundary).expect("this machine has a zone");
     for inside in [1, 30, 59] {
         assert_eq!(
-            gate::local_minute_of(boundary + inside),
+            trigger::local_minute_of(boundary + inside),
             Ok(first),
             "second {inside} of the minute reads as the same minute"
         );
     }
-    let next = gate::local_minute_of(boundary + 60).expect("this machine has a zone");
+    let next = trigger::local_minute_of(boundary + 60).expect("this machine has a zone");
     assert_ne!(next, first, "the minute after is a different reading");
     assert_eq!(next.minute, (first.minute + 1) % 60);
 }
 
-/// A routine with no action to run, for an arm about the gate alone.
-fn gate_routine(body: &str) -> Routine {
+/// A routine with no action to run, for an arm about the trigger alone.
+fn trigger_routine(body: &str) -> Routine {
     routine_of(body)
 }
 
@@ -714,20 +714,20 @@ const EVERY_MINUTE: &str = "[order]\ndescription = \"d\"\ntrigger = \"cron\"\n\
                             schedule = \"* * * * *\"\n[action.exec]\ncommand = \"true\"\n";
 
 fn never_run(_: &Routine) -> CheckOutcome {
-    panic!("the gate ran a check for a trigger that has none")
+    panic!("the evaluation ran a check for a trigger that has none")
 }
 
 /// A cron routine that matched and already fired in that minute does not fire
 /// twice, and the same routine in the NEXT minute does.
 #[test]
 fn a_cron_routine_fires_once_in_the_minute_it_matches() {
-    let routine = gate_routine(EVERY_MINUTE);
+    let routine = trigger_routine(EVERY_MINUTE);
     let now = 1_788_600_030;
     assert!(matches!(
-        gate::gate(&routine, now, None, &never_run),
+        trigger::evaluate(&routine, now, None, &never_run),
         Due::Due(_)
     ));
-    let inside = gate::gate(&routine, now, Some(now - 20), &never_run);
+    let inside = trigger::evaluate(&routine, now, Some(now - 20), &never_run);
     assert!(
         matches!(inside, Due::NotDue(ref why) if why.contains("already fired in that minute")),
         "{inside:?}"
@@ -735,7 +735,7 @@ fn a_cron_routine_fires_once_in_the_minute_it_matches() {
     // The same last_fired, one minute later: the suppression is the MINUTE's
     // and not a fixed span.
     assert!(matches!(
-        gate::gate(&routine, now + 60, Some(now - 20), &never_run),
+        trigger::evaluate(&routine, now + 60, Some(now - 20), &never_run),
         Due::Due(_)
     ));
 }
@@ -744,38 +744,38 @@ fn a_cron_routine_fires_once_in_the_minute_it_matches() {
 /// passed.
 #[test]
 fn a_cooldown_fires_when_it_never_has_and_when_its_interval_is_up() {
-    let routine = gate_routine(
+    let routine = trigger_routine(
         "[order]\ndescription = \"d\"\ntrigger = \"cooldown\"\ninterval = \"1h\"\n\
          [action.exec]\ncommand = \"true\"\n",
     );
     let now = 1_788_600_000;
     assert!(matches!(
-        gate::gate(&routine, now, None, &never_run),
+        trigger::evaluate(&routine, now, None, &never_run),
         Due::Due(ref why) if why.contains("never fired")
     ));
     assert!(matches!(
-        gate::gate(&routine, now, Some(now - 3_599), &never_run),
+        trigger::evaluate(&routine, now, Some(now - 3_599), &never_run),
         Due::NotDue(_)
     ));
     assert!(matches!(
-        gate::gate(&routine, now, Some(now - 3_600), &never_run),
+        trigger::evaluate(&routine, now, Some(now - 3_600), &never_run),
         Due::Due(_)
     ));
 }
 
-/// The seven arms of the condition's gate, through an injected runner. Three
+/// The seven arms of the condition trigger, through an injected runner. Three
 /// answers and never two: the fourth arm is the one that says a status the
 /// routine names is read BEFORE the 0 test.
 #[test]
-fn the_condition_gate_answers_three_ways_and_reads_the_named_status_first() {
-    let routine = gate_routine(
+fn the_condition_trigger_answers_three_ways_and_reads_the_named_status_first() {
+    let routine = trigger_routine(
         "[order]\ndescription = \"d\"\ntrigger = \"condition\"\ncheck = \"probe\"\n\
          check_unknown_exit = [3]\n[action.exec]\ncommand = \"true\"\n",
     );
     let now = 1_788_600_000;
     let answer = |outcome: CheckOutcome| {
         let run = move |_: &Routine| outcome.clone();
-        gate::gate(&routine, now, None, &run)
+        trigger::evaluate(&routine, now, None, &run)
     };
 
     assert!(matches!(answer(CheckOutcome::Exited(0)), Due::Due(_)));
@@ -794,22 +794,22 @@ fn the_condition_gate_answers_three_ways_and_reads_the_named_status_first() {
     ));
 
     // Disabled is NOT-DUE and never could-not-tell: nothing was unreadable.
-    let off = gate_routine(
+    let off = trigger_routine(
         "[order]\ndescription = \"d\"\ntrigger = \"condition\"\ncheck = \"probe\"\n\
          enabled = false\n[action.exec]\ncommand = \"true\"\n",
     );
     assert!(matches!(
-        gate::gate(&off, now, None, &never_run),
+        trigger::evaluate(&off, now, None, &never_run),
         Due::NotDue(ref why) if why.contains("disabled")
     ));
 
     // The ordering, on the one input that separates the two readings: a status
     // the routine maps to could-not-tell that is ALSO the due status. The file
     // reader refuses a 0 there, so this routine is built rather than parsed —
-    // which is what makes the clause a rule of the gate and not of the parser.
+    // which is what makes the clause a rule of the evaluation and not of the parser.
     let ambiguous = Routine {
         check_unknown_exit: vec![0],
-        ..gate_routine(
+        ..trigger_routine(
             "[order]\ndescription = \"d\"\ntrigger = \"condition\"\ncheck = \"probe\"\n\
              [action.exec]\ncommand = \"true\"\n",
         )
@@ -817,7 +817,7 @@ fn the_condition_gate_answers_three_ways_and_reads_the_named_status_first() {
     let zero = |_: &Routine| CheckOutcome::Exited(0);
     assert!(
         matches!(
-            gate::gate(&ambiguous, now, None, &zero),
+            trigger::evaluate(&ambiguous, now, None, &zero),
             Due::CouldNotTell(_)
         ),
         "a named status is read before the 0 test"
@@ -836,53 +836,53 @@ fn the_condition_gate_answers_three_ways_and_reads_the_named_status_first() {
 #[test]
 fn the_next_due_of_each_trigger_is_the_instant_a_reader_can_act_on() {
     let now = 1_788_600_000;
-    let every_minute = gate_routine(EVERY_MINUTE);
-    assert_eq!(gate::next_due(&every_minute, now, None, None), Some(now));
+    let every_minute = trigger_routine(EVERY_MINUTE);
+    assert_eq!(trigger::next_due(&every_minute, now, None, None), Some(now));
     assert_eq!(
-        gate::next_due(&every_minute, now, Some(now), None),
+        trigger::next_due(&every_minute, now, Some(now), None),
         Some(now + 60),
         "a minute this routine already fired in is behind it"
     );
 
-    let cooldown = gate_routine(
+    let cooldown = trigger_routine(
         "[order]\ndescription = \"d\"\ntrigger = \"cooldown\"\ninterval = \"1h\"\n\
          [action.exec]\ncommand = \"true\"\n",
     );
-    assert_eq!(gate::next_due(&cooldown, now, None, None), Some(now));
+    assert_eq!(trigger::next_due(&cooldown, now, None, None), Some(now));
     assert_eq!(
-        gate::next_due(&cooldown, now, Some(now - 100), None),
+        trigger::next_due(&cooldown, now, Some(now - 100), None),
         Some(now - 100 + 3_600)
     );
 
-    let condition = gate_routine(
+    let condition = trigger_routine(
         "[order]\ndescription = \"d\"\ntrigger = \"condition\"\ncheck = \"probe\"\n\
          poll = \"5m\"\n[action.exec]\ncommand = \"true\"\n",
     );
-    assert_eq!(gate::next_due(&condition, now, None, None), Some(now));
+    assert_eq!(trigger::next_due(&condition, now, None, None), Some(now));
     assert_eq!(
-        gate::next_due(&condition, now, None, Some(now - 60)),
+        trigger::next_due(&condition, now, None, Some(now - 60)),
         Some(now - 60 + 300)
     );
 
     // A schedule with no matching minute at all answers none rather than a date
     // nobody meant. The thirtieth of February is the case, and the search stops
     // at the limit rather than running forever.
-    let never = gate_routine(
+    let never = trigger_routine(
         "[order]\ndescription = \"d\"\ntrigger = \"cron\"\nschedule = \"0 0 30 2 *\"\n\
          [action.exec]\ncommand = \"true\"\n",
     );
-    assert_eq!(gate::next_due(&never, now, None, None), None);
+    assert_eq!(trigger::next_due(&never, now, None, None), None);
 
     // The control that the search reaches far without being unbounded: a
     // schedule that matches once a year is found.
-    let yearly = gate_routine(
+    let yearly = trigger_routine(
         "[order]\ndescription = \"d\"\ntrigger = \"cron\"\nschedule = \"0 0 1 1 *\"\n\
          [action.exec]\ncommand = \"true\"\n",
     );
-    let next = gate::next_due(&yearly, now, None, None).expect("a yearly schedule has a next");
+    let next = trigger::next_due(&yearly, now, None, None).expect("a yearly schedule has a next");
     assert!(next > now, "the next new year is ahead of {now}");
     assert!(
-        next - now < gate::SEARCH_LIMIT_MINUTES * 60,
+        next - now < trigger::SEARCH_LIMIT_MINUTES * 60,
         "and inside the search limit"
     );
 }
@@ -893,35 +893,51 @@ fn the_next_due_of_each_trigger_is_the_instant_a_reader_can_act_on() {
 #[test]
 fn each_trigger_is_asked_no_more_often_than_it_can_answer() {
     let now = 1_788_600_000;
-    let cron = gate_routine(EVERY_MINUTE);
-    assert!(gate::is_due_an_evaluation(&cron, now, None));
-    assert!(!gate::is_due_an_evaluation(&cron, now + 59, Some(now)));
-    assert!(gate::is_due_an_evaluation(&cron, now + 60, Some(now)));
+    let cron = trigger_routine(EVERY_MINUTE);
+    assert!(trigger::is_due_an_evaluation(&cron, now, None));
+    assert!(!trigger::is_due_an_evaluation(&cron, now + 59, Some(now)));
+    assert!(trigger::is_due_an_evaluation(&cron, now + 60, Some(now)));
     // The drift a span would have: evaluated one second before the boundary,
     // the next minute is still asked about.
-    assert!(gate::is_due_an_evaluation(&cron, now + 60, Some(now + 59)));
+    assert!(trigger::is_due_an_evaluation(
+        &cron,
+        now + 60,
+        Some(now + 59)
+    ));
 
-    let cooldown = gate_routine(
+    let cooldown = trigger_routine(
         "[order]\ndescription = \"d\"\ntrigger = \"cooldown\"\ninterval = \"1h\"\n\
          [action.exec]\ncommand = \"true\"\n",
     );
-    assert!(!gate::is_due_an_evaluation(&cooldown, now + 59, Some(now)));
-    assert!(gate::is_due_an_evaluation(&cooldown, now + 60, Some(now)));
+    assert!(!trigger::is_due_an_evaluation(
+        &cooldown,
+        now + 59,
+        Some(now)
+    ));
+    assert!(trigger::is_due_an_evaluation(
+        &cooldown,
+        now + 60,
+        Some(now)
+    ));
 
-    let condition = gate_routine(
+    let condition = trigger_routine(
         "[order]\ndescription = \"d\"\ntrigger = \"condition\"\ncheck = \"probe\"\n\
          poll = \"5m\"\n[action.exec]\ncommand = \"true\"\n",
     );
-    assert!(!gate::is_due_an_evaluation(
+    assert!(!trigger::is_due_an_evaluation(
         &condition,
         now + 299,
         Some(now)
     ));
-    assert!(gate::is_due_an_evaluation(&condition, now + 300, Some(now)));
+    assert!(trigger::is_due_an_evaluation(
+        &condition,
+        now + 300,
+        Some(now)
+    ));
 }
 
 /// A disabled routine is not-due whatever its trigger says, which is the first
-/// line of the gate and not a branch inside each one.
+/// line of the evaluation and not a branch inside each one.
 #[test]
 fn a_disabled_routine_is_not_due_under_every_trigger() {
     for body in [
@@ -930,9 +946,9 @@ fn a_disabled_routine_is_not_due_under_every_trigger() {
         "[order]\ndescription = \"d\"\ntrigger = \"cooldown\"\ninterval = \"1s\"\n\
          enabled = false\n[action.exec]\ncommand = \"true\"\n",
     ] {
-        let routine = gate_routine(body);
+        let routine = trigger_routine(body);
         assert!(matches!(
-            gate::gate(&routine, 1_788_600_000, None, &never_run),
+            trigger::evaluate(&routine, 1_788_600_000, None, &never_run),
             Due::NotDue(ref why) if why.contains("disabled")
         ));
     }

@@ -586,8 +586,8 @@ pub fn log_path(machine_dir: &Path, name: &str, kind: &str) -> PathBuf {
 /// Run a condition's check the way the tick runs it: `sh -c` in the order's
 /// project root, stdin null, both streams on a file, bounded by
 /// `check_timeout` through the controller's own runner.
-pub fn run_check(routine: &Routine, machine: &Machine) -> super::gate::CheckOutcome {
-    use super::gate::CheckOutcome;
+pub fn run_check(routine: &Routine, machine: &Machine) -> super::trigger::CheckOutcome {
+    use super::trigger::CheckOutcome;
     let log = log_path(machine.machine_dir, &routine.name, "check");
     let Some(command) = routine.check.as_deref() else {
         return CheckOutcome::NotStarted("the routine names no check".to_string());

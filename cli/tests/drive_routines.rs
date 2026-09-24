@@ -119,7 +119,7 @@ mod routines {
         assert!(path.contains(&child_path(&rig.home())), "{path}");
     }
 
-    /// (b) A gate that cannot answer is a third outcome, and the streak it
+    /// (b) A trigger that cannot answer is a third outcome, and the streak it
     /// carries is a number the projection publishes.
     ///
     /// Three polls of a STEPPED clock, then a fourth tick with the clock

@@ -1,4 +1,5 @@
-//! The clock: whether one routine is due at one instant (PRD R22).
+//! The clock: a routine's trigger, and whether it is due at one instant (PRD
+//! R22).
 //!
 //! Three answers and never two. `due`, `not-due` and `could-not-tell` are
 //! distinct all the way through — a check that timed out, could not be started
@@ -9,8 +10,35 @@
 //! `cron` is matched against LOCAL wall-clock, which is the only clock a person
 //! writes a nightly duty in.
 
-use super::file::{Routine, Trigger};
+use super::file::Routine;
 use std::sync::OnceLock;
+
+/// The three clocks a routine can be on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trigger {
+    Cron,
+    Cooldown,
+    Condition,
+}
+
+impl Trigger {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Trigger::Cron => "cron",
+            Trigger::Cooldown => "cooldown",
+            Trigger::Condition => "condition",
+        }
+    }
+
+    pub(super) fn parse(word: &str) -> Option<Trigger> {
+        match word {
+            "cron" => Some(Trigger::Cron),
+            "cooldown" => Some(Trigger::Cooldown),
+            "condition" => Some(Trigger::Condition),
+            _ => None,
+        }
+    }
+}
 
 /// The five wall-clock fields a cron schedule is matched against, in this
 /// machine's own zone.
@@ -174,7 +202,7 @@ pub enum CheckOutcome {
     NotStarted(String),
 }
 
-/// The gate's three answers, each carrying the sentence a person reads.
+/// A trigger's three answers, each carrying the sentence a person reads.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Due {
     Due(String),
@@ -202,7 +230,7 @@ impl Due {
 ///
 /// `last_fired` is the caller's: nothing here reads or writes state, and the
 /// only disk this touches is `run_check`'s command.
-pub fn gate(
+pub fn evaluate(
     routine: &Routine,
     now: u64,
     last_fired: Option<u64>,
@@ -212,13 +240,13 @@ pub fn gate(
         return Due::NotDue("the routine is disabled".to_string());
     }
     match routine.trigger {
-        Trigger::Cron => cron_gate(routine, now, last_fired),
-        Trigger::Cooldown => cooldown_gate(routine, now, last_fired),
-        Trigger::Condition => condition_gate(routine, run_check),
+        Trigger::Cron => cron(routine, now, last_fired),
+        Trigger::Cooldown => cooldown(routine, now, last_fired),
+        Trigger::Condition => condition(routine, run_check),
     }
 }
 
-fn cron_gate(routine: &Routine, now: u64, last_fired: Option<u64>) -> Due {
+fn cron(routine: &Routine, now: u64, last_fired: Option<u64>) -> Due {
     let Some(schedule) = routine.schedule.as_deref() else {
         return Due::CouldNotTell("the routine names no schedule to match".to_string());
     };
@@ -242,7 +270,7 @@ fn cron_gate(routine: &Routine, now: u64, last_fired: Option<u64>) -> Due {
     Due::Due(format!("schedule `{schedule}` matches {stamp}"))
 }
 
-fn cooldown_gate(routine: &Routine, now: u64, last_fired: Option<u64>) -> Due {
+fn cooldown(routine: &Routine, now: u64, last_fired: Option<u64>) -> Due {
     let Some(interval) = routine.interval else {
         return Due::CouldNotTell("the routine names no interval".to_string());
     };
@@ -264,7 +292,7 @@ fn cooldown_gate(routine: &Routine, now: u64, last_fired: Option<u64>) -> Due {
 /// The routine §3 fixes, and the one place it is written: a check that outran its
 /// bound or could not start is could-not-tell; a status the routine names is
 /// could-not-tell, READ BEFORE the 0 test; 0 is due; anything else is not.
-fn condition_gate(routine: &Routine, run_check: &dyn Fn(&Routine) -> CheckOutcome) -> Due {
+fn condition(routine: &Routine, run_check: &dyn Fn(&Routine) -> CheckOutcome) -> Due {
     if routine.check.is_none() {
         return Due::CouldNotTell("the routine names no check to run".to_string());
     }
