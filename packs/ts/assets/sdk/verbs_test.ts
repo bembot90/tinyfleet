@@ -8,7 +8,7 @@
 // shape, the way `rig.ts` seeds the opening line.
 
 import { assert, assertEquals, assertMatch } from "jsr:@std/assert@1";
-import { GATES_DIR, replay, type Run, Waiting } from "./mod.ts";
+import { GATES_DIR, replay, RETAKEN, type Run, Waiting } from "./mod.ts";
 import {
   closes,
   lines,
@@ -142,6 +142,100 @@ Deno.test("AC1 spawn — fleet dispatch <item> --by <run> --json, the seat in th
     /no verb cuts a reviewer/,
   );
   assertEquals(await calls(t), [], "neither refusal spawned the binary");
+});
+
+/** One line of an item's record on the stream, in the stored shape the
+ * binary's own verb writes it. */
+function recorded(
+  s: Faked,
+  kind: "delivered" | "returned" | "landed",
+  item: string,
+  commit: string,
+): Promise<number> {
+  const payload = kind === "delivered"
+    ? { item, commit, branch: `w/${item}`, base: "0" }
+    : kind === "returned"
+    ? { item, commit, findings: "f.md" }
+    : { item, sha: commit, base: "0", squash_of: commit };
+  return append(s.env.stream, `item.${kind}`, "a-seat", payload);
+}
+
+Deno.test("spawn — a delivery a verdict returned, or a landing closed, is not carried: an item delivered then returned below the start seq is dispatched, and so is one delivered then landed", async () => {
+  const data = { item: "it-1", state: "dispatched", seat: "tr-1" };
+  for (const after of ["returned", "landed"] as const) {
+    const s = await scratch();
+    await can(s, "dispatch", { stdout: envelope("dispatch", data) });
+    await recorded(s, "delivered", "it-1", "aaa1111");
+    const seq = await recorded(s, after, "it-1", "aaa1111");
+    let got: unknown;
+    const outcome = await replay(
+      async (run) => {
+        got = await run.spawn({ role: "builder", item: "it-1" });
+      },
+      { ...s.env, streamSeq: seq },
+      "{}",
+    );
+    assertEquals(outcome, { code: 0 });
+    assertEquals(got, data, `a delivery then ${after} is dispatched`);
+    assertEquals(
+      await calls(s),
+      [["dispatch", "it-1", "--by", s.env.runId, "--json"]],
+      `a delivery then ${after} is no RETAKEN`,
+    );
+  }
+});
+
+Deno.test("spawn — the fence: a delivery nobody judged at or below the start seq closes on RETAKEN, and so does one whose return sits above that seq", async () => {
+  const s = await scratch();
+  const seq = await recorded(s, "delivered", "it-1", "aaa1111");
+  const env = { ...s.env, streamSeq: seq };
+  const fn = (run: Run) => run.spawn({ role: "builder", item: "it-1" });
+  assertEquals(await replay(fn, env, "{}"), { code: 0 });
+  assertEquals(await calls(s), [], "a carried delivery calls no dispatch");
+  assertEquals(
+    closes(await lines(s))[0].payload.result,
+    `${RETAKEN}aaa1111`,
+  );
+
+  const t = await scratch();
+  const at = await recorded(t, "delivered", "it-1", "bbb2222");
+  await recorded(t, "returned", "it-1", "bbb2222");
+  assertEquals(await replay(fn, { ...t.env, streamSeq: at }, "{}"), {
+    code: 0,
+  });
+  assertEquals(await calls(t), [], "a return above the start seq is unread");
+  assertEquals(
+    closes(await lines(t))[0].payload.result,
+    `${RETAKEN}bbb2222`,
+  );
+});
+
+Deno.test("until delivered — each item's latest delivery that no return follows: delivered then returned waits, delivered again answers the second commit, and a landing does not withdraw it", async () => {
+  const s = await scratch();
+  let got: Record<string, unknown> | undefined;
+  const fn = async (run: Run) => {
+    got = await run.until(["it-1"], "delivered");
+  };
+  await recorded(s, "delivered", "it-1", "aaa1111");
+  await recorded(s, "returned", "it-1", "aaa1111");
+  assertEquals(
+    await replay(fn, s.env, "{}"),
+    { code: 2, waiting: ["it-1"] },
+    "a returned delivery is still outstanding",
+  );
+  await recorded(s, "delivered", "it-1", "bbb2222");
+  assertEquals(await replay(fn, s.env, "{}"), { code: 0 });
+  assertEquals((got!["it-1"] as { commit: string }).commit, "bbb2222");
+
+  const t = await scratch();
+  await recorded(t, "delivered", "it-1", "aaa1111");
+  await recorded(t, "landed", "it-1", "aaa1111");
+  assertEquals(
+    await replay(fn, t.env, "{}"),
+    { code: 0 },
+    "a landed item answers its delivery rather than waiting for good",
+  );
+  assertEquals((got!["it-1"] as { commit: string }).commit, "aaa1111");
 });
 
 Deno.test("AC1 deliver — fleet deliver --item <item> --note <file> --by <run> --json, the commit in the step's result", async () => {

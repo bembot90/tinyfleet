@@ -192,7 +192,13 @@ export interface Run {
    * refuses an item that already carries an order, so the step closes on
    * `${RETAKEN}<commit>` without a dispatch and the flight reads the delivery
    * already there. A delivery ABOVE that position is this run's own builder
-   * answering a spawn this run has already recorded. */
+   * answering a spawn this run has already recorded.
+   *
+   * THE FENCE HOLDS FOR A DELIVERY NOBODY JUDGED. One an `item.returned`
+   * follows at or below that position is a verdict's return, and one an
+   * `item.landed` follows there closed the item: neither is a delivery to
+   * review, so the item is dispatched as any other. The landing is spawn's
+   * alone: `until` reads the return and not the landing. */
   spawn(order: Spawn): Promise<Dispatched | string>;
   /** `fleet deliver --json` for the item, with the note file in the
    * delivery-note grammar. */
@@ -207,7 +213,11 @@ export interface Run {
    * answer's letter once `gate.resolved` is on the stream. */
   gate(question: string, options: string[]): Promise<string>;
   /** Waiting until every item's `item.<state>` is on the stream, naming the
-   * outstanding ones; then each item's event payload. */
+   * outstanding ones; then each item's event payload. For `delivered` that is
+   * the item's latest delivery no later `item.returned` follows: an item whose
+   * delivery was returned is outstanding until it is delivered again. A
+   * landing does not withdraw it, so a landed item answers the delivery it
+   * landed rather than waiting for one that will never come. */
   until(items: string[], state: ItemState): Promise<Record<string, unknown>>;
   /** A child run: `fleet run <name> --input k=v …`, then `{ run }` once its
    * `run.closed` is on the stream, a failure once its `run.failed` or its
@@ -222,6 +232,8 @@ export interface Run {
  * reaches core through the binary alone. */
 const STEP_CLOSED = "step.closed";
 const ITEM_DELIVERED = "item.delivered";
+const ITEM_RETURNED = "item.returned";
+const ITEM_LANDED = "item.landed";
 const ITEM_PARKED = "item.parked";
 const GATE_RESOLVED = "gate.resolved";
 const RUN_STARTED = "run.started";
@@ -233,7 +245,8 @@ const RUN_CANCELLED = "run.cancelled";
 export const GATES_DIR = "gates";
 
 /** What a spawn step closes on where the item was already delivered before
- * this execution began, the delivery's commit appended. */
+ * this execution began and no return or landing followed the delivery there,
+ * the delivery's commit appended. */
 export const RETAKEN = "already delivered at ";
 
 /** A result over this many bytes goes to the run directory and the event
@@ -386,11 +399,11 @@ class Handle implements Run {
           "spawn: fleet dispatch pins no model; the policy's default is the one a hand-run dispatch takes",
         );
       }
-      const carried = (await this.tail({ type: ITEM_DELIVERED }))
-        .filter((r) =>
-          r.payload.item === order.item && r.seq <= this.env.streamSeq
-        )
-        .at(-1);
+      const carried = (await this.standing(
+        [ITEM_RETURNED, ITEM_LANDED],
+        this.env.streamSeq,
+      ))
+        .get(order.item);
       if (carried !== undefined) {
         return `${RETAKEN}${String(carried.payload.commit)}`;
       }
@@ -474,10 +487,16 @@ class Handle implements Run {
         );
       }
       const seen = new Map<string, unknown>();
-      for (const r of await this.tail({ type: `item.${state}` })) {
-        const item = r.payload.item;
-        if (typeof item === "string" && items.includes(item)) {
-          seen.set(item, r.payload);
+      if (state === "delivered") {
+        for (const [item, r] of await this.standing([ITEM_RETURNED])) {
+          if (items.includes(item)) seen.set(item, r.payload);
+        }
+      } else {
+        for (const r of await this.tail({ type: `item.${state}` })) {
+          const item = r.payload.item;
+          if (typeof item === "string" && items.includes(item)) {
+            seen.set(item, r.payload);
+          }
         }
       }
       const outstanding = items.filter((item) => !seen.has(item));
@@ -564,6 +583,32 @@ class Handle implements Run {
 
   private tail(filter: Filter): Promise<Record_[]> {
     return tail(this.env, filter);
+  }
+
+  /** Each item's STANDING delivery, by item: its latest `item.delivered` that
+   * no later line of a `clearing` kind follows, over the lines at or below
+   * `upTo`. A return is a verdict against the commit, so a delivery it follows
+   * is not one still to review, and a delivery after the return stands again.
+   * spawn passes `item.landed` too, because a landing closed the item; until
+   * does not, so a landed item still answers its delivery. */
+  private async standing(
+    clearing: string[],
+    upTo = Infinity,
+  ): Promise<Map<string, Record_>> {
+    const records: Record_[] = [];
+    for (const type of [ITEM_DELIVERED, ...clearing]) {
+      records.push(...await this.tail({ type }));
+    }
+    const standing = new Map<string, Record_>();
+    const inOrder = records.filter((r) => r.seq <= upTo)
+      .sort((a, b) => a.seq - b.seq);
+    for (const r of inOrder) {
+      const item = r.payload.item;
+      if (typeof item !== "string") continue;
+      if (r.kind === ITEM_DELIVERED) standing.set(item, r);
+      else standing.delete(item);
+    }
+    return standing;
   }
 
   /** A recorded result: inline, or read from the run directory and checked
