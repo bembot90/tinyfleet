@@ -38,6 +38,8 @@ pub const WITHDRAWN: &str = "ORDER WITHDRAWN at retire";
 /// answer a retire needs before it asks anybody for a name to write under: a
 /// seat holding nothing ordered is retired exactly as it was before this
 /// existed.
+///
+/// `seat` is the row's full id, which is what an order assigns to.
 pub fn held(store: &dyn Store, seat: &str) -> Result<Vec<AssignedItem>, Stop> {
     Ok(holds(store, seat)?.ordered)
 }
@@ -60,13 +62,17 @@ pub fn held(store: &dyn Store, seat: &str) -> Result<Vec<AssignedItem>, Stop> {
 /// Every stop names what it did and did not write, because the caller runs this
 /// BEFORE the act that drops the seat's row: a withdrawal that could not be
 /// written must not become an order held by a seat that no longer exists.
+///
+/// `seat` is the row's full id, which the write is fenced on because it is the
+/// assignee; `label` is how the note and every sentence name the seat.
 pub fn withdraw(
     store: &dyn Store,
     items: &[AssignedItem],
     seat: &str,
+    label: &str,
     by: &str,
 ) -> Result<(), Stop> {
-    let line = format!("{WITHDRAWN}: {seat} retired by {by}; the item is open and unassigned");
+    let line = format!("{WITHDRAWN}: {label} retired by {by}; the item is open and unassigned");
     for row in items {
         let item = row.id.as_str();
         if row.status != "open" && row.status != "in_progress" {
@@ -81,7 +87,7 @@ pub fn withdraw(
         store
             .withdraw_order(item, seat, &row.status, by)
             .map_err(|e| match e {
-                StoreError::Moved(why) => moved_on(item, seat, &why),
+                StoreError::Moved(why) => moved_on(item, label, &why),
                 other => nothing_written(item, &other.to_string()),
             })?;
         store

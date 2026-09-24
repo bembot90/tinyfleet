@@ -13,7 +13,7 @@ use crate::policy::{self, Policy};
 use crate::projection::{self, InFlight, PolicyView, Projection, SeatRow};
 use crate::routines;
 use crate::sessions::{self, SeatState, Table};
-use fleet_core::seat::identity::{SeatId, SeatRef};
+use fleet_core::seat::identity::SeatId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -946,7 +946,14 @@ impl<'a> Observer<'a> {
         // so a file dropped into a routines directory is live on the next
         // evaluation with no restart.
         let routines_now = routines::now_secs();
-        let seat_refs: Vec<SeatRef> = self.config.seats.iter().map(Seat::as_ref).collect();
+        // The seats a routine may name: the rows this machine runs for a
+        // nudge, and every seat the policy lists besides for an item's
+        // assignee — read off the policy file as it stands this tick.
+        let seat_directory = config::directory(
+            &self.config.seats,
+            &fleet_core::item::table_at(&self.policy_path),
+            &self.machine_dir,
+        );
         // The directory holding the policy file in force, which is this
         // machine's fleet root. A daemon's own working directory is the service
         // manager's and names nothing, so the walk-up the CLI does is not a
@@ -955,7 +962,7 @@ impl<'a> Observer<'a> {
         let registry = match &routines_root {
             Some(root) => routines::load::load(
                 &routines::load::roots(root, &self.machine_dir, &projects_of(root)),
-                &seat_refs,
+                &seat_directory,
             ),
             None => routines::load::Registry::default(),
         };

@@ -81,11 +81,10 @@ pub fn command() -> Exit {
     }
 
     if let Some(machine) = machine {
-        // The items are held under the seat's machine name, which is what a
-        // dispatch to a transient seat assigns and what a seat's own session
-        // is named.
+        // The items are held under the seat's full id, which is what every
+        // dispatch assigns: a name moves, and the record is keyed by the seat.
         if let Some((seat, project_root)) = seat_here(&machine, &cwd) {
-            print_items(&project_root, &seat.machine_name());
+            print_items(&project_root, &seat.id.to_string());
         }
     }
 

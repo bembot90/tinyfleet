@@ -36,7 +36,7 @@ use crate::events::{self, EventLog};
 use crate::platform;
 use crate::policy::Policy;
 use crate::sessions::{self, Table};
-use fleet_core::seat::identity::{resolve, SeatRef};
+use fleet_core::seat::identity::{resolve, SeatId, SeatRef};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -579,10 +579,11 @@ pub const CONFIG_DIRS: &str = "config";
 pub const WORKTREE: &str = "{worktree}";
 
 /// What a spawn left behind. The seat's machine name, `agent-<short>`, is the
-/// verb's one answer on stdout, because the caller is `dispatch` and the name
-/// is what it assigns to.
+/// verb's one answer on stdout, because a person reads it; its id is what
+/// `dispatch` assigns the item to, because the record is keyed by the id.
 #[derive(Debug)]
 pub struct Spawned {
+    pub id: SeatId,
     pub seat: String,
     pub worktree: PathBuf,
     pub belt: Belt,
@@ -820,6 +821,7 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
         )));
     }
     Ok(Spawned {
+        id: claimed.id,
         seat: name,
         worktree,
         belt,

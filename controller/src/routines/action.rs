@@ -263,9 +263,11 @@ fn item_argv(binary: &str, routine: &Routine, item: &Item) -> Vec<String> {
         argv.push("--type".to_string());
         argv.push(kind.clone());
     }
-    if let Some(assignee) = &item.assignee {
+    // THE FULL ID the file's assignee resolved to at load, never the name as
+    // the file wrote it: work is keyed by the seat, and a name moves.
+    if let Some(assignee) = &item.assignee_id {
         argv.push("--assignee".to_string());
-        argv.push(assignee.clone());
+        argv.push(assignee.to_string());
     }
     if let Some(priority) = item.priority {
         argv.push("--priority".to_string());

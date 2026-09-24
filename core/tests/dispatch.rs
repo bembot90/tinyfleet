@@ -15,14 +15,16 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use common::{keys_agree, sweep_dead_stores, Fixture, Graph, Rooted, StubEvents};
+use common::{
+    agent, full, keys_agree, seat_id, sweep_dead_stores, Fixture, Graph, Rooted, StubEvents,
+};
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
 use fleet_core::item::dispatch::{self, Order, Wiring, NOT_TOLD, WITHDRAWN};
 use fleet_core::item::{
     control_token, render, table_at, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner,
     ITEM_DISPATCHED,
 };
-use fleet_core::seat::identity::{Kind, SeatId, SeatRef};
+use fleet_core::seat::identity::{Directory, Kind, SeatRef};
 use fleet_core::store::{AssignedItem, Item, Store, StoreError};
 
 const POLICY: &str = "[guards]\n";
@@ -252,21 +254,29 @@ impl Rig {
         ring: &dyn Ring,
         spawner: &dyn Spawner,
     ) -> Answer {
+        // Every arm names its seats by name, which is how a `--to` names one;
+        // each is keyed by an id of its own, as the machine's rows are, and
+        // each runs here and is listed.
+        let running: Vec<SeatRef> = seats.iter().map(|name| agent(name)).collect();
+        let directory = Directory {
+            listed: running.clone(),
+            running,
+        };
+        self.run_in(item, to, &directory, store, ring, spawner)
+    }
+
+    /// The same run over a directory the arm lays out itself.
+    fn run_in(
+        &self,
+        item: &str,
+        to: Option<&str>,
+        seats: &Directory,
+        store: &dyn Store,
+        ring: &dyn Ring,
+        spawner: &dyn Spawner,
+    ) -> Answer {
         let mut out: Vec<u8> = Vec::new();
         let mut err: Vec<u8> = Vec::new();
-        // Every arm names its seats by name, which is how a `--to` names one;
-        // each is keyed by an id of its own, as the machine's rows are.
-        let seats: Vec<SeatRef> = seats
-            .iter()
-            .enumerate()
-            .map(|(at, name)| SeatRef {
-                id: SeatId::parse(&format!("01a0d1f1-0aec-765f-9abe-{at:012x}"))
-                    .expect("the rig's seat id parses"),
-                name: Some(name.clone()),
-                kind: Kind::Agent,
-            })
-            .collect();
-        let seats = seats.as_slice();
         let answer = dispatch::dispatch(
             &mut out,
             &mut err,
@@ -330,22 +340,28 @@ fn a_named_dispatch_writes_the_assignee_the_note_and_the_index() {
     // THE INTEGRATION RING of this suite, and the one arm here that dispatches
     // through `bd`: the assignee, the note and the four index fields written
     // and read back through the store the verb actually talks to.
+    //
+    // THE ORDER NAMES THE SEAT BY ITS ID. `--to orla` is how a person names
+    // Orla, and the assignee, the index's seat, the event and the ring all
+    // carry her full id: a name is hers to change, and work keyed by it would
+    // move with the rename or strand under the old one.
     let rig = Rig::ringed("named");
     let item = rig.graph.item("a ready item");
-    let seat = String::from("s-named");
+    let orla = full("Orla");
     let ring = StubRing::answering(RingOutcome::Delivered);
     let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
 
     let answer = rig.run(
         &item,
-        Some(&seat),
-        std::slice::from_ref(&seat),
+        Some("orla"),
+        &[String::from("Orla")],
         rig.graph.store(),
         &ring,
         &spawner,
     );
     assert_eq!(answer.code, None, "{}", answer.why);
     assert_eq!(answer.out, format!("{}\n", note_for(&rig, BY)));
+    let seat = orla;
 
     let read = rig.graph.store().show(&item).expect("the item reads back");
     assert_eq!(read.assignee.as_deref(), Some(seat.as_str()));
@@ -383,7 +399,74 @@ fn a_named_dispatch_writes_the_assignee_the_note_and_the_index() {
         "the ring names the brief's path: {}",
         calls[0].1
     );
-    assert!(rig.briefs().join(format!("{item}.md")).is_file());
+    // The brief a person and the seat read names her as a sentence does: by
+    // her machine name, not by the id the record carries.
+    let brief = std::fs::read_to_string(rig.briefs().join(format!("{item}.md")))
+        .expect("the brief is on disk");
+    assert!(
+        brief.contains(&format!("You are `orla-{}`", seat_id("Orla").short())),
+        "{brief}"
+    );
+}
+
+/// `--to` names a seat this machine RUNS. A person is listed in the fleet and
+/// runs nowhere, so an order to one is refused before anything is written, as
+/// an argument two running seats both answer to is.
+#[test]
+fn a_person_and_an_ambiguous_name_are_refused_before_any_write() {
+    let rig = Rig::new("not-running");
+    let item = rig.graph.item("a ready item nobody runnable is named for");
+    let before = rig.graph.json(&item);
+    let alberto = SeatRef {
+        id: seat_id("Alberto"),
+        name: Some(String::from("Alberto")),
+        kind: Kind::Human,
+    };
+    let (orla, other) = (agent("Orla"), agent("Orla the second"));
+    let directory = Directory {
+        listed: vec![alberto, orla.clone(), other.clone()],
+        running: vec![orla.clone(), other.clone()],
+    };
+    let ring = StubRing::answering(RingOutcome::Delivered);
+    let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
+
+    let answer = rig.run_in(
+        &item,
+        Some("alberto"),
+        &directory,
+        rig.graph.store(),
+        &ring,
+        &spawner,
+    );
+    assert_eq!(answer.code, Some(1), "{}", answer.why);
+    assert!(
+        answer.why.starts_with("alberto names no seat"),
+        "the human is not a running seat: {}",
+        answer.why
+    );
+
+    // Two running seats answer to one name: exit 1, naming both.
+    let mut twice = directory.clone();
+    twice.running[1].name = Some(String::from("orla"));
+    let answer = rig.run_in(
+        &item,
+        Some("orla"),
+        &twice,
+        rig.graph.store(),
+        &ring,
+        &spawner,
+    );
+    assert_eq!(answer.code, Some(1), "{}", answer.why);
+    for seat in [&orla, &other] {
+        assert!(
+            answer.why.contains(&seat.id.to_string()),
+            "both candidates are named: {}",
+            answer.why
+        );
+    }
+    assert_eq!(rig.graph.json(&item), before, "the item is untouched");
+    assert!(ring.calls().is_empty(), "nobody is rung");
+    assert_eq!(rig.events.count(), 0, "a refusal appends nothing");
 }
 
 /// The rig's copy of the template is rewritten, so the note is measured against
@@ -589,7 +672,7 @@ fn another_writers_orders_key_and_run_label_are_neither_read_nor_moved() {
     assert_eq!(answer.code, None, "{}", answer.why);
     assert_eq!(
         index_of(&rig, &item).seat.as_deref(),
-        Some(seat.as_str()),
+        Some(full(&seat).as_str()),
         "fleet's own index names the seat"
     );
     assert_eq!(
@@ -706,16 +789,16 @@ fn a_seat_already_holding_an_item_is_refused() {
     let rig = Rig::new("busy");
     let seat = String::from("s-busy");
     let claimed = rig.graph.item("the item this seat is already on");
-    rig.graph.assign(&claimed, &seat);
-    ordered(&rig, &claimed, &seat);
+    rig.graph.assign(&claimed, &full(&seat));
+    ordered(&rig, &claimed, &full(&seat));
     rig.graph.status(&claimed, "in_progress");
     let given = rig
         .graph
         .item("a second item it was given and has not started");
-    rig.graph.assign(&given, &seat);
-    ordered(&rig, &given, &seat);
+    rig.graph.assign(&given, &full(&seat));
+    ordered(&rig, &given, &full(&seat));
     let stale = rig.graph.item("an item assigned to it that nobody ordered");
-    rig.graph.assign(&stale, &seat);
+    rig.graph.assign(&stale, &full(&seat));
 
     let item = rig.graph.item("a third item nobody may give it");
     let before = rig.graph.json(&item);
@@ -759,13 +842,13 @@ fn a_seat_assigned_only_unordered_work_and_an_epic_is_dispatched() {
     let bug = rig
         .graph
         .item("a bug assigned a month ago and never ordered");
-    rig.graph.assign(&bug, &seat);
+    rig.graph.assign(&bug, &full(&seat));
     let epic = rig
         .graph
         .item("an epic still carrying the seat as assignee");
     rig.graph.item_type(&epic, "epic");
-    rig.graph.assign(&epic, &seat);
-    ordered(&rig, &epic, &seat);
+    rig.graph.assign(&epic, &full(&seat));
+    ordered(&rig, &epic, &full(&seat));
 
     let item = rig.graph.item("the item the seat is given now");
     let ring = StubRing::answering(RingOutcome::Delivered);
@@ -781,7 +864,7 @@ fn a_seat_assigned_only_unordered_work_and_an_epic_is_dispatched() {
 
     assert_eq!(answer.code, None, "{}", answer.why);
     let read = rig.graph.store().show(&item).expect("the item reads back");
-    assert_eq!(read.assignee.as_deref(), Some(seat.as_str()));
+    assert_eq!(read.assignee.as_deref(), Some(full(&seat).as_str()));
     assert!(read.orders.is_some(), "the order is written");
     assert_eq!(ring.calls().len(), 1, "the seat is rung");
 }
@@ -815,7 +898,7 @@ fn a_read_back_that_disagrees_exits_three_with_both_values() {
         answer.why
     );
     assert!(
-        answer.why.contains(&seat),
+        answer.why.contains(&full(&seat)),
         "the value wanted: {}",
         answer.why
     );
@@ -823,7 +906,8 @@ fn a_read_back_that_disagrees_exits_three_with_both_values() {
     // and handing it the index write instead would leave it lost.
     assert!(
         answer.why.contains(&format!(
-            "RERUN: bd update {item} --assignee {seat} --actor {BY}"
+            "RERUN: bd update {item} --assignee {} --actor {BY}",
+            full(&seat)
         )),
         "the assignee's own repair: {}",
         answer.why
@@ -893,7 +977,7 @@ fn an_index_that_reads_back_wrong_is_handed_the_index_repair() {
     assert!(
         answer.why.contains(&format!(
             "RERUN: bd update {item} --metadata '{}' --actor {BY}",
-            dispatch::index(BY, "dispatch", Some(&seat), AT)
+            dispatch::index(BY, "dispatch", Some(&full(&seat)), AT)
         )),
         "the index's own repair, versioned: {}",
         answer.why
@@ -972,7 +1056,7 @@ fn a_ring_that_finds_no_live_session_leaves_the_order_standing() {
     );
 
     let read = rig.graph.store().show(&item).expect("the item reads back");
-    assert_eq!(read.assignee.as_deref(), Some(seat.as_str()));
+    assert_eq!(read.assignee.as_deref(), Some(full(&seat).as_str()));
     assert!(read.orders.is_some(), "the three writes stand");
     assert!(rig.briefs().join(format!("{item}.md")).is_file());
 }
@@ -1007,14 +1091,14 @@ fn a_suffix_is_dispatched_under_the_full_id_it_resolves_to() {
     assert_eq!(answer.code, None, "{}", answer.why);
 
     let read = rig.graph.store().show(&item).expect("the item reads back");
-    assert_eq!(read.assignee.as_deref(), Some(seat.as_str()));
+    assert_eq!(read.assignee.as_deref(), Some(full(&seat).as_str()));
     assert_eq!(
         brief::order_line(read.notes.as_deref()).as_deref(),
         Some(note_for(&rig, BY).as_str()),
         "the order note is on the full id's item"
     );
     let index = read.orders.expect("the index is an object");
-    assert_eq!(index.seat.as_deref(), Some(seat.as_str()));
+    assert_eq!(index.seat.as_deref(), Some(full(&seat).as_str()));
     assert_eq!(index.at.as_deref(), Some(AT));
 
     let wrote = board.store.wrote();
@@ -1231,7 +1315,7 @@ mod transient {
             .item("a ready item for a seat that does not exist yet");
         let ring = StubRing::answering(RingOutcome::Delivered);
         let spawner = StubSpawner::answering(SpawnOutcome::Spawned {
-            seat: String::from("t1"),
+            seat: full("t1"),
             base: Some(String::from("0123456789abcdef0123456789abcdef01234567")),
             belt: None,
         });
@@ -1243,11 +1327,11 @@ mod transient {
         assert_eq!(answer.out, format!("{}\n", note_for(&rig, BY)));
 
         let read = rig.graph.store().show(&item).expect("the item reads back");
-        assert_eq!(read.assignee.as_deref(), Some("t1"));
+        assert_eq!(read.assignee.as_deref(), Some(full("t1").as_str()));
         let index = index_of(&rig, &item);
         assert_eq!(
             index.seat.as_deref(),
-            Some("t1"),
+            Some(full("t1").as_str()),
             "the seat joins the index"
         );
         assert_eq!(index.kind.as_deref(), Some("dispatch"));
@@ -1276,7 +1360,7 @@ mod transient {
         assert_eq!(actor, BY, "the actor is the verb's own `by`");
         keys_agree(ITEM_DISPATCHED, &payload, &["role", "reason"]);
         assert_eq!(payload["item"], serde_json::json!(item));
-        assert_eq!(payload["seat"], serde_json::json!("t1"));
+        assert_eq!(payload["seat"], serde_json::json!(full("t1")));
         assert_eq!(
             payload["base"],
             serde_json::json!("0123456789abcdef0123456789abcdef01234567")
@@ -1418,7 +1502,7 @@ mod transient {
         let read = "  load average (5m)       : 0.10 (ceiling 8.00 = 8 cpu x 1.00)\n  \
                     transient seats mid-turn: 0 (cap 3)";
         let spawner = StubSpawner::answering(SpawnOutcome::Spawned {
-            seat: String::from("t4"),
+            seat: full("t4"),
             base: None,
             belt: Some(read.to_string()),
         });
@@ -1440,7 +1524,7 @@ mod transient {
             .item("a ready item whose worktree would not answer");
         let ring = StubRing::answering(RingOutcome::Delivered);
         let spawner = StubSpawner::answering(SpawnOutcome::Spawned {
-            seat: String::from("t2"),
+            seat: full("t2"),
             base: None,
             belt: None,
         });
@@ -1457,7 +1541,7 @@ mod transient {
         let item = rig.graph.item("a ready item the stream will not take");
         let ring = StubRing::answering(RingOutcome::Delivered);
         let spawner = StubSpawner::answering(SpawnOutcome::Spawned {
-            seat: String::from("t3"),
+            seat: full("t3"),
             base: None,
             belt: None,
         });
@@ -1483,7 +1567,7 @@ mod transient {
                 project: &rig.project,
                 packs: &rig.packs,
                 briefs_dir: &rig.briefs(),
-                seats: &[],
+                seats: &Directory::default(),
                 ring: &ring,
                 spawner: &spawner,
                 events: &events,

@@ -24,7 +24,7 @@ use crate::item::{
     control_token, render, Events, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner, Stop,
     ITEM_DISPATCHED, NO_SESSION, REFUSED,
 };
-use crate::seat::identity::{resolve, SeatRef};
+use crate::seat::identity::{Directory, SeatRef};
 use crate::store::{keys, Item, Orders, Store, StoreError};
 
 /// The kind of order this verb writes. The reference's other two grammars —
@@ -120,9 +120,10 @@ pub struct Wiring<'a> {
     pub project: &'a Project,
     pub packs: &'a Packs,
     pub briefs_dir: &'a Path,
-    /// The seats the machine's config carries. A `--to` that resolves to none of
-    /// them — or to more than one — is a seat this fleet does not run.
-    pub seats: &'a [SeatRef],
+    /// The seats this fleet knows and this machine runs. A `--to` that resolves
+    /// to no running seat — or to more than one — is a seat this fleet does not
+    /// run.
+    pub seats: &'a Directory,
     pub ring: &'a dyn Ring,
     pub spawner: &'a dyn Spawner,
     pub events: &'a dyn Events,
@@ -135,6 +136,7 @@ pub struct Given {
     pub item: String,
     pub note: String,
     pub brief_path: PathBuf,
+    /// The seat's full id, as the assignee and the index carry it.
     pub seat: Option<String>,
     /// Both load-belt readings the spawn was let through on, as the spawner
     /// rendered them. `None` on the named path, which starts nothing and so
@@ -163,9 +165,9 @@ pub fn dispatch(
         item: &item.id,
         ..*order
     };
-    refuse_unless_dispatchable(order, &item, wiring).map_err(Refused::stopped)?;
+    let named = refuse_unless_dispatchable(order, &item, wiring).map_err(Refused::stopped)?;
 
-    let given = match order.to {
+    let given = match named {
         Some(seat) => to_named_seat(err, order, wiring, &note, seat).map_err(Refused::stopped)?,
         None => to_a_transient_seat(err, order, wiring, &note)?,
     };
@@ -187,8 +189,13 @@ pub fn dispatch(
 }
 
 /// The five refusals, in order, each of them before any write. `item` is the
-/// record the order's id was resolved from.
-fn refuse_unless_dispatchable(order: &Order, item: &Item, wiring: &Wiring) -> Result<(), Stop> {
+/// record the order's id was resolved from. The answer is the running seat a
+/// `--to` named, or `None` for a transient dispatch.
+fn refuse_unless_dispatchable<'w>(
+    order: &Order,
+    item: &Item,
+    wiring: &Wiring<'w>,
+) -> Result<Option<&'w SeatRef>, Stop> {
     let ready = wiring.store.ready()?;
 
     if !ready.iter().any(|id| id == order.item) {
@@ -220,27 +227,30 @@ fn refuse_unless_dispatchable(order: &Order, item: &Item, wiring: &Wiring) -> Re
         )));
     }
 
-    let Some(seat) = order.to else {
-        return Ok(());
+    let Some(to) = order.to else {
+        return Ok(None);
     };
-    // THE MEMBERSHIP IS THE RESOLVER'S: a `--to` is any seat argument — the
-    // name, the machine name, eight hex digits of the id or all of it. What is
-    // written onto the item below is still the argument as given.
-    resolve(wiring.seats, seat).map_err(Stop::from)?;
+    // THE MEMBERSHIP IS THE RESOLVER'S, over the seats this machine RUNS: a
+    // `--to` is any seat argument — the name, the machine name, eight hex
+    // digits of the id or all of it — and a person, who is listed and runs
+    // nowhere, is no seat work is given to. What is written onto the item
+    // below is the id it resolved to, never the argument as typed.
+    let seat = wiring.seats.resolve_running(to).map_err(Stop::from)?;
     // What the seat HOLDS, in deliver's own reading: an item merely assigned
     // to it — an epic, a bug nobody ordered — is not work it was given.
-    let held: Vec<String> = holds(wiring.store, seat)?
+    let held: Vec<String> = holds(wiring.store, &seat.id.to_string())?
         .held
         .into_iter()
         .map(|row| format!("{} ({})", row.id, row.status))
         .collect();
     if !held.is_empty() {
         return Err(Stop::refused(format!(
-            "`{seat}` already holds {} — one item at a time",
+            "`{}` already holds {} — one item at a time",
+            seat.machine_name(),
             held.join(", ")
         )));
     }
-    Ok(())
+    Ok(Some(seat))
 }
 
 /// An epic, refused by its TYPE. The store's ready list keeps an open,
@@ -258,13 +268,19 @@ pub(crate) fn refuse_an_epic(item: &Item) -> Result<(), Stop> {
 }
 
 /// The named path: assign, note, index, read back, brief, ring.
+///
+/// Every write, the event and the ring carry the seat's full id; the brief and
+/// every sentence name it by its machine name.
 fn to_named_seat(
     err: &mut dyn Write,
     order: &Order,
     wiring: &Wiring,
     note: &str,
-    seat: &str,
+    named: &SeatRef,
 ) -> Result<Given, Stop> {
+    let id = named.id.to_string();
+    let seat = id.as_str();
+    let label = wiring.seats.label(&named.id);
     wiring
         .store
         .assign(order.item, seat, order.by)
@@ -277,7 +293,7 @@ fn to_named_seat(
 
     let brief_path = match order.brief {
         Some(pinned) => pinned.to_path_buf(),
-        None => write_brief(wiring, order, note, seat)?,
+        None => write_brief(wiring, order, note, &named.machine_name())?,
     };
     let text = render(
         RING,
@@ -288,6 +304,8 @@ fn to_named_seat(
     )
     .map_err(|name| Stop::could_not_tell(format!("the ring names `{{{name}}}`")))?;
 
+    // THE RING IS ADDRESSED BY THE ID, which the ring resolves exactly: a name
+    // could have moved to another seat between the resolve above and here.
     match wiring.ring.ring(seat, &text) {
         RingOutcome::Delivered => Ok(Given {
             item: order.item.to_string(),
@@ -301,7 +319,7 @@ fn to_named_seat(
             Err(Stop {
                 code: NO_SESSION,
                 message: format!(
-                    "ORDERED, NOT RUNG: no live session for {seat}; the order stands and the \
+                    "ORDERED, NOT RUNG: no live session for {label}; the order stands and the \
                      seat's successor reads it at wake"
                 ),
             })
@@ -348,6 +366,8 @@ fn to_a_transient_seat(
         model: order.model,
         touched: order.touched,
     }) {
+        // `seat` is the spawned seat's full id, which is what the assignee and
+        // the index carry: a transient seat has no name to be found by.
         SpawnOutcome::Spawned { seat, base, belt } => {
             wiring
                 .store
@@ -581,7 +601,7 @@ fn read_back(
             keys::ORDERS,
             &format!("an object at {} {}", keys::VERSION_FIELD, keys::VERSION),
             None,
-            &index_repair(order),
+            &index_repair(order, seat),
         ));
     };
     let wanted: [(&str, Option<&str>, Option<&str>); 4] = [
@@ -597,7 +617,7 @@ fn read_back(
                 &format!("{}.{field}", keys::ORDERS),
                 want.unwrap_or("(absent)"),
                 got,
-                &index_repair(order),
+                &index_repair(order, seat),
             ));
         }
     }
@@ -613,7 +633,7 @@ fn read_back(
                     "the last order note",
                     note,
                     seen.as_deref(),
-                    &index_repair(order),
+                    &index_repair(order, seat),
                 ));
             }
         }
@@ -623,7 +643,7 @@ fn read_back(
                 "the notes",
                 note,
                 None,
-                &index_repair(order),
+                &index_repair(order, seat),
             ))
         }
     }
@@ -769,12 +789,13 @@ fn assignee_repair(order: &Order, seat: &str) -> String {
     )
 }
 
-/// The index written again whole, as the store's own command.
-fn index_repair(order: &Order) -> String {
+/// The index written again whole, as the store's own command, naming the seat
+/// the read-back wanted: the id the argument resolved to, never the argument.
+fn index_repair(order: &Order, seat: Option<&str>) -> String {
     format!(
         "bd update {} --metadata '{}' --actor {}",
         order.item,
-        index_payload(order, order.to),
+        index_payload(order, seat),
         order.by
     )
 }

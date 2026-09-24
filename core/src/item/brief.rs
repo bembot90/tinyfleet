@@ -119,7 +119,9 @@ pub struct Subject<'a> {
     /// The order, as the dispatch note's template renders it for whoever the
     /// order index says gave it.
     pub order: &'a str,
-    /// The seat the order named, or [`TRANSIENT`].
+    /// The machine name of the seat the order named, or [`TRANSIENT`]: the
+    /// brief is read by a seat and a person, and the id the record carries is
+    /// neither's name for it.
     pub seat: &'a str,
     /// The builder's checks as the caller handed them, or `None` for
     /// [`DERIVE_TOUCHED`]. It is the CALLER's because it is the workflow's: a

@@ -203,7 +203,24 @@ impl Runs for Engine {
         // seats whose items are still open — a park leaves the order standing —
         // and the name this frees is the one the next spawn takes.
         let store = self.stores.open(&here.project.root);
-        let withdrawal = |going: &str| withdrawn_from(store.as_ref(), going, events::CONTROLLER);
+        // The retire hands its withdrawal the machine name of the row it
+        // resolved; the order was assigned to that row's ID, so the name is
+        // resolved back to it here, exactly, through the short id it carries.
+        let withdrawal = |going: &str| {
+            let row = here
+                .seats
+                .resolve_running(going)
+                .map_err(|unresolved| Refusal {
+                    code: unresolved.code(),
+                    message: unresolved.to_string(),
+                })?;
+            withdrawn_from(
+                store.as_ref(),
+                &row.id.to_string(),
+                &here.seats.label(&row.id),
+                events::CONTROLLER,
+            )
+        };
         // THE PRICED RETIRE and not the bare one: a seat a run spawned costs
         // what any spawned seat costs, and the run is the item it was working
         // for. It writes `session.retired`, which is the line the cleanup's
@@ -222,12 +239,20 @@ impl Runs for Engine {
 /// THIS STORE for the run's own record, so a store that will not answer the
 /// question below has stopped answering since — a question, and never a seat
 /// that was given nothing.
-fn withdrawn_from(store: &dyn Store, seat: &str, by: &str) -> Result<Vec<String>, Refusal> {
+///
+/// `seat` is the seat's full id, which is what the order was assigned to, and
+/// `label` how the withdrawal note names it.
+fn withdrawn_from(
+    store: &dyn Store,
+    seat: &str,
+    label: &str,
+    by: &str,
+) -> Result<Vec<String>, Refusal> {
     let held = seat::retire::held(store, seat).map_err(as_refusal)?;
     if held.is_empty() {
         return Ok(Vec::new());
     }
-    seat::retire::withdraw(store, &held, seat, by).map_err(as_refusal)?;
+    seat::retire::withdraw(store, &held, seat, label, by).map_err(as_refusal)?;
     Ok(held.into_iter().map(|row| row.id).collect())
 }
 
@@ -243,7 +268,10 @@ mod tests {
     use fleet_core::store::{Item, Orders};
     use fleet_core::test_support::FakeStore;
 
-    const SEAT: &str = "agent-0c3a5e71";
+    /// The seat's full id, which the order was assigned to, and its machine
+    /// name, which the note says.
+    const SEAT: &str = "018f6a2c-1d3e-7a4b-9c5d-00000c3a5e71";
+    const LABEL: &str = "agent-0c3a5e71";
     const PARKED: &str = "fx-parked";
 
     /// The state the leak lives in: a run's item PARKED, so it is still open
@@ -271,7 +299,7 @@ mod tests {
     fn the_cleanups_withdrawal_releases_the_parked_item_the_seat_holds() {
         let store = a_parked_item();
 
-        let withdrawn = withdrawn_from(&store, SEAT, events::CONTROLLER)
+        let withdrawn = withdrawn_from(&store, SEAT, LABEL, events::CONTROLLER)
             .expect("the board answers and the withdrawal lands");
         assert_eq!(withdrawn, vec![PARKED.to_string()]);
 
@@ -289,7 +317,7 @@ mod tests {
         assert_eq!(after.status, "open", "the work itself is still to be done");
         assert_eq!(
             after.notes.unwrap_or_default(),
-            format!("{WITHDRAWN}: {SEAT} retired by controller; the item is open and unassigned"),
+            format!("{WITHDRAWN}: {LABEL} retired by controller; the item is open and unassigned"),
             "the withdrawal says who took it, and the cleanup is the controller"
         );
     }
@@ -301,7 +329,7 @@ mod tests {
         let store = FakeStore::default();
 
         let withdrawn =
-            withdrawn_from(&store, SEAT, events::CONTROLLER).expect("the board answers");
+            withdrawn_from(&store, SEAT, LABEL, events::CONTROLLER).expect("the board answers");
 
         assert!(withdrawn.is_empty(), "{withdrawn:?}");
         assert!(
@@ -320,7 +348,7 @@ mod tests {
             ..FakeStore::default()
         };
 
-        let refused = withdrawn_from(&store, SEAT, events::CONTROLLER)
+        let refused = withdrawn_from(&store, SEAT, LABEL, events::CONTROLLER)
             .expect_err("an unreadable board is a question");
 
         assert_eq!(refused.code, COULD_NOT_TELL);

@@ -131,9 +131,20 @@ impl Rig {
         rig
     }
 
+    /// The policy, listing the delivering seat: `deliver` finds the item a seat
+    /// holds by resolving its actor among the seats the fleet lists.
     fn init_store(&self) {
-        std::fs::write(self.project.join("fleet.toml"), POLICY).expect("the policy is written");
+        std::fs::write(
+            self.project.join("fleet.toml"),
+            format!("{POLICY}{}", common::seat_table_of(&self.seat)),
+        )
+        .expect("the policy is written");
         common::take_a_board(&self.project, "deliver");
+    }
+
+    /// The delivering seat's full id, which its items are assigned to.
+    fn seat_id(&self) -> String {
+        common::seat_id_of(&self.seat)
     }
 
     /// The repository as a delivery finds it: the policy committed on the
@@ -285,11 +296,11 @@ impl Rig {
                 "update",
                 &item,
                 "--assignee",
-                &self.seat,
+                &self.seat_id(),
                 "--metadata",
                 &format!(
                     r#"{{"fleet.orders": {{"v": 1, "by": "an-architect", "kind": "dispatch", "seat": "{seat}", "at": "2026-09-09T00:00:00Z"}}}}"#,
-                    seat = self.seat
+                    seat = self.seat_id()
                 ),
                 "--actor",
                 "an-architect",
@@ -540,7 +551,7 @@ fn the_trunk_and_an_unclean_tree_are_refused_by_the_shipped_binary() {
     );
     assert_eq!(
         rig.item_json(&item)["assignee"],
-        serde_json::json!(rig.seat),
+        serde_json::json!(rig.seat_id()),
         "and the item is still the seat's"
     );
 }

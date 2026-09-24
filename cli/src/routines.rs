@@ -18,7 +18,7 @@ use fleet_controller::routines::load::Registry;
 use fleet_controller::routines::trigger::Due;
 use fleet_controller::routines::{self, action, load, state, trigger, Outcome, SeatView};
 use fleet_controller::{clock, config, events, observe, platform, policy, sessions};
-use fleet_core::seat::identity::{SeatId, SeatRef};
+use fleet_core::seat::identity::SeatId;
 use std::path::{Path, PathBuf};
 
 use crate::exit::Exit;
@@ -130,10 +130,16 @@ fn resolve() -> Result<Fleet, String> {
     let seats = config::read(&machine_dir.join("config.json"))
         .map(|machine| machine.seats)
         .unwrap_or_default();
-    let refs: Vec<SeatRef> = seats.iter().map(config::Seat::as_ref).collect();
+    // A nudge names a row this machine runs; an item's assignee names any seat
+    // the fleet lists besides.
+    let directory = config::directory(
+        &seats,
+        &fleet_core::item::table_at(&fleet_root.join("fleet.toml")),
+        &machine_dir,
+    );
     let registry = load::load(
         &load::roots(&fleet_root, &machine_dir, &projects_of(&fleet_root)),
-        &refs,
+        &directory,
     );
     // A policy that will not read is the defaults: the four verbs below need
     // the nudge model and its bound, and refusing to LIST routines over a policy

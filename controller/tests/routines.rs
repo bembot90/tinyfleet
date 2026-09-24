@@ -8,7 +8,7 @@
 use fleet_controller::routines::file::{self, Action, Loaded, Routine, Source, When};
 use fleet_controller::routines::load;
 use fleet_controller::routines::trigger::{self, CheckOutcome, Due, LocalMinute, Trigger};
-use fleet_core::seat::identity::{Kind, SeatId, SeatRef};
+use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
 use std::path::{Path, PathBuf};
 
 /// The fixed ids this suite's seats carry.
@@ -24,14 +24,24 @@ fn seat_ref(id: &str, name: &str) -> SeatRef {
     }
 }
 
-/// The seat list every arm validates a ring against, unless it says otherwise.
-/// A ring names its seat the way a person would, so every row carries a name.
-fn seats() -> Vec<SeatRef> {
-    vec![
+/// A person the fleet lists and no machine runs.
+const ALBERTO: &str = "01a0d1f1-0aec-765f-9abe-00000a1be270";
+
+/// The seats every arm validates a routine against, unless it says otherwise:
+/// the three rows this machine runs, and a person the fleet lists besides. A
+/// ring names its seat the way a person would, so every row carries a name.
+fn seats() -> Directory {
+    let running = vec![
         seat_ref(BUILDER, "builder-1"),
         seat_ref(ARCHITECT, "architect"),
         seat_ref(ORLA, "Orla"),
-    ]
+    ];
+    let mut listed = running.clone();
+    listed.push(SeatRef {
+        kind: Kind::Human,
+        ..seat_ref(ALBERTO, "Alberto")
+    });
+    Directory { listed, running }
 }
 
 /// One file's read, with the whole file's text passed in.
@@ -448,6 +458,63 @@ fn a_nudge_to_a_seat_by_its_name_fires_at_that_seats_row() {
     // The dry run reads the same row.
     let argv = action::argv_of(&routine, &machine);
     assert_eq!(argv.last().map(String::as_str), Some("(in /wt/orla)"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// [ASSUMES D14] An item's assignee is RESOLVED AT LOAD among every seat the
+/// fleet lists and every seat this machine runs, and the item is filed to the
+/// FULL ID it found: `Orla` files to Orla's id, a person the fleet lists is a
+/// seat an item may go to, and a name nobody holds refuses the file with the
+/// resolver's own reason.
+#[test]
+fn an_item_assignee_is_filed_with_the_full_id_it_resolves_to() {
+    use fleet_controller::policy;
+    use fleet_controller::routines::{action, action::Machine};
+
+    let head = "[order]\ndescription = \"d\"\ntrigger = \"cron\"\nschedule = \"* * * * *\"\n\
+                [action.item]\ntitle = \"t\"\n";
+    let why = refusal(&format!("{head}assignee = \"nobody\"\n"));
+    assert!(
+        why.contains(
+            "[action.item] assignee is nobody, which nobody names no seat — the seats are "
+        ),
+        "{why}"
+    );
+
+    let policy = policy::parse("").expect("the empty policy is the defaults");
+    let root = scratch("item-assignee");
+    let machine = Machine {
+        machine_dir: &root,
+        child_path: "/usr/bin:/bin",
+        policy: &policy,
+        seats: &[],
+        agent: None,
+        effects_off: None,
+    };
+    for (named, id) in [
+        ("Orla", ORLA),
+        ("orla-93b9739a", ORLA),
+        ("alberto", ALBERTO),
+    ] {
+        let routine = routine_of(&format!("{head}assignee = \"{named}\"\n"));
+        let item = routine.action.item.as_ref().expect("the item reads");
+        assert_eq!(item.assignee.as_deref(), Some(named), "the file's own word");
+        assert_eq!(
+            item.assignee_id.map(|found| found.to_string()).as_deref(),
+            Some(id),
+            "{named} resolves"
+        );
+        let argv = action::argv_of(&routine, &machine);
+        let at = argv
+            .iter()
+            .position(|arg| arg == "--assignee")
+            .unwrap_or_else(|| panic!("{named}: the create names an assignee: {argv:?}"));
+        assert_eq!(
+            argv[at + 1],
+            id,
+            "{named}: filed with the full id: {argv:?}"
+        );
+    }
     let _ = std::fs::remove_dir_all(&root);
 }
 

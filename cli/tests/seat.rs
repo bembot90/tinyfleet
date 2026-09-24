@@ -1456,7 +1456,8 @@ fn a_first_turn_file_that_is_not_there_is_a_usage_error() {
 }
 
 /// The seam that was a placeholder: `fleet dispatch` with no `--to` runs the
-/// real spawner and assigns the item to the name it printed.
+/// real spawner and assigns the item to the FULL ID of the seat it spawned —
+/// whose machine name is the worktree the spawn made.
 #[test]
 fn dispatch_without_a_seat_spawns_through_the_real_spawner_and_assigns_the_name() {
     let rig = Rig::new("dispatch", true);
@@ -1475,14 +1476,18 @@ fn dispatch_without_a_seat_spawns_through_the_real_spawner_and_assigns_the_name(
     assert!(rig.calls().contains("START"), "{}", rig.calls());
 
     let (assignee, notes, orders) = rig.order_of(&item);
-    let seat = assignee.expect("the item is assigned");
+    let id = assignee.expect("the item is assigned");
+    let seat = machine_name_of(&id);
     assert_eq!(
         entries_of(&rig.worktrees),
         vec![seat.clone()],
         "the item is assigned to the one seat the spawn made"
     );
-    assert!(seat.starts_with("agent-"), "a spawned seat's name: {seat}");
-    assert_eq!(orders["seat"], serde_json::json!(seat));
+    assert_eq!(
+        orders["seat"],
+        serde_json::json!(id),
+        "the index carries the id"
+    );
     assert!(notes.contains("orders given"), "{notes}");
     let worktree = rig.worktrees.join(&seat);
     assert!(worktree.is_dir());
@@ -1495,7 +1500,7 @@ fn dispatch_without_a_seat_spawns_through_the_real_spawner_and_assigns_the_name(
     assert_eq!(last["type"].as_str(), Some("item.dispatched"), "{last}");
     assert_eq!(last["actor"].as_str(), Some("an-architect"));
     assert_eq!(last["payload"]["item"].as_str(), Some(item.as_str()));
-    assert_eq!(last["payload"]["seat"].as_str(), Some(seat.as_str()));
+    assert_eq!(last["payload"]["seat"].as_str(), Some(id.as_str()));
     let head = seen(&worktree, &["rev-parse", "HEAD"]);
     assert_eq!(head.len(), 40, "a commit is 40 hex: {head}");
     assert_eq!(
@@ -1553,7 +1558,11 @@ fn a_named_dispatch_writes_the_event_with_no_base() {
         .cloned()
         .expect("the stream carries the dispatch");
     assert_eq!(last["type"].as_str(), Some("item.dispatched"), "{last}");
-    assert_eq!(last["payload"]["seat"].as_str(), Some("s-cli-named"));
+    assert_eq!(
+        last["payload"]["seat"].as_str(),
+        Some(NAMED_ID),
+        "`--to s-cli-named` is written as the id it resolved to"
+    );
     assert!(
         last["payload"].get("base").is_none(),
         "a named dispatch carries no base: {last}"
@@ -1767,11 +1776,21 @@ fn a_dispatched_seat(rig: &Rig) -> (String, String) {
         &rig.machine.join("packs").display().to_string(),
     ]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    let seat = rig
+    let id = rig
         .order_of(&item)
         .0
         .expect("the dispatch assigned the item to the seat it spawned");
-    (item, seat)
+    // The item carries the seat's full id; the seat is named — its worktree,
+    // its retire — by the machine name that id derives.
+    (item, machine_name_of(&id))
+}
+
+/// A spawned seat's machine name, off the full id the record carries: it has
+/// no name, so it is its kind and the last eight characters of its id.
+fn machine_name_of(id: &str) -> String {
+    fleet_core::seat::identity::SeatId::parse(id)
+        .map(|id| format!("agent-{}", id.short()))
+        .unwrap_or_else(|why| panic!("the assignee is a seat's full id: {why}"))
 }
 
 /// A dispatched seat standing on its work branch, its item carrying a landing

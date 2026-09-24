@@ -161,7 +161,8 @@ pub fn spawn_command(args: &SpawnArgs) -> Exit {
                 );
             } else {
                 // The seat's machine name, `agent-<short>`, alone on stdout:
-                // the caller is `dispatch` and the name is what it assigns to.
+                // what a person reads and types back. `dispatch` assigns the
+                // seat's id, which the spawner seam hands it directly.
                 println!("{}", spawned.seat);
             }
             Exit::Done
@@ -270,8 +271,12 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
         .clone()
         .or_else(crate::item::actor)
         .unwrap_or_else(|| RETIRED_BY.to_string());
+    // THE ROW'S ID, which is what the order was assigned to; the note and the
+    // sentences name the seat by its machine name. The retire hands its
+    // withdrawal the name it resolved, which is this same row.
+    let id = row.id.to_string();
     let withdrawal = |seat: &str| -> Result<Vec<String>, Refusal> {
-        let held = match seat::retire::held(&store, seat) {
+        let held = match seat::retire::held(&store, &id) {
             Ok(held) => held,
             // A BOARD THAT WILL NOT ANSWER IS A QUESTION wherever this fleet
             // gave this seat something, and the retire stops on it rather than
@@ -291,7 +296,8 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
         if held.is_empty() {
             return Ok(Vec::new());
         }
-        seat::retire::withdraw(&store, &held, seat, &by).map_err(as_refusal)?;
+        seat::retire::withdraw(&store, &held, &id, &here.seats.label(&row.id), &by)
+            .map_err(as_refusal)?;
         Ok(held.into_iter().map(|row| row.id).collect())
     };
 
@@ -485,8 +491,10 @@ impl Spawner for TransientSpawner<'_> {
             },
             clock::now_ms(),
         ) {
+            // The seat's FULL ID, which is what dispatch assigns the item to
+            // and writes into the index: the record is keyed by the seat.
             Ok(spawned) => SpawnOutcome::Spawned {
-                seat: spawned.seat,
+                seat: spawned.id.to_string(),
                 base: spawned.base,
                 // The same two lines `seat spawn` prints, from the same render:
                 // the two verbs run one belt and a person reading either reads

@@ -15,8 +15,8 @@ use common::Fixture;
 use fleet_core::item::{Stop, REFUSED, USAGE};
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::{
-    identity_or_mint, read_identity, resolve, roster, roster_in, seat_table, Kind, SeatId, SeatRef,
-    Unresolved, IDENTITY, SEAT_ACTIVE, SEAT_PARKED, SEAT_PARKED_ALIASES,
+    identity_or_mint, read_identity, resolve, roster, roster_in, seat_table, Directory, Kind,
+    SeatId, SeatRef, Unresolved, IDENTITY, SEAT_ACTIVE, SEAT_PARKED, SEAT_PARKED_ALIASES,
 };
 
 fn id(text: &str) -> SeatId {
@@ -468,6 +468,73 @@ fn a_missing_seat_lists_every_seat_the_fleet_knows() {
         resolve(&[], "nobody").expect_err("no seats").to_string(),
         "nobody names no seat — the seats are none"
     );
+}
+
+// ---- the directory ------------------------------------------------------------
+
+/// Orla and Kite run here; the nameless human is listed and runs nowhere; a
+/// transient seat runs and is listed through its row.
+fn directory() -> Directory {
+    let transient = seat("55555555-aaaa-7bbb-8ccc-0000abcdef01", None, Kind::Agent);
+    Directory {
+        listed: vec![
+            seat(ORLA, Some("Orla"), Kind::Agent),
+            seat(KITE, Some("Kite"), Kind::Agent),
+            seat(NAMELESS, None, Kind::Human),
+            transient.clone(),
+        ],
+        running: vec![
+            seat(ORLA, Some("Orla"), Kind::Agent),
+            seat(KITE, Some("Kite"), Kind::Agent),
+            transient,
+        ],
+    }
+}
+
+/// WORK GOES ONLY TO A RUNNING SEAT: a person is listed and never run, so a
+/// running resolve of one is missing, naming the seats that do run.
+#[test]
+fn a_running_resolve_finds_an_agent_and_misses_a_person() {
+    let dir = directory();
+    assert_eq!(dir.resolve_running("orla").map(|s| s.id), Ok(id(ORLA)));
+    let refused = dir
+        .resolve_running("human-12345678")
+        .expect_err("a person runs nowhere");
+    assert!(matches!(refused, Unresolved::Missing { .. }), "{refused:?}");
+    assert!(
+        refused.to_string().contains("kite-cafef00d") && !refused.to_string().contains(NAMELESS),
+        "{refused}"
+    );
+    assert_eq!(
+        dir.resolve_listed("human-12345678").map(|s| s.id),
+        Ok(id(NAMELESS))
+    );
+}
+
+#[test]
+fn a_label_is_the_machine_name_of_a_known_seat_and_else_the_id() {
+    let dir = directory();
+    assert_eq!(dir.label(&id(ORLA)), "orla-deadbeef");
+    assert_eq!(dir.label(&id(NAMELESS)), "human-12345678");
+    let stranger = id("66666666-aaaa-7bbb-8ccc-0000000000aa");
+    assert_eq!(dir.label(&stranger), stranger.to_string());
+}
+
+/// The actor bridge: a name, a machine name or an id of a listed seat is that
+/// seat, and anything a resolve would miss or find twice is no seat at all.
+#[test]
+fn an_actor_is_a_seat_only_where_it_resolves_to_one_listed_seat() {
+    let mut dir = directory();
+    assert_eq!(dir.seat_of("Orla"), Some(id(ORLA)));
+    assert_eq!(dir.seat_of("kite-cafef00d"), Some(id(KITE)));
+    assert_eq!(dir.seat_of(NAMELESS), Some(id(NAMELESS)));
+    assert_eq!(dir.seat_of("run-x"), None);
+    dir.listed.push(seat(
+        "44444444-aaaa-7bbb-8ccc-0000feedface",
+        Some("orla"),
+        Kind::Agent,
+    ));
+    assert_eq!(dir.seat_of("orla"), None, "two seats answer to it");
 }
 
 // ---- identity ---------------------------------------------------------------

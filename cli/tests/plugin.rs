@@ -1197,6 +1197,9 @@ fn a_resolution_that_refuses_reaches_line_one_too() {
     );
 }
 
+/// In Orla's worktree, the item lines are the items assigned to HER ID: every
+/// dispatch assigns the full id, so a listing by her name or her machine name
+/// would find nothing she was given.
 #[test]
 fn the_item_lines_are_this_seat_s_open_work() {
     let s = Scratch::new("items");
@@ -1204,7 +1207,8 @@ fn the_item_lines_are_this_seat_s_open_work() {
     let fleet_dir = s.dir("fleet-dir");
     let fleet_toml = s.write("fleet-root/fleet.toml", "");
     let row = format!(
-        "{{\"id\": \"01a0d1f1-0aec-765f-9abe-5c21e8a04b17\", \"worktrees\": {{\"demo\": {}}}}}",
+        "{{\"id\": \"01a0d1f1-0aec-765f-9abe-5c21e8a04b17\", \"name\": \"Orla\", \
+         \"worktrees\": {{\"demo\": {}}}}}",
         serde_json::Value::String(text_of(&cwd))
     );
     s.write("fleet-dir/config.json", &config_json(&fleet_toml, &row));
@@ -1234,8 +1238,11 @@ fn the_item_lines_are_this_seat_s_open_work() {
     let asked = std::fs::read_to_string(&argv).expect("the stub recorded its arguments");
     assert_eq!(
         asked.trim(),
-        format!("-C {} list -a agent-e8a04b17 --json -n 0", text_of(&cwd)),
-        "the listing is asked of the row's own project root, for the row's seat"
+        format!(
+            "-C {} list -a 01a0d1f1-0aec-765f-9abe-5c21e8a04b17 --json -n 0",
+            text_of(&cwd)
+        ),
+        "the listing is asked of the row's own project root, for the row's full id"
     );
 }
 
@@ -1301,7 +1308,7 @@ fn a_listing_that_cannot_be_read_is_its_own_answer() {
     let text = utf8(out.stdout);
     assert!(
         text.contains(&format!(
-            "item: could not be read — `{} list -a agent-e8a04b17 --json -n 0` exit status: 4: the store \
+            "item: could not be read — `{} list -a 01a0d1f1-0aec-765f-9abe-5c21e8a04b17 --json -n 0` exit status: 4: the store \
              is locked",
             text_of(&stub)
         )),
@@ -1344,7 +1351,7 @@ fn a_listing_that_never_answers_is_its_own_answer_inside_the_bound() {
     let text = utf8(out.stdout);
     assert!(
         text.contains(&format!(
-            "item: could not be read — `{} list -a agent-e8a04b17 --json -n 0` did not answer within 5s",
+            "item: could not be read — `{} list -a 01a0d1f1-0aec-765f-9abe-5c21e8a04b17 --json -n 0` did not answer within 5s",
             text_of(&stub)
         )),
         "the third answer names the bound the listing outran: {text}"
@@ -1583,7 +1590,14 @@ fn with_no_seam_the_tracker_comes_off_the_constructed_child_path() {
     let direct = Command::new(&named)
         .arg("-C")
         .arg(&cwd)
-        .args(["list", "-a", "agent-e8a04b17", "--json", "-n", "0"])
+        .args([
+            "list",
+            "-a",
+            "01a0d1f1-0aec-765f-9abe-5c21e8a04b17",
+            "--json",
+            "-n",
+            "0",
+        ])
         .output()
         .expect("the resolved tracker runs");
     let fingerprint = if direct.status.success() {
@@ -1676,7 +1690,10 @@ fn a_session_under_a_seat_s_worktree_gets_no_item_line() {
     let asked = std::fs::read_to_string(&argv).expect("the stub recorded its arguments");
     assert_eq!(
         asked.trim(),
-        format!("-C {} list -a agent-e8a04b17 --json -n 0", text_of(&root)),
+        format!(
+            "-C {} list -a 01a0d1f1-0aec-765f-9abe-5c21e8a04b17 --json -n 0",
+            text_of(&root)
+        ),
         "and it is asked of the row's own root, never of the subdirectory"
     );
 }

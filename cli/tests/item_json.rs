@@ -34,6 +34,8 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 const REVIEWER: &str = "ij-a-reviewer";
 const BY: &str = "an-architect";
+/// The id of the seat the rig's second dispatch names.
+const OTHER_TARGET_ID: &str = "01a0d1f1-0aec-765f-9abe-00007e3fa2c0";
 const POLICY: &str = "[core]\nreviewer = \"ij-a-reviewer\"\n\n\
                       [controller]\nnudge_model = \"a-cheap-model\"\n\
                       nudge_timeout_seconds = 20\n";
@@ -182,7 +184,13 @@ impl Rig {
             target_worktree,
             other_worktree,
         };
-        std::fs::write(rig.project.join("fleet.toml"), POLICY).expect("the policy is written");
+        // The policy lists the seat that delivers and asks: those verbs find
+        // the item a seat holds by resolving its actor among the listed seats.
+        std::fs::write(
+            rig.project.join("fleet.toml"),
+            format!("{POLICY}{}", common::seat_table_of(&rig.seat)),
+        )
+        .expect("the policy is written");
         common::take_a_board(&rig.project, "item-json");
         std::fs::write(&rig.note, NOTE).expect("the delivery note is written");
         std::fs::write(&rig.question, QUESTION).expect("the question is written");
@@ -194,7 +202,7 @@ impl Rig {
                       "worktrees": {{"a-project": {worktree}}}}},
                      {{"id": "01a0d1f1-0aec-765f-9abe-5c21e8a04b17", "name": "{target}",
                       "worktrees": {{"a-project": {target_worktree}}}}},
-                     {{"id": "01a0d1f1-0aec-765f-9abe-00007e3fa2c0", "name": "{other_target}",
+                     {{"id": "{OTHER_TARGET_ID}", "name": "{other_target}",
                       "worktrees": {{"a-project": {other_worktree}}}}}
                    ]}}"#,
                 target = rig.target,
@@ -285,16 +293,17 @@ impl Rig {
     /// `deliver` and `hold` read to find the work they are acting on.
     fn an_item_ordered_to_the_seat(&self) -> String {
         let item = self.a_ready_item();
+        // Assigned to the seat's id, as every dispatch assigns.
+        let seat = common::seat_id_of(&self.seat);
         assert!(self
             .bd(&[
                 "update",
                 &item,
                 "--assignee",
-                &self.seat,
+                &seat,
                 "--metadata",
                 &format!(
-                    r#"{{"fleet.orders": {{"v": 1, "by": "{BY}", "kind": "dispatch", "seat": "{seat}", "at": "2026-09-18T00:00:00Z"}}}}"#,
-                    seat = self.seat
+                    r#"{{"fleet.orders": {{"v": 1, "by": "{BY}", "kind": "dispatch", "seat": "{seat}", "at": "2026-09-18T00:00:00Z"}}}}"#
                 ),
                 "--actor",
                 BY,
@@ -439,17 +448,19 @@ fn dispatch_prints_the_seat_it_named_and_the_trunks_bytes_on_the_stream_the_flag
         "under it, the same bytes on the other stream"
     );
 
+    // The seat the order named, by the FULL ID its name resolved to: the id
+    // is what the record holds, so it is what the document carries.
     let data = data_of(&out, "dispatch");
     assert_eq!(data["item"], serde_json::json!(item), "{data}");
     assert_eq!(data["state"], serde_json::json!("dispatched"), "{data}");
     assert_eq!(
         data["seat"],
-        serde_json::json!(rig.other_target),
+        serde_json::json!(OTHER_TARGET_ID),
         "the seat the order named: {data}"
     );
     assert_eq!(
         rig.item_json(&item)["assignee"],
-        serde_json::json!(rig.other_target),
+        serde_json::json!(OTHER_TARGET_ID),
         "and it is the seat the record now holds"
     );
 }

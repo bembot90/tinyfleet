@@ -766,6 +766,48 @@ pub fn keys_agree(kind: &str, payload: &serde_json::Value, absent: &[&str]) {
     assert_eq!(written, wanted, "{kind}'s payload keys");
 }
 
+// ---- seats --------------------------------------------------------------------
+
+/// The id an arm's seat is keyed by, derived from its name alone: FNV-1a over
+/// the name, in the node's twelve digits.
+///
+/// A seat-holds-an-item read is a query across a whole store, and one store is
+/// shared across a binary's arms, so two arms' seats may never share an id —
+/// and each arm already takes a name of its own.
+pub fn seat_id(name: &str) -> fleet_core::seat::identity::SeatId {
+    let hash = name.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    fleet_core::seat::identity::SeatId::parse(&format!(
+        "01a0d1f1-0aec-765f-9abe-{:012x}",
+        hash & 0xffff_ffff_ffff
+    ))
+    .expect("an arm's seat id parses")
+}
+
+/// That id as the record writes it: the assignee and `fleet.orders.seat`.
+pub fn full(name: &str) -> String {
+    seat_id(name).to_string()
+}
+
+/// The agent seat an arm names.
+pub fn agent(name: &str) -> fleet_core::seat::identity::SeatRef {
+    fleet_core::seat::identity::SeatRef {
+        id: seat_id(name),
+        name: Some(name.to_string()),
+        kind: fleet_core::seat::identity::Kind::Agent,
+    }
+}
+
+/// A fleet of agent seats by name, each listed and running here.
+pub fn fleet_of(names: &[&str]) -> fleet_core::seat::identity::Directory {
+    let running: Vec<_> = names.iter().map(|name| agent(name)).collect();
+    fleet_core::seat::identity::Directory {
+        listed: running.clone(),
+        running,
+    }
+}
+
 /// The work graph a rig runs against: held in memory, or `bd` on a scratch
 /// board.
 ///

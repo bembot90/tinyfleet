@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use common::holding::{holding_bd, standing, LEFT_BEHIND};
-use common::{keys_agree, shared_store, Rooted, Scratch, StubEvents};
+use common::{fleet_of, full, keys_agree, shared_store, Rooted, Scratch, StubEvents};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::hold::{self, Clearance, Question, Wiring};
 use fleet_core::item::run;
@@ -25,6 +25,7 @@ use fleet_core::item::{
     last_answer, last_park, Change, Git, Project, Stop, ANSWER_MARKERS, HOLD_CLEARED, ITEM_HELD,
     PARK_MARKERS,
 };
+use fleet_core::seat::identity::Directory;
 use fleet_core::store::{AssignedItem, Bd, Item, NewItem, Store, StoreError};
 use fleet_core::test_support::Board;
 
@@ -246,8 +247,9 @@ fn packs(scratch: &dyn Rooted) -> Packs {
 /// One item, held by this arm's own seat and carrying an order.
 fn an_ordered_item(store: &dyn Store, title: &str, seat: &str) -> String {
     let item = an_item(store, title);
+    let seat = full(seat);
     store
-        .assign(&item, seat, "a-flight")
+        .assign(&item, &seat, "a-flight")
         .expect("the seat holds it");
     store
         .set_orders(
@@ -320,6 +322,9 @@ fn hold_with(
             packs: seams.packs,
             project: seams.project,
             events: seams.events,
+            // The arm's own seat, listed under the name it asks by: what a
+            // question resolves `by` to is the delivery suite's subject.
+            seats: &fleet_of(&[by]),
         },
     )
 }
@@ -345,6 +350,9 @@ fn clear_with(
             packs: seams.packs,
             project: seams.project,
             events: seams.events,
+            // A clearance is a person's act on the record and asks for nobody's
+            // held item.
+            seats: &Directory::default(),
         },
     )
 }
@@ -401,6 +409,7 @@ fn a_clean_hold_commits_the_whole_tree_raises_the_hold_and_parks() {
             packs: &packs(scratch),
             project: &project(scratch),
             events: &events,
+            seats: &fleet_of(&[seat]),
         },
     )
     .expect("the question is asked");
@@ -784,7 +793,7 @@ fn a_seat_holding_no_ordered_item_is_refused() {
     let seat = "g-unordered";
     // Assigned and NOT ordered: the row is held and the order index is absent.
     let item = an_item(&scratch.store, "an item nobody ordered");
-    scratch.assign(&item, seat);
+    scratch.assign(&item, &full(seat));
     let note = a_note(scratch, "unordered", QUESTION);
     let before = scratch.json(&item);
     let git = StubGit::holding_work();
@@ -933,7 +942,7 @@ fn an_epic_is_refused_before_the_commit_and_nothing_is_written() {
             "a-flight",
         )
         .expect("the epic is filed");
-    scratch.assign(&item, seat);
+    scratch.assign(&item, &full(seat));
     let note = a_note(scratch, "epic", QUESTION);
     let before = scratch.json(&item);
     let wrote = scratch.store.wrote();
@@ -980,6 +989,7 @@ fn an_epic_is_refused_before_the_commit_and_nothing_is_written() {
 
 /// The row the holding fake answers for the item a seat holds.
 fn a_held_row(item: &str, seat: &str) -> String {
+    let seat = full(seat);
     format!(
         r#"{{"id":"{item}","title":"an item whose hold fails","status":"open","issue_type":"task","assignee":"{seat}","metadata":{{"fleet.orders":{{"v":1,"by":"a-flight","kind":"dispatch","seat":"{seat}","at":"{AT}"}}}}}}"#
     )
@@ -1146,6 +1156,7 @@ fn a_clearance_writes_the_answer_clears_the_hold_and_announces_it() {
             packs: &packs(scratch),
             project: &project(scratch),
             events: &events,
+            seats: &Directory::default(),
         },
     )
     .expect("the answer is written");

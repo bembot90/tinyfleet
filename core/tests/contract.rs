@@ -204,10 +204,15 @@ fn orders(store: &dyn Store, _: &Path, which: &str) {
     );
     assert_eq!(read.orders, None, "{which}");
 
+    // The seat as a dispatch writes it: the full id, a string the store
+    // carries and never reads.
+    let seat = "01a0d1f1-0aec-765f-9abe-00000000a5ea";
     store
         .set_orders(
             &item,
-            r#"{"fleet.orders":{"v":1,"by":"an-architect","kind":"dispatch","seat":"a-seat","at":"2026-09-13T00:00:00Z"}}"#,
+            &format!(
+                r#"{{"fleet.orders":{{"v":1,"by":"an-architect","kind":"dispatch","seat":"{seat}","at":"2026-09-13T00:00:00Z"}}}}"#
+            ),
             BY,
         )
         .expect("the order index lands");
@@ -216,7 +221,7 @@ fn orders(store: &dyn Store, _: &Path, which: &str) {
     let index = read.orders.expect("the index is an object");
     assert_eq!(index.by.as_deref(), Some("an-architect"), "{which}");
     assert_eq!(index.kind.as_deref(), Some("dispatch"), "{which}");
-    assert_eq!(index.seat.as_deref(), Some("a-seat"), "{which}");
+    assert_eq!(index.seat.as_deref(), Some(seat), "{which}");
     assert_eq!(index.at.as_deref(), Some("2026-09-13T00:00:00Z"), "{which}");
 
     store.unset_orders(&item, BY).expect("the withdrawal lands");

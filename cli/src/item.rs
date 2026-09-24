@@ -26,7 +26,7 @@ use fleet_core::item::{
     RingOutcome, Stop, HOLD_CLEARED, ITEM_DELIVERED, ITEM_DISPATCHED, ITEM_HELD, ITEM_LANDED,
     ITEM_RETURNED, ITEM_REVIEWED, TRUNK,
 };
-use fleet_core::seat::identity::SeatRef;
+use fleet_core::seat::identity::Directory;
 use fleet_core::store::Bd;
 
 use crate::envelope;
@@ -534,6 +534,7 @@ fn run_hold(parsed: &HoldArgs, by: &str, out: &mut dyn Write) -> Result<hold::He
             packs: &packs,
             project: &here.project,
             events: &events,
+            seats: &here.seats,
         },
     )
 }
@@ -563,6 +564,7 @@ fn run_clear(parsed: &ClearArgs, by: &str, out: &mut dyn Write) -> Result<hold::
             packs: &packs,
             project: &here.project,
             events: &events,
+            seats: &here.seats,
         },
     )
 }
@@ -636,6 +638,7 @@ fn run_deliver(
             project: &here.project,
             ring: &ring,
             events: &events,
+            seats: &here.seats,
         },
     )
 }
@@ -857,6 +860,13 @@ fn run_brief(parsed: &BriefArgs, out: &mut dyn Write, err: &mut dyn Write) -> Re
     let here = resolve_at(parsed.packs_dir.clone())?;
     let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
+    // `--to` names a seat this machine runs, as dispatch's does, and the brief
+    // says who it is for by the seat's machine name; no `--to` is the
+    // transient seat that does not exist yet.
+    let seat = match parsed.to.as_deref() {
+        Some(to) => here.seats.resolve_running(to)?.machine_name(),
+        None => TRANSIENT.to_string(),
+    };
 
     brief::for_item(
         out,
@@ -865,7 +875,7 @@ fn run_brief(parsed: &BriefArgs, out: &mut dyn Write, err: &mut dyn Write) -> Re
         &here.project,
         &store,
         &parsed.item,
-        parsed.to.as_deref().unwrap_or(TRANSIENT),
+        &seat,
         parsed.touched.as_deref(),
     )
     .map(|_| ())
@@ -881,8 +891,10 @@ pub struct Here {
     /// SIBLING of the packs directory so a caller naming its own packs dir names
     /// the pair.
     pub defaults_dir: PathBuf,
-    /// The seats the machine's config carries, as every reader names them.
-    pub seats: Vec<SeatRef>,
+    /// Every seat this fleet lists and this machine runs, as every reader
+    /// names them: a `--to` resolves among the running ones, and an actor
+    /// among the listed ones.
+    pub seats: Directory,
     /// The policy file in force, as one path: the embedded fleet's own
     /// `fleet.toml`, or the file a standalone fleet's machine config names.
     /// `run` copies it byte for byte, so which file it is has to be resolved
@@ -1093,16 +1105,17 @@ fn declared_at(
         .ok()
         .map(|machine| machine.fleet_toml.clone())
         .unwrap_or_else(|| machine_dir.join(FLEET_TOML));
+    let project = Project {
+        root: dir.to_path_buf(),
+        name: project_name(&policy).unwrap_or_else(|| basename(dir)),
+        policy,
+        guards,
+    };
     Here {
-        project: Project {
-            root: dir.to_path_buf(),
-            name: project_name(&policy).unwrap_or_else(|| basename(dir)),
-            policy,
-            guards,
-        },
+        seats: seats_of(machine, &project, machine_dir),
+        project,
         packs_dir: packs_dir(chosen_packs_dir, machine_dir),
         defaults_dir: defaults_dir(chosen_packs_dir, machine_dir),
-        seats: seats_of(machine),
         machine_dir: machine_dir.to_path_buf(),
         policy_file,
     }
@@ -1120,16 +1133,17 @@ fn embedded_at(
     chosen_packs_dir: &Option<PathBuf>,
 ) -> Here {
     let policy = table_at(policy_file);
+    let project = Project {
+        root: dir.to_path_buf(),
+        name: basename(dir),
+        guards: policy.clone(),
+        policy,
+    };
     Here {
-        project: Project {
-            root: dir.to_path_buf(),
-            name: basename(dir),
-            guards: policy.clone(),
-            policy,
-        },
+        seats: seats_of(machine, &project, machine_dir),
+        project,
         packs_dir: packs_dir(chosen_packs_dir, machine_dir),
         defaults_dir: defaults_dir(chosen_packs_dir, machine_dir),
-        seats: seats_of(machine),
         machine_dir: machine_dir.to_path_buf(),
         policy_file: policy_file.to_path_buf(),
     }
@@ -1169,11 +1183,20 @@ fn defaults_dir(chosen: &Option<PathBuf>, machine_dir: &Path) -> PathBuf {
     }
 }
 
-fn seats_of(machine: &Result<config::MachineConfig, String>) -> Vec<SeatRef> {
-    machine
+/// The seat directory over the machine's rows and the fleet's own policy —
+/// the project's guards table, which is the fleet's file in either mode. A
+/// machine config that will not read runs nothing here, and the roster and
+/// this machine's identity are still listed.
+fn seats_of(
+    machine: &Result<config::MachineConfig, String>,
+    project: &Project,
+    machine_dir: &Path,
+) -> Directory {
+    let rows = machine
         .as_ref()
-        .map(|machine| machine.seats.iter().map(config::Seat::as_ref).collect())
-        .unwrap_or_default()
+        .map(|machine| machine.seats.as_slice())
+        .unwrap_or_default();
+    config::directory(rows, &project.guards, machine_dir)
 }
 
 fn basename(dir: &Path) -> String {

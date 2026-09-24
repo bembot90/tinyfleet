@@ -46,6 +46,25 @@ pub fn take_a_board(root: &Path, label: &str) {
     take_a_board_with(Path::new("bd"), root, label);
 }
 
+/// The full id a rig's seat is keyed by, derived from its name alone: FNV-1a
+/// over the name, in the node's twelve digits. A seat's items are assigned to
+/// its id, so a rig that names its seats under its own prefix gets ids no
+/// other rig's seats share.
+pub fn seat_id_of(name: &str) -> String {
+    let hash = name.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    format!("01a0d1f1-0aec-765f-9abe-{:012x}", hash & 0xffff_ffff_ffff)
+}
+
+/// The `[seats.<id>]` table that lists an agent seat by that id and name.
+pub fn seat_table_of(name: &str) -> String {
+    format!(
+        "\n[seats.{}]\nkind = \"agent\"\nname = \"{name}\"\n",
+        seat_id_of(name)
+    )
+}
+
 /// A board of this rig's OWN, whatever the run made: an init every time.
 ///
 /// For a rig whose arms make a BOARD-WIDE WRITE keyed on a seat. `fleet seat

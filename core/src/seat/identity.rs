@@ -458,6 +458,55 @@ pub fn resolve(seats: &[SeatRef], arg: &str) -> Result<usize, Unresolved> {
     }
 }
 
+// ---- the directory ------------------------------------------------------------
+
+/// Every seat a verb on this machine can name, in the two lists a verb asks.
+///
+/// LISTED IS WHO THE FLEET KNOWS: fleet.toml's roster, the machine's transient
+/// rows — a spawned seat is on no roster — and this machine's own identity
+/// where `identity.toml` exists. RUNNING IS WHAT THIS MACHINE RUNS: its
+/// config.json rows, every one an agent's. Work is GIVEN only to a running
+/// seat, and anybody listed may act on the record. The caller fills both;
+/// reading them never mints.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Directory {
+    pub listed: Vec<SeatRef>,
+    pub running: Vec<SeatRef>,
+}
+
+impl Directory {
+    /// The one running seat an argument names: an agent seat this machine
+    /// runs, and never a person, who is listed and not run.
+    pub fn resolve_running(&self, arg: &str) -> Result<&SeatRef, Unresolved> {
+        resolve(&self.running, arg).map(|index| &self.running[index])
+    }
+
+    /// The one listed seat an argument names.
+    pub fn resolve_listed(&self, arg: &str) -> Result<&SeatRef, Unresolved> {
+        resolve(&self.listed, arg).map(|index| &self.listed[index])
+    }
+
+    /// How a sentence names a seat: the machine name of a listed or running
+    /// seat, else the id itself — a seat since dropped is still somebody.
+    pub fn label(&self, id: &SeatId) -> String {
+        self.listed
+            .iter()
+            .chain(&self.running)
+            .find(|seat| seat.id == *id)
+            .map(SeatRef::machine_name)
+            .unwrap_or_else(|| id.to_string())
+    }
+
+    /// The seat an actor string names, where it names exactly one listed seat.
+    ///
+    /// A BRIDGE until the actor is typed: a missing or an ambiguous answer is
+    /// "not a seat", and the caller says so rather than guessing whose work it
+    /// holds.
+    pub fn seat_of(&self, by: &str) -> Option<SeatId> {
+        self.resolve_listed(by).ok().map(|seat| seat.id)
+    }
+}
+
 // ---- the machine's own identity -----------------------------------------------
 
 /// The file under the machine directory that says who this machine is.

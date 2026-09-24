@@ -15,7 +15,7 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use common::{keys_agree, Graph, Rooted, StubEvents};
+use common::{fleet_of, full, keys_agree, Graph, Rooted, StubEvents};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::deliver::{self, Delivered, Delivery, Wiring};
 use fleet_core::item::{
@@ -255,7 +255,8 @@ fn project(scratch: &dyn Rooted) -> Project {
 /// One item, held by this arm's own seat and carrying an order.
 fn an_ordered_item(graph: &Graph, title: &str, seat: &str) -> String {
     let item = graph.item(title);
-    graph.assign(&item, seat);
+    let seat = full(seat);
+    graph.assign(&item, &seat);
     graph
         .store()
         .set_orders(
@@ -326,6 +327,9 @@ fn deliver_with(
             project: seams.project,
             ring: seams.ring,
             events: seams.events,
+            // The arm's own seat, listed under the name it delivers by; the
+            // arm about `by` itself lays out a fleet of its own.
+            seats: &fleet_of(&[by]),
         },
     )
 }
@@ -435,7 +439,7 @@ fn another_writers_orders_key_and_run_label_ride_through_a_delivery() {
     let seat = "s-foreign";
     let item = an_ordered_item(scratch, "an item another tool indexes too", seat);
     let theirs = scratch.item("an item only another tool ordered");
-    scratch.assign(&theirs, seat);
+    scratch.assign(&theirs, &full(seat));
     for held in [&item, &theirs] {
         scratch
             .store()
@@ -473,7 +477,7 @@ fn another_writers_orders_key_and_run_label_ride_through_a_delivery() {
     );
     assert_eq!(
         read(scratch, &theirs).assignee.as_deref(),
-        Some(seat),
+        Some(full(seat).as_str()),
         "the item only another tool ordered is left where it was"
     );
 }
@@ -623,6 +627,7 @@ fn a_clean_tree_ahead_of_the_base_delivers_head_and_commits_nothing() {
             project: &project(scratch),
             ring: &ring,
             events: &events,
+            seats: &fleet_of(&[seat]),
         },
     )
     .expect("the clean tree ahead of the base is delivered");
@@ -883,7 +888,7 @@ fn a_seat_holding_no_ordered_item_is_refused_and_two_are_named() {
     let seat = "s-count";
     let note = a_note(scratch, "count", WHOLE);
     let unordered = scratch.item("an item with no order on it");
-    scratch.assign(&unordered, seat);
+    scratch.assign(&unordered, &full(seat));
 
     let stop = deliver_with(
         None,
@@ -924,6 +929,61 @@ fn a_seat_holding_no_ordered_item_is_refused_and_two_are_named() {
         "every candidate is named: {}",
         stop.message
     );
+}
+
+/// THE ACTOR IS RESOLVED TO A SEAT, and the item found is the one assigned to
+/// that seat's ID: `--by orla` — a name, as a person or an older session says
+/// it — finds Orla's item, which carries her id and never her name. An actor
+/// that is no seat of this fleet holds nothing, and without `--item` is
+/// refused rather than read as a seat that was given nothing.
+#[test]
+fn a_name_finds_the_item_assigned_to_its_id_and_a_stranger_is_no_seat() {
+    let scratch = &store();
+    let item = an_ordered_item(scratch, "an item Orla holds", "Orla");
+    assert_eq!(
+        read(scratch, &item).assignee.as_deref(),
+        Some(full("Orla").as_str()),
+        "the premise: the item is assigned to her id"
+    );
+    let note = a_note(scratch, "by-name", WHOLE);
+    let fleet = fleet_of(&["Orla"]);
+    let run = |by: &str, item: Option<&str>| {
+        deliver::deliver(
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &Delivery {
+                item,
+                by,
+                note: &note,
+                at: AT,
+            },
+            &Wiring {
+                store: scratch.store(),
+                git: &StubGit::clean(),
+                packs: &packs(scratch),
+                project: &project(scratch),
+                ring: &StubRing::answering(RingOutcome::Delivered),
+                events: &StubEvents::default(),
+                seats: &fleet,
+            },
+        )
+    };
+
+    let stop = run("run-x", None).expect_err("run-x is no seat");
+    assert_eq!(stop.code, 1, "{}", stop.message);
+    assert_eq!(
+        stop.message,
+        "run-x is not a seat of this fleet, so it holds nothing — pass --item <id>"
+    );
+    assert_eq!(
+        read(scratch, &item).assignee.as_deref(),
+        Some(full("Orla").as_str()),
+        "the refusal wrote nothing"
+    );
+
+    let delivered = run("orla", None).expect("orla finds her item");
+    assert_eq!(delivered.item, item, "the item assigned to Orla's id");
+    assert_eq!(read(scratch, &item).assignee.as_deref(), Some(REVIEWER));
 }
 
 /// `--item` naming its item by a suffix delivers under the full id: the verb
@@ -1028,6 +1088,7 @@ fn an_absent_reviewer_and_a_failed_ring_both_leave_the_delivery_standing() {
                 events: &StubEvents::default(),
                 project: &project(scratch),
                 ring: &ring,
+                seats: &fleet_of(&[&seat]),
             },
         )
         .expect("the delivery stands");

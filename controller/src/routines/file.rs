@@ -7,7 +7,7 @@
 //! key is a duty that silently never runs.
 
 use super::trigger::Trigger;
-use fleet_core::seat::identity::{resolve, SeatId, SeatRef};
+use fleet_core::seat::identity::{resolve, Directory, SeatId, SeatRef};
 use std::path::{Path, PathBuf};
 
 /// Where a routine was loaded from, as it is published and printed.
@@ -54,7 +54,13 @@ pub struct Item {
     pub title: String,
     pub description: Option<String>,
     pub labels: Vec<String>,
+    /// The assignee as the file names it, which is how a line about the
+    /// filing names it back.
     pub assignee: Option<String>,
+    /// The one seat that name resolved to at load, which is what the item is
+    /// filed assigned to. `None` where the file names no assignee, or on a
+    /// file the load refused, which is never run.
+    pub assignee_id: Option<SeatId>,
     pub priority: Option<i64>,
     pub kind: Option<String>,
     pub when: When,
@@ -231,9 +237,10 @@ pub fn routine_name_of(path: &Path) -> Result<String, String> {
 
 /// Read one file into a routine or a defect.
 ///
-/// `seats` is the machine's seat list, because a nudge action names a row of it
-/// and a seat this machine does not carry is a ring nobody would ever answer.
-pub fn read(path: &Path, source: &Source, project_root: &Path, seats: &[SeatRef]) -> Loaded {
+/// `seats` is the machine's seat directory: a nudge action names a row this
+/// machine runs, because a seat it does not carry is a ring nobody would ever
+/// answer, and an item's assignee names any seat the fleet knows.
+pub fn read(path: &Path, source: &Source, project_root: &Path, seats: &Directory) -> Loaded {
     let name = match routine_name_of(path) {
         Ok(name) => name,
         Err(reason) => {
@@ -275,7 +282,7 @@ pub fn parse(
     source: &Source,
     project_root: &Path,
     body: &str,
-    seats: &[SeatRef],
+    seats: &Directory,
 ) -> Loaded {
     let mut reasons: Vec<String> = Vec::new();
     let defective = |reasons: Vec<String>| {
@@ -462,7 +469,7 @@ pub fn parse(
 }
 
 /// `[action.<kind>]`: exactly one, or the fallback pair.
-fn read_action(reasons: &mut Vec<String>, document: &toml::Table, seats: &[SeatRef]) -> Action {
+fn read_action(reasons: &mut Vec<String>, document: &toml::Table, seats: &Directory) -> Action {
     let Some(action) = table_at(document, "action") else {
         reasons.push("carries no [action.<kind>] table".to_string());
         return Action::default();
@@ -484,8 +491,8 @@ fn read_action(reasons: &mut Vec<String>, document: &toml::Table, seats: &[SeatR
         let seat_id = if seat.is_empty() {
             None
         } else {
-            match resolve(seats, &seat) {
-                Ok(index) => Some(seats[index].id),
+            match seats.resolve_running(&seat) {
+                Ok(found) => Some(found.id),
                 Err(unresolved) => {
                     reasons.push(format!("[action.nudge] seat is {seat}, which {unresolved}"));
                     None
@@ -501,7 +508,7 @@ fn read_action(reasons: &mut Vec<String>, document: &toml::Table, seats: &[SeatR
     }
     if let Some(table) = table_at(action, "item") {
         unknown_keys(reasons, table, "action.item", &ITEM_KEYS);
-        built.item = Some(read_item(reasons, table));
+        built.item = Some(read_item(reasons, table, seats));
     }
     if let Some(table) = table_at(action, "exec") {
         unknown_keys(reasons, table, "action.exec", &EXEC_KEYS);
@@ -572,7 +579,7 @@ fn read_inputs(reasons: &mut Vec<String>, table: &toml::Table) -> Vec<(String, S
     inputs
 }
 
-fn read_item(reasons: &mut Vec<String>, table: &toml::Table) -> Item {
+fn read_item(reasons: &mut Vec<String>, table: &toml::Table, seats: &Directory) -> Item {
     let when = match table.get("when") {
         Some(toml::Value::String(word)) if word == "always" => When::Always,
         Some(toml::Value::String(word)) if word == "absent" => When::Absent,
@@ -644,16 +651,46 @@ fn read_item(reasons: &mut Vec<String>, table: &toml::Table) -> Item {
         }
         None => Vec::new(),
     };
+    // [ASSUMES D14] RESOLVED HERE, at load, among every seat the fleet knows
+    // and every seat this machine runs: the item is filed assigned to the id
+    // this found, which is what a holder check compares, and a name nobody
+    // holds — or two seats both answer to — refuses the file.
+    let assignee = optional_string(reasons, table, "action.item", "assignee");
+    let assignee_id = assignee.as_deref().and_then(|said| {
+        let known = known_seats(seats);
+        match resolve(&known, said) {
+            Ok(index) => Some(known[index].id),
+            Err(unresolved) => {
+                reasons.push(format!(
+                    "[action.item] assignee is {said}, which {unresolved}"
+                ));
+                None
+            }
+        }
+    });
     Item {
         title: required_line(reasons, table, "action.item", "title"),
         description: optional_string(reasons, table, "action.item", "description"),
         labels,
-        assignee: optional_string(reasons, table, "action.item", "assignee"),
+        assignee,
+        assignee_id,
         priority,
         kind,
         when,
         dedupe,
     }
+}
+
+/// The listed seats and the running ones, each once: the seats an item may be
+/// filed to.
+fn known_seats(seats: &Directory) -> Vec<SeatRef> {
+    let mut known: Vec<SeatRef> = Vec::new();
+    for seat in seats.listed.iter().chain(&seats.running) {
+        if !known.iter().any(|kept| kept.id == seat.id) {
+            known.push(seat.clone());
+        }
+    }
+    known
 }
 
 fn unknown_keys(reasons: &mut Vec<String>, table: &toml::Table, where_: &str, known: &[&str]) {

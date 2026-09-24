@@ -40,6 +40,7 @@ use crate::item::{
     control_token, label_value, last_answer, last_park, marker_block, opens_with, render, Events,
     Git, Project, Stop, ANSWER_MARKERS, HOLD_CLEARED, ITEM_HELD, PARK_MARKERS, TRUNK_BRANCH,
 };
+use crate::seat::identity::Directory;
 use crate::store::{Item, Store, BD};
 
 /// The park-note grammar, in core's pack and shadowable like every other asset.
@@ -99,6 +100,8 @@ pub struct Wiring<'a> {
     pub packs: &'a Packs,
     pub project: &'a Project,
     pub events: &'a dyn Events,
+    /// The seats this fleet knows, which the question's `by` is found among.
+    pub seats: &'a Directory,
 }
 
 /// The park made, for a caller that wants to say what happened.
@@ -113,7 +116,7 @@ pub struct Held {
 }
 
 pub fn hold(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result<Held, Stop> {
-    let item = held_item(wiring.store, question.by, question.item)?;
+    let item = held_item(wiring.store, question.by, question.item, wiring.seats)?;
     // WHICH OF THE TWO PARKS THIS IS, off the record the store already answers:
     // the run label is the only mark that tells a run's record from every other
     // item, and a run's park touches no git at all.

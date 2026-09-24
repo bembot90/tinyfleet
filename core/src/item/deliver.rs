@@ -30,6 +30,7 @@ use crate::item::{
     Stop, DELIVERY_MARKERS, ITEM_DELIVERED, TRUNK, TRUNK_BRANCH,
 };
 use crate::policy;
+use crate::seat::identity::Directory;
 use crate::store::{AssignedItem, Item, Store};
 
 /// The three lines the verb fills. Everything else in the grammar is the
@@ -74,6 +75,8 @@ pub struct Wiring<'a> {
     pub project: &'a Project,
     pub ring: &'a dyn Ring,
     pub events: &'a dyn Events,
+    /// The seats this fleet knows, which `--by` is found among.
+    pub seats: &'a Directory,
 }
 
 /// The delivery made, for a caller that wants to say what happened.
@@ -137,7 +140,7 @@ pub fn deliver(
     let written = read_note(delivery.note)?;
     grammar_holds(&wiring.packs.read(DELIVERY_NOTE)?, &written)?;
 
-    let item = held_item(wiring.store, delivery.by, delivery.item)?;
+    let item = held_item(wiring.store, delivery.by, delivery.item, wiring.seats)?;
     let reviewer = reviewer_of(wiring.project)?;
 
     let as_is = standing.is_some();
@@ -266,14 +269,30 @@ fn ring(
 /// IT IS `hold`'s READ TOO. A question and a delivery ask the same question of
 /// the record — which item is this worktree's — and two readers of it would be
 /// two answers the day one of them changed.
-pub fn held_item(store: &dyn Store, by: &str, named: Option<&str>) -> Result<String, Stop> {
+///
+/// THE ACTOR IS FOUND AMONG THE LISTED SEATS, because work is assigned to a
+/// seat's id and `by` is whatever the actor string says: a name, a machine
+/// name or an id. One that is no seat of this fleet holds nothing, and is
+/// refused rather than read as a seat nobody gave anything — the refusal names
+/// the flag that says which item instead.
+pub fn held_item(
+    store: &dyn Store,
+    by: &str,
+    named: Option<&str>,
+    seats: &Directory,
+) -> Result<String, Stop> {
     if let Some(named) = named {
         // Resolved once, here: the caller acts on the store's full id and
         // never on the part of it that was typed.
         let item = read(store, named)?;
         return Ok(item.id);
     }
-    let Holds { open, held, .. } = holds(store, by)?;
+    let Some(seat) = seats.seat_of(by) else {
+        return Err(Stop::refused(format!(
+            "{by} is not a seat of this fleet, so it holds nothing — pass --item <id>"
+        )));
+    };
+    let Holds { open, held, .. } = holds(store, &seat.to_string())?;
     let mut held: Vec<String> = held.into_iter().map(|row| row.id).collect();
     match held.len() {
         1 => Ok(held.remove(0)),
@@ -305,7 +324,7 @@ pub(crate) struct Holds {
     /// Every open row assigned to the seat.
     pub(crate) open: Vec<AssignedItem>,
     /// Of those, every one that carries a `fleet.orders` key, whatever its
-    /// type: the orders standing against the seat's name.
+    /// type: the orders standing against the seat.
     pub(crate) ordered: Vec<AssignedItem>,
     /// Of those, every one that is not an epic: what the seat HOLDS.
     pub(crate) held: Vec<AssignedItem>,
@@ -319,12 +338,12 @@ pub(crate) struct Holds {
 /// assignee.
 ///
 /// A retire asks the wider half, `ordered`: an order left standing against a
-/// retired name is inherited by the next seat of that name whatever the item's
-/// type, so a retire withdraws an ordered epic that no seat holds.
+/// retired seat is one nobody delivers whatever the item's type, so a retire
+/// withdraws an ordered epic that no seat holds.
 ///
 /// Whether a row is ordered and whether it is an epic are both read off the
 /// row: the listing answers each row's metadata and type, so the whole reading
-/// is one call.
+/// is one call. `seat` is the seat's full id, which is what an assignee is.
 pub(crate) fn holds(store: &dyn Store, seat: &str) -> Result<Holds, Stop> {
     let rows = store
         .assigned_to(seat)?

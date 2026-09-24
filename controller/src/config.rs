@@ -8,7 +8,9 @@
 //! is not: two spawns that read the same file and then each rename their own
 //! version over it leave one row where there should be two.
 
-use fleet_core::seat::identity::{resolve, Kind, SeatId, SeatRef, Unresolved};
+use fleet_core::seat::identity::{
+    read_identity, resolve, roster, Directory, Kind, SeatId, SeatRef, Unresolved,
+};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -78,6 +80,42 @@ impl MachineConfig {
     /// The row whose id this is.
     pub fn by_id(&self, id: &SeatId) -> Option<&Seat> {
         self.seats.iter().find(|seat| seat.id == *id)
+    }
+}
+
+/// The seat directory a verb on this machine resolves through, over these
+/// rows and the fleet's policy.
+///
+/// LISTED is the policy's `[seats.<id>]` roster, the transient rows — a
+/// spawned seat is on no roster — and this machine's identity where
+/// `identity.toml` exists; RUNNING is every row. Each seat is listed once, in
+/// that order.
+///
+/// READING NEVER MINTS AND NEVER REFUSES: a roster or an identity file that
+/// will not read lists nobody from it, and the verb that asks about a seat it
+/// needed says so — `fleet start` and `fleet seat add` are the readers that
+/// refuse a bad roster.
+pub fn directory(rows: &[Seat], policy: &toml::Table, machine_dir: &Path) -> Directory {
+    let mut listed: Vec<SeatRef> = Vec::new();
+    let roster = roster(policy).unwrap_or_default();
+    let transient = rows.iter().filter(|row| row.transient).map(Seat::as_ref);
+    let identity = read_identity(machine_dir)
+        .ok()
+        .flatten()
+        .map(|identity| identity.as_ref());
+    for seat in roster
+        .into_iter()
+        .map(|seat| seat.seat)
+        .chain(transient)
+        .chain(identity)
+    {
+        if !listed.iter().any(|known| known.id == seat.id) {
+            listed.push(seat);
+        }
+    }
+    Directory {
+        listed,
+        running: rows.iter().map(Seat::as_ref).collect(),
     }
 }
 
@@ -543,6 +581,56 @@ mod tests {
         let both = config.resolve("01a0d1f1").expect_err("the clock is shared");
         assert!(matches!(both, Unresolved::Ambiguous { .. }), "{both}");
         assert!(config.by_id(&id(GONE)).is_none());
+    }
+
+    /// The directory a verb resolves through: the roster, the transient rows
+    /// and this machine's identity are listed, each once; every row runs; and
+    /// a person, listed, runs nowhere. A roster that will not read lists
+    /// nobody from it and refuses nothing.
+    #[test]
+    fn the_directory_lists_the_roster_the_transient_rows_and_the_identity() {
+        const ME: &str = "01a0d1f1-0aec-765f-9abe-00000000c0de";
+        let machine_dir =
+            std::env::temp_dir().join(format!("fleet-directory-{}", std::process::id()));
+        std::fs::create_dir_all(&machine_dir).expect("the machine dir is made");
+        std::fs::write(
+            machine_dir.join(fleet_core::seat::identity::IDENTITY),
+            format!("id = \"{ME}\"\nkind = \"human\"\nname = \"Alberto\"\n"),
+        )
+        .expect("the identity is written");
+        let config = parse(&format!(
+            r#"{{"fleet_toml":"/f.toml","children":[
+                 {{"id":"{ORLA}","name":"Orla","worktrees":{{"p":"/wt/o"}}}},
+                 {{"id":"{SPAWNED}","transient":true,"worktrees":{{"p":"/wt/s"}}}}
+               ]}}"#
+        ))
+        .expect("the file parses");
+        let policy: toml::Table = format!(
+            "[seats.{ORLA}]\nkind = \"agent\"\nname = \"Orla\"\n\
+             [seats.{ME}]\nkind = \"human\"\nname = \"Alberto\"\n"
+        )
+        .parse()
+        .expect("the policy parses");
+
+        let dir = directory(&config.seats, &policy, &machine_dir);
+        let listed: Vec<SeatId> = dir.listed.iter().map(|seat| seat.id).collect();
+        // The roster in id order, then the transient row; the identity is on
+        // the roster already.
+        assert_eq!(listed, [id(ME), id(ORLA), id(SPAWNED)], "each once");
+        let running: Vec<SeatId> = dir.running.iter().map(|seat| seat.id).collect();
+        assert_eq!(running, [id(ORLA), id(SPAWNED)]);
+        assert!(
+            dir.resolve_running("alberto").is_err(),
+            "a person runs nowhere"
+        );
+        assert_eq!(dir.seat_of("alberto"), Some(id(ME)));
+        assert_eq!(dir.seat_of("agent-7e3fa2c0"), Some(id(SPAWNED)));
+
+        let broken: toml::Table = "[seats.orla]\nkind = \"agent\"\n".parse().unwrap();
+        let dir = directory(&config.seats, &broken, &machine_dir);
+        let listed: Vec<SeatId> = dir.listed.iter().map(|seat| seat.id).collect();
+        assert_eq!(listed, [id(SPAWNED), id(ME)], "the roster lists nobody");
+        let _ = std::fs::remove_dir_all(&machine_dir);
     }
 
     #[test]

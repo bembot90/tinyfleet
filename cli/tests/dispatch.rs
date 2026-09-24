@@ -388,10 +388,11 @@ fn a_live_row_in_the_seats_worktree_is_rung_with_the_item_and_the_brief() {
         "the seat is addressed by the machine name its name resolved to:\n{argv}"
     );
 
+    // The record carries the seat's FULL ID, whatever name the `--to` said.
     let (assignee, notes, orders) = project.order_of(&item);
-    assert_eq!(assignee.as_deref(), Some(rig.seat.as_str()));
+    assert_eq!(assignee.as_deref(), Some(SEAT_ID));
     assert!(notes.contains("orders given"), "{notes}");
-    assert_eq!(orders["seat"], serde_json::json!(rig.seat));
+    assert_eq!(orders["seat"], serde_json::json!(SEAT_ID));
 }
 
 /// The ring addresses the session by the name its newest session row RECORDED
@@ -454,11 +455,7 @@ fn an_empty_roster_exits_four_and_the_three_writes_stand() {
     );
 
     let (assignee, notes, orders) = project.order_of(&item);
-    assert_eq!(
-        assignee.as_deref(),
-        Some(rig.seat.as_str()),
-        "the assignment stands"
-    );
+    assert_eq!(assignee.as_deref(), Some(SEAT_ID), "the assignment stands");
     assert!(notes.contains("orders given"), "the note stands: {notes}");
     assert_eq!(
         orders["kind"],
@@ -495,7 +492,7 @@ fn a_ring_the_provider_refuses_exits_one_and_the_three_writes_stand() {
     );
 
     let (assignee, notes, orders) = project.order_of(&item);
-    assert_eq!(assignee.as_deref(), Some(rig.seat.as_str()));
+    assert_eq!(assignee.as_deref(), Some(SEAT_ID));
     assert!(notes.contains("orders given"), "{notes}");
     assert_eq!(orders["by"], serde_json::json!("lead-1"));
 }
@@ -701,4 +698,31 @@ fn brief_prints_the_first_turn_and_says_what_it_cost() {
         stderr(&out).trim(),
         format!("brief: {} bytes", out.stdout.len())
     );
+}
+
+/// `brief --to` resolves its argument among the seats this machine runs, as
+/// dispatch's does, and the brief names the seat by the machine name it
+/// resolved to; a name no running seat answers to is refused, exit 1.
+#[test]
+fn brief_to_a_seat_says_its_machine_name_and_a_stranger_is_refused() {
+    let project = Project::shared();
+    let rig = Rig::new("brief-to");
+    let item = project.ordered("a ready item briefed for a named seat");
+
+    let out = rig.run(&["brief", &item, "--to", &rig.seat]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let body = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        body.contains(&format!("You are `{}-93b9739a`", rig.seat)),
+        "{body}"
+    );
+
+    let out = rig.run(&["brief", &item, "--to", "s-cli-nobody"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("s-cli-nobody names no seat"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(out.stdout.is_empty(), "a refused brief prints nothing");
 }

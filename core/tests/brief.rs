@@ -12,7 +12,7 @@ use common::{shared_store, Fixture, Scratch, StubEvents};
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
 use fleet_core::item::dispatch::{self, Order, Wiring};
 use fleet_core::item::{table_at, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner};
-use fleet_core::seat::identity::{Kind, SeatId, SeatRef};
+use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
 use fleet_core::seat::retire;
 use fleet_core::store::{AssignedItem, Bd, Item, Orders, Store};
 use fleet_core::test_support::FakeStore;
@@ -239,14 +239,14 @@ fn a_defaults_directory_that_was_never_written_is_refused_by_name() {
 #[test]
 fn every_placeholder_of_the_template_resolves() {
     let rig = Rig::new("whole");
-    let rendered = rig.render(&ordered(), "s1");
+    let rendered = rig.render(&ordered(), SEAT);
     let body = &rendered.body;
 
     for wanted in [
         ITEM,
         ORDER,
         "fx-1 · a ready item",
-        "s1",
+        SEAT,
         "a-project",
         TOUCHED,
         // One line per class, iterated rather than named: the two a pack
@@ -325,7 +325,7 @@ fn placeholders(template: &str) -> Vec<String> {
 fn the_brief_hands_the_seat_the_touched_gate_and_the_suite_to_the_reviewer() {
     let rig = Rig::new("touched");
     let body = rig
-        .render_touched(&ordered(), "s1", Some("make the-touched-gate"))
+        .render_touched(&ordered(), SEAT, Some("make the-touched-gate"))
         .body;
 
     // rules.md's own copy of the rule, which every brief carries. It is read
@@ -368,7 +368,7 @@ fn the_brief_hands_the_seat_the_touched_gate_and_the_suite_to_the_reviewer() {
 
     // A dispatch handed no builder's checks: the hole is filled by the named
     // absence, which says what was not handed over and what to run instead.
-    let derived = rig.render_touched(&ordered(), "s1", None).body;
+    let derived = rig.render_touched(&ordered(), SEAT, None).body;
     let (seats, _) = checks_halves(&derived);
     assert!(
         seats.contains(brief::DERIVE_TOUCHED),
@@ -383,7 +383,7 @@ fn the_brief_hands_the_seat_the_touched_gate_and_the_suite_to_the_reviewer() {
         "and names no command:\n{seats}"
     );
     // A blank command is no command.
-    let blank = rig.render_touched(&ordered(), "s1", Some("  ")).body;
+    let blank = rig.render_touched(&ordered(), SEAT, Some("  ")).body;
     assert!(checks_halves(&blank).0.contains(brief::DERIVE_TOUCHED));
 
     // The control, observed failing: a brief edited back to a section with no
@@ -395,7 +395,7 @@ fn the_brief_hands_the_seat_the_touched_gate_and_the_suite_to_the_reviewer() {
         "defaults/assets/brief.md",
         "# {item_id}\n\n## The suite\n\n```\n{project}\n```\n",
     );
-    let broken = Rig::over(rig.fixture).render(&ordered(), "s1").body;
+    let broken = Rig::over(rig.fixture).render(&ordered(), SEAT).body;
     assert!(
         !broken.contains("## Your checks"),
         "the readings are of the template, which this one no longer carries:\n{broken}"
@@ -432,7 +432,7 @@ fn a_policy_file_setting_gates_touched_is_refused_naming_the_pack_setting() {
         "moved-touched",
         "[gates]\ntouched = \"make the-touched-gate\"\n\n[guards]\nrecord = { enabled = false }\n",
     );
-    let rendered = rig.render(&ordered(), "s1");
+    let rendered = rig.render(&ordered(), SEAT);
     assert_eq!(
         rendered.code,
         Some(1),
@@ -456,7 +456,7 @@ fn a_policy_file_setting_gates_touched_is_refused_naming_the_pack_setting() {
 
     // The control: the same policy with the key taken out renders.
     let rig = Rig::new("moved-touched-control");
-    assert_eq!(rig.render(&ordered(), "s1").code, None);
+    assert_eq!(rig.render(&ordered(), SEAT).code, None);
 }
 
 #[test]
@@ -473,7 +473,7 @@ fn an_unknown_placeholder_exits_three_and_writes_nothing() {
         .file("defaults/assets/brief.md", "you are {nobody}\n");
     let rig = Rig::over(rig.fixture);
 
-    let rendered = rig.render(&ordered(), "s1");
+    let rendered = rig.render(&ordered(), SEAT);
     assert_eq!(rendered.code, Some(3), "{}", rendered.why);
     assert!(rendered.why.contains("{nobody}"), "{}", rendered.why);
     assert_eq!(rendered.body.len(), 0, "nothing reaches stdout");
@@ -486,7 +486,7 @@ fn a_missing_rules_file_exits_three_and_writes_nothing() {
         .expect("the rules file is removed");
     let rig = Rig::over(rig.fixture);
 
-    let rendered = rig.render(&ordered(), "s1");
+    let rendered = rig.render(&ordered(), SEAT);
     assert_eq!(rendered.code, Some(3), "{}", rendered.why);
     assert!(rendered.why.contains("assets/rules.md"), "{}", rendered.why);
     assert_eq!(rendered.body.len(), 0, "nothing reaches stdout");
@@ -495,7 +495,7 @@ fn a_missing_rules_file_exits_three_and_writes_nothing() {
 #[test]
 fn an_item_with_no_order_index_is_refused_and_writes_nothing() {
     let rig = Rig::new("unordered");
-    let rendered = rig.render(&store_with(None), "s1");
+    let rendered = rig.render(&store_with(None), SEAT);
     assert_eq!(rendered.code, Some(1), "{}", rendered.why);
     assert!(rendered.why.contains("no order index"), "{}", rendered.why);
     assert_eq!(rendered.body.len(), 0, "nothing reaches stdout");
@@ -519,13 +519,13 @@ fn an_item_with_no_order_index_is_refused_and_writes_nothing() {
         (&unreadable, "order index is not an object"),
         (&nobody, "order index names no dispatcher"),
     ] {
-        let rendered = rig.render(store, "s1");
+        let rendered = rig.render(store, SEAT);
         assert_eq!(rendered.code, Some(1), "{}", rendered.why);
         assert!(rendered.why.contains(wanted), "{}", rendered.why);
         assert_eq!(rendered.body.len(), 0, "nothing reaches stdout");
     }
     assert_eq!(
-        rig.render(&ordered(), "s1").code,
+        rig.render(&ordered(), SEAT).code,
         None,
         "the control renders"
     );
@@ -533,8 +533,62 @@ fn an_item_with_no_order_index_is_refused_and_writes_nothing() {
 
 // ---- the gate is the index ---------------------------------------------------
 
-/// The seat [`Rig::dispatch`] names, and the one `retire` releases.
-const SEAT: &str = "s1";
+/// Orla's id: the seat [`Rig::dispatch`] names, and the one `retire` releases.
+const ORLA: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
+
+/// Orla's machine name — `{seat}` in every brief this suite renders for a
+/// named seat. `her_machine_name_is_the_seat_every_arm_renders` holds it to
+/// the id above.
+const SEAT: &str = "orla-93b9739a";
+
+/// Orla, a seat this machine runs.
+fn orla() -> SeatRef {
+    SeatRef {
+        id: SeatId::parse(ORLA).expect("the rig's seat id parses"),
+        name: Some(String::from("Orla")),
+        kind: Kind::Agent,
+    }
+}
+
+/// The fleet the dispatches below are given in: Orla, listed and running.
+fn directory() -> Directory {
+    Directory {
+        listed: vec![orla()],
+        running: vec![orla()],
+    }
+}
+
+#[test]
+fn her_machine_name_is_the_seat_every_arm_renders() {
+    assert_eq!(orla().machine_name(), SEAT);
+}
+
+/// `--to orla` renders the seat's machine name where the brief says who it
+/// is for — `fleet brief` resolves the argument among the running seats and
+/// hands the renderer that — and no `--to` renders the transient placeholder.
+#[test]
+fn a_named_brief_says_the_machine_name_and_an_unnamed_one_says_transient() {
+    let rig = Rig::new("you-are");
+    let to = directory()
+        .resolve_running("orla")
+        .expect("Orla runs here")
+        .machine_name();
+    let named = rig.render(&ordered(), &to);
+    assert_eq!(named.code, None, "{}", named.why);
+    assert!(
+        named.body.contains("You are `orla-93b9739a`"),
+        "{}",
+        named.body
+    );
+
+    let unnamed = rig.render(&ordered(), TRANSIENT);
+    assert_eq!(unnamed.code, None, "{}", unnamed.why);
+    assert!(
+        unnamed.body.contains("You are `(transient)`"),
+        "{}",
+        unnamed.body
+    );
+}
 
 /// A ring that is always heard, so a dispatch to a named seat completes.
 struct Heard;
@@ -584,12 +638,7 @@ impl Rig {
                 project: &self.project,
                 packs: &self.packs,
                 briefs_dir: &self.fixture.path("briefs"),
-                seats: &[SeatRef {
-                    id: SeatId::parse("01a0d1f1-0aec-765f-9abe-d4f993b9739a")
-                        .expect("the rig's seat id parses"),
-                    name: Some(SEAT.to_string()),
-                    kind: Kind::Agent,
-                }],
+                seats: &directory(),
                 ring: &Heard,
                 spawner,
                 events: &StubEvents::default(),
@@ -616,7 +665,7 @@ fn a_withdrawn_order_is_refused_and_writes_nothing() {
     let retired = store_with(None);
     rig.dispatch(
         &retired,
-        Some(SEAT),
+        Some("orla"),
         &Spawns(SpawnOutcome::Refused(String::new())),
     )
     .expect("the dispatch lands");
@@ -625,7 +674,7 @@ fn a_withdrawn_order_is_refused_and_writes_nothing() {
         status: String::from("open"),
         ..AssignedItem::default()
     };
-    retire::withdraw(&retired, &[row], SEAT, BY).expect("the retire withdraws");
+    retire::withdraw(&retired, &[row], ORLA, SEAT, BY).expect("the retire withdraws");
 
     // The refused spawn's: dispatched to no seat, withdrawn in the same act.
     let refused = store_with(None);
@@ -702,7 +751,7 @@ fn a_dispatched_item_still_gets_its_brief() {
     let store = store_with(None);
     rig.dispatch(
         &store,
-        Some(SEAT),
+        Some("orla"),
         &Spawns(SpawnOutcome::Refused(String::new())),
     )
     .expect("the dispatch lands");
@@ -754,7 +803,7 @@ fn a_pack_on_top_shadows_the_brief_whole() {
         );
     let rig = Rig::over(rig.fixture);
 
-    let rendered = rig.render(&ordered(), "s1");
+    let rendered = rig.render(&ordered(), SEAT);
     assert!(
         rendered.body.starts_with("THE SHADOW SPEAKS"),
         "{}",
@@ -800,7 +849,7 @@ fn the_real_store_renders_the_same_brief_as_the_one_held_in_memory() {
             &rig.project,
             store,
             &item,
-            "s1",
+            SEAT,
             Some(TOUCHED),
         )
         .expect("the brief renders");
@@ -857,7 +906,7 @@ fn the_item_rendering_is_stable_and_a_tip_in_it_would_reach_the_seat() {
         &format!("{first}\n💡 Tip: run 'bd setup claude' for CLI-only mode\n"),
     );
     let rig = Rig::new("tip-render");
-    let rendered = rig.render(&tipped, "s1");
+    let rendered = rig.render(&tipped, SEAT);
     assert!(
         rendered.body.contains("bd setup claude"),
         "a tip in the rendering reaches the brief:\n{}",
@@ -874,7 +923,7 @@ mod lessons {
     #[test]
     fn the_prompt_floor_is_paid_on_every_restart() {
         let rig = Rig::new("floor");
-        let rendered = rig.render(&ordered(), "s1");
+        let rendered = rig.render(&ordered(), SEAT);
 
         assert_eq!(
             rendered.size,
@@ -894,7 +943,7 @@ mod lessons {
             ITEM,
             "fx-1 · an item with a very much longer rendering than the one above\n",
         );
-        let longer = rig.render(&store, "s1");
+        let longer = rig.render(&store, SEAT);
         assert!(longer.body.len() > rendered.body.len());
         assert!(
             longer

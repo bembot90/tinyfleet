@@ -366,6 +366,9 @@ pub fn numstat_line(line: &str) -> Option<Change> {
 
 /// What the controller answered when asked for a seat to give this item to.
 ///
+/// `seat` is the spawned seat's full id, which is what dispatch assigns the
+/// item to and writes into its index.
+///
 /// `base` is the commit the seat's worktree was cut from, read by the spawner
 /// from that worktree's own HEAD: the fact is answered by the tree it
 /// describes. `None` where the spawner could not read it, which the event then
