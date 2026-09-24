@@ -16,7 +16,7 @@
 //! has the shim in front of it would be reading the shim.
 //!
 //! The ENVELOPE arms answer in the shape bd gives with `BD_JSON_ENVELOPE=1`,
-//! the shape v2.0 makes the default, copied from bd 1.2.2's own answers: each
+//! the shape v2.0 makes the default, copied from bd 1.3.0's own answers: each
 //! read decodes through it, and the shim records that every call asked for it.
 //!
 //! The DECODE arms at the end hand `item_from` a row in the shape bd answers
@@ -435,7 +435,7 @@ fn every_read_opens_the_envelope() {
     );
 }
 
-/// An empty gate listing is `null` inside the envelope — measured on 1.2.2 —
+/// An empty gate listing is `null` inside the envelope — measured on 1.3.0 —
 /// and reads as no gates, as the bare `null` did.
 #[test]
 fn an_empty_listing_inside_the_envelope_is_no_rows() {
@@ -459,7 +459,7 @@ fn an_empty_listing_inside_the_envelope_is_no_rows() {
 }
 
 /// A not_found error is an item that is not there (exit 1), and so is an
-/// error with no code at all, which is what bd 1.2.2 answers. Any other code
+/// error with no code at all, which is what bd 1.3.0 answers. Any other code
 /// is a store that did not answer (exit 3).
 #[test]
 fn a_show_error_is_classified_by_its_code() {
@@ -469,11 +469,13 @@ fn a_show_error_is_classified_by_its_code() {
     let bin = envelope_bd(&dir, &log);
     dir.file(
         "answers/show-fx-uncoded.json",
-        r#"{"data": {"error": "no issues found matching the provided IDs"}, "schema_version": 1}"#,
+        r#"{"data": {"error": "no issues found matching the provided IDs", "hint": "some IDs may reference deleted/purged records with no trace left in the live database — try 'bd history <id>' to check"}, "schema_version": 1}"#,
     )
     .file(
         "answers/show-fx-uncoded.err",
-        "Error fetching fx-uncoded: no issue found matching \"fx-uncoded\"\n",
+        "Issue fx-uncoded not found\nHint: this ID may have never existed, or may reference a \
+         deleted/purged record with no trace left in the live database — try 'bd history \
+         fx-uncoded'\n",
     )
     .file(
         "answers/show-fx-coded.json",
@@ -509,38 +511,49 @@ fn a_show_error_is_classified_by_its_code() {
 }
 
 /// An id naming more than one item answers the same JSON error a missing one
-/// does — measured on bd 1.2.2 — and is told apart by stderr alone, which
+/// does — measured on bd 1.3.0 — and is told apart by stderr alone, which
 /// names the matches. It is still the record's answer (exit 1), and the
 /// refusal carries every match bd listed.
+///
+/// Two stderr shapes, because 1.3.0 moved the words: `63` answers the pinned
+/// 1.3.0's `ambiguous issue ID:`, and `64` the `ambiguous ID` of 1.2.2, which a
+/// bd off the pin still answers and a verb still runs on.
 #[test]
 fn an_ambiguous_show_is_missing_and_names_the_matches_off_stderr() {
     let _guard = path_lock();
     let dir = Fixture::new("store-envelope-ambiguous");
     let log = dir.path("envelope");
     let bin = envelope_bd(&dir, &log);
-    dir.file(
-        "answers/show-63.json",
-        r#"{"data": {"error": "no issues found matching the provided IDs"}, "schema_version": 1}"#,
-    )
-    .file(
-        "answers/show-63.err",
-        "Error fetching 63: ambiguous ID \"63\" matches 2 issues: [fx-63h fx-63u]\nUse more \
-         characters to disambiguate\n",
-    );
+    let error =
+        r#"{"data": {"error": "no issues found matching the provided IDs"}, "schema_version": 1}"#;
+    dir.file("answers/show-63.json", error)
+        .file(
+            "answers/show-63.err",
+            "Error fetching 63: ambiguous issue ID: \"63\" matches 2 issues: [fx-63h fx-63u]\n\
+             Use more characters to disambiguate\n",
+        )
+        .file("answers/show-64.json", error)
+        .file(
+            "answers/show-64.err",
+            "Error fetching 64: ambiguous ID \"64\" matches 2 issues: [fx-64h fx-64u]\nUse more \
+             characters to disambiguate\n",
+        );
     let root = dir.path("project");
     std::fs::create_dir_all(&root).expect("the project root is created");
 
-    let answer = Bd::at_bin(&root, &bin)
-        .show("63")
-        .expect_err("an ambiguous id is no one item");
-    assert_eq!(
-        answer,
-        StoreError::Missing(String::from(
-            "`63` matches more than one item — fx-63h, fx-63u — and more of the id says which \
-             one this is"
-        ))
-    );
-    assert_eq!(Stop::from(answer).code, REFUSED);
+    for id in ["63", "64"] {
+        let answer = Bd::at_bin(&root, &bin)
+            .show(id)
+            .expect_err("an ambiguous id is no one item");
+        assert_eq!(
+            answer,
+            StoreError::Missing(format!(
+                "`{id}` matches more than one item — fx-{id}h, fx-{id}u — and more of the id \
+                 says which one this is"
+            ))
+        );
+        assert_eq!(Stop::from(answer).code, REFUSED);
+    }
 }
 
 /// A schema_version above the one this binary knows is read anyway: beads'
@@ -675,7 +688,7 @@ fn a_write_that_does_not_answer_says_its_effect_cannot_be_told() {
     );
 }
 
-/// A `show` row in the shape bd 1.2.2 answers, holding one dependency on an
+/// A `show` row in the shape bd 1.3.0 answers, holding one dependency on an
 /// open item, of `kind` — or of no stated type at all when `kind` is `None`.
 fn depending_on(kind: Option<&str>) -> serde_json::Value {
     let mut dependency = serde_json::json!({

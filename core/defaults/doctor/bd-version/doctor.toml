@@ -1,0 +1,17 @@
+description = "Whether the bd on PATH is the release this binary's store was measured against."
+run = "run.sh"
+
+# No name key: the directory is the name, which is the shape the reference's
+# packs use.
+#
+# THE PIN IS THE BINARY'S, not a pack's: every "measured on" claim in its store
+# adapter was taken on that one release. The registry lets a pack replace this
+# entry, as it does every default, and a copy that moves the pin measures bd
+# against a release the binary never read.
+#
+# What it is for: fleet reaches the work graph through bd and nothing else,
+# and reads its answers by shapes measured on the pinned release — the row
+# caps, the envelope, the stderr an ambiguous id is told by. A bd at another
+# version still runs every verb, and this entry is where a person is told the
+# shapes those verbs read were not measured on it, with the line that installs
+# the pin. `fleet prime` says the same on its second line.

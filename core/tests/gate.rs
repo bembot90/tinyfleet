@@ -948,8 +948,8 @@ fn gating_calls(log: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
-/// A `gate create` that files its gate and then exits 1 — bd 1.2.2 on an epic
-/// — leaves an open gate blocking nothing. The park reads the open list before
+/// A `gate create` that files its gate and then exits 1 — bd 1.2.2 on an epic,
+/// which 1.3.0 no longer does — leaves an open gate blocking nothing. The park reads the open list before
 /// the create and again after it, resolves what is new, and names it; a gate
 /// that was open before the park is somebody else's and is left alone.
 #[test]

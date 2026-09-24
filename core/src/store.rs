@@ -27,11 +27,23 @@ use crate::process::{deadline_cause, run_bounded};
 /// other, resolved on the process's own `PATH`.
 pub const BD: &str = "bd";
 
+/// The bd release this fleet is measured against: every "measured on" claim in
+/// this file was taken on it, and the defaults' `bd-version` doctor check and
+/// `fleet prime`'s second line compare `bd version` with it. A bd at another
+/// version is named, with the line that installs this one, and the verbs still
+/// run on it.
+///
+/// A pin move is THIS LINE PLUS THE RE-MEASURE: every claim here re-run on the
+/// new release and restated, or its code changed where the behaviour moved.
+/// The doctor check carries its own copy, because a shell script cannot read
+/// this, and a suite arm fails until the two agree.
+pub const PINNED_BD: &str = "1.3.0";
+
 /// Where the store's export goes, relative to the project root. It is a passive
 /// file the work graph regenerates, never a second copy anything reads back.
 pub const EXPORT: &str = ".beads/issues.jsonl";
 
-/// The newest `schema_version` this binary reads — the one bd 1.2.2 answers on
+/// The newest `schema_version` this binary reads — the one bd 1.3.0 answers on
 /// every JSON call, enveloped or not. A higher one is warned about once and
 /// read anyway, which is beads' own advice to a consumer.
 pub const SCHEMA_VERSION: u64 = 1;
@@ -122,13 +134,16 @@ pub struct AssignedItem {
     pub item_type: String,
 }
 
-/// The two ways a store call ends badly, which are two different exits: an
-/// item that is not there is the record's answer, and a store that will not
-/// answer is no reading at all.
+/// The ways a store call ends badly, which are different exits: an item that
+/// is not there, or not held by whom the write required, is the record's
+/// answer, and a store that will not answer is no reading at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
     /// The store answered, and its answer is that there is no such item.
     Missing(String),
+    /// The store answered, and its answer is that the item is held by someone
+    /// other than the holder a fenced write named — so NOTHING was written.
+    Moved(String),
     /// The store could not be run, or did not answer something readable.
     Unreadable(String),
 }
@@ -137,6 +152,7 @@ impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             StoreError::Missing(why) => write!(f, "{why}"),
+            StoreError::Moved(why) => write!(f, "{why}"),
             StoreError::Unreadable(why) => write!(f, "{why}"),
         }
     }
@@ -148,7 +164,7 @@ pub trait Store {
     fn ready(&self) -> Result<Vec<String>, StoreError>;
 
     /// One item, which the argument may name by PART of its id: bd resolves a
-    /// partial id itself — measured on 1.2.2, a whole id, then a whole hash,
+    /// partial id itself — measured on 1.3.0, a whole id, then a whole hash,
     /// then a substring of one — and the answer's `id` is the full one. So a
     /// verb taking an item resolves it here once, at its entry, and acts on
     /// [`Item::id`] from then on and never on the typed text.
@@ -176,6 +192,24 @@ pub trait Store {
 
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError>;
 
+    /// The item handed from `from` to `to`, and only while `from` still holds
+    /// it — `""` for an item nobody holds. Anyone else holding it is
+    /// [`StoreError::Moved`], and nothing is written.
+    ///
+    /// For a write whose actor is NOT the holder. bd 1.3.0 refuses a plain
+    /// `--assignee` from anyone but the holder on an `in_progress` item —
+    /// measured: `cannot reassign X: held by "s1" (in_progress)` — and takes the
+    /// same write when it names the holder with `--if-assignee`, which also
+    /// writes nothing and exits 13 where the holder moved. The DEFAULT reads the
+    /// holder and then assigns, for a store with no fence of its own.
+    fn hand_over(&self, item: &str, from: &str, to: &str, by: &str) -> Result<(), StoreError> {
+        let held = self.show(item)?.assignee.unwrap_or_default();
+        if held != from {
+            return Err(moved(item, from, &held));
+        }
+        self.assign(item, to, by)
+    }
+
     fn note(&self, item: &str, text: &str, by: &str) -> Result<(), StoreError>;
 
     /// `metadata.orders`, written as one object that replaces the key whole.
@@ -185,14 +219,16 @@ pub trait Store {
     /// top-level key that is not `orders`.
     ///
     /// It is the SIBLING of that method and not a generalisation of it: the
-    /// write MERGES at the top level — measured on bd 1.2.2, where a second
+    /// write MERGES at the top level — measured on bd 1.3.0, where a second
     /// write of a different key kept the first — so a run's object never
     /// erases the order index beside it, and the two keys keep one writer each.
     fn set_metadata(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError>;
 
     fn unset_orders(&self, item: &str, by: &str) -> Result<(), StoreError>;
 
-    /// The assignee cleared and the order index unset in ONE call.
+    /// The assignee cleared and the order index unset in ONE call, and only
+    /// while `seat` still holds the item: [`hand_over`](Store::hand_over)'s
+    /// fence, because a retire's actor is never the seat it retires.
     ///
     /// The pair is what a withdrawal always writes together, and a retire pays
     /// it on every seat it ends — so the store that talks to `bd` sends one
@@ -201,8 +237,8 @@ pub trait Store {
     /// order, so an implementation that has nothing to gain by folding them
     /// says nothing; what neither form may do is leave the assignee cleared
     /// with the index still set, which the caller's read-back is what catches.
-    fn withdraw_order(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.assign(item, "", by)?;
+    fn withdraw_order(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
+        self.hand_over(item, seat, "", by)?;
         self.unset_orders(item, by)
     }
 
@@ -217,9 +253,9 @@ pub trait Store {
     /// Every gate the store still calls open, by id.
     ///
     /// IDS AND NOT DOCUMENTS, and no item on them: the listing answers which
-    /// gate this is and never which item it blocks — measured on bd 1.2.2,
-    /// where the blocked item appears only inside the reason's prose — so a
-    /// caller that wants one item's gate reads that gate's id off the item's
+    /// gate this is and never which item it blocks — measured on bd 1.3.0,
+    /// where the blocked item appears only inside the description's prose — so
+    /// a caller that wants one item's gate reads that gate's id off the item's
     /// own park and asks this list whether it is still here (flights PRD S4a).
     fn open_gates(&self) -> Result<Vec<String>, StoreError>;
 
@@ -237,10 +273,11 @@ pub trait Store {
     /// the act runs in, and a landing resolves that tree for itself — so where
     /// the export has to land is a fact of the act and not of the store.
     ///
-    /// It regenerates that one file and touches nothing else — measured on a
-    /// scratch store, where two exports left the audit log beside it unchanged
-    /// in bytes and in mtime — so nothing is carried forward here to keep the
-    /// export's polarity right (packs PRD R20).
+    /// It regenerates that one file and touches nothing else — measured on bd
+    /// 1.3.0, where two exports left every other file under `.beads` as it was
+    /// in bytes, and in mtime bar the embedded engine's journal, which a bare
+    /// read touches the same way — so nothing is carried forward here to keep
+    /// the export's polarity right (packs PRD R20).
     fn export(&self, into: &Path) -> Result<(), StoreError>;
 }
 
@@ -291,7 +328,7 @@ impl Bd {
     /// this store's timeout.
     ///
     /// The envelope is asked for on EVERY call and not only on the JSON reads:
-    /// bd applies it to a `--json` answer alone — measured on 1.2.2, where the
+    /// bd applies it to a `--json` answer alone — measured on 1.3.0, where the
     /// rendering, the export and a write's own line were byte-identical with
     /// it and without — so one setting here cannot leave a read out.
     ///
@@ -356,7 +393,7 @@ impl Bd {
 
     /// One listing, as its rows.
     ///
-    /// AN EMPTY LISTING MAY ANSWER `null` AND NOT `[]` — measured on bd 1.2.2
+    /// AN EMPTY LISTING MAY ANSWER `null` AND NOT `[]` — measured on bd 1.3.0
     /// for `gate list` — or nothing at all, and both read as no rows: a decoder
     /// demanding an array would read "nothing here" as a store that would not
     /// answer, and refuse every answer on a fleet with nothing parked.
@@ -394,6 +431,46 @@ impl Bd {
 
     fn wrote(&self, args: &[&str]) -> Result<(), StoreError> {
         self.answered(args).map(|_| ())
+    }
+
+    /// A write carrying `--if-assignee <holder>`, whose exit 13 is bd's word
+    /// that the holder moved and nothing was written — measured on 1.3.0:
+    /// `assignee mismatch: X is held by "s2", expected "s1"`, exit 13.
+    fn fenced(&self, args: &[&str], item: &str, holder: &str) -> Result<(), StoreError> {
+        let out = self.run(args)?;
+        if out.status.code() == Some(FENCE_MISMATCH) {
+            return Err(StoreError::Moved(format!(
+                "{item} is not held by {} — nothing was written ({})",
+                holder_named(holder),
+                tail(&out)
+            )));
+        }
+        if !out.status.success() {
+            return Err(self.refused(args, &out));
+        }
+        Ok(())
+    }
+}
+
+/// The exit bd gives a write whose `--if-assignee` no longer holds.
+const FENCE_MISMATCH: i32 = 13;
+
+/// The refusal a fenced hand-over answers when the item's holder is not the
+/// one the write named.
+pub(crate) fn moved(item: &str, expected: &str, held: &str) -> StoreError {
+    StoreError::Moved(format!(
+        "{item} is held by {} and not by {} — nothing was written",
+        holder_named(held),
+        holder_named(expected)
+    ))
+}
+
+/// A holder as a refusal names one: the seat, or nobody for `""`.
+fn holder_named(seat: &str) -> String {
+    if seat.is_empty() {
+        String::from("nobody")
+    } else {
+        format!("`{seat}`")
     }
 }
 
@@ -447,7 +524,7 @@ pub fn opened(value: serde_json::Value, from: impl FnOnce() -> String) -> serde_
         }
     }
     // BOTH KEYS make an envelope. A bare error carries `schema_version` beside
-    // `error` and no `data` — measured on 1.2.2 with the envelope off — and is
+    // `error` and no `data` — measured on 1.3.0 with the envelope off — and is
     // handed back whole for `show` to read.
     if answer.contains_key("schema_version") && answer.contains_key("data") {
         return answer.remove("data").unwrap_or_default();
@@ -462,13 +539,13 @@ pub fn opened(value: serde_json::Value, from: impl FnOnce() -> String) -> serde_
 /// An error CARRYING A CODE is classified by it: `not_found` is the record's
 /// answer, and any other code is a store that did not answer. An error with NO
 /// code is read by its key alone, as an item that is not there — measured on
-/// bd 1.2.2, whose missing id answers an error and no code.
+/// bd 1.3.0, whose missing id answers an error, a hint and no code.
 ///
 /// AN ARGUMENT NAMING MORE THAN ONE ITEM is the record's answer too, and is
-/// told from one naming none by stderr alone: bd 1.2.2 answers both with the
-/// same JSON error, and only its stderr says `ambiguous ID … matches N issues:
-/// [...]`. So the refusal names the matches bd listed, and a verb that acts on
-/// one item never guesses which.
+/// told from one naming none by stderr alone: bd 1.3.0 answers both with the
+/// same JSON error, and only its stderr says `ambiguous issue ID: … matches N
+/// issues: [...]`. So the refusal names the matches bd listed, and a verb that
+/// acts on one item never guesses which.
 pub fn shown(
     item: &str,
     value: serde_json::Value,
@@ -494,12 +571,19 @@ pub fn shown(
     Ok(row)
 }
 
+/// The words a stderr line names an ambiguity with: bd 1.3.0's, measured, and
+/// bd 1.2.2's, which 1.3.0 moved — kept, so a bd off the pin still refuses an
+/// ambiguous id by its matches rather than as an id that is not there.
+const AMBIGUOUS: [&str; 2] = ["ambiguous issue ID", "ambiguous ID"];
+
 /// The items bd named for an ambiguous id, off its stderr line — `Error
-/// fetching 0: ambiguous ID "0" matches 14 issues: [fleet-0zs fleet-01c …]`,
-/// measured on 1.2.2 — joined for a refusal, or that whole line where it names
+/// fetching a: ambiguous issue ID: "a" matches 7 issues: [fx-a64 fx-a82 …]`,
+/// measured on 1.3.0 — joined for a refusal, or that whole line where it names
 /// none in brackets. `None` where stderr says nothing of an ambiguity.
 fn ambiguous(said: &str) -> Option<String> {
-    let line = said.lines().find(|line| line.contains("ambiguous ID"))?;
+    let line = said
+        .lines()
+        .find(|line| AMBIGUOUS.iter().any(|words| line.contains(words)))?;
     let listed = line
         .split_once('[')
         .and_then(|(_, rest)| rest.split_once(']'))
@@ -552,13 +636,15 @@ fn orders_of(row: &serde_json::Value) -> (Option<Orders>, bool) {
 }
 
 /// The dependency types bd's ready set honours as blocking, MEASURED on bd
-/// 1.2.2 in a scratch board: one item per type, each depending on one open
+/// 1.3.0 in a scratch board: one item per type, each depending on one open
 /// item, then `bd ready --json -n 0`. These three took their item out of the
 /// ready set, and a gate raised by `bd gate create --blocks` is a `blocks`
-/// edge. `parent-child`, `related`, `relates-to`, `discovered-from`, `tracks`,
-/// `until`, `caused-by`, `validates`, `supersedes` and a type bd does not know
-/// left it ready — a `parent-child` edge passes on a blocked parent's
-/// blockers, and is not one itself.
+/// edge. `parent-child`, `related`, `discovered-from`, `replies-to`,
+/// `relates-to`, `duplicates`, `supersedes`, `authored-by`, `assigned-to`,
+/// `approved-by`, `attests`, `tracks`, `until`, `caused-by`, `validates` and
+/// `delegated-from` left it ready, and `bd dep add` refuses a type it does not
+/// know — a `parent-child` edge passes on a blocked parent's blockers, and is
+/// not one itself.
 const BLOCKING: [&str; 3] = ["blocks", "conditional-blocks", "waits-for"];
 
 /// The dependencies that still stand between this item and a start: an entry
@@ -593,8 +679,9 @@ fn blockers_of(row: &serde_json::Value) -> Vec<String> {
 impl Store for Bd {
     fn ready(&self) -> Result<Vec<String>, StoreError> {
         // `-n 0` lifts the read's row cap. The verb answers its first 100 rows
-        // by default, and a truncated list reads exactly like a whole one — so
-        // past a hundred ready rows a ready item would be refused as not ready.
+        // by default, piped or not — measured on 1.3.0, 100 of 112 — and a
+        // truncated list reads exactly like a whole one, so past a hundred
+        // ready rows a ready item would be refused as not ready.
         Ok(self
             .listed(&["ready", "--json", "-n", "0"])?
             .iter()
@@ -624,7 +711,7 @@ impl Store for Bd {
 
     /// `-q`, which the JSON reads do not need and this one does: the human
     /// rendering carries a one-off tip on a store's FIRST read — measured on
-    /// 1.2.2, present on call one and absent on every call after — and that
+    /// 1.3.0, present on call one and absent on every call after — and that
     /// line both names a provider and makes the same item render two different
     /// ways. Quiet drops it and leaves the body byte-identical.
     fn show_text(&self, item: &str) -> Result<String, StoreError> {
@@ -632,10 +719,12 @@ impl Store for Bd {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
-    /// `-n 0` for the same reason the ready read carries it: this answer's
-    /// default cap is 50 rows and a truncated list reads exactly like a whole
-    /// one, so past fifty open run records a run would be started past the
-    /// `[core.run] max_open` cap it is measured against.
+    /// `-n 0` for the same reason the ready read carries it: this answer takes
+    /// a cap — measured on 1.3.0, none by default on a piped call (110 of 110)
+    /// and 50 on a terminal (20 in bd's agent mode), but a board's `list.limit`
+    /// binds a piped one too (5 of 110 with it set) — and a truncated list
+    /// reads exactly like a whole one, so past the cap a run would be started
+    /// past the `[core.run] max_open` cap it is measured against.
     fn open_labelled(&self, label: &str) -> Result<Vec<String>, StoreError> {
         Ok(self
             .listed(&[
@@ -668,10 +757,10 @@ impl Store for Bd {
         self.wrote(&["update", item, "--title", title, "--actor", by])
     }
 
-    /// `-n 0` for the same reason the reads above carry it: this answer's
-    /// default cap is 50 rows and a truncated list reads exactly like a whole
-    /// one, so past fifty items on one seat a retire misses the orders beyond
-    /// row 50 and the next seat of that name inherits them.
+    /// `-n 0` for the same reason the reads above carry it: this answer takes
+    /// the same cap as `open_labelled`'s, and a truncated list reads exactly
+    /// like a whole one, so past the cap a retire misses the orders beyond it
+    /// and the next seat of that name inherits them.
     fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
         Ok(self
             .listed(&["list", "-a", seat, "--json", "-n", "0"])?
@@ -690,6 +779,23 @@ impl Store for Bd {
 
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
         self.wrote(&["update", item, "--assignee", seat, "--actor", by])
+    }
+
+    fn hand_over(&self, item: &str, from: &str, to: &str, by: &str) -> Result<(), StoreError> {
+        self.fenced(
+            &[
+                "update",
+                item,
+                "--if-assignee",
+                from,
+                "--assignee",
+                to,
+                "--actor",
+                by,
+            ],
+            item,
+            from,
+        )
     }
 
     fn note(&self, item: &str, text: &str, by: &str) -> Result<(), StoreError> {
@@ -711,23 +817,32 @@ impl Store for Bd {
     }
 
     /// Both flags on one `update`, which bd takes: the empty assignee is what
-    /// clears the field, measured through the shipped binary in the cli's own
-    /// seat suite.
-    fn withdraw_order(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&[
-            "update",
+    /// clears the field, measured on 1.3.0 — the one call left no `assignee`
+    /// and no `orders`, and the `run` key beside it standing. `--if-assignee`
+    /// names the retiring seat, which is what bd 1.3.0 takes from a retirer on
+    /// an item that seat marked `in_progress` — measured, where the same call
+    /// without it is refused.
+    fn withdraw_order(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
+        self.fenced(
+            &[
+                "update",
+                item,
+                "--if-assignee",
+                seat,
+                "--assignee",
+                "",
+                "--unset-metadata",
+                "orders",
+                "--actor",
+                by,
+            ],
             item,
-            "--assignee",
-            "",
-            "--unset-metadata",
-            "orders",
-            "--actor",
-            by,
-        ])
+            seat,
+        )
     }
 
     /// `--type` is not passed: human is the type `bd gate create` takes with no
-    /// flag, measured on 1.2.2, and a verb that spelled the default would be a
+    /// flag, measured on 1.3.0, and a verb that spelled the default would be a
     /// second copy of it.
     ///
     /// THE ID COMES OFF THE STRUCTURED ANSWER and never off the printed line.
@@ -741,10 +856,11 @@ impl Store for Bd {
     }
 
     /// `-n 0` for the same reason the three reads above carry it: this verb
-    /// answers its first 50 rows by default and a truncated list reads exactly
-    /// like a whole one, so past fifty open gates a gate the board holds open
-    /// is absent from the listing — and `answer` refuses a gate it does not
-    /// find there as one somebody has already resolved.
+    /// answers its first 50 rows by default, piped or not — measured on 1.3.0,
+    /// 50 of 53 — and a truncated list reads exactly like a whole one, so past
+    /// fifty open gates a gate the board holds open is absent from the listing
+    /// — and `answer` refuses a gate it does not find there as one somebody has
+    /// already resolved.
     fn open_gates(&self) -> Result<Vec<String>, StoreError> {
         Ok(self
             .listed(&["gate", "list", "--json", "-n", "0"])?
@@ -762,9 +878,9 @@ impl Store for Bd {
     }
 
     /// `-o` is resolved against the CALLER's directory and not against `-C`:
-    /// measured on a scratch store, `bd -C <root> export -o .beads/issues.jsonl`
-    /// run from elsewhere wrote `.beads/issues.jsonl` under the caller and left
-    /// the root's `.beads` without one. So the path handed over is absolute.
+    /// measured on 1.3.0, `bd -C <root> export -o .beads/issues.jsonl` run
+    /// from elsewhere wrote `.beads/issues.jsonl` under the caller and left the
+    /// root's `.beads` without one. So the path handed over is absolute.
     fn export(&self, into: &Path) -> Result<(), StoreError> {
         let into = into.join(EXPORT);
         // THE DIRECTORY IS MADE FIRST. `bd` writes the export through a temp

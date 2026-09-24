@@ -5,15 +5,21 @@
 //! on a line rather than on a status: a layering this fleet cannot resolve, a
 //! rules file that is not there and a tracker that will not answer each say so
 //! in their own words and the next part still prints.
+//!
+//! Line 2 is the tracker's version against the one the store was measured on
+//! (`store::PINNED_BD`). Another version is NAMED AND NOT REFUSED: the verbs
+//! still run on it, and the line says so beside the one that installs the pin.
 
 use fleet_controller::{config, platform};
 use fleet_core::add;
 use fleet_core::defaults;
 use fleet_core::guard;
 use fleet_core::lock;
+use fleet_core::process::run_bounded;
 use fleet_core::resolve::{self, Layer};
-use fleet_core::store::{Bd, Store};
+use fleet_core::store::{Bd, Store, PINNED_BD};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use crate::exit::Exit;
@@ -21,6 +27,11 @@ use crate::exit::Exit;
 /// The bound on the item listing. Well under a hook's own deadline: a store
 /// that will not answer costs the line and never the session start.
 const ITEMS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The bound on `bd version`, which reads no store and answered in 60ms on the
+/// box this was written on: a tracker that hangs costs line 2 and never more
+/// than this of a session start.
+const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The item-tracker binary when nothing names one, resolved on the constructed
 /// child PATH and never by a bare name (lessons claude-code D1).
@@ -59,6 +70,7 @@ pub fn command() -> Exit {
         packs_of(&layering, &machine_dir.join(lock::LOCK)),
         guards_of(&policy),
     );
+    println!("{}", bd_line(resolve_bd()));
 
     if let Some(rules) = rules_of(&layering) {
         print!("{rules}");
@@ -207,6 +219,72 @@ fn seat_here(machine: &config::MachineConfig, cwd: &Path) -> Option<(String, Pat
 
 fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Line 2: the tracker a session's verbs reach, by the same resolution the
+/// item lines take, against the pinned release — the pin, another version
+/// with the line that installs the pin, or a tracker that did not answer,
+/// which is this line's third answer as it is the item line's.
+fn bd_line(bin: Result<PathBuf, String>) -> String {
+    match bin.and_then(|bin| version_of(&bin)) {
+        Ok(first) if carries_pin(&first) => format!("bd: {PINNED_BD}, the pinned version"),
+        Ok(first) => format!(
+            "bd: {}, not the pinned {PINNED_BD} — the verbs still run, on answers fleet was not \
+             measured against; install the pin: {}",
+            named_version(&first),
+            install_line()
+        ),
+        Err(why) => format!(
+            "bd: could not be read — {why}; the pinned version is {PINNED_BD}: {}",
+            install_line()
+        ),
+    }
+}
+
+/// The first line `bd version` printed, which is where bd prints its own.
+fn version_of(bin: &Path) -> Result<String, String> {
+    let mut cmd = Command::new(bin);
+    cmd.arg("version");
+    let out = run_bounded(cmd, VERSION_TIMEOUT)
+        .map_err(|why| format!("`{} version` {why}", bin.display()))?;
+    let said = String::from_utf8_lossy(&out.stdout);
+    let first = said.lines().next().unwrap_or_default().trim();
+    if !out.status.success() || first.is_empty() {
+        return Err(format!(
+            "`{} version` {} and printed no version",
+            bin.display(),
+            out.status
+        ));
+    }
+    Ok(first.to_string())
+}
+
+/// The pin as a WHOLE token of that line, bare or with a leading `v` — the
+/// reading the defaults' `bd-version` doctor check takes, so the two agree.
+fn carries_pin(first: &str) -> bool {
+    first
+        .split_whitespace()
+        .any(|token| token.strip_prefix('v').unwrap_or(token) == PINNED_BD)
+}
+
+/// The version a line names: its first token that opens on a digit, or the
+/// whole line where none does, so a tracker that answered something else is
+/// quoted rather than read as a version.
+fn named_version(first: &str) -> String {
+    first
+        .split_whitespace()
+        .map(|token| token.strip_prefix('v').unwrap_or(token))
+        .find(|token| token.starts_with(|c: char| c.is_ascii_digit()))
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("`{first}`"))
+}
+
+/// The line that installs the pinned release — beads' own `go install`
+/// guidance, at the pin's tag. The defaults' doctor check prints the same.
+fn install_line() -> String {
+    format!(
+        "CGO_ENABLED=0 go install -tags gms_pure_go github.com/steveyegge/beads/cmd/bd@v{PINNED_BD}"
+    )
 }
 
 fn print_items(project_root: &Path, seat: &str) {

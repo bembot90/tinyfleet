@@ -48,7 +48,7 @@ pub struct FakeStore {
     /// What the metadata writes have left, per item, as one top-level object.
     ///
     /// The write MERGES AT THE TOP LEVEL and replaces one key's object whole,
-    /// which is the polarity measured on bd 1.2.2 and pinned by an arm of the
+    /// which is the polarity measured on bd 1.3.0 and pinned by an arm of the
     /// plan suite.
     pub metadata: Mutex<BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
     pub text: Mutex<BTreeMap<String, String>>,
@@ -177,6 +177,21 @@ impl FakeStore {
             .get_mut(item)
             .ok_or_else(|| StoreError::Missing(format!("{item} is not here")))?;
         change(held);
+        Ok(())
+    }
+
+    /// The fence a hand-over writes behind: the item held by `holder` (`""`
+    /// for nobody), or [`StoreError::Moved`] and nothing written — the rule
+    /// bd's `--if-assignee` keeps.
+    fn held_by(&self, item: &str, holder: &str) -> Result<(), StoreError> {
+        let items = self.items.lock().expect("the items are not poisoned");
+        let held = items
+            .get(item)
+            .ok_or_else(|| StoreError::Missing(format!("{item} is not here")))?;
+        let now = held.assignee.as_deref().unwrap_or_default();
+        if now != holder {
+            return Err(crate::store::moved(item, holder, now));
+        }
         Ok(())
     }
 
@@ -335,13 +350,13 @@ fn row_of(
     serde_json::Value::Object(row)
 }
 
-/// The ids a `show` argument names, by the rule bd 1.2.2 resolves one with —
+/// The ids a `show` argument names, by the rule bd 1.3.0 resolves one with —
 /// measured on a scratch board. A whole id names itself. Else a whole HASH, the
-/// part after the prefix, names its item (`6gr` is `fleet-6gr`, even with a
-/// child `fleet-6gr.1` beside it). Else every id whose hash HOLDS the argument
-/// is named, with a leading prefix taken off the argument first (`fx-63` names
-/// what `63` does, and `x-e` names nothing). One id is the item, more than one
-/// an ambiguity, none a missing id.
+/// part after the prefix, names its item (`7cx` is `fx-7cx`, even with a child
+/// `fx-7cx.1` beside it). Else every id whose hash HOLDS the argument is named,
+/// with a leading prefix taken off the argument first (`fx-7c` names what `7c`
+/// does, and `x-7c` names nothing). One id is the item, more than one an
+/// ambiguity, none a missing id.
 fn named<'a>(ids: impl Iterator<Item = &'a String> + Clone, given: &str) -> Vec<String> {
     let parts = |id: &'a str| id.split_once('-').unwrap_or(("", id));
     let needle = |prefix: &str| {
@@ -468,11 +483,11 @@ impl Store for FakeStore {
     /// array of one, or an error coded `not_found` as beads' contract spells
     /// it — opened and read by the same functions the real store's `show` goes
     /// through, so the fake cannot classify an answer the real store classifies
-    /// differently. bd 1.2.2's own error carries no code, and the real half of
+    /// differently. bd 1.3.0's own error carries no code, and the real half of
     /// the contract suite is what reads that one.
     ///
     /// THE ARGUMENT IS RESOLVED AS bd RESOLVES IT, by [`named`], and an
-    /// ambiguous one answers what bd 1.2.2 answers: the error with no code, and
+    /// ambiguous one answers what bd 1.3.0 answers: the error with no code, and
     /// the matches on stderr alone. Only this read resolves; every write here
     /// takes a whole id, so a verb that wrote under the text it was typed is a
     /// refusal on this board and never a write that quietly landed.
@@ -501,13 +516,17 @@ impl Store for FakeStore {
                     "error": "no issues found matching the provided IDs",
                     "code": "not_found",
                 }),
-                format!("Error fetching {item}: no issue found matching \"{item}\"\n"),
+                format!(
+                    "Issue {item} not found\nHint: this ID may have never existed, or may \
+                     reference a deleted/purged record with no trace left in the live database \
+                     — try 'bd history {item}'\n"
+                ),
             ),
             many => (
                 serde_json::json!({ "error": "no issues found matching the provided IDs" }),
                 format!(
-                    "Error fetching {item}: ambiguous ID \"{item}\" matches {} issues: [{}]\nUse \
-                     more characters to disambiguate\n",
+                    "Error fetching {item}: ambiguous issue ID: \"{item}\" matches {} issues: \
+                     [{}]\nUse more characters to disambiguate\n",
                     many.len(),
                     many.iter()
                         .map(|held| held.id.as_str())
@@ -573,6 +592,13 @@ impl Store for FakeStore {
         self.moving(item, |held| held.assignee = Some(seat.to_string()))
     }
 
+    /// One log line, and the assignment only while `from` holds the item.
+    fn hand_over(&self, item: &str, from: &str, to: &str, by: &str) -> Result<(), StoreError> {
+        self.log(format!("hand_over {item} {from} {to} {by}"))?;
+        self.held_by(item, from)?;
+        self.moving(item, |held| held.assignee = Some(to.to_string()))
+    }
+
     /// Appended with a newline between notes and no header, which is how the
     /// real store answers two notes on one item.
     fn note(&self, item: &str, text: &str, by: &str) -> Result<(), StoreError> {
@@ -604,8 +630,10 @@ impl Store for FakeStore {
 
     /// One log line and both moves, which is what the real store's one call
     /// leaves: an arm counting the calls a retire makes counts this as one.
-    fn withdraw_order(&self, item: &str, by: &str) -> Result<(), StoreError> {
+    /// Neither move is made while another seat holds the item.
+    fn withdraw_order(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
         self.log(format!("withdraw_order {item} {by}"))?;
+        self.held_by(item, seat)?;
         self.moving(item, |held| held.assignee = Some(String::new()))?;
         self.metadata_write(item, |object| {
             object.remove("orders");
@@ -754,8 +782,11 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     fn unset_orders(&self, item: &str, by: &str) -> Result<(), StoreError> {
         (**self).unset_orders(item, by)
     }
-    fn withdraw_order(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        (**self).withdraw_order(item, by)
+    fn hand_over(&self, item: &str, from: &str, to: &str, by: &str) -> Result<(), StoreError> {
+        (**self).hand_over(item, from, to, by)
+    }
+    fn withdraw_order(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
+        (**self).withdraw_order(item, seat, by)
     }
     fn gate(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
         (**self).gate(item, reason, by)

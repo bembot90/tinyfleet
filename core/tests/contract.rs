@@ -27,7 +27,7 @@ mod common;
 use std::path::Path;
 
 use common::shared_store;
-use fleet_core::store::{Bd, NewItem, Store};
+use fleet_core::store::{Bd, NewItem, Store, StoreError};
 use fleet_core::test_support::Board;
 
 const BY: &str = "the-contract";
@@ -48,6 +48,7 @@ const CHECKS: &[(&str, Check)] = &[
     ("note", note),
     ("set_title", set_title),
     ("set_orders then unset_orders", orders),
+    ("hand_over and withdraw_order's holder fence", fenced),
     ("set_metadata's merge", metadata_merge),
     ("gate, open_gates, resolve_gate", gates),
     ("close", close),
@@ -225,6 +226,65 @@ fn orders(store: &dyn Store, _: &Path, which: &str) {
     );
 }
 
+/// A fenced write lands only while the holder it names still holds the item,
+/// and is `Moved` with NOTHING written where somebody else does — bd's
+/// `--if-assignee`, which both halves keep.
+fn fenced(store: &dyn Store, _: &Path, which: &str) {
+    let item = filed(store, "an item a fenced write reaches");
+    store
+        .assign(&item, "a-seat", BY)
+        .expect("the seat holds it");
+    store
+        .set_orders(&item, r#"{"orders":{"seat":"a-seat"}}"#, BY)
+        .expect("the order index lands");
+
+    match store.withdraw_order(&item, "another-seat", BY) {
+        Err(StoreError::Moved(why)) => assert!(
+            why.contains(&item) && why.contains("another-seat"),
+            "{which}: the refusal names the item and the holder it expected: {why}"
+        ),
+        other => panic!("{which}: a withdraw naming a seat that does not hold it: {other:?}"),
+    }
+    let read = store.show(&item).expect("the item reads");
+    assert_eq!(
+        read.assignee.as_deref(),
+        Some("a-seat"),
+        "{which}: nothing was written — the holder stands"
+    );
+    assert!(read.has_orders_key, "{which}: and so does its order");
+
+    store
+        .withdraw_order(&item, "a-seat", BY)
+        .expect("the holder's withdraw lands");
+    let read = store.show(&item).expect("the item reads");
+    assert!(
+        read.assignee.as_deref().unwrap_or_default().is_empty(),
+        "{which}: the assignee is cleared: {:?}",
+        read.assignee
+    );
+    assert!(!read.has_orders_key, "{which}: and the order unset");
+
+    match store.hand_over(&item, "a-seat", "the-builder", BY) {
+        Err(StoreError::Moved(_)) => {}
+        other => panic!("{which}: a hand-over from a seat that no longer holds it: {other:?}"),
+    }
+    store
+        .hand_over(&item, "", "the-builder", BY)
+        .expect("a hand-over of an item nobody holds, from nobody, lands");
+    store
+        .hand_over(&item, "the-builder", "a-reviewer", BY)
+        .expect("a hand-over from its holder lands");
+    assert_eq!(
+        store
+            .show(&item)
+            .expect("the item reads")
+            .assignee
+            .as_deref(),
+        Some("a-reviewer"),
+        "{which}"
+    );
+}
+
 fn metadata_merge(store: &dyn Store, _: &Path, which: &str) {
     let item = filed(store, "an item with two metadata keys");
     store
@@ -363,6 +423,11 @@ fn a_set_title_moves_the_title_the_next_read_answers() {
 #[test]
 fn set_orders_writes_the_four_fields_and_unset_orders_takes_the_key_away() {
     in_memory("contract-orders", orders);
+}
+
+#[test]
+fn a_fenced_write_lands_only_while_the_holder_it_names_holds_the_item() {
+    in_memory("contract-fenced", fenced);
 }
 
 #[test]

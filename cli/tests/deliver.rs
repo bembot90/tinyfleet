@@ -139,9 +139,10 @@ impl Rig {
     /// file staged.
     ///
     /// The store's own files are committed HERE, after the item has been made,
-    /// because `bd` appends to a log this repository versions on every call:
-    /// the tree a seat starts a delivery from is clean, and this fixture is one
-    /// that has actually been used.
+    /// so the tree a seat starts a delivery from is clean and this fixture is
+    /// one that has actually been used. bd 1.2.2 appended to a log this
+    /// repository versions on every call; bd 1.3.0 keeps no such log and
+    /// commits its own files at `bd init`, so the board may add nothing.
     fn init_repo(&self) {
         self.git(&[
             "config",
@@ -173,7 +174,17 @@ impl Rig {
             self.git(&["add", "--", "fleet.toml"]);
         }
         self.git(&["add", "--", ".beads"]);
-        self.git(&["commit", "--quiet", "--no-gpg-sign", "-m", "the board"]);
+        // `--allow-empty`: on bd 1.3.0 the board has nothing to add where the
+        // policy is left out — its `bd init` committed its own files, and no
+        // call since changed one — and the arms want the commit either way.
+        self.git(&[
+            "commit",
+            "--quiet",
+            "--no-gpg-sign",
+            "--allow-empty",
+            "-m",
+            "the board",
+        ]);
         self.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
         let seat = self.root.join("a-project-worktrees/transient-1");
         self.git(&[

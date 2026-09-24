@@ -1615,6 +1615,10 @@ fn a_landed_seat(rig: &Rig, verdict: &str) -> String {
         "bd note: {}",
         String::from_utf8_lossy(&note.stderr)
     );
+    // `--force`, because this fixture skips the delivery: bd 1.3.0 refuses a
+    // close by an actor that is not the item's assignee, and `fleet land` only
+    // ever closes as the assignee — the reviewer its delivery handed the item
+    // to — while here the item is still the seat's.
     let closed = rig.bd(&[
         "close",
         &item,
@@ -1622,6 +1626,7 @@ fn a_landed_seat(rig: &Rig, verdict: &str) -> String {
         "landed 4444444444444444444444444444444444444444",
         "--actor",
         "a-reviewer",
+        "--force",
     ]);
     assert!(
         closed.status.success(),
@@ -1746,6 +1751,46 @@ fn a_retire_withdraws_the_order_the_seat_still_holds() {
     assert!(
         notes.contains("dispatched by an-architect"),
         "the order note it answers stands: {notes}"
+    );
+}
+
+/// fleet-reb: the same retire over an item the seat CLAIMED. bd 1.3.0 refuses
+/// a plain `--assignee` from anyone but the holder on an `in_progress` item —
+/// `cannot reassign X: held by "transient-1" (in_progress)` — and a retire's
+/// actor is never the seat it retires, so only the withdrawal's
+/// `--if-assignee <seat>` lets it through. The fence is bd's, so the arm is
+/// the real binary's.
+#[test]
+fn a_retire_withdraws_an_item_the_seat_marked_in_progress() {
+    let rig = Rig::new("retire-in-progress", true);
+    let item = a_dispatched_seat(&rig);
+    let claimed = rig.bd(&[
+        "update",
+        &item,
+        "--status",
+        "in_progress",
+        "--actor",
+        "transient-1",
+    ]);
+    assert!(
+        claimed.status.success(),
+        "bd update: {}",
+        String::from_utf8_lossy(&claimed.stderr)
+    );
+    rig.live("transient-1", "idle");
+
+    let retired = rig.run(&["seat", "retire", "transient-1"]);
+    assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
+
+    let (assignee, notes, orders) = rig.order_of(&item);
+    assert!(
+        assignee.as_deref().unwrap_or("").trim().is_empty(),
+        "the claimed item reads unassigned: {assignee:?}"
+    );
+    assert!(orders.is_null(), "and carries no orders key: {orders}");
+    assert!(
+        notes.contains("ORDER WITHDRAWN at retire: transient-1 retired by"),
+        "the withdrawal is on the record: {notes}"
     );
 }
 

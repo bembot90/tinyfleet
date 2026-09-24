@@ -1,9 +1,10 @@
 //! A `bd` that caps a listing the way the real one does, for the reads whose
 //! whole argument is that they lift the cap.
 //!
-//! `bd list` answers its first 50 rows unless `-n 0` is passed — bd 1.2.2's own
-//! help: "-n, --limit int … (default 50, use 0 for unlimited)" — and a
-//! truncated list reads exactly like a whole one. A real board holding 51 rows
+//! `bd list` answers its first 50 rows unless `-n 0` is passed — bd 1.3.0's own
+//! help: "-n, --limit int … (default 50, use 0 for unlimited)", which binds a
+//! terminal and, measured, a piped call only where the board sets `list.limit`
+//! — and a truncated list reads exactly like a whole one. A real board holding 51 rows
 //! against one seat costs a `create` per row to build; this answers the same
 //! listing off one file per row, so the row past the cap is cheap to hold.
 
@@ -27,8 +28,9 @@ pub struct Held<'a> {
 ///   another limit — the seat filter is not applied, because every row it holds
 ///   is that seat's;
 /// - `show <id>` that row;
-/// - `update <id>` only as a withdrawal (`--assignee ''` with `--unset-metadata
-///   orders`), which leaves the row open, unassigned and unordered;
+/// - `update <id>` only as a withdrawal fenced on `seat` (`--if-assignee
+///   <seat>`, then `--assignee ''` with `--unset-metadata orders`), which leaves
+///   the row open, unassigned and unordered;
 /// - `note` as a write it accepts and does not keep.
 pub fn capped_bd(dir: &Fixture, seat: &str, rows: &[Held], log: &Path) -> PathBuf {
     let items = dir.path("items");
@@ -74,7 +76,7 @@ pub fn capped_bd(dir: &Fixture, seat: &str, rows: &[Held], log: &Path) -> PathBu
              \x20 printf ']\\n' ;;\n\
              show) printf '['; cat \"$items/$2.json\"; printf ']\\n' ;;\n\
              update)\n\
-             \x20 case \" $* \" in *' --assignee  --unset-metadata orders '*) ;; *) exit 1 ;; esac\n\
+             \x20 case \" $* \" in *' --if-assignee {seat} --assignee  --unset-metadata orders '*) ;; *) exit 1 ;; esac\n\
              \x20 printf '{{\"id\":\"%s\",\"status\":\"open\"}}' \"$2\" > \"$items/$2.json\" ;;\n\
              note) ;;\n\
              *) echo 'the fake answers list, show, update and note only' >&2; exit 1 ;;\n\

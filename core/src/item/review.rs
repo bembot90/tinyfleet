@@ -420,7 +420,16 @@ fn retur(
     )
     .map_err(|name| unresolved(&name))?;
 
-    wiring.store.assign(&item.id, &builder, verdict.by)?;
+    // HANDED OVER FROM THE HOLDER THIS REVIEW READ, and only while it still
+    // holds the item: the reviewer need not be the `--by` of the call, and bd
+    // 1.3.0 refuses a plain reassignment of an `in_progress` item by anyone
+    // but its holder — which the builder's claim leaves it through delivery.
+    wiring.store.hand_over(
+        &item.id,
+        item.assignee.as_deref().unwrap_or_default(),
+        &builder,
+        verdict.by,
+    )?;
     write_verdict(&item.id, &note, Some(&builder), verdict, wiring)?;
     announce(
         &item.id,

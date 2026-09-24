@@ -11,7 +11,7 @@ mod common;
 
 use common::capped::{calls, capped_bd, Held};
 use common::Fixture;
-use fleet_core::item::COULD_NOT_TELL;
+use fleet_core::item::{COULD_NOT_TELL, REFUSED};
 use fleet_core::seat::retire::{self, WITHDRAWN};
 use fleet_core::store::{AssignedItem, Bd, Item, Orders, Store};
 use fleet_core::test_support::FakeStore;
@@ -229,6 +229,43 @@ fn a_retire_whose_withdrawal_does_not_land_refuses_and_names_the_item() {
         "the item is as it was, so the name must not be freed: {}",
         after.document
     );
+}
+
+/// fleet-reb: an item another seat took between the listing and the write is
+/// the record's answer. The withdrawal is fenced on the retiring seat — bd
+/// 1.3.0's `--if-assignee`, which this fake keeps too — so it is REFUSED with
+/// nothing written, and the new holder's claim and order stand.
+#[test]
+fn a_retire_whose_item_moved_to_another_seat_is_refused_and_writes_nothing() {
+    let store = board();
+    let held = retire::held(&store, SEAT).expect("the board answers");
+    store
+        .assign(HELD, "transient-9", "the-test")
+        .expect("another seat takes the item after the listing");
+
+    let stop = retire::withdraw(&store, &held, SEAT, BY).expect_err("the holder moved");
+
+    assert_eq!(
+        stop.code, REFUSED,
+        "an item somebody else holds is the record's answer: {}",
+        stop.message
+    );
+    assert!(
+        stop.message.contains(HELD)
+            && stop
+                .message
+                .contains(&format!("`{SEAT}` no longer holds it"))
+            && stop.message.contains("`transient-9`"),
+        "the refusal names the item, the retiring seat and the holder now: {}",
+        stop.message
+    );
+    let after = read(&store, HELD);
+    assert!(
+        after.has_orders_key && after.assignee.as_deref() == Some("transient-9"),
+        "nothing was written: {}",
+        after.document
+    );
+    assert_eq!(after.notes, None, "and no withdrawal note either");
 }
 
 /// A board nobody could read is a QUESTION and never an empty hold: a retire

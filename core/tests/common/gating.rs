@@ -1,11 +1,12 @@
 //! A `bd` whose `gate create` writes the gate and then exits 1, for the park
 //! that has to find what a failed create left behind.
 //!
-//! bd 1.2.2 does exactly this when the item the gate blocks is an epic: the
-//! gate is filed, the blocking edge is refused, and the call exits 1 — so an
-//! open gate that blocks nothing stands on the list with nobody's park naming
-//! it. A real board will not produce it on demand for any other item, and this
-//! answers the same calls off one file per gate.
+//! bd 1.2.2 did exactly this when the item the gate blocks is an epic: the
+//! gate was filed, the blocking edge refused, and the call exited 1 — so an
+//! open gate that blocks nothing stood on the list with nobody's park naming
+//! it. bd 1.3.0 files the gate AND the edge on an epic and exits 0, measured,
+//! so a real board at the pin produces it on demand for no item at all, and
+//! this answers the same calls off one file per gate.
 
 use std::path::{Path, PathBuf};
 

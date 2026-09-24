@@ -1762,10 +1762,13 @@ fn caller_run(store: &dyn Store, by: &str) -> Result<Option<Item>, Stop> {
             Ok(of_a_run.then_some(record))
         }
         Err(StoreError::Missing(_)) => Ok(None),
-        Err(StoreError::Unreadable(why)) => Err(Stop::could_not_tell(format!(
+        // A read never answers `Moved`, which only a fenced write does.
+        Err(StoreError::Unreadable(why) | StoreError::Moved(why)) => {
+            Err(Stop::could_not_tell(format!(
             "the store could not say whether `{by}` is a run's record: {why} — a run's landing \
              acts as the reviewer and a seat's as itself, and this is where the two are told apart"
-        ))),
+        )))
+        }
     }
 }
 

@@ -162,9 +162,10 @@ pub fn ask(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result<
 
     // (b) THE GATE, whose id comes off the command's own answer. The open list
     // is read FIRST, because a create that fails can still have filed its gate
-    // — bd 1.2.2 on an epic files it, refuses the edge and exits 1 — and the
-    // listing names no item, so what the create left is what was not there
-    // before it.
+    // — bd 1.2.2 on an epic filed it, refused the edge and exited 1; 1.3.0
+    // files both and exits 0, measured, but a bd off the pin still runs here —
+    // and the listing names no item, so what the create left is what was not
+    // there before it.
     let before = wiring.store.open_gates().map_err(|e| {
         parked(
             &item,

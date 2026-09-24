@@ -814,8 +814,9 @@ fn create_embedded_writes_the_smallest_file_that_runs_and_materializes_the_defau
         "the defaults are the binary's and are on no packs line: {line_one}"
     );
     assert!(
-        page.lines().count() > 1,
-        "the rules file resolved through the defaults and follows line 1: {page}"
+        page.lines().count() > 2,
+        "the rules file resolved through the defaults and follows line 2, the \
+         tracker's: {page}"
     );
 
     // The done message.

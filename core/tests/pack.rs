@@ -577,6 +577,92 @@ fn the_runtime_doctor_shape_reads_the_pinned_version_against_the_binary_on_path(
     assert!(said.contains("runtime-version: nothing pinned"), "{said}");
 }
 
+/// fleet-reb — the bd pin's doctor check the defaults ship, run as a real
+/// script against stub trackers, and its copy of the pin held to
+/// `store::PINNED_BD`: the script cannot read the constant, so this arm is what
+/// refuses a pin move that left the script behind.
+///
+/// The mismatch arm is a bd answering 1.2.2, the release before the pin, and
+/// is what makes the holding arm worth anything; absence is measured with no
+/// bd on PATH at all, which is also what proves the check needs no tool of its
+/// own there. `FLEET_BD_BIN` is the seam prime reads the tracker through, and
+/// names the binary over PATH.
+#[test]
+fn the_bd_doctor_check_reads_bd_version_against_the_pin() {
+    let pin = fleet_core::store::PINNED_BD;
+    let install = format!(
+        "CGO_ENABLED=0 go install -tags gms_pure_go github.com/steveyegge/beads/cmd/bd@v{pin}"
+    );
+    let defaults = Defaults::new("bd-doctor");
+    let check = defaults.path().join("doctor/bd-version/run.sh");
+    let script = std::fs::read_to_string(&check)
+        .unwrap_or_else(|e| panic!("the defaults ship the check at {}: {e}", check.display()));
+    assert_eq!(
+        script
+            .lines()
+            .filter(|line| line.starts_with("PINNED="))
+            .collect::<Vec<_>>(),
+        vec![format!("PINNED={pin}").as_str()],
+        "the check's one copy of the pin is store::PINNED_BD"
+    );
+
+    let fixture = Fixture::new("bd-doctor-stubs");
+    fixture.dir("nothing");
+    let fake = |label: &str, answer: &str| -> std::path::PathBuf {
+        let dir = fixture.path(label);
+        std::fs::create_dir_all(&dir).expect("the fake tracker's directory");
+        let bin = dir.join("bd");
+        std::fs::write(&bin, format!("#!/bin/sh\necho \"{answer}\"\n"))
+            .expect("the fake tracker is written");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+            .expect("the fake tracker is executable");
+        dir
+    };
+    let pinned = fake("pinned", &format!("bd version {pin} (Homebrew)"));
+    let other = fake("other", "bd version 1.2.2");
+
+    let run = |path: &std::path::Path, seam: Option<&std::path::Path>| -> (i32, String) {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg(&check).env("PATH", path).env_remove("FLEET_BD_BIN");
+        if let Some(bin) = seam {
+            cmd.env("FLEET_BD_BIN", bin);
+        }
+        let out = cmd.output().expect("the check runs");
+        (
+            out.status
+                .code()
+                .expect("the check exits rather than signals"),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
+    };
+
+    let (code, said) = run(&pinned, None);
+    assert_eq!(code, 0, "the pinned bd on PATH: {said}");
+    assert!(said.contains("bd-version: holds"), "{said}");
+
+    let (code, said) = run(&other, None);
+    assert_eq!(code, 1, "another bd on PATH: {said}");
+    assert!(
+        said.contains("answers: bd version 1.2.2")
+            && said.contains(&format!("is not the pinned {pin}"))
+            && said.contains("the verbs still run")
+            && said.contains(&install),
+        "the mismatch is named, with the line that installs the pin: {said}"
+    );
+
+    let (code, said) = run(&fixture.path("nothing"), None);
+    assert_eq!(code, 1, "no bd on PATH: {said}");
+    assert!(
+        said.contains("did not answer (exit 127)") && said.contains(&install),
+        "{said}"
+    );
+
+    let (code, said) = run(&other, Some(&pinned.join("bd")));
+    assert_eq!(code, 0, "the seam names the pinned bd over PATH's: {said}");
+    assert!(said.contains("bd-version: holds"), "{said}");
+}
+
 /// The ts pack, read as it stands: the one shipped pack whose manifest carries
 /// the runtime table, and the doctor instance that measures it. The instance
 /// resolves the binary from PATH first and from the installer's bin second —

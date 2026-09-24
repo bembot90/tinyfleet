@@ -21,7 +21,7 @@
 
 use crate::item::deliver::holds;
 use crate::item::Stop;
-use crate::store::Store;
+use crate::store::{Store, StoreError};
 
 /// The line a withdrawal leaves, so an item whose seat was retired reads as one
 /// nobody holds rather than as one whose holder vanished.
@@ -58,9 +58,10 @@ pub fn held(store: &dyn Store, seat: &str) -> Result<Vec<String>, Stop> {
 pub fn withdraw(store: &dyn Store, items: &[String], seat: &str, by: &str) -> Result<(), Stop> {
     let line = format!("{WITHDRAWN}: {seat} retired by {by}; the item stays open, unassigned");
     for item in items {
-        store
-            .withdraw_order(item, by)
-            .map_err(|e| nothing_written(item, &e.to_string()))?;
+        store.withdraw_order(item, seat, by).map_err(|e| match e {
+            StoreError::Moved(why) => moved_on(item, seat, &why),
+            other => nothing_written(item, &other.to_string()),
+        })?;
         store
             .note(item, &line, by)
             .map_err(|e| halfway(item, &e.to_string()))?;
@@ -78,6 +79,18 @@ pub fn withdraw(store: &dyn Store, items: &[String], seat: &str, by: &str) -> Re
         }
     }
     Ok(())
+}
+
+/// An item somebody else holds now, between the listing and the write: the
+/// record's answer, so a refusal and not a could-not-tell. The withdrawal is
+/// fenced on the retiring seat — bd 1.3.0 takes a retirer's clear of an
+/// `in_progress` item only so — and the new holder's claim is not this
+/// retire's to take away.
+fn moved_on(item: &str, seat: &str, why: &str) -> Stop {
+    Stop::refused(format!(
+        "the order on {item} was not withdrawn: `{seat}` no longer holds it — {why}\n  the \
+         retire stops here, before the name is freed; read the item and retire again"
+    ))
 }
 
 /// A write that did not land where nothing of this item has moved yet.

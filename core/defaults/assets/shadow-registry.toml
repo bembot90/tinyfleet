@@ -42,6 +42,14 @@ path = "doctor/runtime-version/run.sh"
 purpose = "how a pack's pinned runtime is asked for its version and which readings count as holding — the shape the defaults ship against no [runtime] table of their own, for the feature-layer pack that pins one to replace"
 
 [[shadow]]
+path = "doctor/bd-version/doctor.toml"
+purpose = "the bd pin check's own name and description"
+
+[[shadow]]
+path = "doctor/bd-version/run.sh"
+purpose = "how bd is asked for its version against the release the binary's store was measured on, and the line a mismatch names to install it"
+
+[[shadow]]
 path = "assets/brief.md"
 purpose = "the first turn a dispatched seat reads, and the contract it works under"
 
