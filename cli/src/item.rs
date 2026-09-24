@@ -425,6 +425,7 @@ fn run_land(
             events: &events,
             load: &load,
             child_path: &child_path,
+            seats: &here.seats,
         },
     )
 }
@@ -687,6 +688,7 @@ fn run_review(
             project: &here.project,
             ring: &ring,
             events: &events,
+            seats: &here.seats,
         },
     )
 }

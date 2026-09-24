@@ -13,7 +13,7 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use common::{keys_agree, shared_store, Rooted, Scratch, StubEvents};
+use common::{agent, fleet_of, full, keys_agree, shared_store, Rooted, Scratch, StubEvents};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::deliver::BASE;
 use fleet_core::item::review::{self, Mode, Verdict, Wiring};
@@ -27,6 +27,10 @@ const AT: &str = "2026-09-09T04:05:06Z";
 const SHA: &str = "3333333333333333333333333333333333333333";
 const REVIEWER: &str = "a-reviewer";
 const POLICY: &str = "[core]\nreviewer = \"a-reviewer\"\n";
+
+/// Every seat this suite's arms deliver as, listed, with the reviewer: the
+/// fleet a return's sentence names its builder among.
+const BUILDERS: [&str; 5] = [REVIEWER, "s-return", "s-foreign", "s-bent", "s-absent"];
 
 /// The delivery every arm reads: two numbered calls, and a commit line the
 /// review takes its diff from.
@@ -130,12 +134,18 @@ impl Git for StubGit {
 }
 
 struct StubRing {
+    outcome: RingOutcome,
     calls: Mutex<Vec<(String, String)>>,
 }
 
 impl StubRing {
     fn new() -> StubRing {
+        StubRing::answering(RingOutcome::Delivered)
+    }
+
+    fn answering(outcome: RingOutcome) -> StubRing {
         StubRing {
+            outcome,
             calls: Mutex::new(Vec::new()),
         }
     }
@@ -151,7 +161,7 @@ impl Ring for StubRing {
             .lock()
             .expect("not poisoned")
             .push((seat.to_string(), text.to_string()));
-        RingOutcome::Delivered
+        self.outcome.clone()
     }
 }
 
@@ -268,11 +278,13 @@ fn project(scratch: &dyn Rooted) -> Project {
 }
 
 /// An item carrying a delivery and the order index that says who built it, in
-/// one call apiece.
+/// one call apiece. The index and the assignee carry seat ids, as dispatch and
+/// deliver write them.
 fn a_delivered_item(store: &dyn Store, title: &str, builder: &str) -> String {
     let item = an_item(store, title);
+    let builder = full(builder);
     store
-        .assign(&item, REVIEWER, "an-architect")
+        .assign(&item, &full(REVIEWER), "an-architect")
         .expect("the reviewer holds it");
     store
         .set_orders(
@@ -284,7 +296,7 @@ fn a_delivered_item(store: &dyn Store, title: &str, builder: &str) -> String {
         )
         .expect("the order index lands");
     store
-        .note(&item, &a_delivery(), builder)
+        .note(&item, &a_delivery(), &builder)
         .expect("the delivery lands");
     item
 }
@@ -370,6 +382,7 @@ fn run_through(
             project: &project(scratch),
             ring,
             events,
+            seats: &fleet_of(&BUILDERS),
         },
     );
     let (code, stop) = match answer {
@@ -637,13 +650,68 @@ fn a_return_writes_the_findings_count_first_and_hands_the_item_back() {
 
     assert_eq!(
         bd.show(&item).expect("the item reads").assignee.as_deref(),
-        Some(builder),
-        "the item goes back to the seat the order named"
+        Some(full(builder).as_str()),
+        "the item goes back to the seat the order named, by its id"
     );
     let rung = ring.calls();
     assert_eq!(rung.len(), 1);
-    assert_eq!(rung[0].0, builder);
+    assert_eq!(rung[0].0, full(builder));
     assert!(rung[0].1.contains(&item), "{:?}", rung);
+}
+
+/// A return goes to `fleet.orders.seat`, which is the builder's full id: the
+/// item is reassigned to that id and the id is rung, and where the builder has
+/// no live session the line that says so names the seat as a person reads it —
+/// its machine name — and not by the id the record holds.
+#[test]
+fn a_return_reassigns_to_the_orders_seat_id_and_an_absent_builder_is_named_by_label() {
+    let scratch = &store();
+    let builder = "s-absent";
+    let item = a_delivered_item(&scratch.store, "an item returned to nobody live", builder);
+    assert_eq!(
+        scratch
+            .store
+            .show(&item)
+            .expect("the item reads")
+            .orders
+            .and_then(|orders| orders.seat),
+        Some(full(builder)),
+        "the premise: the order index carries the builder's id"
+    );
+    let findings = file(scratch, "absent", "F1 the one finding.\n");
+    let ring = StubRing::answering(RingOutcome::Absent);
+
+    let (said, code) = run(
+        scratch,
+        &item,
+        Mode::Return(&findings),
+        &StubGit::answering(a_diff()),
+        &ring,
+    );
+    assert_eq!(code, 0, "{}{}", said.err, said.stop);
+    assert_eq!(
+        scratch
+            .store
+            .show(&item)
+            .expect("the item reads")
+            .assignee
+            .as_deref(),
+        Some(full(builder).as_str()),
+        "the return reassigns to the order's seat id"
+    );
+    let rung = ring.calls();
+    assert_eq!(rung.len(), 1, "{rung:?}");
+    assert_eq!(rung[0].0, full(builder), "the id is rung");
+    assert!(
+        said.out.contains(&format!(
+            "{}: no live session for {};",
+            review::STANDS,
+            agent(builder).machine_name()
+        )),
+        "{}",
+        said.out
+    );
+    assert!(!said.out.contains(&full(builder)), "{}", said.out);
 }
 
 /// Another writer's bare `orders` — whose `seat` names a seat fleet never
@@ -685,10 +753,10 @@ fn another_writers_orders_key_and_run_label_ride_through_a_review() {
             .expect("the item reads")
             .assignee
             .as_deref(),
-        Some(builder),
+        Some(full(builder).as_str()),
         "the return goes to the seat fleet's index names"
     );
-    assert_eq!(ring.calls()[0].0, builder, "and that seat is rung");
+    assert_eq!(ring.calls()[0].0, full(builder), "and that seat is rung");
 
     let (said, code) = run(
         scratch,
@@ -746,13 +814,15 @@ fn a_return_whose_assignee_reads_back_as_somebody_else_could_not_tell_and_rings_
         "the event follows the read-back, so a disagreement announces nothing"
     );
     assert!(
-        said.stop.contains("somebody-else") && said.stop.contains(builder),
+        said.stop.contains("somebody-else") && said.stop.contains(&full(builder)),
         "the value read and the value wanted: {}",
         said.stop
     );
     assert!(
-        said.stop
-            .contains(&format!("RERUN: bd update {item} --assignee {builder}")),
+        said.stop.contains(&format!(
+            "RERUN: bd update {item} --assignee {}",
+            full(builder)
+        )),
         "{}",
         said.stop
     );

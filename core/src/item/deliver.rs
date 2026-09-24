@@ -30,7 +30,7 @@ use crate::item::{
     Stop, DELIVERY_MARKERS, ITEM_DELIVERED, TRUNK, TRUNK_BRANCH,
 };
 use crate::policy;
-use crate::seat::identity::Directory;
+use crate::seat::identity::{Directory, SeatRef};
 use crate::store::{AssignedItem, Item, Store};
 
 /// The three lines the verb fills. Everything else in the grammar is the
@@ -84,6 +84,7 @@ pub struct Wiring<'a> {
 pub struct Delivered {
     pub item: String,
     pub commit: String,
+    /// The reviewer's full id, which the item is now assigned to.
     pub reviewer: String,
     pub note: String,
 }
@@ -141,7 +142,8 @@ pub fn deliver(
     grammar_holds(&wiring.packs.read(DELIVERY_NOTE)?, &written)?;
 
     let item = held_item(wiring.store, delivery.by, delivery.item, wiring.seats)?;
-    let reviewer = reviewer_of(wiring.project)?;
+    let reviewer = reviewer_of(wiring.project, wiring.seats)?;
+    let reviewer = reviewer.id.to_string();
 
     let as_is = standing.is_some();
     let commit = match standing {
@@ -250,8 +252,9 @@ fn ring(
         RingOutcome::Absent => {
             let _ = writeln!(
                 out,
-                "{STANDS}: no live session for {reviewer}; {item} is theirs and their successor \
-                 reads it at wake"
+                "{STANDS}: no live session for {}; {item} is theirs and their successor reads it \
+                 at wake",
+                named(reviewer, wiring.seats)
             );
         }
         RingOutcome::Failed(cause) => {
@@ -376,17 +379,40 @@ fn open(row: &AssignedItem) -> bool {
     row.status == "open" || row.status == "in_progress"
 }
 
-/// `[core] reviewer`, through the census reader. The fleet's own policy rather
-/// than the project's, which is the table `guards` carries.
-pub(crate) fn reviewer_of(project: &Project) -> Result<String, Stop> {
-    match policy::read("core", "reviewer", &project.guards) {
+/// `[core] reviewer`, through the census reader, as the one seat it names. The
+/// fleet's own policy rather than the project's, which is the table `guards`
+/// carries.
+///
+/// THE VALUE IS ANY SEAT ARGUMENT — a full id, eight or more of its hex, a name
+/// or a machine name — and every reader turns it into ONE LISTED SEAT, of
+/// either kind, through core's one resolver: a delivery is assigned to that
+/// seat's id, a landing closes as it and runs in its worktree. A value naming
+/// no seat, or two, is refused naming the key rather than written to the
+/// record as a word nobody holds work under.
+pub(crate) fn reviewer_of(project: &Project, seats: &Directory) -> Result<SeatRef, Stop> {
+    let value = match policy::read("core", "reviewer", &project.guards) {
         Ok(Some(value)) => match value.as_str() {
-            Some(name) if !name.trim().is_empty() => Ok(name.trim().to_string()),
-            _ => Err(no_reviewer()),
+            Some(name) if !name.trim().is_empty() => name.trim().to_string(),
+            _ => return Err(no_reviewer()),
         },
-        Ok(None) => Err(no_reviewer()),
-        Err(unlisted) => Err(Stop::could_not_tell(unlisted.to_string())),
-    }
+        Ok(None) => return Err(no_reviewer()),
+        Err(unlisted) => return Err(Stop::could_not_tell(unlisted.to_string())),
+    };
+    seats.resolve_listed(&value).cloned().map_err(|unresolved| {
+        let why = format!("[core] reviewer = \"{value}\" {unresolved}");
+        match unresolved.code() {
+            crate::item::USAGE => Stop::usage(why),
+            _ => Stop::refused(why),
+        }
+    })
+}
+
+/// How a sentence names a seat the record holds by id: its label where the
+/// text is an id, and the text itself where it is not.
+pub(crate) fn named(seat: &str, seats: &Directory) -> String {
+    crate::seat::identity::SeatId::parse(seat)
+        .map(|id| seats.label(&id))
+        .unwrap_or_else(|_| seat.to_string())
 }
 
 fn no_reviewer() -> Stop {

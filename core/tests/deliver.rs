@@ -329,7 +329,7 @@ fn deliver_with(
             events: seams.events,
             // The arm's own seat, listed under the name it delivers by; the
             // arm about `by` itself lays out a fleet of its own.
-            seats: &fleet_of(&[by]),
+            seats: &fleet_of(&[by, REVIEWER]),
         },
     )
 }
@@ -375,7 +375,11 @@ fn a_clean_delivery_commits_reassigns_and_writes_the_note_it_rendered() {
 
     assert_eq!(delivered.item, item, "the seat's one ordered item");
     assert_eq!(delivered.commit, SHA);
-    assert_eq!(delivered.reviewer, REVIEWER, "the reviewer policy names");
+    assert_eq!(
+        delivered.reviewer,
+        full(REVIEWER),
+        "the seat the reviewer policy names, by its id"
+    );
 
     let expected = WHOLE
         .trim_end()
@@ -395,7 +399,7 @@ fn a_clean_delivery_commits_reassigns_and_writes_the_note_it_rendered() {
     );
 
     let read = read(scratch, &item);
-    assert_eq!(read.assignee.as_deref(), Some(REVIEWER));
+    assert_eq!(read.assignee.as_deref(), Some(full(REVIEWER).as_str()));
     assert_eq!(
         last_delivery(read.notes.as_deref().expect("the item carries notes")).as_deref(),
         Some(expected.as_str()),
@@ -421,7 +425,7 @@ fn a_clean_delivery_commits_reassigns_and_writes_the_note_it_rendered() {
 
     let rung = ring.calls();
     assert_eq!(rung.len(), 1);
-    assert_eq!(rung[0].0, REVIEWER);
+    assert_eq!(rung[0].0, full(REVIEWER));
     assert!(
         rung[0].1.contains(&item) && rung[0].1.contains(SHA),
         "{:?}",
@@ -469,7 +473,10 @@ fn another_writers_orders_key_and_run_label_ride_through_a_delivery() {
     .expect("the delivery is made");
 
     assert_eq!(delivered.item, item, "the seat's one ordered item");
-    assert_eq!(read(scratch, &item).assignee.as_deref(), Some(REVIEWER));
+    assert_eq!(
+        read(scratch, &item).assignee.as_deref(),
+        Some(full(REVIEWER).as_str())
+    );
     assert_eq!(
         common::foreign_of(scratch.store(), &item),
         before,
@@ -627,7 +634,7 @@ fn a_clean_tree_ahead_of_the_base_delivers_head_and_commits_nothing() {
             project: &project(scratch),
             ring: &ring,
             events: &events,
-            seats: &fleet_of(&[seat]),
+            seats: &fleet_of(&[seat, REVIEWER]),
         },
     )
     .expect("the clean tree ahead of the base is delivered");
@@ -650,7 +657,7 @@ fn a_clean_tree_ahead_of_the_base_delivers_head_and_commits_nothing() {
     let read = read(scratch, &item);
     assert_eq!(
         read.assignee.as_deref(),
-        Some(REVIEWER),
+        Some(full(REVIEWER).as_str()),
         "the handoff is recorded"
     );
     assert_eq!(
@@ -808,6 +815,90 @@ fn a_fleet_naming_no_reviewer_refuses_before_the_commit() {
     );
 }
 
+/// `[core] reviewer` is any seat argument, and deliver hands the item to the
+/// ONE LISTED SEAT it names, by that seat's full id: a reviewer written by name
+/// is assigned, read back and rung by id, and a value that names no seat of
+/// this fleet is refused naming the key before anything is committed.
+#[test]
+fn a_reviewer_named_by_name_is_assigned_by_its_full_id_and_a_stranger_is_refused() {
+    let scratch = &store();
+    let seat = "s-to-kite";
+    let item = an_ordered_item(scratch, "an item Kite reviews", seat);
+    let note = a_note(scratch, "to-kite", WHOLE);
+    let policy = |reviewer: &str| {
+        let mut named = project(scratch);
+        named.guards = format!("[core]\nreviewer = \"{reviewer}\"\n")
+            .parse()
+            .expect("the policy parses");
+        named
+    };
+    let fleet = fleet_of(&[seat, "Kite"]);
+    let run = |project: &Project, git: &StubGit, ring: &StubRing| {
+        deliver::deliver(
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &Delivery {
+                item: Some(&item),
+                by: seat,
+                note: &note,
+                at: AT,
+            },
+            &Wiring {
+                store: scratch.store(),
+                git,
+                packs: &packs(scratch),
+                project,
+                ring,
+                events: &StubEvents::default(),
+                seats: &fleet,
+            },
+        )
+    };
+
+    // KITE, BY NAME, is assigned and rung by her full id.
+    let ring = StubRing::answering(RingOutcome::Delivered);
+    let delivered = run(&policy("Kite"), &StubGit::clean(), &ring).expect("Kite reviews it");
+    assert_eq!(
+        delivered.reviewer,
+        full("Kite"),
+        "the reviewer is Kite's id"
+    );
+    assert_eq!(
+        read(scratch, &item).assignee.as_deref(),
+        Some(full("Kite").as_str()),
+        "the item is assigned to Kite's full id and never to the word the policy wrote"
+    );
+    let rung = ring.calls();
+    assert_eq!(rung.len(), 1, "{rung:?}");
+    assert_eq!(rung[0].0, full("Kite"), "the ring addresses her id");
+
+    // A VALUE NAMING NO LISTED SEAT is exit 1 naming the key, before the commit.
+    let git = StubGit::clean();
+    let stop = run(
+        &policy("nobody"),
+        &git,
+        &StubRing::answering(RingOutcome::Delivered),
+    )
+    .expect_err("nobody is no seat");
+    assert_eq!(stop.code, 1, "{}", stop.message);
+    assert!(
+        stop.message
+            .starts_with("[core] reviewer = \"nobody\" nobody names no seat — the seats are "),
+        "{}",
+        stop.message
+    );
+    assert!(
+        !git.calls().iter().any(|call| call.starts_with("commit ")),
+        "nothing was committed: {:?}",
+        git.calls()
+    );
+    assert_eq!(
+        read(scratch, &item).assignee.as_deref(),
+        Some(full("Kite").as_str()),
+        "the refusal wrote nothing"
+    );
+}
+
 #[test]
 fn a_read_back_that_disagrees_exits_three_and_prints_both_values() {
     let scratch = &store();
@@ -839,7 +930,7 @@ fn a_read_back_that_disagrees_exits_three_and_prints_both_values() {
 
     assert_eq!(stop.code, 3, "{}", stop.message);
     assert!(
-        stop.message.contains("somebody-else") && stop.message.contains(REVIEWER),
+        stop.message.contains("somebody-else") && stop.message.contains(&full(REVIEWER)),
         "both values: {}",
         stop.message
     );
@@ -946,7 +1037,7 @@ fn a_name_finds_the_item_assigned_to_its_id_and_a_stranger_is_no_seat() {
         "the premise: the item is assigned to her id"
     );
     let note = a_note(scratch, "by-name", WHOLE);
-    let fleet = fleet_of(&["Orla"]);
+    let fleet = fleet_of(&["Orla", REVIEWER]);
     let run = |by: &str, item: Option<&str>| {
         deliver::deliver(
             &mut Vec::new(),
@@ -983,7 +1074,10 @@ fn a_name_finds_the_item_assigned_to_its_id_and_a_stranger_is_no_seat() {
 
     let delivered = run("orla", None).expect("orla finds her item");
     assert_eq!(delivered.item, item, "the item assigned to Orla's id");
-    assert_eq!(read(scratch, &item).assignee.as_deref(), Some(REVIEWER));
+    assert_eq!(
+        read(scratch, &item).assignee.as_deref(),
+        Some(full(REVIEWER).as_str())
+    );
 }
 
 /// `--item` naming its item by a suffix delivers under the full id: the verb
@@ -1088,7 +1182,7 @@ fn an_absent_reviewer_and_a_failed_ring_both_leave_the_delivery_standing() {
                 events: &StubEvents::default(),
                 project: &project(scratch),
                 ring: &ring,
-                seats: &fleet_of(&[&seat]),
+                seats: &fleet_of(&[&seat, REVIEWER]),
             },
         )
         .expect("the delivery stands");
@@ -1100,9 +1194,20 @@ fn an_absent_reviewer_and_a_failed_ring_both_leave_the_delivery_standing() {
             String::from_utf8_lossy(&err)
         );
         assert!(said.contains(expect), "{label}: {said}");
+        if label == "absent" {
+            // The line names the reviewer as a person reads it — its machine
+            // name — and not by the id the record holds.
+            assert!(
+                said.contains(&format!(
+                    "no live session for {};",
+                    common::agent(REVIEWER).machine_name()
+                )),
+                "{label}: {said}"
+            );
+        }
         assert_eq!(
             read(scratch, &item).assignee.as_deref(),
-            Some(REVIEWER),
+            Some(full(REVIEWER).as_str()),
             "{label}: the handoff is recorded whatever the doorbell did"
         );
     }

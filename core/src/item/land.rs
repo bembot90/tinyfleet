@@ -21,7 +21,7 @@
 //! landing called by a run's record therefore closes AS the reviewer: the
 //! holder check reads that seat, the close and `item.landed` carry it with the
 //! run named beside it, and what licenses the act is the reviewer's own answer
-//! to the hold this run raised. A seat's own landing acts as itself, unchanged.
+//! to the hold this run raised. A seat's own landing acts as itself, by its id.
 //!
 //! IT RUNS IN THE REVIEWER'S OWN WORKTREE, WHEREVER IT WAS CALLED FROM. A
 //! workflow's verbs all run at the registered project's root, which on a box
@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::item::brief::Packs;
-use crate::item::deliver::BRANCH;
+use crate::item::deliver::{named, reviewer_of, BRANCH};
 use crate::item::lane;
 use crate::item::review::last_verdict;
 use crate::item::run;
@@ -51,7 +51,7 @@ use crate::item::{
     TRUNK_BRANCH, VERDICT_MARKERS,
 };
 use crate::policy;
-use crate::seat::identity::{resolve, Kind, SeatId, SeatRef};
+use crate::seat::identity::{Directory, SeatId};
 use crate::store::{Item, Store, StoreError, EXPORT};
 
 /// The landing-note grammar, in core's pack and shadowable like every other
@@ -296,6 +296,9 @@ pub struct Wiring<'a> {
     /// this process. Empty means the caller has none and the children inherit
     /// this process's environment unchanged.
     pub child_path: &'a str,
+    /// The seats this fleet knows: what `[core] reviewer`, the caller and the
+    /// delivery's builder are each resolved among.
+    pub seats: &'a Directory,
 }
 
 /// The landing made.
@@ -338,7 +341,7 @@ pub fn land(
     {
         return land_in(out, err, landing, wiring, true);
     }
-    let root = reviewers_worktree(landing, wiring)?;
+    let root = reviewers_worktree(wiring, landing.machine_dir)?;
     let git = wiring.git.at(&root);
     let linked = git.is_linked_worktree().map_err(Stop::could_not_tell)?;
     let project = Project {
@@ -360,6 +363,7 @@ pub fn land(
             events: wiring.events,
             load: wiring.load,
             child_path: wiring.child_path,
+            seats: wiring.seats,
         },
         linked,
     )
@@ -370,17 +374,18 @@ pub fn land(
 ///
 /// IT REFUSES RATHER THAN FALLING BACK. Every path out of here that is not a
 /// worktree is the primary, and a landing that ran there would squash onto the
-/// trunk checkout somebody else is standing in — so a seat the table does not
-/// name, one it names twice, and a seat it names with no worktree for this
-/// project, are each a refusal naming the seat and the file.
+/// trunk checkout somebody else is standing in — so a seat the table has no
+/// row for, and a seat it names with no worktree for this project, are each a
+/// refusal naming the seat and the file.
 ///
-/// THE REVIEWER IS RESOLVED, not matched: `[core] reviewer` is any seat
-/// argument — the seat's name, its machine name or its id — and core's one
-/// resolver turns it into the row, over each row's `id` and `name`. A row with
-/// no id that parses is no seat this table can name.
-fn reviewers_worktree(landing: &Landing, wiring: &Wiring) -> Result<PathBuf, Stop> {
-    let seat = crate::item::deliver::reviewer_of(wiring.project)?;
-    let table = landing.machine_dir.join(SEATS);
+/// THE REVIEWER IS RESOLVED, then found: `[core] reviewer` is any seat
+/// argument, resolved among the listed seats to one seat, and its row is the
+/// one whose `id` is that seat's. A row with no id that parses is no seat this
+/// table can name.
+fn reviewers_worktree(wiring: &Wiring, machine_dir: &Path) -> Result<PathBuf, Stop> {
+    let reviewer = reviewer_of(wiring.project, wiring.seats)?;
+    let seat = reviewer.machine_name();
+    let table = machine_dir.join(SEATS);
     let body = std::fs::read_to_string(&table).map_err(|e| {
         Stop::could_not_tell(format!(
             "a landing runs from `{seat}`'s own worktree and {} could not be read: {e} — that \
@@ -391,32 +396,25 @@ fn reviewers_worktree(landing: &Landing, wiring: &Wiring) -> Result<PathBuf, Sto
     let document: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
         Stop::could_not_tell(format!("{} is not readable JSON: {e}", table.display()))
     })?;
-    let rows: Vec<(SeatRef, &serde_json::Value)> = document
+    let row = document
         .get(SEAT_ROWS)
         .and_then(serde_json::Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|row| {
-            let text = |key: &str| row.get(key).and_then(serde_json::Value::as_str);
-            let id = SeatId::parse(text("id")?).ok()?;
-            let seat = SeatRef {
-                id,
-                name: text("name").map(str::to_string),
-                kind: Kind::Agent,
-            };
-            Some((seat, row))
+        .find(|row| {
+            row.get("id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|id| SeatId::parse(id).ok())
+                == Some(reviewer.id)
         })
-        .collect();
-    let seats: Vec<SeatRef> = rows.iter().map(|(seat, _)| seat.clone()).collect();
-    let row = match resolve(&seats, &seat) {
-        Ok(index) => rows[index].1,
-        Err(unresolved) => {
-            return Err(Stop::refused(format!(
-                "[core] reviewer = \"{seat}\" {unresolved} in {}",
+        .ok_or_else(|| {
+            Stop::refused(format!(
+                "[core] reviewer is `{seat}` ({}), and {} carries no row for it — a landing runs \
+                 from the reviewer's own worktree and this machine runs no such seat",
+                reviewer.id,
                 table.display()
-            )))
-        }
-    };
+            ))
+        })?;
     let named = row
         .get(WORKTREES)
         .and_then(|trees| trees.get(&wiring.project.name))
@@ -552,22 +550,34 @@ fn run(
             item.id
         )));
     }
-    // WHO CLOSES THIS ITEM. A seat closes as itself. A run closes as the
-    // `[core] reviewer`: the landing is that seat's act, on that seat's
-    // worktree, under a hold that seat cleared, and the run is only what
-    // carried it.
+    // WHO CLOSES THIS ITEM, as a seat id. A seat closes as itself, its actor
+    // resolved among the listed seats. A run closes as the `[core] reviewer`:
+    // the landing is that seat's act, on that seat's worktree, under a hold
+    // that seat cleared, and the run is only what carried it. An actor that is
+    // neither is nobody an item can be held by.
     let by_run = caller_run(wiring.store, landing.by)?;
-    let closer = match &by_run {
-        Some(_) => crate::item::deliver::reviewer_of(wiring.project)?,
-        None => landing.by.to_string(),
+    let closer: SeatId = match &by_run {
+        Some(_) => reviewer_of(wiring.project, wiring.seats)?.id,
+        None => wiring.seats.seat_of(landing.by).ok_or_else(|| {
+            Stop::refused(format!(
+                "{} is neither a seat of this fleet nor a run — whoever closes an item lands its \
+                 work",
+                landing.by
+            ))
+        })?,
     };
+    // The id every write below is made under: the note, the events and the
+    // close are the closer's.
+    let actor = closer.to_string();
+    let closer_named = wiring.seats.label(&closer);
     match item.assignee.as_deref() {
-        Some(seat) if seat == closer => {}
+        Some(seat) if seat == actor => {}
         Some(seat) => {
             return Err(Stop::refused(format!(
-                "{} is held by `{seat}` and not by `{closer}` — whoever closes an item lands its \
-                 work",
-                item.id
+                "{} is held by `{}` and not by `{closer_named}` — whoever closes an item lands \
+                 its work",
+                item.id,
+                named(seat, wiring.seats)
             )))
         }
         None => {
@@ -581,13 +591,13 @@ fn run(
     // answers for nothing, so a run's landing stands on the reviewer's own
     // answer to the hold this run raised and is refused where there is none.
     if let Some(record) = &by_run {
-        licensed(record, &closer)?;
+        licensed(record, closer, wiring.seats)?;
     }
     // The name the landing is written under wherever one is asked for and two
-    // are the fact.
+    // are the fact: the seat a person reads and the id a script can pass.
     let landed_by = match &by_run {
-        Some(record) => format!("{closer} through run {}", record.id),
-        None => closer.clone(),
+        Some(record) => format!("{closer_named} ({actor}) through run {}", record.id),
+        None => format!("{closer_named} ({actor})"),
     };
     let notes = item.notes.clone().unwrap_or_default();
     let accepted = accepted_commit(&item.id, &notes, commit, wiring)?;
@@ -599,7 +609,16 @@ fn run(
         ))
     })?;
     let work_branch = label_value(&delivery, BRANCH).filter(|b| !b.is_empty());
-    let builder = after_dash(&delivery).unwrap_or_else(|| closer.clone());
+    // The builder as the seat the delivery's own line names, by its id; a
+    // delivery a run made names the run, which is no seat, and is kept as
+    // written.
+    let builder = match after_dash(&delivery) {
+        Some(who) => wiring
+            .seats
+            .seat_of(&who)
+            .map_or(who, |seat| seat.to_string()),
+        None => actor.clone(),
+    };
     rows.read(
         out,
         wiring,
@@ -783,7 +802,7 @@ fn run(
         ))
     })?;
     let message_path = work_dir.join("message");
-    std::fs::write(&message_path, message(&item, &marker, &closer, &builder)).map_err(|e| {
+    std::fs::write(&message_path, message(&item, &marker, &actor, &builder)).map_err(|e| {
         Stop::could_not_tell(format!(
             "the commit message at {} could not be written: {e}",
             message_path.display()
@@ -807,7 +826,7 @@ fn run(
         &suite_command,
         &work_dir,
         landing,
-        &closer,
+        &actor,
         wiring,
     )?;
     let suite_rc = readings.last().map(|reading| reading.rc);
@@ -935,7 +954,7 @@ fn run(
             "`{LANDING_NOTE}` writes `{{{name}}}`, which is not a placeholder this verb resolves"
         ))
     })?;
-    wiring.store.note(&item.id, &note, &closer)?;
+    wiring.store.note(&item.id, &note, &actor)?;
     read_back(&item.id, &note, wiring)?;
 
     // (k2) THE TWO EVENTS, after the note has been written and read back and
@@ -948,7 +967,7 @@ fn run(
         announce(
             &item.id,
             CHECK_READ,
-            &closer,
+            &actor,
             wiring,
             serde_json::json!({
                 "item": item.id,
@@ -968,7 +987,7 @@ fn run(
         announce(
             &item.id,
             CHECK_READ,
-            &closer,
+            &actor,
             wiring,
             reading.payload(&item.id, suite_command.as_deref()),
         )?;
@@ -976,7 +995,7 @@ fn run(
     announce(
         &item.id,
         ITEM_LANDED,
-        &closer,
+        &actor,
         wiring,
         serde_json::json!({
             "item": item.id,
@@ -1008,7 +1027,7 @@ fn run(
     };
     wiring
         .store
-        .close(&item.id, &reason, &closer)
+        .close(&item.id, &reason, &actor)
         .map_err(|e| rerun(&item.id, &sha, &e.to_string()))?;
     let closed = read(wiring.store, &item.id)?;
     if closed.status != "closed" {
@@ -1797,19 +1816,23 @@ fn caller_run(store: &dyn Store, by: &str) -> Result<Option<Item>, Stop> {
 ///
 /// The hold is raised on the RUN's record and cleared there, so that record is
 /// where the answer is read; the landing the answer licenses is on the item.
-fn licensed(record: &Item, reviewer: &str) -> Result<(), Stop> {
+/// Whoever answered is resolved among the listed seats and compared with the
+/// reviewer by id, so the reviewer's name, machine name and id each answer as
+/// the one seat they are.
+fn licensed(record: &Item, reviewer: SeatId, seats: &Directory) -> Result<(), Stop> {
+    let wanted = seats.label(&reviewer);
     let notes = record.notes.clone().unwrap_or_default();
     let Some(answer) = last_answer(&notes) else {
         return Err(Stop::refused(format!(
-            "run {} carries no cleared hold — a run lands what `{reviewer}` answered for, and \
+            "run {} carries no cleared hold — a run lands what `{wanted}` answered for, and \
              nobody has answered this run anything",
             record.id
         )));
     };
     match after_dash(&answer) {
-        Some(who) if who == reviewer => Ok(()),
+        Some(who) if seats.seat_of(&who) == Some(reviewer) => Ok(()),
         Some(who) => Err(Stop::refused(format!(
-            "run {}'s last hold was cleared by `{who}` and not by `{reviewer}` — a run lands as \
+            "run {}'s last hold was cleared by `{who}` and not by `{wanted}` — a run lands as \
              the `[core] reviewer` and on that seat's own answer",
             record.id
         ))),

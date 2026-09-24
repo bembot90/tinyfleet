@@ -19,7 +19,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use common::{keys_agree, shared_store, Rooted, Scratch, StubEvents};
+use common::{agent, full, keys_agree, shared_store, Rooted, Scratch, StubEvents};
 use fleet_core::item::brief::{Packs, DELIVERY_NOTE};
 use fleet_core::item::land::{
     self, LandGit, Landed, Landing, Progress, Pushed, Squashed, Wiring, CRITERIA, LANDING_NOTE,
@@ -32,6 +32,7 @@ use fleet_core::item::{
     Git, Project, Stop, CHECK_READ, ITEM_LANDED, LANDING_MARKERS, TRUNK, TRUNK_BRANCH,
     VERDICT_MARKERS,
 };
+use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
 use fleet_core::store::{AssignedItem, Bd, Item, Store, StoreError};
 use fleet_core::test_support::Board;
 
@@ -516,9 +517,35 @@ fn project(scratch: &dyn Rooted) -> Project {
     }
 }
 
-/// The reviewer seat's id, which keys its row in the seat table. Its name is
-/// [`REVIEWER`], so the policy can name it either way.
+/// The reviewer seat's id, which keys its row in the seat table and is what
+/// the item is assigned to. Its name is [`REVIEWER`], so the policy can name it
+/// either way.
 const REVIEWER_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
+
+/// The reviewer seat, as the rig's fleet lists it.
+fn reviewer() -> SeatRef {
+    SeatRef {
+        id: SeatId::parse(REVIEWER_ID).expect("the reviewer's id parses"),
+        name: Some(REVIEWER.to_string()),
+        kind: Kind::Agent,
+    }
+}
+
+/// The seats every landing below is resolved among: the reviewer and the
+/// builder whose delivery it lands.
+fn fleet() -> Directory {
+    let seats = vec![reviewer(), agent(BUILDER)];
+    Directory {
+        listed: seats.clone(),
+        running: seats,
+    }
+}
+
+/// How the note names the closer: the seat a person reads and the id a script
+/// can pass.
+fn closer_named() -> String {
+    format!("{} ({REVIEWER_ID})", reviewer().machine_name())
+}
 
 /// The machine's seat table under the rig's own machine directory: the file a
 /// landing handed the primary reads to find the tree it belongs in. One row per
@@ -602,7 +629,8 @@ fn an_item_on_branch(store: &dyn Store, title: &str, branch: &str) -> String {
 }
 
 /// Built through the trait and not through a binary, so one builder fills
-/// either board.
+/// either board. The reviewer holds it by its full id, as `deliver` hands it
+/// over.
 fn an_item_delivering(
     store: &dyn Store,
     title: &str,
@@ -621,7 +649,7 @@ fn an_item_delivering(
         )
         .expect("the item is filed");
     store
-        .assign(&item, REVIEWER, REVIEWER)
+        .assign(&item, REVIEWER_ID, REVIEWER)
         .expect("the reviewer holds it");
     store
         .note(&item, delivery, BUILDER)
@@ -828,6 +856,7 @@ fn run_against_path(
             events,
             load,
             child_path,
+            seats: &fleet(),
         },
     );
     // Read out before the struct literal: a guard taken in a tail expression
@@ -871,7 +900,7 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_note_and_closes() {
     let kinds: Vec<String> = events.all().into_iter().map(|(kind, _, _)| kind).collect();
     assert_eq!(kinds, vec![CHECK_READ.to_string(), ITEM_LANDED.to_string()]);
     let (actor, reading) = events.one(CHECK_READ);
-    assert_eq!(actor, REVIEWER);
+    assert_eq!(actor, REVIEWER_ID, "the reviewer, by its id");
     keys_agree(CHECK_READ, &reading, &[]);
     assert_eq!(reading["item"], serde_json::json!(item));
     assert_eq!(reading["suite"], serde_json::json!("exit 0"));
@@ -879,7 +908,7 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_note_and_closes() {
     assert_eq!(reading["verdict"], serde_json::json!("green"));
     assert_eq!(reading["reading"], serde_json::json!(1));
     let (actor, landing) = events.one(ITEM_LANDED);
-    assert_eq!(actor, REVIEWER);
+    assert_eq!(actor, REVIEWER_ID);
     keys_agree(ITEM_LANDED, &landing, &[]);
     assert_eq!(landing["item"], serde_json::json!(item));
     assert_eq!(landing["sha"], serde_json::json!(LANDED));
@@ -959,11 +988,11 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_note_and_closes() {
             ("sha", LANDED),
             ("rebased", ""),
             ("trunk", TRUNK_BRANCH),
-            ("actor", REVIEWER),
+            ("actor", &closer_named()),
             ("old", OLD),
             ("new", LANDED),
             ("commit", SHA),
-            ("builder", BUILDER),
+            ("builder", &full(BUILDER)),
             ("tested", "suite: exit 0, rc 0"),
             ("checks", &checks_of(&landed.note)),
         ],
@@ -1051,7 +1080,8 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_note_and_closes() {
 }
 
 /// The marker the project's `[landing] ci_marker` printed rides the commit
-/// subject, and the trailers name both seats.
+/// subject, and the trailers name both seats by their ids: the closer, and the
+/// builder the delivery's own line names, resolved.
 #[test]
 fn the_marker_and_the_two_trailers_ride_the_commit_subject() {
     let scratch = &store();
@@ -1078,12 +1108,12 @@ fn the_marker_and_the_two_trailers_ride_the_commit_subject() {
         "the subject is the item, its title and the marker: {message}"
     );
     assert!(
-        message.contains(&format!("Seat: {REVIEWER}")),
-        "the Seat trailer names the reviewer: {message}"
+        message.contains(&format!("Seat: {REVIEWER_ID}")),
+        "the Seat trailer names the reviewer by id: {message}"
     );
     assert!(
-        message.contains(&format!("Implemented-by: {BUILDER}")),
-        "the Implemented-by trailer names the builder: {message}"
+        message.contains(&format!("Implemented-by: {}", full(BUILDER))),
+        "the Implemented-by trailer names the builder by id: {message}"
     );
 }
 
@@ -2042,8 +2072,9 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
         "and the suite ran there"
     );
 
-    // A REVIEWER THE TABLE DOES NOT HOLD refuses with the resolver's own
-    // reason, naming the value and the table — and the list of seats it does.
+    // A REVIEWER THE FLEET DOES NOT LIST refuses with the resolver's own
+    // reason, naming the key and the value — and the list of seats it does —
+    // before the table is read.
     let stranger = an_item(
         bd,
         "an item whose reviewer the table does not hold",
@@ -2085,7 +2116,65 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
         ran.why()
     );
     assert!(ran.why().contains("a-reviewer-93b9739a"), "{}", ran.why());
+    assert!(
+        git.calls().iter().all(|call| call == "is_linked_worktree"),
+        "nothing was driven anywhere: {:?}",
+        git.calls()
+    );
+
+    // A LISTED REVIEWER THIS MACHINE RUNS NO ROW FOR refuses naming the seat,
+    // its id and the table: the row is found by the resolved id alone.
+    let rowless = an_item(
+        bd,
+        "an item whose reviewer has no row here",
+        Some(("ACCEPTED", SHA)),
+    );
+    let rowless_policy = scratch.root().join("a-reviewer-with-no-row.toml");
+    std::fs::write(
+        &rowless_policy,
+        format!(
+            "[landing]\nci_marker = \"printf '[skip ci]'\"\n\n[core]\nreviewer = \"{BUILDER}\"\n"
+        ),
+    )
+    .expect("the policy is written");
+    let rowless_table = fleet_core::item::table_at(&rowless_policy);
+    let rowless_project = Project {
+        root: scratch.root().to_path_buf(),
+        name: "a-project".to_string(),
+        guards: rowless_table.clone(),
+        policy: rowless_table,
+    };
+    let mut git = StubGit::clean();
+    git.linked = false;
+    let ran = run_against(
+        scratch,
+        bd,
+        &git,
+        &rowless,
+        SHA,
+        &[],
+        None,
+        &rowless_project,
+        Some(&says_where),
+        &StubEvents::default(),
+        &lane::Unread,
+    );
+    assert_eq!(ran.code(), Some(1), "{}", ran.why());
+    assert!(
+        ran.why().starts_with(&format!(
+            "[core] reviewer is `{}` ({}), and ",
+            agent(BUILDER).machine_name(),
+            full(BUILDER)
+        )),
+        "{}",
+        ran.why()
+    );
     assert!(ran.why().contains("config.json"), "{}", ran.why());
+    assert!(
+        git.calls().iter().all(|call| call == "is_linked_worktree"),
+        "nothing was driven anywhere: {:?}",
+        git.calls()
+    );
 
     // THE REVIEWER WITH NO WORKTREE FOR THIS PROJECT refuses, naming the seat
     // and the table. The resolution never falls back to the tree it was handed,
@@ -2187,12 +2276,16 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
         "an item held by another seat",
         Some(("ACCEPTED", SHA)),
     );
-    scratch.assign(&other, BUILDER);
+    scratch.assign(&other, &full(BUILDER));
     let before_other = scratch.json(&other);
     let git = StubGit::clean();
     let ran = run(scratch, bd, &git, &other, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
-    assert!(ran.why().contains(BUILDER), "{}", ran.why());
+    assert!(
+        ran.why().contains(&agent(BUILDER).machine_name()),
+        "{}",
+        ran.why()
+    );
     assert_eq!(scratch.json(&other), before_other);
 
     // No verdict at all.
@@ -4324,9 +4417,12 @@ fn a_run_lands_as_the_reviewer_and_names_the_run_beside_it() {
     // `item.landed`: the reviewer is the actor whose act it is, and `run` is
     // what carried it. The stub's caller is neither name by accident — the run
     // id is what was handed in, and the reviewer is what came back.
-    assert_ne!(run, REVIEWER);
+    assert_ne!(run, REVIEWER_ID);
     let (actor, landing) = events.one(ITEM_LANDED);
-    assert_eq!(actor, REVIEWER, "the landing is the reviewer's act");
+    assert_eq!(
+        actor, REVIEWER_ID,
+        "the landing is the reviewer's act, by its id"
+    );
     keys_agree(ITEM_LANDED, &landing, &[]);
     assert_eq!(landing["run"], serde_json::json!(run));
     assert_eq!(landing["sha"], serde_json::json!(LANDED));
@@ -4339,22 +4435,23 @@ fn a_run_lands_as_the_reviewer_and_names_the_run_beside_it() {
         .unwrap_or_else(|| panic!("the item was closed: {wrote:?}"));
     assert_eq!(
         closed,
-        &format!("close {item} landed {LANDED} through run {run} {REVIEWER}")
+        &format!("close {item} landed {LANDED} through run {run} {REVIEWER_ID}")
     );
 
     // The note a person reads afterwards names both on its own first line.
     assert!(
         landed
             .note
-            .contains(&format!("by {REVIEWER} through run {run}")),
+            .contains(&format!("by {} through run {run}", closer_named())),
         "{}",
         landed.note
     );
 }
 
 /// THE HOLDER GATE STILL HOLDS UNDER A RUN. It compares the item's assignee to
-/// the reviewer the run acts as, so an item some other seat holds is refused
-/// exactly as a seat's own landing of it would be.
+/// the reviewer the run acts as, both as seat ids, so an item another seat's
+/// id holds is refused exactly as a seat's own landing of it would be — and
+/// the refusal names both sides by their labels.
 #[test]
 fn a_runs_landing_is_refused_an_item_another_seat_holds() {
     let board = store();
@@ -4366,7 +4463,7 @@ fn a_runs_landing_is_refused_an_item_another_seat_holds() {
     );
     scratch
         .store
-        .assign(&item, BUILDER, REVIEWER)
+        .assign(&item, &full(BUILDER), REVIEWER)
         .expect("the builder holds it");
     let run = a_run(&scratch.store, Some(REVIEWER));
 
@@ -4383,9 +4480,11 @@ fn a_runs_landing_is_refused_an_item_another_seat_holds() {
     assert_eq!(
         ran.why(),
         format!(
-            "{item} is held by `{BUILDER}` and not by `{REVIEWER}` — whoever closes an item lands \
-             its work"
-        )
+            "{item} is held by `{}` and not by `{}` — whoever closes an item lands its work",
+            agent(BUILDER).machine_name(),
+            reviewer().machine_name()
+        ),
+        "the holder and the closer, compared as ids and named by their labels"
     );
     assert!(
         git.calls()
@@ -4451,4 +4550,114 @@ fn a_runs_landing_is_refused_where_nobody_cleared_its_hold() {
         "the same landing with an answer behind it: {}",
         ran.why()
     );
+}
+
+/// THE LICENCE IS THE REVIEWER'S ANSWER, WHATEVER IT CALLED ITSELF. Whoever
+/// cleared the run's hold is resolved among the listed seats and compared with
+/// the reviewer by id: an answer signed with the reviewer's machine name is
+/// that seat's and licenses the landing, and one signed by another seat is
+/// refused naming both.
+#[test]
+fn a_runs_licence_is_the_reviewers_answer_by_any_name_and_another_seats_is_refused() {
+    let board = store();
+    let scratch = &board;
+
+    let item = an_item(
+        &scratch.store,
+        "an item another seat answered for",
+        Some(("ACCEPTED", SHA)),
+    );
+    let foreign = a_run(&scratch.store, Some(BUILDER));
+    let git = StubGit::clean();
+    let ran = run_as(
+        scratch,
+        &scratch.store,
+        &git,
+        &item,
+        &foreign,
+        &StubEvents::default(),
+    );
+    assert_eq!(ran.code(), Some(1), "{}", ran.why());
+    assert_eq!(
+        ran.why(),
+        format!(
+            "run {foreign}'s last hold was cleared by `{BUILDER}` and not by `{}` — a run lands as \
+             the `[core] reviewer` and on that seat's own answer",
+            reviewer().machine_name()
+        )
+    );
+    assert!(
+        git.calls()
+            .iter()
+            .all(|call| !call.starts_with("push_head")),
+        "nothing was pushed: {:?}",
+        git.calls()
+    );
+
+    // THE CONTROL, on the same item: the reviewer answered under its machine
+    // name, which resolves to the same id the policy's name does.
+    let by_machine_name = a_run(&scratch.store, Some(&reviewer().machine_name()));
+    let git = StubGit::clean();
+    let ran = run_as(
+        scratch,
+        &scratch.store,
+        &git,
+        &item,
+        &by_machine_name,
+        &StubEvents::default(),
+    );
+    assert!(
+        ran.landed.is_ok(),
+        "the reviewer's answer, by its machine name: {}",
+        ran.why()
+    );
+}
+
+/// A SEAT'S OWN LANDING IS MADE BY A SEAT. The caller is resolved among the
+/// listed seats, so the reviewer landing under its id closes as the same seat
+/// its name does; a caller that is neither a seat nor a run's record is
+/// refused before anything is read off the trunk.
+#[test]
+fn a_caller_that_is_neither_a_seat_nor_a_run_is_refused() {
+    let board = store();
+    let scratch = &board;
+    let item = an_item(
+        &scratch.store,
+        "an item a stranger tries to land",
+        Some(("ACCEPTED", SHA)),
+    );
+
+    let git = StubGit::clean();
+    let ran = run_as(
+        scratch,
+        &scratch.store,
+        &git,
+        &item,
+        "a-stranger",
+        &StubEvents::default(),
+    );
+    assert_eq!(ran.code(), Some(1), "{}", ran.why());
+    assert_eq!(
+        ran.why(),
+        "a-stranger is neither a seat of this fleet nor a run — whoever closes an item lands its \
+         work"
+    );
+    assert!(
+        git.calls().iter().all(|call| !call.starts_with("fetch")),
+        "nothing was fetched: {:?}",
+        git.calls()
+    );
+
+    // THE CONTROL: the reviewer, by its full id, lands it as the seat it is.
+    let events = StubEvents::default();
+    let ran = run_as(
+        scratch,
+        &scratch.store,
+        &StubGit::clean(),
+        &item,
+        REVIEWER_ID,
+        &events,
+    );
+    assert!(ran.landed.is_ok(), "the reviewer by id: {}", ran.why());
+    assert_eq!(events.one(ITEM_LANDED).0, REVIEWER_ID);
 }

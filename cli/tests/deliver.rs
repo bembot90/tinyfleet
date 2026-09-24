@@ -131,12 +131,17 @@ impl Rig {
         rig
     }
 
-    /// The policy, listing the delivering seat: `deliver` finds the item a seat
-    /// holds by resolving its actor among the seats the fleet lists.
+    /// The policy, listing the delivering seat and the reviewer: `deliver`
+    /// finds the item a seat holds by resolving its actor among the seats the
+    /// fleet lists, and hands it to the one listed seat `[core] reviewer`
+    /// names, by that seat's id.
     fn init_store(&self) {
         std::fs::write(
             self.project.join("fleet.toml"),
-            format!("{POLICY}{}", common::seat_table_of(&self.seat)),
+            format!(
+                "{POLICY}{}\n[seats.{REVIEWER_ID}]\nkind = \"agent\"\nname = \"{REVIEWER}\"\n",
+                common::seat_table_of(&self.seat)
+            ),
         )
         .expect("the policy is written");
         common::take_a_board(&self.project, "deliver");
@@ -430,7 +435,7 @@ fn a_live_reviewer_is_rung_with_the_item_and_the_commit_the_delivery_made() {
     );
 
     let record = rig.item_json(&item);
-    assert_eq!(record["assignee"], serde_json::json!(REVIEWER));
+    assert_eq!(record["assignee"], serde_json::json!(REVIEWER_ID));
     let notes = record["notes"].as_str().unwrap_or_default();
     assert!(
         notes.contains(&format!("commit:  {head}")),
@@ -504,7 +509,7 @@ fn an_empty_roster_exits_zero_and_the_delivery_stands() {
     let record = rig.item_json(&item);
     assert_eq!(
         record["assignee"],
-        serde_json::json!(REVIEWER),
+        serde_json::json!(REVIEWER_ID),
         "the reassignment recorded the handoff whatever the doorbell did"
     );
     assert!(record["notes"]
@@ -754,7 +759,7 @@ fn a_seat_worktree_beside_an_uncommitted_policy_delivers_through_the_machine_con
         "the commit is made in the SEAT's checkout and carries the staged set"
     );
     let record = rig.item_json(&item);
-    assert_eq!(record["assignee"], serde_json::json!(REVIEWER));
+    assert_eq!(record["assignee"], serde_json::json!(REVIEWER_ID));
     let notes = record["notes"].as_str().unwrap_or_default();
     assert!(
         notes.contains(&format!("commit:  {head}")),

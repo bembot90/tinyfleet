@@ -15,11 +15,12 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::item::brief::Packs;
-use crate::item::deliver::{BASE, COMMIT};
+use crate::item::deliver::{named, BASE, COMMIT};
 use crate::item::{
     control_token, label_value, last_delivery, render, Change, Events, Git, Project, Ring,
     RingOutcome, Stop, ITEM_RETURNED, ITEM_REVIEWED, VERDICT_ACCEPTED, VERDICT_MARKERS,
 };
+use crate::seat::identity::Directory;
 use crate::store::{Item, Store};
 
 /// The verdict grammar, in core's pack and shadowable like every other asset.
@@ -59,6 +60,9 @@ pub struct Wiring<'a> {
     pub project: &'a Project,
     pub ring: &'a dyn Ring,
     pub events: &'a dyn Events,
+    /// The seats this fleet knows, which a return's sentence names the builder
+    /// by.
+    pub seats: &'a Directory,
 }
 
 /// What the review read and wrote.
@@ -397,7 +401,8 @@ fn retur(
         )));
     }
     // The builder is the order index's seat: the record of who was given this
-    // item, which is the one place that says where a return goes.
+    // item, which is the one place that says where a return goes. It is the
+    // seat's full id, which is what the return assigns and rings.
     let Some(builder) = item.orders.as_ref().and_then(|o| o.seat.clone()) else {
         return Err(Stop::refused(format!(
             "{}'s order index names no seat — a return goes to the seat the order named and the \
@@ -452,8 +457,9 @@ fn retur(
         RingOutcome::Absent => {
             let _ = writeln!(
                 out,
-                "{STANDS}: no live session for {builder}; the return stands and their successor \
-                 reads it at wake"
+                "{STANDS}: no live session for {}; the return stands and their successor reads \
+                 it at wake",
+                named(&builder, wiring.seats)
             );
         }
         RingOutcome::Failed(cause) => {

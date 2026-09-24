@@ -50,12 +50,24 @@ fn spawned(what: &str) {
 
 const REVIEWER: &str = "a-reviewer";
 const BUILDER: &str = "a-builder";
+/// The two seats' ids, which the policy lists them under: the item is held by
+/// the reviewer's and ordered to the builder's, as dispatch and deliver write
+/// them.
+const REVIEWER_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
+const BUILDER_ID: &str = "01a0d1f1-0aec-765f-9abe-bfbf2ac3ce32";
+/// How a landing names the reviewer that closed it: its machine name, then
+/// its id.
+const CLOSER: &str = "a-reviewer-93b9739a (01a0d1f1-0aec-765f-9abe-d4f993b9739a)";
 const WORK: &str = "a-builder/feat/the-work";
 /// The second item's branch, for the arm that asks for two landings at once.
 const OTHER: &str = "a-builder/feat/the-other";
 
 const POLICY: &str = "[landing]\nci_marker = \"sh the-marker.sh\"\n\n\
-                      [core]\nreviewer = \"a-reviewer\"\n";
+                      [core]\nreviewer = \"a-reviewer\"\n\n\
+                      [seats.01a0d1f1-0aec-765f-9abe-d4f993b9739a]\n\
+                      kind = \"agent\"\nname = \"a-reviewer\"\n\n\
+                      [seats.01a0d1f1-0aec-765f-9abe-bfbf2ac3ce32]\n\
+                      kind = \"agent\"\nname = \"a-builder\"\n";
 
 /// The test every landing below is handed, as `fleet land --test`: a script
 /// whose exit a seam file sets, so an arm chooses green or red without changing
@@ -581,10 +593,10 @@ impl Rig {
                 "--type",
                 "task",
                 "--assignee",
-                REVIEWER,
+                REVIEWER_ID,
                 "--metadata",
                 &format!(
-                    r#"{{"fleet.orders": {{"v": 1, "by": "an-architect", "kind": "dispatch", "seat": "{BUILDER}", "at": "2026-09-12T00:00:00Z"}}}}"#
+                    r#"{{"fleet.orders": {{"v": 1, "by": "an-architect", "kind": "dispatch", "seat": "{BUILDER_ID}", "at": "2026-09-12T00:00:00Z"}}}}"#
                 ),
                 "--notes",
                 &delivery,
@@ -906,15 +918,15 @@ fn a_green_landing_moves_the_bare_and_closes_the_item() {
     );
     let body = rig.in_bare(&["log", "-1", "--format=%b", "main"]);
     assert!(
-        body.contains(&format!("Seat: {REVIEWER}"))
-            && body.contains(&format!("Implemented-by: {BUILDER}")),
-        "both trailers: {body}"
+        body.contains(&format!("Seat: {REVIEWER_ID}\n"))
+            && body.contains(&format!("Implemented-by: {BUILDER_ID}")),
+        "both trailers, each a seat id: {body}"
     );
 
     // The record.
     let notes = rig.notes();
     assert!(
-        notes.contains(&format!("LANDED {landed} on main by {REVIEWER}")),
+        notes.contains(&format!("LANDED {landed} on main by {CLOSER}")),
         "the note's first line is on the item:\n{notes}"
     );
     assert!(
@@ -948,7 +960,7 @@ fn a_green_landing_moves_the_bare_and_closes_the_item() {
     assert_eq!(reading["rc"], serde_json::json!(0));
     assert_eq!(reading["verdict"].as_str(), Some("green"));
     assert_eq!(reading["reading"], serde_json::json!(1));
-    assert_eq!(events[2]["actor"].as_str(), Some(REVIEWER));
+    assert_eq!(events[2]["actor"].as_str(), Some(REVIEWER_ID));
     assert_eq!(landing["sha"].as_str(), Some(landed.as_str()));
     assert_eq!(
         landing["squash_of"].as_str(),

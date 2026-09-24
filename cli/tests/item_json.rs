@@ -33,6 +33,8 @@ use common::hermetic::Hermetic;
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 const REVIEWER: &str = "ij-a-reviewer";
+/// The reviewer seat's id, which keys its row and its `[seats.<id>]` table.
+const REVIEWER_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
 const BY: &str = "an-architect";
 /// The id of the seat the rig's second dispatch names.
 const OTHER_TARGET_ID: &str = "01a0d1f1-0aec-765f-9abe-00007e3fa2c0";
@@ -186,9 +188,14 @@ impl Rig {
         };
         // The policy lists the seat that delivers and asks: those verbs find
         // the item a seat holds by resolving its actor among the listed seats.
+        // It lists the reviewer too, under its row's id: a delivery goes to the
+        // one listed seat `[core] reviewer` names.
         std::fs::write(
             rig.project.join("fleet.toml"),
-            format!("{POLICY}{}", common::seat_table_of(&rig.seat)),
+            format!(
+                "{POLICY}{}\n[seats.{REVIEWER_ID}]\nkind = \"agent\"\nname = \"{REVIEWER}\"\n",
+                common::seat_table_of(&rig.seat)
+            ),
         )
         .expect("the policy is written");
         common::take_a_board(&rig.project, "item-json");
@@ -198,7 +205,7 @@ impl Rig {
             rig.machine.join("config.json"),
             format!(
                 r#"{{"fleet_toml": {fleet_toml}, "children": [
-                     {{"id": "01a0d1f1-0aec-765f-9abe-d4f993b9739a", "name": "{REVIEWER}",
+                     {{"id": "{REVIEWER_ID}", "name": "{REVIEWER}",
                       "worktrees": {{"a-project": {worktree}}}}},
                      {{"id": "01a0d1f1-0aec-765f-9abe-5c21e8a04b17", "name": "{target}",
                       "worktrees": {{"a-project": {target_worktree}}}}},
