@@ -97,20 +97,14 @@ pub fn command(args: &AddArgs) -> Exit {
     }
     if args.json {
         // THE DOCUMENT REPLACES THE ID on stdout and never joins it, as it does
-        // for every verb under the flag (`envelope.rs`).
-        let mut listed = serde_json::json!({
-            "id": seat.id.to_string(),
-            "kind": seat.kind.as_str(),
-        });
-        if let Some(name) = &seat.name {
-            listed["name"] = serde_json::Value::String(name.clone());
-        }
+        // for every verb under the flag (`envelope.rs`). The seat is the one
+        // object every document names a seat by.
         println!(
             "{}",
             envelope::ok(
                 ADD,
                 &serde_json::json!({
-                    "seat": listed,
+                    "seat": seat,
                     "file": added.file,
                     "minted_identity": added.minted.is_some(),
                 })

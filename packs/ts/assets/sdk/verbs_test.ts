@@ -8,7 +8,15 @@
 // shape, the way `rig.ts` seeds the opening line.
 
 import { assert, assertEquals, assertMatch } from "jsr:@std/assert@1";
-import { HOLDS_DIR, replay, RETAKEN, type Run, Waiting } from "./mod.ts";
+import {
+  type Dispatched,
+  HOLDS_DIR,
+  replay,
+  RETAKEN,
+  type Run,
+  type Seat,
+  Waiting,
+} from "./mod.ts";
 import {
   closes,
   lines,
@@ -23,6 +31,13 @@ const here = import.meta.dirname!;
 interface Faked extends Scratch {
   fake: string;
 }
+
+/** The seat a dispatch's document names: a spawned seat is an agent with no
+ * name, so its object carries none. */
+const SPAWNED: Seat = {
+  id: "01a0d1f1-0aec-765f-9abe-00007e3fa2c0",
+  kind: "agent",
+};
 
 /** The scratch rig with the fake binary in front of the real one. */
 async function scratch(): Promise<Faked> {
@@ -109,7 +124,15 @@ async function oneStep<T>(
 
 Deno.test("AC1 spawn — fleet dispatch <item> --by <run> --json, the seat in the step's result; a reviewer or a model is refused", async () => {
   const s = await scratch();
-  const data = { item: "it-1", state: "dispatched", seat: "tr-1" };
+  // The seat is its object, typed: a name where the object belongs is a type
+  // error, which the directive below asserts at check time.
+  const data: Dispatched = { item: "it-1", state: "dispatched", seat: SPAWNED };
+  const seat: Seat = data.seat;
+  assertEquals(seat.kind, "agent");
+  assertEquals(seat.name, undefined, "a spawned seat carries no name");
+  // @ts-expect-error — a seat is `{id, name?, kind}` and never a bare name.
+  const named: Dispatched = { item: "it-1", state: "dispatched", seat: "tr-1" };
+  assertEquals(typeof named.seat, "string");
   await can(s, "dispatch", { stdout: envelope("dispatch", data) });
   const seen = await oneStep(
     s,
@@ -161,7 +184,7 @@ function recorded(
 }
 
 Deno.test("spawn — a delivery a verdict returned, or a landing closed, is not carried: an item delivered then returned below the start seq is dispatched, and so is one delivered then landed", async () => {
-  const data = { item: "it-1", state: "dispatched", seat: "tr-1" };
+  const data: Dispatched = { item: "it-1", state: "dispatched", seat: SPAWNED };
   for (const after of ["returned", "landed"] as const) {
     const s = await scratch();
     await can(s, "dispatch", { stdout: envelope("dispatch", data) });
@@ -684,7 +707,7 @@ async function fromTheRunDirectory(
 
 Deno.test("a verb runs from the project root under a run-directory cwd: the fake binary, canned to refuse any other cwd, answers dispatch from FLEET_PROJECT while the wrapper's own cwd is the run directory", async () => {
   const s = await scratch();
-  const data = { item: "it-1", state: "dispatched", seat: "tr-1" };
+  const data: Dispatched = { item: "it-1", state: "dispatched", seat: SPAWNED };
   await can(s, "dispatch", {
     stdout: envelope("dispatch", data),
     cwd: s.project,

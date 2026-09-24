@@ -455,16 +455,23 @@ fn dispatch_prints_the_seat_it_named_and_the_trunks_bytes_on_the_stream_the_flag
         "under it, the same bytes on the other stream"
     );
 
-    // The seat the order named, by the FULL ID its name resolved to: the id
-    // is what the record holds, so it is what the document carries.
+    // The seat the order named, as its object: the FULL ID its name resolved
+    // to — the id is what the record holds — beside the name it was asked by
+    // and its kind.
     let data = data_of(&out, "dispatch");
     assert_eq!(data["item"], serde_json::json!(item), "{data}");
     assert_eq!(data["state"], serde_json::json!("dispatched"), "{data}");
     assert_eq!(
-        data["seat"],
+        data["seat"]["id"],
         serde_json::json!(OTHER_TARGET_ID),
         "the seat the order named: {data}"
     );
+    assert_eq!(
+        data["seat"]["name"],
+        serde_json::json!(rig.other_target),
+        "{data}"
+    );
+    assert_eq!(data["seat"]["kind"], serde_json::json!("agent"), "{data}");
     assert_eq!(
         rig.item_json(&item)["assignee"],
         serde_json::json!(OTHER_TARGET_ID),

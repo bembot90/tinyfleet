@@ -14,7 +14,9 @@ use fleet_controller::observe::{
 };
 use fleet_controller::platform::{self, Grant, Listing, GRANT_OK, GRANT_PENDING};
 use fleet_controller::policy::DEFAULT_STOPPED_RECENCY_HOURS;
-use fleet_controller::projection::{render, EffectsView, PolicyView, Projection, SeatRow, VERSION};
+use fleet_controller::projection::{
+    render, EffectsView, PolicyView, Projection, SeatRow, SeatView, VERSION,
+};
 use fleet_core::seat::identity::SeatId;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -743,12 +745,11 @@ fn the_projection_carries_no_pid_and_no_handle() {
     assert_eq!(seen.state, RosterState::Present);
 
     let mut document = projection(Some("2.1.261"), Some("2.1.261"));
-    document.seats = vec![SeatRow::from_observation(
-        "builder-1",
-        Some("Orla"),
-        &seen,
-        Some(1234),
-    )];
+    let orla = Seat {
+        name: Some("Orla".to_string()),
+        ..seat()
+    };
+    document.seats = vec![SeatRow::from_observation(&orla, &seen, Some(1234))];
     let body = render(&document).unwrap();
 
     let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -773,11 +774,12 @@ fn the_projection_carries_no_pid_and_no_handle() {
 /// intent as the fleet's state, and a row that says neither is a permanent seat
 /// on the fleet's default model — which is a reading rather than a silence.
 ///
-/// The forbidden-key shape above, over a PRESENT row: `from_observation` never
-/// reads the `Seat`, so the two fields are set to show that the projection is
-/// not handed them rather than to feed them in, and the state is what has to be
-/// asserted — an Unknown row carries neither key either, and an arm that read
-/// one would pass while a leak scoped to a seat that was found went by.
+/// The forbidden-key shape above, over a PRESENT row: `from_observation` reads
+/// the `Seat` for its id and its name and nothing else, so the two fields are
+/// set to show that the projection is not handed them rather than to feed them
+/// in, and the state is what has to be asserted — an Unknown row carries
+/// neither key either, and an arm that read one would pass while a leak scoped
+/// to a seat that was found went by.
 #[test]
 fn the_projection_carries_no_model_and_no_transient() {
     let configured = Seat {
@@ -798,24 +800,15 @@ fn the_projection_carries_no_model_and_no_transient() {
     );
 
     let mut document = projection(Some("2.1.261"), Some("2.1.261"));
-    // The row the loop publishes: keyed by the seat's id, beside the seat's own
-    // name — which this seat has none of.
-    document.seats = vec![SeatRow::from_observation(
-        &configured.id.to_string(),
-        configured.name.as_deref(),
-        &seen,
-        Some(1234),
-    )];
+    // The row the loop publishes: the seat as its object — which, for this
+    // seat, carries no name.
+    document.seats = vec![SeatRow::from_observation(&configured, &seen, Some(1234))];
     let body = render(&document).unwrap();
 
     // The positive control: the row IS this seat's, so the absences below are
     // the projection's silence and not an empty document.
     let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(parsed["seats"][0]["seat_dir"], configured.id.to_string());
-    assert!(
-        parsed["seats"][0].get("chosen_name").is_none(),
-        "a seat with no name of its own publishes none: {body}"
-    );
+    assert_eq!(parsed["seats"][0]["seat"]["id"], configured.id.to_string());
     assert_eq!(parsed["seats"][0]["roster_state"], "present");
 
     for forbidden in ["\"model\"", "\"transient\"", "a-model"] {
@@ -826,13 +819,72 @@ fn the_projection_carries_no_model_and_no_transient() {
     }
 }
 
+/// A row names its seat as the one object every document carries: `{id, name,
+/// kind}`, and nothing beside it. The two keys it replaced are gone rather than
+/// kept alongside — a reader that still found `seat_dir` would go on keying on
+/// it — and a seat with no name of its own carries no `name` key at all, which
+/// a reader can tell from a name that is empty.
+#[test]
+fn a_row_names_its_seat_as_the_id_the_name_and_the_kind() {
+    let orla = Seat {
+        name: Some("Orla".to_string()),
+        ..seat()
+    };
+    let seen = observe_seat(
+        &roster(&[live(WORKTREE, "a-session")]),
+        &orla,
+        2_000,
+        &started(),
+    );
+    let nameless = Seat {
+        id: id(TRANSIENT_ID),
+        worktrees: vec![("demo".to_string(), OTHER.to_string())],
+        ..seat()
+    };
+    let unseen = observe_seat(&roster(&[]), &nameless, 2_000, &started());
+
+    let mut document = projection(Some("2.1.261"), Some("2.1.261"));
+    document.seats = vec![
+        SeatRow::from_observation(&orla, &seen, Some(1234)),
+        SeatRow::from_observation(&nameless, &unseen, None),
+    ];
+    let body = render(&document).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    assert_eq!(
+        parsed["seats"][0]["seat"],
+        serde_json::json!({ "id": SEAT_ID, "name": "Orla", "kind": "agent" }),
+        "{body}"
+    );
+    for retired in ["seat_dir", "chosen_name"] {
+        assert!(
+            parsed["seats"][0].get(retired).is_none(),
+            "the row carries no {retired}: {body}"
+        );
+    }
+    assert_eq!(
+        parsed["seats"][1]["seat"],
+        serde_json::json!({ "id": TRANSIENT_ID, "kind": "agent" }),
+        "{body}"
+    );
+    assert!(
+        parsed["seats"][1]["seat"].get("name").is_none(),
+        "a nameless seat's object has no name key: {body}"
+    );
+
+    // And the reader `fleet status` uses takes the document back.
+    let read: Projection = serde_json::from_str(&body).expect("the writer's own document");
+    assert_eq!(read.seats[0].seat.name.as_deref(), Some("Orla"));
+    assert_eq!(read.seats[1].seat.name, None);
+}
+
 /// An Unknown seat publishes its cause and no context figure: a reading nobody
 /// took is a named absence, never a stale number carried forward.
 #[test]
 fn an_unknown_seat_publishes_its_cause_and_no_reading() {
     let seen = observe_seat(&parse_roster(""), &seat(), 2_000, &started());
     let mut document = projection(Some("2.1.261"), Some("2.1.261"));
-    document.seats = vec![SeatRow::from_observation("builder-1", None, &seen, None)];
+    document.seats = vec![SeatRow::from_observation(&seat(), &seen, None)];
     let parsed: serde_json::Value = serde_json::from_str(&render(&document).unwrap()).unwrap();
     assert_eq!(parsed["seats"][0]["roster_state"], "unknown");
     assert!(parsed["seats"][0]["context_tokens"].is_null());
@@ -1156,17 +1208,19 @@ fn a_logged_out_first_turn_yields_one_dispatch_failure_and_an_answered_one_yield
     ));
 
     // The line's own content: the seat and the item the order index named.
+    let builder = SeatView::from(&seat().as_ref());
     let payload = events::dispatch_failed_payload(
-        "builder-9",
+        &builder,
         Some("an-item"),
         fleet_controller::observe::AUTHENTICATION_FAILED,
     );
-    assert_eq!(payload["seat"], "builder-9");
+    assert_eq!(payload["seat"]["id"], SEAT_ID);
+    assert_eq!(payload["seat"]["kind"], "agent");
     assert_eq!(payload["item"], "an-item");
     assert_eq!(payload["cause"], "authentication_failed");
     // A start no order accompanied carries the key as null rather than dropping
     // it, so a reader meets a field it can read as absent.
-    let no_item = events::dispatch_failed_payload("builder-9", None, "authentication_failed");
+    let no_item = events::dispatch_failed_payload(&builder, None, "authentication_failed");
     assert!(
         no_item.get("item").is_some_and(|v| v.is_null()),
         "{no_item}"

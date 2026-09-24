@@ -135,13 +135,18 @@ pub const CONTROLLER_TYPES: [&str; 19] = [
     ROUTINE_COULD_NOT_TELL,
 ];
 
-/// What a [`DISPATCH_FAILED`] line carries: the seat that came up logged out, the
-/// item the order index named, and the provider's own cause.
+/// What a [`DISPATCH_FAILED`] line carries: the seat that came up logged out, as
+/// its `{id, name?, kind}` object, the item the order index named, and the
+/// provider's own cause.
 ///
 /// The item is `None` on a start no order accompanied, and the key is present
 /// carrying null rather than dropped, so a reader folding the line meets a field
 /// it can read as absent instead of a shape that varies.
-pub fn dispatch_failed_payload(seat: &str, item: Option<&str>, cause: &str) -> serde_json::Value {
+pub fn dispatch_failed_payload(
+    seat: &crate::projection::SeatView,
+    item: Option<&str>,
+    cause: &str,
+) -> serde_json::Value {
     serde_json::json!({ "seat": seat, "item": item, "cause": cause })
 }
 
@@ -686,11 +691,18 @@ mod tests {
         // cause — and the item key is PRESENT carrying null on a start no order
         // accompanied, so a reader folding the line meets a field it can read as
         // absent rather than a shape that varies.
-        let named = dispatch_failed_payload("builder-9", Some("an-item"), "authentication_failed");
-        assert_eq!(named["seat"], "builder-9");
+        let builder = crate::projection::SeatView {
+            id: "01a0d1f1-0aec-765f-9abe-5c21e8a04b17".to_string(),
+            name: Some("Orla".to_string()),
+            kind: "agent".to_string(),
+        };
+        let named = dispatch_failed_payload(&builder, Some("an-item"), "authentication_failed");
+        assert_eq!(named["seat"]["id"], "01a0d1f1-0aec-765f-9abe-5c21e8a04b17");
+        assert_eq!(named["seat"]["name"], "Orla");
+        assert_eq!(named["seat"]["kind"], "agent");
         assert_eq!(named["item"], "an-item");
         assert_eq!(named["cause"], "authentication_failed");
-        let unordered = dispatch_failed_payload("builder-9", None, "authentication_failed");
+        let unordered = dispatch_failed_payload(&builder, None, "authentication_failed");
         assert!(
             unordered.get("item").is_some_and(|item| item.is_null()),
             "{unordered}"

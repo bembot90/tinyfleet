@@ -159,6 +159,25 @@ impl SeatRef {
     }
 }
 
+/// THE ONE MACHINE-READABLE SEAT: `{"id", "name", "kind"}`, in that order, the
+/// name absent — never null — where the seat has none. Every event payload and
+/// `--json` document that names a seat carries this object, so a reader keys
+/// on the id and never has to parse a machine name back apart.
+impl serde::Serialize for SeatRef {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let fields = if self.name.is_some() { 3 } else { 2 };
+        let mut object = serializer.serialize_struct("Seat", fields)?;
+        object.serialize_field("id", &self.id)?;
+        match &self.name {
+            Some(name) => object.serialize_field("name", name)?,
+            None => object.skip_field("name")?,
+        }
+        object.serialize_field("kind", self.kind.as_str())?;
+        object.end()
+    }
+}
+
 /// One `[seats.<id>]` table.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Seat {

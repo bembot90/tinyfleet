@@ -173,7 +173,7 @@ impl Rig {
     fn projection(&self, state: &str, age: u64) -> &Rig {
         self.publish(&format!(
             r#"{{"version": 1, "generated_at": "{at}", "fleet": {{"poll_seconds": {POLL_SECONDS}}},
-                 "seats": [{{"seat_dir": "{SEAT_ID}", "roster_state": "{state}"}}]}}"#,
+                 "seats": [{{"seat": {{"id": "{SEAT_ID}", "kind": "agent"}}, "roster_state": "{state}"}}]}}"#,
             at = stamp_secs_ago(age),
         ))
     }
@@ -182,7 +182,7 @@ impl Rig {
     fn projection_without_the_seat(&self) -> &Rig {
         self.publish(&format!(
             r#"{{"version": 1, "generated_at": "{at}", "fleet": {{"poll_seconds": {POLL_SECONDS}}},
-                 "seats": [{{"seat_dir": "someone-else", "roster_state": "present"}}]}}"#,
+                 "seats": [{{"seat": {{"id": "someone-else", "kind": "agent"}}, "roster_state": "present"}}]}}"#,
             at = stamp_secs_ago(0),
         ))
     }

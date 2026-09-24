@@ -10,7 +10,7 @@ use crate::events::{self, EventLog, CONTROLLER};
 use crate::observe::{self, RosterState, SeatObservation};
 use crate::platform;
 use crate::policy::{self, Policy};
-use crate::projection::{self, InFlight, PolicyView, Projection, SeatRow};
+use crate::projection::{self, InFlight, PolicyView, Projection, SeatRow, SeatView};
 use crate::routines;
 use crate::sessions::{self, SeatState, Table};
 use fleet_core::seat::identity::SeatId;
@@ -632,7 +632,7 @@ impl<'a> Observer<'a> {
 
         let mut observations: Vec<(usize, SeatObservation, Option<u64>)> = Vec::new();
         let mut seats = Vec::with_capacity(self.config.seats.len());
-        let mut logged_out: Vec<(SeatId, String, Option<String>)> = Vec::new();
+        let mut logged_out: Vec<(SeatView, String, Option<String>)> = Vec::new();
         for (index, seat) in self.config.seats.iter().enumerate() {
             let machine_name = seat.machine_name();
             // What the session table and the projection key this seat on.
@@ -689,7 +689,7 @@ impl<'a> Observer<'a> {
                 body.as_deref(),
             ) {
                 logged_out.push((
-                    seat.id,
+                    SeatView::from(&seat.as_ref()),
                     machine_name.clone(),
                     self.table.newest_for(&key).and_then(|row| row.item.clone()),
                 ));
@@ -736,11 +736,10 @@ impl<'a> Observer<'a> {
                     self.pidless_since.remove(&seat.id);
                 }
             }
-            // The row is the seat's id, beside the seat's own name where it has
-            // one.
+            // The row names the seat as its object: the id, the seat's own name
+            // where it has one, and its kind.
             seats.push(SeatRow::from_observation(
-                &key,
-                seat.name.as_deref(),
+                seat,
                 &observation,
                 context_tokens,
             ));
@@ -754,9 +753,9 @@ impl<'a> Observer<'a> {
         for (seat, machine_name, item) in &logged_out {
             if let Err(e) = self.events_log.append(
                 events::DISPATCH_FAILED,
-                &seat.to_string(),
+                &seat.id,
                 events::dispatch_failed_payload(
-                    machine_name,
+                    seat,
                     item.as_deref(),
                     observe::AUTHENTICATION_FAILED,
                 ),
@@ -1279,7 +1278,7 @@ fn act(
                 return Outcome::None;
             };
             document.in_flight = Some(InFlight {
-                seat: seat.id.to_string(),
+                seat: SeatView::from(&seat.as_ref()),
                 effect: verdict.as_str().to_string(),
             });
             write_projection(machine_dir, document);

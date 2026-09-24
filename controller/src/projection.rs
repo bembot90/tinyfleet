@@ -11,7 +11,9 @@
 //! parts in one release.
 
 use crate::adapter::dir_key;
+use crate::config;
 use crate::observe::SeatObservation;
+use fleet_core::seat::identity::{Kind, SeatId, SeatRef};
 use serde::{Deserialize, Serialize};
 
 /// Bumped by any breaking change to the shape below. A reader that meets a
@@ -60,9 +62,51 @@ pub struct Projection {
 
 #[derive(Serialize, Deserialize)]
 pub struct InFlight {
-    /// The seat's id, as its row's `seat_dir` carries it.
-    pub seat: String,
+    /// The seat, as its row's `seat` carries it.
+    pub seat: SeatView,
     pub effect: String,
+}
+
+/// A seat as every machine-readable document names it: `{id, name?, kind}`.
+///
+/// THE ID IS WHAT A READER KEYS ON, whole and hyphenated. The name is the
+/// seat's own, absent — never null — where it has none, and free to change;
+/// the kind is `agent` or `human`. The reader half is strings rather than the
+/// typed id, so a row this build cannot parse is still a row `fleet status`
+/// prints rather than a document it refuses whole.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SeatView {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub name: Option<String>,
+    pub kind: String,
+}
+
+impl From<&SeatRef> for SeatView {
+    fn from(seat: &SeatRef) -> Self {
+        Self {
+            id: seat.id.to_string(),
+            name: seat.name.clone(),
+            kind: seat.kind.as_str().to_string(),
+        }
+    }
+}
+
+impl SeatView {
+    /// `<slug>-<short>`, the name a person reads a seat by — or the id as it
+    /// was published, where the id or the kind is not one this build reads,
+    /// because a line naming the text it was handed beats one naming nothing.
+    pub fn machine_name(&self) -> String {
+        match (SeatId::parse(&self.id), Kind::parse(&self.kind)) {
+            (Ok(id), Some(kind)) => SeatRef {
+                id,
+                name: self.name.clone(),
+                kind,
+            }
+            .machine_name(),
+            _ => self.id.clone(),
+        }
+    }
 }
 
 /// `on`, or `off` with the cause. A loop that cannot exec the agent still
@@ -140,11 +184,8 @@ pub struct PolicyView {
 
 #[derive(Serialize, Deserialize)]
 pub struct SeatRow {
-    /// The seat's id, as its hyphenated string: what a reader finds the row by.
-    pub seat_dir: String,
-    /// The seat's own name, absent where it has none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chosen_name: Option<String>,
+    /// The seat: a reader finds the row by its `id`.
+    pub seat: SeatView,
     pub roster_state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roster_unknown_cause: Option<String>,
@@ -181,14 +222,12 @@ pub struct SeatRow {
 
 impl SeatRow {
     pub fn from_observation(
-        seat_dir: &str,
-        chosen_name: Option<&str>,
+        seat: &config::Seat,
         observation: &SeatObservation,
         context_tokens: Option<u64>,
     ) -> Self {
         Self {
-            seat_dir: seat_dir.to_string(),
-            chosen_name: chosen_name.map(str::to_string),
+            seat: SeatView::from(&seat.as_ref()),
             roster_state: observation.state.as_str().to_string(),
             roster_unknown_cause: observation.unknown_cause.clone(),
             waiting_for: observation.waiting_for.clone(),
@@ -227,6 +266,19 @@ mod tests {
     use super::*;
     use crate::observe::RosterState;
 
+    const BUILDER_1: &str = "01a0d1f1-0aec-765f-9abe-5c21e8a04b17";
+    const BUILDER_2: &str = "01a0d1f1-0aec-765f-9abe-2b7c1d0e4f58";
+
+    fn configured(id: &str, name: Option<&str>) -> config::Seat {
+        config::Seat {
+            id: SeatId::parse(id).expect("a hand-written seat id parses"),
+            name: name.map(str::to_string),
+            model: None,
+            transient: false,
+            worktrees: Vec::new(),
+        }
+    }
+
     fn one_seat() -> Projection {
         Projection {
             version: VERSION,
@@ -247,8 +299,7 @@ mod tests {
             grant: crate::platform::GRANT_OK.to_string(),
             grant_detail: None,
             seats: vec![SeatRow::from_observation(
-                "builder-1",
-                Some("Orla"),
+                &configured(BUILDER_1, Some("Orla")),
                 &SeatObservation {
                     state: RosterState::Present,
                     unknown_cause: None,
@@ -287,8 +338,7 @@ mod tests {
     #[test]
     fn the_row_publishes_the_directory_s_own_spelling_and_never_a_guess() {
         let row = SeatRow::from_observation(
-            "builder-1",
-            None,
+            &configured(BUILDER_1, None),
             &SeatObservation {
                 state: RosterState::Absent,
                 unknown_cause: None,
@@ -306,8 +356,7 @@ mod tests {
         assert_eq!(row.worktree.as_deref(), Some("/wt/builder-1"));
 
         let nowhere = SeatRow::from_observation(
-            "builder-2",
-            None,
+            &configured(BUILDER_2, None),
             &SeatObservation {
                 state: RosterState::Absent,
                 unknown_cause: None,
@@ -351,13 +400,14 @@ mod tests {
         // The control for the loop above: a key the same row DOES carry is
         // found by the same search, so the four absences are the attribute's
         // doing and not a `contains` that matches nothing.
-        assert!(body.contains("chosen_name"), "{body}");
+        assert!(body.contains("\"name\""), "{body}");
 
         let read: Projection = serde_json::from_str(&body).expect("the writer's own document");
         assert_eq!(read.version, VERSION);
         assert_eq!(read.fleet.poll_seconds, 5);
         assert_eq!(read.seats.len(), 1);
-        assert_eq!(read.seats[0].seat_dir, "builder-1");
+        assert_eq!(read.seats[0].seat.id, BUILDER_1);
+        assert_eq!(read.seats[0].seat.name.as_deref(), Some("Orla"));
         assert_eq!(read.seats[0].context_tokens, Some(42));
         assert_eq!(read.fleet_parse_error, None);
 
@@ -376,5 +426,36 @@ mod tests {
         assert_eq!(parsed["seats"][0]["context_tokens"], 42);
         assert_eq!(parsed["seats"][0]["project"], "demo");
         assert_eq!(parsed["version"], VERSION);
+    }
+
+    /// The row's object and the one core serializes a seat as are the same
+    /// document, key for key and in the same order: the projection and the
+    /// stream name a seat one way, whichever half wrote it.
+    #[test]
+    fn a_seat_view_is_the_object_core_writes_for_the_same_seat() {
+        for name in [Some("Orla"), None] {
+            let seat = configured(BUILDER_1, name).as_ref();
+            assert_eq!(
+                serde_json::to_string(&SeatView::from(&seat)).unwrap(),
+                serde_json::to_string(&seat).unwrap(),
+                "{name:?}"
+            );
+        }
+    }
+
+    /// The name a person reads is the machine name, and a row whose id this
+    /// build cannot parse still prints as the text it carries.
+    #[test]
+    fn a_seat_view_is_read_by_its_machine_name_or_else_its_id() {
+        let orla = SeatView::from(&configured(BUILDER_1, Some("Orla")).as_ref());
+        assert_eq!(orla.machine_name(), "orla-e8a04b17");
+        let nameless = SeatView::from(&configured(BUILDER_2, None).as_ref());
+        assert_eq!(nameless.machine_name(), "agent-1d0e4f58");
+        let unread = SeatView {
+            id: "builder-1".to_string(),
+            name: None,
+            kind: "agent".to_string(),
+        };
+        assert_eq!(unread.machine_name(), "builder-1");
     }
 }

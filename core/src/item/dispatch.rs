@@ -24,7 +24,7 @@ use crate::item::{
     control_token, render, Events, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner, Stop,
     ITEM_DISPATCHED, NO_SESSION, REFUSED,
 };
-use crate::seat::identity::{Directory, SeatRef};
+use crate::seat::identity::{Directory, Kind, SeatId, SeatRef};
 use crate::store::{keys, Item, Orders, Store, StoreError};
 
 /// The kind of order this verb writes. The reference's other two grammars —
@@ -136,8 +136,9 @@ pub struct Given {
     pub item: String,
     pub note: String,
     pub brief_path: PathBuf,
-    /// The seat's full id, as the assignee and the index carry it.
-    pub seat: Option<String>,
+    /// The seat the order was given to: its full id, as the assignee and the
+    /// index carry it, with its name and its kind.
+    pub seat: Option<SeatRef>,
     /// Both load-belt readings the spawn was let through on, as the spawner
     /// rendered them. `None` on the named path, which starts nothing and so
     /// runs no belt.
@@ -289,7 +290,7 @@ fn to_named_seat(
     read_back(order, wiring, note, Some(seat), Some(seat))?;
     // A NAMED SEAT WRITES NO BASE: no worktree was cut for this order, so there
     // is no commit the seat started from that this verb could read.
-    announce(order, wiring, seat, None)?;
+    announce(order, wiring, named, None)?;
 
     let brief_path = match order.brief {
         Some(pinned) => pinned.to_path_buf(),
@@ -311,7 +312,7 @@ fn to_named_seat(
             item: order.item.to_string(),
             note: note.to_string(),
             brief_path,
-            seat: Some(seat.to_string()),
+            seat: Some(named.clone()),
             belt: None,
         }),
         RingOutcome::Absent => {
@@ -369,6 +370,22 @@ fn to_a_transient_seat(
         // `seat` is the spawned seat's full id, which is what the assignee and
         // the index carry: a transient seat has no name to be found by.
         SpawnOutcome::Spawned { seat, base, belt } => {
+            // THE SEAT THE SPAWN MADE: an agent, and nameless. An answer that
+            // is no seat id is one no record can key on, so it is a question
+            // asked before the first write that would carry it.
+            let spawned = SeatId::parse(&seat)
+                .map(|id| SeatRef {
+                    id,
+                    name: None,
+                    kind: Kind::Agent,
+                })
+                .map_err(|e| {
+                    Refused::stopped(Stop::could_not_tell(format!(
+                        "{} was ordered and the spawner answered `{seat}`, which no record can \
+                         key on: {e}",
+                        order.item
+                    )))
+                })?;
             wiring
                 .store
                 .assign(order.item, &seat, order.by)
@@ -381,7 +398,7 @@ fn to_a_transient_seat(
                 })?;
             write_order(order, wiring, note, Some(&seat), false).map_err(Refused::stopped)?;
             read_back(order, wiring, note, Some(&seat), Some(&seat)).map_err(Refused::stopped)?;
-            announce(order, wiring, &seat, base.as_deref()).map_err(Refused::stopped)?;
+            announce(order, wiring, &spawned, base.as_deref()).map_err(Refused::stopped)?;
             // The item's own rendering moved under the brief: the assignment
             // and the seat in the index are both in it. Rendered again over the
             // same path, so the file a reader opens is the item as it stands
@@ -399,7 +416,7 @@ fn to_a_transient_seat(
                 item: order.item.to_string(),
                 note: note.to_string(),
                 brief_path,
-                seat: Some(seat),
+                seat: Some(spawned),
                 belt,
             })
         }
@@ -439,10 +456,18 @@ fn to_a_transient_seat(
 /// WHICH DISPATCH THIS IS IS NOT WRITTEN (decision D2). The fold counts the
 /// dispatches it reads; a verb that wrote a count would have to read the stream
 /// to take one, which is the fold's own answer arriving by a second route.
-fn announce(order: &Order, wiring: &Wiring, seat: &str, base: Option<&str>) -> Result<(), Stop> {
+///
+/// THE SEAT IS THE OBJECT `{id, name?, kind}`, off the directory entry the
+/// order resolved to: a reader keys on the id and reads the name beside it.
+fn announce(
+    order: &Order,
+    wiring: &Wiring,
+    seat: &SeatRef,
+    base: Option<&str>,
+) -> Result<(), Stop> {
     let mut payload = serde_json::Map::new();
     payload.insert("item".into(), order.item.into());
-    payload.insert("seat".into(), seat.into());
+    payload.insert("seat".into(), serde_json::json!(seat));
     if let Some(base) = base {
         payload.insert("base".into(), base.into());
     }

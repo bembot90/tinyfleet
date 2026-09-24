@@ -16,7 +16,7 @@ use fleet_core::item::brief::Packs;
 use fleet_core::item::land::{self, Release};
 use fleet_core::item::{render, Spawn, SpawnOutcome, Spawner, Stop, COULD_NOT_TELL};
 use fleet_core::seat;
-use fleet_core::seat::identity::SeatId;
+use fleet_core::seat::identity::{Kind, SeatId, SeatRef};
 use fleet_core::store::Store;
 
 use crate::envelope;
@@ -152,7 +152,13 @@ pub fn spawn_command(args: &SpawnArgs) -> Exit {
                     envelope::ok(
                         SPAWN,
                         &serde_json::json!({
-                            "seat": spawned.seat,
+                            // The seat as its object: the id the spawn
+                            // minted, an agent's, and nameless.
+                            "seat": SeatRef {
+                                id: spawned.id,
+                                name: None,
+                                kind: Kind::Agent,
+                            },
                             "worktree": spawned.worktree.display().to_string(),
                             "belt": spawned.belt.payload(),
                             "base": spawned.base,
@@ -176,10 +182,11 @@ pub fn feed_command(args: &FeedArgs) -> Exit {
         Ok(here) => here,
         Err(stop) => return stopped(FEED, &stop, args.json),
     };
-    let seat = match seat_named(&here.machine_dir, &args.seat) {
-        Ok(row) => row.machine_name(),
+    let row = match seat_named(&here.machine_dir, &args.seat) {
+        Ok(row) => row,
         Err(stop) => return stopped(FEED, &stop, args.json),
     };
+    let seat = row.machine_name();
     let first_turn = match turn_text(&args.first_turn) {
         Ok(text) => text,
         Err(stop) => return stopped(FEED, &stop, args.json),
@@ -211,7 +218,7 @@ pub fn feed_command(args: &FeedArgs) -> Exit {
                     envelope::ok(
                         FEED,
                         &serde_json::json!({
-                            "seat": fed.seat,
+                            "seat": row.as_ref(),
                             "prior_first_turn": first_line(&fed.prior),
                             "first_turn": first_line(&fed.next),
                         })
@@ -340,7 +347,7 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
                     envelope::ok(
                         RETIRE,
                         &serde_json::json!({
-                            "seat": reclaimed.seat,
+                            "seat": row.as_ref(),
                             "worktree": reclaimed.worktree,
                             "bytes": reclaimed.bytes,
                             "pid": reclaimed.pid,

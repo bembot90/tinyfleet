@@ -236,7 +236,7 @@ impl Rig {
             .as_array()
             .expect("the projection carries seats")
             .iter()
-            .find(|row| row["seat_dir"] == seat)
+            .find(|row| row["seat"]["id"] == seat)
             .unwrap_or_else(|| panic!("{seat} is published: {document}"))["decision"]
             .as_str()
             .unwrap_or_else(|| panic!("{seat}'s decision is published: {document}"))

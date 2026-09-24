@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use fleet_controller::projection::{self, EffectsView, InFlight, PolicyView, Projection, SeatRow};
+use fleet_controller::projection::{
+    self, EffectsView, InFlight, PolicyView, Projection, SeatRow, SeatView,
+};
 
 use common::hermetic::Hermetic;
 
@@ -173,18 +175,26 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
+/// A nameless agent seat's object, keyed by `id`.
+fn view(id: &str) -> SeatView {
+    SeatView {
+        id: id.to_string(),
+        name: None,
+        kind: "agent".to_string(),
+    }
+}
+
 /// A seat row with everything null that a quiet seat publishes as null.
-fn seat(seat_dir: &str) -> SeatRow {
+fn seat(id: &str) -> SeatRow {
     SeatRow {
-        seat_dir: seat_dir.to_string(),
-        chosen_name: None,
+        seat: view(id),
         roster_state: "present".to_string(),
         roster_unknown_cause: None,
         waiting_for: None,
         roster_recency_fallback: None,
         context_tokens: None,
         project: Some("demo".to_string()),
-        worktree: Some(format!("/wt/{seat_dir}")),
+        worktree: Some(format!("/wt/{id}")),
         decision: "leave-alone".to_string(),
         outcome: "none".to_string(),
         blind: 0,
@@ -222,10 +232,9 @@ fn document(policy_file: &Path, generated_at: &str, seats: Vec<SeatRow>) -> Proj
 fn the_page_prints_every_section() {
     let rig = Rig::new("page");
 
-    let mut busy = seat("builder-1");
-    busy.chosen_name = Some("Orla".to_string());
+    let mut busy = seat_named(BUILDER_1, "Orla");
     busy.context_tokens = Some(250);
-    let mut held = seat("builder-2");
+    let mut held = seat(BUILDER_2);
     held.roster_state = "prompt-blocked".to_string();
     held.waiting_for = Some("a permission dialog".to_string());
     held.halted = true;
@@ -237,7 +246,7 @@ fn the_page_prints_every_section() {
         vec![busy, held],
     );
     doc.in_flight = Some(InFlight {
-        seat: "builder-1".to_string(),
+        seat: busy_view(),
         effect: "dispatch".to_string(),
     });
     rig.publish(&doc);
@@ -259,13 +268,32 @@ fn the_page_prints_every_section() {
     // (b) the grant is answered, so no banner.
     assert!(!page.contains("GRANT PENDING"), "{page}");
 
-    // (c) the roster, with the halt mark and the blind count.
-    assert!(page.contains("builder-1 (Orla)  present"), "{page}");
+    // (c) the roster, with the halt mark and the blind count. A seat is named
+    // by its machine name [ASSUMES D13]: Orla's line starts with hers, and a
+    // nameless seat's with its kind's.
+    let roster: Vec<&str> = page
+        .lines()
+        .skip_while(|line| *line != "roster")
+        .skip(1)
+        .take(2)
+        .collect();
+    assert!(
+        roster[0].starts_with("  orla-e8a04b17  present"),
+        "the roster line starts orla-<short>: {roster:?}"
+    );
+    assert!(
+        roster[1].starts_with("  agent-1d0e4f58  prompt-blocked"),
+        "{roster:?}"
+    );
+    assert!(
+        !page.contains(BUILDER_1),
+        "no human line spells the id: {page}"
+    );
     assert!(
         page.contains("decision leave-alone, outcome none"),
         "{page}"
     );
-    assert!(page.contains("worktree /wt/builder-1"), "{page}");
+    assert!(page.contains("worktree /wt/Orla"), "{page}");
     assert!(
         page.contains("prompt-blocked, waiting for a permission dialog"),
         "{page}"
@@ -274,7 +302,7 @@ fn the_page_prints_every_section() {
 
     // (d) in_flight and effects, one line each.
     assert!(
-        page.contains("\nin flight  builder-1 — dispatch\n"),
+        page.contains("\nin flight  orla-e8a04b17 — dispatch\n"),
         "{page}"
     );
     assert!(page.contains("\neffects  on\n"), "{page}");
@@ -285,11 +313,11 @@ fn the_page_prints_every_section() {
         "{page}"
     );
     assert!(
-        page.contains("builder-1  250 tokens, 25% of the threshold, 750 left"),
-        "{page}"
+        page.contains("\n  orla-e8a04b17  250 tokens, 25% of the threshold, 750 left\n"),
+        "the context row is keyed on the machine name: {page}"
     );
     assert!(
-        page.contains("builder-2  —"),
+        page.contains("\n  agent-1d0e4f58  —\n"),
         "a seat with no reading: {page}"
     );
 
@@ -352,13 +380,18 @@ fn a_stale_projection_a_pending_grant_and_no_rules() {
 const BUILDER_1: &str = "01a0d1f1-0aec-765f-9abe-5c21e8a04b17";
 const BUILDER_2: &str = "01a0d1f1-0aec-765f-9abe-2b7c1d0e4f58";
 
-/// A row keyed by the seat's id, beside the seat's own name, as the loop
-/// publishes it.
+/// A row naming the seat by its id and its own name, as the loop publishes
+/// it.
 fn seat_named(id: &str, name: &str) -> SeatRow {
     let mut row = seat(id);
-    row.chosen_name = Some(name.to_string());
+    row.seat.name = Some(name.to_string());
     row.worktree = Some(format!("/wt/{name}"));
     row
+}
+
+/// The object Orla's row carries, for the in-flight line to name.
+fn busy_view() -> SeatView {
+    seat_named(BUILDER_1, "Orla").seat
 }
 
 /// AC2, the flags: `--json` is the file's bytes and nothing else; `--seat`
@@ -388,10 +421,7 @@ fn the_two_flags_print_what_they_name_and_refuse_what_they_cannot() {
     let one_page = stdout(&one);
     let rows: Vec<&str> = one_page.lines().map(str::trim_end).collect();
     assert_eq!(rows.len(), 2, "two rows and nothing else: {rows:?}");
-    assert!(
-        rows[0].starts_with(&format!("{BUILDER_1} (builder-1)")),
-        "{rows:?}"
-    );
+    assert!(rows[0].starts_with("builder-1-e8a04b17  "), "{rows:?}");
     assert!(
         rows[1].contains("500 tokens, 50% of the threshold, 500 left"),
         "{rows:?}"
@@ -435,10 +465,7 @@ fn status_seat_resolves_its_argument_and_matches_a_name_in_any_case() {
     let page = stdout(&out);
     let rows: Vec<&str> = page.lines().map(str::trim_end).collect();
     assert_eq!(rows.len(), 2, "Orla's two rows and nothing else: {rows:?}");
-    assert!(
-        rows[0].starts_with(&format!("{BUILDER_1} (Orla)")),
-        "{rows:?}"
-    );
+    assert!(rows[0].starts_with("orla-e8a04b17  "), "{rows:?}");
     assert!(
         rows[1].contains("500 tokens, 50% of the threshold, 500 left"),
         "{rows:?}"
@@ -449,7 +476,11 @@ fn status_seat_resolves_its_argument_and_matches_a_name_in_any_case() {
     for arg in ["orla-e8a04b17", "e8a04b17"] {
         let by = rig.run(&["status", "--seat", arg]);
         assert_eq!(by.status.code(), Some(0), "{arg}: {}", stderr(&by));
-        assert!(stdout(&by).starts_with(BUILDER_1), "{arg}: {}", stdout(&by));
+        assert!(
+            stdout(&by).starts_with("orla-e8a04b17  "),
+            "{arg}: {}",
+            stdout(&by)
+        );
     }
 
     // A seat the list carries and the projection does not is refused naming

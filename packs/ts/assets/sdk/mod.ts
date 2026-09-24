@@ -125,11 +125,20 @@ const ITEM_STATES: readonly ItemState[] = [
   "held",
 ];
 
+/** A seat, as every machine-readable document names one: its full id, its
+ * own name where it has one — the key is absent, never null, where it has
+ * none — and its kind. Key on the id; the name is free to change. */
+export interface Seat {
+  id: string;
+  name?: string;
+  kind: "agent" | "human";
+}
+
 /** `fleet dispatch --json`'s data. */
 export interface Dispatched {
   item: string;
   state: string;
-  seat: string;
+  seat: Seat;
 }
 
 /** `fleet deliver --json`'s data. */

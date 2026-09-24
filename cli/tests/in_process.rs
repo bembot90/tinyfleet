@@ -317,7 +317,7 @@ fn one_tick_reaches_the_agent_for_every_call_the_poll_makes_and_publishes_its_ou
     );
 
     let document = rig.projection();
-    assert_eq!(document["seats"][0]["seat_dir"], SEAT_ID, "{document}");
+    assert_eq!(document["seats"][0]["seat"]["id"], SEAT_ID, "{document}");
     assert_eq!(document["seats"][0]["outcome"], "spawned", "{document}");
     assert_eq!(
         document["agent_version"],

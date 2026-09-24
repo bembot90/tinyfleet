@@ -128,7 +128,7 @@ fn rest_is_answerable(machine_dir: &Path, named: &Named) -> Result<(), (u8, Stri
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let row = seats.iter().find(|row| row["seat_dir"] == named.key);
+    let row = seats.iter().find(|row| row["seat"]["id"] == named.key);
     let state = match row {
         None => None,
         Some(row) => row["roster_state"].as_str(),
@@ -180,7 +180,7 @@ fn clear_halt_is_answerable(machine_dir: &Path, named: &Named) -> Result<(), (u8
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let row = seats.iter().find(|row| row["seat_dir"] == named.key);
+    let row = seats.iter().find(|row| row["seat"]["id"] == named.key);
     match row {
         Some(row) if row["halted"].as_bool() == Some(true) => Ok(()),
         Some(row) => Err((

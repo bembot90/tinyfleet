@@ -383,7 +383,12 @@ fn a_named_dispatch_writes_the_assignee_the_note_and_the_index() {
     assert_eq!(actor, BY);
     keys_agree(ITEM_DISPATCHED, &payload, &["base", "role", "reason"]);
     assert_eq!(payload["item"], serde_json::json!(item));
-    assert_eq!(payload["seat"], serde_json::json!(seat));
+    // The seat as the object every document carries: her id, her name and her
+    // kind, off the directory entry `--to` resolved to.
+    assert_eq!(
+        payload["seat"],
+        serde_json::json!({ "id": seat, "name": "Orla", "kind": "agent" })
+    );
 
     let calls = ring.calls();
     assert_eq!(calls.len(), 1, "one ring, to the seat that was named");
@@ -1360,7 +1365,12 @@ mod transient {
         assert_eq!(actor, BY, "the actor is the verb's own `by`");
         keys_agree(ITEM_DISPATCHED, &payload, &["role", "reason"]);
         assert_eq!(payload["item"], serde_json::json!(item));
-        assert_eq!(payload["seat"], serde_json::json!(full("t1")));
+        // The spawned seat: an agent, and nameless, so the object carries no
+        // name key at all.
+        assert_eq!(
+            payload["seat"],
+            serde_json::json!({ "id": full("t1"), "kind": "agent" })
+        );
         assert_eq!(
             payload["base"],
             serde_json::json!("0123456789abcdef0123456789abcdef01234567")
@@ -1423,6 +1433,30 @@ mod transient {
             0,
             "a withdrawn order announces nothing: the event follows the seat"
         );
+    }
+
+    /// A spawner that answers something no seat id parses from has handed back
+    /// a seat no record can key on: the verb stops at could-not-tell before it
+    /// assigns or announces anything, and the order it wrote stands.
+    #[test]
+    fn a_spawned_seat_that_is_no_seat_id_is_could_not_tell_before_the_assignee() {
+        let rig = Rig::new("no-id");
+        let item = rig.graph.item("a ready item whose spawner answers a name");
+        let ring = StubRing::answering(RingOutcome::Delivered);
+        let spawner = StubSpawner::answering(SpawnOutcome::Spawned {
+            seat: String::from("agent-1d0e4f58"),
+            base: None,
+            belt: None,
+        });
+
+        let answer = rig.run(&item, None, &[], rig.graph.store(), &ring, &spawner);
+        assert_eq!(answer.code, Some(3), "{}", answer.why);
+        assert!(answer.why.contains("`agent-1d0e4f58`"), "{}", answer.why);
+
+        let read = rig.graph.store().show(&item).expect("the item reads back");
+        assert_eq!(read.assignee, None, "nobody was assigned");
+        assert!(read.has_orders_key, "the order stands: {:?}", read.orders);
+        assert_eq!(rig.events.count(), 0, "and nothing was announced");
     }
 
     /// AC1 of the could-not-tell spec — a spawn nobody could OBSERVE is not a refusal, so

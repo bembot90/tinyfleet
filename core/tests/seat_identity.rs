@@ -80,6 +80,27 @@ fn a_seat_id_serializes_through_its_string_form() {
     assert!(serde_json::from_str::<SeatId>("\"orla\"").is_err());
 }
 
+/// Every machine-readable seat is the one object `{id, name?, kind}`: the id
+/// whole, the name only where the seat has one, and the kind as its word. The
+/// order is asserted on the text, because a document a person reads puts the
+/// id first.
+#[test]
+fn a_seat_serializes_as_its_id_its_name_where_it_has_one_and_its_kind() {
+    let a = "11111111-aaaa-7bbb-8ccc-0000deadbeef";
+    let named = serde_json::to_string(&seat(a, Some("Orla"), Kind::Agent)).expect("serializes");
+    assert_eq!(
+        named,
+        format!(r#"{{"id":"{a}","name":"Orla","kind":"agent"}}"#)
+    );
+
+    let nameless = serde_json::to_value(seat(a, None, Kind::Human)).expect("serializes");
+    assert_eq!(nameless, serde_json::json!({ "id": a, "kind": "human" }));
+    assert!(
+        nameless.get("name").is_none(),
+        "a seat with no name carries no key: {nameless}"
+    );
+}
+
 // ---- short [ASSUMES D1] -----------------------------------------------------
 
 /// The 48-bit millisecond timestamp a v7 id opens with, read off the id itself.

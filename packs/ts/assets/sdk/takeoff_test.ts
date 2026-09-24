@@ -53,7 +53,14 @@ async function scratch(): Promise<Faked> {
   );
   await Deno.chmod(script, 0o755);
   const t = { ...s, fake, env: { ...s.env, bin: script } };
-  await can(t, "dispatch", { item: "x", state: "dispatched", seat: "tr-1" });
+  await can(t, "dispatch", {
+    item: "x",
+    state: "dispatched",
+    seat: {
+      id: "01a0d1f1-0aec-765f-9abe-00007e3fa2c0",
+      kind: "agent",
+    },
+  });
   await can(t, "review", { item: "x", state: "reviewed" });
   await can(t, "land", { item: "x", state: "landed", sha: "fedcba9" });
   return t;

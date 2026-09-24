@@ -544,7 +544,7 @@ mod effects {
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         assert_eq!(seat_row(&rig)["outcome"], "spawned");
         assert_eq!(
-            seat_row(&rig)["seat_dir"],
+            seat_row(&rig)["seat"]["id"],
             SEAT_ID,
             "the row is the seat's id"
         );
@@ -1786,7 +1786,11 @@ mod isolation {
             .find(|e| e["type"] == "dispatch.failed")
             .expect("the line is on the stream");
         assert_eq!(line["actor"], SEAT_ID);
-        assert_eq!(line["payload"]["seat"], SEAT);
+        assert_eq!(
+            line["payload"]["seat"],
+            serde_json::json!({ "id": SEAT_ID, "name": "Orla", "kind": "agent" }),
+            "the seat as its object: {line}"
+        );
         assert_eq!(line["payload"]["item"], "an-item");
         assert_eq!(line["payload"]["cause"], "authentication_failed");
 

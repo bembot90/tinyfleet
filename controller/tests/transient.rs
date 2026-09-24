@@ -2818,7 +2818,13 @@ fn a_priced_retire_reads_the_cost_the_branch_and_the_commit_before_it_reclaims()
     let retired = rig.events_of(events::SESSION_RETIRED);
     assert_eq!(retired.len(), 1, "and the cost is another: {retired:?}");
     let payload = &retired[0]["payload"];
-    assert_eq!(payload["seat"], seat);
+    // The seat as its object: the id the stream keys it on, an agent's, and
+    // nameless — a spawned seat has no name of its own.
+    assert_eq!(
+        payload["seat"],
+        serde_json::json!({ "id": id, "kind": "agent" }),
+        "{payload}"
+    );
     assert_eq!(payload["item"], "an-item");
     assert_eq!(payload["context_tokens"], 60);
     assert_eq!(payload["turns"], 4);

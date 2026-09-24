@@ -178,7 +178,7 @@ fn published_live(document: &serde_json::Value, key: &str, seat: &str) -> Result
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let Some(row) = seats.iter().find(|row| row["seat_dir"] == key) else {
+    let Some(row) = seats.iter().find(|row| row["seat"]["id"] == key) else {
         return Err(format!(
             "the projection carries no row for `{seat}` — the collector is what makes a seat one \
              of this fleet's, so a session it has not published is not one this verb rings"

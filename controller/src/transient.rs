@@ -35,6 +35,7 @@ use crate::effect::{self, Outcome, Target};
 use crate::events::{self, EventLog};
 use crate::platform;
 use crate::policy::Policy;
+use crate::projection::SeatView;
 use crate::sessions::{self, Table};
 use fleet_core::seat::identity::{resolve, SeatId, SeatRef};
 use std::path::{Path, PathBuf};
@@ -1658,9 +1659,8 @@ pub fn priced_with(
     let seats = machine.seats()?;
     let row = machine.transient_row(&seats, seat)?;
     // From here the session table and the stream are asked by the seat's id,
-    // and the line's payload names it by its machine name.
-    let name = row.machine_name();
-    let seat = name.as_str();
+    // and the line's payload names the seat as its `{id, name?, kind}` object.
+    let seat = SeatView::from(&row.as_ref());
     let seat_id = row.id.to_string();
     let worktree = machine.worktree_of(&row)?;
 

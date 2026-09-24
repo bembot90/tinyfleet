@@ -357,7 +357,7 @@ fn whole_page(out: &mut dyn Write, document: &Projection, read: &Read) -> Result
         out,
         "\nin flight  {}",
         match &document.in_flight {
-            Some(held) => format!("{} — {}", held.seat, held.effect),
+            Some(held) => format!("{} — {}", held.seat.machine_name(), held.effect),
             None => String::from("nothing"),
         }
     ))?;
@@ -401,11 +401,11 @@ fn first_line(out: &mut dyn Write, document: &Projection, read: &Read) -> std::i
     )
 }
 
+/// A seat's line, opening on its machine name [ASSUMES D13]: the name a person
+/// reads and types back, which carries the seat's own name and the tail of its
+/// id. `--json` is where the id is spelled whole.
 fn roster_row(row: &SeatRow) -> String {
-    let mut line = row.seat_dir.clone();
-    if let Some(name) = &row.chosen_name {
-        line.push_str(&format!(" ({name})"));
-    }
+    let mut line = row.seat.machine_name();
     line.push_str(&format!("  {}", row.roster_state));
     if let Some(waiting) = &row.waiting_for {
         line.push_str(&format!(", waiting for {waiting}"));
@@ -451,14 +451,14 @@ fn context_section(out: &mut dyn Write, seats: &[SeatRow], read: &Read) -> std::
 /// A seat with no reading prints a dash: null in the document is a measured
 /// absence and never a zero, and a zero here would read as a fresh session.
 fn context_row(row: &SeatRow, threshold: Option<u64>) -> String {
+    let seat = row.seat.machine_name();
     let Some(tokens) = row.context_tokens else {
-        return format!("{}  —", row.seat_dir);
+        return format!("{seat}  —");
     };
     match threshold {
-        None => format!("{}  {tokens} tokens", row.seat_dir),
+        None => format!("{seat}  {tokens} tokens"),
         Some(threshold) => format!(
-            "{}  {tokens} tokens, {}% of the threshold, {} left",
-            row.seat_dir,
+            "{seat}  {tokens} tokens, {}% of the threshold, {} left",
             percent_of(tokens, threshold),
             threshold.saturating_sub(tokens)
         ),
@@ -651,7 +651,7 @@ fn one_seat(
     })?;
     let named = machine.resolve(seat).map_err(Stop::from)?;
     let key = named.id.to_string();
-    let Some(row) = document.seats.iter().find(|row| row.seat_dir == key) else {
+    let Some(row) = document.seats.iter().find(|row| row.seat.id == key) else {
         return Err(Stop::refused(format!(
             "the projection carries no row for `{}` — the collector is what makes a seat one \
              of this fleet's",

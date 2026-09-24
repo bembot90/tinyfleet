@@ -1500,7 +1500,11 @@ fn dispatch_without_a_seat_spawns_through_the_real_spawner_and_assigns_the_name(
     assert_eq!(last["type"].as_str(), Some("item.dispatched"), "{last}");
     assert_eq!(last["actor"].as_str(), Some("an-architect"));
     assert_eq!(last["payload"]["item"].as_str(), Some(item.as_str()));
-    assert_eq!(last["payload"]["seat"].as_str(), Some(id.as_str()));
+    assert_eq!(
+        last["payload"]["seat"],
+        serde_json::json!({ "id": id, "kind": "agent" }),
+        "the spawned seat, nameless: {last}"
+    );
     let head = seen(&worktree, &["rev-parse", "HEAD"]);
     assert_eq!(head.len(), 40, "a commit is 40 hex: {head}");
     assert_eq!(
@@ -1559,9 +1563,9 @@ fn a_named_dispatch_writes_the_event_with_no_base() {
         .expect("the stream carries the dispatch");
     assert_eq!(last["type"].as_str(), Some("item.dispatched"), "{last}");
     assert_eq!(
-        last["payload"]["seat"].as_str(),
-        Some(NAMED_ID),
-        "`--to s-cli-named` is written as the id it resolved to"
+        last["payload"]["seat"],
+        serde_json::json!({ "id": NAMED_ID, "name": "s-cli-named", "kind": "agent" }),
+        "`--to s-cli-named` is written as the seat it resolved to"
     );
     assert!(
         last["payload"].get("base").is_none(),
@@ -1791,6 +1795,20 @@ fn machine_name_of(id: &str) -> String {
     fleet_core::seat::identity::SeatId::parse(id)
         .map(|id| format!("agent-{}", id.short()))
         .unwrap_or_else(|why| panic!("the assignee is a seat's full id: {why}"))
+}
+
+/// A transient seat as a document names it — `{id, kind: "agent"}`, with no
+/// name key, because a spawned seat has none — answered as its machine name,
+/// the one its worktree and its row are called.
+fn spawned_seat(object: &serde_json::Value) -> String {
+    let keys: Vec<&String> = object
+        .as_object()
+        .unwrap_or_else(|| panic!("the seat is an object: {object}"))
+        .keys()
+        .collect();
+    assert_eq!(keys, ["id", "kind"], "no name on a spawned seat: {object}");
+    assert_eq!(object["kind"], "agent", "{object}");
+    machine_name_of(object["id"].as_str().expect("the id is a string"))
 }
 
 /// A dispatched seat standing on its work branch, its item carrying a landing
@@ -2062,18 +2080,17 @@ fn the_json_spawn_prints_the_seat_the_worktree_the_belt_and_the_base() {
     let parsed = document(&spawned);
     assert_eq!(parsed["ok"], serde_json::Value::Bool(true));
     assert_eq!(parsed["verb"], "seat spawn");
-    let seat = parsed["data"]["seat"]
-        .as_str()
-        .expect("the document names the seat");
+    // The seat as its object: the id the spawn minted and the kind, and no
+    // name, because a spawned seat has none.
+    let seat = spawned_seat(&parsed["data"]["seat"]);
     assert_eq!(
         rig.worktree_entries(),
-        vec![seat.to_string()],
+        vec![seat.clone()],
         "the seat the document names is the one the spawn made"
     );
-    assert!(seat.starts_with("agent-"), "a spawned seat's name: {seat}");
     assert_eq!(
         parsed["data"]["worktree"],
-        rig.worktrees.join(seat).display().to_string()
+        rig.worktrees.join(&seat).display().to_string()
     );
     assert_eq!(parsed["data"]["belt"]["load"], 0.37);
     assert_eq!(parsed["data"]["belt"]["cpus"], 4u64);
@@ -2124,7 +2141,7 @@ fn the_json_feed_prints_the_seat_and_the_turn_that_replaced_the_last() {
     let parsed = document(&fed);
     assert_eq!(parsed["ok"], serde_json::Value::Bool(true));
     assert_eq!(parsed["verb"], "seat feed");
-    assert_eq!(parsed["data"]["seat"], seat.as_str());
+    assert_eq!(spawned_seat(&parsed["data"]["seat"]), seat);
     assert_eq!(
         parsed["data"]["first_turn"],
         "the next turn this seat takes"
@@ -2150,7 +2167,7 @@ fn the_json_retire_prints_the_reclaim_and_what_became_of_the_work_branch() {
     let parsed = document(&retired);
     assert_eq!(parsed["ok"], serde_json::Value::Bool(true));
     assert_eq!(parsed["verb"], "seat retire");
-    assert_eq!(parsed["data"]["seat"], seat.as_str());
+    assert_eq!(spawned_seat(&parsed["data"]["seat"]), seat);
     assert_eq!(
         parsed["data"]["worktree"],
         rig.worktrees.join(&seat).display().to_string()
@@ -2321,10 +2338,7 @@ fn the_human_rendering_of_a_spawn_is_the_name_alone_without_the_flag() {
         "--json",
     ]);
     assert_eq!(other.status.code(), Some(0), "{}", stderr(&other));
-    let named = document(&other)["data"]["seat"]
-        .as_str()
-        .expect("the document names the seat")
-        .to_string();
+    let named = spawned_seat(&document(&other)["data"]["seat"]);
     assert!(
         !stdout(&other).lines().any(|line| line == named),
         "the flag replaces the name on stdout rather than joining it: {}",
