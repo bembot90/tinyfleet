@@ -158,7 +158,7 @@ fleet order: the family is `fleet routine` now — use `fleet routine list | che
 
 It exits 2.
 
-A missing actor. `fleet dispatch`, `deliver`, `ask`, `answer`, `review`,
+A missing actor. `fleet dispatch`, `deliver`, `hold`, `clear`, `review`,
 `land` and `run` each name who acted, `fleet review --show` included. Given no
 `--by` and neither `FLEET_ACTOR` nor `BEADS_ACTOR` set, each refuses with
 exit 2 before it reads anything:
@@ -173,7 +173,7 @@ It exits 2.
 ## Reading the answer as JSON
 
 `--json` asks for the outcome as one JSON document on standard output. These
-verbs take it: `fleet dispatch`, `deliver`, `ask`, `answer`, `review` and
+verbs take it: `fleet dispatch`, `deliver`, `hold`, `clear`, `review` and
 `land`; `fleet seat spawn`, `feed` and `retire`; and `fleet event tail` and
 `fleet event show`.
 
@@ -251,8 +251,8 @@ That refusal is about the seat, not the item.
 
 The commits fleet makes name the item by its full id. The commit
 `fleet deliver` makes has the subject `<item>: delivered by <seat>`. When the
-worktree holds changes, `fleet ask` commits them with the subject
-`<item>: parked — <seat> asked a question at <time>`. Both carry the full id
+worktree holds changes, `fleet hold` commits them with the subject
+`<item>: held — <seat> asked a question at <time>`. Both carry the full id
 the store answers, including when you named the item to `--item` by its
 suffix.
 

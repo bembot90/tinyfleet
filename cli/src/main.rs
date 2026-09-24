@@ -206,13 +206,13 @@ the item to the seat the order named and rings them.
     /// squash a reviewed commit onto the trunk and close the item
     #[command(long_about = "\
 squash a reviewed commit onto the trunk and close the item, from the reviewer's
-own worktree. It takes a commit and never a branch name; it gates on the last
-ACCEPTED verdict naming that commit, on a staged set equal to the delivery's,
-on the --test command it is handed, run on the land branch before the push,
-and on a trunk nobody has moved — the last of those in the same act as the
-push, so the two cannot race.
+own worktree. It takes a commit and never a branch name. Its checks are the
+last ACCEPTED verdict naming that commit, a staged set equal to the delivery's,
+the --test command it is handed, run on the land branch before the push, and a
+trunk nobody has moved — the last of those in the same act as the push, so the
+two cannot race.
 
-Every gate row is printed as it is read, and the landed sha is taken from the
+Every check row is printed as it is read, and the landed sha is taken from the
 push's own range line and from nowhere else. A landing handed no --test runs
 nothing, lands on the review alone, and says NOT TESTED on its note.")]
     Land(item::LandArgs),

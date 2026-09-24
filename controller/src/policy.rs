@@ -80,7 +80,7 @@ pub const DEFAULT_LOAD_CEILING_PER_CPU: f64 = 1.0;
 pub const DEFAULT_RUN_MAX_CRASHES: u64 = 2;
 
 /// The belt's second leg: how many transient seats may be mid-turn at once.
-/// Every one of them runs a full gate, so this bounds the work the machine has
+/// Every one of them runs its own checks, so this bounds the work the machine has
 /// already accepted rather than the work it is being asked for.
 pub const DEFAULT_MAX_TRANSIENT_BUSY: u32 = 3;
 
@@ -848,7 +848,7 @@ mod tests {
         assert_eq!(
             zeroed.auto_capable_models,
             DEFAULT_AUTO_CAPABLE_MODELS.to_vec(),
-            "a present but empty list would gate every model out"
+            "a present but empty list would keep every model out"
         );
         assert_eq!(zeroed.first_turn, DEFAULT_FIRST_TURN);
         assert_eq!(zeroed.nudge_model, DEFAULT_NUDGE_MODEL);

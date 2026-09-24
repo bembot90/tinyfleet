@@ -33,11 +33,11 @@ Two habits that keep specs honest:
 - **An option set is part of a question.** An incomplete one gets a wrong
   answer from a perfectly honest judge. When the decision is the person's,
   build the option set as carefully as the question.
-- **A spec never asks a builder for the full suite.** The acceptance gate reads
-  *touched suites green; the full suite runs at the landing* — the landing runs
-  it by doctrine, so a builder-side full-suite line buys a second run of the
-  same minutes on every dispatch, and a fan-out of them puts the box on its
-  knees.
+- **A spec never asks a builder for the full suite.** The acceptance's checks
+  read *touched suites green; the full suite runs at the landing* — the landing
+  runs it by doctrine, so a builder-side full-suite line buys a second run of
+  the same minutes on every dispatch, and a fan-out of them puts the box on
+  its knees.
 
 **Sequence a fan-out behind its shared prerequisite, and land the prerequisite
 first, alone.** When several children each extend the same new thing — a test
@@ -78,18 +78,18 @@ pinned before takeoff and nothing a flight produces waits on someone being
 awake.
 
 Cap what you send at what the machine measures, not at what the roster allows.
-Every dispatch whose acceptance runs a gate costs the box a gate; the load belt
-holds a dispatch it cannot afford, and a plan that walks into the belt is a
-plan that was sized against the roster.
+Every dispatch whose acceptance runs a suite costs the box that suite; the load
+belt holds a dispatch it cannot afford, and a plan that walks into the belt is
+a plan that was sized against the roster.
 
 ## Two lanes, and a surface
 
 Every item is tagged at design time. **Autonomous** — correctness a compiler, a
 test or a diff against the spec can prove: a builder implements, you review, the
 lane lands. **Supervised** — anything touching what a person sees and feels: the
-builder delivers, the item parks at a gate carrying its review artefacts, and
-the person answers that gate when they have looked. The on-device read is the
-taste gate, permanently and by design, and it uses the same gate object as every
+builder delivers, the item is held carrying its review artefacts, and the
+person clears that hold when they have looked. The on-device read is the taste
+hold, permanently and by design, and it uses the same hold object as every
 other question a flight raises.
 
 Every item also carries one surface — the product, the fleet itself, or the
@@ -98,12 +98,12 @@ re-reading the work.
 
 ## The morning
 
-The open gates are the fleet's overnight questions, and they are the first
-thing read: the store's own gate list is the decisions list, each row an item
-parked with its branch, its commit and its question kept. `fleet clear`
-resolves one — the one act that empties the list — and the next flight resumes
-from the parked commit with both question and answer in the brief. A gate
-nobody answers is a flight that cannot finish.
+The open holds are the fleet's overnight questions, and they are the first
+thing read: the store's own hold list is the decisions list, each row an item
+held with its branch, its commit and its question kept. `fleet clear` clears
+one — the one act that empties the list — and the next flight resumes from the
+parked commit with both question and answer in the brief. A hold nobody clears
+is a flight that cannot finish.
 
 ## The review
 
@@ -128,12 +128,12 @@ Then read the delivery yourself and rule. Four things to hold while you do:
   something it did not sample, not only by running what it did.
 - **Drive the thing.** Reach for whatever instrument the surface has and drive
   it yourself rather than reading that it was driven. The person's screen is
-  the taste gate; it is not your integration test.
+  the taste hold; it is not your integration test.
 - **Would this comment survive?** Past-tense narration about the code is
   history and belongs on the item, whatever lane it arrived in.
 - **A scratch tree never shares a build cache with the landing worktree.** A
   mutant artifact built for a review reads as fresh to a landing that touched
-  none of that source, and the landing gate then runs the mutant. Two readings
+  none of that source, and the landing's suite then runs the mutant. Two readings
   are two builds or they are not two readings.
 
 **Before ruling anything nonexistent, check what the other seats have flagged

@@ -101,7 +101,7 @@ pub const CENSUS: [(&str, &str); 18] = [
 /// `fleet land --test` the command the landing runs on the tree that lands, and
 /// `fleet dispatch --touched` the one the builder's brief names. A file that
 /// still sets either is REFUSED rather than ignored — a key nothing reads is a
-/// gate a person believes is in force, and the landing it stood behind would
+/// check a person believes is in force, and the landing it stood behind would
 /// go untested with nobody told.
 pub const MOVED: [(&str, &str, &str); 2] = [
     (
@@ -121,7 +121,7 @@ pub const MOVED: [(&str, &str, &str); 2] = [
 /// The pairs a policy file may NOT set because nothing reads them any more:
 /// the keys the flight engine read, left behind when it moved out of core.
 ///
-/// Refused for [`MOVED`]'s reason — a key nothing reads is a gate a person
+/// Refused for [`MOVED`]'s reason — a key nothing reads is a check a person
 /// believes is in force — and with nowhere to set the value instead, because
 /// nothing in the fleet enforces it now.
 pub const RETIRED: [(&str, &str); 7] = [

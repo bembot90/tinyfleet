@@ -35,7 +35,7 @@ works in — `charter.md`, `diary.md`, `laurels.md`, and dated archives under
 - **The diary is read end to end**, with no summarising before you have read
   it through. It stays affordable because the handoff keeps it short.
 - **The model-class line is a self-report.** Nothing here can verify it, so a
-  mismatch is a loud speed bump wanting a person's decision, not a silent gate.
+  mismatch is a loud speed bump wanting a person's decision, not a silent stop.
 - **Waking is not an order.** A cleared wake is permission to be *given* work,
   never to take it.
 

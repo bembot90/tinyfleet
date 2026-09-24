@@ -3,7 +3,7 @@
 Two things tell you what your fleet is doing. `fleet status` prints the
 projection, the document the controller writes on every poll: the seats, what
 the controller decided about each, how much context each has used, and the
-runs and gates waiting on you. `fleet event tail` and `fleet event show` read
+runs and holds waiting on you. `fleet event tail` and `fleet event show` read
 the event stream, the fleet's log of what happened, one line per event. All
 three read files and write nothing.
 
@@ -57,14 +57,14 @@ context  (rest threshold 400000 tokens)
 
 [[core.flight.rules]]
   type bug → review=none
-  labels [docs] → gate=review
+  labels [docs] → sets nothing
 
 routines
   morning  cron  next due 2026-09-24T07:00:00Z, last delivered at 2026-09-23T07:00:02Z, failing streak 0
 
-runs  0 failed in the last 24 hours, 0 parked, 0 could not tell, 0 waiting, 0 open
+runs  0 failed in the last 24 hours, 0 held, 0 could not tell, 0 waiting, 0 open
 
-gates  0 raised by a park and not answered
+holds  0 raised by a park and not cleared
 ```
 
 It exits 0.
@@ -176,12 +176,12 @@ Each loaded routine gets one line: its name, its trigger (`cron`, `cooldown` or
 and its failing streak. A dash stands for a value the routine does not have
 yet. With no routines loaded, the section says `no routine is loaded`.
 
-### Runs and gates
+### Runs and holds
 
-The `runs` line counts runs by state: failed in the last 24 hours, parked,
+The `runs` line counts runs by state: failed in the last 24 hours, held,
 could not tell, waiting and open. Every run counted there gets its own row
-below the line. The `gates` line counts gates that a park raised and
-nobody has answered yet. Both come from the event stream, so a machine with no
+below the line. The `holds` line counts holds that a park raised and
+nobody has cleared yet. Both come from the event stream, so a machine with no
 stream shows every count at zero. The rows are explained in
 [Runs and workflows](runs.md).
 

@@ -1,7 +1,7 @@
 //! `fleet land <item> <commit>` — the reviewer's verb, and the only writer of a
 //! landing.
 //!
-//! IT LANDS A REVIEW, NOT A DELIVERY. The gate that decides whether anything
+//! IT LANDS A REVIEW, NOT A DELIVERY. The check that decides whether anything
 //! may be squashed is the item's last verdict: an `ACCEPTED` naming this exact
 //! commit. A delivery nobody accepted, an accept naming a different commit, and
 //! a return are each refused before the trunk is touched.
@@ -10,7 +10,7 @@
 //! — to whatever its tip is at merge time, which is not what the reviewer read
 //! — so the shape is refused before anything is read (the pack's rules, rule 1).
 //!
-//! ONE ACT, NOT TWO PHASES. The suite runs inside it, which is why the gate
+//! ONE ACT, NOT TWO PHASES. The suite runs inside it, which is why the check
 //! rows reach stdout as they are read rather than at the end: a landing that
 //! takes minutes says where it is while it is there.
 //!
@@ -19,7 +19,7 @@
 //! `deliver` hands every item to the `[core] reviewer`, so on a workflow's
 //! landing the holder is always that seat and the caller is always the run. A
 //! landing called by a run's record therefore closes AS the reviewer: the
-//! holder gate reads that seat, the close and `item.landed` carry it with the
+//! holder check reads that seat, the close and `item.landed` carry it with the
 //! run named beside it, and what licenses the act is the reviewer's own answer
 //! to the hold this run raised. A seat's own landing acts as itself, unchanged.
 //!
@@ -57,7 +57,7 @@ use crate::store::{Item, Store, StoreError, EXPORT};
 /// asset.
 pub const LANDING_NOTE: &str = "assets/landing-note.md";
 
-/// The criteria the note carries, in the order the gates are READ — which is
+/// The criteria the note carries, in the order the checks are READ — which is
 /// the order they are printed in, so the page a person watches and the note a
 /// reader finds afterwards carry the same rows in the same places.
 pub const CRITERIA: [&str; 7] = [
@@ -106,7 +106,7 @@ const UNTESTED: &str =
      and it stands on the review alone";
 
 /// The line a landing prints when the trunk moved between the land branch's cut
-/// and the push's own gate.
+/// and the push's own check.
 ///
 /// IT IS NOT A PARK. The flight retries on its next call: the lane's lock makes
 /// the race rare, and a park would put a person in the middle of a landing
@@ -114,7 +114,7 @@ const UNTESTED: &str =
 /// runs again.
 pub const REBASE_NEEDED: &str = "REBASE NEEDED";
 
-/// The store's own directory, whose paths the staged-set gate does not judge:
+/// The store's own directory, whose paths the staged-set check does not judge:
 /// they are this verb's own bookkeeping and not the delivery's.
 const STORE_DIR: &str = ".beads/";
 
@@ -502,10 +502,10 @@ fn run(
     }
     let status = wiring.git.status().map_err(Stop::could_not_tell)?;
     // THE EXPORT IS EXEMPT HERE AND NOTHING ELSE UNDER THE STORE IS. (e)
-    // regenerates the export in this same root, so a gate that refused on a
+    // regenerates the export in this same root, so a check that refused on a
     // dirty board would refuse every re-run after its own first refusal — but
-    // a refusal from (e) on hard-resets the tree, so every store path this gate
-    // lets past is a store path that gate's reset discards. The two spellings
+    // a refusal from (e) on hard-resets the tree, so every store path this check
+    // lets past is a store path that check's reset discards. The two spellings
     // are the export by name and the whole directory, which is what an
     // untracked-but-unignored store answers the porcelain with.
     if let Some(loose) = outside_also(&status, landing.also) {
@@ -618,7 +618,7 @@ fn run(
         }
     }
 
-    // (e) THE EXPORT, then the staged set and the gate on it.
+    // (e) THE EXPORT, then the staged set and the check on it.
     let export = wiring.project.root.join(EXPORT);
     let before = fingerprint(&export);
     wiring.store.export(&wiring.project.root)?;
@@ -678,7 +678,7 @@ fn run(
         )));
     }
     let staged = outside_store(&all_staged);
-    // THE DELIVERY'S OWN PATHS, kept apart from the set the gate compares
+    // THE DELIVERY'S OWN PATHS, kept apart from the set the check compares
     // against: the classification below asks whether what landed matches what
     // was reviewed, and an `--also` path is in neither commit's diff by
     // construction, so counting it there would read every landing as CARRIES.
@@ -782,7 +782,7 @@ fn run(
         .map(str::trim)
         .filter(|command| !command.is_empty())
         .map(str::to_string);
-    let readings = the_gate(
+    let readings = suite_check(
         out,
         &mut rows,
         &suite_command,
@@ -793,7 +793,7 @@ fn run(
     )?;
     let suite_rc = readings.last().map(|reading| reading.rc);
 
-    // (i) THE CURRENT-TRUNK GATE AND THE PUSH, in one act. Split into two they
+    // (i) THE CURRENT-TRUNK CHECK AND THE PUSH, in one act. Split into two they
     // are a race: the trunk can move between the count and the push, and the
     // push then lands on a trunk nobody read.
     wiring.git.fetch(remote()).map_err(Stop::could_not_tell)?;
@@ -905,7 +905,10 @@ fn run(
             ("commit", commit),
             ("builder", &builder),
             ("tested", &tested),
-            ("gate", &rows.rendered(commit, &sha, work_branch.as_deref())),
+            (
+                "checks",
+                &rows.rendered(commit, &sha, work_branch.as_deref()),
+            ),
         ],
     )
     .map_err(|name| {
@@ -1061,7 +1064,7 @@ fn run(
     })
 }
 
-// ---- the gate and its one rerun ----------------------------------------------
+// ---- the suite check and its one rerun ---------------------------------------
 
 /// The reading a landing's own first suite run is.
 const FIRST_READING: u64 = 1;
@@ -1076,7 +1079,7 @@ const GREEN: &str = "green";
 const RED: &str = "red";
 const NO_READING: &str = "none";
 
-/// One reading of the project's gate: which it is, what the child exited, where
+/// One reading of the suite check: which it is, what the child exited, where
 /// its log is, and what the wait before it did.
 struct Reading {
     n: u64,
@@ -1148,10 +1151,10 @@ impl Reading {
 ///
 /// A SECOND RED REFUSES WITH BOTH LOGS ON STDOUT. That is the whole channel the
 /// park needs: the flight's landing act carries what this printed into the
-/// gate's question, so the person who meets it reads both tails without this
+/// hold's question, so the person who meets it reads both tails without this
 /// verb knowing a flight exists.
 #[allow(clippy::too_many_arguments)]
-fn the_gate(
+fn suite_check(
     out: &mut dyn Write,
     rows: &mut Rows,
     command: &Option<String>,
@@ -1230,7 +1233,7 @@ fn the_gate(
     )))
 }
 
-/// One run of the gate, into its own log. The second reading's log sits beside
+/// One run of the suite check, into its own log. The second reading's log sits beside
 /// the first rather than over it: a reader comparing two reds needs both.
 fn read_once(
     command: &str,
@@ -1367,7 +1370,7 @@ impl Tree {
 
 // ---- the rows ----------------------------------------------------------------
 
-/// The gate rows, printed as each is read and rendered again into the note.
+/// The check rows, printed as each is read and rendered again into the note.
 ///
 /// A row carries its own criterion NAME rather than taking it from its
 /// position, because the rerun adds a row in the middle and a positional name
@@ -1576,7 +1579,7 @@ pub fn release(notes: &str, held: Option<&str>) -> Release {
         ));
     };
     // THE VERDICT IS THE ROW'S FIRST FIELD and [`SAFE`] is the only one this
-    // acts on, so the strip is the gate: what follows it is the evidence, which
+    // acts on, so the strip is the check: what follows it is the evidence, which
     // opens with the branch the landing classified. A row that does not open
     // with SAFE is reported back whole, verdict and all — the words a person
     // needs here are the ones the landing itself wrote.
@@ -1916,7 +1919,7 @@ struct Ran {
 }
 
 /// The suite as a child of this act, with no deadline of the verb's own: the
-/// project decides how long its own gate takes. Its rc is read from the child's
+/// project decides how long its own suite takes. Its rc is read from the child's
 /// own exit and never from anything it printed.
 fn suite(
     command: &str,
@@ -2017,7 +2020,7 @@ fn is_hex(text: &str) -> bool {
 /// rewrites itself between its own first refusal and the re-run after it.
 ///
 /// THE EXPORT AND NOT THE DIRECTORY: a refusal from (e) on hard-resets the
-/// tree, so a path this gate lets past is a path that reset discards without a
+/// tree, so a path this check lets past is a path that reset discards without a
 /// word. A tracked `.beads/hooks/*` or `.beads/config.json` edit is a seat's
 /// work and refuses here like any other.
 fn outside_also(status: &[String], also: &[String]) -> Option<String> {
@@ -2113,7 +2116,7 @@ fn octal(digits: &[u8]) -> Option<u8> {
 }
 
 /// A path set with the store's own directory taken out, sorted and deduplicated
-/// so the two sides of the staged-set gate are compared as sets.
+/// so the two sides of the staged-set check are compared as sets.
 fn outside_store(paths: &[String]) -> Vec<String> {
     let mut kept: Vec<String> = paths
         .iter()

@@ -71,7 +71,7 @@ pub struct Order<'a> {
     /// The model the spawned seat runs on, where the caller names one; `None`
     /// leaves the fleet's policy default.
     pub model: Option<&'a str>,
-    /// The builder's gate — the command the seat runs over its own diff before
+    /// The builder's checks — the command the seat runs over its own diff before
     /// it delivers — as the caller hands it. It reaches the brief's `{touched}`
     /// and the spawned seat's permission rules; `None` renders the brief's
     /// named absence ([`brief::DERIVE_TOUCHED`]).

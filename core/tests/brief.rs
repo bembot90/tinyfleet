@@ -21,7 +21,7 @@ use fleet_core::test_support::FakeStore;
 /// in, and [`TOUCHED`] is the one every arm's render hands over.
 const POLICY: &str = "[guards]\nrecord = { enabled = false }\n";
 
-/// The builder's gate [`Rig::render`] hands the brief, as a dispatch would.
+/// The builder's checks [`Rig::render`] hands the brief, as a dispatch would.
 const TOUCHED: &str = "make check";
 
 const ORDER: &str = "dispatched by lead-1 — orders given";
@@ -88,7 +88,7 @@ impl Rig {
         self.render_touched(store, seat, Some(TOUCHED))
     }
 
-    /// The same render with the builder's gate in the arm's own hands, `None`
+    /// The same render with the builder's checks in the arm's own hands, `None`
     /// being the dispatch that was handed none.
     fn render_touched(&self, store: &dyn Store, seat: &str, touched: Option<&str>) -> Rendered {
         self.render_as(store, ITEM, seat, touched)
@@ -318,7 +318,7 @@ fn placeholders(template: &str) -> Vec<String> {
 ///
 /// Three halves, each able to go missing on its own, so each is read: the
 /// handed command reaches the seat, the whole suite is attributed rather than
-/// handed over, and a dispatch handed no builder's gate gets the named absence
+/// handed over, and a dispatch handed no builder's checks gets the named absence
 /// — the derivation sentence — in that hole instead.
 #[test]
 fn the_brief_hands_the_seat_the_touched_gate_and_the_suite_to_the_reviewer() {
@@ -328,22 +328,23 @@ fn the_brief_hands_the_seat_the_touched_gate_and_the_suite_to_the_reviewer() {
         .body;
 
     // rules.md's own copy of the rule, which every brief carries. It is read
-    // over the WHOLE page and every reading below is read over the gate section
-    // alone: this line would otherwise answer for the section's sentence, which
-    // is how the first red proof of this arm passed against a broken template.
+    // over the WHOLE page and every reading below is read over the checks
+    // section alone: this line would otherwise answer for the section's
+    // sentence, which is how the first red proof of this arm passed against a
+    // broken template.
     assert!(
-        body.contains("The gate is the suites your diff touches."),
+        body.contains("Your checks are the suites your diff touches."),
         "the every-turn rules carry the rule:\n{body}"
     );
 
     // Which sentence and which command sit on which side, read as two regions:
     // a page naming both commands in the wrong halves would satisfy a `contains`
     // over the body and still hand the seat the landing's suite.
-    let (seats, reviewers) = gate_halves(&body);
+    let (seats, reviewers) = checks_halves(&body);
     for wanted in ["the suites your diff touches", "make the-touched-gate"] {
         assert!(
             seats.contains(wanted),
-            "the seat's half of the gate section carries `{wanted}`:\n{seats}"
+            "the seat's half of the checks section carries `{wanted}`:\n{seats}"
         );
     }
     assert!(
@@ -364,13 +365,13 @@ fn the_brief_hands_the_seat_the_touched_gate_and_the_suite_to_the_reviewer() {
         "and the seat's gate is never offered as the reviewer's:\n{reviewers}"
     );
 
-    // A dispatch handed no builder's gate: the hole is filled by the named
+    // A dispatch handed no builder's checks: the hole is filled by the named
     // absence, which says what was not handed over and what to run instead.
     let derived = rig.render_touched(&ordered(), "s1", None).body;
-    let (seats, _) = gate_halves(&derived);
+    let (seats, _) = checks_halves(&derived);
     assert!(
         seats.contains(brief::DERIVE_TOUCHED),
-        "an absent builder's gate renders the derivation sentence:\n{seats}"
+        "absent builder's checks render the derivation sentence:\n{seats}"
     );
     assert!(
         seats.contains("no touched command was handed to this dispatch"),
@@ -382,7 +383,7 @@ fn the_brief_hands_the_seat_the_touched_gate_and_the_suite_to_the_reviewer() {
     );
     // A blank command is no command.
     let blank = rig.render_touched(&ordered(), "s1", Some("  ")).body;
-    assert!(gate_halves(&blank).0.contains(brief::DERIVE_TOUCHED));
+    assert!(checks_halves(&blank).0.contains(brief::DERIVE_TOUCHED));
 
     // The control, observed failing: a brief edited back to a section with no
     // gate in it fails the first reading above, so what is pinned here is the
@@ -395,21 +396,21 @@ fn the_brief_hands_the_seat_the_touched_gate_and_the_suite_to_the_reviewer() {
     );
     let broken = Rig::over(rig.fixture).render(&ordered(), "s1").body;
     assert!(
-        !broken.contains("## Your gate"),
+        !broken.contains("## Your checks"),
         "the readings are of the template, which this one no longer carries:\n{broken}"
     );
 }
 
-/// The gate section's two halves — the seat's and the reviewer's — bounded at
+/// The checks section's two halves — the seat's and the reviewer's — bounded at
 /// the next heading.
 ///
 /// BOUNDED, because the page's later sections quote the same rule: a reading
 /// that ran to the end of the body would be answered by the every-turn rules
 /// whatever the section above them said.
-fn gate_halves(body: &str) -> (&str, &str) {
+fn checks_halves(body: &str) -> (&str, &str) {
     let after = body
-        .split_once("## Your gate")
-        .expect("the brief carries the gate section")
+        .split_once("## Your checks")
+        .expect("the brief carries the checks section")
         .1;
     let section = after
         .split_once("\n## ")
@@ -417,7 +418,7 @@ fn gate_halves(body: &str) -> (&str, &str) {
         .unwrap_or(after);
     section
         .split_once("The project's whole suite is")
-        .expect("the gate section names the reviewer's half")
+        .expect("the checks section names the reviewer's half")
 }
 
 /// A policy file that still sets `[gates] touched` is REFUSED, by name, with

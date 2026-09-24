@@ -58,8 +58,8 @@ binary on `FLEET_BIN` that answers `event …` with the real one.
   carries neither an item nor a role, and a seat with no order could never
   deliver. The one role is `"builder"` (a reviewer's spawn is the flight's
   own), and a hand-run dispatch pins no model, so a `model` given is refused
-  rather than dropped. `touched` is the builder's gate its brief names; without
-  one the brief names the absence.
+  rather than dropped. `touched` is the builder's checks its brief names;
+  without one the brief names the absence.
 
   ```ts
   const { seat } = await run.spawn({ role: "builder", item: "item-12" });

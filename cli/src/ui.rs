@@ -12,7 +12,7 @@
 //!   script's, and both silent until the wait has ALREADY lasted
 //!   [`THRESHOLD`]. A spinner on a verb that takes a second is noise; a bar on
 //!   a three-minute wait is information. `land` takes the bounded one, one step
-//!   per gate row, its message carrying the suite log's line count as it grows.
+//!   per check row, its message carrying the suite log's line count as it grows.
 //! * **prompts** — select, confirm and input through `dialoguer`, refused with
 //!   the usage status and a sentence naming the flag that answers the question
 //!   whenever stdin is not a terminal: a prompt never blocks a script.
@@ -197,7 +197,7 @@ impl Ui {
             .map_err(|e| Prompt::Failed(e.to_string()))
     }
 
-    /// The gate every prompt passes first: a question put to a pipe is a usage
+    /// The check every prompt passes first: a question put to a pipe is a usage
     /// error naming the flag, never a wait for an answer that cannot come.
     fn askable(&self, question: &str, flag: &str) -> Result<(), Prompt> {
         if self.stdin_is_terminal {

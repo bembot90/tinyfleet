@@ -724,7 +724,7 @@ fn a_seat_worktree_beside_an_uncommitted_policy_delivers_through_the_machine_con
     );
     assert!(
         stdout(&out).contains("make check"),
-        "and the builder's gate is the one the call handed in: {}",
+        "and the builder's checks are the ones the call handed in: {}",
         stdout(&out)
     );
 

@@ -33,10 +33,10 @@ the item wins.
 {item}
 ```
 
-## Your gate
+## Your checks
 
-Your gate is **the suites your diff touches**, and nothing beyond them. Run it
-before you deliver, and read its exit from the command's own status:
+Your checks are **the suites your diff touches**, and nothing beyond them. Run
+them before you deliver, and read the exit from the command's own status:
 
 ```
 {touched}

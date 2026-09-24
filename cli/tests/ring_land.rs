@@ -1267,7 +1267,7 @@ fn the_bar_is_drawn_on_a_terminal_and_never_on_a_pipe() {
     assert!(page.contains("LANDED "), "the landing succeeded:\n{page}");
     assert!(
         page.contains("/7 "),
-        "the bar is bounded by the gate rows the note renders:\n{page}"
+        "the bar is bounded by the check rows the note renders:\n{page}"
     );
 
     // THE COUNT GREW, which is what "as it grows" means and what a single read

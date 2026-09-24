@@ -25,7 +25,7 @@ use fleet_core::item::{
 use fleet_core::store::{AssignedItem, Item, Store, StoreError};
 
 const POLICY: &str = "[guards]\n";
-/// The builder's gate every arm's order hands over, as a workflow would.
+/// The builder's checks every arm's order hands over, as a workflow would.
 const TOUCHED: &str = "make check";
 const BY: &str = "lead-1";
 const AT: &str = "2026-09-08T18:46:55Z";
@@ -63,7 +63,7 @@ impl Ring for StubRing {
 struct StubSpawner {
     outcome: SpawnOutcome,
     calls: Mutex<Vec<PathBuf>>,
-    /// The builder's gate each spawn was asked to write a rule for.
+    /// The builder's checks each spawn was asked to write a rule for.
     touched: Mutex<Vec<Option<String>>>,
 }
 
@@ -1245,8 +1245,8 @@ mod transient {
             spawner.calls.lock().expect("not poisoned").as_slice(),
             std::slice::from_ref(&path)
         );
-        // The builder's gate the order was handed reaches the spawn, which
-        // writes the seat's rule for it.
+        // The builder's checks the order was handed reach the spawn, which
+        // writes the seat's rule for them.
         assert_eq!(
             spawner.touched.lock().expect("not poisoned").as_slice(),
             &[Some(TOUCHED.to_string())]
@@ -1281,7 +1281,7 @@ mod transient {
         assert_eq!(written, printed, "byte for byte");
         assert!(
             String::from_utf8_lossy(&written).contains(&format!("```\n{TOUCHED}\n```")),
-            "the brief names the builder's gate the order was handed"
+            "the brief names the builder's checks the order was handed"
         );
     }
 

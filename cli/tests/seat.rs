@@ -583,7 +583,7 @@ fn a_spawn_renders_the_packs_permission_rules_into_the_seats_worktree() {
         template
             .replace("{touched}", "make check")
             .replace("{worktree}", &worktree.display().to_string()),
-        "the seat's settings are the pack's document with the builder's gate and the worktree \
+        "the seat's settings are the pack's document with the builder's checks and the worktree \
          rendered in"
     );
 
@@ -594,7 +594,7 @@ fn a_spawn_renders_the_packs_permission_rules_into_the_seats_worktree() {
     assert!(
         written.contains("Bash(make check:*)")
             && written.contains(&format!("Edit(/{}/**)", worktree.display())),
-        "the builder's gate the spawn was handed and the seat's own checkout are both in a rule: \
+        "the builder's checks the spawn was handed and the seat's own checkout are both in a rule: \
          {written}"
     );
 
@@ -608,7 +608,7 @@ fn a_spawn_renders_the_packs_permission_rules_into_the_seats_worktree() {
     );
 }
 
-/// A spawn handed NO builder's gate writes no rule for one — the entry that
+/// A spawn handed NO builder's checks writes no rule for one — the entry that
 /// would carry it is taken out, and nothing else is — and a gate that carries a
 /// quote is written into its rule as JSON, so the document still parses.
 #[test]
@@ -830,7 +830,7 @@ fn a_pack_above_the_defaults_shadowing_the_permission_slot_is_what_the_seat_come
         SHADOW_RULES
             .replace("{touched}", "make check")
             .replace("{worktree}", &worktree.display().to_string()),
-        "the seat's settings are the SHADOWING pack's document with the builder's gate and the \
+        "the seat's settings are the SHADOWING pack's document with the builder's checks and the \
          worktree rendered in"
     );
     assert!(

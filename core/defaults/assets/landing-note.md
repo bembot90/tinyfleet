@@ -1,5 +1,5 @@
 LANDED {sha} on {trunk} by {actor} (range {old}..{new}; squash of {commit}{rebased}; implemented by {builder}) — {tested}
-{gate}
+{checks}
 
 The one shape a landing writes, and the landing verb renders it whole. What is
 written here under no marker is this note, which teaches it and is never written
@@ -26,8 +26,9 @@ column zero, or on the last verdict, reads neither a landing: it begins with
 neither of theirs, and a landing appended after a verdict ends that verdict's
 region rather than extending it.
 
-Then the gate as the verb read it — one numbered row per criterion, its verdict
-and the evidence that produced it, in the order the gates were read, which is
-the order they were printed in while the landing ran. Nothing in a row is typed:
-each is rendered from a reading a step above it took. Beneath them a commands
-block, so the next reader can re-run every verdict rather than believe it.
+Then the checks as the verb read them — one numbered row per criterion, its
+verdict and the evidence that produced it, in the order the checks were read,
+which is the order they were printed in while the landing ran. Nothing in a row
+is typed: each is rendered from a reading a step above it took. Beneath them a
+commands block, so the next reader can re-run every verdict rather than believe
+it.

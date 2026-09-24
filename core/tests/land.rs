@@ -338,8 +338,8 @@ fn one_line(text: &str) -> String {
 }
 
 /// Everything a landing note carries after its own first line: what the
-/// template writes as {gate}.
-fn gate_of(note: &str) -> String {
+/// template writes as {checks}.
+fn checks_of(note: &str) -> String {
     note.lines().skip(1).collect::<Vec<_>>().join("\n")
 }
 
@@ -957,7 +957,7 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_note_and_closes() {
             ("commit", SHA),
             ("builder", BUILDER),
             ("tested", "suite: exit 0, rc 0"),
-            ("gate", &gate_of(&landed.note)),
+            ("checks", &checks_of(&landed.note)),
         ],
     )
     .expect("every placeholder is one this arm offers");
@@ -966,20 +966,20 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_note_and_closes() {
         "the note is the template rendered whole — its first line and its gate and nothing the \
          template does not carry"
     );
-    // What the gate block itself is, asserted where the arm can predict it: the
+    // What the check block itself is, asserted where the arm can predict it: the
     // seven rows by number, criterion and verdict, and the commands block
     // verbatim. Only the evidence is left to the rows' own checks, because it
     // names a temporary path and a duration no arm can know in advance.
-    let gate = gate_of(&landed.note);
+    let checks = checks_of(&landed.note);
     let verdicts = ["PASS", "PASS", "PASS", "PASS", "PASS", "SAFE", "PASS"];
     for (n, (criterion, verdict)) in CRITERIA.iter().zip(verdicts).enumerate() {
         let head = format!("{}. {criterion:<16} {verdict:<10} ", n + 1);
         assert!(
-            gate.lines().any(|line| line.starts_with(&head)),
-            "no row opening `{head}` in:\n{gate}"
+            checks.lines().any(|line| line.starts_with(&head)),
+            "no row opening `{head}` in:\n{checks}"
         );
     }
-    let commands: Vec<&str> = gate
+    let commands: Vec<&str> = checks
         .lines()
         .skip_while(|line| !line.starts_with("## Commands"))
         .collect();
@@ -1029,7 +1029,7 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_note_and_closes() {
     assert_eq!(
         ran.rows,
         CRITERIA.len() as u64,
-        "the bar took one step per gate row"
+        "the bar took one step per check row"
     );
     assert!(ran.finished, "the bar was taken back off the terminal");
     assert!(
@@ -2200,7 +2200,7 @@ fn a_landing_handed_no_test_says_not_tested_on_the_record() {
     );
 }
 
-/// On a pipe, stdout is the gate rows and the LANDED line and nothing else —
+/// On a pipe, stdout is the check rows and the LANDED line and nothing else —
 /// and it is the same page whether the suite took a second or none, but for the
 /// one row that measures the suite.
 #[test]
@@ -2253,7 +2253,7 @@ fn stdout_is_the_same_page_whichever_way_the_suite_was_timed() {
                 line.starts_with("LANDED <sha>")
                     || line.starts_with("work branch ")
                     || line.chars().next().is_some_and(|c| c.is_ascii_digit()),
-                "stdout carries only gate rows and the LANDED line: {line:?}"
+                "stdout carries only check rows and the LANDED line: {line:?}"
             );
         }
     }
@@ -2264,7 +2264,7 @@ fn stdout_is_the_same_page_whichever_way_the_suite_was_timed() {
 }
 
 /// The suite the arm above times, as one script whose sleep is a number in it —
-/// so the command string the gate row prints is the same in both runs.
+/// so the command string the check row prints is the same in both runs.
 const SUITE_SCRIPT: &str = "the-suite.sh";
 
 fn a_sleeping_suite(scratch: &dyn Rooted, seconds: &str) {
@@ -2983,7 +2983,7 @@ fn each_reader_finds_only_its_own_region() {
             ("commit", SHA),
             ("builder", BUILDER),
             ("tested", "suite: exit 0, rc 0"),
-            ("gate", "1. reviewed commit PASS  read here"),
+            ("checks", "1. reviewed commit PASS  read here"),
         ],
     )
     .expect("every placeholder is one this arm offers");
@@ -3584,12 +3584,12 @@ fn a_red_gate_is_rerun_once_and_a_green_second_reading_lands_with_both_rows() {
         .as_ref()
         .unwrap_or_else(|stop| panic!("the landing was refused: {}\n{}", stop.message, ran.out));
 
-    let gate = gate_of(&landed.note);
-    let suite_rows: Vec<&str> = gate
+    let checks = checks_of(&landed.note);
+    let suite_rows: Vec<&str> = checks
         .lines()
         .filter(|line| line.contains(&command))
         .collect();
-    assert_eq!(suite_rows.len(), 2, "both readings are rows:\n{gate}");
+    assert_eq!(suite_rows.len(), 2, "both readings are rows:\n{checks}");
     assert!(
         suite_rows[0].contains("RED"),
         "the first reading is the red one: {}",
@@ -3609,8 +3609,8 @@ fn a_red_gate_is_rerun_once_and_a_green_second_reading_lands_with_both_rows() {
     // named: a row whose criterion came from its POSITION would have slid.
     for criterion in ["base current", "work branch", "tree clean after"] {
         assert!(
-            gate.lines().any(|line| line.contains(criterion)),
-            "`{criterion}` keeps its own row after the rerun:\n{gate}"
+            checks.lines().any(|line| line.contains(criterion)),
+            "`{criterion}` keeps its own row after the rerun:\n{checks}"
         );
     }
 
@@ -3750,13 +3750,17 @@ fn the_rerun_waits_for_the_box_to_quieten_and_the_row_says_it_did() {
         .landed
         .as_ref()
         .unwrap_or_else(|stop| panic!("the landing was refused: {}\n{}", stop.message, ran.out));
-    let gate = gate_of(&landed.note);
+    let checks = checks_of(&landed.note);
     assert!(
-        gate.lines()
+        checks
+            .lines()
             .any(|line| line.contains(SUITE_RERUN) && line.contains("the box quietened after")),
-        "the second row says what the wait ended as:\n{gate}"
+        "the second row says what the wait ended as:\n{checks}"
     );
-    assert!(!gate.contains("expired"), "and it did not expire:\n{gate}");
+    assert!(
+        !checks.contains("expired"),
+        "and it did not expire:\n{checks}"
+    );
 }
 
 /// THE EXPIRY RERUNS ANYWAY AND SAYS SO — and on a busy box this is the common
@@ -3807,12 +3811,12 @@ fn a_wait_that_expires_reruns_anyway_and_the_row_says_it_expired() {
         "the wait was waited: {:?}",
         started.elapsed()
     );
-    let gate = gate_of(&landed.note);
+    let checks = checks_of(&landed.note);
     assert!(
-        gate.lines().any(|line| line.contains(SUITE_RERUN)
+        checks.lines().any(|line| line.contains(SUITE_RERUN)
             && line.contains("expired")
             && line.contains("ran anyway")),
-        "the second row says the wait expired and the rerun ran:\n{gate}"
+        "the second row says the wait expired and the rerun ran:\n{checks}"
     );
 }
 

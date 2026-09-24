@@ -2,15 +2,15 @@ Five things no verb guesses, each one a lesson somebody already paid for:
 
 1. **The commit, never the branch.** `review` and `land` take a commit. A
    branch tip that moved after the review is excluded, not swept in.
-2. **Status read directly.** Every gate reads its own command's exit. Nothing
+2. **Status read directly.** Every check reads its own command's exit. Nothing
    is read through a pipe, and nothing is read off the tail of some output.
 3. **The record before the act's end.** No verb says done until the note it
    wrote has been read back off the item.
 4. **Absence is graceful.** A ring that finds no live session sends nothing and
    moves on: the assignment already recorded the handoff.
-5. **The gate is the suites your diff touches.** The project's whole suite is
-   the reviewer's, and the landing runs it once. A seat that runs it too pays
-   for it twice and holds the box while every other seat waits on it.
+5. **Your checks are the suites your diff touches.** The project's whole
+   suite is the reviewer's, and the landing runs it once. A seat that runs it
+   too pays for it twice and holds the box while every other seat waits on it.
 
 Every command shares one exit vocabulary, so a script reading `$?` learns the
 same thing from all of them:
@@ -34,12 +34,12 @@ What each verb writes, so you know what to look for afterwards:
 | `deliver` | the commit on the work branch, and the delivery note on the item |
 | `review` | the verdict note: accepted, or returned with numbered findings |
 | `land` | the squashed commit on the trunk, the landing note, and the closed item |
-| `ask` | everything the tree holds, committed on the work branch; the gate; the park on the item |
-| `answer` | the answer note on the item, and the gate resolved |
+| `hold` | everything the tree holds, committed on the work branch; the hold; the park on the item |
+| `clear` | the answer note on the item, and the hold cleared |
 
 When a question blocks you and nobody here can answer it, `fleet hold --note
 <file>` is the way to stop: it commits everything your tree holds, raises the
-question as a gate on the item, and parks. Write the note with `QUESTION` at
+question as a hold on the item, and parks. Write the note with `QUESTION` at
 column zero and one lettered option per line — a question with no options is a
 conversation, and the person answering may be reading it on a phone. You are
 retired after it; the next flight cuts a fresh seat from your commit with the

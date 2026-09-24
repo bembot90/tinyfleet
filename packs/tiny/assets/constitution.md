@@ -58,7 +58,7 @@ The welfare layer, which is not negotiable:
 - **Two lanes, chosen at design time.** *Autonomous* — correctness a compiler,
   a test or a diff against the spec can prove: a builder implements, an
   architect reviews, the lane lands. *Supervised* — anything a person sees and
-  feels: the builder delivers and the item parks at a gate the person resolves.
+  feels: the builder delivers and the item is held until the person clears it.
 - **How work flows.** Design → spec item → work is *given*, never taken →
   build → review → land, one squash commit per item. Seats ring each other
   directly; a ring is a doorbell, the item is the record.

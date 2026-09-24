@@ -116,7 +116,7 @@ duplicate.
 The rituals, each resolving under the `fleet:` namespace: **wake**, a seat
 coming up for a session; **handoff**, the seat's day ending; **rest**, a
 mid-day handoff that asks the controller for a woken successor; **clock-out**,
-a spawned seat's last acts; **morning**, the first read of the open gates;
+a spawned seat's last acts; **morning**, the first read of the open holds;
 **corrections-review**, a landing judged a second time for whether every line
 earns its place; **praise**, a laurel written into another seat's file;
 **preboard**, the next flight's list composed off the departure board;
@@ -195,9 +195,9 @@ lists) sit under `[guards.targets]`.
   reading is rerun once and a second red refuses with nothing pushed. Without
   `--test` the landing runs nothing, and says so: its note's first line and its
   suite row read `NOT TESTED`, and `item.landed` carries `test: null`.
-- **The builder's gate** is what `fleet dispatch <item> --touched <command>`
-  is handed; the brief names it where the seat reads its gate, or names the
-  absence where none was handed.
+- **The builder's checks** are what `fleet dispatch <item> --touched
+  <command>` is handed; the brief names them under "Your checks", or names
+  the absence where none was handed.
 - **takeoff** hands both: `test` from `--input test=<command>`, else
   `takeoff.test` under `[packs.tiny]`; `touched` the same way from
   `--input touched=` or `takeoff.touched`. The input wins. With neither test

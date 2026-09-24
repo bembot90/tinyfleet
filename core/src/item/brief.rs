@@ -29,7 +29,7 @@ pub const TRANSIENT: &str = "(transient)";
 /// the note it just wrote among the item's notes.
 pub const ORDER_MARK: &str = "orders given";
 
-/// The value `{touched}` takes where the dispatch was handed no builder's gate.
+/// The value `{touched}` takes where the dispatch was handed no builder's checks.
 ///
 /// A SENTENCE and not a command, because there is no command to name and the
 /// one thing that must not fill the hole is the project's whole suite: that is
@@ -121,7 +121,7 @@ pub struct Subject<'a> {
     pub order: &'a str,
     /// The seat the order named, or [`TRANSIENT`].
     pub seat: &'a str,
-    /// The builder's gate as the caller handed it, or `None` for
+    /// The builder's checks as the caller handed them, or `None` for
     /// [`DERIVE_TOUCHED`]. It is the CALLER's because it is the workflow's: a
     /// project's policy names no test command.
     pub touched: Option<&'a str>,
@@ -195,7 +195,7 @@ pub fn print(
 
 /// The brief for one item, read out of the store and printed.
 ///
-/// The order INDEX is the gate — `metadata["fleet.orders"]`, the reading
+/// The order INDEX is what decides — `metadata["fleet.orders"]`, the reading
 /// dispatch, deliver, review and retire all take: an item carrying none has not
 /// been given to anybody, and a brief for it would tell a seat it may begin
 /// when nothing said so. The notes are never searched for it, because a withdrawal
@@ -257,7 +257,7 @@ pub fn for_item(
 
 /// A command a caller handed in, or the named absence in its place. A blank
 /// command is no command: a brief that printed an empty block would tell a
-/// seat it had been given a gate.
+/// seat it had been given a check.
 fn command_or<'a>(given: Option<&'a str>, absent: &'a str) -> &'a str {
     given
         .map(str::trim)

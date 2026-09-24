@@ -12,7 +12,7 @@
 //!
 //! `brief` renders the first thing a dispatched seat reads: the item, its order
 //! note, the delivery-note template it will fill, the guards in force, the
-//! builder's gate its dispatch was handed and the every-turn rules. Whole or not at all — every value
+//! builder's checks its dispatch was handed and the every-turn rules. Whole or not at all — every value
 //! is resolved into memory before a byte reaches stdout, because a seat that
 //! read half a contract cannot tell it read half.
 //!
@@ -54,7 +54,7 @@
 //! handed none), counts
 //! the trunk's distance in the same act as the push, and reads the landed sha
 //! off the push's own range line — never off a rev-parse, which answers the tip
-//! a push that did nothing leaves behind. Every gate row reaches stdout as it is
+//! a push that did nothing leaves behind. Every check row reaches stdout as it is
 //! read and the note renders the same rows again. A refusal before the push puts
 //! the checkout back; nothing is put back after it.
 //!
@@ -63,16 +63,17 @@
 //! at `[core.flight] lanes`, cut from the trunk on first use and kept between
 //! landings, so its build cache is its own by construction and no person's
 //! checkout is ever touched by a flight. Beside it — never inside it, where a
-//! landing's own tree gate would meet it — sits one lock file, the standard
+//! landing's own tree check would meet it — sits one lock file, the standard
 //! library's file lock and no crate, blocking with no deadline because a
 //! landing is bounded by its own suite and not by a timeout this layer could
 //! pick. `land` takes it before its first fetch and holds it until it returns,
 //! whatever the exit, so the tick's landings and a person's `fleet land` queue
 //! on one object; a landing that finds it held prints the holder and the stamp
-//! it wrote there and waits. The module also carries the one wait a gate's
-//! rerun takes — the box's five-minute load against the belt's ceiling, read
-//! through a seam the caller fills, bounded by `[core.flight]
-//! rerun_wait_seconds`, whose expiry reruns anyway and says so on the row.
+//! it wrote there and waits. The module also carries the one wait a suite
+//! check's rerun takes — the box's five-minute load against the belt's
+//! ceiling, read through a seam the caller fills, bounded by
+//! `[core.flight] rerun_wait_seconds`, whose expiry reruns anyway and says so
+//! on the row.
 //!
 //! `run` is the whole run lifecycle over a workflow a pack carries: the
 //! resolution through the layers, the run directory with every input pinned and

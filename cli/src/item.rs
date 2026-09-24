@@ -53,7 +53,7 @@ pub struct DispatchArgs {
     /// who is dispatching; else FLEET_ACTOR or BEADS_ACTOR
     #[arg(long, value_name = "NAME")]
     pub by: Option<String>,
-    /// the builder's gate, named in its brief
+    /// the builder's checks, named in its brief
     #[arg(long, value_name = "COMMAND")]
     pub touched: Option<String>,
     /// print the outcome as one JSON document
@@ -72,7 +72,7 @@ pub struct BriefArgs {
     /// the seat it goes to; without it, a transient one
     #[arg(long, value_name = "SEAT")]
     pub to: Option<String>,
-    /// the builder's gate, as its dispatch was handed it
+    /// the builder's checks, as its dispatch had them
     #[arg(long, value_name = "COMMAND")]
     pub touched: Option<String>,
     /// where the packs the brief renders from are installed
@@ -390,7 +390,7 @@ fn run_land(
         root: here.project.root.clone(),
     };
     // The bar is bounded by the rows the note renders, because that count is
-    // known before the first gate is read and does not change with what they
+    // known before the first check is read and does not change with what they
     // say.
     let progress = Bar::over(ui, land::CRITERIA.len() as u64, "landing");
     let events = StreamEvents {
@@ -1314,7 +1314,7 @@ impl SeatRing {
 }
 
 /// The box's five-minute load against the belt's own ceiling, for the one wait a
-/// gate's rerun takes.
+/// suite check's rerun takes.
 ///
 /// The ceiling is `[dispatch] load_ceiling_per_cpu` times the processor count,
 /// which is the same arithmetic the spawn belt does — one number, read twice,

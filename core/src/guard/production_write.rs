@@ -48,7 +48,7 @@ pub const CHECKS: [&str; 6] = [
     "workflow-ref",
 ];
 
-/// The tools this class reads. Both paths gate on this list — the parsed walk
+/// The tools this class reads. Both paths refuse on this list — the parsed walk
 /// below and the raw-text fallback at the foot of the file — so a tool that
 /// leaves here leaves both at once.
 const GUARDED_TOOLS: [&str; 9] = [

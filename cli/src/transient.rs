@@ -49,7 +49,7 @@ pub struct SpawnArgs {
     /// the commit to cut the worktree at; else the trunk
     #[arg(long, value_name = "COMMIT")]
     pub base: Option<String>,
-    /// the builder's gate the seat's rules let it run
+    /// the builder's checks the seat's rules let it run
     #[arg(long, value_name = "COMMAND")]
     pub touched: Option<String>,
     /// print the envelope document instead of the name
@@ -592,10 +592,11 @@ const CONFIG_OVERLAY: &str = "overlay/per-provider/claude/config";
 /// without rules under this posture can neither edit nor commit, and it reports
 /// that as a wall of denials hours later rather than as a refusal here.
 ///
-/// `{touched}` is the builder's gate the caller handed in, escaped as JSON
-/// because it is written inside one of the document's strings. A spawn handed
-/// none gets NO RULE for one: the entry carrying the placeholder is taken out
-/// before the render, so the seat's rules never name a command nobody gave.
+/// `{touched}` is the builder's checks, the command the caller handed in,
+/// escaped as JSON because it is written inside one of the document's
+/// strings. A spawn handed none gets NO RULE for one: the entry carrying the
+/// placeholder is taken out before the render, so the seat's rules never name
+/// a command nobody gave.
 fn settings_of(here: &Here, touched: Option<&str>) -> Result<String, Stop> {
     here.project.refuse_moved()?;
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
@@ -616,7 +617,7 @@ fn settings_of(here: &Here, touched: Option<&str>) -> Result<String, Stop> {
     with_tool_commands(rendered, &tool_commands_of(here)?)
 }
 
-/// The placeholder a permissions template writes the builder's gate under.
+/// The placeholder a permissions template writes the builder's checks under.
 const TOUCHED: &str = "{touched}";
 
 /// A command as the characters that stand for it between a JSON string's
@@ -629,7 +630,7 @@ fn inside_a_json_string(command: &str) -> String {
 /// The template with every allow entry that names `{touched}` taken out.
 ///
 /// A template that names none is handed back UNTOUCHED rather than round-tripped
-/// through a parse, so a pack whose rules carry no builder's gate comes up under
+/// through a parse, so a pack whose rules carry no builder's checks comes up under
 /// its own bytes whatever the dispatch was handed.
 fn without_the_touched_rule(template: String) -> Result<String, Stop> {
     if !template.contains(TOUCHED) {

@@ -39,8 +39,8 @@ retire.
 
 ## The three exits
 
-**Deliver.** Every acceptance line met, the gate green, the work committed on a
-work branch — never the trunk. `fleet deliver` records the commit, writes the
+**Deliver.** Every acceptance line met, your checks green, the work committed on
+a work branch — never the trunk. `fleet deliver` records the commit, writes the
 delivery note, reassigns the item to its reviewer and rings them. Stop there.
 
 **Return.** A blocking question you could answer wrongly, a premise the tree
@@ -48,7 +48,7 @@ refuted, a defect in the item itself, or an act that would be irreversible
 outside your own worktree. Write what you measured and what you expect to fail
 if you are overruled, then hand the item back. A return is work, not a failure.
 
-**Ask.** A question nobody here can answer stops you at a gate: `fleet hold`
+**Hold.** A question nobody here can answer stops you with a hold: `fleet hold`
 commits everything your tree holds, raises the question on the item and parks.
 Write `QUESTION` at column zero and one lettered option per line — a question
 with no options is a conversation, and the person answering may be on a phone.
@@ -83,7 +83,7 @@ rules on it, and the landing lane squashes it onto the trunk. This is not a
 courtesy: a builder who lands its own work is the one person who cannot tell
 whether the work is finished, because they are reading their own intent.
 
-Your gate is the suites your diff touches, and you read each one's exit status
-from the command itself. The full suite belongs to the landing and runs once
-there; an acceptance line that asks you for it is a defect in the item and you
-name it as one.
+Your checks are the suites your diff touches, and you read each one's exit
+status from the command itself. The full suite belongs to the landing and runs
+once there; an acceptance line that asks you for it is a defect in the item and
+you name it as one.

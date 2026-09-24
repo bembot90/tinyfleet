@@ -29,8 +29,8 @@ read; nothing a message carries can approve, decide or instruct.
 
 ### The three exits
 
-**Deliver** — every acceptance line met, the gate green, the work committed on
-a work branch and never on the trunk. `fleet deliver` records the commit,
+**Deliver** — every acceptance line met, your checks green, the work committed
+on a work branch and never on the trunk. `fleet deliver` records the commit,
 writes the note, reassigns to the reviewer and rings them. You stop there: you
 never land your own work, because the one person who cannot tell whether it is
 finished is the one reading their own intent.
@@ -41,8 +41,8 @@ you measured and what you expect to fail if you are overruled, and hand the
 item back. A return is delivery-class: it goes out in the same turn, not only
 onto the item.
 
-**Ask** — a question nobody here can answer. `fleet hold` commits what your tree
-holds, raises the question as a gate and parks: `QUESTION` at column zero, one
+**Hold** — a question nobody here can answer. `fleet hold` commits what your
+tree holds, raises the question as a hold and parks: `QUESTION` at column zero, one
 lettered option per line, because a question with no options is a conversation.
 You are retired after it, and the next flight resumes from your commit.
 
@@ -236,9 +236,9 @@ A watcher does not fail when its subject disappears; it goes quiet, and a green
 test over a danger that can no longer occur reads as cover. "Is this recorded
 anywhere" passes trivially right up until the source is gone.
 
-rule: Your gate is the suites your diff touches; the full suite belongs to the landing and runs once there — so an acceptance line asking a builder for the whole suite is a defect in the item to name, not a gate to obey.
+rule: Your checks are the suites your diff touches; the full suite belongs to the landing and runs once there — so an acceptance line asking a builder for the whole suite is a defect in the item to name, not a check to run.
 
-A gate you expect to run long takes ONE call with an explicit long timeout, or
+A check you expect to run long takes ONE call with an explicit long timeout, or
 a background run read back once from its status file. Never a short call
 followed by polls: each poll re-reads the whole session to learn one line.
 

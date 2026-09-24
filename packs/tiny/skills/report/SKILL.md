@@ -55,7 +55,7 @@ classification chips do:
 | Amber `a` | The problem is **unfixed** — nothing here addresses it | `.chip.a` |
 | Blue `b` | The problem is **half-fixed** — addressed partially or by ritual | `.chip.b` |
 | Teal `c` | The problem is **fixed by our own code** — the finding names what that code could shrink or retire | `.chip.c` |
-| Amber `up` | A caveat that gates the finding — needs an upgrade, untested, depends on another row | `.chip.up` |
+| Amber `up` | A caveat that blocks the finding — needs an upgrade, untested, depends on another row | `.chip.up` |
 | Plain `ok` | No caveat; measured present | `.chip.ok` |
 
 A report about something other than "what we underuse" keeps the *shape* — a
@@ -71,12 +71,12 @@ above the first card. The ruled-out list and the misuse list deliberately are
 *not* numbered: they are sets. Do not number a list that is not a sequence.
 
 **The verdict strip is three numbers, not a paragraph.** The count that
-answers the reader's first question, the count that answers the gate they
+answers the reader's first question, the count that answers the blocker they
 were worried about, and the count they would otherwise miss. If the report
 cannot be reduced to three numbers, it has not finished thinking.
 
 **The summary table precedes the detail.** The top-N table restates the ranked
-cards in one row each — feature, problem, what it retires, the gate — so a
+cards in one row each — feature, problem, what it retires, the blocker — so a
 reader who stops after the table has the report's whole argument. The cards
 below are the evidence for it, not a second telling.
 

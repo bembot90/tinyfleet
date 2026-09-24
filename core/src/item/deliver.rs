@@ -93,7 +93,7 @@ pub fn deliver(
 ) -> Result<Delivered, Stop> {
     // THE TREE IS READ BEFORE THE STORE. A store call of this verb's own can
     // touch a file the project versions — an append-only log beside the
-    // database is the shape that does it — and a gate that read the tree after
+    // database is the shape that does it — and a check that read the tree after
     // one would report this verb's own bookkeeping as the seat's unstaged work.
     //
     // (a) the trunk, (b) a file left outside the delivery, (c) an empty one.
@@ -263,7 +263,7 @@ fn ring(
 ///
 /// `named` says which one directly, for the case a seat legitimately holds two.
 ///
-/// IT IS `ask`'s READ TOO. A question and a delivery ask the same question of
+/// IT IS `hold`'s READ TOO. A question and a delivery ask the same question of
 /// the record — which item is this worktree's — and two readers of it would be
 /// two answers the day one of them changed.
 pub fn held_item(store: &dyn Store, by: &str, named: Option<&str>) -> Result<String, Stop> {

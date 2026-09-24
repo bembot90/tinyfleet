@@ -839,7 +839,7 @@ fn base_of(worktree: &Path) -> Option<String> {
 /// retire left behind would otherwise hand the new session the old one's state,
 /// which is the isolation this exists to give, lost to a name collision.
 ///
-/// The read-back is the same gate every other step here takes, and it is the
+/// The read-back is the same check every other step here takes, and it is the
 /// LISTING and not the existence: a directory the process could not write into
 /// is one the agent will populate from the person's own instead.
 fn make_config_dir(dir: &Path, files: &[(String, String)]) -> Result<(), String> {
@@ -905,7 +905,7 @@ const MERGED_LISTS: [&str; 2] = ["allow", "deny"];
 /// rules out of the seat's session and leave a tracked file modified in a
 /// checkout nobody edited.
 ///
-/// The read-back is the same gate every other step here takes: a write that
+/// The read-back is the same check every other step here takes: a write that
 /// silently landed short leaves a seat that can neither edit nor commit, and
 /// the refusal a person would get instead is one from the agent, hours later.
 fn write_settings(

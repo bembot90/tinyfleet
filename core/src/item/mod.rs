@@ -284,8 +284,8 @@ impl Progress for Silent {
 }
 
 /// The trunk, as the local ref names it. `deliver` records the base it read
-/// and never fetches: a fetch moves what a second verb is about to gate on, and
-/// `land` is the verb that owns that.
+/// and never fetches: a fetch moves what a second verb is about to check
+/// against, and `land` is the verb that owns that.
 pub const TRUNK: &str = "origin/main";
 
 /// The branch a delivery may not sit on.
@@ -411,7 +411,7 @@ pub struct Spawn<'a> {
     /// The model this seat runs on, where the caller names one. `None` leaves
     /// the fleet's policy default.
     pub model: Option<&'a str>,
-    /// The builder's own gate, as the dispatch was handed it: the command the
+    /// The builder's own checks, as the dispatch was handed them: the command the
     /// seat's permission rules let it run. `None` writes no rule for one.
     pub touched: Option<&'a str>,
 }

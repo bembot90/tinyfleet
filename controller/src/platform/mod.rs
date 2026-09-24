@@ -562,7 +562,7 @@ enum Probe {
 
 /// The gate, across polls.
 pub struct Grant {
-    gated: bool,
+    probed: bool,
     timeout: Duration,
     listing: Listing,
     probes: BTreeMap<PathBuf, Probe>,
@@ -573,7 +573,7 @@ impl Grant {
     /// reads `ok` and probes nothing, which is a reading and not a skip.
     pub fn new(listing: Listing, timeout: Duration) -> Grant {
         Grant {
-            gated: sys::GRANT_IS_GATED,
+            probed: sys::GRANT_IS_GATED,
             timeout,
             listing,
             probes: BTreeMap::new(),
@@ -583,7 +583,7 @@ impl Grant {
     /// Probe every path that has not answered, read every parked probe without
     /// starting a second one for it, and report the fleet's grant.
     pub fn poll(&mut self, paths: &[PathBuf]) -> GrantRead {
-        if !self.gated {
+        if !self.probed {
             return GrantRead {
                 state: GRANT_OK,
                 detail: None,
@@ -1213,10 +1213,10 @@ mod tests {
             }
             Ok(())
         });
-        let mut gate = Grant::new(listing, Duration::from_millis(50));
+        let mut grant = Grant::new(listing, Duration::from_millis(50));
         let paths = vec![PathBuf::from("/wt/one")];
 
-        let first = gate.poll(&paths);
+        let first = grant.poll(&paths);
         assert_eq!(first.state, GRANT_PENDING);
         assert!(
             first
@@ -1230,7 +1230,7 @@ mod tests {
 
         // A second poll while the probe is outstanding reads the same parked
         // one: still pending, and the listing was not called again.
-        let second = gate.poll(&paths);
+        let second = grant.poll(&paths);
         assert_eq!(second.state, GRANT_PENDING);
         assert_eq!(
             started.load(Ordering::SeqCst),
@@ -1242,10 +1242,10 @@ mod tests {
         // reads it — with no restart and no second probe.
         answer.store(true, Ordering::SeqCst);
         let deadline = Instant::now() + Duration::from_secs(5);
-        let mut read = gate.poll(&paths);
+        let mut read = grant.poll(&paths);
         while !read.is_ok() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
-            read = gate.poll(&paths);
+            read = grant.poll(&paths);
         }
         assert_eq!(read.state, GRANT_OK, "{read:?}");
         assert_eq!(read.detail, None);
@@ -1256,7 +1256,7 @@ mod tests {
         );
 
         // And an answered path is never probed again.
-        assert!(gate.poll(&paths).is_ok());
+        assert!(grant.poll(&paths).is_ok());
         assert_eq!(started.load(Ordering::SeqCst), 1);
     }
 
@@ -1267,14 +1267,14 @@ mod tests {
     #[test]
     fn a_listing_that_answers_is_ok_and_one_that_refuses_is_pending() {
         let fine: Listing = Arc::new(|_: &Path| Ok(()));
-        let mut gate = Grant::new(fine, Duration::from_secs(5));
-        let read = gate.poll(&[PathBuf::from("/wt/one"), PathBuf::from("/wt/two")]);
+        let mut grant = Grant::new(fine, Duration::from_secs(5));
+        let read = grant.poll(&[PathBuf::from("/wt/one"), PathBuf::from("/wt/two")]);
         assert_eq!(read.state, GRANT_OK);
         assert_eq!(read.detail, None);
 
         let denied: Listing = Arc::new(|_: &Path| Err("operation not permitted".to_string()));
-        let mut gate = Grant::new(denied, Duration::from_secs(5));
-        let read = gate.poll(&[PathBuf::from("/wt/one")]);
+        let mut grant = Grant::new(denied, Duration::from_secs(5));
+        let read = grant.poll(&[PathBuf::from("/wt/one")]);
         assert_eq!(read.state, GRANT_PENDING);
         let detail = read.detail.unwrap_or_default();
         assert!(detail.contains("refused"), "{detail}");
@@ -1341,9 +1341,9 @@ mod tests {
             std::thread::sleep(Duration::from_secs(600));
             Ok(())
         });
-        let mut gate = Grant::new(never, Duration::from_millis(50));
+        let mut grant = Grant::new(never, Duration::from_millis(50));
         let started = Instant::now();
-        let read = gate.poll(&[PathBuf::from("/wt/one")]);
+        let read = grant.poll(&[PathBuf::from("/wt/one")]);
         assert_eq!(read.state, GRANT_OK);
         assert!(started.elapsed() < Duration::from_secs(1));
     }

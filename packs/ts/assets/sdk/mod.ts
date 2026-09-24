@@ -91,7 +91,7 @@ export interface Spawn {
   role: "builder";
   item: string;
   model?: string;
-  /** The builder's gate, handed to `fleet dispatch --touched`: the command
+  /** The builder's checks, handed to `fleet dispatch --touched`: the command
    * its brief names for the seat to run over its own diff. Absent, the brief
    * names the absence instead. */
   touched?: string;

@@ -338,7 +338,7 @@ impl Load for Unread {
 }
 
 /// What a wait for the box to quieten ended as. Each is a clause the second
-/// gate row prints, so the row says which of the three happened.
+/// check row prints, so the row says which of the three happened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Waited {
     /// The load was already under the ceiling, or fell under it in time.
@@ -350,7 +350,7 @@ pub enum Waited {
 }
 
 impl Waited {
-    /// The clause the second gate row and the second `check.read` carry.
+    /// The clause the second check row and the second `check.read` carry.
     pub fn clause(&self) -> String {
         match self {
             Waited::Quiet(text) => text.clone(),

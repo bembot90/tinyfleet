@@ -21,7 +21,7 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 ///
 /// IT APPLIES WHAT IT IS TOLD. A write moves the stored item, so the read
 /// beside it answers the write, and `export` writes a file whose bytes move
-/// when an item moves — which is what lets a landing's export gate run here
+/// when an item moves — which is what lets a landing's export check run here
 /// with no `bd` on the box at all. The recorded log is kept beside that, so an
 /// arm can still assert the line a verb wrote.
 ///

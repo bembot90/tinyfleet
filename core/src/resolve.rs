@@ -104,7 +104,7 @@ pub enum Refusal {
     },
     /// The binary's defaults have not been materialized. Named rather than
     /// resolved as an empty bottom layer, because an empty bottom publishes no
-    /// registry and gates nothing.
+    /// registry and checks nothing.
     NoDefaults {
         root: String,
     },
@@ -169,7 +169,7 @@ impl fmt::Display for Refusal {
 /// layer's declaration of its own surface, so a caller that assembled the list
 /// itself and forgot resolves with a real pack as the bottom — and then every
 /// shadow that pack does not list is refused, or, where it publishes no
-/// registry, nothing is gated at all.
+/// registry, nothing is checked at all.
 pub fn layers(packs_dir: &Path, defaults_dir: &Path) -> Result<Vec<Layer>, Vec<Refusal>> {
     layers_over(installed(packs_dir), defaults_dir)
 }

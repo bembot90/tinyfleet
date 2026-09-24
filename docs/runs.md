@@ -28,9 +28,9 @@ carried on by the controller when the answer or the work arrives.
   stream as a `step.started` and `step.closed` pair.
 - **wait**: a run that cannot go on yet exits waiting and names what it is
   waiting for. The controller executes it again when that could have arrived.
-- **gate** and **park**: a question on the run's record for a person to
-  answer, and the state the record is in while the question stands. The same
-  objects a seat raises with `fleet ask`; see
+- **hold**: a question on the run's record for a person to answer. The
+  record is **held** while the hold stands, and a person's answer clears it.
+  The same object a seat raises with `fleet hold`; see
   [Items and the record](items.md).
 
 ## Running a workflow
@@ -168,7 +168,7 @@ under `[landing]`, `tool_commands` under `[permissions]`, and
 ### How many runs are open
 
 A run counts as open while its record is open: while it is running, waiting,
-could not be read, or is parked. `[core.run] max_open` in `fleet.toml` caps
+could not be read, or is held. `[core.run] max_open` in `fleet.toml` caps
 them, four when it is not set. At the cap `fleet run` refuses with exit 1 and
 lists the open runs. A value that is not a whole number is refused too, with
 exit 1.
@@ -219,10 +219,9 @@ each poll it executes a waiting run again when the stream has moved past where
 the run stopped, and:
 
 - if the run is waiting on items (the SDK's `until`), only when a line about
-  one of those items has arrived since: `item.dispatched`, `item.held`,
-  `item.delivered`, `item.reviewed`, `item.returned`, `item.landed` or
-  `item.parked`;
-- if it is waiting on anything else, such as a gate or a child run, when any
+  one of those items has arrived since: `item.dispatched`, `item.delivered`,
+  `item.reviewed`, `item.returned`, `item.landed` or `item.held`;
+- if it is waiting on anything else, such as a hold or a child run, when any
   line has arrived.
 
 Executing a run again uses the bundle already in its run directory; the
@@ -241,24 +240,24 @@ controller as the actor.
 
 A run that ends `could not tell` is also executed again by the controller, up
 to `[core.run] max_crashes` more times, two when it is not set. Past that, the
-controller raises a gate on the run's record and writes `item.parked` naming
+controller raises a hold on the run's record and writes `item.held` naming
 it, with the reason:
 
 ```text
 <run> has been executed 3 time(s) and nothing could classify the last one — `[core.run] max_crashes` is 2
 ```
 
-With `max_crashes = 0` the first `could not tell` parks the run. A run parked
+With `max_crashes = 0` the first `could not tell` holds the run. A run held
 this way is not executed again. Its record stays open, so it keeps counting
-against `max_open`, and `fleet answer` on it refuses with exit 1:
+against `max_open`, and `fleet clear` on it refuses with exit 1:
 
 ```text
-fleet answer: <run> carries no park — an answer settles a question somebody asked, and this item has none
+fleet clear: <run> carries no park — a clearance settles a question somebody asked, and this item has none
 ```
 
 ### Seats a run spawned
 
-When a run closes, fails or is parked, the controller retires every transient
+When a run closes, fails or is held, the controller retires every transient
 seat the run spawned, releases the items those seats still held, and writes
 `run.cleaned` with the count, once per run and also when the count is zero.
 
@@ -278,25 +277,25 @@ and the seat is retired all the same.
 
 ## Questions a run asks
 
-A workflow asks a person a question with a gate on its own run record (the
-SDK's `gate`). The record is parked the way a seat's item is: a `PARKED` note
-with the question and its lettered options, a gate in the work graph, and
-`item.parked` on the stream. The run exits waiting on the gate.
+A workflow asks a person a question with a hold on its own run record (the
+SDK's `hold`). The record is held the way a seat's item is: a `PARKED` note
+with the question and its lettered options, a hold in the work graph, and
+`item.held` on the stream. The run exits waiting on the hold.
 
-You answer it with `fleet answer`, naming the run as the item:
+You clear it with `fleet clear`, naming the run as the item:
 
 ```sh
-$ fleet answer <run> A --by <name>
-<run> answered A — <gate> resolved
+$ fleet clear <run> A --by <name>
+<run> answered A — <hold> cleared
 ```
 
 The controller's next poll executes the run again, and the workflow reads the
-letter you gave. See [Items and the record](items.md) for `fleet answer`.
+letter you gave. See [Items and the record](items.md) for `fleet clear`.
 
-A run lands an item only on an answered gate. When a workflow calls
+A run lands an item only on a cleared hold. When a workflow calls
 `fleet land` as the run, the landing acts as the seat `[core] reviewer` names,
-and it is refused unless the last gate on the run's record was answered by
-that seat. Answer a run's gate with `--by <reviewer>` when its answer is what
+and it is refused unless the last hold on the run's record was cleared by
+that seat. Clear a run's hold with `--by <reviewer>` when its answer is what
 lets it land.
 
 ## Watching runs
@@ -306,21 +305,21 @@ stream. Like the rest of the page, it prints only once the controller has
 published its projection; without one, `fleet status` exits 5 (see
 [Status and the event stream](status.md)).
 
-In this example each row is a different run, so the ids, gates and times are
+In this example each row is a different run, so the ids, holds and times are
 placeholders per row:
 
 ```sh
 $ fleet status
 ...
-runs  6 failed in the last 24 hours, 1 parked, 0 could not tell, 2 waiting, 0 open
+runs  6 failed in the last 24 hours, 1 held, 0 could not tell, 2 waiting, 0 open
 ...
   <run-a>  fails  FAILED at <time-a> — {"reason":"fails: this workflow fails on purpose"}
   <run-b>  takeoff  FAILED at <time-b> — {"reason":"takeoff: no `items` input — the flight has nothing to fly"}
-  <run-c>  crashes  PARKED at <time-c> on gate <gate-c> — nothing could classify 3 execution(s)
+  <run-c>  crashes  HELD at <time-c> on hold <hold-c> — nothing could classify 3 execution(s)
   <run-d>  waits  waiting since <time-d> for {"waiting":["<item>"]}
-  <run-e>  asks  waiting since <time-e> for {"waiting":"<gate-e>"}
+  <run-e>  asks  waiting since <time-e> for {"waiting":"<hold-e>"}
 
-gates  2 raised by a park and not answered
+holds  2 raised by a park and not cleared
 ```
 
 The first line counts the runs in each standing; the rows follow in the same
@@ -328,8 +327,8 @@ order, and inside each standing by run id. Each row is the run, its workflow,
 and:
 
 - `FAILED at` the time it failed, with the reason its workflow gave;
-- `PARKED at` the time of its last execution, on the gate raised for it, with
-  `, answered` after the gate once the gate is resolved;
+- `HELD at` the time of its last execution, on the hold raised for it, with
+  `, cleared` after the hold once the hold is cleared;
 - `could not tell at` the time, the executions so far, the exit and the line
   that could not be read;
 - `waiting since` the time, and what it is waiting for;
@@ -338,9 +337,9 @@ and:
 
 Closed runs are not listed. A run that failed more than 24 hours ago is left
 out of the first line's count and of the rows; a line under the rows says how
-many were left out, and `fleet event tail --type run.failed` lists them. The last line counts the
-gates raised by a park, a run's or an item's, that no `gate.resolved` has
-answered.
+many were left out, and `fleet event tail --type run.failed` lists them. The
+last line counts the holds raised by a park, a run's or an item's, that no
+`hold.cleared` has cleared.
 
 ## Writing a workflow
 
@@ -417,16 +416,16 @@ The handle:
 | `run.deliver(item, note)` | `fleet deliver --item <item> --note <note>` |
 | `run.review(item, "accepted")` or `run.review(item, { returned: file })` | `fleet review <item> --land`, or `--return <file>` |
 | `run.land(item, sha, { test? })` | `fleet land <item> <sha>`, with `--test` when given |
-| `run.gate(question, options)` | asks on the run's record and waits for the answer; returns the letter |
+| `run.hold(question, options)` | asks on the run's record and waits for the answer; returns the letter |
 | `run.until(items, state)` | waits until each item has an `item.<state>` event; returns each event's payload |
 | `run.start(name, inputs?)` | `fleet run <name>` as a child run, and waits for it to close |
 
 The verbs run the fleet binary from the project, with `--json` and
 `--by <run>`, so every act a run takes is on the record under the run's id. A
 verb that refuses fails the run, with `{"verb", "code", "why"}` as its reason.
-A gate is asked once and a child run is started once, however often the run
-is executed again. `until` takes the states `dispatched`, `held`,
-`delivered`, `reviewed`, `returned`, `landed` and `parked`. `spawn` takes the
+A hold is raised once and a child run is started once, however often the run
+is executed again. `until` takes the states `dispatched`, `delivered`,
+`reviewed`, `returned`, `landed` and `held`. `spawn` takes the
 one role `builder`, and refuses a `model`.
 
 ## The takeoff workflow
@@ -436,15 +435,15 @@ person away. It spawns a builder per item, waits for each delivery, reviews
 it, lands the accepted ones, and ends by writing a report.
 
 ```sh
-$ fleet run takeoff --input items=<item-1>,<item-2> --input policy=review=gate,width=2 --input test="make check"
+$ fleet run takeoff --input items=<item-1>,<item-2> --input policy=review=hold,width=2 --input test="make check"
 ```
 
 Its inputs:
 
 - `items`: the items to fly, in order, comma- or space-separated or as a JSON
   array. Required, and an item listed twice fails the run.
-- `policy`: comma-separated pairs. `review=gate` (the default) asks the person
-  for every verdict at a gate; `review=accept` accepts every delivery
+- `policy`: comma-separated pairs. `review=hold` (the default) asks the person
+  for every verdict at a hold; `review=accept` accepts every delivery
   unasked. `width=<n>` is how many items are in the air at once, 1 by
   default. Any other pair fails the run.
 - `test`: the command each landing runs on its rebased tree before the push,
@@ -462,16 +461,16 @@ flies: each landing runs nothing and says NOT TESTED on its note (see
 NOT TESTED — this flight was handed no test command, so every landing ran nothing and stands on the review alone. Set `takeoff.test` under [packs.tiny] in fleet.toml, or pass `--input test=<command>`.
 ```
 
-Under `review=gate` each delivered item raises a gate on the run,
+Under `review=hold` each delivered item raises a hold on the run,
 `Accept <item> at <commit>?` with `A. accept and land` and
 `B. return to the builder`. `A` accepts and lands it; any other letter
 returns it to the builder with a findings file under `findings/` in the run
-directory. Under `review=accept` the run raises no gate, and a run's landing
-is refused where no gate was answered (see *Questions a run asks*), so the
+directory. Under `review=accept` the run raises no hold, and a run's landing
+is refused where no hold was cleared (see *Questions a run asks*), so the
 run fails at its first landing.
 
 When every item is settled, the run writes two files to its run directory and
-closes: `report.md`, with the decisions answered at gates, each item's outcome
+closes: `report.md`, with the decisions answered at holds, each item's outcome
 and landed sha, and the counts; and `board-tick.md`, the landed items to tick
 on the departure board. A workflow writes only its run directory, so the tick
 is left for a person or a seat to apply.
@@ -511,16 +510,16 @@ to the person.
 | `fleet.toml` does not parse | 3 | ``fleet run: the policy in force at <path> does not parse, so the settings its [packs] table sets cannot be read:`` and the parse error | Fix the file. |
 | The work graph cannot be read | 3 | ``fleet run: the work graph could not be read:`` and the reason | Make `bd` reachable. |
 | The pack's bundle command fails | 1 | ``fleet run: the bundle command of `<pack>` exited 1 — `` the command, and its error output | Fix the workflow. The run's record stays open. |
-| `fleet answer` on a run parked by the controller | 1 | ``fleet answer: <run> carries no park — an answer settles a question somebody asked, and this item has none`` | Nothing in fleet resumes it; read its `stdout.log` and `stderr.log`. |
+| `fleet clear` on a run held by the controller | 1 | ``fleet clear: <run> carries no park — a clearance settles a question somebody asked, and this item has none`` | Nothing in fleet resumes it; read its `stdout.log` and `stderr.log`. |
 
 Every refusal above is made before the run record is filed, except the last
 two: a failed bundle leaves its record open, and the last is
-`fleet answer`'s.
+`fleet clear`'s.
 
 ## See also
 
 - [Items and the record](items.md): `dispatch`, `deliver`, `review`, `land`,
-  `ask` and `answer`, the verbs a workflow calls, and the notes they write.
+  `hold` and `clear`, the verbs a workflow calls, and the notes they write.
 - [Packs](packs.md): installing the tiny and ts packs, how layers resolve a
   workflow's file, and pack settings in `fleet.toml`.
 - [Status and the event stream](status.md): the rest of `fleet status`, and

@@ -338,7 +338,7 @@ impl<'a> Observer<'a> {
         // Once per key, never once per poll.
         let mut unknown_override_said: BTreeSet<String> = BTreeSet::new();
         let policy = overlaid(&file_policy, &raw_config, &mut unknown_override_said);
-        let config = gated(&raw_config, &policy);
+        let config = admitted(&raw_config, &policy);
         report_skipped(&config);
 
         let policy_seen = policy_mtime;
@@ -525,7 +525,7 @@ impl<'a> Observer<'a> {
                 &self.raw_config,
                 &mut self.unknown_override_said,
             );
-            self.config = gated(&self.raw_config, &self.policy);
+            self.config = admitted(&self.raw_config, &self.policy);
             report_skipped(&self.config);
         }
 
@@ -1507,7 +1507,7 @@ fn overlaid(file: &Policy, raw: &MachineConfig, said: &mut BTreeSet<String>) -> 
 /// instrument reads reports the downgrade, and the seat then stops at the first
 /// approval dialog with nobody there to answer. So the row is dropped here,
 /// before any start is attempted, and the drop is loud.
-fn gated(raw: &MachineConfig, policy: &Policy) -> MachineConfig {
+fn admitted(raw: &MachineConfig, policy: &Policy) -> MachineConfig {
     let mut seats = Vec::with_capacity(raw.seats.len());
     let mut skipped = raw.skipped.clone();
     for seat in &raw.seats {

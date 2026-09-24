@@ -662,7 +662,7 @@ fn orders_of(metadata: Option<&serde_json::Value>) -> (Option<Orders>, bool) {
 /// The dependency types bd's ready set honours as blocking, MEASURED on bd
 /// 1.3.0 in a scratch board: one item per type, each depending on one open
 /// item, then `bd ready --json -n 0`. These three took their item out of the
-/// ready set, and a gate raised by `bd gate create --blocks` is a `blocks`
+/// ready set, and a hold raised by `bd gate create --blocks` is a `blocks`
 /// edge. `parent-child`, `related`, `discovered-from`, `replies-to`,
 /// `relates-to`, `duplicates`, `supersedes`, `authored-by`, `assigned-to`,
 /// `approved-by`, `attests`, `tracks`, `until`, `caused-by`, `validates` and
@@ -880,7 +880,7 @@ impl Store for Bd {
     /// `-n 0` for the same reason the three reads above carry it: this verb
     /// answers its first 50 rows by default, piped or not — measured on 1.3.0,
     /// 50 of 53 — and a truncated list reads exactly like a whole one, so past
-    /// fifty open gates a gate the board holds open is absent from the listing
+    /// fifty open holds a hold the board keeps open is absent from the listing
     /// — and `clear` refuses a hold it does not find there as one somebody has
     /// already cleared.
     fn open_holds(&self) -> Result<Vec<String>, StoreError> {

@@ -12,7 +12,7 @@ was decided in their name, and gone in between.
 
 The middle is not a skill any more. It is `workflows/takeoff.ts` in this
 pack, run by `fleet run takeoff`: a spawn step per item, an until step per
-delivery, review and land as steps, every verdict a gate for the person
+delivery, review and land as steps, every verdict a hold for the person
 under `review=hold`, and the report and the board tick as its last two steps.
 A step that cannot close exits waiting and the controller re-runs the bundle
 when the stream moves; replay carries the re-run back to the same step, so
@@ -23,7 +23,7 @@ the two phases that stay human: **pre-flight** and **reading the report**.
 
 **The architect, operating.** Review is chartered architect work and the
 middle is dominated by it, so there is no dispatcher seat. A builder in a
-run just builds, and its questions reach the person through the run's gates.
+run just builds, and its questions reach the person through the run's holds.
 If you are not the architect and you reached this file, stop and say so.
 
 ## Hard rules
@@ -31,10 +31,10 @@ If you are not the architect and you reached this file, stop and say so.
 - **What never auto-resolves, in any mode:** supervised-lane sign-off on the
   running thing, release refs, and anything the charters reserve to the
   person. The workflow asks; it never answers for them.
-- **The review bar does not move.** The verdict at a gate is read to the
+- **The review bar does not move.** The verdict at a hold is read to the
   normal standard: the delivery note, the diff at its commit, the suite it
   claims.
-- **A decision with no clear recommendation is a gate, not a guess.** The
+- **A decision with no clear recommendation is a hold, not a guess.** The
   workflow parks on it and the run waits; a coin-flip dressed as a
   recommendation is a false record and worse than an interruption.
 - **The item trail comes first.** Every act of the run is on the stream and
@@ -63,12 +63,12 @@ b. **Read every item on it** — `bd show <id>`: acceptance criteria that exist
    drops the item from the list with the reason on it.
 
 c. **Supervised-lane items are accepted only with an explicit flag** that
-   they run to the review gate and stop there: the reel, then the gate for
+   they run to the review hold and stop there: the reel, then the hold for
    the person on the running thing, never a landing in their absence.
 
 d. **Resolve every gap now, while they are here** — a question with its
    options and a marked recommendation — or drop the item with their ok. A
-   gap carried into the middle is a gate the run will park on for hours.
+   gap carried into the middle is a hold the run will park on for hours.
 
 e. **State the list back and wait for go.** The final list in order, every
    item you dropped and which check dropped it, the policy pair as it will
@@ -92,7 +92,7 @@ e. **State the list back and wait for go.** The final list in order, every
 The end-loaded half. The workflow's last two steps wrote `report.md` and
 `board-tick.md` into the run directory, and `run.closed` is on the stream.
 
-a. **Read the report** — the decisions the person answered at gates, each
+a. **Read the report** — the decisions the person answered at holds, each
    tagged `<run id>-D<n>`, the flight table with every item's outcome and
    landed sha, and the numbers. Post one line in chat: the run id, the local
    time from `date`, and where the report is. No table, no decision list —
@@ -105,7 +105,7 @@ b. **Apply the tick.** `board-tick.md` names the landed rows; tick each one
    else, which is why the tick is a file for your hand and not an edit.
 
 c. **The walk-through happens when their reading comes back**, whenever that
-   is. A gate's letter was already the ruling and needs nothing more; a
+   is. A hold's letter was already the ruling and needs nothing more; a
    verdict they now want reversed is transcribed verbatim onto the item and
    filed as a follow-up item, because a reversed decision is the mechanism
    working as designed.

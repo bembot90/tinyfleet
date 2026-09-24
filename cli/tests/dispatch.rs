@@ -350,7 +350,7 @@ fn a_live_row_in_the_seats_worktree_is_rung_with_the_item_and_the_brief() {
         String::from_utf8_lossy(&out.stdout),
         "dispatched by lead-1 — orders given\n"
     );
-    // The builder's gate the call handed in is the one the brief names.
+    // The builder's checks the call handed in are the ones the brief names.
     let brief = std::fs::read_to_string(rig.machine.join("briefs").join(format!("{item}.md")))
         .expect("the brief is written");
     assert!(
@@ -423,7 +423,7 @@ fn an_empty_roster_exits_four_and_the_three_writes_stand() {
         serde_json::json!("dispatch"),
         "the index stands"
     );
-    // A dispatch handed no builder's gate: the brief names the absence where
+    // A dispatch handed no builder's checks: the brief names the absence where
     // the command goes.
     let brief = std::fs::read_to_string(rig.machine.join("briefs").join(format!("{item}.md")))
         .expect("the brief stands");
@@ -653,7 +653,7 @@ fn brief_prints_the_first_turn_and_says_what_it_cost() {
     assert!(body.contains("(transient)"), "{body}");
     assert!(
         body.contains("```\nmake check\n```"),
-        "the builder's gate the call handed in: {body}"
+        "the builder's checks the call handed in: {body}"
     );
     assert_eq!(
         stderr(&out).trim(),

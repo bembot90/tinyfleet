@@ -443,7 +443,7 @@ pub fn revive(
 /// A row is claimed when it is LIVE and never by its state (gas-city G7:
 /// "adopts every live session it names"). The state word cannot carry the
 /// question — a live idle session reads `done` (lessons claude-code A3), so a
-/// claim gated on it takes no idle seat at all — and liveness is a sighting
+/// claim keyed on it takes no idle seat at all — and liveness is a sighting
 /// this controller made: what is claimed is a session observed running, which
 /// is then held through the pid-less stretches that follow it. A session the
 /// roster no longer carries, and one it carries pid-less with no sighting
