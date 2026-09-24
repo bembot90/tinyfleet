@@ -61,11 +61,11 @@ dependencies are the real blockers.
 | fleet-iex.11 | The work graph holds seat ids, part 1: dispatch and brief resolve --to to a seat id, the assignee and fleet.orders.se… | fleet-iex.6 | ☑ |
 | fleet-iex.12 | The work graph holds seat ids, part 2: [core] reviewer resolves to a seat id, deliver reassigns to it, review returns… | fleet-iex.11 | ☑ |
 | fleet-iex.8 | The actor is a typed reference at the cli: --by and FLEET_ACTOR take a seat or kind:id, BEADS_ACTOR is no longer read… | fleet-iex.12 | ☑ |
-| fleet-iex.9 | Core's verbs take the typed actor: bd gets its <kind>:<id> string, and every seat-only check refuses a non-seat actor… | fleet-iex.8 | ☐ |
+| fleet-iex.9 | Core's verbs take the typed actor: bd gets its <kind>:<id> string, and every seat-only check refuses a non-seat actor… | fleet-iex.8 | ☑ |
 | fleet-iex.10 | The stream carries the actor as a typed reference {kind, id}; tail filters by --seat (resolved) and --actor, and the… | fleet-iex.9 | ☐ |
 | fleet-iex.13 | A seat appears as {id, name?, kind} in the projection, the event payloads, every seat-bearing --json document and the… | fleet-iex.6, fleet-iex.7, fleet-iex.11 | ☑ |
 | fleet-iex.14 | Rewrite docs/ for seat identity: ids and names, identity.toml, fleet seat add, <slug>-<short> names, the typed actor… | fleet-iex.4, fleet-iex.6, fleet-iex.7, fleet-iex.10, fleet-iex.12, fleet-iex.13 | ☐ |
-| fleet-iex.15 | Rewrite the tiny pack's rituals and core's default assets for seat identity: homes under seats/<slug>-<short>/, the n… | fleet-iex.6, fleet-iex.7, fleet-iex.8, fleet-iex.11 | ☐ |
+| fleet-iex.15 | Rewrite the tiny pack's rituals and core's default assets for seat identity: homes under seats/<slug>-<short>/, the n… | fleet-iex.6, fleet-iex.7, fleet-iex.8, fleet-iex.11 | ☑ |
 | fleet-2u3.15 | doctor core: one module finds the doctor checks through the layers and runs each one bounded; fleet run's runtime che… | — | ☑ |
 | fleet-2u3.1 | fleet doctor: run every installed pack's and the defaults' doctor checks on demand | fleet-2u3.15 | ☑ |
 
