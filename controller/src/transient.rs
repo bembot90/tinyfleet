@@ -10,8 +10,9 @@
 //! [`Machine`], the way `effect.rs` gathers a seat into its `Target`: the
 //! project and its two directories come from the project's own policy file,
 //! which this crate cannot read because it takes nothing from core but its
-//! bounded runner (`fleet_core::process`). The stream and the session table
-//! are opened here from the machine directory the caller named, because a verb
+//! bounded runner (`fleet_core::process`) and the release it supports
+//! (`fleet_core::supported`). The stream and the session table are opened here
+//! from the machine directory the caller named, because a verb
 //! is one process and there is no loop holding them across a poll.
 //!
 //! ## The belt's two environment overrides

@@ -79,8 +79,9 @@ The defaults carry these files, and a pack can shadow every one of them:
   `assets/answer-note.md`
 - `overlay/per-provider/claude/hooks.json`,
   `overlay/per-provider/claude/permissions.json`
-- `doctor/guards-installed/`, `doctor/isolation-pair/` and
-  `doctor/runtime-version/`, each a `doctor.toml` and a `run.sh`
+- `doctor/guards-installed/`, `doctor/isolation-pair/`,
+  `doctor/runtime-version/`, `doctor/bd-version/` and
+  `doctor/claude-code-version/`, each a `doctor.toml` and a `run.sh`
 
 `<machine-dir>/defaults/assets/shadow-registry.toml` lists the same files with
 one line each on what they are for.
@@ -232,6 +233,7 @@ the defaults:
 ```sh
 $ fleet prime
 fleet 0.1.0 — packs: tiny, ts; guards: shell-trap on, record on, release-ref on, production-write on
+bd: 1.3.0, the pinned version
 ...
 ```
 

@@ -239,6 +239,44 @@ binary can be found (`fleet observe: effects are off — <why>`). On macOS it
 also holds every such act while the permission to read the seats' worktrees
 is pending. In both cases it keeps polling and publishing.
 
+### The Claude Code version
+
+On every poll the controller asks `claude` for its version and compares it
+with the version it expects. That is the version the fleet's `fleet.toml`
+pins under `[substrate]`, in either of two forms:
+
+```toml
+[substrate.claude_code]
+version = "<version>"
+```
+
+```toml
+[substrate]
+claude_code = "<version>"
+```
+
+With no pin, it expects the version fleet supports, 2.1.261 (see
+[What fleet runs on](getting-started.md#what-fleet-runs-on)). A blank pin, or
+a `claude_code` entry in any other shape, pins nothing.
+
+When the version it reads differs from the one it expects, the controller
+writes a `substrate.moved` event naming the agent, the version it observed
+and the version it expected, and carries on: it refuses, stops and holds
+nothing for it.
+
+```sh
+$ fleet event tail --type substrate.moved
+{"id":"<id>","seq":2,"ts":"<event-stamp>","type":"substrate.moved","actor":"controller","payload":{"agent":"claude_code","expected":"2.1.261","observed":"<version>"}}
+```
+
+A running controller writes one event per difference, not one per poll. A
+poll that reads the expected version again ends the difference, so the next
+one is a new event. A poll that cannot read the version writes nothing and
+does not end it. A controller that starts again writes the event again on
+its first poll. `fleet status` prints both versions on its first line while
+they differ (see
+[Status and the event stream](status.md#the-first-line)).
+
 ### Tuning the controller
 
 These keys go under `[controller]` in `fleet.toml`. A zero or a blank where a

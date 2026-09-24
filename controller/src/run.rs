@@ -66,8 +66,9 @@ pub fn observe_with(options: &Options, grant: platform::Grant) -> u8 {
 /// The loop with the RUN seam handed in beside the gate.
 ///
 /// The seam exists because this crate takes nothing from core but its bounded
-/// runner — no store, no packs, no policy reader — and the three acts a run's
-/// advance needs are wired in the binary (controller PRD R35–R37). `None` is a loop that knows nothing of runs and polls exactly as it
+/// runner and the release it supports — no store, no packs, no policy reader —
+/// and the three acts a run's advance needs are wired in the binary (controller
+/// PRD R35–R37). `None` is a loop that knows nothing of runs and polls exactly as it
 /// did before they existed.
 pub fn observe_runs(
     options: &Options,
@@ -910,7 +911,10 @@ impl<'a> Observer<'a> {
             generated_at: clock::now_stamp(),
             controller_version: env!("CARGO_PKG_VERSION").to_string(),
             agent_version: agent_version.clone(),
-            agent_version_expected: self.policy.claude_code_pin.clone(),
+            // The expectation, which a fleet that pins nothing still has: the
+            // release fleet supports. `fleet.claude_code` below stays the
+            // file's own word, so a reader tells the two apart.
+            agent_version_expected: Some(self.policy.claude_code_expected()),
             fleet: PolicyView {
                 path: self.policy_path.display().to_string(),
                 mtime: self.policy_mtime.and_then(clock::stamp_of),
@@ -1090,13 +1094,18 @@ impl<'a> Observer<'a> {
         }
 
         // A live version that differs from the pin is a flag to re-measure,
-        // never a failure (R29) — and one event per move, not one per poll.
+        // never a failure (R29) — and one event per move, not one per poll. The
+        // pin is the fleet's own where its file writes one, and the release
+        // fleet supports where it does not.
         //
         // Only a version that WAS READ and agrees with the pin closes an
         // announcement. A poll whose version read failed knows nothing about the
         // spread, and clearing on it re-announces the same move on the next
         // healthy poll.
-        let pair = (agent_version.clone(), self.policy.claude_code_pin.clone());
+        let pair = (
+            agent_version.clone(),
+            Some(self.policy.claude_code_expected()),
+        );
         match (&pair.0, &pair.1) {
             (Some(live), Some(pinned)) if live != pinned => {
                 if self.announced_move.as_ref() != Some(&pair) {

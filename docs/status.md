@@ -83,8 +83,12 @@ reads `STALE, <stale-age>s old`. A stamp fleet cannot read as a time reads
 `STALE, an age nothing can read it at`. A stale page still exits 0.
 
 When the agent version the controller read differs from the one it expects,
-both are printed: `agent 2.1.262 (expected 2.1.261)`. When the controller
-could not read the agent's version, the line says `agent not read`.
+both are printed: `agent 2.1.262 (expected 2.1.261)`. The version it expects
+is the fleet's own `[substrate]` pin, or the version fleet supports when
+there is none; see
+[The controller and seats](seats.md#the-claude-code-version). When the
+controller could not read the agent's version, the line says
+`agent not read (expected 2.1.261)`.
 
 ### A pending grant
 

@@ -39,7 +39,8 @@ $ cargo build --release
 The binary lands at `target/release/fleet`, or at `target/debug/fleet` for a
 plain `cargo build`. Fleet also calls other tools as you go further: `git` to
 fetch a pack, `bd` for the project's items, `claude` for the sessions the
-controller starts, and `deno` for the tiny pack's workflows.
+controller starts, and `deno` for the tiny pack's workflows. The version of
+each that fleet supports is in [What fleet runs on](#what-fleet-runs-on).
 
 `--version` prints the version and nothing else:
 
@@ -57,6 +58,77 @@ Fleet has no install command. Putting the built binary on your shell's `PATH`
 is your own step: put `target/release/fleet`, or a copy of it, on it.
 The controller's service runs the file that ran `fleet start`, named by its
 full path, so start the controller from the copy you mean to keep.
+
+## What fleet runs on
+
+Fleet runs four other tools. Three of them have a supported version: the
+release fleet was measured against. A doctor check measures the one you have
+installed against it.
+
+| Tool | Supported version | What measures it |
+| --- | --- | --- |
+| `bd` | 1.3.0 | the `bd-version` doctor check, and the second line of `fleet prime` |
+| Claude Code (`claude`) | 2.1.261 | the `claude-code-version` doctor check, and the controller's `substrate.moved` event |
+| Deno (`deno`) | 2.9.7, pinned by the `ts` pack | the `runtime-version` doctor check, which `fleet run` runs before it opens a run, and the `ts` pack's `deno-version` |
+| `git` | none: fleet pins no version | nothing |
+
+Another version of `bd` or Claude Code is named and not refused: the verbs
+and the controller still run on it. Deno is different: while the
+`runtime-version` check is red, `fleet run` refuses to open a run. See
+[Runs and workflows](runs.md).
+
+The controller compares Claude Code's version with the one it expects on
+every poll. That is 2.1.261 unless the fleet's `fleet.toml` pins another; see
+[The controller and seats](seats.md#the-claude-code-version).
+
+### Running a doctor check
+
+`bd-version` and `claude-code-version` come with the defaults every fleet
+gets, which `fleet create` and `fleet start` write under
+`<machine>/defaults`. Each is a shell script you run with `sh`:
+
+```sh
+$ sh <machine>/defaults/doctor/bd-version/run.sh
+bd-version: pinned bd 1.3.0; `bd version` answers: bd version 1.3.0 (<build>)
+bd-version: holds
+```
+
+It exits 0. On another version, the check says `broken`, names the line that
+installs the supported one, and exits 1:
+
+```sh
+$ sh <machine>/defaults/doctor/claude-code-version/run.sh
+claude-code-version: supported Claude Code 2.1.261; `claude --version` answers: <version> (Claude Code)
+claude-code-version: broken — this claude is not the supported 2.1.261, so the shapes the controller reads were not measured on it; the controller still runs. Install the supported release: claude install 2.1.261
+```
+
+A tool that does not answer at all is `broken` too, with the exit it gave:
+`did not answer (exit 127)` when it is not on your `PATH`. The lines each
+check names are:
+
+- `bd-version`:
+  `CGO_ENABLED=0 go install -tags gms_pure_go github.com/steveyegge/beads/cmd/bd@v1.3.0`
+- `claude-code-version`: `claude install 2.1.261` when `claude` answered
+  another version, and
+  `curl -fsSL https://claude.ai/install.sh | bash -s 2.1.261` when nothing
+  answered.
+
+`bd-version` asks the binary `FLEET_BD_BIN` names, or else the first `bd` on
+your `PATH`. `claude-code-version` asks the binary `FLEET_CLAUDE_BIN` names,
+or else the first `claude` on your `PATH`, which is not the search path the
+controller uses (see [Starting the controller](#starting-the-controller)).
+
+The `ts` pack's own Deno check runs the same way, from the pack:
+
+```sh
+$ sh <machine>/packs/ts/doctor/deno-version/run.sh
+deno-version: pinned deno 2.9.7
+deno-version: deno resolved from PATH (<path>)
+deno-version: `deno --version` answers: deno 2.9.7 (<build>)
+deno-version: holds
+```
+
+It exits 0.
 
 ## Creating a fleet
 
@@ -243,17 +315,24 @@ before every shell command it runs the four guards in order: `shell-trap`,
 `record`, `release-ref` and `production-write`. See [Guards](guards.md).
 
 `fleet prime` names the fleet's installed packs and its guards on its first
-line, then prints the resolved rules:
+line, the `bd` it runs against the supported version on its second, then
+prints the resolved rules:
 
 ```sh
 $ fleet prime
 fleet 0.1.0 — packs: tiny, ts; guards: shell-trap on, record on, release-ref on, production-write on
+bd: 1.3.0, the pinned version
 Five things no verb guesses, each one a lesson somebody already paid for:
 ...
 ```
 
 It exits 0, always. With no pack installed, the first line says
-`packs: none installed`. Outside every fleet it prints one line,
+`packs: none installed`. On another `bd` the second line reads
+`bd: <version>, not the pinned 1.3.0 — the verbs still run, on answers fleet
+was not measured against; install the pin:` and the install line from
+[Running a doctor check](#running-a-doctor-check). When `bd` does not answer,
+it reads `bd: could not be read — ` with the reason, then the pinned version
+and the same install line. Outside every fleet it prints one line,
 `fleet 0.1.0 — no fleet config found above <directory>`. When the directory
 is a seat's worktree, it also lists the items assigned to that seat.
 

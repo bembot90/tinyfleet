@@ -1,0 +1,18 @@
+description = "Whether the Claude Code on PATH is the release this binary's controller adapter was measured against."
+run = "run.sh"
+
+# No name key: the directory is the name, which is the shape the reference's
+# packs use.
+#
+# THE PIN IS THE BINARY'S, not a pack's: every version-scoped behaviour its
+# controller adapter reads was measured on that one release. The registry lets
+# a pack replace this entry, as it does every default, and a copy that moves
+# the pin measures Claude Code against a release the binary never read.
+#
+# What it is for: the controller reads every seat through the agent binary —
+# its roster, its transcripts, its version — by shapes observed on the
+# supported release, and none of them is a published contract. A Claude Code
+# at another version still runs and is still polled, and this entry is where a
+# person is told those shapes were not measured on it, with the line that
+# installs the supported release. A fleet that pins no release of its own under
+# [substrate] gets a `substrate.moved` on the stream for the same spread.

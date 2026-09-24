@@ -32,7 +32,7 @@ skill, `.claude/skills/docs/SKILL.md`.
 
 | File | Area | Covers | Status |
 | --- | --- | --- | --- |
-| `getting-started.md` | Getting started | building and installing fleet, `fleet create`, `fleet start`, the plugin in a Claude Code session | drafted |
+| `getting-started.md` | Getting started | building and installing fleet, what fleet runs on, `fleet create`, `fleet start`, the plugin in a Claude Code session | drafted |
 | `packs.md` | Packs | installing and removing a pack, how packs layer and shadow, the defaults every fleet gets, pack settings in `fleet.toml` | drafted |
 | `items.md` | Items and the record | `dispatch`, `brief`, `deliver`, `ask`, `answer`, `review`, `land`, and the note each one writes on the item | drafted |
 | `runs.md` | Runs and workflows | `fleet run`, the workflow SDK, the takeoff and preboard workflows, gates and parks, the runs section of `fleet status` | drafted |

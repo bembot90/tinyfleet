@@ -663,6 +663,95 @@ fn the_bd_doctor_check_reads_bd_version_against_the_pin() {
     assert!(said.contains("bd-version: holds"), "{said}");
 }
 
+/// fleet-2jt — the Claude Code pin's doctor check the defaults ship, run as a
+/// real script against stub agents, and its copy of the pin held to
+/// `supported::PINNED_CLAUDE_CODE`, as the bd check's is held to its own.
+///
+/// The mismatch arm is a claude answering 2.1.280, a release past the pin, in
+/// the shape `claude --version` prints; absence is measured with no claude on
+/// PATH at all. `FLEET_CLAUDE_BIN` is the seam the controller reads the agent
+/// through, and names the binary over PATH.
+#[test]
+fn the_claude_code_doctor_check_reads_claude_version_against_the_pin() {
+    let pin = fleet_core::supported::PINNED_CLAUDE_CODE;
+    let defaults = Defaults::new("claude-doctor");
+    let check = defaults.path().join("doctor/claude-code-version/run.sh");
+    let script = std::fs::read_to_string(&check)
+        .unwrap_or_else(|e| panic!("the defaults ship the check at {}: {e}", check.display()));
+    assert_eq!(
+        script
+            .lines()
+            .filter(|line| line.starts_with("SUPPORTED="))
+            .collect::<Vec<_>>(),
+        vec![format!("SUPPORTED={pin}").as_str()],
+        "the check's one copy of the pin is supported::PINNED_CLAUDE_CODE"
+    );
+
+    let fixture = Fixture::new("claude-doctor-stubs");
+    fixture.dir("nothing");
+    let fake = |label: &str, answer: &str| -> std::path::PathBuf {
+        let dir = fixture.path(label);
+        std::fs::create_dir_all(&dir).expect("the fake agent's directory");
+        let bin = dir.join("claude");
+        std::fs::write(&bin, format!("#!/bin/sh\necho \"{answer}\"\n"))
+            .expect("the fake agent is written");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+            .expect("the fake agent is executable");
+        dir
+    };
+    let pinned = fake("pinned", &format!("{pin} (Claude Code)"));
+    let other = fake("other", "2.1.280 (Claude Code)");
+
+    let run = |path: &std::path::Path, seam: Option<&std::path::Path>| -> (i32, String) {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg(&check)
+            .env("PATH", path)
+            .env_remove("FLEET_CLAUDE_BIN");
+        if let Some(bin) = seam {
+            cmd.env("FLEET_CLAUDE_BIN", bin);
+        }
+        let out = cmd.output().expect("the check runs");
+        (
+            out.status
+                .code()
+                .expect("the check exits rather than signals"),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
+    };
+
+    let (code, said) = run(&pinned, None);
+    assert_eq!(code, 0, "the pinned claude on PATH: {said}");
+    assert!(said.contains("claude-code-version: holds"), "{said}");
+
+    let (code, said) = run(&other, None);
+    assert_eq!(code, 1, "another claude on PATH: {said}");
+    assert!(
+        said.contains("answers: 2.1.280 (Claude Code)")
+            && said.contains(&format!("is not the supported {pin}"))
+            && said.contains("the controller still runs")
+            && said.contains(&format!("claude install {pin}")),
+        "the mismatch is named, with the line that installs the pin: {said}"
+    );
+
+    let (code, said) = run(&fixture.path("nothing"), None);
+    assert_eq!(code, 1, "no claude on PATH: {said}");
+    assert!(
+        said.contains("did not answer (exit 127)")
+            && said.contains(&format!(
+                "curl -fsSL https://claude.ai/install.sh | bash -s {pin}"
+            )),
+        "{said}"
+    );
+
+    let (code, said) = run(&other, Some(&pinned.join("claude")));
+    assert_eq!(
+        code, 0,
+        "the seam names the pinned claude over PATH's: {said}"
+    );
+    assert!(said.contains("claude-code-version: holds"), "{said}");
+}
+
 /// The ts pack, read as it stands: the one shipped pack whose manifest carries
 /// the runtime table, and the doctor instance that measures it. The instance
 /// resolves the binary from PATH first and from the installer's bin second —

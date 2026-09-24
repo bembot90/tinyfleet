@@ -114,6 +114,7 @@ pub mod resolve;
 pub mod seat;
 pub mod settings;
 pub mod store;
+pub mod supported;
 
 /// What a suite drives these verbs with — the applying fake store and the board
 /// over it. Compiled into this crate's own tests always, and into the library

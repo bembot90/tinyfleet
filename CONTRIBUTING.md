@@ -42,6 +42,32 @@ Every commit on a release or hotfix branch is **one item, squashed**:
 - Board state (`.beads/`) is committed on the branch the work is on, as its
   own commit (`beads: …`).
 
+## Supported versions
+
+The releases of the tools fleet runs on that it supports are declared in one
+place, `core/src/supported.rs`:
+
+| Tool | Constant | Where it is declared | Checked by |
+| --- | --- | --- | --- |
+| bd | `PINNED_BD` | `core/src/store.rs`, named again in `supported.rs` | `doctor/bd-version`, `fleet prime`'s second line |
+| Claude Code | `PINNED_CLAUDE_CODE` | `core/src/supported.rs` | `doctor/claude-code-version`, the controller's `substrate.moved` when a fleet pins none |
+
+Deno is a pack's, not the binary's: `packs/ts/pack.toml`'s `[runtime]` table,
+measured by `doctor/runtime-version`. git carries no pin.
+
+**A supported-version move is one constant plus a re-measure**, as one item:
+
+1. Change the constant, and the one copy of it in its doctor check's `run.sh`
+   (`PINNED=` or `SUPPORTED=`). The core suite fails until the two agree.
+2. Re-measure every claim that rests on the old release, on the new one: for
+   bd, every "measured on" comment in `core/src/store.rs`; for Claude Code,
+   the version-scoped entries in `brain/lessons/claude-code.md` the adapter
+   reads. Restate each one that held, and change the code where a behaviour
+   moved.
+3. The version is also in the "What fleet runs on" table of
+   `docs/getting-started.md`, which only the docs skill edits: ask for the
+   edit on the item's bead, or the release pass catches it up.
+
 ## Releasing
 
 1. **The docs pass.** When the branch's work is done, run the docs skill's

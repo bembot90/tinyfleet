@@ -110,9 +110,10 @@ pub struct Policy {
     /// The load belt's two ceilings (R30), read here and nowhere else.
     pub load_ceiling_per_cpu: f64,
     pub max_transient_busy: u32,
-    /// The release the Claude Code adapter's behaviours were measured against.
-    /// `None` when the file pins nothing, which publishes as an absent
-    /// expectation rather than as agreement.
+    /// The release this fleet's own file pins under `[substrate]`, as written.
+    /// `None` when the file pins nothing, and the expectation is then the
+    /// release fleet supports — read through [`Policy::claude_code_expected`],
+    /// never off this field.
     pub claude_code_pin: Option<String>,
     /// The plugin root every start this fleet makes loads, or `None` for a fleet
     /// that names none — a session loads the overlay's hooks and finds its bin
@@ -386,6 +387,18 @@ impl Policy {
     /// answers `true` is dropped at config read, before any start is attempted.
     pub fn posture_is_ungranted(&self, transient: bool, model: &str) -> bool {
         self.posture_for(transient) == POSTURE_AUTO && !self.model_can_honour(model)
+    }
+
+    /// The Claude Code release the live one is compared with: the fleet's own
+    /// `[substrate]` pin where the file writes one, and otherwise the release
+    /// fleet supports (`fleet_core::supported`). A fleet that pins nothing is
+    /// not a fleet that expects nothing, so a spread there is "not the release
+    /// fleet supports" and announced the same way (R29).
+    pub fn claude_code_expected(&self) -> String {
+        named(
+            self.claude_code_pin.as_deref(),
+            fleet_core::supported::PINNED_CLAUDE_CODE,
+        )
     }
 }
 
@@ -1207,11 +1220,22 @@ mod tests {
         assert_eq!(flat.claude_code_pin.as_deref(), Some("2.1.261"));
     }
 
+    /// fleet-2jt: a file that pins nothing expects the release fleet supports,
+    /// and a pin of its own wins over it. The pin is a release the constant is
+    /// not, so the second half reads the file's and not a coincidence.
     #[test]
-    fn a_file_that_pins_nothing_expects_nothing() {
+    fn a_file_that_pins_nothing_expects_the_supported_release() {
         let policy = parse("[controller]\npoll_seconds = 9\n").unwrap();
         assert_eq!(policy.claude_code_pin, None);
+        assert_eq!(
+            policy.claude_code_expected(),
+            fleet_core::supported::PINNED_CLAUDE_CODE
+        );
         assert_eq!(policy.poll_seconds, 9);
+
+        let pinned = parse("[substrate]\nclaude_code = \"0.0.1\"\n").unwrap();
+        assert_ne!(fleet_core::supported::PINNED_CLAUDE_CODE, "0.0.1");
+        assert_eq!(pinned.claude_code_expected(), "0.0.1");
     }
 
     #[test]
