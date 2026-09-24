@@ -470,6 +470,69 @@ fn an_item_already_ordered_is_refused_and_nothing_is_written() {
     assert_eq!(rig.events.count(), 0, "a refusal appends nothing");
 }
 
+/// An epic is refused BY ITS TYPE and not by the ready list: the store calls an
+/// open, unblocked epic ready, and a dispatch that trusted the list would hand
+/// a seat the one kind of item nobody builds.
+///
+/// The transient path, because it is the one that starts a seat: a refusal
+/// that came after the spawn would leave a session running on an epic.
+#[test]
+fn an_epic_is_refused_by_name_and_nothing_is_written() {
+    let rig = Rig::new("epic");
+    let item = rig
+        .graph
+        .store()
+        .create(
+            &fleet_core::store::NewItem {
+                title: "an epic whose children are the work",
+                description: "an epic",
+                item_type: "epic",
+                labels: &[],
+            },
+            "the-test",
+        )
+        .expect("the epic is filed");
+    assert!(
+        rig.graph
+            .store()
+            .ready()
+            .expect("the ready read answers")
+            .contains(&item),
+        "the store calls the epic ready, so the ready check alone lets it through"
+    );
+
+    let Graph::Memory(board) = &rig.graph else {
+        unreachable!("the rig is in memory");
+    };
+    let before = rig.graph.json(&item);
+    let wrote = board.store.wrote();
+    let ring = StubRing::answering(RingOutcome::Delivered);
+    let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
+    let answer = rig.run(&item, None, &[], rig.graph.store(), &ring, &spawner);
+
+    assert_eq!(answer.code, Some(1), "{}", answer.why);
+    assert!(
+        answer.why.contains(&item)
+            && answer
+                .why
+                .contains("an epic is never dispatched — its children are"),
+        "the refusal names the epic and why: {}",
+        answer.why
+    );
+    assert_eq!(board.store.wrote(), wrote, "the store was written nothing");
+    assert_eq!(rig.graph.json(&item), before, "the item is untouched");
+    assert!(
+        spawner.calls.lock().expect("not poisoned").is_empty(),
+        "no seat was started"
+    );
+    assert!(ring.calls().is_empty());
+    assert!(
+        !rig.briefs().join(format!("{item}.md")).exists(),
+        "no brief was written"
+    );
+    assert_eq!(rig.events.count(), 0, "a refusal appends nothing");
+}
+
 #[test]
 fn a_seat_the_machine_does_not_run_is_refused() {
     let rig = Rig::new("stranger");

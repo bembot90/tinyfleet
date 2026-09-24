@@ -25,6 +25,7 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::item::brief::{Packs, DELIVERY_NOTE};
+use crate::item::dispatch::EPIC;
 use crate::item::{
     control_token, label_value, last_delivery, opens_with, Events, Git, Project, Ring, RingOutcome,
     Stop, DELIVERY_MARKERS, ITEM_DELIVERED, TRUNK, TRUNK_BRANCH,
@@ -298,11 +299,6 @@ pub fn held_item(store: &dyn Store, by: &str, named: Option<&str>) -> Result<Str
     }
 }
 
-/// The type an item that only groups others carries. An epic is never work a
-/// seat holds: it stays open while its children are built, and an assignee left
-/// on it names whoever last touched it, not a seat carrying it.
-const EPIC: &str = "epic";
-
 /// What a seat is carrying, off ONE listing and no per-row read.
 pub(crate) struct Holds {
     /// Every open row assigned to the seat.
@@ -339,6 +335,9 @@ pub(crate) fn holds(store: &dyn Store, seat: &str) -> Result<Holds, Stop> {
         .filter(|row| row.has_orders_key)
         .cloned()
         .collect::<Vec<Row>>();
+    // An epic is never work a seat holds: it stays open while its children are
+    // built, and an assignee left on it names whoever last touched it, not a
+    // seat carrying it.
     let held = ordered
         .iter()
         .filter(|row| row.item_type != EPIC)

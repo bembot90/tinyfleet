@@ -8,9 +8,10 @@
 //! seat about to be retired, and `answer` dispatches nothing.
 //!
 //! THE REFUSALS COME BEFORE THE COMMIT, as they do in `deliver`. Everything
-//! `ask` can answer from the record and the note — the item the seat holds, the
-//! trunk, a note the grammar does not read — is asked while nothing has been
-//! written, so a refusal leaves the seat's worktree exactly where it stood.
+//! `ask` can answer from the record and the note — the item the seat holds, an
+//! epic, the trunk, a note the grammar does not read — is asked while nothing
+//! has been written, so a refusal leaves the seat's worktree exactly where it
+//! stood.
 //!
 //! WHAT `ask` COMMITS IS EVERYTHING (decision D1). A question asked mid-work
 //! must lose nothing and the seat is retired the moment the flight reads the
@@ -34,6 +35,7 @@ use std::path::Path;
 
 use crate::item::brief::Packs;
 use crate::item::deliver::held_item;
+use crate::item::dispatch::refuse_an_epic;
 use crate::item::review::last_verdict;
 use crate::item::run;
 use crate::item::{
@@ -41,7 +43,7 @@ use crate::item::{
     render, Events, Git, Project, Stop, ANSWER_MARKERS, GATE_RESOLVED, ITEM_PARKED, PARK_MARKERS,
     TRUNK_BRANCH, VERDICT_MARKERS,
 };
-use crate::store::{Item, Store};
+use crate::store::{Item, Store, BD};
 
 /// The park-note grammar, in core's pack and shadowable like every other asset.
 pub const PARK_NOTE: &str = "assets/park-note.md";
@@ -129,6 +131,7 @@ pub fn ask(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result<
     // the run label is the only mark that tells a run's record from every other
     // item, and a run's park touches no git at all.
     let record = wiring.store.show(&item)?;
+    refuse_an_epic(&record)?;
     let of_a_run = record.labels.iter().any(|label| label == run::LABEL);
 
     let branch = if of_a_run {
@@ -170,11 +173,32 @@ pub fn ask(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result<
         }
     };
 
-    // (b) THE GATE, whose id comes off the command's own answer.
+    // (b) THE GATE, whose id comes off the command's own answer. The open list
+    // is read FIRST, because a create that fails can still have filed its gate
+    // — bd 1.2.2 on an epic files it, refuses the edge and exits 1 — and the
+    // listing names no item, so what the create left is what was not there
+    // before it.
+    let before = wiring.store.open_gates().map_err(|e| {
+        parked(
+            &item,
+            &commit,
+            &format!("the open gates could not be read before the gate was raised: {e}"),
+        )
+    })?;
     let gate = wiring
         .store
         .gate(&item, &written, question.by)
-        .map_err(|e| parked(&item, &commit, &format!("the gate was not raised: {e}")))?;
+        .map_err(|e| {
+            let stop = parked(&item, &commit, &format!("the gate was not raised: {e}"));
+            Stop {
+                message: format!(
+                    "{}{}",
+                    stop.message,
+                    left_behind(wiring.store, &before, question.by)
+                ),
+                ..stop
+            }
+        })?;
 
     // (c) THE PARK NOTE, read back as the last park region.
     let note = park_note(wiring.packs, &item, ASK, &branch, &commit, &gate, &written)?;
@@ -767,6 +791,37 @@ fn parked(item: &str, commit: &str, why: &str) -> Stop {
     Stop::could_not_tell(format!(
         "{why}\n  the commit {commit} STANDS on the work branch and {item} carries no park"
     ))
+}
+
+/// Every gate a failed create left open, withdrawn, and one line each saying
+/// so — or saying that it stands and what resolves it.
+///
+/// WHAT IS NEW ON THE OPEN LIST IS THIS PARK'S, because the listing never names
+/// the item a gate blocks. A gate open before the create is somebody else's and
+/// is left alone.
+fn left_behind(store: &dyn Store, before: &[String], by: &str) -> String {
+    let after = match store.open_gates() {
+        Ok(after) => after,
+        Err(e) => {
+            return format!(
+                "\n  the open gates could not be read again: {e} — a gate the store raised all \
+                 the same is not known, and `{BD} gate list` lists every open one"
+            )
+        }
+    };
+    after
+        .iter()
+        .filter(|gate| !before.contains(gate))
+        .map(|gate| match store.resolve_gate(gate, by) {
+            Ok(()) => {
+                format!("\n  the store raised the gate {gate} all the same, and it is withdrawn")
+            }
+            Err(e) => format!(
+                "\n  the store raised the gate {gate} all the same, and it STANDS with no park \
+                 naming it — withdrawing it failed: {e}; `{BD} gate resolve {gate}` resolves it"
+            ),
+        })
+        .collect()
 }
 
 /// A failure after the gate. The gate is on the store's list and a person will

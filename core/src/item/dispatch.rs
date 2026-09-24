@@ -43,6 +43,10 @@ pub const REVIEW_KIND: &str = "review";
 pub const RING: &str = "{item} is yours. The order is on the item; your brief is at {path}. \
      Read the item and act on the record.";
 
+/// The store's spelling of the one type no order is given for: an epic's
+/// children are the work, and each of them is dispatched on its own.
+pub const EPIC: &str = "epic";
+
 /// The line a withdrawal leaves, so an item a spawn refused reads as one
 /// nobody was ever given rather than as one whose seat vanished.
 pub const WITHDRAWN: &str = "DISPATCH WITHDRAWN — spawn refused";
@@ -175,7 +179,7 @@ pub fn dispatch(
     Ok(given)
 }
 
-/// The four refusals, in order, each of them before any write.
+/// The five refusals, in order, each of them before any write.
 fn refuse_unless_dispatchable(order: &Order, wiring: &Wiring) -> Result<(), Stop> {
     let ready = wiring.store.ready()?;
     let item = read(wiring.store, order.item)?;
@@ -187,6 +191,7 @@ fn refuse_unless_dispatchable(order: &Order, wiring: &Wiring) -> Result<(), Stop
             why_not_ready(&item)
         )));
     }
+    refuse_an_epic(&item)?;
     if item.has_orders_key {
         return Err(Stop::refused(format!(
             "{} already carries an order — {}",
@@ -219,6 +224,20 @@ fn refuse_unless_dispatchable(order: &Order, wiring: &Wiring) -> Result<(), Stop
         return Err(Stop::refused(format!(
             "`{seat}` already holds {} — one item at a time",
             held.join(", ")
+        )));
+    }
+    Ok(())
+}
+
+/// An epic, refused by its TYPE. The store's ready list keeps an open,
+/// unblocked epic — it is the store's answer and not a list of what a seat can
+/// build — so the ready check alone lets one through. `ask` refuses on the same
+/// reading, because a park on an epic is a gate the store will not tie to it.
+pub(crate) fn refuse_an_epic(item: &Item) -> Result<(), Stop> {
+    if item.item_type == EPIC {
+        return Err(Stop::refused(format!(
+            "{} is an epic, and an epic is never dispatched — its children are",
+            item.id
         )));
     }
     Ok(())

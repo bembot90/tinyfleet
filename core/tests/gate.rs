@@ -16,6 +16,7 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use common::gating::{gating_bd, standing, LEFT_BEHIND};
 use common::{keys_agree, shared_store, Rooted, Scratch, StubEvents};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::gate::{self, Question, Reply, Wiring};
@@ -804,6 +805,213 @@ fn a_read_back_that_disagrees_is_could_not_tell() {
     );
     assert_eq!(events.count(), 0, "and nothing reached the stream");
     assert_eq!(before, scratch.json(&item), "the item is byte-identical");
+}
+
+/// An epic is refused by its type before any git act: no seat is ever given
+/// one, and a park on one is a gate the store cannot tie to it.
+#[test]
+fn an_epic_is_refused_before_the_commit_and_nothing_is_written() {
+    let scratch = &store();
+    let seat = "g-epic";
+    let item = scratch
+        .store
+        .create(
+            &NewItem {
+                title: "an epic somebody asked about",
+                description: "an epic",
+                item_type: "epic",
+                labels: &[],
+            },
+            "a-flight",
+        )
+        .expect("the epic is filed");
+    scratch.assign(&item, seat);
+    let note = a_note(scratch, "epic", QUESTION);
+    let before = scratch.json(&item);
+    let wrote = scratch.store.wrote();
+    let git = StubGit::holding_work();
+    let events = StubEvents::default();
+
+    let stop = ask_with(
+        Some(&item),
+        &note,
+        seat,
+        &Seams {
+            store: &scratch.store,
+            git: &git,
+            project: &project(scratch),
+            packs: &packs(scratch),
+            events: &events,
+        },
+    )
+    .expect_err("an epic is refused");
+
+    assert_eq!(stop.code, 1, "{}", stop.message);
+    assert!(
+        stop.message.contains(&item)
+            && stop
+                .message
+                .contains("an epic is never dispatched — its children are"),
+        "the refusal names the epic and why: {}",
+        stop.message
+    );
+    assert!(
+        git.calls().is_empty(),
+        "git was never asked: {:?}",
+        git.calls()
+    );
+    assert_eq!(
+        scratch.store.wrote(),
+        wrote,
+        "the store was written nothing"
+    );
+    assert!(scratch.store.raised().is_empty(), "no gate was raised");
+    assert_eq!(events.count(), 0, "and nothing reached the stream");
+    assert_eq!(before, scratch.json(&item), "the item is byte-identical");
+}
+
+/// The row the gating fake answers for the item a seat holds.
+fn a_held_row(item: &str, seat: &str) -> String {
+    format!(
+        r#"{{"id":"{item}","title":"an item whose gate fails","status":"open","issue_type":"task","assignee":"{seat}","metadata":{{"orders":{{"by":"a-flight","kind":"dispatch","seat":"{seat}","at":"{AT}"}}}}}}"#
+    )
+}
+
+/// The calls the gating fake was handed, with the `-C <root>` every call opens
+/// on dropped. A line that does not open on it is the rest of a reason the
+/// question's own newlines split, and not a call.
+fn gating_calls(log: &std::path::Path) -> Vec<String> {
+    common::capped::calls(log)
+        .into_iter()
+        .filter(|call| call.first().map(String::as_str) == Some("-C"))
+        .map(|call| call[2..].join(" "))
+        .collect()
+}
+
+/// A `gate create` that files its gate and then exits 1 — bd 1.2.2 on an epic
+/// — leaves an open gate blocking nothing. The park reads the open list before
+/// the create and again after it, resolves what is new, and names it; a gate
+/// that was open before the park is somebody else's and is left alone.
+#[test]
+fn a_gate_left_behind_by_a_failed_create_is_resolved_and_named() {
+    let scratch = &store();
+    let seat = "g-left";
+    let item = "fx-left";
+    let dir = common::Fixture::new("gate-left-behind");
+    let log = dir.path("argv");
+    let bin = gating_bd(&dir, &a_held_row(item, seat), &["g-before"], true, &log);
+    let bd = Bd::at_bin(scratch.root(), &bin);
+    let note = a_note(scratch, "left", QUESTION);
+    let events = StubEvents::default();
+
+    let stop = ask_with(
+        Some(item),
+        &note,
+        seat,
+        &Seams {
+            store: &bd,
+            git: &StubGit::holding_work(),
+            project: &project(scratch),
+            packs: &packs(scratch),
+            events: &events,
+        },
+    )
+    .expect_err("a gate that was not raised is could-not-tell");
+
+    assert_eq!(stop.code, 3, "{}", stop.message);
+    assert!(
+        stop.message.contains(&format!(
+            "the store raised the gate {LEFT_BEHIND} all the same, and it is withdrawn"
+        )),
+        "the refusal names the gate it resolved: {}",
+        stop.message
+    );
+    assert!(
+        stop.message.contains(SHA) && stop.message.contains(&format!("{item} carries no park")),
+        "and still says what stands: {}",
+        stop.message
+    );
+    assert!(
+        !stop.message.contains("g-before"),
+        "a gate open before the park is not this park's: {}",
+        stop.message
+    );
+    assert_eq!(
+        standing(&dir),
+        vec![String::from("g-before")],
+        "the gate left behind is resolved and the one before it stands"
+    );
+
+    let calls = gating_calls(&log);
+    let at = |prefix: &str| {
+        calls
+            .iter()
+            .position(|call| call.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no `{prefix}` in {calls:?}"))
+    };
+    let listed: Vec<usize> = calls
+        .iter()
+        .enumerate()
+        .filter(|(_, call)| call.starts_with("gate list"))
+        .map(|(n, _)| n)
+        .collect();
+    let created = at("gate create");
+    assert!(
+        listed.len() == 2 && listed[0] < created && created < listed[1],
+        "the open list is read once before the create and once after it: {calls:?}"
+    );
+    assert!(
+        at(&format!("gate resolve {LEFT_BEHIND}")) > listed[1],
+        "{calls:?}"
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|call| call.starts_with("gate resolve g-before")),
+        "{calls:?}"
+    );
+    assert_eq!(events.count(), 0, "nothing reached the stream");
+}
+
+/// The same failure where the resolve fails too: the gate stands, and the
+/// refusal names it with the command that resolves it.
+#[test]
+fn a_gate_left_behind_that_cannot_be_resolved_is_named_with_its_command() {
+    let scratch = &store();
+    let seat = "g-left-stands";
+    let item = "fx-left-stands";
+    let dir = common::Fixture::new("gate-left-stands");
+    let log = dir.path("argv");
+    let bin = gating_bd(&dir, &a_held_row(item, seat), &[], false, &log);
+    let bd = Bd::at_bin(scratch.root(), &bin);
+    let note = a_note(scratch, "left-stands", QUESTION);
+
+    let stop = ask_with(
+        Some(item),
+        &note,
+        seat,
+        &Seams {
+            store: &bd,
+            git: &StubGit::holding_work(),
+            project: &project(scratch),
+            packs: &packs(scratch),
+            events: &StubEvents::default(),
+        },
+    )
+    .expect_err("a gate that was not raised is could-not-tell");
+
+    assert_eq!(stop.code, 3, "{}", stop.message);
+    assert!(
+        stop.message.contains(&format!(
+            "the store raised the gate {LEFT_BEHIND} all the same, and it STANDS with no park \
+             naming it"
+        )) && stop
+            .message
+            .contains(&format!("`bd gate resolve {LEFT_BEHIND}` resolves it")),
+        "the refusal names the gate and the command: {}",
+        stop.message
+    );
+    assert_eq!(standing(&dir), vec![String::from(LEFT_BEHIND)]);
 }
 
 // ---- AC2: the answer ---------------------------------------------------------
