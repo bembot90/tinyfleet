@@ -524,7 +524,7 @@ pub struct Spawn<'a> {
     /// the worktree instead, before the first turn. `None` writes nothing.
     ///
     /// Everything else in the document is rendered by the caller, which reads
-    /// the pack layers and the project's gates. The worktree is not: it is
+    /// the pack layers and the project's policy. The worktree is not: it is
     /// claimed below, and nothing outside this function knows the path.
     ///
     /// A document the worktree already carries is MERGED INTO rather than

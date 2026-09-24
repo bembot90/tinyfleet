@@ -58,7 +58,7 @@ const AT: &str = "2026-09-13T00:00:00Z";
 /// for. The reviewer is [`REVIEWER`], spelled out because a const carries no
 /// format, and the arm that reads it says so.
 const POLICY: &str =
-    "[gates]\nci_marker = \"printf '[skip ci]'\"\n\n[core]\nreviewer = \"a-reviewer\"\n";
+    "[landing]\nci_marker = \"printf '[skip ci]'\"\n\n[core]\nreviewer = \"a-reviewer\"\n";
 
 /// The test command every landing below is handed unless its arm hands its
 /// own, as `fleet land --test` would be: one that answers at once.
@@ -509,7 +509,7 @@ fn project(scratch: &dyn Rooted) -> Project {
         root: scratch.root().to_path_buf(),
         name: "a-project".to_string(),
         guards: table.clone(),
-        gates: table,
+        policy: table,
     }
 }
 
@@ -1043,7 +1043,7 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_note_and_closes() {
     assert_eq!(ran.err, "", "a green landing says nothing on stderr");
 }
 
-/// The marker the project's `[gates] ci_marker` printed rides the commit
+/// The marker the project's `[landing] ci_marker` printed rides the commit
 /// subject, and the trailers name both seats.
 #[test]
 fn the_marker_and_the_two_trailers_ride_the_commit_subject() {
@@ -1087,7 +1087,7 @@ fn the_marker_and_the_two_trailers_ride_the_commit_subject() {
 #[test]
 fn a_landing_handed_no_test_lands_and_says_not_tested() {
     let scratch = Board::new("land-no-suite");
-    scratch.fleet_toml("[gates]\n");
+    scratch.fleet_toml("[landing]\n");
     let item = an_item(
         &scratch.store,
         "an item landed with no test command",
@@ -1300,6 +1300,43 @@ fn a_policy_file_setting_gates_suite_is_refused_naming_the_pack_setting() {
             && ran.why().contains("`takeoff.test` under [packs.tiny]")
             && ran.why().contains("fleet land --test <command>"),
         "the line names the key and where it is set instead: {}",
+        ran.why()
+    );
+    assert!(
+        git.calls().is_empty(),
+        "no git was asked anything: {:?}",
+        git.calls()
+    );
+    assert_eq!(scratch.json(&item), before, "the item is byte-identical");
+    assert_eq!(events.count(), 0, "and nothing reached the stream");
+}
+
+/// A policy file that still carries a `[gates]` table is REFUSED by the
+/// table's name before anything is read, naming where each of its keys is set
+/// now — a marker left under `[gates]` is one no landing reads, and the commit
+/// it meant to mark would go out unmarked with nobody told.
+#[test]
+fn a_policy_file_carrying_a_gates_table_is_refused_naming_the_new_homes() {
+    let scratch = Board::new("land-moved-gates");
+    scratch.fleet_toml(
+        "[gates]\nci_marker = \"printf '[skip ci]'\"\n\n[core]\nreviewer = \"a-reviewer\"\n",
+    );
+    let item = an_item(
+        &scratch.store,
+        "an item in a fleet whose policy still carries [gates]",
+        Some(("ACCEPTED", SHA)),
+    );
+    let before = scratch.json(&item);
+    let git = StubGit::clean();
+    let events = StubEvents::default();
+    let ran = run_untested(&scratch, &scratch.store, &git, &item, &events);
+    assert_eq!(ran.code(), Some(1), "refused on the record: {}", ran.why());
+    assert!(
+        ran.why().contains("[gates] is not a policy table")
+            && ran.why().contains("`ci_marker` under [landing]")
+            && ran.why().contains("`tool_commands` under [permissions]")
+            && ran.why().contains("under [guards.targets]"),
+        "the line names the table and every new home: {}",
         ran.why()
     );
     assert!(
@@ -1825,7 +1862,7 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
     std::fs::write(
         &policy,
         format!(
-            "[gates]\nci_marker = \"printf '[skip ci]'\"\n\n[core]\nreviewer = \"{REVIEWER}\"\n"
+            "[landing]\nci_marker = \"printf '[skip ci]'\"\n\n[core]\nreviewer = \"{REVIEWER}\"\n"
         ),
     )
     .expect("the policy is written");
@@ -1835,7 +1872,7 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
         root: scratch.root().to_path_buf(),
         name: "a-project".to_string(),
         guards: table.clone(),
-        gates: table,
+        policy: table,
     };
 
     let mut git = StubGit::clean();
@@ -2094,7 +2131,7 @@ fn a_branch_name_is_refused_before_any_git_write() {
 #[test]
 fn a_landing_handed_no_test_says_not_tested_on_the_record() {
     let scratch = Board::new("land-suite-none");
-    scratch.fleet_toml("[gates]\n");
+    scratch.fleet_toml("[landing]\n");
     let item = an_item(
         &scratch.store,
         "an item landed with no test command",
@@ -2139,7 +2176,7 @@ fn stdout_is_the_same_page_whichever_way_the_suite_was_timed() {
             } else {
                 "land-page-fast"
             });
-            scratch.fleet_toml("[gates]\nci_marker = \"printf '[skip ci]'\"\n");
+            scratch.fleet_toml("[landing]\nci_marker = \"printf '[skip ci]'\"\n");
             a_sleeping_suite(&scratch, sleep);
             let item = an_item(
                 &scratch.store,
@@ -3050,12 +3087,12 @@ fn old_lane_of(scratch: &dyn Rooted) -> PathBuf {
         .join("a-project")
 }
 
-/// A project whose `[gates]` and `[core.flight]` tables the arm writes.
-fn project_under(scratch: &dyn Rooted, gates: &str, flight: &str) -> Project {
+/// A project whose `[landing]` and `[core.flight]` tables the arm writes.
+fn project_under(scratch: &dyn Rooted, policy: &str, flight: &str) -> Project {
     Project {
         root: scratch.root().to_path_buf(),
         name: "a-project".to_string(),
-        gates: gates.parse().expect("the fixture gates parse"),
+        policy: policy.parse().expect("the fixture policy parses"),
         guards: flight.parse().expect("the fixture flight table parses"),
     }
 }
@@ -3411,7 +3448,7 @@ fn a_lane_whose_lock_cannot_be_made_is_exit_3_with_nothing_written() {
 
 // ---- the gate's one rerun (flights PRD R18, Q3c) ------------------------------
 
-/// A `[gates] suite` whose exit comes from a file of rc's, one per reading, and
+/// A test command whose exit comes from a file of rc's, one per reading, and
 /// which says which reading it is on its own stdout.
 fn a_gate_script(scratch: &dyn Rooted, name: &str, rcs: &[i32]) -> String {
     let root = scratch.root().display().to_string();
@@ -3482,7 +3519,7 @@ fn a_red_gate_is_rerun_once_and_a_green_second_reading_lands_with_both_rows() {
     let command = a_gate_script(scratch, "rerun-green", &[1, 0]);
     let project = project_under(
         scratch,
-        "[gates]\n",
+        "[landing]\n",
         "[core.flight]\nrerun_wait_seconds = 1\n",
     );
     let events = StubEvents::default();
@@ -3577,7 +3614,7 @@ fn a_second_red_reading_refuses_with_both_tails_and_writes_both_readings() {
     let command = a_gate_script(scratch, "rerun-red", &[1, 2]);
     let project = project_under(
         scratch,
-        "[gates]\n",
+        "[landing]\n",
         "[core.flight]\nrerun_wait_seconds = 1\n",
     );
     let events = StubEvents::default();
@@ -3642,7 +3679,7 @@ fn the_rerun_waits_for_the_box_to_quieten_and_the_row_says_it_did() {
     let command = a_gate_script(scratch, "rerun-wait", &[1, 0]);
     let project = project_under(
         scratch,
-        "[gates]\n",
+        "[landing]\n",
         "[core.flight]\nrerun_wait_seconds = 30\n",
     );
     // Busy, busy, then under the ceiling: the wait has to take more than one
@@ -3696,7 +3733,7 @@ fn a_wait_that_expires_reruns_anyway_and_the_row_says_it_expired() {
     let command = a_gate_script(scratch, "rerun-expire", &[1, 0]);
     let project = project_under(
         scratch,
-        "[gates]\n",
+        "[landing]\n",
         "[core.flight]\nrerun_wait_seconds = 1\n",
     );
     // A box that never quietens. The wait is a real one — a second of it — so
@@ -3930,7 +3967,7 @@ fn the_suite_runs_under_the_constructed_path_and_the_reading_names_it() {
 
     let project = project_under(
         scratch,
-        "[gates]\n",
+        "[landing]\n",
         "[core.flight]\nrerun_wait_seconds = 0\n",
     );
 

@@ -157,6 +157,11 @@ For the takeoff workflow, set them as `takeoff.test` and `takeoff.touched`
 under `[packs.tiny]`, or pass `--input test=<command>` and
 `--input touched=<command>`.
 
+A `[gates]` table is refused the same way, whatever it holds, even when it is
+empty. The refusal names where each key it could hold is set: `ci_marker`
+under `[landing]`, `tool_commands` under `[permissions]`, and
+`release_ref_glob` and the `prod_*` lists under `[guards.targets]`.
+
 ### How many runs are open
 
 A run counts as open while its record is open: while it is running, waiting,
@@ -473,7 +478,8 @@ to the person.
 | An input without `=` | 2 | ``fleet run: `--input name` is not a pair — an input is written key=value`` | Write `key=value`. |
 | An input with no key | 2 | ``fleet run: `--input =x` names no key — an input is written key=value`` | Name the key. |
 | One key given twice | 2 | ``fleet run: `--input name=` is given twice — a run pins one value per key`` | Give each key once. |
-| `fleet.toml` sets `[gates] suite` or `[gates] touched` | 1 | ``fleet run: [gates] suite is not project policy, and nothing reads it — a test command is the workflow's: set `takeoff.test` under [packs.tiny] in fleet.toml, or `--input test=<command>` on `fleet run takeoff`; a landing run by hand takes `fleet land --test <command>`, and delete the key`` | Move the command where it says, and delete the key. |
+| `fleet.toml` sets `[gates] suite` or `[gates] touched` | 1 | ``fleet run: [gates] suite is not project policy, and nothing reads it — a test command is the workflow's: set `takeoff.test` under [packs.tiny] in fleet.toml, or `--input test=<command>` on `fleet run takeoff`; a landing run by hand takes `fleet land --test <command>`, and delete the key``, and on the next line the `[gates]` refusal below | Move the command where it says, and delete the key and the `[gates]` table. |
+| `fleet.toml` carries a `[gates]` table | 1 | ``fleet run: [gates] is not a policy table, and nothing reads it — its keys are set by purpose: `ci_marker` under [landing], `tool_commands` under [permissions], and `release_ref_glob` and the `prod_*` lists under [guards.targets]; move each one there, and delete the table`` | Move each key to the table named, and delete `[gates]`. |
 | The open runs are at `[core.run] max_open` | 1 | ``fleet run: 2 run(s) are open and `[core.run] max_open` is 2 — the open runs are <run-1>, <run-2>, and one has to close or the cap has to be raised`` | Wait for a run to close, or raise the cap. |
 | `max_open` is not a whole number | 1 | ``fleet run: `[core.run] max_open` is string, and a cap has to be a whole number — this fleet will not fall back to a cap it did not name`` | Write a whole number. |
 | No pack carries the workflow | 1 | ``fleet run: no workflow named `nosuch` — no installed pack carries `workflows/nosuch.<ext>` `` | Check the name, or install the pack. |

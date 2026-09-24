@@ -896,7 +896,7 @@ impl Here {
     /// written in sits there and a path relative to the caller's cwd would name
     /// a different directory per call.
     pub fn primary(&self) -> Result<PathBuf, Stop> {
-        let named = fleet_core::policy::read("project", "primary", &self.project.gates);
+        let named = fleet_core::policy::read("project", "primary", &self.project.policy);
         Ok(self
             .under_root("primary", named)?
             .unwrap_or_else(|| self.project.root.clone()))
@@ -906,7 +906,7 @@ impl Here {
     /// the file names one, else a sibling of the project root named after it
     /// with `-worktrees` appended.
     pub fn worktrees_dir(&self) -> Result<PathBuf, Stop> {
-        let named = fleet_core::policy::read("project", "worktrees", &self.project.gates);
+        let named = fleet_core::policy::read("project", "worktrees", &self.project.policy);
         Ok(self
             .under_root("worktrees", named)?
             .unwrap_or_else(|| derived_worktrees_dir(&self.project.root)))
@@ -1081,7 +1081,7 @@ fn declared_at(
     machine_dir: &Path,
     chosen_packs_dir: &Option<PathBuf>,
 ) -> Here {
-    let gates = table_at(&dir.join(PROJECT_TOML));
+    let policy = table_at(&dir.join(PROJECT_TOML));
     let guards = machine
         .as_ref()
         .map(|machine| table_at(&machine.fleet_toml))
@@ -1094,8 +1094,8 @@ fn declared_at(
     Here {
         project: Project {
             root: dir.to_path_buf(),
-            name: project_name(&gates).unwrap_or_else(|| basename(dir)),
-            gates,
+            name: project_name(&policy).unwrap_or_else(|| basename(dir)),
+            policy,
             guards,
         },
         packs_dir: packs_dir(chosen_packs_dir, machine_dir),
@@ -1107,9 +1107,9 @@ fn declared_at(
 }
 
 /// An embedded fleet, keeping its policy beside the work: one file carries both
-/// the gates and the guards. `policy_file` is passed rather than derived from
-/// `dir`, because the fallback above reaches this root through a machine config
-/// that may name the file by some other spelling.
+/// the project's policy and the guards. `policy_file` is passed rather than
+/// derived from `dir`, because the fallback above reaches this root through a
+/// machine config that may name the file by some other spelling.
 fn embedded_at(
     dir: &Path,
     policy_file: &Path,
@@ -1117,13 +1117,13 @@ fn embedded_at(
     machine_dir: &Path,
     chosen_packs_dir: &Option<PathBuf>,
 ) -> Here {
-    let gates = table_at(policy_file);
+    let policy = table_at(policy_file);
     Here {
         project: Project {
             root: dir.to_path_buf(),
             name: basename(dir),
-            guards: gates.clone(),
-            gates,
+            guards: policy.clone(),
+            policy,
         },
         packs_dir: packs_dir(chosen_packs_dir, machine_dir),
         defaults_dir: defaults_dir(chosen_packs_dir, machine_dir),

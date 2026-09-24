@@ -61,16 +61,17 @@ pub const NO_ESCAPE: &str =
 /// The key the bare-id check needs before it refuses anything.
 pub const ITEM_PREFIX_KEY: &str = "[project] item_prefix";
 
-/// The keys the two pack classes need, each in the project's own `[gates]`
-/// table. A check whose key is absent or empty refuses nothing and says so under
-/// the check flag (packs PRD R16).
-pub const RELEASE_REF_GLOB_KEY: &str = "[gates] release_ref_glob";
-pub const PROD_BUCKETS_KEY: &str = "[gates] prod_buckets";
-pub const PROD_PROJECTS_KEY: &str = "[gates] prod_projects";
-pub const PROD_APPS_KEY: &str = "[gates] prod_apps";
-pub const PROD_MAKE_GOALS_KEY: &str = "[gates] prod_make_goals";
-pub const PROD_DAGGER_FUNCTIONS_KEY: &str = "[gates] prod_dagger_functions";
-pub const PROD_WORKFLOW_REFS_KEY: &str = "[gates] prod_workflow_refs";
+/// The keys the two pack classes need, each in the project's own
+/// `[guards.targets]` table, beside the fleet's `[guards]` switches. A check
+/// whose key is absent or empty refuses nothing and says so under the check
+/// flag (packs PRD R16).
+pub const RELEASE_REF_GLOB_KEY: &str = "[guards.targets] release_ref_glob";
+pub const PROD_BUCKETS_KEY: &str = "[guards.targets] prod_buckets";
+pub const PROD_PROJECTS_KEY: &str = "[guards.targets] prod_projects";
+pub const PROD_APPS_KEY: &str = "[guards.targets] prod_apps";
+pub const PROD_MAKE_GOALS_KEY: &str = "[guards.targets] prod_make_goals";
+pub const PROD_DAGGER_FUNCTIONS_KEY: &str = "[guards.targets] prod_dagger_functions";
+pub const PROD_WORKFLOW_REFS_KEY: &str = "[guards.targets] prod_workflow_refs";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
@@ -304,9 +305,9 @@ pub fn item_prefix(config: &toml::Table) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The targets the two pack classes read, all in the project's own `[gates]`
-/// table and all through the census, so the pairs a guard reads can be read out
-/// of this source without running it (packs PRD R18).
+/// The targets the two pack classes read, all in the project's own
+/// `[guards.targets]` table and all through the census, so the pairs a guard
+/// reads can be read out of this source without running it (packs PRD R18).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Targets {
     pub release_ref_glob: Option<String>,
@@ -320,13 +321,21 @@ pub struct Targets {
 
 pub fn targets(config: &toml::Table) -> Targets {
     Targets {
-        release_ref_glob: string_target(policy::read("gates", "release_ref_glob", config)),
-        prod_buckets: list_target(policy::read("gates", "prod_buckets", config)),
-        prod_projects: list_target(policy::read("gates", "prod_projects", config)),
-        prod_apps: list_target(policy::read("gates", "prod_apps", config)),
-        prod_make_goals: list_target(policy::read("gates", "prod_make_goals", config)),
-        prod_dagger_functions: list_target(policy::read("gates", "prod_dagger_functions", config)),
-        prod_workflow_refs: list_target(policy::read("gates", "prod_workflow_refs", config)),
+        release_ref_glob: string_target(policy::read("guards.targets", "release_ref_glob", config)),
+        prod_buckets: list_target(policy::read("guards.targets", "prod_buckets", config)),
+        prod_projects: list_target(policy::read("guards.targets", "prod_projects", config)),
+        prod_apps: list_target(policy::read("guards.targets", "prod_apps", config)),
+        prod_make_goals: list_target(policy::read("guards.targets", "prod_make_goals", config)),
+        prod_dagger_functions: list_target(policy::read(
+            "guards.targets",
+            "prod_dagger_functions",
+            config,
+        )),
+        prod_workflow_refs: list_target(policy::read(
+            "guards.targets",
+            "prod_workflow_refs",
+            config,
+        )),
     }
 }
 

@@ -245,7 +245,7 @@ fn project(scratch: &dyn Rooted) -> Project {
         root: scratch.root().to_path_buf(),
         name: "a-project".to_string(),
         guards: table.clone(),
-        gates: table,
+        policy: table,
     }
 }
 
@@ -717,7 +717,7 @@ fn a_fleet_naming_no_reviewer_refuses_before_the_commit() {
     let item = an_ordered_item(scratch, "an item with nowhere to go", seat);
     let note = a_note(scratch, "nobody", WHOLE);
     let mut nameless = project(scratch);
-    nameless.guards = "[gates]\nci_marker = \"printf '[skip ci]'\"\n"
+    nameless.guards = "[landing]\nci_marker = \"printf '[skip ci]'\"\n"
         .parse()
         .expect("the policy parses");
     let git = StubGit::clean();

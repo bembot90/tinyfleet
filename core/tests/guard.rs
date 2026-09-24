@@ -997,7 +997,8 @@ fn an_unconfigured_target_refuses_nothing_and_the_reader_says_so() {
     }
 
     // The targets, off a file's text, through the census.
-    let text = "[gates]\nrelease_ref_glob = \"refs/heads/*\"\nprod_buckets = [\"a\", \"b\"]\n";
+    let text =
+        "[guards.targets]\nrelease_ref_glob = \"refs/heads/*\"\nprod_buckets = [\"a\", \"b\"]\n";
     let targets = guard::targets_in(text);
     assert_eq!(targets.release_ref_glob.as_deref(), Some("refs/heads/*"));
     assert_eq!(targets.prod_buckets, vec!["a".to_string(), "b".to_string()]);
@@ -1006,7 +1007,7 @@ fn an_unconfigured_target_refuses_nothing_and_the_reader_says_so() {
         "a key the file omits reads as the empty list"
     );
     assert_eq!(
-        guard::targets_in("[gates]\nprod_apps = \"one\"\n").prod_apps,
+        guard::targets_in("[guards.targets]\nprod_apps = \"one\"\n").prod_apps,
         Vec::<String>::new(),
         "a value of the wrong type reads as no target rather than as one"
     );

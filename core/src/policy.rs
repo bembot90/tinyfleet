@@ -4,7 +4,7 @@
 //! A verb that reads a key not listed here is a defect, so the reader answers
 //! an unlisted pair with an error and never with a value — the pair is checked
 //! before the config is even walked. Two tests hold the other half: that every
-//! table named below is one of the five, and that every call site in this
+//! table named below is one of the eight, and that every call site in this
 //! workspace names a listed pair.
 
 use std::fmt;
@@ -17,17 +17,19 @@ use std::fmt;
 /// shape from an absent one in a signature.
 pub use toml::Value;
 
-/// The six tables, and no seventh. `core` and `core.flight` are the fleet's own
-/// policy, `core.run` the run lifecycle's, `guards` its opt-outs, `gates` the
-/// landing's CI marker, a seat's command words and the targets a pack's guards
-/// refuse on, and `project`
-/// the two directories a transient seat is made in.
-pub const TABLES: [&str; 6] = [
+/// The eight tables, and no ninth. `core` and `core.flight` are the fleet's own
+/// policy, `core.run` the run lifecycle's, `guards` its opt-outs and
+/// `guards.targets` what a pack's guards refuse on, `landing` the landing's CI
+/// marker, `permissions` a seat's command words, and `project` the two
+/// directories a transient seat is made in.
+pub const TABLES: [&str; 8] = [
     "core",
     "core.flight",
     "core.run",
     "guards",
-    "gates",
+    "guards.targets",
+    "landing",
+    "permissions",
     "project",
 ];
 
@@ -56,33 +58,33 @@ pub const CENSUS: [(&str, &str); 18] = [
     ("core.flight", "lanes"),
     ("core.flight", "rerun_wait_seconds"),
     ("guards", "*.enabled"),
-    // The marker a landing's commit carries. The two TEST commands are not in
-    // this table: they are the workflow's, handed to `land` and `dispatch` by
+    // The marker a landing's commit carries. The two TEST commands are in no
+    // table: they are the workflow's, handed to `land` and `dispatch` by
     // whatever calls them, and a file that sets either is refused ([`MOVED`]).
-    ("gates", "ci_marker"),
+    ("landing", "ci_marker"),
     // The command words a transient seat on this project is allowed to run,
     // rendered one `Bash(<word>:*)` rule each into the seat's own permission
     // document. It is the PROJECT's because a toolchain is, the same rule the
-    // three production-write lists above are read under: a pack reads a list
-    // and never hardcodes one.
-    ("gates", "tool_commands"),
+    // production-write lists below are read under: a pack reads a list and
+    // never hardcodes one.
+    ("permissions", "tool_commands"),
     // The targets a pack's two guard classes read: the glob the release-ref
     // class matches a push's destination against, and the three lists the
     // production-write class reads one per check (packs PRD § The guards).
     // Core's own two classes need no pair here — the guards wildcard above is
     // their switch and the bare-id check's target is not a policy key.
-    ("gates", "release_ref_glob"),
-    ("gates", "prod_buckets"),
-    ("gates", "prod_projects"),
-    ("gates", "prod_apps"),
+    ("guards.targets", "release_ref_glob"),
+    ("guards.targets", "prod_buckets"),
+    ("guards.targets", "prod_projects"),
+    ("guards.targets", "prod_apps"),
     // The three surfaces that are a PRODUCT's own rather than a cloud target:
     // the build-tool goals that deploy, the module functions declared as
     // production writes, and the workflow-and-ref pairs a dispatch reaches
     // production through. Lists like the three above, for the same reason —
     // which goals and which functions deploy is a fact about one repository.
-    ("gates", "prod_make_goals"),
-    ("gates", "prod_dagger_functions"),
-    ("gates", "prod_workflow_refs"),
+    ("guards.targets", "prod_make_goals"),
+    ("guards.targets", "prod_dagger_functions"),
+    ("guards.targets", "prod_workflow_refs"),
     // Where a spawn cuts a transient seat's worktree from, and where it puts it
     // (controller PRD R30). Both are paths, and both have an answer derived from
     // the project root when the file names neither.
@@ -91,7 +93,9 @@ pub const CENSUS: [(&str, &str); 18] = [
 ];
 
 /// The pairs a policy file may NOT set, each with where its value is set
-/// instead.
+/// instead. They stay named under the table they were set in, so a file that
+/// sets one hears where the test command went as well as that its table is
+/// gone ([`MOVED_TABLES`]).
 ///
 /// A test command is the workflow's and not the project's: the workflow hands
 /// `fleet land --test` the command the landing runs on the tree that lands, and
@@ -130,11 +134,27 @@ pub const RETIRED: [(&str, &str); 7] = [
     ("project", "trunk"),
 ];
 
-/// A pair [`MOVED`] or [`RETIRED`] names, found set in a policy file.
+/// The tables a policy file may NOT carry at all, each with where its keys are
+/// set instead.
+///
+/// `[gates]` held three purposes under one name — the landing's marker, a
+/// seat's command words and the targets a pack's guards refuse on — and each
+/// key now sits in the table named for its purpose. A file that still carries
+/// the table is refused for [`MOVED`]'s reason: every key in it is one nothing
+/// reads, so each is a setting a person believes is in force.
+pub const MOVED_TABLES: [(&str, &str); 1] = [(
+    "gates",
+    "`ci_marker` under [landing], `tool_commands` under [permissions], and \
+     `release_ref_glob` and the `prod_*` lists under [guards.targets]",
+)];
+
+/// A pair [`MOVED`] or [`RETIRED`] names, or a table [`MOVED_TABLES`] names,
+/// found set in a policy file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Moved {
     pub table: &'static str,
-    pub key: &'static str,
+    /// `None` is the whole table, found carried at all.
+    pub key: Option<&'static str>,
     /// Where the value is set instead, as a person reads it. `None` is a
     /// [`RETIRED`] pair, whose value is set nowhere.
     pub to: Option<&'static str>,
@@ -142,56 +162,69 @@ pub struct Moved {
 
 impl fmt::Display for Moved {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.to {
-            Some(to) => write!(
+        let table = self.table;
+        match (self.key, self.to) {
+            (Some(key), Some(to)) => write!(
                 f,
-                "[{}] {} is not project policy, and nothing reads it — a test command is the \
-                 workflow's: set {to}, and delete the key",
-                self.table, self.key
+                "[{table}] {key} is not project policy, and nothing reads it — a test command \
+                 is the workflow's: set {to}, and delete the key"
             ),
-            None => write!(
+            (Some(key), None) => write!(f, "[{table}] {key} is no longer read — delete it"),
+            (None, Some(to)) => write!(
                 f,
-                "[{}] {} is no longer read — delete it",
-                self.table, self.key
+                "[{table}] is not a policy table, and nothing reads it — its keys are set by \
+                 purpose: {to}; move each one there, and delete the table"
             ),
+            (None, None) => write!(f, "[{table}] is no longer read — delete it"),
         }
     }
 }
 
 /// Every [`MOVED`] pair this config sets, in that table's order, then every
-/// [`RETIRED`] one in its own.
+/// [`MOVED_TABLES`] table it carries, then every [`RETIRED`] pair in that
+/// table's order.
 ///
 /// A key present with ANY value counts, an empty string included: the refusal
 /// is about where the setting lives, and a blank one in the old place is still
-/// a person looking for it there.
+/// a person looking for it there. A table counts the same way, an empty one
+/// included.
 pub fn moved(config: &toml::Table) -> Vec<Moved> {
     let moved = MOVED.iter().map(|(table, key, to)| Moved {
         table,
-        key,
+        key: Some(key),
+        to: Some(to),
+    });
+    let tables = MOVED_TABLES.iter().map(|(table, to)| Moved {
+        table,
+        key: None,
         to: Some(to),
     });
     let retired = RETIRED.iter().map(|(table, key)| Moved {
         table,
-        key,
+        key: Some(key),
         to: None,
     });
     moved
+        .chain(tables)
         .chain(retired)
-        .filter(|found| sets(config, found.table, found.key))
+        .filter(|found| {
+            let held = table_in(config, found.table);
+            match found.key {
+                Some(key) => held.is_some_and(|table| table.contains_key(key)),
+                None => held.is_some(),
+            }
+        })
         .collect()
 }
 
-/// Whether the config holds this key under this table, a dotted table walked
-/// one segment at a time.
-fn sets(config: &toml::Table, table: &str, key: &str) -> bool {
+/// The table the config holds under this name, a dotted name walked one
+/// segment at a time.
+fn table_in<'c>(config: &'c toml::Table, table: &str) -> Option<&'c toml::Table> {
     let mut here = config;
     for segment in table.split('.') {
-        match here.get(segment).and_then(toml::Value::as_table) {
-            Some(next) => here = next,
-            None => return false,
-        }
+        here = here.get(segment).and_then(toml::Value::as_table)?;
     }
-    here.contains_key(key)
+    Some(here)
 }
 
 /// A pair no census row covers. The reader hands this back instead of the

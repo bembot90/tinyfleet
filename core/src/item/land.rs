@@ -343,7 +343,7 @@ pub fn land(
     let project = Project {
         root,
         name: wiring.project.name.clone(),
-        gates: wiring.project.gates.clone(),
+        policy: wiring.project.policy.clone(),
         guards: wiring.project.guards.clone(),
     };
     land_in(
@@ -752,7 +752,7 @@ fn run(
                 format!("`{command}` printed nothing over the staged pathset")
             }
             Some(command) => format!("{marker} — `{command}` over the staged pathset"),
-            None => "no [gates] ci_marker in this project — no marker is appended".to_string(),
+            None => "no [landing] ci_marker in this project — no marker is appended".to_string(),
         },
     );
 
@@ -1851,18 +1851,18 @@ fn rerun(item: &str, sha: &str, why: &str) -> Stop {
     ))
 }
 
-// ---- the gate key -------------------------------------------------------------
+// ---- the marker key ----------------------------------------------------------
 
-/// `[gates] ci_marker`, through the census reader. The table and the key are
+/// `[landing] ci_marker`, through the census reader. The table and the key are
 /// LITERALS at the call site, as they are at every other reader in this
 /// workspace: the pair a verb reads has to be readable out of the source
 /// without running it. This verb is its first reader.
 fn marker_of(project: &Project) -> Result<Option<String>, Stop> {
-    command(policy::read("gates", "ci_marker", &project.gates))
+    command(policy::read("landing", "ci_marker", &project.policy))
 }
 
-/// A key that is there but is not a string reads as absent: a gate is a command
-/// line or it is nothing.
+/// A key that is there but is not a string reads as absent: a marker is a
+/// command line or it is nothing.
 fn command(
     read: Result<Option<&toml::Value>, crate::policy::Unlisted>,
 ) -> Result<Option<String>, Stop> {

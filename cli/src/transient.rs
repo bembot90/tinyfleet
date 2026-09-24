@@ -653,7 +653,7 @@ fn without_the_touched_rule(template: String) -> Result<String, Stop> {
     Ok(out)
 }
 
-/// `[gates] tool_commands`, checked entry by entry to be one command word.
+/// `[permissions] tool_commands`, checked entry by entry to be one command word.
 ///
 /// The check is AT THE RENDER and names the entry, because the rule it is
 /// written into is matched by its opening token: a word carrying a space, a
@@ -661,12 +661,13 @@ fn without_the_touched_rule(template: String) -> Result<String, Stop> {
 /// the project meant to write, and the widening would not be visible anywhere
 /// but in the seat's own settings file hours later.
 fn tool_commands_of(here: &Here) -> Result<Vec<String>, Stop> {
-    let declared = match fleet_core::policy::read("gates", "tool_commands", &here.project.gates) {
-        Ok(Some(value)) => value,
-        _ => return Ok(Vec::new()),
-    };
+    let declared =
+        match fleet_core::policy::read("permissions", "tool_commands", &here.project.policy) {
+            Ok(Some(value)) => value,
+            _ => return Ok(Vec::new()),
+        };
     let entries = declared.as_array().ok_or_else(|| {
-        Stop::usage("[gates] tool_commands is not a list of command words".to_string())
+        Stop::usage("[permissions] tool_commands is not a list of command words".to_string())
     })?;
     let mut words = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -674,7 +675,7 @@ fn tool_commands_of(here: &Here) -> Result<Vec<String>, Stop> {
             Some(word) => words.push(word.to_string()),
             None => {
                 return Err(Stop::usage(format!(
-                    "[gates] tool_commands entry `{entry}` is not one command word"
+                    "[permissions] tool_commands entry `{entry}` is not one command word"
                 )))
             }
         }
@@ -717,8 +718,8 @@ fn with_tool_commands(rendered: String, words: &[String]) -> Result<String, Stop
         .and_then(serde_json::Value::as_array_mut)
         .ok_or_else(|| {
             Stop::could_not_tell(format!(
-                "`{PERMISSIONS}` carries no `permissions.allow` list for [gates] tool_commands to \
-                 be added to"
+                "`{PERMISSIONS}` carries no `permissions.allow` list for [permissions] \
+                 tool_commands to be added to"
             ))
         })?;
     for word in words {

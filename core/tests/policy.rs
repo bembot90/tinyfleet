@@ -1,4 +1,4 @@
-//! R18 — the census. Two arms: that every table it names is one of the six,
+//! R18 — the census. Two arms: that every table it names is one of the eight,
 //! and that every reader call site in this workspace's source names a pair the
 //! census carries.
 
@@ -8,7 +8,7 @@ use common::workspace;
 use fleet_core::policy;
 
 #[test]
-fn the_census_names_only_the_six_tables() {
+fn the_census_names_only_the_eight_tables() {
     for (table, key) in policy::CENSUS {
         assert!(
             policy::TABLES.contains(&table),
@@ -21,12 +21,22 @@ fn the_census_names_only_the_six_tables() {
         18,
         "the census is read, not empty — a shrunk list would satisfy the arm above saying nothing"
     );
+    assert_eq!(
+        policy::TABLES.len(),
+        8,
+        "every table a pair names is listed, and no table nothing reads"
+    );
+    assert!(
+        !policy::TABLES.contains(&"gates"),
+        "[gates] is a table nothing reads — its keys moved by purpose"
+    );
 }
 
 /// The two TEST commands are the workflow's and not the project's: neither is
 /// a pair any verb may read, and each is one [`policy::MOVED`] names with the
 /// pack setting that replaces it — so a file still setting one is refused by
-/// name rather than read as absent.
+/// name rather than read as absent. The table they were set in is refused
+/// beside them, on its own line.
 #[test]
 fn the_test_commands_are_not_in_the_census_and_each_names_where_it_moved() {
     for (key, setting) in [("suite", "takeoff.test"), ("touched", "takeoff.touched")] {
@@ -38,29 +48,84 @@ fn the_test_commands_are_not_in_the_census_and_each_names_where_it_moved() {
             .parse()
             .expect("the fixture config parses");
         let found = policy::moved(&config);
-        assert_eq!(found.len(), 1, "[gates] {key} is found set: {found:?}");
+        assert_eq!(
+            found.len(),
+            2,
+            "[gates] {key} and the table are found set: {found:?}"
+        );
         let said = found[0].to_string();
         assert!(
             said.contains(&format!("[gates] {key}"))
                 && said.contains(&format!("`{setting}` under [packs.tiny]")),
             "the line names the key and the pack setting that replaces it: {said}"
         );
+        assert_eq!(found[1].key, None, "the second line is the table's own");
     }
-    // The control: a [gates] table carrying neither sets neither, and the
-    // marker beside them is still a census pair.
-    let marker: toml::Table = "[gates]\nci_marker = \"printf x\"\n"
-        .parse()
-        .expect("the fixture config parses");
-    assert_eq!(policy::moved(&marker), Vec::new());
-    assert!(policy::in_census("gates", "ci_marker"));
 }
 
-/// The production-write class's six target lists, all in `[gates]`. A key the
-/// census does not name is a key `policy::read` refuses, so the guard that
-/// wanted it reads an empty list and refuses nothing — silently, which is the
-/// direction this arm exists to catch.
+/// `[gates]` is refused BY NAME, whatever it carries — an empty table
+/// included — and the line names where each of its keys is set now.
 #[test]
-fn the_gates_table_names_every_list_the_production_write_class_reads() {
+fn a_gates_table_is_refused_by_name_and_names_the_new_homes() {
+    for text in [
+        "[gates]\n",
+        "[gates]\nci_marker = \"printf x\"\n",
+        "[gates]\ntool_commands = [\"cargo\"]\n",
+        "[gates]\nrelease_ref_glob = \"refs/heads/release/*\"\n",
+    ] {
+        let config: toml::Table = text.parse().expect("the fixture config parses");
+        let found = policy::moved(&config);
+        assert_eq!(found.len(), 1, "{text:?} is refused once: {found:?}");
+        assert_eq!(
+            found[0].to_string(),
+            "[gates] is not a policy table, and nothing reads it — its keys are set by \
+             purpose: `ci_marker` under [landing], `tool_commands` under [permissions], and \
+             `release_ref_glob` and the `prod_*` lists under [guards.targets]; move each one \
+             there, and delete the table",
+            "the line names the table and every new home"
+        );
+    }
+
+    // The control: the three new homes, each carrying its key, are refused
+    // nothing — so the answers above are about the table's name and not about
+    // any key found under any table.
+    let moved_home: toml::Table = "[landing]\nci_marker = \"printf x\"\n\n\
+                                   [permissions]\ntool_commands = [\"cargo\"]\n\n\
+                                   [guards.targets]\nrelease_ref_glob = \"refs/heads/r/*\"\n"
+        .parse()
+        .expect("the fixture config parses");
+    assert_eq!(policy::moved(&moved_home), Vec::new());
+}
+
+/// Each key the old table held is a census pair under its new home and under
+/// no other, and reads its value from there.
+#[test]
+fn each_key_the_gates_table_held_is_read_from_its_new_home() {
+    let config: toml::Table = "[landing]\nci_marker = \"printf m\"\n\n\
+                               [permissions]\ntool_commands = [\"cargo\"]\n\n\
+                               [guards.targets]\nrelease_ref_glob = \"refs/heads/r/*\"\n"
+        .parse()
+        .expect("the fixture config parses");
+    for (table, key, value) in [
+        ("landing", "ci_marker", "\"printf m\""),
+        ("permissions", "tool_commands", "[\"cargo\"]"),
+        ("guards.targets", "release_ref_glob", "\"refs/heads/r/*\""),
+    ] {
+        let read = policy::read(table, key, &config)
+            .expect("a census pair is readable")
+            .expect("the value is there");
+        assert_eq!(read.to_string(), value, "[{table}] {key}");
+        policy::read("gates", key, &config)
+            .expect_err("the old home is not a pair any verb may read");
+    }
+}
+
+/// The production-write class's six target lists, all in `[guards.targets]`.
+/// A key the census does not name is a key `policy::read` refuses, so the guard
+/// that wanted it reads an empty list and refuses nothing — silently, which is
+/// the direction this arm exists to catch.
+#[test]
+fn the_targets_table_names_every_list_the_production_write_class_reads() {
     for key in [
         "prod_buckets",
         "prod_projects",
@@ -74,15 +139,15 @@ fn the_gates_table_names_every_list_the_production_write_class_reads() {
         "prod_workflow_refs",
     ] {
         assert!(
-            policy::in_census("gates", key),
-            "[gates] {key} is a list the production-write class reads"
+            policy::in_census("guards.targets", key),
+            "[guards.targets] {key} is a list the production-write class reads"
         );
     }
     // The control, in the same read: a neighbouring spelling the reader would
     // not accept, so the six answers above are about the census rather than
     // about a matcher that says yes to anything.
-    assert!(!policy::in_census("gates", "prod_make_goal"));
-    assert!(!policy::in_census("gates", "prod_workflows"));
+    assert!(!policy::in_census("guards.targets", "prod_make_goal"));
+    assert!(!policy::in_census("guards.targets", "prod_workflows"));
 }
 
 /// The flight table's three keys something still reads: the rules `fleet
@@ -242,7 +307,7 @@ fn a_census_key_the_config_omits_reads_as_absent_and_not_as_an_error() {
     let config: toml::Table = "[core]\nreviewer = \"reviewer\"\n"
         .parse()
         .expect("the fixture config parses");
-    assert!(policy::read("gates", "ci_marker", &config)
+    assert!(policy::read("landing", "ci_marker", &config)
         .expect("the pair is in the census")
         .is_none());
 }

@@ -1608,6 +1608,31 @@ fn a_policy_setting_a_gates_test_command_opens_no_run_and_names_where_it_moved()
     }
 }
 
+/// A policy that still carries a `[gates]` table opens no run, whatever the
+/// table holds: the refusal names the table and where each of its keys is set
+/// now, before anything is written — a marker, a command list or a guard target
+/// left under the old name is one nothing reads.
+#[test]
+fn a_policy_carrying_a_gates_table_opens_no_run_and_names_the_new_homes() {
+    let rig = Rig::new(
+        "moved-gates",
+        &Pack::running(ECHOES_AND_WAITS),
+        &policy_setting("[gates]\nci_marker = \"printf '[skip ci]'\"\n"),
+    );
+    let said = refuses(
+        &rig,
+        &["run", &rig.workflow(ONE), "--by", BY],
+        "[gates] is not a policy table",
+    );
+    for home in [
+        "`ci_marker` under [landing]",
+        "`tool_commands` under [permissions]",
+        "`release_ref_glob` and the `prod_*` lists under [guards.targets]",
+    ] {
+        assert!(said.contains(home), "the refusal names {home}: {said}");
+    }
+}
+
 /// A policy that still sets a key NOTHING READS opens no run: the refusal names
 /// the key and says to delete it, before anything is written — a cap nothing
 /// enforces is one a person believes is in force. One key at the top of the
@@ -1697,7 +1722,7 @@ fn a_rerun_reads_the_settings_the_run_was_opened_with_and_not_the_edited_file() 
     let project = fleet_core::item::Project {
         root: rig.project.clone(),
         name: String::from("project"),
-        gates: table.clone(),
+        policy: table.clone(),
         guards: table,
     };
     let stream = Stream(rig.machine.join("events.jsonl"));
@@ -1759,7 +1784,7 @@ fn rerun_in_this_process(
     let project = fleet_core::item::Project {
         root: rig.project.clone(),
         name: String::from("project"),
-        gates: table.clone(),
+        policy: table.clone(),
         guards: table,
     };
     let stream = Stream(rig.machine.join("events.jsonl"));

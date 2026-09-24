@@ -65,7 +65,7 @@ impl Rig {
     /// built from, so an arm that plants a defect in a pack file resolves once
     /// more and asks about the pack as it now stands.
     fn over(fixture: Fixture) -> Rig {
-        let gates = table_at(&fixture.path("fleet.toml"));
+        let policy = table_at(&fixture.path("fleet.toml"));
         let packs = Packs::under(
             &fixture.path("packs"),
             &fixture.path(fleet_core::defaults::DIR),
@@ -74,8 +74,8 @@ impl Rig {
         let project = Project {
             root: fixture.root.clone(),
             name: String::from("a-project"),
-            guards: gates.clone(),
-            gates,
+            guards: policy.clone(),
+            policy,
         };
         Rig {
             fixture,

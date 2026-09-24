@@ -59,8 +59,8 @@ version = "2.1.261"
 # whose spawned seats come up logged out and whose every first turn fails.
 isolation_pair = "holds"
 
-# The test commands are not in this file's [gates] table, and a [gates] table
-# that sets `suite` or `touched` is refused by name. They are the workflow's:
+# The test commands are in no table of this file, and a [gates] table that
+# sets `suite` or `touched` is refused by name. They are the workflow's:
 # `fleet land --test <command>` runs the landing's on the rebased tree, and
 # `fleet dispatch --touched <command>` hands a builder its own gate. For the
 # takeoff workflow, set them for the pack that carries it — a run's

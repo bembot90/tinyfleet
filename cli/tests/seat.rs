@@ -150,7 +150,7 @@ impl Rig {
             rig.project.join("fleet.toml"),
             if declared {
                 format!(
-                    "[gates]\n\n\
+                    "[permissions]\n\n\
                      [controller]\nnudge_model = \"a-cheap-model\"\n\
                      nudge_timeout_seconds = 30\nstart_watch_seconds = 10\n\
                      default_model = \"a-model\"\n\n\
@@ -159,7 +159,7 @@ impl Rig {
                     worktrees = toml_string(&rig.worktrees.display().to_string()),
                 )
             } else {
-                "[gates]\n\n\
+                "[permissions]\n\n\
                  [controller]\nnudge_model = \"a-cheap-model\"\n\
                  nudge_timeout_seconds = 30\nstart_watch_seconds = 10\n\
                  default_model = \"a-model\"\n"
@@ -199,10 +199,13 @@ impl Rig {
             .map(|word| toml_string(word))
             .collect::<Vec<_>>()
             .join(", ");
-        let declared = policy.replace("[gates]\n", &format!("[gates]\ntool_commands = [{list}]\n"));
+        let declared = policy.replace(
+            "[permissions]\n",
+            &format!("[permissions]\ntool_commands = [{list}]\n"),
+        );
         assert!(
             declared.contains("tool_commands"),
-            "the fixture's [gates] table is the one this helper edits: {policy}"
+            "the fixture's [permissions] table is the one this helper edits: {policy}"
         );
         std::fs::write(&path, declared).expect("the declaration is written");
     }
@@ -1076,7 +1079,7 @@ fn a_declaration_beside_a_fleet_toml_resolves_standalone() {
         format!(
             "[project]\nname = \"a-declared-project\"\nitem_prefix = \"dp\"\n\
              primary = {primary}\nworktrees = {worktrees}\n\n\
-             [gates]\nci_marker = \"printf '[skip ci]'\"\n",
+             [landing]\nci_marker = \"printf '[skip ci]'\"\n",
             primary = toml_string(&rig.project.display().to_string()),
             worktrees = toml_string(&declared.display().to_string()),
         ),

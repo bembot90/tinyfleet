@@ -84,17 +84,18 @@ The targets live in two tables:
 | Key | Class | Check |
 | --- | --- | --- |
 | `[project] item_prefix` | record | bare-id |
-| `[gates] release_ref_glob` | release-ref | push-target |
-| `[gates] prod_buckets` | production-write | bucket |
-| `[gates] prod_projects` | production-write | project |
-| `[gates] prod_apps` | production-write | app |
-| `[gates] prod_make_goals` | production-write | make-goal |
-| `[gates] prod_dagger_functions` | production-write | module-function |
-| `[gates] prod_workflow_refs` | production-write | workflow-ref |
+| `[guards.targets] release_ref_glob` | release-ref | push-target |
+| `[guards.targets] prod_buckets` | production-write | bucket |
+| `[guards.targets] prod_projects` | production-write | project |
+| `[guards.targets] prod_apps` | production-write | app |
+| `[guards.targets] prod_make_goals` | production-write | make-goal |
+| `[guards.targets] prod_dagger_functions` | production-write | module-function |
+| `[guards.targets] prod_workflow_refs` | production-write | workflow-ref |
 
-`release_ref_glob` is a string. The other five `prod_` keys are lists of
-strings. An empty string, an empty list and an absent key all leave the check
-refusing nothing.
+`release_ref_glob` is a string. The six `prod_` keys are lists of strings.
+An empty string, an empty list and an absent key all leave the check refusing
+nothing. A guard reads these keys from `[guards.targets]` alone: the same key
+under any other table sets no target.
 
 A file that cannot be read or parsed counts as an empty one: it switches no
 class off and sets no target, and nothing is printed about it.
@@ -112,8 +113,8 @@ production-write = { enabled = false }
 Only the boolean `false` switches a class off. An absent table, an absent
 key, and a value of any other type (`"no"`, `0`) leave it on. In a
 standalone project the switches are read from the fleet's `fleet.toml` only;
-a `[guards]` table in `.fleet/project.toml` or in a `fleet.toml` beside it
-changes nothing.
+a switch set in `.fleet/project.toml` or in a `fleet.toml` beside it changes
+nothing.
 
 `fleet prime`, which a session runs at its start, ends its first line with
 each class and whether it is on, for example `guards: shell-trap off, record
@@ -192,12 +193,12 @@ plain text match. `bare-id` lets it through.
 ## The release-ref class
 
 Release-ref refuses a `git push` whose destination matches
-`[gates] release_ref_glob`. It has no escape: the refusal prints `no escape
-at this layer — a release is cut by a person from their own shell` where the
-escape would be.
+`[guards.targets] release_ref_glob`. It has no escape: the refusal prints
+`no escape at this layer — a release is cut by a person from their own shell`
+where the escape would be.
 
 ```toml
-[gates]
+[guards.targets]
 release_ref_glob = "refs/heads/release/*"
 ```
 
@@ -302,7 +303,7 @@ not set:
 
 ```sh
 $ fleet guard release-ref --check
-release-ref push-target: not configured — [gates] release_ref_glob
+release-ref push-target: not configured — [guards.targets] release_ref_glob
 ```
 
 It exits 1. With every target set, it exits 0:

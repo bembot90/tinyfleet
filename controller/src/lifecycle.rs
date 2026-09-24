@@ -148,7 +148,7 @@ pub fn project_text(
          # skip a pipeline nobody chose to skip. The test commands are not set\n\
          # here — a workflow hands them to the landing; for takeoff they are\n\
          # takeoff.test and takeoff.touched under [packs.tiny] in fleet.toml.\n\
-         [gates]\n\
+         [landing]\n\
          # ci_marker = \"the marker a landing's commit carries\"\n",
         name = basic(name),
         primary = basic(&primary.display().to_string()),
@@ -850,8 +850,8 @@ mod tests {
         let table: toml::Table = text.parse().expect("the written file parses");
         assert_eq!(table["project"]["item_prefix"].as_str(), Some("ap"));
         assert!(
-            table["gates"].as_table().expect("a table").is_empty(),
-            "every gate is commented: {text}"
+            table["landing"].as_table().expect("a table").is_empty(),
+            "the marker is commented: {text}"
         );
     }
 

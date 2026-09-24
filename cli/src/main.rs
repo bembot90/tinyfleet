@@ -1153,7 +1153,7 @@ fn resolve_policy(class: Class, cwd: Option<&Path>) -> Policy {
     }
 }
 
-/// The project's own `[gates]` targets, onto the policy the walk built.
+/// The project's own `[guards.targets]`, onto the policy the walk built.
 fn with_targets(policy: Policy, targets: guard::Targets) -> Policy {
     Policy {
         release_ref_glob: targets.release_ref_glob,

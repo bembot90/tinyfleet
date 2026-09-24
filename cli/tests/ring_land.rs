@@ -55,7 +55,7 @@ const WORK: &str = "a-builder/feat/the-work";
 /// The second item's branch, for the arm that asks for two landings at once.
 const OTHER: &str = "a-builder/feat/the-other";
 
-const POLICY: &str = "[gates]\nci_marker = \"sh the-marker.sh\"\n\n\
+const POLICY: &str = "[landing]\nci_marker = \"sh the-marker.sh\"\n\n\
                       [core]\nreviewer = \"a-reviewer\"\n";
 
 /// The test every landing below is handed, as `fleet land --test`: a script
@@ -220,7 +220,7 @@ struct Template {
 impl Template {
     fn shared() -> &'static Template {
         static TEMPLATE: OnceLock<Template> = OnceLock::new();
-        TEMPLATE.get_or_init(|| Template::at(built_once("with-gates", POLICY)))
+        TEMPLATE.get_or_init(|| Template::at(built_once("with-marker", POLICY)))
     }
 
     /// The fixture read off the tree, by the process that built it and by every

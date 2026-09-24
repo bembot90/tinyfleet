@@ -183,8 +183,11 @@ check` refuses a malformed declaration by name.
 A test command is the workflow's, not the project's. There is no `[gates]
 suite` and no `[gates] touched`: a `fleet.toml` or `.fleet/project.toml` that
 still sets either is refused by name — by `land`, `dispatch`, `brief`, `seat
-spawn` and `run` — with the setting that replaces it. `[gates] ci_marker`
-stays where it was.
+spawn` and `run` — with the setting that replaces it. The `[gates]` table
+itself is refused the same way, naming where its keys live now: the landing's
+marker is `[landing] ci_marker`, a seat's command words are `[permissions]
+tool_commands`, and the guard targets (`release_ref_glob` and the `prod_*`
+lists) sit under `[guards.targets]`.
 
 - **The landing's suite** is what `fleet land <item> <commit> --test
   <command>` is handed. The landing runs it on the rebased land branch, under

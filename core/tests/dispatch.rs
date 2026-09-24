@@ -209,7 +209,7 @@ impl Rig {
         let fixture = Fixture::new(label);
         fixture.file("fleet.toml", POLICY);
         fixture.materialize_defaults();
-        let gates = table_at(&fixture.path("fleet.toml"));
+        let policy = table_at(&fixture.path("fleet.toml"));
         let packs = Packs::under(
             &fixture.path("packs"),
             &fixture.path(fleet_core::defaults::DIR),
@@ -219,8 +219,8 @@ impl Rig {
             project: Project {
                 root: graph.root().to_path_buf(),
                 name: String::from("a-project"),
-                guards: gates.clone(),
-                gates,
+                guards: policy.clone(),
+                policy,
             },
             packs,
             fixture,

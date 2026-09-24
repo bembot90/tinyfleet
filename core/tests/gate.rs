@@ -231,7 +231,7 @@ fn project(scratch: &dyn Rooted) -> Project {
         root: scratch.root().to_path_buf(),
         name: "a-project".to_string(),
         guards: table.clone(),
-        gates: table,
+        policy: table,
     }
 }
 

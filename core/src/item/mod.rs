@@ -425,29 +425,31 @@ pub trait Spawner {
 
 /// The project a verb acts inside, as the cli resolved it.
 ///
-/// `gates` and `guards` are two tables and not one because a standalone fleet
-/// keeps them in two files: the project declares its gates, and the fleet
+/// `policy` and `guards` are two tables and not one because a standalone fleet
+/// keeps them in two files: the project declares its own policy, and the fleet
 /// declares which guards its seats run. An embedded fleet hands the same table
 /// twice, which is the shape its one `fleet.toml` actually has.
 pub struct Project {
     pub root: PathBuf,
     pub name: String,
-    pub gates: toml::Table,
+    /// The project's whole policy file, every table in it.
+    pub policy: toml::Table,
     pub guards: toml::Table,
 }
 
 impl Project {
     /// A refusal where either file still sets a test command, naming each key
-    /// and where it is set instead ([`crate::policy::MOVED`]) — or a key
-    /// nothing reads any more, naming it to delete
-    /// ([`crate::policy::RETIRED`]).
+    /// and where it is set instead ([`crate::policy::MOVED`]), or still carries
+    /// a table whose keys moved, naming where each is set now
+    /// ([`crate::policy::MOVED_TABLES`]) — or a key nothing reads any more,
+    /// naming it to delete ([`crate::policy::RETIRED`]).
     ///
     /// Read by every verb that would have read one — `land`, the brief, a
     /// spawn's rules and `run` — BEFORE it writes anything, so a fleet whose
     /// landings a person believes are tested hears otherwise from the first
     /// verb that lands, briefs or opens a run.
     pub fn refuse_moved(&self) -> Result<(), Stop> {
-        let mut found = crate::policy::moved(&self.gates);
+        let mut found = crate::policy::moved(&self.policy);
         for also in crate::policy::moved(&self.guards) {
             if !found.contains(&also) {
                 found.push(also);

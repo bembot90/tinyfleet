@@ -511,7 +511,7 @@ fn the_doctor_entry_runs_both_check_lines_and_exits_with_the_first_non_zero() {
 
 /// A declared project carrying all four target keys, which is the shape the
 /// pack's own guards read (packs PRD § Policy core reads).
-const TARGETS: &str = "[project]\nitem_prefix = \"acme\"\n\n[gates]\n\
+const TARGETS: &str = "[project]\nitem_prefix = \"acme\"\n\n[guards.targets]\n\
                        release_ref_glob = \"refs/heads/*release/*\"\n\
                        prod_buckets = [\"live.example.test\"]\n\
                        prod_projects = [\"example-production\"]\n\
@@ -723,7 +723,9 @@ fn check_on_each_new_class_names_its_keys_and_exits_on_whether_they_are_configur
     assert_eq!(out.status.code(), Some(1), "an unconfigured target exits 1");
     let text = String::from_utf8(out.stdout).expect("the output is utf-8");
     assert!(
-        text.contains("release-ref push-target: not configured — [gates] release_ref_glob"),
+        text.contains(
+            "release-ref push-target: not configured — [guards.targets] release_ref_glob"
+        ),
         "the line names the key — {text}"
     );
     assert_eq!(text.lines().count(), 1, "one line per check — {text}");
@@ -740,7 +742,7 @@ fn check_on_each_new_class_names_its_keys_and_exits_on_whether_they_are_configur
         "prod_workflow_refs",
     ] {
         assert!(
-            text.contains(&format!("not configured — [gates] {key}")),
+            text.contains(&format!("not configured — [guards.targets] {key}")),
             "every unconfigured key is named, not only the first — {text}"
         );
     }
