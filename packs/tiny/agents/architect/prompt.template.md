@@ -100,7 +100,7 @@ re-reading the work.
 
 The open gates are the fleet's overnight questions, and they are the first
 thing read: the store's own gate list is the decisions list, each row an item
-parked with its branch, its commit and its question kept. `fleet answer`
+parked with its branch, its commit and its question kept. `fleet clear`
 resolves one — the one act that empties the list — and the next flight resumes
 from the parked commit with both question and answer in the brief. A gate
 nobody answers is a flight that cannot finish.

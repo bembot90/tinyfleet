@@ -1,7 +1,7 @@
 // tiny's takeoff workflow against the fake fleet binary `verbs_test.ts` runs
 // the verbs on: each arm reads the steps the flight records, in order, the
 // argv the fake saw per verb, and the exit a re-run takes — so a Waiting at an
-// item's delivery spawns nothing twice, and a gate's letter is the verdict.
+// item's delivery spawns nothing twice, and a hold's letter is the verdict.
 //
 // The deliveries the flight waits on are appended by the arm in the stored
 // shape, the way the verbs' suite appends a park or a landing.
@@ -233,43 +233,43 @@ Deno.test("AC2 re-run — Waiting at the second item's until: exit 2 naming it, 
   assertEquals(closes(await lines(s)).map((l) => l.payload.name), FOURTEEN);
 });
 
-Deno.test("AC1 gate — under review=gate every verdict is a gate: the flight waits on the gate id, asks once across the re-runs, lands on A and returns on B with the findings file", async () => {
+Deno.test("AC1 hold — under review=hold every verdict is a hold: the flight waits on the hold id, holds once across the re-runs, lands on A and returns on B with the findings file", async () => {
   const s = await scratch();
   await delivered(s, "it-1", "aaa1111");
   const runId = s.env.runId;
-  await can(s, "ask", { item: runId, state: "parked", gate: "gate-1" }, [{
-    type: "item.parked",
+  await can(s, "hold", { item: runId, state: "held", hold: "hold-1" }, [{
+    type: "item.held",
     payload: {
       item: runId,
       reason: "ask",
       branch: "",
       commit: "",
-      gate: "gate-1",
+      hold: "hold-1",
     },
   }]);
   const stdin = pinned("it-1");
 
   assertEquals(await replay(takeoff, s.env, stdin), {
     code: 2,
-    waiting: "gate-1",
+    waiting: "hold-1",
   });
   assertEquals(
-    await Deno.readTextFile(`${s.env.runDir}/gates/1.md`),
+    await Deno.readTextFile(`${s.env.runDir}/holds/1.md`),
     `QUESTION Accept it-1 at aaa1111?\n${OPTIONS.join("\n")}\n`,
   );
   assertEquals(await replay(takeoff, s.env, stdin), {
     code: 2,
-    waiting: "gate-1",
+    waiting: "hold-1",
   });
   assertEquals(
     verbs(await calls(s)),
-    ["dispatch", "ask"],
+    ["dispatch", "hold"],
     "one ask across the re-runs",
   );
 
-  await append(s.env.stream, "gate.resolved", "a-person", {
+  await append(s.env.stream, "hold.cleared", "a-person", {
     item: runId,
-    gate: "gate-1",
+    hold: "hold-1",
     letter: "B",
   });
   assertEquals(await replay(takeoff, s.env, stdin), { code: 0 });
@@ -277,11 +277,11 @@ Deno.test("AC1 gate — under review=gate every verdict is a gate: the flight wa
   assertEquals(await calls(s), [
     ["dispatch", "it-1", "--by", runId, "--json"],
     [
-      "ask",
+      "hold",
       "--item",
       runId,
       "--note",
-      `${s.env.runDir}/gates/1.md`,
+      `${s.env.runDir}/holds/1.md`,
       "--by",
       runId,
       "--json",
@@ -293,7 +293,7 @@ Deno.test("AC1 gate — under review=gate every verdict is a gate: the flight wa
     ...INPUTS,
     "spawn it-1",
     "until delivered it-1",
-    "gate Accept it-1 at aaa1111?",
+    "hold Accept it-1 at aaa1111?",
     "review it-1",
     "report",
     "tick",
@@ -317,34 +317,34 @@ Deno.test("AC1 gate — under review=gate every verdict is a gate: the flight wa
     "a returned item is not ticked",
   );
 
-  // The same gate answered A: the review is --land and the item lands.
+  // The same hold cleared A: the review is --land and the item lands.
   const t = await scratch();
   await delivered(t, "it-1", "aaa1111");
-  await can(t, "ask", { item: t.env.runId, state: "parked", gate: "gate-2" }, [{
-    type: "item.parked",
+  await can(t, "hold", { item: t.env.runId, state: "held", hold: "hold-2" }, [{
+    type: "item.held",
     payload: {
       item: t.env.runId,
       reason: "ask",
       branch: "",
       commit: "",
-      gate: "gate-2",
+      hold: "hold-2",
     },
   }]);
   assertEquals(await replay(takeoff, t.env, stdin), {
     code: 2,
-    waiting: "gate-2",
+    waiting: "hold-2",
   });
-  await append(t.env.stream, "gate.resolved", "a-person", {
+  await append(t.env.stream, "hold.cleared", "a-person", {
     item: t.env.runId,
-    gate: "gate-2",
+    hold: "hold-2",
     letter: "A",
   });
   assertEquals(await replay(takeoff, t.env, stdin), { code: 0 });
-  assertEquals(verbs(await calls(t)), ["dispatch", "ask", "review", "land"]);
+  assertEquals(verbs(await calls(t)), ["dispatch", "hold", "review", "land"]);
   assertEquals((await calls(t))[2][2], "--land");
 });
 
-Deno.test("AC1 an item taken back — its delivery sits at or below the seq the run started from: the spawn step closes on `already delivered at <commit>` and calls no dispatch, and the item gates and lands on that commit", async () => {
+Deno.test("AC1 an item taken back — its delivery sits at or below the seq the run started from: the spawn step closes on `already delivered at <commit>` and calls no dispatch, and the item holds and lands on that commit", async () => {
   const s = await scratch();
   const runId = s.env.runId;
   const seq = await delivered(s, "it-1", "aaa1111");
@@ -353,26 +353,26 @@ Deno.test("AC1 an item taken back — its delivery sits at or below the seq the 
   // for it is refused. Every other arm here delivers above its start seq and
   // dispatches, which is the same read's other answer.
   const env = { ...s.env, streamSeq: seq };
-  await can(s, "ask", { item: runId, state: "parked", gate: "gate-1" }, [{
-    type: "item.parked",
+  await can(s, "hold", { item: runId, state: "held", hold: "hold-1" }, [{
+    type: "item.held",
     payload: {
       item: runId,
       reason: "ask",
       branch: "",
       commit: "",
-      gate: "gate-1",
+      hold: "hold-1",
     },
   }]);
   const stdin = pinned("it-1");
 
   assertEquals(await replay(takeoff, env, stdin), {
     code: 2,
-    waiting: "gate-1",
+    waiting: "hold-1",
   });
   assertEquals(
     verbs(await calls(s)),
-    ["ask"],
-    "the delivered item reaches the gate without a dispatch",
+    ["hold"],
+    "the delivered item reaches the hold without a dispatch",
   );
   const recorded = closes(await lines(s));
   assertEquals(recorded.map((l) => l.payload.name), [
@@ -386,18 +386,18 @@ Deno.test("AC1 an item taken back — its delivery sits at or below the seq the 
     "the spawn step closes on the delivery it found",
   );
   assertEquals(
-    await Deno.readTextFile(`${env.runDir}/gates/1.md`),
+    await Deno.readTextFile(`${env.runDir}/holds/1.md`),
     `QUESTION Accept it-1 at aaa1111?\n${OPTIONS.join("\n")}\n`,
-    "the gate carries the delivery's own commit",
+    "the hold carries the delivery's own commit",
   );
 
-  await append(env.stream, "gate.resolved", "a-person", {
+  await append(env.stream, "hold.cleared", "a-person", {
     item: runId,
-    gate: "gate-1",
+    hold: "hold-1",
     letter: "A",
   });
   assertEquals(await replay(takeoff, env, stdin), { code: 0 });
-  assertEquals(verbs(await calls(s)), ["ask", "review", "land"]);
+  assertEquals(verbs(await calls(s)), ["hold", "review", "land"]);
   assertEquals(
     (await calls(s))[2],
     ["land", "it-1", "aaa1111", "--by", runId, "--json"],
@@ -534,18 +534,18 @@ function passedThrough(): Record<string, string> {
   return env;
 }
 
-Deno.test("AC1 the bundle — takeoff bundled by the pack's bundle line and run by its run line reaches its first gate: the note carries the question and both options, and the wrapper exits 2 waiting on the gate", async () => {
+Deno.test("AC1 the bundle — takeoff bundled by the pack's bundle line and run by its run line reaches its first hold: the note carries the question and both options, and the wrapper exits 2 waiting on the hold", async () => {
   const s = await scratch();
   const runId = s.env.runId;
   await delivered(s, "it-1", "aaa1111");
-  await can(s, "ask", { item: runId, state: "parked", gate: "gate-1" }, [{
-    type: "item.parked",
+  await can(s, "hold", { item: runId, state: "held", hold: "hold-1" }, [{
+    type: "item.held",
     payload: {
       item: runId,
       reason: "ask",
       branch: "",
       commit: "",
-      gate: "gate-1",
+      hold: "hold-1",
     },
   }]);
 
@@ -610,18 +610,18 @@ Deno.test("AC1 the bundle — takeoff bundled by the pack's bundle line and run 
 
   assertEquals(
     [ran.code, last],
-    [2, JSON.stringify("gate-1")],
+    [2, JSON.stringify("hold-1")],
     `the bundled workflow ended ${ran.code} on \`${last}\`\n${stderr}`,
   );
   assertEquals(
-    await Deno.readTextFile(`${s.env.runDir}/gates/1.md`),
+    await Deno.readTextFile(`${s.env.runDir}/holds/1.md`),
     `QUESTION Accept it-1 at aaa1111?\n${OPTIONS.join("\n")}\n`,
     "the note the person reads, written by the bundle and not by an import",
   );
   assertEquals(
     verbs(await calls(s)),
-    ["dispatch", "ask"],
-    "the flight spawned the item and asked its first gate, and stopped there",
+    ["dispatch", "hold"],
+    "the flight spawned the item and raised its first hold, and stopped there",
   );
 });
 
@@ -629,7 +629,7 @@ Deno.test("the inputs — items as a JSON array or a separated list, the policy'
   assertEquals(itemsOf("it-1,it-2"), ["it-1", "it-2"]);
   assertEquals(itemsOf(" it-1 it-2 "), ["it-1", "it-2"]);
   assertEquals(itemsOf('["it-1", "it-2"]'), ["it-1", "it-2"]);
-  assertEquals(policyOf(null), { review: "gate", width: 1 });
+  assertEquals(policyOf(null), { review: "hold", width: 1 });
   assertEquals(policyOf("review=accept,width=3"), {
     review: "accept",
     width: 3,
@@ -656,6 +656,6 @@ Deno.test("the inputs — items as a JSON array or a separated list, the policy'
     } catch (e) {
       thrown = String((e as Error).message);
     }
-    assertMatch(thrown, /is not one of review=gate, review=accept, width=<n>/);
+    assertMatch(thrown, /is not one of review=hold, review=accept, width=<n>/);
   }
 });

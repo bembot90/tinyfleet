@@ -8,7 +8,7 @@ import { Waiting, workflow } from "../mod.ts";
 await workflow(async (run) => {
   console.log("a line before the last one");
   await run.step("count", () => 1);
-  await run.step("gate", async () => {
+  await run.step("hold", async () => {
     try {
       await Deno.stat(`${run.env.runDir}/answered`);
       return "answered";

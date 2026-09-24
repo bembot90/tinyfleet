@@ -55,8 +55,8 @@ enum Ends {
     Closed,
     /// Waiting, recording the stream's position as the child left it.
     Waiting,
-    /// Waiting on the id given — a gate or a child the stream may or may not
-    /// know — as `gate` and `start` throw it.
+    /// Waiting on the id given — a hold or a child the stream may or may not
+    /// know — as `hold` and `start` throw it.
     WaitingOn(&'static str),
     CouldNotTell,
 }
@@ -69,7 +69,7 @@ struct Stub {
     /// re-run was asked for even where it forgot to count the calls.
     script: RefCell<VecDeque<Ends>>,
     reruns: RefCell<Vec<String>>,
-    gates: RefCell<Vec<(String, String)>>,
+    holds: RefCell<Vec<(String, String)>>,
     retires: RefCell<Vec<(String, String)>>,
 }
 
@@ -79,7 +79,7 @@ impl Stub {
             stream: stream.to_path_buf(),
             script: RefCell::new(script.iter().copied().collect()),
             reruns: RefCell::new(Vec::new()),
-            gates: RefCell::new(Vec::new()),
+            holds: RefCell::new(Vec::new()),
             retires: RefCell::new(Vec::new()),
         }
     }
@@ -129,11 +129,11 @@ impl Runs for Stub {
         Ok(())
     }
 
-    fn gate(&self, run: &str, reason: &str) -> Result<String, String> {
-        self.gates
+    fn hold(&self, run: &str, reason: &str) -> Result<String, String> {
+        self.holds
             .borrow_mut()
             .push((run.to_string(), reason.to_string()));
-        Ok(format!("gate-for-{run}"))
+        Ok(format!("hold-for-{run}"))
     }
 
     fn retire(&self, seat: &str, run: &str) -> Result<(), String> {
@@ -234,31 +234,31 @@ fn an_item_moved(stream: &Path, kind: &str, item: &str) {
         .expect("the line lands");
 }
 
-/// A gate asked on a run's own record, announced as `fleet ask` announces it:
-/// `item.parked` naming the run as the item and the gate it raised. The SDK's
-/// `gate` asks first and waits after, so the ask is on the stream below the
-/// wait that names the gate.
-fn a_gate_asked(stream: &Path, run: &str, gate: &str) {
+/// A hold raised on a run's own record, announced as `fleet hold` announces it:
+/// `item.held` naming the run as the item and the hold it raised. The SDK's
+/// `hold` raises first and waits after, so the raise is on the stream below the
+/// wait that names the hold.
+fn a_hold_raised(stream: &Path, run: &str, hold: &str) {
     EventLog::open(stream)
         .append(
-            runs::ITEM_PARKED,
+            runs::ITEM_HELD,
             run,
             serde_json::json!({
-                "item": run, "reason": "ask", "branch": null, "commit": null, "gate": gate,
+                "item": run, "reason": "ask", "branch": null, "commit": null, "hold": hold,
             }),
         )
-        .expect("the ask lands");
+        .expect("the hold lands");
 }
 
-/// A person's answer to a gate.
-fn a_gate_answered(stream: &Path, item: &str, gate: &str) {
+/// A person's clearance of a hold.
+fn a_hold_cleared(stream: &Path, item: &str, hold: &str) {
     EventLog::open(stream)
         .append(
-            runs::GATE_RESOLVED,
+            runs::HOLD_CLEARED,
             "alberto",
-            serde_json::json!({ "item": item, "gate": gate, "letter": "a" }),
+            serde_json::json!({ "item": item, "hold": hold, "letter": "a" }),
         )
-        .expect("the answer lands");
+        .expect("the clearance lands");
 }
 
 /// One lifecycle line of a run nobody is waiting on, or of a child.
@@ -404,7 +404,7 @@ fn a_waiting_run_is_woken_only_by_a_line_for_an_item_its_wake_names() {
 /// before the match, kept for every shape the match does not know.
 ///
 /// THE FOUR SHAPES ARE THE POINT — a payload with no wake, a list with nothing
-/// in it, an object a workflow threw itself, and an id no gate and no run on
+/// in it, an object a workflow threw itself, and an id no hold and no run on
 /// the stream carries. A match that refused any of them would hold a run
 /// waiting for a line that is never coming.
 #[test]
@@ -437,24 +437,25 @@ fn a_waiting_run_whose_wake_the_pass_cannot_read_is_woken_by_any_line() {
     );
 }
 
-/// A run stopped on a gate is woken by that gate's answer and by nothing else —
-/// not by a seat's line, not by an item's, not by another gate's answer, and
+/// A run stopped on a hold is woken by that hold's clearance and by nothing
+/// else — not by a seat's line, not by an item's, not by another hold's
+/// clearance, and
 /// not by the lines another waiting run's re-run writes.
 ///
-/// THE LAST OF THOSE IS THE ARM. Two runs waiting on gates, each re-run on any
+/// THE LAST OF THOSE IS THE ARM. Two runs waiting on holds, each re-run on any
 /// move, keep each other running: the first one's re-run writes `run.started`,
 /// a `step.started` and a `run.waiting`, which is a move for the second, whose
 /// re-run is a move for the first — one child execution per run per poll, and
 /// another `step.started` on the stream each time, for as long as nobody
-/// answers. A kill-and-resume on a takeoff stopped at its gate is exactly that
+/// clears. A kill-and-resume on a takeoff stopped at its hold is exactly that
 /// run.
 #[test]
-fn a_run_waiting_on_a_gate_is_woken_only_by_that_gate_s_answer() {
-    let scratch = Scratch::new("wake-gate");
+fn a_run_waiting_on_a_hold_is_woken_only_by_that_hold_s_clearance() {
+    let scratch = Scratch::new("wake-hold");
     let stream = scratch.stream();
-    a_gate_asked(&stream, "r1", "g1");
+    a_hold_raised(&stream, "r1", "g1");
     a_run_waiting_with(&stream, "r1", serde_json::json!("g1"));
-    a_gate_asked(&stream, "r2", "g2");
+    a_hold_raised(&stream, "r2", "g2");
     a_run_waiting_with(&stream, "r2", serde_json::json!("g2"));
     // One execution in the script: a second re-run refuses, so a pass that
     // over-woke is reported as well as counted.
@@ -462,7 +463,7 @@ fn a_run_waiting_on_a_gate_is_woken_only_by_that_gate_s_answer() {
 
     a_line_from_elsewhere(&stream);
     an_item_moved(&stream, "item.delivered", "g1");
-    a_gate_answered(&stream, "it-9", "g9");
+    a_hold_cleared(&stream, "it-9", "g9");
     let passed = pass(&stub, &stream, 2);
     assert!(
         stub.reruns.borrow().is_empty(),
@@ -471,12 +472,12 @@ fn a_run_waiting_on_a_gate_is_woken_only_by_that_gate_s_answer() {
     );
     passed.expect("the pass runs");
 
-    a_gate_answered(&stream, "r1", "g1");
+    a_hold_cleared(&stream, "r1", "g1");
     pass(&stub, &stream, 2).expect("the pass runs");
     assert_eq!(
         *stub.reruns.borrow(),
         vec!["r1".to_string()],
-        "its gate was answered, so it ran again, and the other did not"
+        "its hold was cleared, so it ran again, and the other did not"
     );
 
     // The re-run's own lines are on the stream now, above where r2 stopped.
@@ -484,7 +485,7 @@ fn a_run_waiting_on_a_gate_is_woken_only_by_that_gate_s_answer() {
     assert_eq!(
         *stub.reruns.borrow(),
         vec!["r1".to_string()],
-        "another run's execution is not an answer to r2's gate"
+        "another run's execution is not a clearance of r2's hold"
     );
     passed.expect("the pass runs");
 }
@@ -569,52 +570,52 @@ fn a_run_waiting_on_a_child_is_woken_by_that_child_s_cancel_and_no_other() {
     );
 }
 
-/// A run whose gate was answered after the ask and before its process exited
-/// is woken by that answer, though the answer sits at or below the position
+/// A run whose hold was cleared after the raise and before its process exited
+/// is woken by that clearance, though it sits at or below the position
 /// the wait recorded — and once the re-run has moved it on, it is not woken
 /// again.
 ///
-/// THE POSITION IS READ AT EXIT. `gate` asks, finds no answer and throws; the
-/// wrapper prints and the process exits, and only then does the back half
-/// read the stream's position for `run.waiting`. An answer that lands in that
-/// gap is below the position, so a match that looked only above it would hold
-/// the run on a gate that is already answered — and with nothing else
+/// THE POSITION IS READ AT EXIT. `hold` raises, finds no clearance and throws;
+/// the wrapper prints and the process exits, and only then does the back half
+/// read the stream's position for `run.waiting`. A clearance that lands in that
+/// gap is below the position, so a match that looked only above it would keep
+/// the run on a hold that is already cleared — and with nothing else
 /// written, the stream would never move past it for any match to look at.
 ///
-/// ONCE, AND NOT EVERY POLL: the answer stays on the stream, and what stops it
+/// ONCE, AND NOT EVERY POLL: the clearance stays on the stream, and what stops it
 /// waking the run again is that the fold reads the run's latest `run.waiting`,
-/// which after the re-run names another gate.
+/// which after the re-run names another hold.
 #[test]
-fn a_gate_answered_before_the_run_exited_still_wakes_it_and_only_once() {
-    let scratch = Scratch::new("wake-gate-early");
+fn a_hold_cleared_before_the_run_exited_still_wakes_it_and_only_once() {
+    let scratch = Scratch::new("wake-hold-early");
     let stream = scratch.stream();
     a_run_waiting_after(&stream, "r1", serde_json::json!("g1"), |stream| {
-        a_gate_asked(stream, "r1", "g1");
-        a_gate_answered(stream, "r1", "g1");
+        a_hold_raised(stream, "r1", "g1");
+        a_hold_cleared(stream, "r1", "g1");
     });
     a_run_waiting_after(&stream, "r2", serde_json::json!("g2"), |stream| {
-        a_gate_asked(stream, "r2", "g2");
-        a_gate_answered(stream, "it-9", "g3");
+        a_hold_raised(stream, "r2", "g2");
+        a_hold_cleared(stream, "it-9", "g3");
     });
-    // The re-run replays past the answered gate and stops on the next one.
+    // The re-run replays past the cleared hold and stops on the next one.
     let stub = Stub::with(&stream, &[Ends::WaitingOn("g4")]);
 
     let passed = pass(&stub, &stream, 2);
     assert_eq!(
         *stub.reruns.borrow(),
         vec!["r1".to_string()],
-        "r1's gate was answered before it exited, and r2's never was"
+        "r1's hold was cleared before it exited, and r2's never was"
     );
     passed.expect("the pass runs");
 
-    a_gate_asked(&stream, "r1", "g4");
+    a_hold_raised(&stream, "r1", "g4");
     a_line_from_elsewhere(&stream);
     for _ in 0..2 {
         let passed = pass(&stub, &stream, 2);
         assert_eq!(
             *stub.reruns.borrow(),
             vec!["r1".to_string()],
-            "g1's answer woke r1 once; r1 now waits on g4, which nobody answered"
+            "g1's clearance woke r1 once; r1 now waits on g4, which nobody cleared"
         );
         passed.expect("the pass runs");
     }
@@ -671,8 +672,8 @@ fn a_wake_still_wrapped_by_a_pinned_bundle_is_read_as_the_condition_inside() {
     let scratch = Scratch::new("wake-wrapped");
     let stream = scratch.stream();
     a_run_waiting_with(&stream, "r-items", serde_json::json!({ "waiting": ["x"] }));
-    a_gate_asked(&stream, "r-gate", "g1");
-    a_run_waiting_with(&stream, "r-gate", serde_json::json!({ "waiting": "g1" }));
+    a_hold_raised(&stream, "r-hold", "g1");
+    a_run_waiting_with(&stream, "r-hold", serde_json::json!({ "waiting": "g1" }));
     let stub = Stub::with(&stream, &[Ends::Closed, Ends::Closed]);
 
     a_line_from_elsewhere(&stream);
@@ -685,11 +686,11 @@ fn a_wake_still_wrapped_by_a_pinned_bundle_is_read_as_the_condition_inside() {
     passed.expect("the pass runs");
 
     an_item_moved(&stream, "item.delivered", "x");
-    a_gate_answered(&stream, "r-gate", "g1");
+    a_hold_cleared(&stream, "r-hold", "g1");
     pass(&stub, &stream, 2).expect("the pass runs");
     let mut woken = stub.reruns.borrow().clone();
     woken.sort();
-    assert_eq!(woken, vec!["r-gate".to_string(), "r-items".to_string()]);
+    assert_eq!(woken, vec!["r-hold".to_string(), "r-items".to_string()]);
 }
 
 /// The re-run is at most once per pass, and a run that has ended is not
@@ -732,10 +733,10 @@ fn a_closed_run_is_never_re_run_however_far_the_stream_moves() {
     );
 }
 
-// ---- AC2: the crash cap, the gate and the park --------------------------------
+// ---- AC2: the crash cap, the hold and the park --------------------------------
 
-/// A run nothing can classify is executed cap-plus-one times, then gated and
-/// parked, and never executed again.
+/// A run nothing can classify is executed cap-plus-one times, then held, and
+/// never executed again.
 #[test]
 fn a_run_nothing_can_classify_runs_to_the_cap_then_parks() {
     let scratch = Scratch::new("ac2");
@@ -765,31 +766,31 @@ fn a_run_nothing_can_classify_runs_to_the_cap_then_parks() {
         "the cap is 2 re-runs, so the run was executed three times"
     );
     assert_eq!(stub.reruns.borrow().len(), 2);
-    let gates = stub.gates.borrow();
-    assert_eq!(gates.len(), 1, "one gate, raised once at the cap");
+    let holds = stub.holds.borrow();
+    assert_eq!(holds.len(), 1, "one hold, raised once at the cap");
     assert!(
-        gates[0].1.contains("max_crashes") && gates[0].1.contains('3'),
-        "the gate's reason carries the last reading: {}",
-        gates[0].1
+        holds[0].1.contains("max_crashes") && holds[0].1.contains('3'),
+        "the hold's reason carries the last reading: {}",
+        holds[0].1
     );
-    let parked = of_kind(&stream, runs::ITEM_PARKED);
-    assert_eq!(parked.len(), 1, "one park, and not one per poll");
-    assert_eq!(parked[0].payload["item"], "r2");
-    assert_eq!(parked[0].payload["gate"], "gate-for-r2");
+    let held = of_kind(&stream, runs::ITEM_HELD);
+    assert_eq!(held.len(), 1, "one park, and not one per poll");
+    assert_eq!(held[0].payload["item"], "r2");
+    assert_eq!(held[0].payload["hold"], "hold-for-r2");
 
     // And no further execution, however far the stream then moves.
     a_line_from_elsewhere(&stream);
     pass(&stub, &stream, 2).expect("the pass runs");
     assert_eq!(count(&stream, runs::RUN_STARTED), 3);
-    assert_eq!(count(&stream, runs::ITEM_PARKED), 1);
+    assert_eq!(count(&stream, runs::ITEM_HELD), 1);
 }
 
 /// What a reader outside the pass is told is the pass's own fold: a run the
 /// pass has not parked reads as could-not-tell, and the same run reads as
-/// parked, on the gate the pass raised, once the pass has parked it — never on
+/// held, on the hold the pass raised, once the pass has parked it — never on
 /// a rule of the reader's own. A failure reads as failed with its reason.
 #[test]
-fn the_readings_follow_the_pass_from_could_not_tell_to_parked() {
+fn the_readings_follow_the_pass_from_could_not_tell_to_held() {
     let scratch = Scratch::new("readings");
     let stream = scratch.stream();
     let mut log = EventLog::open(&stream);
@@ -822,7 +823,7 @@ fn the_readings_follow_the_pass_from_could_not_tell_to_parked() {
     assert_eq!(before[0].standing, Standing::CouldNotTell);
     assert_eq!(before[0].workflow.as_deref(), Some("w"));
     assert_eq!(before[0].crashes, 1);
-    assert_eq!(before[0].gate, None, "no gate before the pass raised one");
+    assert_eq!(before[0].hold, None, "no hold before the pass raised one");
     assert_eq!(before[1].run, "r4");
     assert_eq!(before[1].standing, Standing::Failed);
     assert_eq!(before[1].said["reason"]["why"], "refused");
@@ -832,8 +833,8 @@ fn the_readings_follow_the_pass_from_could_not_tell_to_parked() {
     let stub = Stub::with(&stream, &[]);
     pass(&stub, &stream, 0).expect("the pass runs");
     let after = read();
-    assert_eq!(after[0].standing, Standing::Parked);
-    assert_eq!(after[0].gate.as_deref(), Some("gate-for-r3"));
+    assert_eq!(after[0].standing, Standing::Held);
+    assert_eq!(after[0].hold.as_deref(), Some("hold-for-r3"));
     assert_eq!(after[1].standing, Standing::Failed);
 }
 
@@ -856,7 +857,7 @@ fn the_cap_the_pass_is_handed_is_the_one_it_counts_against() {
         pass(&stub, &stream, 1).expect("the pass runs");
     }
     assert_eq!(stub.reruns.borrow().len(), 1, "one re-run under a cap of 1");
-    assert_eq!(count(&stream, runs::ITEM_PARKED), 1);
+    assert_eq!(count(&stream, runs::ITEM_HELD), 1);
 }
 
 // ---- AC3: the cleanup ----------------------------------------------------------
@@ -1003,7 +1004,7 @@ fn a_run_that_spawned_no_seat_is_cleaned_with_a_count_of_zero() {
     assert_eq!(cleaned[0].payload["count"], 0);
 }
 
-/// The park cleans too: a person looking at a parked run is not also holding
+/// The park cleans too: a person looking at a held run is not also holding
 /// its seats.
 #[test]
 fn the_park_retires_the_runs_seats_as_an_ending_does() {
@@ -1027,7 +1028,7 @@ fn the_park_retires_the_runs_seats_as_an_ending_does() {
     // A cap of zero parks on the first reading nothing could classify.
     pass(&stub, &stream, 0).expect("the pass runs");
 
-    assert_eq!(count(&stream, runs::ITEM_PARKED), 1);
+    assert_eq!(count(&stream, runs::ITEM_HELD), 1);
     assert_eq!(
         *stub.retires.borrow(),
         vec![("s3".to_string(), "r6".to_string())]

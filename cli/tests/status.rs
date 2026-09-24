@@ -28,7 +28,7 @@ match = { type = \"task\", labels = [\"flight\"] }
 review = \"none\"
 
 [[core.flight.rules]]
-gate = \"review\"
+review = \"required\"
 ";
 
 /// The same file with the array gone, for the no-rules line.
@@ -278,7 +278,7 @@ fn the_page_prints_every_section() {
         page.contains("type task and labels [flight] → review=none"),
         "{page}"
     );
-    assert!(page.contains("every item → gate=review"), "{page}");
+    assert!(page.contains("every item → review=required"), "{page}");
     assert!(!page.contains("no rules are set"), "{page}");
 
     // (g) the routines, as the document carries them.
@@ -519,13 +519,13 @@ fn started(ts: &str, run: &str) -> (String, &'static str, serde_json::Value) {
     )
 }
 
-/// `item.parked` for one item, as a park writes it.
-fn parked(ts: &str, item: &str, gate: &str) -> (String, &'static str, serde_json::Value) {
+/// `item.held` for one item, as a park writes it.
+fn held(ts: &str, item: &str, hold: &str) -> (String, &'static str, serde_json::Value) {
     line(
         ts,
-        fleet_core::item::ITEM_PARKED,
+        fleet_core::item::ITEM_HELD,
         serde_json::json!({
-            "item": item, "reason": "a question", "branch": null, "commit": null, "gate": gate,
+            "item": item, "reason": "a question", "branch": null, "commit": null, "hold": hold,
         }),
     )
 }
@@ -551,11 +551,11 @@ fn row_of(section: &str, run: &str) -> String {
 
 /// AC1: every standing a run can be in, read off the stream the run pass
 /// decides on — the failure in the window with its reason, the park with its
-/// gate and the park whose gate was answered, the could-not-tell with what was
+/// hold and the park whose hold was cleared, the could-not-tell with what was
 /// read, the wait with its wake, the open run — and the two the section leaves
 /// out: the closed run, and the
-/// failure before the window, which is counted and not listed. The gate count
-/// is every park the stream holds that no `gate.resolved` answered, a run's or
+/// failure before the window, which is counted and not listed. The hold count
+/// is every park the stream holds that no `hold.cleared` cleared, a run's or
 /// an item's.
 #[test]
 fn the_runs_section_reads_every_standing_off_the_stream() {
@@ -589,18 +589,18 @@ fn the_runs_section_reads_every_standing_off_the_stream() {
                 fleet_core::item::RUN_COULD_NOT_TELL,
                 serde_json::json!({ "run": "fx-park", "exit": 7, "read": "nothing to see" }),
             ),
-            parked(now, "fx-park", "fx-gate-run"),
+            held(now, "fx-park", "fx-hold-run"),
             started(now, "fx-heard"),
             line(
                 now,
                 fleet_core::item::RUN_COULD_NOT_TELL,
                 serde_json::json!({ "run": "fx-heard", "exit": null, "read": null }),
             ),
-            parked(now, "fx-heard", "fx-gate-heard"),
+            held(now, "fx-heard", "fx-hold-heard"),
             line(
                 now,
-                fleet_core::item::GATE_RESOLVED,
-                serde_json::json!({ "item": "fx-heard", "gate": "fx-gate-heard", "letter": "b" }),
+                fleet_core::item::HOLD_CLEARED,
+                serde_json::json!({ "item": "fx-heard", "hold": "fx-hold-heard", "letter": "b" }),
             ),
             started(now, "fx-fail"),
             line(
@@ -620,13 +620,13 @@ fn the_runs_section_reads_every_standing_off_the_stream() {
                 fleet_core::item::RUN_CLOSED,
                 serde_json::json!({ "run": "fx-done" }),
             ),
-            parked(now, "fx-item", "fx-gate-item"),
-            parked(now, "fx-answered", "fx-gate-answered"),
+            held(now, "fx-item", "fx-hold-item"),
+            held(now, "fx-answered", "fx-hold-answered"),
             line(
                 now,
-                fleet_core::item::GATE_RESOLVED,
+                fleet_core::item::HOLD_CLEARED,
                 serde_json::json!({
-                    "item": "fx-answered", "gate": "fx-gate-answered", "letter": "a",
+                    "item": "fx-answered", "hold": "fx-hold-answered", "letter": "a",
                 }),
             ),
         ],
@@ -639,7 +639,7 @@ fn the_runs_section_reads_every_standing_off_the_stream() {
 
     assert!(
         section.starts_with(
-            "runs  1 failed in the last 24 hours, 2 parked, 1 could not tell, 1 waiting, 1 open\n"
+            "runs  1 failed in the last 24 hours, 2 held, 1 could not tell, 1 waiting, 1 open\n"
         ),
         "{section}"
     );
@@ -650,15 +650,15 @@ fn the_runs_section_reads_every_standing_off_the_stream() {
         "the reason is the workflow's own: {failed}"
     );
     let park = row_of(&section, "fx-park");
-    assert!(park.contains("PARKED at "), "{park}");
+    assert!(park.contains("HELD at "), "{park}");
     assert!(
-        park.contains("on gate fx-gate-run — "),
-        "a gate nobody answered: {park}"
+        park.contains("on hold fx-hold-run — "),
+        "a hold nobody cleared: {park}"
     );
     let heard = row_of(&section, "fx-heard");
     assert!(
-        heard.contains("on gate fx-gate-heard, answered — "),
-        "a park whose gate was answered still stands, and says so: {heard}"
+        heard.contains("on hold fx-hold-heard, cleared — "),
+        "a park whose hold was cleared still stands, and says so: {heard}"
     );
     let crash = row_of(&section, "fx-crash");
     assert!(crash.contains("could not tell at "), "{crash}");
@@ -697,16 +697,16 @@ fn the_runs_section_reads_every_standing_off_the_stream() {
     );
 
     assert!(
-        page.contains("\ngates  2 raised by a park and not answered\n"),
+        page.contains("\nholds  2 raised by a park and not cleared\n"),
         "{page}"
     );
 }
 
 /// A failure and a wait the SDK printed read as text on the page: the reason as
-/// the words the workflow threw, and the wake as the gate it is waiting on.
+/// the words the workflow threw, and the wake as the hold it is waiting on.
 ///
 /// THE PAYLOADS ARE THE SDK'S OWN LAST LINES as the back half stores them — a
-/// thrown `Error`'s message is a JSON string, and so is the gate id `gate`
+/// thrown `Error`'s message is a JSON string, and so is the hold id `hold`
 /// waits on. The row that printed `{"reason":"…"}` was the wrapper's key
 /// stored inside the event's own, and this arm holds the other half of that
 /// fix: a reason that is text is printed as the text.
@@ -730,11 +730,11 @@ fn a_failure_and_a_wait_the_sdk_printed_read_as_text_on_the_page() {
                 serde_json::json!({ "run": "fx-fail", "reason": "takeoff: no `items` input" }),
             ),
             started(now, "fx-wait"),
-            parked(now, "fx-wait", "fx-gate"),
+            held(now, "fx-wait", "fx-hold"),
             line(
                 now,
                 fleet_core::item::RUN_WAITING,
-                serde_json::json!({ "run": "fx-wait", "wake": "fx-gate", "seq": 3 }),
+                serde_json::json!({ "run": "fx-wait", "wake": "fx-hold", "seq": 3 }),
             ),
         ],
     );
@@ -748,19 +748,19 @@ fn a_failure_and_a_wait_the_sdk_printed_read_as_text_on_the_page() {
         "the reason is the text, bare: {failed}"
     );
     let wait = row_of(&section, "fx-wait");
-    assert!(wait.ends_with(" for fx-gate"), "{wait}");
+    assert!(wait.ends_with(" for fx-hold"), "{wait}");
 }
 
-/// A run parked at the crash cap and then cancelled is off the page: it is not
-/// listed as parked, and the gate the cancel resolved is not counted among the
-/// ones a park raised and nobody answered — the count is of gates a person
-/// still owes an answer, and a cancelled run is owed none.
+/// A run held at the crash cap and then cancelled is off the page: it is not
+/// listed as held, and the hold the cancel cleared is not counted among the
+/// ones a park raised and nobody cleared — the count is of holds a person
+/// still owes a clearance, and a cancelled run is owed none.
 ///
 /// THE LINES ARE THE ONES `fleet cancel` WRITES: `run.cancelled`, then one
-/// `gate.resolved` per gate it resolved, carrying no letter because nobody
+/// `hold.cleared` per hold it cleared, carrying no letter because nobody
 /// chose one.
 #[test]
-fn a_cancelled_run_is_neither_listed_parked_nor_counted_as_owed_an_answer() {
+fn a_cancelled_run_is_neither_listed_held_nor_counted_as_owed_a_clearance() {
     let rig = Rig::new("runs-cancelled");
     rig.publish(&document(
         &rig.policy_file(),
@@ -778,7 +778,7 @@ fn a_cancelled_run_is_neither_listed_parked_nor_counted_as_owed_an_answer() {
                 fleet_core::item::RUN_COULD_NOT_TELL,
                 serde_json::json!({ "run": "fx-gone", "exit": 7, "read": null }),
             ),
-            parked(now, "fx-gone", "fx-gate-gone"),
+            held(now, "fx-gone", "fx-hold-gone"),
             line(
                 now,
                 fleet_core::item::RUN_CANCELLED,
@@ -786,8 +786,8 @@ fn a_cancelled_run_is_neither_listed_parked_nor_counted_as_owed_an_answer() {
             ),
             line(
                 now,
-                fleet_core::item::GATE_RESOLVED,
-                serde_json::json!({ "item": "fx-gone", "gate": "fx-gate-gone", "letter": null }),
+                fleet_core::item::HOLD_CLEARED,
+                serde_json::json!({ "item": "fx-gone", "hold": "fx-hold-gone", "letter": null }),
             ),
         ],
     );
@@ -798,7 +798,7 @@ fn a_cancelled_run_is_neither_listed_parked_nor_counted_as_owed_an_answer() {
     let section = runs_section(&page);
     assert!(
         section.starts_with(
-            "runs  0 failed in the last 24 hours, 0 parked, 0 could not tell, 0 waiting, 0 open\n"
+            "runs  0 failed in the last 24 hours, 0 held, 0 could not tell, 0 waiting, 0 open\n"
         ),
         "{section}"
     );
@@ -807,7 +807,7 @@ fn a_cancelled_run_is_neither_listed_parked_nor_counted_as_owed_an_answer() {
         "a cancelled run is not listed: {section}"
     );
     assert!(
-        page.contains("\ngates  0 raised by a park and not answered\n"),
+        page.contains("\nholds  0 raised by a park and not cleared\n"),
         "{page}"
     );
 }
@@ -828,12 +828,12 @@ fn a_machine_with_no_stream_prints_every_count_at_zero() {
     let page = stdout(&out);
     assert!(
         page.contains(
-            "\nruns  0 failed in the last 24 hours, 0 parked, 0 could not tell, 0 waiting, 0 open\n\n"
+            "\nruns  0 failed in the last 24 hours, 0 held, 0 could not tell, 0 waiting, 0 open\n\n"
         ),
         "{page}"
     );
     assert!(
-        page.contains("\ngates  0 raised by a park and not answered\n"),
+        page.contains("\nholds  0 raised by a park and not cleared\n"),
         "{page}"
     );
 }

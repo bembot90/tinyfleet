@@ -50,7 +50,7 @@ than one, and only the last is open.
 ### 2. Answer what the record settles
 
 ```sh
-fleet answer <item> <letter> --text "<what the record says, and where>"
+fleet clear <item> <letter> --text "<what the record says, and where>"
 ```
 
 The letter names one of the question's own options. `--text` is what was

@@ -37,7 +37,7 @@ commit:  <pending>
 branch:  <pending>
 base:    <pending>
 files:   the-work.txt
-gate:    AC2 green, each rc read from its own command
+checks:  AC2 green, each rc read from its own command
 suite:   the workspace suite, rc 0
 spec corrections: none
 not proven: what this arm did not run

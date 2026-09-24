@@ -21,7 +21,7 @@
 //! landing called by a run's record therefore closes AS the reviewer: the
 //! holder gate reads that seat, the close and `item.landed` carry it with the
 //! run named beside it, and what licenses the act is the reviewer's own answer
-//! to the gate this run raised. A seat's own landing acts as itself, unchanged.
+//! to the hold this run raised. A seat's own landing acts as itself, unchanged.
 //!
 //! IT RUNS IN THE REVIEWER'S OWN WORKTREE, WHEREVER IT WAS CALLED FROM. A
 //! workflow's verbs all run at the registered project's root, which on a box
@@ -47,7 +47,7 @@ use crate::item::review::last_verdict;
 use crate::item::run;
 use crate::item::{
     control_token, label_value, last_answer, last_delivery, last_landing, marker_block, opens_with,
-    render, Events, Git, Project, Stop, GATE_READ, ITEM_LANDED, LANDING_MARKERS, TRUNK,
+    render, Events, Git, Project, Stop, CHECK_READ, ITEM_LANDED, LANDING_MARKERS, TRUNK,
     TRUNK_BRANCH, VERDICT_MARKERS,
 };
 use crate::policy;
@@ -536,7 +536,7 @@ fn run(
     }
     // WHO CLOSES THIS ITEM. A seat closes as itself. A run closes as the
     // `[core] reviewer`: the landing is that seat's act, on that seat's
-    // worktree, under a gate that seat answered, and the run is only what
+    // worktree, under a hold that seat cleared, and the run is only what
     // carried it.
     let by_run = caller_run(wiring.store, landing.by)?;
     let closer = match &by_run {
@@ -561,7 +561,7 @@ fn run(
     }
     // THE RUN'S LICENCE. A seat answers for its own landing by making it; a run
     // answers for nothing, so a run's landing stands on the reviewer's own
-    // answer to the gate this run raised and is refused where there is none.
+    // answer to the hold this run raised and is refused where there is none.
     if let Some(record) = &by_run {
         licensed(record, &closer)?;
     }
@@ -922,12 +922,12 @@ fn run(
     // before anything else — so a crash between them leaves a landing note the
     // stream does not carry, and never a stream that carries a landing no note
     // stands behind. The reading precedes the landing, as it did in time.
-    // ONE `gate.read` PER READING, in the order they were taken (R18). A
+    // ONE `check.read` PER READING, in the order they were taken (R18). A
     // landing that needed no rerun writes the one it always did.
     if readings.is_empty() {
         announce(
             &item.id,
-            GATE_READ,
+            CHECK_READ,
             &closer,
             wiring,
             serde_json::json!({
@@ -947,7 +947,7 @@ fn run(
     for reading in &readings {
         announce(
             &item.id,
-            GATE_READ,
+            CHECK_READ,
             &closer,
             wiring,
             reading.payload(&item.id, suite_command.as_deref()),
@@ -1070,7 +1070,7 @@ const FIRST_READING: u64 = 1;
 /// The reading the rerun is. There is no third: a second red parks.
 const SECOND_READING: u64 = 2;
 
-/// The three words a `gate.read` carries under `verdict`, which are the three
+/// The three words a `check.read` carries under `verdict`, which are the three
 /// the landing note's own suite rows print. `RED` reaches the stream only on a
 /// reading the landing did NOT stand on — a first red that a green rerun
 /// followed, or the pair a second red refuses with.
@@ -1211,7 +1211,7 @@ fn the_gate(
     for reading in [&first, &second] {
         announce(
             landing.item,
-            GATE_READ,
+            CHECK_READ,
             closer,
             wiring,
             reading.payload(landing.item, Some(command)),
@@ -1752,7 +1752,7 @@ fn rebased_from(delivery: &str, landed_on: &str) -> String {
 /// A workflow calls every verb as the RUN: the `by` it hands in is the run's
 /// record id, and the `fleet:run` label on the item the store answers for that
 /// id is the only mark that tells one from every other item — the same
-/// discriminator `ask` reads to tell a run's park from a seat's. A `by` the store has no item
+/// discriminator `hold` reads to tell a run's park from a seat's. A `by` the store has no item
 /// for is a seat name, which is not an id at all; a store that could not answer
 /// is a could-not-tell and never a seat.
 fn caller_run(store: &dyn Store, by: &str) -> Result<Option<Item>, Stop> {
@@ -1772,16 +1772,16 @@ fn caller_run(store: &dyn Store, by: &str) -> Result<Option<Item>, Stop> {
     }
 }
 
-/// The reviewer's own answer to the gate this run raised, which is the whole
+/// The reviewer's own answer to the hold this run raised, which is the whole
 /// licence for a run to land anything.
 ///
-/// The gate is raised on the RUN's record and answered there, so that record is
+/// The hold is raised on the RUN's record and cleared there, so that record is
 /// where the answer is read; the landing the answer licenses is on the item.
 fn licensed(record: &Item, reviewer: &str) -> Result<(), Stop> {
     let notes = record.notes.clone().unwrap_or_default();
     let Some(answer) = last_answer(&notes) else {
         return Err(Stop::refused(format!(
-            "run {} carries no answered gate — a run lands what `{reviewer}` answered for, and \
+            "run {} carries no cleared hold — a run lands what `{reviewer}` answered for, and \
              nobody has answered this run anything",
             record.id
         )));
@@ -1789,7 +1789,7 @@ fn licensed(record: &Item, reviewer: &str) -> Result<(), Stop> {
     match after_dash(&answer) {
         Some(who) if who == reviewer => Ok(()),
         Some(who) => Err(Stop::refused(format!(
-            "run {}'s last gate was answered by `{who}` and not by `{reviewer}` — a run lands as \
+            "run {}'s last hold was cleared by `{who}` and not by `{reviewer}` — a run lands as \
              the `[core] reviewer` and on that seat's own answer",
             record.id
         ))),

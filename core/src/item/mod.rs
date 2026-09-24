@@ -12,7 +12,7 @@
 pub mod brief;
 pub mod deliver;
 pub mod dispatch;
-pub mod gate;
+pub mod hold;
 pub mod land;
 pub mod lane;
 pub mod pins;
@@ -143,44 +143,44 @@ pub const RUN_CLEANED: &str = "run.cleaned";
 
 /// The item vocabulary (flights PRD § The events, Q4a).
 ///
-/// Five of these and [`GATE_READ`] are the four verbs' own: each writes exactly
-/// one, after its note has been written and read back. [`ITEM_HELD`] and
-/// [`ITEM_PARKED`] are named here and written nowhere in this crate, because
-/// a fold over the stream reads them and a kind spelled twice is two kinds.
+/// Five of these and [`CHECK_READ`] are the verbs' own: each writes exactly
+/// one, after its note has been written and read back. [`ITEM_HELD`] is
+/// written by `hold` here and by the controller at a run's crash cap, and is
+/// named here because a fold over the stream reads it and a kind spelled twice
+/// is two kinds.
 pub const ITEM_DISPATCHED: &str = "item.dispatched";
-pub const ITEM_HELD: &str = "item.held";
 pub const ITEM_DELIVERED: &str = "item.delivered";
 pub const ITEM_REVIEWED: &str = "item.reviewed";
 pub const ITEM_RETURNED: &str = "item.returned";
 pub const ITEM_LANDED: &str = "item.landed";
-pub const ITEM_PARKED: &str = "item.parked";
-pub const GATE_READ: &str = "gate.read";
+pub const ITEM_HELD: &str = "item.held";
+pub const CHECK_READ: &str = "check.read";
 
-/// The one a person's answer writes (flights PRD R21). It is the gate's own
+/// The one a person's clearance writes (flights PRD R21). It is the hold's own
 /// kind and not an item's: what it says is that the object a park raised is
-/// resolved, and the item it names is how a fold ties it to a list.
-pub const GATE_RESOLVED: &str = "gate.resolved";
+/// cleared, and the item it names is how a fold ties it to a list.
+pub const HOLD_CLEARED: &str = "hold.cleared";
 
 /// The value `item.reviewed` carries under `verdict`. The accept is the only
 /// verdict that kind names: a return is `item.returned` and not a second
 /// verdict value.
 pub const VERDICT_ACCEPTED: &str = "accepted";
 
-/// Every item and gate kind, in the order the events table lists them.
-pub const ITEM_KINDS: [&str; 9] = [
+/// Every item, check and hold kind, in the order the events table lists them.
+pub const ITEM_KINDS: [&str; 8] = [
     ITEM_DISPATCHED,
-    ITEM_HELD,
     ITEM_DELIVERED,
     ITEM_REVIEWED,
     ITEM_RETURNED,
     ITEM_LANDED,
-    ITEM_PARKED,
-    GATE_READ,
-    GATE_RESOLVED,
+    ITEM_HELD,
+    CHECK_READ,
+    HOLD_CLEARED,
 ];
 
-/// The payload keys one item or gate kind carries — and [`RUN_STARTED`], which
-/// is neither and is here for the same reason — or `None` for every other kind.
+/// The payload keys one item, check or hold kind carries — and
+/// [`RUN_STARTED`], which is none of them and is here for the same reason — or
+/// `None` for every other kind.
 ///
 /// The table is HERE and not in each verb, so the writer and the fold cannot
 /// disagree about what a kind carries: every writer asserts its payload against
@@ -189,7 +189,6 @@ pub const ITEM_KINDS: [&str; 9] = [
 pub fn payload_keys(kind: &str) -> Option<&'static [&'static str]> {
     Some(match kind {
         ITEM_DISPATCHED => &["item", "seat", "base", "role", "reason"],
-        ITEM_HELD => &["item", "reading"],
         ITEM_DELIVERED => &["item", "commit", "branch", "base"],
         ITEM_REVIEWED => &["item", "commit", "verdict", "accepted", "overruled"],
         ITEM_RETURNED => &["item", "commit", "findings"],
@@ -200,18 +199,18 @@ pub fn payload_keys(kind: &str) -> Option<&'static [&'static str]> {
         // tree it pushed, `null` where it was handed none and landed NOT
         // TESTED: an absent key and an untested landing are not the same fact.
         ITEM_LANDED => &["item", "sha", "base", "squash_of", "run", "test"],
-        ITEM_PARKED => &["item", "reason", "branch", "commit", "gate"],
+        ITEM_HELD => &["item", "reason", "branch", "commit", "hold"],
         // `log` is where the reading it carries can be read back. It is on the
         // kind and not only on the rerun's: a pair of readings a person is
         // asked to judge names two files, and one of them is the first.
         // `path` is the search path the reading's child ran under, so a suite
         // that failed on the diff and one that failed because it could not find
         // its tools are told apart from the stream alone.
-        GATE_READ => &["item", "suite", "rc", "verdict", "reading", "log", "path"],
+        CHECK_READ => &["item", "suite", "rc", "verdict", "reading", "log", "path"],
         // `letter` is the answer itself and rides the kind, because the one
-        // thing a reader of the stream wants to know about a resolved gate is
+        // thing a reader of the stream wants to know about a cleared hold is
         // which way it went.
-        GATE_RESOLVED => &["item", "gate", "letter"],
+        HOLD_CLEARED => &["item", "hold", "letter"],
         // `run` first, as `item` is first on every row above: it is the key a
         // reader of the stream ties a hash and a workflow name to.
         RUN_STARTED => &["run", "hash", "workflow"],
@@ -229,8 +228,8 @@ pub fn payload_keys(kind: &str) -> Option<&'static [&'static str]> {
         // `read` is the last line as it stood — the two readings that say why
         // no other row fitted.
         RUN_COULD_NOT_TELL => &["run", "exit", "read"],
-        // The id alone, as the close's: the gates the cancel resolved each
-        // have a `gate.resolved` of their own, and a list here would be a
+        // The id alone, as the close's: the holds the cancel cleared each
+        // have a `hold.cleared` of their own, and a list here would be a
         // second copy of them.
         RUN_CANCELLED => &["run"],
         // `count` is how many seats were retired, and it is the whole payload

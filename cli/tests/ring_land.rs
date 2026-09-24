@@ -564,7 +564,7 @@ impl Rig {
              branch:  {branch}\n\
              base:    origin/main at {commit}, fetched at 2026-09-12T00:00:00Z\n\
              files:   {file}\n\
-             gate:    AC2 green, each rc read from its own command\n\
+             checks:  AC2 green, each rc read from its own command\n\
              suite:   the workspace suite, rc 0\n\
              spec corrections: none\n\
              not proven: what this arm did not run\n\
@@ -939,7 +939,7 @@ fn a_green_landing_moves_the_bare_and_closes_the_item() {
         .collect();
     assert_eq!(
         kinds,
-        vec!["item.reviewed", "gate.read", "item.landed"],
+        vec!["item.reviewed", "check.read", "item.landed"],
         "the accept, the reading, the landing: {events:?}"
     );
     let reading = &events[1]["payload"];

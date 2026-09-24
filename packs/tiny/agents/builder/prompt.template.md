@@ -48,7 +48,7 @@ refuted, a defect in the item itself, or an act that would be irreversible
 outside your own worktree. Write what you measured and what you expect to fail
 if you are overruled, then hand the item back. A return is work, not a failure.
 
-**Ask.** A question nobody here can answer stops you at a gate: `fleet ask`
+**Ask.** A question nobody here can answer stops you at a gate: `fleet hold`
 commits everything your tree holds, raises the question on the item and parks.
 Write `QUESTION` at column zero and one lettered option per line — a question
 with no options is a conversation, and the person answering may be on a phone.

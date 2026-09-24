@@ -79,7 +79,7 @@ purpose = "the note a landing renders, with the one line a script reads the land
 
 [[shadow]]
 path = "assets/park-note.md"
-purpose = "the note a park renders, carrying the question, the branch, the commit and the gate the answer resolves"
+purpose = "the note a park renders, carrying the question, the branch, the commit and the hold the clearance clears"
 
 [[shadow]]
 path = "assets/question-note.md"
@@ -87,7 +87,7 @@ purpose = "the grammar a seat's blocking question is written in: the marker, the
 
 [[shadow]]
 path = "assets/answer-note.md"
-purpose = "the note an answer renders, carrying the gate it resolved, the letter a person chose and what they said beyond it"
+purpose = "the note an answer renders, carrying the hold it cleared, the letter a person chose and what they said beyond it"
 
 [[shadow]]
 path = "assets/rules.md"

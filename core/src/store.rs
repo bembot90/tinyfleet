@@ -252,25 +252,25 @@ pub trait Store {
         self.unset_orders(item, by)
     }
 
-    /// A gate raised on this item, answered as the gate's own id.
+    /// A hold raised on this item, answered as the hold's own id.
     ///
     /// The store's own object and not a question item this fleet owns (flights
-    /// PRD S4a): the gate is of type human, the blocked item leaves the ready
-    /// set the moment it is created, and it comes back when somebody resolves
-    /// the gate. So a park needs nothing of fleet's beside the event.
-    fn gate(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError>;
+    /// PRD S4a): bd files it as a gate of type human, the held item leaves the
+    /// ready set the moment it is created, and it comes back when somebody
+    /// clears the hold. So a park needs nothing of fleet's beside the event.
+    fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError>;
 
-    /// Every gate the store still calls open, by id.
+    /// Every hold the store still calls open, by id.
     ///
     /// IDS AND NOT DOCUMENTS, and no item on them: the listing answers which
-    /// gate this is and never which item it blocks — measured on bd 1.3.0,
+    /// hold this is and never which item it blocks — measured on bd 1.3.0,
     /// where the blocked item appears only inside the description's prose — so
-    /// a caller that wants one item's gate reads that gate's id off the item's
+    /// a caller that wants one item's hold reads that hold's id off the item's
     /// own park and asks this list whether it is still here (flights PRD S4a).
-    fn open_gates(&self) -> Result<Vec<String>, StoreError>;
+    fn open_holds(&self) -> Result<Vec<String>, StoreError>;
 
-    /// One gate resolved, which puts the item it blocked back in the ready set.
-    fn resolve_gate(&self, gate: &str, by: &str) -> Result<(), StoreError>;
+    /// One hold cleared, which puts the item it blocked back in the ready set.
+    fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError>;
 
     /// The item closed, with the reason a reader gets instead of the act.
     fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError>;
@@ -408,7 +408,7 @@ impl Bd {
     /// AN EMPTY LISTING MAY ANSWER `null` AND NOT `[]` — measured on bd 1.3.0
     /// for `gate list` — or nothing at all, and both read as no rows: a decoder
     /// demanding an array would read "nothing here" as a store that would not
-    /// answer, and refuse every answer on a fleet with nothing parked.
+    /// answer, and refuse every answer on a fleet with nothing held.
     fn listed<Row: serde::de::DeserializeOwned>(
         &self,
         args: &[&str],
@@ -872,7 +872,7 @@ impl Store for Bd {
     /// `--actor` and `--json` are global flags here, so both are available on
     /// this subcommand; a parse of the prose is the form that goes quiet the
     /// day the prose changes.
-    fn gate(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
+    fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
         self.created_id(&[
             "gate", "create", "--blocks", item, "--reason", reason, "--actor", by, "--json",
         ])
@@ -882,9 +882,9 @@ impl Store for Bd {
     /// answers its first 50 rows by default, piped or not — measured on 1.3.0,
     /// 50 of 53 — and a truncated list reads exactly like a whole one, so past
     /// fifty open gates a gate the board holds open is absent from the listing
-    /// — and `answer` refuses a gate it does not find there as one somebody has
-    /// already resolved.
-    fn open_gates(&self) -> Result<Vec<String>, StoreError> {
+    /// — and `clear` refuses a hold it does not find there as one somebody has
+    /// already cleared.
+    fn open_holds(&self) -> Result<Vec<String>, StoreError> {
         Ok(self
             .listed::<bd_wire::Issue>(&["gate", "list", "--json", "-n", "0"])?
             .into_iter()
@@ -892,8 +892,8 @@ impl Store for Bd {
             .collect())
     }
 
-    fn resolve_gate(&self, gate: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&["gate", "resolve", gate, "--actor", by])
+    fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError> {
+        self.wrote(&["gate", "resolve", hold, "--actor", by])
     }
 
     fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {

@@ -74,12 +74,12 @@ the queue, then the three pairs on their own lines, ready to paste:
 
 ```
 --input items=<id>,<id>,<id>
---input policy=review=gate,width=<n>
+--input policy=review=hold,width=<n>
 --input test=<command>
 ```
 
 `items` is the flight in board order, comma-separated. `policy` is the
-workflow's own grammar: `review=gate` asks the person for every verdict at
+workflow's own grammar: `review=hold` asks the person for every verdict at
 a gate and `review=accept` lands every delivery unasked — `gate` unless the
 person says otherwise, because every decision that would have gone to them
 is theirs to answer; `width` is how many items fly at once, the roster's

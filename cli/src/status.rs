@@ -231,7 +231,6 @@ fn rule_rows(value: Option<&core_policy::Value>) -> Vec<RuleRow> {
         .map(|rule| {
             let filled = rules::Effective {
                 review: string_of(rule.get("review")),
-                gate: string_of(rule.get("gate")),
             };
             RuleRow {
                 clause: clause_of(rule.get("match")),
@@ -272,7 +271,7 @@ fn string_of(value: Option<&core_policy::Value>) -> Option<String> {
     value?.as_str().map(str::to_string)
 }
 
-/// Every run the stream holds, and the gates standing on it.
+/// Every run the stream holds, and the holds standing on it.
 ///
 /// THE STREAM AND NOT THE RUN'S RECORD OR ITS DIRECTORY. The directory holds
 /// the pins and the logs and never how the run ended; the record is open or
@@ -283,7 +282,7 @@ fn string_of(value: Option<&core_policy::Value>) -> Option<String> {
 /// one fold.
 struct RunsRead {
     readings: Vec<Reading>,
-    gates: BTreeSet<String>,
+    holds: BTreeSet<String>,
 }
 
 fn read_runs(path: &Path) -> Result<RunsRead, String> {
@@ -301,27 +300,27 @@ fn read_runs(path: &Path) -> Result<RunsRead, String> {
     let stream = events::read_after(path, 0);
     Ok(RunsRead {
         readings: runs::readings(&stream),
-        gates: standing_gates(&stream),
+        holds: standing_holds(&stream),
     })
 }
 
-/// Every gate a park announced that no `gate.resolved` has answered since.
+/// Every hold a park announced that no `hold.cleared` has cleared since.
 ///
-/// The stream's count and not the store's: a gate raised or resolved by hand
+/// The stream's count and not the store's: a hold raised or cleared by hand
 /// with `bd` wrote no line here, and `bd gate list` is the listing that sees
 /// those.
-fn standing_gates(stream: &[Record]) -> BTreeSet<String> {
+fn standing_holds(stream: &[Record]) -> BTreeSet<String> {
     let mut standing = BTreeSet::new();
     for record in stream {
-        let Some(gate) = record.payload.get("gate").and_then(|gate| gate.as_str()) else {
+        let Some(hold) = record.payload.get("hold").and_then(|hold| hold.as_str()) else {
             continue;
         };
         match record.kind.as_str() {
-            runs::ITEM_PARKED => {
-                standing.insert(gate.to_string());
+            runs::ITEM_HELD => {
+                standing.insert(hold.to_string());
             }
-            fleet_core::item::GATE_RESOLVED => {
-                standing.remove(gate);
+            fleet_core::item::HOLD_CLEARED => {
+                standing.remove(hold);
             }
             _ => {}
         }
@@ -519,7 +518,7 @@ fn routines_section(out: &mut dyn Write, routines: &[RoutineRow]) -> std::io::Re
 /// classify, the waits, and the runs still executing. A closed run is not
 /// listed, nor a cancelled one, which a person ended themselves; a failure
 /// before the window is counted and not listed. Then the
-/// gates the stream holds standing, runs' and items' alike, because a park is
+/// holds standing on the stream, runs' and items' alike, because a park is
 /// what the morning's first read is of.
 fn runs_section(out: &mut dyn Write, read: &Result<RunsRead, String>) -> std::io::Result<()> {
     let read = match read {
@@ -527,7 +526,7 @@ fn runs_section(out: &mut dyn Write, read: &Result<RunsRead, String>) -> std::io
         Err(why) => {
             writeln!(out, "\nruns")?;
             writeln!(out, "  {why}")?;
-            return writeln!(out, "\ngates  not counted — the stream did not read");
+            return writeln!(out, "\nholds  not counted — the stream did not read");
         }
     };
     let window = FAILED_WINDOW_HOURS * 60 * 60;
@@ -545,23 +544,23 @@ fn runs_section(out: &mut dyn Write, read: &Result<RunsRead, String>) -> std::io
     let failed = of(Standing::Failed);
     let listed: Vec<&Reading> = failed.iter().copied().filter(recent).collect();
     let earlier = failed.len() - listed.len();
-    let parked = of(Standing::Parked);
+    let held = of(Standing::Held);
     let unread = of(Standing::CouldNotTell);
     let waiting = of(Standing::Waiting);
     let open = of(Standing::Open);
 
     writeln!(
         out,
-        "\nruns  {} failed in the last {FAILED_WINDOW_HOURS} hours, {} parked, {} could not tell, \
+        "\nruns  {} failed in the last {FAILED_WINDOW_HOURS} hours, {} held, {} could not tell, \
          {} waiting, {} open",
         listed.len(),
-        parked.len(),
+        held.len(),
         unread.len(),
         waiting.len(),
         open.len()
     )?;
-    for reading in [listed, parked, unread, waiting, open].concat() {
-        writeln!(out, "  {}", run_row(reading, &read.gates))?;
+    for reading in [listed, held, unread, waiting, open].concat() {
+        writeln!(out, "  {}", run_row(reading, &read.holds))?;
     }
     match earlier {
         0 => {}
@@ -577,21 +576,21 @@ fn runs_section(out: &mut dyn Write, read: &Result<RunsRead, String>) -> std::io
     }
     writeln!(
         out,
-        "\ngates  {} raised by a park and not answered",
-        read.gates.len()
+        "\nholds  {} raised by a park and not cleared",
+        read.holds.len()
     )
 }
 
-fn run_row(reading: &Reading, gates: &BTreeSet<String>) -> String {
+fn run_row(reading: &Reading, holds: &BTreeSet<String>) -> String {
     let said = |key: &str| said_of(reading.said.get(key));
     let what = match reading.standing {
         Standing::Failed => format!("FAILED at {} — {}", reading.stamp, said("reason")),
-        Standing::Parked => format!(
-            "PARKED at {} on gate {}{} — nothing could classify {} execution(s)",
+        Standing::Held => format!(
+            "HELD at {} on hold {}{} — nothing could classify {} execution(s)",
             reading.stamp,
-            reading.gate.as_deref().unwrap_or("—"),
-            match &reading.gate {
-                Some(gate) if !gates.contains(gate) => ", answered",
+            reading.hold.as_deref().unwrap_or("—"),
+            match &reading.hold {
+                Some(hold) if !holds.contains(hold) => ", cleared",
                 _ => "",
             },
             reading.crashes

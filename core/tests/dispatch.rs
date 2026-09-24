@@ -160,16 +160,16 @@ impl Store for Doctored<'_> {
         self.inner.unset_orders(item, by)
     }
 
-    fn gate(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
-        self.inner.gate(item, reason, by)
+    fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
+        self.inner.hold(item, reason, by)
     }
 
-    fn open_gates(&self) -> Result<Vec<String>, StoreError> {
-        self.inner.open_gates()
+    fn open_holds(&self) -> Result<Vec<String>, StoreError> {
+        self.inner.open_holds()
     }
 
-    fn resolve_gate(&self, gate: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.resolve_gate(gate, by)
+    fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError> {
+        self.inner.clear_hold(hold, by)
     }
 
     fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {

@@ -19,14 +19,14 @@ pub const LEFT_BEHIND: &str = "g-left-behind";
 /// handed goes on one line of `log`, its arguments tab-separated, which is the
 /// shape [`super::capped::calls`] reads back.
 ///
-/// It answers the calls a park makes up to its gate and no other:
+/// It answers the calls a park makes up to its hold and no other:
 /// - `show <id>` the one row `item` holds, whatever the id;
 /// - `gate list` every gate it holds, in id order — `open` at the start, plus
 ///   whatever a create has filed since and a resolve has not removed;
 /// - `gate create` files [`LEFT_BEHIND`] and then exits 1;
 /// - `gate resolve <id>` removes that gate, or exits 1 and keeps it when
 ///   `resolves` is false.
-pub fn gating_bd(dir: &Fixture, item: &str, open: &[&str], resolves: bool, log: &Path) -> PathBuf {
+pub fn holding_bd(dir: &Fixture, item: &str, open: &[&str], resolves: bool, log: &Path) -> PathBuf {
     let gates = dir.path("gates");
     std::fs::create_dir_all(&gates).expect("the fake's gates directory is created");
     for id in open {

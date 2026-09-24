@@ -52,7 +52,7 @@ const CHECKS: &[(&str, Check)] = &[
     ("hand_over and withdraw_order's holder fence", fenced),
     ("set_metadata's merge", metadata_merge),
     ("fleet.orders and fleet.run keep each other", fleet_keys),
-    ("gate, open_gates, resolve_gate", gates),
+    ("hold, open_holds, clear_hold", holds),
     ("close", close),
     ("export", export),
 ];
@@ -410,27 +410,27 @@ fn fleet_keys(store: &dyn Store, _: &Path, which: &str) {
     );
 }
 
-fn gates(store: &dyn Store, _: &Path, which: &str) {
+fn holds(store: &dyn Store, _: &Path, which: &str) {
     let item = filed(store, "an item to park");
-    let gate = store
-        .gate(&item, "the question this park asks", BY)
-        .expect("the gate is raised");
-    assert!(!gate.is_empty(), "{which}: the store names the gate");
+    let hold = store
+        .hold(&item, "the question this park asks", BY)
+        .expect("the hold is raised");
+    assert!(!hold.is_empty(), "{which}: the store names the hold");
     assert!(
         store
-            .open_gates()
+            .open_holds()
             .expect("the open listing answers")
-            .contains(&gate),
-        "{which}: a raised gate is open"
+            .contains(&hold),
+        "{which}: a raised hold is open"
     );
 
-    store.resolve_gate(&gate, BY).expect("the gate resolves");
+    store.clear_hold(&hold, BY).expect("the hold clears");
     assert!(
         !store
-            .open_gates()
+            .open_holds()
             .expect("the open listing answers")
-            .contains(&gate),
-        "{which}: and a resolved one is not"
+            .contains(&hold),
+        "{which}: and a cleared one is not"
     );
 }
 
@@ -529,8 +529,8 @@ fn fleet_orders_and_fleet_run_keep_each_other_through_every_write() {
 }
 
 #[test]
-fn a_gate_is_on_the_open_listing_until_it_is_resolved() {
-    in_memory("contract-gate", gates);
+fn a_hold_is_on_the_open_listing_until_it_is_cleared() {
+    in_memory("contract-hold", holds);
 }
 
 #[test]

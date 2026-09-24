@@ -1,13 +1,13 @@
 //! The item verbs' `--json` document, through the shipped binary (cli PRD § The
 //! JSON envelope; MVP path row 2).
 //!
-//! Five verbs are driven here — `dispatch`, `deliver`, `review`, `ask` and
-//! `answer`. `land` is the sixth and rides `ring_land.rs`, whose three
+//! Five verbs are driven here — `dispatch`, `deliver`, `review`, `hold` and
+//! `clear`. `land` is the sixth and rides `ring_land.rs`, whose three
 //! repositories are the only rig that can give it a remote to move.
 //!
 //! WHAT EACH ARM ASSERTS IS A FIELD ONLY ITS OWN VERB CAN KNOW: the seat a
-//! dispatch named, the commit a delivery made, the gate an ask raised and an
-//! answer resolved. A document carrying the right keys and another verb's
+//! dispatch named, the commit a delivery made, the hold a `hold` raised and a
+//! `clear` cleared. A document carrying the right keys and another verb's
 //! values would pass an arm that only counted them.
 //!
 //! One repository, work graph and machine directory per arm, the way
@@ -45,7 +45,7 @@ commit:  <pending>
 branch:  <pending>
 base:    <pending>
 files:   the-work.txt
-gate:    AC1 green, each rc read from its own command
+checks:  AC1 green, each rc read from its own command
 suite:   the workspace suite, rc 0
 spec corrections: none
 not proven: what this arm did not run
@@ -54,7 +54,7 @@ decisions: 1
 covers: none
 ";
 
-/// The question an ask hands in, in the question grammar.
+/// The question a hold hands in, in the question grammar.
 const QUESTION: &str = "\
 QUESTION the value the spec names is not on the record — where does it come from?
 A. read it off the item, as the spec assumes
@@ -211,7 +211,7 @@ impl Rig {
         rig
     }
 
-    /// The repository as a delivery and an ask find it: the policy committed on
+    /// The repository as a delivery and a hold find it: the policy committed on
     /// the trunk, a trunk ref to record a base from, and a work branch with one
     /// file staged.
     fn init_repo(&self) {
@@ -282,7 +282,7 @@ impl Rig {
     }
 
     /// The same item, held by this arm's seat under a standing order: what
-    /// `deliver` and `ask` read to find the work they are acting on.
+    /// `deliver` and `hold` read to find the work they are acting on.
     fn an_item_ordered_to_the_seat(&self) -> String {
         let item = self.a_ready_item();
         assert!(self
@@ -378,7 +378,7 @@ impl Rig {
             .arg(self.machine.join("packs"))
             .current_dir(&self.project)
             .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub))
-            // The identity the delivery's and the ask's own commits are made
+            // The identity the delivery's and the hold's own commits are made
             // under. Named here because `HOME` is the rig's.
             .env("GIT_AUTHOR_NAME", "fleet tests")
             .env("GIT_AUTHOR_EMAIL", "fleet@example.invalid")
@@ -510,41 +510,41 @@ fn deliver_prints_the_commit_it_made_and_review_the_state_its_verdict_moved_the_
     );
 }
 
-/// `ask --json` and `answer --json`: the gate id, which only these two carry,
+/// `hold --json` and `clear --json`: the hold id, which only these two carry,
 /// and which the second reads back from the first.
 #[test]
-fn ask_and_answer_print_the_gate_one_raised_and_the_other_resolved() {
-    let rig = Rig::new("gate");
+fn hold_and_clear_print_the_hold_one_raised_and_the_other_cleared() {
+    let rig = Rig::new("hold");
     rig.live();
     let item = rig.an_ordered_item();
 
     let out = rig.run(&[
-        "ask",
+        "hold",
         "--note",
         &rig.question.display().to_string(),
         "--json",
     ]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    let data = data_of(&out, "ask");
+    let data = data_of(&out, "hold");
     assert_eq!(data["item"], serde_json::json!(item), "{data}");
-    assert_eq!(data["state"], serde_json::json!("parked"), "{data}");
-    let gate = data["gate"].as_str().expect("a gate id").to_string();
-    assert!(!gate.is_empty(), "the gate the ask raised: {data}");
+    assert_eq!(data["state"], serde_json::json!("held"), "{data}");
+    let hold = data["hold"].as_str().expect("a hold id").to_string();
+    assert!(!hold.is_empty(), "the hold `hold` raised: {data}");
     assert!(
-        rig.notes_of(&item).contains(&gate),
+        rig.notes_of(&item).contains(&hold),
         "which the park on the record names too: {}",
         rig.notes_of(&item)
     );
 
-    let out = rig.run(&["answer", &item, "B", "--by", "a-person", "--json"]);
+    let out = rig.run(&["clear", &item, "B", "--by", "a-person", "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    let data = data_of(&out, "answer");
+    let data = data_of(&out, "clear");
     assert_eq!(data["item"], serde_json::json!(item), "{data}");
-    assert_eq!(data["state"], serde_json::json!("resolved"), "{data}");
+    assert_eq!(data["state"], serde_json::json!("cleared"), "{data}");
     assert_eq!(
-        data["gate"],
-        serde_json::json!(gate),
-        "the same gate the ask raised: {data}"
+        data["hold"],
+        serde_json::json!(hold),
+        "the same hold `hold` raised: {data}"
     );
 }
 
@@ -560,7 +560,7 @@ fn ask_and_answer_print_the_gate_one_raised_and_the_other_resolved() {
 fn a_refused_verb_prints_the_refusal_shape_and_the_exit_code_it_always_had() {
     let rig = Rig::new("refused");
     rig.live();
-    // An item nobody delivered and nobody parked, held by nobody: each verb
+    // An item nobody delivered and nobody held, assigned to nobody: each verb
     // below stops on its own first gate.
     let item = rig.a_ready_item();
     let question = rig.question.display().to_string();
@@ -580,8 +580,8 @@ fn a_refused_verb_prints_the_refusal_shape_and_the_exit_code_it_always_had() {
         ),
         ("deliver", vec!["deliver", "--note", &note]),
         ("review", vec!["review", &item, "--by", REVIEWER]),
-        ("ask", vec!["ask", "--note", &question]),
-        ("answer", vec!["answer", &item, "A", "--by", "a-person"]),
+        ("hold", vec!["hold", "--note", &question]),
+        ("clear", vec!["clear", &item, "A", "--by", "a-person"]),
     ];
 
     for (verb, args) in calls {
@@ -637,8 +637,8 @@ fn a_missing_by_is_the_usage_row_before_the_verb_does_anything() {
         ("dispatch", vec!["dispatch", "no-such-item-0"]),
         ("deliver", vec!["deliver", "--note", "no-such-note.md"]),
         ("review", vec!["review", "no-such-item-0"]),
-        ("ask", vec!["ask", "--note", "no-such-question.md"]),
-        ("answer", vec!["answer", "no-such-item-0", "A"]),
+        ("hold", vec!["hold", "--note", "no-such-question.md"]),
+        ("clear", vec!["clear", "no-such-item-0", "A"]),
     ];
 
     for (verb, args) in calls {
@@ -666,6 +666,44 @@ fn a_missing_by_is_the_usage_row_before_the_verb_does_anything() {
                 .unwrap_or_default()
                 .contains("--by <name>"),
             "{verb}: the refusal names the flag: {refusal}"
+        );
+    }
+}
+
+/// The old spellings of the pair, `ask` and `answer`, are the usage row naming
+/// `hold` and `clear`, whatever followed them — and they read nothing, so no
+/// rig: a seat's rules or a person's habit still typing the old verb meets the
+/// rewrite and never a sentence about a flag.
+#[test]
+fn the_old_spellings_ask_and_answer_are_usage_naming_hold_and_clear() {
+    let hold = "say fleet hold --note <file>";
+    let clear = "say fleet clear <item> <letter> [--text <text>]";
+    for (args, rewrite) in [
+        (vec!["ask"], hold),
+        (vec!["ask", "--note", "no-such-question.md", "--json"], hold),
+        (vec!["ask", "--help"], hold),
+        (vec!["answer"], clear),
+        (
+            vec!["answer", "no-such-item-0", "A", "--by", "a-person"],
+            clear,
+        ),
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_fleet"))
+            .args(&args)
+            .current_dir(std::env::temp_dir())
+            .hermetic_nowhere()
+            .output()
+            .expect("the built binary runs");
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains(rewrite),
+            "{args:?} names the rewrite: {}",
+            stderr(&out)
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "{args:?} prints no document: {}",
+            String::from_utf8_lossy(&out.stdout)
         );
     }
 }

@@ -1,7 +1,7 @@
 // packs/tiny/workflows/takeoff.ts — a flight's middle as code. Pre-flight,
 // the preboard skill with the person present, hands this run its items, its
 // policy and the test command its landings run; the run spawns a builder per
-// item, waits on each delivery, reviews it — every verdict a gate when the
+// item, waits on each delivery, reviews it — every verdict a hold when the
 // policy says so — lands the accepted ones on the test it was handed, and ends
 // on the report and the board tick as its last two steps. Every act is a
 // numbered step over the SDK, so a re-run after a Waiting exit replays to
@@ -32,9 +32,9 @@ export async function takeoff(run: Run): Promise<void> {
     const delivery = (await run.until([item], "delivered"))[item] as Delivery;
     const commit = String(delivery.commit);
     let letter = "A";
-    if (policy.review === "gate") {
+    if (policy.review === "hold") {
       const question = `Accept ${item} at ${commit}?`;
-      letter = await run.gate(question, OPTIONS);
+      letter = await run.hold(question, OPTIONS);
       decisions.push({ n: decisions.length + 1, item, question, letter });
     }
     if (letter === "A") {
@@ -48,7 +48,7 @@ export async function takeoff(run: Run): Promise<void> {
       });
       await Deno.writeTextFile(
         findings,
-        `RETURNED ${item} at ${commit}\nThe person answered ${letter} at the run's gate: ${
+        `RETURNED ${item} at ${commit}\nThe person answered ${letter} at the run's hold: ${
           OPTIONS.find((o) => o.startsWith(letter)) ?? letter
         }.\n`,
       );
@@ -64,8 +64,8 @@ export async function takeoff(run: Run): Promise<void> {
   await run.step("tick", () => writeTick(run, rows));
 }
 
-/** The gate every verdict is read from under `review=gate`; the letter the
- * person answers is the verdict. */
+/** The hold every verdict is read from under `review=hold`; the letter the
+ * person clears it with is the verdict. */
 export const OPTIONS = ["A. accept and land", "B. return to the builder"];
 
 /** The flight report's markdown, written into the run directory. */
@@ -84,14 +84,14 @@ export const NOT_TESTED =
 
 /** What the flight pins. `items` is the ids in board order, as a JSON array or
  * a comma-separated list. `policy` is `key=value` pairs, comma-separated:
- * `review` is `gate` (every verdict asked of the person, the default) or
+ * `review` is `hold` (every verdict asked of the person, the default) or
  * `accept` (every delivery landed); `width` is how many items fly at once,
  * 1 unless named. `test` is the command each landing runs on the rebased tree
  * and `touched` the one each builder's brief names; each is read from the
  * run's input, else from `takeoff.test` / `takeoff.touched` under
  * [packs.tiny] in fleet.toml, and the input wins. */
 export interface Policy {
-  review: "gate" | "accept";
+  review: "hold" | "accept";
   width: number;
 }
 
@@ -150,18 +150,18 @@ export function commandOf(
 }
 
 export function policyOf(pinned: unknown): Policy {
-  const policy: Policy = { review: "gate", width: 1 };
+  const policy: Policy = { review: "hold", width: 1 };
   if (pinned === null || pinned === undefined) return policy;
   for (const pair of String(pinned).split(",")) {
     if (pair.trim() === "") continue;
     const [key, value] = pair.split("=").map((s) => s.trim());
-    if (key === "review" && (value === "gate" || value === "accept")) {
+    if (key === "review" && (value === "hold" || value === "accept")) {
       policy.review = value;
     } else if (key === "width" && /^[1-9][0-9]*$/.test(value ?? "")) {
       policy.width = Number(value);
     } else {
       throw new Error(
-        `takeoff: the policy pair \`${pair.trim()}\` is not one of review=gate, review=accept, width=<n>`,
+        `takeoff: the policy pair \`${pair.trim()}\` is not one of review=hold, review=accept, width=<n>`,
       );
     }
   }

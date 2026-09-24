@@ -90,11 +90,11 @@ Deno.test("AC2 — step 2 renamed between runs: exit 1 with the divergence namin
 Deno.test("AC3 — Waiting thrown at step 2: exit 2 with the condition, then the re-run replays steps 1 and 2 and closes", async () => {
   const s = await scratch();
   let met = false;
-  const condition = { until: "the gate is answered", seq: 1 };
+  const condition = { until: "the hold is cleared", seq: 1 };
   const waits = (c: ReturnType<typeof counters>) => async (run: Run) => {
     await run.step("fetch", c.exec("fetch", "rows"));
-    await run.step("gate", () => {
-      c.calls.gate = (c.calls.gate ?? 0) + 1;
+    await run.step("hold", () => {
+      c.calls.hold = (c.calls.hold ?? 0) + 1;
       if (!met) throw new Waiting(condition);
       return "A";
     });
@@ -106,7 +106,7 @@ Deno.test("AC3 — Waiting thrown at step 2: exit 2 with the condition, then the
     code: 2,
     waiting: condition,
   });
-  assertEquals(first.calls, { fetch: 1, gate: 1 });
+  assertEquals(first.calls, { fetch: 1, hold: 1 });
   let all = await lines(s);
   assertEquals(
     closes(all).map((l) => l.payload.n),
@@ -120,8 +120,8 @@ Deno.test("AC3 — Waiting thrown at step 2: exit 2 with the condition, then the
   assertEquals(await replay(waits(second), s.env, "{}"), { code: 0 });
   assertEquals(
     second.calls,
-    { gate: 1, report: 1 },
-    "step 1 replayed; the gate ran again and closed",
+    { hold: 1, report: 1 },
+    "step 1 replayed; the hold ran again and closed",
   );
   all = await lines(s);
   assertEquals(closes(all).map((l) => l.payload.n), [1, 2, 3]);
@@ -129,7 +129,7 @@ Deno.test("AC3 — Waiting thrown at step 2: exit 2 with the condition, then the
   assertEquals(
     starts(all).map((l) => l.payload.n),
     [1, 2, 2, 3],
-    "the gate started twice, once per attempt",
+    "the hold started twice, once per attempt",
   );
 
   const third = counters();
@@ -337,7 +337,7 @@ Deno.test("the process wrapper: the wake condition on stdout's last line and exi
   );
   assertEquals(closes(await lines(s)).map((l) => l.payload.name), [
     "count",
-    "gate",
+    "hold",
     "input boom",
   ]);
 

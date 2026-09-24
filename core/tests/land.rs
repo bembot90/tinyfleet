@@ -30,7 +30,7 @@ use fleet_core::item::lane;
 use fleet_core::item::review::VERDICT;
 use fleet_core::item::{
     control_token, last_delivery, last_landing, marker_block, render, review::last_verdict, Change,
-    Git, Project, Stop, GATE_READ, ITEM_LANDED, LANDING_MARKERS, TRUNK, TRUNK_BRANCH,
+    Git, Project, Stop, CHECK_READ, ITEM_LANDED, LANDING_MARKERS, TRUNK, TRUNK_BRANCH,
     VERDICT_MARKERS,
 };
 use fleet_core::store::{AssignedItem, Bd, Item, Store, StoreError};
@@ -441,16 +441,16 @@ impl Store for Doctored<'_> {
         self.inner.unset_orders(item, by)
     }
 
-    fn gate(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
-        self.inner.gate(item, reason, by)
+    fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
+        self.inner.hold(item, reason, by)
     }
 
-    fn open_gates(&self) -> Result<Vec<String>, StoreError> {
-        self.inner.open_gates()
+    fn open_holds(&self) -> Result<Vec<String>, StoreError> {
+        self.inner.open_holds()
     }
 
-    fn resolve_gate(&self, gate: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.resolve_gate(gate, by)
+    fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError> {
+        self.inner.clear_hold(hold, by)
     }
 
     fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
@@ -561,7 +561,7 @@ fn a_delivery_on(commit: &str, branch: &str) -> String {
          branch:  {branch}\n\
          base:    {TRUNK} at {OLD}, fetched at 2026-09-12T00:00:00Z\n\
          files:   {FILE}\n\
-         gate:    AC1 green, read from the arm's own status\n\
+         checks:  AC1 green, read from the arm's own status\n\
          suite:   the workspace suite, rc 0\n\
          spec corrections: none\n\
          not proven: what this arm did not run\n\
@@ -862,10 +862,10 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_note_and_closes() {
     // landing. Both carry the push's own range line and never a rev-parse.
     assert_eq!(events.count(), 2, "one reading and one landing");
     let kinds: Vec<String> = events.all().into_iter().map(|(kind, _, _)| kind).collect();
-    assert_eq!(kinds, vec![GATE_READ.to_string(), ITEM_LANDED.to_string()]);
-    let (actor, reading) = events.one(GATE_READ);
+    assert_eq!(kinds, vec![CHECK_READ.to_string(), ITEM_LANDED.to_string()]);
+    let (actor, reading) = events.one(CHECK_READ);
     assert_eq!(actor, REVIEWER);
-    keys_agree(GATE_READ, &reading, &[]);
+    keys_agree(CHECK_READ, &reading, &[]);
     assert_eq!(reading["item"], serde_json::json!(item));
     assert_eq!(reading["suite"], serde_json::json!("exit 0"));
     assert_eq!(reading["rc"], serde_json::json!(0));
@@ -1105,7 +1105,7 @@ fn a_landing_handed_no_test_lands_and_says_not_tested() {
     assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
     // The reading is a measured absence on the stream too, in the same three
     // words the note's own row prints.
-    let (_, reading) = events.one(GATE_READ);
+    let (_, reading) = events.one(CHECK_READ);
     assert_eq!(reading["suite"], serde_json::Value::Null);
     assert_eq!(reading["rc"], serde_json::Value::Null);
     assert_eq!(reading["verdict"], serde_json::json!("none"));
@@ -1231,7 +1231,7 @@ fn a_landing_handed_a_green_test_lands_and_records_the_command_and_rc_0() {
         "and a tested landing never reads like an untested one:\n{}",
         landed.note
     );
-    let (_, reading) = events.one(GATE_READ);
+    let (_, reading) = events.one(CHECK_READ);
     assert_eq!(reading["suite"], serde_json::json!("exit 0"));
     assert_eq!(reading["rc"], serde_json::json!(0));
     let (_, landing) = events.one(ITEM_LANDED);
@@ -3618,13 +3618,13 @@ fn a_red_gate_is_rerun_once_and_a_green_second_reading_lands_with_both_rows() {
     let readings: Vec<serde_json::Value> = events
         .all()
         .into_iter()
-        .filter(|(kind, _, _)| kind == GATE_READ)
+        .filter(|(kind, _, _)| kind == CHECK_READ)
         .map(|(_, _, payload)| payload)
         .collect();
     assert_eq!(
         readings.len(),
         2,
-        "one `{GATE_READ}` per reading: {readings:?}"
+        "one `{CHECK_READ}` per reading: {readings:?}"
     );
     assert_eq!(readings[0]["reading"], 1);
     assert_eq!(readings[0]["verdict"], "red");
@@ -3689,7 +3689,7 @@ fn a_second_red_reading_refuses_with_both_tails_and_writes_both_readings() {
     let readings: Vec<serde_json::Value> = events
         .all()
         .into_iter()
-        .filter(|(kind, _, _)| kind == GATE_READ)
+        .filter(|(kind, _, _)| kind == CHECK_READ)
         .map(|(_, _, payload)| payload)
         .collect();
     assert_eq!(
@@ -3837,7 +3837,7 @@ fn a_behind_delivery_names_its_own_base_and_a_current_one_does_not() {
              branch:  {WORK}\n\
              base:    {TRUNK} at {OTHER}, fetched at 2026-09-12T00:00:00Z\n\
              files:   {FILE}\n\
-             gate:    AC1 green, read from the arm's own status\n\
+             checks:  AC1 green, read from the arm's own status\n\
              suite:   the workspace suite, rc 0\n\
              spec corrections: none\n\
              not proven: what this arm did not run\n\
@@ -4073,8 +4073,8 @@ fn the_suite_runs_under_the_constructed_path_and_the_reading_names_it() {
         "and the suite row is green:\n{}",
         landed.note
     );
-    let (_, reading) = green.one(GATE_READ);
-    keys_agree(GATE_READ, &reading, &[]);
+    let (_, reading) = green.one(CHECK_READ);
+    keys_agree(CHECK_READ, &reading, &[]);
     assert_eq!(
         reading["path"],
         serde_json::json!(constructed),
@@ -4097,7 +4097,7 @@ fn the_suite_runs_under_the_constructed_path_and_the_reading_names_it() {
     let readings: Vec<serde_json::Value> = red
         .all()
         .into_iter()
-        .filter(|(kind, _, _)| kind == GATE_READ)
+        .filter(|(kind, _, _)| kind == CHECK_READ)
         .map(|(_, _, payload)| payload)
         .collect();
     assert_eq!(readings.len(), 2, "both readings reached the stream");
@@ -4113,8 +4113,8 @@ fn the_suite_runs_under_the_constructed_path_and_the_reading_names_it() {
 
 // ---- a run's landing ---------------------------------------------------------
 
-/// The gate a run raises on its own record, as `ask` writes it and `answer`
-/// answers it. `answered_by` is `None` for the run nobody answered.
+/// The hold a run raises on its own record, as `hold` writes it and `clear`
+/// clears it. `answered_by` is `None` for the run nobody answered.
 fn a_run(store: &dyn Store, answered_by: Option<&str>) -> String {
     let run = store
         .create(
@@ -4134,7 +4134,7 @@ fn a_run(store: &dyn Store, answered_by: Option<&str>) -> String {
                 "PARKED {run} — ask\n\
                  branch:  (run)\n\
                  commit:  {OLD}\n\
-                 gate:    a-gate\n\
+                 hold:    a-hold\n\
                  QUESTION Accept the delivery?\n\
                  A. accept and land\n\
                  B. return to the builder"
@@ -4146,7 +4146,7 @@ fn a_run(store: &dyn Store, answered_by: Option<&str>) -> String {
         store
             .note(
                 &run,
-                &format!("ANSWERED a-gate — {who}\nletter:  A\ntext:    (none)"),
+                &format!("ANSWERED a-hold — {who}\nletter:  A\ntext:    (none)"),
                 who,
             )
             .expect("the answer is on the run");
@@ -4281,15 +4281,15 @@ fn a_runs_landing_is_refused_an_item_another_seat_holds() {
 }
 
 /// A RUN LANDS ON AN ANSWER OR NOT AT ALL. A seat answers for its own landing
-/// by making it; a run answers for nothing, so a run whose gate nobody answered
+/// by making it; a run answers for nothing, so a run whose hold nobody cleared
 /// is refused — with the run named, because the answer is on its record.
 #[test]
-fn a_runs_landing_is_refused_where_nobody_answered_its_gate() {
+fn a_runs_landing_is_refused_where_nobody_cleared_its_hold() {
     let board = store();
     let scratch = &board;
     let item = an_item(
         &scratch.store,
-        "an item nobody answered a gate for",
+        "an item nobody cleared a hold for",
         Some(("ACCEPTED", SHA)),
     );
     let unanswered = a_run(&scratch.store, None);
@@ -4306,7 +4306,7 @@ fn a_runs_landing_is_refused_where_nobody_answered_its_gate() {
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert!(
         ran.why()
-            .contains(&format!("run {unanswered} carries no answered gate")),
+            .contains(&format!("run {unanswered} carries no cleared hold")),
         "{}",
         ran.why()
     );

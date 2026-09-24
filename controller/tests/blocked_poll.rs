@@ -152,7 +152,7 @@ impl Rig {
         );
         append(
             &rig.stream_path(),
-            "gate.resolved",
+            "hold.cleared",
             "a-seat",
             serde_json::json!({"item": RUN, "letter": "A"}),
         );
@@ -273,7 +273,7 @@ fn append(path: &Path, kind: &str, actor: &str, payload: serde_json::Value) {
 /// The run as the loop acts on it: one execution that occupies the polling
 /// thread for the land step and then fails, exactly as core's `run` child does.
 ///
-/// The gate and the retire answer refusals and are asserted never to have been
+/// The hold and the retire answer refusals and are asserted never to have been
 /// called: this run spawned no seat, so the cleanup that follows its failure
 /// walks an empty set and its `run.cleaned` carries a count of zero — which is
 /// what the live stream carried on all three of the incident's runs.
@@ -304,12 +304,12 @@ impl Runs for ALandStepOnThePollingThread<'_> {
         Ok(())
     }
 
-    fn gate(&self, run: &str, _reason: &str) -> Result<String, String> {
+    fn hold(&self, run: &str, _reason: &str) -> Result<String, String> {
         self.calls
             .lock()
             .expect("the run stub's own lock")
-            .push(format!("gate {run}"));
-        Err("this rig raises no gate".to_string())
+            .push(format!("hold {run}"));
+        Err("this rig raises no hold".to_string())
     }
 
     fn retire(&self, seat: &str, run: &str) -> Result<(), String> {

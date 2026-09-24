@@ -10,7 +10,7 @@
 //! before the store is called at all.
 //!
 //! A CLEAN TREE AHEAD OF THE BASE IS ITSELF THE DELIVERY. Nothing staged and
-//! HEAD ahead of the trunk ref is a seat resuming after `fleet ask`: the
+//! HEAD ahead of the trunk ref is a seat resuming after `fleet hold`: the
 //! delivery is the commit HEAD already names and this verb commits nothing.
 //! Nothing staged and HEAD AT the trunk ref is a seat that built nothing, and
 //! is refused.
@@ -113,8 +113,8 @@ pub fn deliver(
         )));
     }
     // A CLEAN TREE IS A DELIVERY ONLY WHERE IT IS AHEAD OF THE BASE. HEAD
-    // against the trunk ref is what separates a seat resuming after `fleet ask`
-    // — parked commit, complete work, nothing left to stage — from a seat that
+    // against the trunk ref is what separates a seat resuming after `fleet hold`
+    // — held commit, complete work, nothing left to stage — from a seat that
     // built nothing; only the second is refused.
     let base = wiring.git.trunk_tip().map_err(step)?;
     let standing = if staged.is_empty() {
@@ -122,7 +122,7 @@ pub fn deliver(
         if head == base {
             return Err(Stop::refused(format!(
                 "nothing is staged in {} and HEAD is {TRUNK} at {head} — a note with no commit is \
-                 no delivery.\n  A worktree RESUMED AFTER `fleet ask` delivers its parked commit \
+                 no delivery.\n  A worktree RESUMED AFTER `fleet hold` delivers its held commit \
                  as it stands, with nothing staged, when HEAD is AHEAD of {TRUNK}. This HEAD is \
                  the base itself: `git log --oneline {TRUNK}..HEAD` prints nothing here.\n  So: \
                  stage the work and run this again, or — if the work is committed on another \

@@ -23,21 +23,21 @@
 //! seat wrote, reassigns to the reviewer, reads both back and rings. A ring
 //! nobody answers is still exit 0: the reassignment recorded the handoff.
 //!
-//! `gate` is the pair that needs a person: `ask` and `answer`. `ask` is the
+//! `hold` is the pair that needs a person: `hold` and `clear`. `hold` is the
 //! seat's, run from inside its worktree, and it is how work stops on a question
 //! without anybody waiting for one — everything the tree holds committed on the
-//! work branch, the store's own gate raised carrying the question and its
+//! work branch, the store's own hold raised carrying the question and its
 //! lettered options, the park written on the item with the branch, the commit
-//! and the gate, and `item.parked` on the stream. It commits EVERYTHING, staged
+//! and the hold, and `item.held` on the stream. It commits EVERYTHING, staged
 //! or not, tracked or not, because a question asked mid-work must lose nothing
 //! and the seat is about to be retired; a tree with nothing to commit parks on
 //! HEAD. It refuses the trunk, a worktree holding no ordered item and a note
-//! the question grammar does not read, all three before the commit. `answer` is
-//! a person's reply and the one act that empties the store's gate list: the
-//! answer written on the item, the gate resolved and `gate.resolved` written,
+//! the question grammar does not read, all three before the commit. `clear` is
+//! a person's clearance and the one act that empties the store's hold list: the
+//! answer written on the item, the hold cleared and `hold.cleared` written,
 //! each read back. A letter the options do not name is still an answer with
 //! `--text`, because the person deciding may see a third way the seat did not.
-//! Neither verb rings anybody and neither dispatches: what resumes a parked
+//! Neither verb rings anybody and neither dispatches: what resumes a held
 //! item is whatever dispatches it next.
 //!
 //! `review` is the reviewer's read and the verdict it writes. It prints a size

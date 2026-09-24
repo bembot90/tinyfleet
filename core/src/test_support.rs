@@ -55,13 +55,13 @@ pub struct FakeStore {
     /// Rows answered for a seat on top of the items assigned to it here.
     pub held: BTreeMap<String, Vec<AssignedItem>>,
     pub writes: Mutex<Vec<String>>,
-    /// The gates raised, in the order they were raised: the item and the
-    /// question. The nth gate's id is `gate-<n>`, so a note naming one and the
+    /// The holds raised, in the order they were raised: the item and the
+    /// question. The nth hold's id is `hold-<n>`, so a note naming one and the
     /// call that raised it can be compared.
-    pub gates: Mutex<Vec<(String, String)>>,
-    /// The gates a `resolve_gate` has closed, by id, so the open listing below
+    pub holds: Mutex<Vec<(String, String)>>,
+    /// The holds a `clear_hold` has closed, by id, so the open listing below
     /// answers what this store has actually been told.
-    pub resolved: Mutex<Vec<String>>,
+    pub cleared: Mutex<Vec<String>>,
     /// Why each closed item was closed. The real store holds it in a field of
     /// its own that no read decodes but every document carries, and a close
     /// reason is asserted off the document.
@@ -94,9 +94,9 @@ impl FakeStore {
     }
 
     pub fn raised(&self) -> Vec<(String, String)> {
-        self.gates
+        self.holds
             .lock()
-            .expect("the gates are not poisoned")
+            .expect("the holds are not poisoned")
             .clone()
     }
 
@@ -195,15 +195,15 @@ impl FakeStore {
         Ok(())
     }
 
-    /// The items an open gate stands against, which is what takes one out of
-    /// the ready set until somebody resolves that gate.
-    fn gated(&self) -> Vec<String> {
-        let closed = self.resolved.lock().expect("the gates are not poisoned");
-        let raised = self.gates.lock().expect("the gates are not poisoned");
+    /// The items an open hold stands against, which is what takes one out of
+    /// the ready set until somebody clears that hold.
+    fn on_hold(&self) -> Vec<String> {
+        let closed = self.cleared.lock().expect("the holds are not poisoned");
+        let raised = self.holds.lock().expect("the holds are not poisoned");
         raised
             .iter()
             .enumerate()
-            .filter(|(n, _)| !closed.contains(&format!("gate-{}", n + 1)))
+            .filter(|(n, _)| !closed.contains(&format!("hold-{}", n + 1)))
             .map(|(_, (item, _))| item.clone())
             .collect()
     }
@@ -392,14 +392,14 @@ fn named<'a>(ids: impl Iterator<Item = &'a String> + Clone, given: &str) -> Vec<
 
 impl Store for FakeStore {
     /// The seeded ids, plus every item this store holds that it calls ready:
-    /// open, with no dependency standing and no gate raised against it. A
+    /// open, with no dependency standing and no hold raised against it. A
     /// store computes its own ready set and never holds a second copy of it.
     fn ready(&self) -> Result<Vec<String>, StoreError> {
         if let Some(refused) = self.refuse() {
             return refused;
         }
         let mut ids = self.ready.clone();
-        let gated = self.gated();
+        let on_hold = self.on_hold();
         for item in self
             .items
             .lock()
@@ -407,7 +407,7 @@ impl Store for FakeStore {
             .values()
         {
             let open = item.status != "closed";
-            let free = item.blockers.is_empty() && !gated.contains(&item.id);
+            let free = item.blockers.is_empty() && !on_hold.contains(&item.id);
             if open && free && !ids.contains(&item.id) {
                 ids.push(item.id.clone());
             }
@@ -640,41 +640,41 @@ impl Store for FakeStore {
         })
     }
 
-    /// The gate recorded and answered as an id derived from the call's own
-    /// order: an arm asserting that a park named the gate it raised needs the
-    /// two to agree, and a constant id would agree with a second gate too.
-    fn gate(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
+    /// The hold recorded and answered as an id derived from the call's own
+    /// order: an arm asserting that a park named the hold it raised needs the
+    /// two to agree, and a constant id would agree with a second hold too.
+    fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
         if let Some(refused) = self.refuse() {
             return refused;
         }
-        self.log(format!("gate {item} {reason} {by}"))?;
-        let mut raised = self.gates.lock().expect("the gates are not poisoned");
+        self.log(format!("hold {item} {reason} {by}"))?;
+        let mut raised = self.holds.lock().expect("the holds are not poisoned");
         raised.push((item.to_string(), reason.to_string()));
-        Ok(format!("gate-{}", raised.len()))
+        Ok(format!("hold-{}", raised.len()))
     }
 
-    /// Every gate this store has raised and not been told to resolve.
-    fn open_gates(&self) -> Result<Vec<String>, StoreError> {
+    /// Every hold this store has raised and not been told to clear.
+    fn open_holds(&self) -> Result<Vec<String>, StoreError> {
         if let Some(refused) = self.refuse() {
             return refused;
         }
-        let closed = self.resolved.lock().expect("the gates are not poisoned");
-        let raised = self.gates.lock().expect("the gates are not poisoned");
+        let closed = self.cleared.lock().expect("the holds are not poisoned");
+        let raised = self.holds.lock().expect("the holds are not poisoned");
         Ok((1..=raised.len())
-            .map(|n| format!("gate-{n}"))
+            .map(|n| format!("hold-{n}"))
             .filter(|id| !closed.contains(id))
             .collect())
     }
 
-    fn resolve_gate(&self, gate: &str, by: &str) -> Result<(), StoreError> {
-        self.log(format!("resolve_gate {gate} {by}"))?;
+    fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError> {
+        self.log(format!("clear_hold {hold} {by}"))?;
         if self.deaf() {
             return Ok(());
         }
-        self.resolved
+        self.cleared
             .lock()
-            .expect("the gates are not poisoned")
-            .push(gate.to_string());
+            .expect("the holds are not poisoned")
+            .push(hold.to_string());
         Ok(())
     }
 
@@ -788,14 +788,14 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     fn withdraw_order(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
         (**self).withdraw_order(item, seat, by)
     }
-    fn gate(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
-        (**self).gate(item, reason, by)
+    fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
+        (**self).hold(item, reason, by)
     }
-    fn open_gates(&self) -> Result<Vec<String>, StoreError> {
-        (**self).open_gates()
+    fn open_holds(&self) -> Result<Vec<String>, StoreError> {
+        (**self).open_holds()
     }
-    fn resolve_gate(&self, gate: &str, by: &str) -> Result<(), StoreError> {
-        (**self).resolve_gate(gate, by)
+    fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError> {
+        (**self).clear_hold(hold, by)
     }
     fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
         (**self).close(item, reason, by)

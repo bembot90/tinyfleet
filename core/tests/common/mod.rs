@@ -6,7 +6,7 @@
 
 mod board;
 pub mod capped;
-pub mod gating;
+pub mod holding;
 
 pub use board::bd_init_server_args;
 

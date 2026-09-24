@@ -18,12 +18,12 @@ use fleet_controller::adapter::{Agent, RosterRead};
 use fleet_controller::{clock, config, effect, platform, policy as controller, sessions};
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
 use fleet_core::item::dispatch::{self, Order, Wiring};
-use fleet_core::item::gate;
+use fleet_core::item::hold;
 use fleet_core::item::land::{self, LandGit, Landed, Landing, Progress, Pushed, Squashed};
 use fleet_core::item::run as workflow_run;
 use fleet_core::item::{
     deliver, numstat_line, project_name, review, table_at, Change, Events, Git, Project, Ring,
-    RingOutcome, Stop, GATE_RESOLVED, ITEM_DELIVERED, ITEM_DISPATCHED, ITEM_LANDED, ITEM_PARKED,
+    RingOutcome, Stop, HOLD_CLEARED, ITEM_DELIVERED, ITEM_DISPATCHED, ITEM_HELD, ITEM_LANDED,
     ITEM_RETURNED, ITEM_REVIEWED, TRUNK,
 };
 use fleet_core::store::Bd;
@@ -101,10 +101,10 @@ pub struct DeliverArgs {
     pub packs_dir: Option<PathBuf>,
 }
 
-/// What `ask` takes. No item, for the reason `deliver` takes none: the one the
+/// What `hold` takes. No item, for the reason `deliver` takes none: the one the
 /// seat holds is the one it is asking about.
 #[derive(clap::Args)]
-pub struct AskArgs {
+pub struct HoldArgs {
     /// the question the seat wrote, in the question grammar
     #[arg(long, value_name = "FILE")]
     pub note: PathBuf,
@@ -122,17 +122,17 @@ pub struct AskArgs {
     pub packs_dir: Option<PathBuf>,
 }
 
-/// What `answer` takes: the item, the letter, and what was said beyond it.
+/// What `clear` takes: the item, the letter, and what was said beyond it.
 #[derive(clap::Args)]
-pub struct AnswerArgs {
-    /// the item whose gate is being answered
+pub struct ClearArgs {
+    /// the item whose hold is being cleared
     pub item: String,
     /// the option's letter
     pub letter: String,
     /// what was decided, where the options did not carry it
     #[arg(long, value_name = "TEXT")]
     pub text: Option<String>,
-    /// who is answering; else FLEET_ACTOR or BEADS_ACTOR
+    /// who is clearing it; else FLEET_ACTOR or BEADS_ACTOR
     #[arg(long, value_name = "NAME")]
     pub by: Option<String>,
     /// print the outcome as one JSON document
@@ -455,10 +455,10 @@ pub fn deliver_command(args: &DeliverArgs) -> Exit {
     }
 }
 
-pub fn ask_command(args: &AskArgs) -> Exit {
+pub fn hold_command(args: &HoldArgs) -> Exit {
     let Some(by) = args.by.clone().or_else(actor) else {
         return refused(
-            "ask",
+            "hold",
             Exit::Usage,
             "no seat — pass --by <name>, or set FLEET_ACTOR or BEADS_ACTOR. A park names the seat \
              that asked.",
@@ -467,47 +467,47 @@ pub fn ask_command(args: &AskArgs) -> Exit {
     };
 
     let mut human = Human::under(args.json);
-    match run_ask(args, &by, &mut human) {
-        Ok(asked) => answered(
-            "ask",
+    match run_hold(args, &by, &mut human) {
+        Ok(held) => answered(
+            "hold",
             serde_json::json!({
-                "item": asked.item,
-                "state": state(ITEM_PARKED),
-                "gate": asked.gate,
+                "item": held.item,
+                "state": state(ITEM_HELD),
+                "hold": held.hold,
             }),
             args.json,
         ),
-        Err(stop) => refused("ask", stop_exit(stop.code), &stop.message, args.json),
+        Err(stop) => refused("hold", stop_exit(stop.code), &stop.message, args.json),
     }
 }
 
-pub fn answer_command(args: &AnswerArgs) -> Exit {
+pub fn clear_command(args: &ClearArgs) -> Exit {
     let Some(by) = args.by.clone().or_else(actor) else {
         return refused(
-            "answer",
+            "clear",
             Exit::Usage,
-            "no name — pass --by <name>, or set FLEET_ACTOR or BEADS_ACTOR. An answer names who \
+            "no name — pass --by <name>, or set FLEET_ACTOR or BEADS_ACTOR. A clearance names who \
              gave it.",
             args.json,
         );
     };
 
     let mut human = Human::under(args.json);
-    match run_answer(args, &by, &mut human) {
-        Ok(replied) => answered(
-            "answer",
+    match run_clear(args, &by, &mut human) {
+        Ok(cleared) => answered(
+            "clear",
             serde_json::json!({
-                "item": replied.item,
-                "state": state(GATE_RESOLVED),
-                "gate": replied.gate,
+                "item": cleared.item,
+                "state": state(HOLD_CLEARED),
+                "hold": cleared.hold,
             }),
             args.json,
         ),
-        Err(stop) => refused("answer", stop_exit(stop.code), &stop.message, args.json),
+        Err(stop) => refused("clear", stop_exit(stop.code), &stop.message, args.json),
     }
 }
 
-fn run_ask(parsed: &AskArgs, by: &str, out: &mut dyn Write) -> Result<gate::Asked, Stop> {
+fn run_hold(parsed: &HoldArgs, by: &str, out: &mut dyn Write) -> Result<hold::Held, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
     let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
@@ -519,15 +519,15 @@ fn run_ask(parsed: &AskArgs, by: &str, out: &mut dyn Write) -> Result<gate::Aske
     };
 
     let stamp = clock::now_stamp();
-    gate::ask(
+    hold::hold(
         out,
-        &gate::Question {
+        &hold::Question {
             item: parsed.item.as_deref(),
             by,
             note: &parsed.note,
             at: &stamp,
         },
-        &gate::Wiring {
+        &hold::Wiring {
             store: &store,
             git: &git,
             packs: &packs,
@@ -537,7 +537,7 @@ fn run_ask(parsed: &AskArgs, by: &str, out: &mut dyn Write) -> Result<gate::Aske
     )
 }
 
-fn run_answer(parsed: &AnswerArgs, by: &str, out: &mut dyn Write) -> Result<gate::Replied, Stop> {
+fn run_clear(parsed: &ClearArgs, by: &str, out: &mut dyn Write) -> Result<hold::Cleared, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
     let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
@@ -548,15 +548,15 @@ fn run_answer(parsed: &AnswerArgs, by: &str, out: &mut dyn Write) -> Result<gate
         path: here.machine_dir.join(EVENTS),
     };
 
-    gate::answer(
+    hold::clear(
         out,
-        &gate::Reply {
+        &hold::Clearance {
             item: &parsed.item,
             letter: &parsed.letter,
             text: parsed.text.as_deref(),
             by,
         },
-        &gate::Wiring {
+        &hold::Wiring {
             store: &store,
             git: &git,
             packs: &packs,
@@ -791,7 +791,7 @@ fn refused(verb: &str, exit: Exit, why: &str, json: bool) -> Exit {
 }
 
 /// The state a verb moved the item to: the stream kind the verb writes, without
-/// its `item.`/`gate.` prefix. Derived rather than spelled a second time, so a
+/// its `item.`/`hold.` prefix. Derived rather than spelled a second time, so a
 /// document and the flight fold cannot become two vocabularies.
 fn state(kind: &str) -> &str {
     kind.split_once('.').map_or(kind, |(_, state)| state)

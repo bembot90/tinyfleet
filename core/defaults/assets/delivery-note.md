@@ -3,7 +3,7 @@ commit:  <sha, read from the commit's own output — never from the trunk>
 branch:  <the work branch this sits on>
 base:    <trunk> at <sha>, fetched at <time>
 files:   <the paths this delivery touched>
-gate:    <each acceptance check the item named, with its observed result>
+checks:  <each acceptance check the item named, with its observed result>
 suite:   <the suite that ran, its exit status read from the command itself>
 spec corrections: <N> — <one clause per correction: the premise, and the
          measurement that refuted it; or "none">

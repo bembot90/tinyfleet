@@ -201,16 +201,16 @@ impl Store for Doctored<'_> {
         self.inner.unset_orders(item, by)
     }
 
-    fn gate(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
-        self.inner.gate(item, reason, by)
+    fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
+        self.inner.hold(item, reason, by)
     }
 
-    fn open_gates(&self) -> Result<Vec<String>, StoreError> {
-        self.inner.open_gates()
+    fn open_holds(&self) -> Result<Vec<String>, StoreError> {
+        self.inner.open_holds()
     }
 
-    fn resolve_gate(&self, gate: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.resolve_gate(gate, by)
+    fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError> {
+        self.inner.clear_hold(hold, by)
     }
 
     fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
@@ -280,7 +280,7 @@ commit:  <pending>
 branch:  <pending>
 base:    <pending>
 files:   a/file.rs
-gate:    AC1 green, read from the arm's own status
+checks:  AC1 green, read from the arm's own status
 suite:   the workspace suite, rc 0
 spec corrections: none
 not proven: nothing this arm did not run
@@ -579,13 +579,13 @@ fn a_staged_file_with_more_work_on_it_is_the_delivery() {
 }
 
 /// THE FIRST HALF OF THE PAIR, and worth nothing without the second below: a
-/// seat resuming after `fleet ask` at the parked commit, nothing left to stage,
+/// seat resuming after `fleet hold` at the held commit, nothing left to stage,
 /// HEAD ahead of the base. The delivery is that commit and no commit is made.
 #[test]
 fn a_clean_tree_ahead_of_the_base_delivers_head_and_commits_nothing() {
     let scratch = &store();
     let seat = "s-ahead";
-    let item = an_ordered_item(scratch, "an item parked at its finished commit", seat);
+    let item = an_ordered_item(scratch, "an item held at its finished commit", seat);
     let note = a_note(scratch, "ahead", WHOLE);
     let git = StubGit {
         staged: Vec::new(),
@@ -697,7 +697,7 @@ fn a_clean_tree_at_the_base_is_refused_and_the_refusal_names_the_way_out() {
     .expect_err("an empty delivery at the base is refused");
 
     assert_eq!(stop.code, 1, "{}", stop.message);
-    for named in ["fleet ask", "AHEAD", TRUNK, "stage the work"] {
+    for named in ["fleet hold", "AHEAD", TRUNK, "stage the work"] {
         assert!(
             stop.message.contains(named),
             "the refusal names `{named}`: {}",

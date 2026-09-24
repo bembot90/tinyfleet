@@ -209,25 +209,25 @@ fn ready_lifts_the_row_cap() {
     );
 }
 
-/// The open-gate read lifts the row cap.
+/// The open-hold read lifts the row cap.
 ///
 /// The same argument the ready read carries, against a different verb and for a
 /// sharper consequence: `gate list` answers its first 50 rows with no `-n`, and
-/// `answer` refuses a gate it cannot find on the open list as one somebody has
-/// already resolved — so a truncated listing refuses a live question instead of
+/// `clear` refuses a hold it cannot find on the open list as one somebody has
+/// already cleared — so a truncated listing refuses a live question instead of
 /// answering it. The argv is the proof here for the reason it is above: a board
 /// big enough to drop a row costs about fifty times this arm to build, and what
 /// went wrong was the argument.
 #[test]
-fn open_gates_lifts_the_row_cap() {
+fn open_holds_lifts_the_row_cap() {
     let _guard = path_lock();
-    let dir = Fixture::new("store-argv-gates");
+    let dir = Fixture::new("store-argv-holds");
     let log = dir.path("argv");
     shim(&dir, &log);
 
     let root = dir.path("project");
     std::fs::create_dir_all(&root).expect("the project root is created");
-    let answered = with_path_ahead(&dir.root, || Bd::at(&root).open_gates());
+    let answered = with_path_ahead(&dir.root, || Bd::at(&root).open_holds());
 
     assert_eq!(
         answered.expect("the shim answers a list"),
@@ -249,7 +249,7 @@ fn open_gates_lifts_the_row_cap() {
             String::from("-n"),
             String::from("0"),
         ],
-        "the open-gate read must carry `-n 0`, or it answers the first 50 rows only"
+        "the open-hold read must carry `-n 0`, or it answers the first 50 rows only"
     );
 }
 
@@ -405,7 +405,7 @@ fn every_read_opens_the_envelope() {
     assert!(rows[0].has_orders_key, "the row's own metadata is read");
 
     assert_eq!(
-        store.open_gates().expect("the gate list decodes"),
+        store.open_holds().expect("the gate list decodes"),
         vec![String::from("fx-gate")]
     );
     let filed = store
@@ -422,8 +422,8 @@ fn every_read_opens_the_envelope() {
     assert_eq!(filed, "fx-new");
     assert_eq!(
         store
-            .gate("fx-held", "why", "the-test")
-            .expect("the gate answer decodes"),
+            .hold("fx-held", "why", "the-test")
+            .expect("the hold answer decodes"),
         "fx-raised"
     );
 
@@ -452,7 +452,7 @@ fn an_empty_listing_inside_the_envelope_is_no_rows() {
 
     assert_eq!(
         Bd::at_bin(&root, &bin)
-            .open_gates()
+            .open_holds()
             .expect("an empty listing is an answer"),
         Vec::<String>::new()
     );

@@ -168,8 +168,8 @@ fn the_run_vocabulary_is_one_string_in_both_crates() {
         (runs::RUN_COULD_NOT_TELL, item::RUN_COULD_NOT_TELL),
         (runs::RUN_CANCELLED, item::RUN_CANCELLED),
         (runs::RUN_CLEANED, item::RUN_CLEANED),
-        (runs::ITEM_PARKED, item::ITEM_PARKED),
-        (runs::GATE_RESOLVED, item::GATE_RESOLVED),
+        (runs::ITEM_HELD, item::ITEM_HELD),
+        (runs::HOLD_CLEARED, item::HOLD_CLEARED),
         (runs::ENV_RUN_ID, item::run::ENV_RUN_ID),
     ] {
         assert_eq!(

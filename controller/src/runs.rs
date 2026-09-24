@@ -1,13 +1,13 @@
 //! The run lifecycle's controller half (controller PRD R35–R37): a waiting run
 //! re-run once the stream has moved past where it stopped and carries a line
 //! its wake could be satisfied by, a run nothing could classify re-run to a cap
-//! and then parked, and the seats a run spawned let go when it ends.
+//! and then held, and the seats a run spawned let go when it ends.
 //!
 //! WHY THE ACTS ARE A SEAM AND THE DECISION IS NOT. This crate takes nothing
 //! from core but its bounded runner (`fleet_core::process`) and the release it
 //! supports (`fleet_core::supported`), and every one of the three acts needs a
 //! resolution this crate cannot make: a re-run needs the project's store, its
-//! packs and its policy file; a park needs the store's gate; a retire needs the
+//! packs and its policy file; a park needs the store's hold; a retire needs the
 //! project's primary checkout and its worktrees directory. All of those are
 //! wired in the binary, so the acts are a seam the binary fills. The
 //! DECISION is different: it is a fold of the machine's own stream against one
@@ -49,24 +49,23 @@ pub const RUN_CANCELLED: &str = "run.cancelled";
 pub const RUN_CLEANED: &str = "run.cleaned";
 
 /// The kind a park announces on, spelled here beside the six above.
-pub const ITEM_PARKED: &str = "item.parked";
+pub const ITEM_HELD: &str = "item.held";
 
-/// The kind an answer to a gate announces on: what a run waiting on the SDK's
-/// `gate` is woken by. Spelled here for the same reason.
-pub const GATE_RESOLVED: &str = "gate.resolved";
+/// The kind a hold's clearance announces on: what a run waiting on the SDK's
+/// `hold` is woken by. Spelled here for the same reason.
+pub const HOLD_CLEARED: &str = "hold.cleared";
 
 /// The item kinds a `run.waiting` that names items can be woken by: one per
 /// state the SDK's `until` accepts (`ITEM_STATES` in
 /// `fleet/packs/ts/assets/sdk/mod.ts`), which is the only step whose wake names
 /// items at all.
-pub const ITEM_WAKE_KINDS: [&str; 7] = [
+pub const ITEM_WAKE_KINDS: [&str; 6] = [
     "item.dispatched",
-    "item.held",
     "item.delivered",
     "item.reviewed",
     "item.returned",
     "item.landed",
-    ITEM_PARKED,
+    ITEM_HELD,
 ];
 
 /// The line the loop prints for a pass that refused.
@@ -97,10 +96,10 @@ pub trait Runs {
     /// half's, and this pass reads them on its next fold.
     fn rerun(&self, run: &str) -> Result<(), String>;
 
-    /// Raise a gate on the run's record and say why, answering with the gate's
-    /// own id — with the park note beside it that `fleet answer` resolves the
-    /// gate through, or the gate is one nobody can answer.
-    fn gate(&self, run: &str, reason: &str) -> Result<String, String>;
+    /// Raise a hold on the run's record and say why, answering with the hold's
+    /// own id — with the park note beside it that `fleet clear` clears the
+    /// hold through, or the hold is one nobody can clear.
+    fn hold(&self, run: &str, reason: &str) -> Result<String, String>;
 
     /// Retire one seat the run spawned, through the transient retire path. The
     /// run is passed so the retire's own line can name what the seat was working
@@ -136,12 +135,12 @@ struct Folded {
     /// Whether a `run.cleaned` already stands for this run — the latch that
     /// makes the cleanup once per run rather than once per poll.
     cleaned: bool,
-    /// Whether an `item.parked` already stands for this run. A SECOND LATCH AND
+    /// Whether an `item.held` already stands for this run. A SECOND LATCH AND
     /// NOT THE ONE ABOVE: the run's last event stays `run.could_not_tell` after
     /// the park — nothing writes a further row of the exit table for a run
-    /// nobody is executing — so a pass reading the cap alone raises a gate on
+    /// nobody is executing — so a pass reading the cap alone raises a hold on
     /// every poll for as long as the record stands.
-    parked: bool,
+    held: bool,
     /// Whether a `run.cancelled` stands for this run. A THIRD LATCH: a cancel
     /// stops no process, so an execution under way when it landed still writes
     /// its row of the exit table after it — and a pass reading the last line
@@ -157,8 +156,8 @@ struct Folded {
     /// failure, the wake on a wait, what was read on a could-not-tell.
     stamp: String,
     said: serde_json::Value,
-    /// The gate the park raised, as `item.parked` carried it.
-    gate: Option<String>,
+    /// The hold the park raised, as `item.held` carried it.
+    hold: Option<String>,
 }
 
 /// One pass over every run this machine's stream knows about.
@@ -195,11 +194,11 @@ pub fn tick(pass: &mut Pass) -> Result<(), String> {
                     refusals.push(format!("{run}: {why}"));
                 }
             }
-            // AT THE CAP: the gate, the park, and then the same cleanup an
+            // AT THE CAP: the hold, the park, and then the same cleanup an
             // ending gets. A run a person has to look at holds no seats while
             // they do.
             RUN_COULD_NOT_TELL => {
-                if !state.parked {
+                if !state.held {
                     if let Err(why) = park(pass, run, state) {
                         refusals.push(format!("{run}: {why}"));
                         continue;
@@ -268,11 +267,11 @@ fn fold(stream: &[Record]) -> BTreeMap<String, Folded> {
             }
             // The park's latch. The kind ties a record to a list by `item`,
             // which for a run is the run's own id.
-            ITEM_PARKED => {
+            ITEM_HELD => {
                 if let Some(id) = payload_str(record, "item") {
                     let state = runs.entry(id).or_default();
-                    state.parked = true;
-                    state.gate = payload_str(record, "gate");
+                    state.held = true;
+                    state.hold = payload_str(record, "hold");
                 }
             }
             // The seat is the line's ACTOR on both of the arms below, which is
@@ -313,9 +312,9 @@ pub enum Standing {
     /// `run.could_not_tell` with no park behind it: the pass executes it again
     /// while it is under `[core.run] max_crashes`, and parks it at the cap.
     CouldNotTell,
-    /// `run.could_not_tell` with the park's latch standing: a gate on the
-    /// record, and nothing executes it until a person answers.
-    Parked,
+    /// `run.could_not_tell` with the park's latch standing: a hold on the
+    /// record, and nothing executes it until a person clears it.
+    Held,
     Failed,
     Closed,
     /// `run.cancelled` stands, whatever an execution under way wrote after it.
@@ -336,14 +335,14 @@ pub struct Reading {
     pub said: serde_json::Value,
     /// How many executions ended on `run.could_not_tell`.
     pub crashes: u64,
-    /// The gate the park raised, where it is parked.
-    pub gate: Option<String>,
+    /// The hold the park raised, where it is held.
+    pub hold: Option<String>,
 }
 
 /// Every run the stream holds a lifecycle line for, in id order.
 ///
 /// THE PASS'S OWN FOLD, and not a second reading of the same lines: a page that
-/// called a run parked by some rule of its own could disagree with the pass
+/// called a run held by some rule of its own could disagree with the pass
 /// that is deciding whether to execute it, and the page is the one a person
 /// believes. The run's record in the store is not read — the stream is what the
 /// pass decides on, and the record's open or closed carries no row of the exit
@@ -357,7 +356,7 @@ pub fn readings(stream: &[Record]) -> Vec<Reading> {
                 _ if state.cancelled => Standing::Cancelled,
                 RUN_STARTED => Standing::Open,
                 RUN_WAITING => Standing::Waiting,
-                RUN_COULD_NOT_TELL if state.parked => Standing::Parked,
+                RUN_COULD_NOT_TELL if state.held => Standing::Held,
                 RUN_COULD_NOT_TELL => Standing::CouldNotTell,
                 RUN_FAILED => Standing::Failed,
                 _ => Standing::Closed,
@@ -369,7 +368,7 @@ pub fn readings(stream: &[Record]) -> Vec<Reading> {
                 stamp: state.stamp,
                 said: state.said,
                 crashes: state.crashes,
-                gate: state.gate.filter(|_| standing == Standing::Parked),
+                hold: state.hold.filter(|_| standing == Standing::Held),
             })
         })
         .collect()
@@ -382,7 +381,7 @@ pub fn readings(stream: &[Record]) -> Vec<Reading> {
 enum Wake {
     /// The items `until` still has outstanding.
     Items(Vec<String>),
-    /// One id: the gate `gate` asked, or the child run `start` opened. The two
+    /// One id: the hold `hold` raised, or the child run `start` opened. The two
     /// verbs throw the id alone, and nothing in the wake says which it is — the
     /// stream does, and [`could_wake`] asks it.
     Id(String),
@@ -450,18 +449,18 @@ fn wake_of(record: &Record) -> Wake {
 /// reading the state from the wake the payload does not carry would be a
 /// guess.
 ///
-/// A GATE WAKES ON ITS ANSWER AND A CHILD ON EITHER END, WHEREVER ON THE STREAM
-/// IT SITS. The recorded position is read when the process exits, after `gate`
-/// or `start` read the stream and threw, so an answer or an end that landed in
-/// between sits at or below it — and a match that looked only above it, or
-/// waited for the stream to move, would hold the run on a gate already
-/// answered. Waking on it wherever it is loops on nothing: the re-run replays
-/// past the answered gate or the ended child, so the run's last line is no
+/// A HOLD WAKES ON ITS CLEARANCE AND A CHILD ON EITHER END, WHEREVER ON THE
+/// STREAM IT SITS. The recorded position is read when the process exits, after
+/// `hold` or `start` read the stream and threw, so a clearance or an end that
+/// landed in between sits at or below it — and a match that looked only above
+/// it, or waited for the stream to move, would keep the run on a hold already
+/// cleared. Waking on it wherever it is loops on nothing: the re-run replays
+/// past the cleared hold or the ended child, so the run's last line is no
 /// longer this wait. `start` returns on the child's close and fails on its
 /// failure or its cancel, and each is a re-run's to read.
 ///
-/// AN ID IS A GATE'S OR A RUN'S ONLY WHERE THE STREAM SAYS SO: a gate that was
-/// asked or answered, or a run that was started. An id the stream knows as
+/// AN ID IS A HOLD'S OR A RUN'S ONLY WHERE THE STREAM SAYS SO: a hold that was
+/// raised or cleared, or a run that was started. An id the stream knows as
 /// neither is a word a workflow threw itself, and a match on it would hold the
 /// run waiting for a line that is never coming — so it wakes on any move.
 fn could_wake(stream: &[Record], head: u64, at: u64, state: &Folded) -> bool {
@@ -479,7 +478,7 @@ fn could_wake(stream: &[Record], head: u64, at: u64, state: &Folded) -> bool {
         Wake::Id(id) => {
             let names = |record: &Record, key: &str| payload_str(record, key).as_ref() == Some(id);
             let known = stream.iter().any(|record| match record.kind.as_str() {
-                ITEM_PARKED | GATE_RESOLVED => names(record, "gate"),
+                ITEM_HELD | HOLD_CLEARED => names(record, "hold"),
                 RUN_STARTED => names(record, "run"),
                 _ => false,
             });
@@ -487,7 +486,7 @@ fn could_wake(stream: &[Record], head: u64, at: u64, state: &Folded) -> bool {
                 return moved;
             }
             stream.iter().any(|record| match record.kind.as_str() {
-                GATE_RESOLVED => names(record, "gate"),
+                HOLD_CLEARED => names(record, "hold"),
                 RUN_CLOSED | RUN_FAILED | RUN_CANCELLED => names(record, "run"),
                 _ => false,
             })
@@ -495,11 +494,11 @@ fn could_wake(stream: &[Record], head: u64, at: u64, state: &Folded) -> bool {
     }
 }
 
-/// The gate on the run's record and the `item.parked` that announces it.
+/// The hold on the run's record and the `item.held` that announces it.
 ///
-/// THE GATE COMES FIRST AND THE EVENT SECOND, as every other park's does: a gate
+/// THE HOLD COMES FIRST AND THE EVENT SECOND, as every other park's does: a hold
 /// nobody announced is a person's question still standing, where an announcement
-/// with no gate behind it is a run a reader believes is held and which the store
+/// with no hold behind it is a run a reader believes is held and which the store
 /// will hand straight back.
 fn park(pass: &mut Pass, run: &str, state: &Folded) -> Result<(), String> {
     let reason = format!(
@@ -507,10 +506,10 @@ fn park(pass: &mut Pass, run: &str, state: &Folded) -> Result<(), String> {
          `[core.run] max_crashes` is {}",
         state.crashes, pass.max_crashes
     );
-    let gate = pass.runs.gate(run, &reason)?;
+    let hold = pass.runs.hold(run, &reason)?;
     pass.events
         .append(
-            ITEM_PARKED,
+            ITEM_HELD,
             CONTROLLER,
             serde_json::json!({
                 "item": run,
@@ -521,10 +520,10 @@ fn park(pass: &mut Pass, run: &str, state: &Folded) -> Result<(), String> {
                 // field it reads as absent and not a shape that varies.
                 "branch": serde_json::Value::Null,
                 "commit": serde_json::Value::Null,
-                "gate": gate,
+                "hold": hold,
             }),
         )
-        .map_err(|e| format!("{run} is gated and {ITEM_PARKED} did not reach the stream: {e}"))
+        .map_err(|e| format!("{run} is held and {ITEM_HELD} did not reach the stream: {e}"))
 }
 
 /// Every seat the run spawned, retired, and one `run.cleaned` with the count.

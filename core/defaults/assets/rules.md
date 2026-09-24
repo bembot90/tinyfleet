@@ -37,7 +37,7 @@ What each verb writes, so you know what to look for afterwards:
 | `ask` | everything the tree holds, committed on the work branch; the gate; the park on the item |
 | `answer` | the answer note on the item, and the gate resolved |
 
-When a question blocks you and nobody here can answer it, `fleet ask --note
+When a question blocks you and nobody here can answer it, `fleet hold --note
 <file>` is the way to stop: it commits everything your tree holds, raises the
 question as a gate on the item, and parks. Write the note with `QUESTION` at
 column zero and one lettered option per line — a question with no options is a

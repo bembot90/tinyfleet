@@ -1814,12 +1814,12 @@ fn rerun_in_this_process(
     )
 }
 
-/// The ids of every gate the store still lists open.
-fn open_gates(rig: &Rig) -> Vec<String> {
+/// The ids of every hold the store still lists open.
+fn open_holds(rig: &Rig) -> Vec<String> {
     use fleet_core::store::Store;
     fleet_core::store::Bd::at(&rig.project)
-        .open_gates()
-        .expect("the store lists its gates")
+        .open_holds()
+        .expect("the store lists its holds")
 }
 
 /// `fleet cancel` on a waiting run: the record is closed, `run.cancelled` names
@@ -1867,7 +1867,7 @@ fn a_cancelled_waiting_run_is_closed_announced_and_never_executed_again() {
         fleet_core::item::payload_keys(fleet_core::item::RUN_CANCELLED),
         "the payload carries the keys its kind declares"
     );
-    none_of(&rig, from, fleet_core::item::GATE_RESOLVED);
+    none_of(&rig, from, fleet_core::item::HOLD_CLEARED);
 
     let from = rig.stream_length();
     let stop = rerun_in_this_process(&rig, &id).expect_err("a closed run is not executed");
@@ -1930,24 +1930,24 @@ fn a_run_object_at_an_unknown_version_is_could_not_tell_and_never_executed() {
     }
 }
 
-/// One run parked on a real store the way the controller's run pass leaves one
-/// at `[core.run] max_crashes`: a workflow nothing could classify, then the gate
-/// on its record. `noted` is the park the seam makes now, gate and note; unset,
-/// it is the bare gate the seam raised before the note existed.
-fn a_run_parked_at_the_cap(rig: &Rig, noted: bool) -> (String, String) {
+/// One run held on a real store the way the controller's run pass leaves one
+/// at `[core.run] max_crashes`: a workflow nothing could classify, then the hold
+/// on its record. `noted` is the park the seam makes now, hold and note; unset,
+/// it is the bare hold the seam raised before the note existed.
+fn a_run_held_at_the_cap(rig: &Rig, noted: bool) -> (String, String) {
     use fleet_core::store::Store;
     let out = rig.run(&["run", &rig.workflow(ONE), "--by", BY]);
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     let (id, _) = started_line(&out);
     let store = fleet_core::store::Bd::at(&rig.project);
-    let gate = if noted {
+    let hold = if noted {
         let packs = fleet_core::item::brief::Packs::under(
             &rig.machine.join("packs"),
             &rig.machine.join(fleet_core::defaults::DIR),
         )
         .unwrap_or_else(|stop| panic!("the layers resolve: {}", stop.message));
-        fleet_core::item::gate::park_at_the_cap(
-            &fleet_core::item::gate::Capped {
+        fleet_core::item::hold::park_at_the_cap(
+            &fleet_core::item::hold::Capped {
                 run: &id,
                 reason: "executed 3 time(s) and nothing could classify the last one",
                 directory: &rig.machine.join(workflow_run::RUNS).join(&id),
@@ -1959,69 +1959,69 @@ fn a_run_parked_at_the_cap(rig: &Rig, noted: bool) -> (String, String) {
         .unwrap_or_else(|stop| panic!("the park is made: {}", stop.message))
     } else {
         store
-            .gate(&id, "a park from before the note", "controller")
-            .expect("the bare gate is raised")
+            .hold(&id, "a park from before the note", "controller")
+            .expect("the bare hold is raised")
     };
-    (id, gate)
+    (id, hold)
 }
 
-/// The crash cap's park, answered through the shipped binary on a real store:
-/// `fleet answer` finds the park the note names, resolves the gate the store
+/// The crash cap's park, cleared through the shipped binary on a real store:
+/// `fleet clear` finds the park the note names, clears the hold the store
 /// raised, and says so on the stream.
 #[test]
-fn a_run_parked_at_the_crash_cap_answers_through_fleet_answer() {
+fn a_run_held_at_the_crash_cap_clears_through_fleet_clear() {
     let rig = Rig::new(
-        "answer-park",
+        "clear-park",
         &Pack::running(STRANGE),
         &cap_that_is_not_the_subject(),
     );
-    let (id, gate) = a_run_parked_at_the_cap(&rig, true);
-    assert!(open_gates(&rig).contains(&gate), "{gate} stands");
+    let (id, hold) = a_run_held_at_the_cap(&rig, true);
+    assert!(open_holds(&rig).contains(&hold), "{hold} stands");
 
     let from = rig.stream_length();
-    let out = rig.run(&["answer", &id, "B", "--by", "a-person"]);
+    let out = rig.run(&["clear", &id, "B", "--by", "a-person"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    let answered = only(&rig, from, fleet_core::item::GATE_RESOLVED);
-    assert_eq!(answered["payload"]["item"].as_str(), Some(id.as_str()));
-    assert_eq!(answered["payload"]["gate"].as_str(), Some(gate.as_str()));
-    assert!(!open_gates(&rig).contains(&gate), "the gate is resolved");
+    let cleared = only(&rig, from, fleet_core::item::HOLD_CLEARED);
+    assert_eq!(cleared["payload"]["item"].as_str(), Some(id.as_str()));
+    assert_eq!(cleared["payload"]["hold"].as_str(), Some(hold.as_str()));
+    assert!(!open_holds(&rig).contains(&hold), "the hold is cleared");
 }
 
-/// `fleet cancel` on a parked run resolves the gate standing on its record and
-/// closes it — here the bare gate a park raised before its note existed, which
-/// `fleet answer` cannot reach and which kept the record's close blocked. The
-/// gates are the store's own answer, so a noted park's gate is found the same
+/// `fleet cancel` on a held run clears the hold standing on its record and
+/// closes it — here the bare hold a park raised before its note existed, which
+/// `fleet clear` cannot reach and which kept the record's close blocked. The
+/// holds are the store's own answer, so a noted park's hold is found the same
 /// way.
 #[test]
-fn a_cancel_resolves_the_gate_on_a_parked_runs_record_and_closes_it() {
+fn a_cancel_clears_the_hold_on_a_held_runs_record_and_closes_it() {
     let rig = Rig::new(
         "cancel-park",
         &Pack::running(STRANGE),
         &cap_that_is_not_the_subject(),
     );
-    let (id, bare) = a_run_parked_at_the_cap(&rig, false);
-    assert!(open_gates(&rig).contains(&bare), "{bare} stands");
+    let (id, bare) = a_run_held_at_the_cap(&rig, false);
+    assert!(open_holds(&rig).contains(&bare), "{bare} stands");
 
     let from = rig.stream_length();
     let out = rig.run(&["cancel", &id, "--by", "a-person"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(
         stdout(&out).trim(),
-        format!("{id} — cancelled, gate {bare} resolved"),
-        "the line names the gate it resolved"
+        format!("{id} — cancelled, hold {bare} cleared"),
+        "the line names the hold it cleared"
     );
     assert!(
-        !open_gates(&rig).contains(&bare),
-        "the bare gate is resolved"
+        !open_holds(&rig).contains(&bare),
+        "the bare hold is cleared"
     );
     assert!(!is_open(&rig, &id), "and the record is closed");
     only(&rig, from, fleet_core::item::RUN_CANCELLED);
-    let resolved = only(&rig, from, fleet_core::item::GATE_RESOLVED);
-    assert_eq!(resolved["payload"]["item"].as_str(), Some(id.as_str()));
-    assert_eq!(resolved["payload"]["gate"].as_str(), Some(bare.as_str()));
+    let cleared = only(&rig, from, fleet_core::item::HOLD_CLEARED);
+    assert_eq!(cleared["payload"]["item"].as_str(), Some(id.as_str()));
+    assert_eq!(cleared["payload"]["hold"].as_str(), Some(bare.as_str()));
     assert!(
-        resolved["payload"]["letter"].is_null(),
-        "nobody chose a letter: {resolved}"
+        cleared["payload"]["letter"].is_null(),
+        "nobody chose a letter: {cleared}"
     );
 }
 

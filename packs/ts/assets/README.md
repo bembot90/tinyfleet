@@ -46,10 +46,10 @@ refusal code and its why; the wrapper turns it into exit 1 with the reason
 `{"verb", "code", "why"}` on stdout's last line.
 
 Two verbs leave something open across a Waiting exit and must not repeat it
-on the re-run: a gate's ask and a start's child run. Each finds its own record
-on the stream by the actor — the k-th `item.parked` and the k-th `run.started`
-this run raised are its k-th `gate` and k-th `start` call — so neither asks
-nor starts twice. Their suite is `assets/sdk/verbs_test.ts`, against a fake
+on the re-run: a hold's question and a start's child run. Each finds its own
+record on the stream by the actor — the k-th `item.held` and the k-th
+`run.started` this run raised are its k-th `hold` and k-th `start` call — so
+neither holds nor starts twice. Their suite is `assets/sdk/verbs_test.ts`, against a fake
 binary on `FLEET_BIN` that answers `event …` with the real one.
 
 - `spawn({ role, item, model?, touched? })` — a builder on an item, over
@@ -93,22 +93,22 @@ binary on `FLEET_BIN` that answers `event …` with the real one.
   const { sha } = await run.land("item-12", "0123abc", { test: "make check" });
   ```
 
-- `gate(question, options)` — a question for a person on the run's own record
-  item: the note `gates/<k>.md` in the question grammar (`QUESTION <text>`,
-  then the lettered options one per line), `fleet ask --item <run> --note
-  <file> --json`, then Waiting with the gate id as the condition. Once
-  `gate.resolved` for that gate is on the stream the re-run closes the step
-  with the answer's letter.
+- `hold(question, options)` — a question for a person on the run's own record
+  item: the note `holds/<k>.md` in the question grammar (`QUESTION <text>`,
+  then the lettered options one per line), `fleet hold --item <run> --note
+  <file> --json`, then Waiting with the hold id as the condition. Once
+  `hold.cleared` for that hold is on the stream the re-run closes the step
+  with the clearance's letter.
 
   ```ts
-  const letter = await run.gate("Ship the report?", ["A. yes", "B. hold"]);
+  const letter = await run.hold("Ship the report?", ["A. yes", "B. not yet"]);
   ```
 
 - `until(items, state)` — reads `item.<state>` events off the stream and
   throws Waiting whose condition is exactly the outstanding items, in the
   order given; once every item has one it returns each item's event payload.
-  The states are the item kinds' last words: `dispatched`, `held`,
-  `delivered`, `reviewed`, `returned`, `landed`, `parked`.
+  The states are the item kinds' last words: `dispatched`, `delivered`,
+  `reviewed`, `returned`, `landed`, `held`.
 
   ```ts
   const landed = await run.until(["item-12", "item-13"], "landed");
@@ -133,7 +133,7 @@ export default workflow(async (run) => {
   const items = await run.input("items");
   for (const item of items) await run.spawn({ role: "builder", item });
   await run.until(items, "landed");
-  await run.gate("Ship the report?", ["A. yes", "B. hold"]);
+  await run.hold("Ship the report?", ["A. yes", "B. not yet"]);
 });
 ```
 

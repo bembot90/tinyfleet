@@ -18,7 +18,7 @@ use fleet_controller::runs::Runs;
 use fleet_controller::transient::Refusal;
 use fleet_controller::{clock, config, events, platform, transient};
 use fleet_core::item::brief::Packs;
-use fleet_core::item::gate;
+use fleet_core::item::hold;
 use fleet_core::item::run as workflow_run;
 use fleet_core::seat;
 use fleet_core::store::{Bd, Store};
@@ -169,17 +169,17 @@ impl Runs for Engine {
         .map_err(|stop| stop.message)
     }
 
-    /// THE PARK AND NOT THE BARE GATE: the note beside the gate is what
-    /// `fleet answer` resolves it through, and the packs are resolved here
+    /// THE PARK AND NOT THE BARE HOLD: the note beside the hold is what
+    /// `fleet clear` clears it through, and the packs are resolved here
     /// because the note is written in the park grammar they carry.
-    fn gate(&self, run: &str, reason: &str) -> Result<String, String> {
+    fn hold(&self, run: &str, reason: &str) -> Result<String, String> {
         let here = self.project_holding(run)?;
         let store = self.stores.open(&here.project.root);
         let packs =
             Packs::under(&here.packs_dir, &here.defaults_dir).map_err(|stop| stop.message)?;
         let directory = self.machine_dir.join(workflow_run::RUNS).join(run);
-        gate::park_at_the_cap(
-            &gate::Capped {
+        hold::park_at_the_cap(
+            &hold::Capped {
                 run,
                 reason,
                 directory: &directory,

@@ -44,7 +44,7 @@ use crate::add;
 use crate::item::brief::Packs;
 use crate::item::pins;
 use crate::item::{
-    control_token, read_table, Events, Project, Stop, GATE_RESOLVED, RUN_CANCELLED, RUN_CLOSED,
+    control_token, read_table, Events, Project, Stop, HOLD_CLEARED, RUN_CANCELLED, RUN_CLOSED,
     RUN_COULD_NOT_TELL, RUN_FAILED, RUN_STARTED, RUN_WAITING,
 };
 use crate::lock;
@@ -512,25 +512,25 @@ pub struct Cancel<'a> {
     pub by: &'a str,
 }
 
-/// The run cancelled, and the gates the cancel resolved on its record.
+/// The run cancelled, and the holds the cancel cleared on its record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cancelled {
     pub run: String,
-    pub gates: Vec<String>,
+    pub holds: Vec<String>,
 }
 
-/// A run ended by hand: every gate standing on its record resolved, the record
-/// closed as cancelled, then [`RUN_CANCELLED`] and one [`GATE_RESOLVED`] per
-/// gate on the stream.
+/// A run ended by hand: every hold standing on its record cleared, the record
+/// closed as cancelled, then [`RUN_CANCELLED`] and one [`HOLD_CLEARED`] per
+/// hold on the stream.
 ///
 /// THE WAY OUT FOR A RUN NOTHING ELSE ENDS. A run whose process died before it
-/// wrote a row of the exit table, one parked at `[core.run] max_crashes`, one
+/// wrote a row of the exit table, one held at `[core.run] max_crashes`, one
 /// waiting on a wake that will never come: each holds its record open, and the
 /// open records are what `[core.run] max_open` counts.
 ///
-/// THE GATES ARE THE STORE'S ANSWER, not a park note's: the record's own open
-/// dependencies that the store lists as open gates. A park written before its
-/// note existed raised a gate nothing on the record names, and it blocks the
+/// THE HOLDS ARE THE STORE'S ANSWER, not a park note's: the record's own open
+/// dependencies that the store lists as open holds. A park written before its
+/// note existed raised a hold nothing on the record names, and it blocks the
 /// close exactly as a noted one does.
 ///
 /// IT STOPS NO PROCESS AND RETIRES NO SEAT. A run holds no process between its
@@ -540,8 +540,8 @@ pub struct Cancelled {
 /// the run spawned with the cleanup every ending gets.
 ///
 /// THE STORE'S WRITES, THEN THE STREAM'S, and [`RUN_CANCELLED`] ahead of the
-/// gates' lines: a pass that read a resolved gate before the cancel that
-/// resolved it would be reading a run still standing.
+/// holds' lines: a pass that read a cleared hold before the cancel that
+/// cleared it would be reading a run still standing.
 pub fn cancel(
     out: &mut dyn Write,
     cancel: &Cancel,
@@ -574,18 +574,18 @@ pub fn cancel(
     }
 
     let open = store
-        .open_gates()
-        .map_err(|e| Stop::could_not_tell(format!("the store's gates could not be read: {e}")))?;
-    let gates: Vec<String> = record
+        .open_holds()
+        .map_err(|e| Stop::could_not_tell(format!("the store's holds could not be read: {e}")))?;
+    let holds: Vec<String> = record
         .blockers
         .iter()
         .filter(|blocker| open.contains(blocker))
         .cloned()
         .collect();
-    for gate in &gates {
-        store.resolve_gate(gate, cancel.by).map_err(|e| {
+    for hold in &holds {
+        store.clear_hold(hold, cancel.by).map_err(|e| {
             Stop::could_not_tell(format!(
-                "{gate} on {run} was not resolved: {e}\n  {run} is NOT cancelled"
+                "{hold} on {run} was not cleared: {e}\n  {run} is NOT cancelled"
             ))
         })?;
     }
@@ -594,8 +594,8 @@ pub fn cancel(
         .close(run, "the run cancelled", cancel.by)
         .map_err(|e| {
             Stop::could_not_tell(format!(
-                "{run}'s record did not close: {e}\n  {} resolved and {run} is NOT cancelled",
-                named_gates(&gates)
+                "{run}'s record did not close: {e}\n  {} cleared and {run} is NOT cancelled",
+                named_holds(&holds)
             ))
         })?;
     let read_back = read(store, run)?;
@@ -606,42 +606,42 @@ pub fn cancel(
     let written = |e: String| {
         Stop::could_not_tell(format!(
             "{run} is cancelled and its lines did not all reach the stream: {e}\n  the record \
-             is CLOSED and {} resolved",
-            named_gates(&gates)
+             is CLOSED and {} cleared",
+            named_holds(&holds)
         ))
     };
     events
         .append(RUN_CANCELLED, cancel.by, serde_json::json!({ "run": run }))
         .map_err(written)?;
-    for gate in &gates {
+    for hold in &holds {
         events
             .append(
-                GATE_RESOLVED,
+                HOLD_CLEARED,
                 cancel.by,
-                serde_json::json!({ "item": run, "gate": gate, "letter": serde_json::Value::Null }),
+                serde_json::json!({ "item": run, "hold": hold, "letter": serde_json::Value::Null }),
             )
             .map_err(written)?;
     }
 
-    let line = if gates.is_empty() {
+    let line = if holds.is_empty() {
         format!("{run} — cancelled")
     } else {
-        format!("{run} — cancelled, {} resolved", named_gates(&gates))
+        format!("{run} — cancelled, {} cleared", named_holds(&holds))
     };
     writeln!(out, "{line}")
         .map_err(|e| Stop::could_not_tell(format!("the cancel line could not be written: {e}")))?;
     Ok(Cancelled {
         run: run.to_string(),
-        gates,
+        holds,
     })
 }
 
-/// The gates a cancel resolved, named as the line about them names them.
-fn named_gates(gates: &[String]) -> String {
-    match gates {
-        [] => String::from("no gate"),
-        [one] => format!("gate {one}"),
-        many => format!("gates {}", many.join(", ")),
+/// The holds a cancel cleared, named as the line about them names them.
+fn named_holds(holds: &[String]) -> String {
+    match holds {
+        [] => String::from("no hold"),
+        [one] => format!("hold {one}"),
+        many => format!("holds {}", many.join(", ")),
     }
 }
 

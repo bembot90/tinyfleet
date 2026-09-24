@@ -156,32 +156,42 @@ It refuses the trunk, a file left outside the staged set and an empty one, and
 it refuses them all before anything is committed.")]
     Deliver(item::DeliverArgs),
 
-    /// ask a person a question, and park the item on it
+    /// raise a hold: ask a person a question, and hold the item on it
     #[command(long_about = "\
-ask a person a question from inside a seat's worktree: everything the tree
-holds is committed on the work branch, the store's own gate is raised carrying
-the question and its lettered options, the park is written on the item with the
-branch, the commit and the gate, and `item.parked` reaches the stream.
+raise a hold from inside a seat's worktree, asking a person a question:
+everything the tree holds is committed on the work branch, the store's own hold
+is raised carrying the question and its lettered options, the park is written
+on the item with the branch, the commit and the hold, and `item.held` reaches
+the stream.
 
 It rings nobody and dispatches nothing. The flight retires the seat, the item
-leaves the ready set until the gate is resolved, and the next flight that lists
-it cuts a fresh seat from the parked commit with the question and the answer in
+leaves the ready set until the hold is cleared, and the next flight that lists
+it cuts a fresh seat from the held commit with the question and the answer in
 its brief.
 
 It refuses the trunk, a worktree holding no ordered item, and a note the
 question grammar does not read — all three before anything is committed.")]
-    Ask(item::AskArgs),
+    Hold(item::HoldArgs),
 
-    /// answer a question a seat parked on
+    /// give a hold its clearance: answer the question an item is held on
     #[command(long_about = "\
-answer a question a seat parked on: the answer written on the item, the store's
-gate resolved and `gate.resolved` on the stream, one act.
+give a hold its clearance, answering the question an item is held on: the
+answer written on the item, the store's hold cleared and `hold.cleared` on the
+stream, one act.
 
 The letter names one of the question's options; `--text` says what was decided
 where the options did not carry it, and is what makes a letter outside them an
 answer rather than a typo. The item is ready again and nothing is dispatched:
 the next flight that lists it is what resumes the work.")]
-    Answer(item::AnswerArgs),
+    Clear(item::ClearArgs),
+
+    // THE OLD SPELLINGS OF THE PAIR, refused: a seat or a script still typing
+    // `fleet ask` or `fleet answer` reads exit 2 and the one rewrite that
+    // helps, never a sentence about a flag. The words are never read.
+    #[command(hide = true, disable_help_flag = true)]
+    Ask(OldWords),
+    #[command(hide = true, disable_help_flag = true)]
+    Answer(OldWords),
 
     /// read a delivery and write the verdict
     #[command(long_about = "\
@@ -243,11 +253,11 @@ run.could_not_tell with what was read. A closed or failed run is closed
 on the record; a waiting one stays open.")]
     Run(item::RunArgs),
 
-    /// cancel a run: resolve its gates, close its record, let its seats go
+    /// cancel a run: clear its holds, close its record, let its seats go
     #[command(long_about = "\
-cancel a run: every gate standing on its record resolved, the record closed as
-cancelled, and run.cancelled on the stream, with one gate.resolved per gate —
-one act, for a run nothing else will end: parked at [core.run] max_crashes,
+cancel a run: every hold standing on its record cleared, the record closed as
+cancelled, and run.cancelled on the stream, with one hold.cleared per hold —
+one act, for a run nothing else will end: held at [core.run] max_crashes,
 waiting on a wake that will not come, or gone without a row of the exit
 table. The record is what [core.run] max_open counts, so a cancel frees its
 slot.
@@ -573,8 +583,18 @@ fn dispatch() -> Result<Exit> {
         Family::Dispatch(args) => Ok(item::dispatch_command(&args)),
         Family::Brief(args) => Ok(item::brief_command(&args)),
         Family::Deliver(args) => Ok(item::deliver_command(&args)),
-        Family::Ask(args) => Ok(item::ask_command(&args)),
-        Family::Answer(args) => Ok(item::answer_command(&args)),
+        Family::Hold(args) => Ok(item::hold_command(&args)),
+        Family::Clear(args) => Ok(item::clear_command(&args)),
+        Family::Ask(_) => Ok(old_verb(
+            "ask",
+            "a question is a hold now",
+            "fleet hold --note <file>",
+        )),
+        Family::Answer(_) => Ok(old_verb(
+            "answer",
+            "an answer is a hold's clearance now",
+            "fleet clear <item> <letter> [--text <text>]",
+        )),
         Family::Review(args) => Ok(item::review_command(&args)),
         Family::Land(args) => Ok(item::land_command(&ui, &args)),
         Family::Run(args) => Ok(item::run_command(&args)),
@@ -592,7 +612,7 @@ fn dispatch() -> Result<Exit> {
 /// DIRECTORY and on no project: a service-started controller has no working
 /// directory to resolve one from, so the engine looks each run's record up
 /// over the projects the machine registers. `None` here is a loop that never
-/// re-runs, gates or cleans a run.
+/// re-runs, holds or cleans a run.
 pub fn observe_loop(once: bool) -> u8 {
     let engine = runs::Engine::on(platform::machine_dir());
     run::observe_runs(
@@ -679,6 +699,17 @@ fn seat_usage_error(verb: &str) -> Exit {
     // The root's usage line and not this family's help: the refusal above is
     // the whole answer, and the rewrite is the only text a reader of it needs.
     // `fleet seat --help` is where the family's own page lives.
+    eprint!("{}", Cli::command().render_usage());
+    eprintln!();
+    Exit::Usage
+}
+
+// `ask` and `answer` are `hold` and `clear` now (fleet-6gr, V1). Named back with
+// their rewrite, as the lifecycle words under `seat` are, rather than met by a
+// bare unknown subcommand: they are the two a seat's rules and a person's habit
+// type.
+fn old_verb(verb: &str, why: &str, rewrite: &str) -> Exit {
+    eprintln!("fleet {verb}: {why} — say {rewrite}");
     eprint!("{}", Cli::command().render_usage());
     eprintln!();
     Exit::Usage

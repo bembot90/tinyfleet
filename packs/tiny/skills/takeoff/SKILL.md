@@ -13,7 +13,7 @@ was decided in their name, and gone in between.
 The middle is not a skill any more. It is `workflows/takeoff.ts` in this
 pack, run by `fleet run takeoff`: a spawn step per item, an until step per
 delivery, review and land as steps, every verdict a gate for the person
-under `review=gate`, and the report and the board tick as its last two steps.
+under `review=hold`, and the report and the board tick as its last two steps.
 A step that cannot close exits waiting and the controller re-runs the bundle
 when the stream moves; replay carries the re-run back to the same step, so
 nothing is spawned twice and no delivery is reviewed twice. This file holds
@@ -77,7 +77,7 @@ e. **State the list back and wait for go.** The final list in order, every
    the flight lands NOT TESTED. Only then:
 
    ```sh
-   fleet run takeoff --input items=<id>,<id> --input policy=review=gate,width=<n> --input test=<command>
+   fleet run takeoff --input items=<id>,<id> --input policy=review=hold,width=<n> --input test=<command>
    ```
 
    The run prints its id and its hash; the run directory under the machine

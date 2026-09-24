@@ -41,7 +41,7 @@ you measured and what you expect to fail if you are overruled, and hand the
 item back. A return is delivery-class: it goes out in the same turn, not only
 onto the item.
 
-**Ask** — a question nobody here can answer. `fleet ask` commits what your tree
+**Ask** — a question nobody here can answer. `fleet hold` commits what your tree
 holds, raises the question as a gate and parks: `QUESTION` at column zero, one
 lettered option per line, because a question with no options is a conversation.
 You are retired after it, and the next flight resumes from your commit.

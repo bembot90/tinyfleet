@@ -37,7 +37,7 @@ What each verb writes, so you know what to look for afterwards:
 | `ask` | everything the tree holds, committed on the work branch; the gate; the park on the item |
 | `answer` | the answer note on the item, and the gate resolved |
 
-When a question blocks you and nobody here can answer it, `fleet ask --note
+When a question blocks you and nobody here can answer it, `fleet hold --note
 <file>` is the way to stop: it commits everything your tree holds, raises the
 question as a gate on the item, and parks. Write the note with `QUESTION` at
 column zero and one lettered option per line — a question with no options is a
@@ -69,5 +69,5 @@ Seven more, this fleet's own:
 6. **Whoever reviews it drives it.** Read the delivery, run its suite, and
    exercise the thing itself; a green somebody else reported is not a reading.
 7. **A decision that is the person's is a gate, never prose.** Raise it with
-   `fleet ask`, one lettered option per line, and let the flight park on it.
+   `fleet hold`, one lettered option per line, and let the flight park on it.
    A decision buried in a paragraph is one nobody answered.

@@ -22,14 +22,14 @@
 // opens the stream file for neither, so what it records and what it replays
 // cannot be two files.
 //
-// The verbs — spawn, deliver, review, land, gate, until and start — are each
+// The verbs — spawn, deliver, review, land, hold, until and start — are each
 // one step whose exec runs the binary with `--json` and records the envelope's
 // `data`; a refusal envelope is a thrown `Refusal`, exit 1 with the code in the
 // reason. Every act a verb takes is attributed `--by` the run id, and the two
-// verbs that leave something open across a Waiting exit — a gate's ask, a
+// verbs that leave something open across a Waiting exit — a hold's question, a
 // start's child run — find their own record on a re-run by that actor: the k-th
-// park or the k-th run this run raised is the k-th gate or start call, so
-// neither asks nor starts twice.
+// park or the k-th run this run raised is the k-th hold or start call, so
+// neither holds nor starts twice.
 
 /// The six names the run exports to its child (core's run module), and the
 /// machine directory the binary resolves the stream under.
@@ -110,21 +110,19 @@ export type Verdict = "accepted" | { returned: string };
 /** The item events `until` waits on, by their last word. */
 export type ItemState =
   | "dispatched"
-  | "held"
   | "delivered"
   | "reviewed"
   | "returned"
   | "landed"
-  | "parked";
+  | "held";
 
 const ITEM_STATES: readonly ItemState[] = [
   "dispatched",
-  "held",
   "delivered",
   "reviewed",
   "returned",
   "landed",
-  "parked",
+  "held",
 ];
 
 /** `fleet dispatch --json`'s data. */
@@ -154,10 +152,10 @@ export interface Landed {
   sha: string;
 }
 
-interface Asked {
+interface Held {
   item: string;
   state: string;
-  gate: string;
+  hold: string;
 }
 
 /** The handle a workflow runs against. */
@@ -208,10 +206,10 @@ export interface Run {
   review(item: string, verdict: Verdict): Promise<Reviewed>;
   /** `fleet land <item> <sha> [--test <command>] --json`. */
   land(item: string, sha: string, options?: LandOptions): Promise<Landed>;
-  /** A question for a person, asked on the run's own record item: `fleet ask
-   * --json` with the lettered options, then Waiting on the gate id; the
-   * answer's letter once `gate.resolved` is on the stream. */
-  gate(question: string, options: string[]): Promise<string>;
+  /** A question for a person, held on the run's own record item: `fleet hold
+   * --json` with the lettered options, then Waiting on the hold id; the
+   * clearance's letter once `hold.cleared` is on the stream. */
+  hold(question: string, options: string[]): Promise<string>;
   /** Waiting until every item's `item.<state>` is on the stream, naming the
    * outstanding ones; then each item's event payload. For `delivered` that is
    * the item's latest delivery no later `item.returned` follows: an item whose
@@ -234,15 +232,15 @@ const STEP_CLOSED = "step.closed";
 const ITEM_DELIVERED = "item.delivered";
 const ITEM_RETURNED = "item.returned";
 const ITEM_LANDED = "item.landed";
-const ITEM_PARKED = "item.parked";
-const GATE_RESOLVED = "gate.resolved";
+const ITEM_HELD = "item.held";
+const HOLD_CLEARED = "hold.cleared";
 const RUN_STARTED = "run.started";
 const RUN_CLOSED = "run.closed";
 const RUN_FAILED = "run.failed";
 const RUN_CANCELLED = "run.cancelled";
 
-/** Where a gate's question note goes under the run directory. */
-export const GATES_DIR = "gates";
+/** Where a hold's question note goes under the run directory. */
+export const HOLDS_DIR = "holds";
 
 /** What a spawn step closes on where the item was already delivered before
  * this execution began and no return or landing followed the delivery there,
@@ -313,7 +311,7 @@ export async function workflow(
 class Handle implements Run {
   readonly id: string;
   private n = 0;
-  private gates = 0;
+  private holds = 0;
   private starts = 0;
 
   constructor(
@@ -444,36 +442,36 @@ class Handle implements Run {
     );
   }
 
-  gate(question: string, options: string[]): Promise<string> {
-    const k = ++this.gates;
-    return this.step(`gate ${question}`, async () => {
-      const parks = (await this.tail({ type: ITEM_PARKED, seat: this.id }))
+  hold(question: string, options: string[]): Promise<string> {
+    const k = ++this.holds;
+    return this.step(`hold ${question}`, async () => {
+      const parks = (await this.tail({ type: ITEM_HELD, seat: this.id }))
         .filter((r) => r.payload.item === this.id);
-      let gate: string;
+      let hold: string;
       if (parks.length >= k) {
-        gate = String(parks[k - 1].payload.gate);
+        hold = String(parks[k - 1].payload.hold);
       } else {
-        const note = `${this.env.runDir}/${GATES_DIR}/${k}.md`;
-        await Deno.mkdir(`${this.env.runDir}/${GATES_DIR}`, {
+        const note = `${this.env.runDir}/${HOLDS_DIR}/${k}.md`;
+        await Deno.mkdir(`${this.env.runDir}/${HOLDS_DIR}`, {
           recursive: true,
         });
         await Deno.writeTextFile(
           note,
           `QUESTION ${question}\n${options.join("\n")}\n`,
         );
-        const asked = await this.verb<Asked>([
-          "ask",
+        const held = await this.verb<Held>([
+          "hold",
           "--item",
           this.id,
           "--note",
           note,
         ]);
-        gate = asked.gate;
+        hold = held.hold;
       }
-      const resolved = (await this.tail({ type: GATE_RESOLVED }))
-        .find((r) => r.payload.gate === gate);
-      if (resolved === undefined) throw new Waiting(gate);
-      return String(resolved.payload.letter);
+      const cleared = (await this.tail({ type: HOLD_CLEARED }))
+        .find((r) => r.payload.hold === hold);
+      if (cleared === undefined) throw new Waiting(hold);
+      return String(cleared.payload.letter);
     });
   }
 

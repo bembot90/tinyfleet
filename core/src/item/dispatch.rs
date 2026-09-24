@@ -250,8 +250,8 @@ fn refuse_unless_dispatchable(order: &Order, item: &Item, wiring: &Wiring) -> Re
 
 /// An epic, refused by its TYPE. The store's ready list keeps an open,
 /// unblocked epic — it is the store's answer and not a list of what a seat can
-/// build — so the ready check alone lets one through. `ask` refuses on the same
-/// reading, because a park on an epic is a gate the store will not tie to it.
+/// build — so the ready check alone lets one through. `hold` refuses on the same
+/// reading, because a park on an epic is a hold the store will not tie to it.
 pub(crate) fn refuse_an_epic(item: &Item) -> Result<(), Stop> {
     if item.item_type == EPIC {
         return Err(Stop::refused(format!(

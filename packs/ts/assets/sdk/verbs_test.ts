@@ -3,12 +3,12 @@
 // binary — so each arm reads the argv the verb spawned, the step it recorded
 // with the envelope's data as its result, and the exit the wrapper takes.
 //
-// The stream lines a verb's re-run reads — a park, a resolved gate, an item's
+// The stream lines a verb's re-run reads — a park, a cleared hold, an item's
 // landing, a child run's close — are appended by the arm itself in the stored
 // shape, the way `rig.ts` seeds the opening line.
 
 import { assert, assertEquals, assertMatch } from "jsr:@std/assert@1";
-import { GATES_DIR, replay, RETAKEN, type Run, Waiting } from "./mod.ts";
+import { HOLDS_DIR, replay, RETAKEN, type Run, Waiting } from "./mod.ts";
 import {
   closes,
   lines,
@@ -321,37 +321,37 @@ Deno.test("AC1 land — fleet land <item> <sha> --by <run> --json, the landed sh
   ]]);
 });
 
-Deno.test("AC2 gate — the question note, fleet ask on the run's record item, exit 2 with the gate id, one ask across the re-runs, then the letter", async () => {
+Deno.test("AC2 hold — the question note, fleet hold on the run's record item, exit 2 with the hold id, one hold across the re-runs, then the letter", async () => {
   const s = await scratch();
   const runId = s.env.runId;
-  await can(s, "ask", {
-    stdout: envelope("ask", { item: runId, state: "parked", gate: "gate-7" }),
+  await can(s, "hold", {
+    stdout: envelope("hold", { item: runId, state: "held", hold: "hold-7" }),
     append: [{
-      type: "item.parked",
+      type: "item.held",
       payload: {
         item: runId,
         reason: "ask",
         branch: "",
         commit: "",
-        gate: "gate-7",
+        hold: "hold-7",
       },
     }],
   });
   const letters: string[] = [];
   const fn = async (run: Run) => {
     await run.step("count", () => 1);
-    letters.push(await run.gate("Ship the report?", ["A. yes", "B. hold"]));
+    letters.push(await run.hold("Ship the report?", ["A. yes", "B. not yet"]));
   };
 
-  assertEquals(await replay(fn, s.env, "{}"), { code: 2, waiting: "gate-7" });
-  const note = `${s.env.runDir}/${GATES_DIR}/1.md`;
+  assertEquals(await replay(fn, s.env, "{}"), { code: 2, waiting: "hold-7" });
+  const note = `${s.env.runDir}/${HOLDS_DIR}/1.md`;
   assertEquals(
     await Deno.readTextFile(note),
-    "QUESTION Ship the report?\nA. yes\nB. hold\n",
+    "QUESTION Ship the report?\nA. yes\nB. not yet\n",
     "the note is in the question grammar",
   );
   assertEquals(await calls(s), [[
-    "ask",
+    "hold",
     "--item",
     runId,
     "--note",
@@ -364,27 +364,27 @@ Deno.test("AC2 gate — the question note, fleet ask on the run's record item, e
   assertEquals(
     closes(all).map((l) => l.payload.n),
     [1],
-    "the gate is started and not closed",
+    "the hold is started and not closed",
   );
   assertEquals(starts(all).map((l) => l.payload.n), [1, 2]);
 
-  // The stream has not moved past the park: the re-run waits on the same gate
+  // The stream has not moved past the park: the re-run waits on the same hold
   // and asks nothing — the park on the stream is the record it reads.
-  assertEquals(await replay(fn, s.env, "{}"), { code: 2, waiting: "gate-7" });
+  assertEquals(await replay(fn, s.env, "{}"), { code: 2, waiting: "hold-7" });
   assertEquals((await calls(s)).length, 1, "the re-run does not ask twice");
 
-  await append(s.env.stream, "gate.resolved", "a-person", {
+  await append(s.env.stream, "hold.cleared", "a-person", {
     item: runId,
-    gate: "gate-7",
+    hold: "hold-7",
     letter: "B",
   });
   assertEquals(await replay(fn, s.env, "{}"), { code: 0 });
   assertEquals(letters, ["B"]);
   assertEquals((await calls(s)).length, 1);
   all = await lines(s);
-  const gate = closes(all)[1];
-  assertEquals(gate.payload.name, "gate Ship the report?");
-  assertEquals(gate.payload.result, "B", "the step closes with the letter");
+  const hold = closes(all)[1];
+  assertEquals(hold.payload.name, "hold Ship the report?");
+  assertEquals(hold.payload.result, "B", "the step closes with the letter");
 
   assertEquals(await replay(fn, s.env, "{}"), { code: 0 });
   assertEquals(letters, ["B", "B"], "and replays it");

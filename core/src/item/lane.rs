@@ -350,7 +350,7 @@ pub enum Waited {
 }
 
 impl Waited {
-    /// The clause the second gate row and the second `gate.read` carry.
+    /// The clause the second gate row and the second `check.read` carry.
     pub fn clause(&self) -> String {
         match self {
             Waited::Quiet(text) => text.clone(),
