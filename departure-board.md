@@ -60,7 +60,7 @@ dependencies are the real blockers.
 | fleet-iex.6 | Key sessions.json, the stream's seat actor and the projection's seat by id, derive every name from <slug>-<short>, an… | fleet-iex.5 | ☑ |
 | fleet-iex.11 | The work graph holds seat ids, part 1: dispatch and brief resolve --to to a seat id, the assignee and fleet.orders.se… | fleet-iex.6 | ☑ |
 | fleet-iex.12 | The work graph holds seat ids, part 2: [core] reviewer resolves to a seat id, deliver reassigns to it, review returns… | fleet-iex.11 | ☑ |
-| fleet-iex.8 | The actor is a typed reference at the cli: --by and FLEET_ACTOR take a seat or kind:id, BEADS_ACTOR is no longer read… | fleet-iex.12 | ☐ |
+| fleet-iex.8 | The actor is a typed reference at the cli: --by and FLEET_ACTOR take a seat or kind:id, BEADS_ACTOR is no longer read… | fleet-iex.12 | ☑ |
 | fleet-iex.9 | Core's verbs take the typed actor: bd gets its <kind>:<id> string, and every seat-only check refuses a non-seat actor… | fleet-iex.8 | ☐ |
 | fleet-iex.10 | The stream carries the actor as a typed reference {kind, id}; tail filters by --seat (resolved) and --actor, and the… | fleet-iex.9 | ☐ |
 | fleet-iex.13 | A seat appears as {id, name?, kind} in the projection, the event payloads, every seat-bearing --json document and the… | fleet-iex.6, fleet-iex.7, fleet-iex.11 | ☑ |
