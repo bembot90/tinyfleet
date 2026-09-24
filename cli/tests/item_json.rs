@@ -190,11 +190,11 @@ impl Rig {
             rig.machine.join("config.json"),
             format!(
                 r#"{{"fleet_toml": {fleet_toml}, "children": [
-                     {{"name": "{REVIEWER}", "chosen_name": "Kite",
+                     {{"id": "01a0d1f1-0aec-765f-9abe-d4f993b9739a", "name": "{REVIEWER}",
                       "worktrees": {{"a-project": {worktree}}}}},
-                     {{"name": "{target}", "chosen_name": "Pell",
+                     {{"id": "01a0d1f1-0aec-765f-9abe-5c21e8a04b17", "name": "{target}",
                       "worktrees": {{"a-project": {target_worktree}}}}},
-                     {{"name": "{other_target}", "chosen_name": "Orla",
+                     {{"id": "01a0d1f1-0aec-765f-9abe-00007e3fa2c0", "name": "{other_target}",
                       "worktrees": {{"a-project": {other_worktree}}}}}
                    ]}}"#,
                 target = rig.target,

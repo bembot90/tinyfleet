@@ -29,8 +29,10 @@ mod common;
 static ENV: Mutex<()> = Mutex::new(());
 
 /// The one seat the rig configures, spelled once so the fixture and every
-/// assertion about it read the same value.
-const SEAT: &str = "a-seat";
+/// assertion about it read the same value: the id its row is keyed by, and the
+/// machine name everything the loop writes about it carries.
+const SEAT_ID: &str = "01a0d1f1-0aec-765f-9abe-5c21e8a04b17";
+const SEAT: &str = "agent-e8a04b17";
 const PROJECT: &str = "a-project";
 
 /// The poll interval the rig's policy file carries. Ten minutes, so the fake
@@ -79,7 +81,7 @@ impl Rig {
             &rig.machine.join("config.json"),
             &format!(
                 "{{\"fleet_toml\": \"{}\", \"children\": [\
-                 {{\"name\": \"{SEAT}\", \"worktrees\": {{\"{PROJECT}\": \"{}\"}}}}]}}\n",
+                 {{\"id\": \"{SEAT_ID}\", \"worktrees\": {{\"{PROJECT}\": \"{}\"}}}}]}}\n",
                 rig.root.join("fleet.toml").display(),
                 rig.worktree.display()
             ),

@@ -13,6 +13,7 @@ use crate::policy::{self, Policy};
 use crate::projection::{self, InFlight, PolicyView, Projection, SeatRow};
 use crate::routines;
 use crate::sessions::{self, SeatState, Table};
+use fleet_core::seat::identity::{SeatId, SeatRef};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -270,7 +271,7 @@ pub struct Observer<'a> {
     adopted: bool,
     /// The seats standing in a hold, whichever of the two holds it is: the line
     /// is written once per transition into one and not once per poll.
-    held: BTreeSet<String>,
+    held: BTreeSet<SeatId>,
     /// When this controller last read a LIVE row for each seat, in epoch
     /// milliseconds.
     ///
@@ -280,7 +281,7 @@ pub struct Observer<'a> {
     /// and `Table::sight` therefore records nothing for. A restart starts this
     /// empty, which is the seat's own pre-hold verdict and never a hold nobody
     /// can account for.
-    live_seen: BTreeMap<String, u64>,
+    live_seen: BTreeMap<SeatId, u64>,
     /// When this controller read the FIRST pid-less poll of the run of them each
     /// seat is currently standing in, in epoch milliseconds.
     ///
@@ -291,7 +292,7 @@ pub struct Observer<'a> {
     /// poll interval: a run's steps execute on this thread, and the poll after a
     /// twenty-minute land step holds a live sighting twenty minutes old for
     /// every seat on the fleet — the reading the poll after a run's land step turns on.
-    pidless_since: BTreeMap<String, u64>,
+    pidless_since: BTreeMap<SeatId, u64>,
     upgrade_shape: Option<FleetShape>,
     rest_failed_said: BTreeSet<String>,
     routines_state_said: BTreeSet<String>,
@@ -385,12 +386,12 @@ impl<'a> Observer<'a> {
         // Once per transition into a hold, and once per transition into the
         // upgrade shape: both are observations, not decisions, and a line per
         // poll would drown the one a person came to read.
-        let held: BTreeSet<String> = BTreeSet::new();
+        let held: BTreeSet<SeatId> = BTreeSet::new();
         // No seat has been seen live before the first poll, so the first poll
         // decides every seat exactly as it did before this memory existed.
-        let live_seen: BTreeMap<String, u64> = BTreeMap::new();
+        let live_seen: BTreeMap<SeatId, u64> = BTreeMap::new();
         // And no seat is standing in a run of pid-less polls until one is read.
-        let pidless_since: BTreeMap<String, u64> = BTreeMap::new();
+        let pidless_since: BTreeMap<SeatId, u64> = BTreeMap::new();
         let upgrade_shape: Option<FleetShape> = None;
         // For a rest whose stop failed: the retry is silent and the first
         // failure is loud.
@@ -538,20 +539,23 @@ impl<'a> Observer<'a> {
         // controller remembers about what it started: the seat list carries no
         // such field, and a directory derived from the seat's name here would be
         // a second spelling that a spawn could already have decided otherwise.
-        let recorded_dirs: BTreeMap<String, String> = self
+        //
+        // The table is still keyed on the machine name, so it is asked by that;
+        // everything this loop keeps about a seat is keyed on its id.
+        let recorded_dirs: BTreeMap<SeatId, String> = self
             .config
             .seats
             .iter()
             .filter_map(|seat| {
                 self.table
-                    .newest_for(&seat.name)
+                    .newest_for(&seat.machine_name())
                     .and_then(|row| row.config_dir.clone())
-                    .map(|dir| (seat.name.clone(), dir))
+                    .map(|dir| (seat.id, dir))
             })
             .collect();
         let rosters = observe::Rosters::gather(
             &self.config.seats,
-            &|seat: &str| recorded_dirs.get(seat).cloned(),
+            &|seat: &SeatId| recorded_dirs.get(seat).cloned(),
             &|dir: Option<&Path>| agent.status(dir),
         );
         let agent_version = agent.version();
@@ -614,13 +618,21 @@ impl<'a> Observer<'a> {
         // The stream, from the line after the cursor. Read BEFORE deciding, so
         // what a seat asked for between polls is in hand when its verdict is
         // reached.
-        let known: BTreeSet<&str> = self.config.seats.iter().map(|s| s.name.as_str()).collect();
-        let transient: BTreeSet<&str> = self
+        //
+        // A stream line's actor is still the seat's machine name, so the fold
+        // is handed the one map from that name to the id it is keyed on.
+        let known: BTreeMap<String, SeatId> = self
+            .config
+            .seats
+            .iter()
+            .map(|s| (s.machine_name(), s.id))
+            .collect();
+        let transient: BTreeSet<SeatId> = self
             .config
             .seats
             .iter()
             .filter(|s| s.transient)
-            .map(|s| s.name.as_str())
+            .map(|s| s.id)
             .collect();
         let stream = events::read_after(
             &self.machine_dir.join("events.jsonl"),
@@ -633,10 +645,11 @@ impl<'a> Observer<'a> {
         let mut seats = Vec::with_capacity(self.config.seats.len());
         let mut logged_out: Vec<(String, Option<String>)> = Vec::new();
         for (index, seat) in self.config.seats.iter().enumerate() {
+            let machine_name = seat.machine_name();
             // The seat's own directory, threaded through every read about it:
             // the listing that can see it, the end its stopped-row window is
             // judged on, and the transcript its context is read from.
-            let under: Option<PathBuf> = recorded_dirs.get(&seat.name).map(PathBuf::from);
+            let under: Option<PathBuf> = recorded_dirs.get(&seat.id).map(PathBuf::from);
             // The stopped-row window, from policy, with the end each row is
             // judged on resolved through the same adapter and the same worktree
             // spelling the context read below uses.
@@ -647,7 +660,7 @@ impl<'a> Observer<'a> {
                 },
             };
             let observation =
-                observe::observe_seat(rosters.for_seat(&seat.name), seat, now_ms, &recency);
+                observe::observe_seat(rosters.for_seat(&seat.id), seat, now_ms, &recency);
             // Context comes from the transcript and never from the listing,
             // which carries no token field (lessons claude-code B2). An ended
             // row still answers, because the transcript outlives the process.
@@ -676,7 +689,7 @@ impl<'a> Observer<'a> {
             // rule is against.
             let sighted = self
                 .table
-                .newest_for(&seat.name)
+                .newest_for(&machine_name)
                 .is_none_or(|row| row.first_seen_at.is_some());
             if observe::logged_out_dispatch(
                 seat.transient,
@@ -685,9 +698,9 @@ impl<'a> Observer<'a> {
                 body.as_deref(),
             ) {
                 logged_out.push((
-                    seat.name.clone(),
+                    machine_name.clone(),
                     self.table
-                        .newest_for(&seat.name)
+                        .newest_for(&machine_name)
                         .and_then(|row| row.item.clone()),
                 ));
             }
@@ -706,12 +719,12 @@ impl<'a> Observer<'a> {
                 // a session no row names. It is written BEFORE the verdicts and
                 // only on a live row, so the seat it decides about — a pid-less
                 // one — reads the stamp an earlier poll left.
-                self.live_seen.insert(seat.name.clone(), now_ms);
+                self.live_seen.insert(seat.id, now_ms);
                 if let (Some(session_id), Some(worktree)) =
                     (&observation.session_id, &observation.worktree)
                 {
                     table_moved |= self.table.sight(
-                        &seat.name,
+                        &machine_name,
                         dir_key(worktree),
                         session_id,
                         observation.short_id.as_deref(),
@@ -727,17 +740,17 @@ impl<'a> Observer<'a> {
             // minutes opens its run at the poll that finally looked.
             match observation.state {
                 RosterState::Stopped | RosterState::Absent => {
-                    self.pidless_since
-                        .entry(seat.name.clone())
-                        .or_insert(now_ms);
+                    self.pidless_since.entry(seat.id).or_insert(now_ms);
                 }
                 _ => {
-                    self.pidless_since.remove(&seat.name);
+                    self.pidless_since.remove(&seat.id);
                 }
             }
+            // No `chosen_name`: the key is the shape seat identity retired, and
+            // it stays absent on every row until the projection drops it.
             seats.push(SeatRow::from_observation(
-                &seat.name,
-                seat.chosen_name.as_deref(),
+                &machine_name,
+                None,
                 &observation,
                 context_tokens,
             ));
@@ -790,32 +803,36 @@ impl<'a> Observer<'a> {
         // for another interval.
         for seat in &self.config.seats {
             if !pending
-                .get(seat.name.as_str())
+                .get(&seat.id)
                 .map(|asked| asked.clear_halt)
                 .unwrap_or(false)
             {
                 continue;
             }
-            let was = self.table.seat_state(&seat.name);
+            let machine_name = seat.machine_name();
+            let was = self.table.seat_state(&machine_name);
             if was.blind == 0 && !was.halted {
                 continue;
             }
-            self.table.set_seat_state(&seat.name, SeatState::default());
+            self.table
+                .set_seat_state(&machine_name, SeatState::default());
             table_moved = true;
             eprintln!(
-                "fleet observe: {}'s blind counter reset from {} and its halt lifted by request",
-                seat.name, was.blind
+                "fleet observe: {machine_name}'s blind counter reset from {} and its halt lifted \
+                 by request",
+                was.blind
             );
         }
 
         let mut verdicts: Vec<Verdict> = Vec::with_capacity(observations.len());
         for (index, observation, context_tokens) in &observations {
             let seat = &self.config.seats[*index];
-            let asked = pending.get(seat.name.as_str()).cloned().unwrap_or_default();
-            let newest = self.table.newest_for(&seat.name);
-            let carried = self.table.seat_state(&seat.name);
+            let machine_name = seat.machine_name();
+            let asked = pending.get(&seat.id).cloned().unwrap_or_default();
+            let newest = self.table.newest_for(&machine_name);
+            let carried = self.table.seat_state(&machine_name);
             let input = SeatInput {
-                seat_dir: &seat.name,
+                seat_dir: &machine_name,
                 state: observation.state,
                 unknown_cause: observation.unknown_cause.as_deref(),
                 transient: seat.transient,
@@ -827,7 +844,7 @@ impl<'a> Observer<'a> {
                 already_nudged: observation
                     .session_id
                     .as_deref()
-                    .map(|id| self.table.is_nudged(&seat.name, id))
+                    .map(|id| self.table.is_nudged(&machine_name, id))
                     .unwrap_or(false),
                 dispatch_age_ms: newest.map(|row| now_ms.saturating_sub(row.dispatched_at)),
                 sighted: newest.map(|row| row.session_id.is_some()).unwrap_or(false),
@@ -854,21 +871,21 @@ impl<'a> Observer<'a> {
                 // session being re-hosted from one that is gone while the
                 // daemon holding it stands unchanged — and the age of the
                 // pid-less run itself, which is what the window is spent on.
-                seen_live: self.live_seen.contains_key(seat.name.as_str()),
+                seen_live: self.live_seen.contains_key(&seat.id),
                 since_pidless_ms: self
                     .pidless_since
-                    .get(seat.name.as_str())
+                    .get(&seat.id)
                     .map(|at| now_ms.saturating_sub(*at)),
             };
             let verdict = decide::decide(&input);
             // The hold's own line, from the same function the arm reaches its
             // verdict through, once per transition into it.
             match decide::hold(&input) {
-                Some(why) if self.held.insert(seat.name.clone()) => {
+                Some(why) if self.held.insert(seat.id) => {
                     eprintln!("fleet observe: {why}")
                 }
                 None => {
-                    self.held.remove(&seat.name);
+                    self.held.remove(&seat.id);
                 }
                 _ => {}
             }
@@ -938,7 +955,7 @@ impl<'a> Observer<'a> {
         // so a file dropped into a routines directory is live on the next
         // evaluation with no restart.
         let routines_now = routines::now_secs();
-        let seat_names: Vec<String> = self.config.seats.iter().map(|s| s.name.clone()).collect();
+        let seat_refs: Vec<SeatRef> = self.config.seats.iter().map(Seat::as_ref).collect();
         // The directory holding the policy file in force, which is this
         // machine's fleet root. A daemon's own working directory is the service
         // manager's and names nothing, so the walk-up the CLI does is not a
@@ -947,7 +964,7 @@ impl<'a> Observer<'a> {
         let registry = match &routines_root {
             Some(root) => routines::load::load(
                 &routines::load::roots(root, &self.machine_dir, &projects_of(root)),
-                &seat_names,
+                &seat_refs,
             ),
             None => routines::load::Registry::default(),
         };
@@ -992,13 +1009,14 @@ impl<'a> Observer<'a> {
                 // are on: a poll that dispatched nothing has no blind dispatch
                 // to count, and counting one would halt a seat this controller
                 // never acted for.
-                let carried = self.table.seat_state(&seat.name);
+                let machine_name = seat.machine_name();
+                let carried = self.table.seat_state(&machine_name);
                 let blind = decide::blind_after(carried.blind, observation.state, *verdict);
                 if blind != carried.blind || carried.halted != (blind >= decide::BLIND_LIMIT) {
                     let halted = carried.halted || blind >= decide::BLIND_LIMIT;
                     if blind > carried.blind {
                         effect::blind_dispatch(
-                            &seat.name,
+                            &machine_name,
                             blind,
                             verdict.as_str(),
                             &mut self.events_log,
@@ -1006,10 +1024,10 @@ impl<'a> Observer<'a> {
                     }
                     // Once per transition INTO the halt, never once per poll.
                     if halted && !carried.halted {
-                        effect::halted(&seat.name, blind, &mut self.events_log);
+                        effect::halted(&machine_name, blind, &mut self.events_log);
                     }
                     self.table
-                        .set_seat_state(&seat.name, SeatState { blind, halted });
+                        .set_seat_state(&machine_name, SeatState { blind, halted });
                     document.seats[*index].blind = blind;
                     document.seats[*index].halted = halted;
                     table_moved = true;
@@ -1019,7 +1037,7 @@ impl<'a> Observer<'a> {
                 // it standing for the next tick.
                 let collected = matches!(outcome, Outcome::Rested | Outcome::Spawned);
                 if let Some(seq) = pending
-                    .get(seat.name.as_str())
+                    .get(&seat.id)
                     .filter(|asked| asked.rest && !collected)
                     .and_then(|asked| asked.rest_seq)
                 {
@@ -1247,19 +1265,25 @@ fn act(
         // and the event were written once, at the transition.
         Verdict::Halt => Outcome::Halted,
         Verdict::Revive | Verdict::SpawnWoken | Verdict::Rest | Verdict::SuggestRest => {
-            let recorded = Recorded::of(table, &seat.name);
-            let Some(target) = target_for(policy, seat, observation, context_tokens, recorded)
-            else {
+            let machine_name = seat.machine_name();
+            let recorded = Recorded::of(table, &machine_name);
+            let Some(target) = target_for(
+                policy,
+                seat,
+                &machine_name,
+                observation,
+                context_tokens,
+                recorded,
+            ) else {
                 eprintln!(
-                    "fleet observe: {} is due {} and names no one worktree, so there is \
-                     nowhere to start it; nothing is done",
-                    seat.name,
+                    "fleet observe: {machine_name} is due {} and names no one worktree, so there \
+                     is nowhere to start it; nothing is done",
                     verdict.as_str()
                 );
                 return Outcome::None;
             };
             document.in_flight = Some(InFlight {
-                seat: seat.name.clone(),
+                seat: machine_name.clone(),
                 effect: verdict.as_str().to_string(),
             });
             write_projection(machine_dir, document);
@@ -1274,13 +1298,13 @@ fn act(
                         effect::Rested::StopFailed(cause) => {
                             if rest_failed_said.insert(format!(
                                 "{}:{}",
-                                seat.name,
+                                machine_name,
                                 observation.session_id.as_deref().unwrap_or("-")
                             )) {
                                 eprintln!(
                                     "fleet observe: {}'s rest is not collected and stays pending; \
                                  nothing was started and nothing was removed — {cause}",
-                                    seat.name
+                                    machine_name
                                 );
                             }
                             Outcome::Failed
@@ -1288,14 +1312,14 @@ fn act(
                         effect::Rested::StartFailed(cause) => {
                             if rest_failed_said.insert(format!(
                                 "{}:{}",
-                                seat.name,
+                                machine_name,
                                 observation.session_id.as_deref().unwrap_or("-")
                             )) {
                                 eprintln!(
                                     "fleet observe: {}'s predecessor was stopped and its successor \
                                  did not start, so the rest is not collected and stays pending; \
                                  nothing was removed — {cause}",
-                                    seat.name
+                                    machine_name
                                 );
                             }
                             Outcome::Failed
@@ -1304,7 +1328,7 @@ fn act(
                             eprintln!(
                                 "fleet observe: {} asked to rest and its row carries no short id, \
                              which is the address a stop takes; nothing is done",
-                                seat.name
+                                machine_name
                             );
                             Outcome::Failed
                         }
@@ -1340,19 +1364,21 @@ fn projects_of(fleet_root: &Path) -> Vec<(String, PathBuf)> {
 fn seat_views(
     seats: &[Seat],
     observations: &[(usize, SeatObservation, Option<u64>)],
-    recorded_dirs: &BTreeMap<String, String>,
+    recorded_dirs: &BTreeMap<SeatId, String>,
 ) -> Vec<routines::SeatView> {
     observations
         .iter()
         .filter_map(|(index, observation, _)| {
             let seat = seats.get(*index)?;
             let (_, worktree) = seat.worktrees.first()?;
+            let machine_name = seat.machine_name();
             Some(routines::SeatView {
-                seat_dir: seat.name.clone(),
-                display_name: effect::display_name(seat.chosen_name.as_deref(), &seat.name),
+                id: seat.id,
+                display_name: effect::display_name(None, &machine_name),
+                seat_dir: machine_name,
                 worktree: dir_key(worktree).to_string(),
                 state: observation.state,
-                config_dir: recorded_dirs.get(&seat.name).cloned(),
+                config_dir: recorded_dirs.get(&seat.id).cloned(),
             })
         })
         .collect()
@@ -1363,6 +1389,7 @@ fn seat_views(
 fn target_for<'a>(
     policy: &Policy,
     seat: &'a Seat,
+    machine_name: &'a str,
     observation: &'a SeatObservation,
     context_tokens: Option<u64>,
     recorded: Recorded,
@@ -1380,12 +1407,12 @@ fn target_for<'a>(
     };
     let model = policy.model_for(seat.model.as_deref());
     Some(Target {
-        seat_dir: &seat.name,
-        display_name: effect::display_name(seat.chosen_name.as_deref(), &seat.name),
+        seat_dir: machine_name,
+        display_name: effect::display_name(None, machine_name),
         project,
         worktree: dir_key(worktree),
         posture: policy.posture_for(seat.transient).to_string(),
-        first_turn: policy.first_turn_for(&seat.name),
+        first_turn: policy.first_turn_for(machine_name),
         model,
         transient: seat.transient,
         config_dir: recorded.config_dir,
@@ -1435,24 +1462,27 @@ impl Recorded {
 /// `fleet seat retire` is the verb for the other kind. `seat.woke` and
 /// `seat.handed_off` are recorded as lifecycle and nothing more — neither asks
 /// for anything.
+///
+/// The actor a line carries is the seat's machine name, and `known` maps it to
+/// the id the answer is keyed on.
 fn fold(
     stream: &[events::Record],
-    known: &BTreeSet<&str>,
-    transient: &BTreeSet<&str>,
-) -> BTreeMap<String, Pending> {
-    let mut pending: BTreeMap<String, Pending> = BTreeMap::new();
+    known: &BTreeMap<String, SeatId>,
+    transient: &BTreeSet<SeatId>,
+) -> BTreeMap<SeatId, Pending> {
+    let mut pending: BTreeMap<SeatId, Pending> = BTreeMap::new();
     for record in stream {
         if !events::SEAT_TYPES.contains(&record.kind.as_str()) {
             continue;
         }
-        if !known.contains(record.actor.as_str()) {
+        let Some(id) = known.get(record.actor.as_str()) else {
             eprintln!(
                 "fleet observe: dropping a {} whose actor `{}` names no seat row",
                 record.kind, record.actor
             );
             continue;
-        }
-        if record.kind == events::SEAT_RESTING && transient.contains(record.actor.as_str()) {
+        };
+        if record.kind == events::SEAT_RESTING && transient.contains(id) {
             eprintln!(
                 "fleet observe: dropping a {} for `{}`, which is a transient row; only named \
                  seats rest",
@@ -1460,7 +1490,7 @@ fn fold(
             );
             continue;
         }
-        let entry = pending.entry(record.actor.clone()).or_default();
+        let entry = pending.entry(*id).or_default();
         if record.kind == events::SEAT_RESTING {
             entry.rest = true;
             entry.rest_seq = Some(entry.rest_seq.unwrap_or(record.seq).min(record.seq));
@@ -1516,7 +1546,7 @@ fn admitted(raw: &MachineConfig, policy: &Policy) -> MachineConfig {
             skipped.push(format!(
                 "{} would start under posture `{}` on model `{model}`, which matches none of \
                  the models measured to honour it ({})",
-                seat.name,
+                seat.machine_name(),
                 policy.posture_for(seat.transient),
                 policy.auto_capable_models.join(", ")
             ));

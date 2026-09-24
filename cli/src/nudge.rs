@@ -5,10 +5,12 @@
 //! lookup, the worktree choice, the roster read and the adapter's turn are one
 //! path for both callers and the provider is reached from one place.
 //!
-//! The two refusals in front of it are the PROJECTION's, in a fixed order: the
-//! collector first (exit 5), then the seat (exit 4). The projection is what
-//! makes a seat one of this fleet's, so a seat with a live session and no
-//! published row is refused here on purpose.
+//! The seat argument is resolved first, through the seat list, and a name that
+//! names no one seat is refused with the resolver's own exit. The two refusals
+//! after it are the PROJECTION's, in a fixed order: the collector first (exit
+//! 5), then the seat (exit 4). The projection is what makes a seat one of this
+//! fleet's, so a seat with a live session and no published row is refused here
+//! on purpose.
 
 use std::path::Path;
 use std::time::Duration;
@@ -54,12 +56,18 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
         Ok(here) => here,
         Err(stop) => return stopped(&stop.message, stop.code),
     };
+    // The argument through the seat list's resolver, and its machine name
+    // from here on: the projection, the ring and the stream are keyed on it.
+    let seat = match crate::transient::seat_named(&here.machine_dir, &args.seat) {
+        Ok(seat) => seat,
+        Err(stop) => return stopped(&stop.message, stop.code),
+    };
 
     let document = match fresh_projection(&here.machine_dir) {
         Ok(document) => document,
         Err(why) => return stopped(&why, Exit::NoCollector.code()),
     };
-    if let Err(why) = published_live(&document, &args.seat) {
+    if let Err(why) = published_live(&document, &seat) {
         return stopped(&why, Exit::NoSession.code());
     }
 
@@ -67,11 +75,7 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
         machine_dir: here.machine_dir.clone(),
         project: here.project.name.clone(),
     };
-    let rung = ring.ring_with(
-        &args.seat,
-        &args.text,
-        args.timeout.map(Duration::from_secs),
-    );
+    let rung = ring.ring_with(&seat, &args.text, args.timeout.map(Duration::from_secs));
     let (outcome, exit) = match &rung.outcome {
         RingOutcome::Delivered => ("sent".to_string(), Exit::Done),
         RingOutcome::Failed(cause) => (format!("failed: {cause}"), Exit::Refused),
@@ -81,9 +85,8 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
         RingOutcome::Absent => {
             return stopped(
                 &format!(
-                    "`{}` has no live session in its worktree — the roster read carries no live \
-                     row there, whatever the projection published",
-                    args.seat
+                    "`{seat}` has no live session in its worktree — the roster read carries no \
+                     live row there, whatever the projection published"
                 ),
                 Exit::NoSession.code(),
             )
@@ -94,7 +97,7 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
     let mut log = EventLog::open(&stream);
     if let Err(e) = log.append(
         events::SESSION_NUDGED,
-        &args.seat,
+        &seat,
         serde_json::json!({
             "session": rung.session,
             "by": actor(),
@@ -117,7 +120,7 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
         Stream::Err,
         tone,
         verb,
-        &args.seat,
+        &seat,
         Some(&format!("{session} — {outcome}")),
     );
     exit

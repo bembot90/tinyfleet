@@ -35,6 +35,9 @@ const SEAT_A: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
 const SEAT_B: &str = "01a0d1f1-0aec-765f-9abe-5c21e8a04b17";
 const SEAT_C: &str = "01a0d1f1-0aec-765f-9abe-0f3b6d2c8e44";
 const SEAT_H: &str = "01a0d1f1-0aec-765f-9abe-7a9e1c4f05d2";
+/// A transient seat's row, and a row whose seat has left the table.
+const SPAWNED: &str = "01a0d1f1-0aec-765f-9abe-00002f6d1a93";
+const GONE: &str = "01a0d1f1-0aec-765f-9abe-0000000a90e5";
 
 /// What `fleet create --embedded` writes, byte for byte.
 const EMBEDDED: &str = "\
@@ -1730,9 +1733,9 @@ fn the_foreground_loop_advances_a_waiting_run() {
     );
 }
 
-/// The `[seats.<id>]` tables, rendered: every active agent seat a row named
-/// by its machine name and carrying its id and kind, and no row for a parked
-/// seat or for a person's.
+/// The `[seats.<id>]` tables, rendered: every active agent seat a row keyed by
+/// its id, carrying its kind and the seat's own name where it has one, and no
+/// row for a parked seat or for a person's.
 #[test]
 fn the_seats_table_is_rendered_into_rows_and_a_transient_row_survives_it() {
     let rig = Rig::new("seats");
@@ -1742,19 +1745,26 @@ fn the_seats_table_is_rendered_into_rows_and_a_transient_row_survives_it() {
          \n[seats.{SEAT_C}]\nkind = \"agent\"\nstatus = \"parked\"\n\
          \n[seats.{SEAT_H}]\nkind = \"human\"\nname = \"Orla\"\n",
     ));
-    // A transient row and an unknown key, written before the render: both are
-    // what the document-edit discipline exists for. B's row is already there
-    // and still carries the `chosen_name` a render before seat identity wrote,
-    // which this render owns and takes off.
+    // A transient row, an unknown key and a row keyed by its name alone,
+    // written before the render: all three are what the document-edit
+    // discipline exists for, and the name-keyed row is the shape the clean
+    // break retired — not a seat this render reconciles, and not migrated. B's
+    // row is already there under its id and still carries the machine name and
+    // the `chosen_name` a render before this one wrote, both of which this
+    // render owns and takes off: B has no name of its own.
     write(
         &rig.machine.join("config.json"),
         &format!(
             "{{\n  \"fleet_toml\": \"{}\",\n  \"autopilot\": {{\"on\": true}},\n  \
-             \"children\": [\n    {{\"name\": \"agent-2f6d1a93\", \"transient\": true, \
-             \"spawned_by\": \"somebody\", \"worktrees\": {{\"a-project\": \"/wt/t1\"}}}},\n    \
-             {{\"name\": \"agent-e8a04b17\", \"chosen_name\": \"Pell\", \
+             \"children\": [\n    {{\"id\": \"{SPAWNED}\", \"kind\": \"agent\", \
+             \"transient\": true, \"spawned_by\": \"somebody\", \
+             \"worktrees\": {{\"a-project\": \"/wt/t1\"}}}},\n    \
+             {{\"id\": \"{SEAT_B}\", \"name\": \"agent-e8a04b17\", \"chosen_name\": \"Pell\", \
              \"worktrees\": {{\"a-project\": \"/wt/b\"}}}},\n    \
-             {{\"name\": \"gone\", \"worktrees\": {{\"a-project\": \"/wt/gone\"}}}}\n  ]\n}}\n",
+             {{\"id\": \"{GONE}\", \"name\": \"Gone\", \
+             \"worktrees\": {{\"a-project\": \"/wt/gone\"}}}},\n    \
+             {{\"name\": \"a-row-keyed-by-its-name\", \
+             \"worktrees\": {{\"a-project\": \"/wt/old\"}}}}\n  ]\n}}\n",
             rig.project.join("fleet.toml").display()
         ),
     );
@@ -1765,32 +1775,43 @@ fn the_seats_table_is_rendered_into_rows_and_a_transient_row_survives_it() {
     let after = rig.seat_list();
     let rows = after["children"].as_array().expect("children is an array");
 
-    let row = |name: &str| {
+    let row = |id: &str| {
         rows.iter()
-            .find(|r| r["name"] == name)
-            .unwrap_or_else(|| panic!("no row for {name}: {after}"))
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("no row for {id}: {after}"))
     };
-    assert_eq!(row("kite-93b9739a")["id"], SEAT_A);
-    assert_eq!(row("kite-93b9739a")["kind"], "agent");
-    assert_eq!(row("kite-93b9739a")["model"], "a-model");
     assert_eq!(
-        row("kite-93b9739a")["worktrees"]["a-project"],
+        row(SEAT_A)["name"],
+        "Kite",
+        "the row carries the seat's own name, not a slug"
+    );
+    assert_eq!(row(SEAT_A)["kind"], "agent");
+    assert_eq!(row(SEAT_A)["model"], "a-model");
+    assert_eq!(
+        row(SEAT_A)["worktrees"]["a-project"],
         rig.root
             .join("a-project-worktrees/kite-93b9739a")
             .display()
             .to_string(),
         "with no directory ending in its short id, a seat's worktree is its machine name"
     );
-    assert_eq!(
-        row("agent-e8a04b17")["id"],
-        SEAT_B,
-        "a seat with no name takes its kind as its slug"
+    assert!(
+        row(SEAT_B).get("name").is_none(),
+        "a seat with no name carries none on its row: {after}"
     );
-    assert_eq!(row("agent-e8a04b17")["kind"], "agent");
+    assert_eq!(row(SEAT_B)["kind"], "agent");
     assert_eq!(
-        row("agent-e8a04b17")["model"],
+        row(SEAT_B)["model"],
         "claude-opus-5",
         "a row naming no model takes the policy's default"
+    );
+    assert_eq!(
+        row(SEAT_B)["worktrees"]["a-project"],
+        rig.root
+            .join("a-project-worktrees/agent-e8a04b17")
+            .display()
+            .to_string(),
+        "a seat with no name takes its kind as its slug"
     );
     for (id, who) in [(SEAT_C, "the parked seat"), (SEAT_H, "the human seat")] {
         assert!(
@@ -1799,23 +1820,22 @@ fn the_seats_table_is_rendered_into_rows_and_a_transient_row_survives_it() {
         );
     }
     assert!(
-        !rows
-            .iter()
-            .any(|r| r["name"] == "agent-6d2c8e44" || r["name"] == "orla-1c4f05d2"),
-        "nor under its machine name: {after}"
-    );
-    assert!(
-        !rows.iter().any(|r| r["name"] == "gone"),
-        "a named row whose seat left the table is dropped: {after}"
+        !rows.iter().any(|r| r["id"] == GONE),
+        "a row whose seat left the table is dropped: {after}"
     );
     assert_eq!(
         rows.len(),
-        3,
-        "the two agent rows and the transient: {after}"
+        4,
+        "the two agent rows, the transient and the name-keyed row: {after}"
     );
     assert!(
         rows.iter().all(|r| r.get("chosen_name").is_none()),
         "no row carries chosen_name: {after}"
+    );
+    assert!(
+        stderr(&out).contains("seats: 2 row(s) rendered — 1 added, 1 updated, 1 dropped"),
+        "{}",
+        stderr(&out)
     );
     // Two people: Orla, and the one `create` listed for the machine it ran on.
     assert!(
@@ -1824,10 +1844,12 @@ fn the_seats_table_is_rendered_into_rows_and_a_transient_row_survives_it() {
         stderr(&out)
     );
 
-    // BYTE-IDENTICAL: the transient row and the unknown key survive, field for
-    // field, because the document is edited and never re-serialized.
-    let transient_before = before["children"][0].clone();
-    assert_eq!(*row("agent-2f6d1a93"), transient_before, "{after}");
+    // BYTE-IDENTICAL: the transient row, the name-keyed row and the unknown key
+    // survive, field for field, because the document is edited and never
+    // re-serialized.
+    assert_eq!(*row(SPAWNED), before["children"][0], "{after}");
+    let keyless: Vec<&serde_json::Value> = rows.iter().filter(|r| r["id"].is_null()).collect();
+    assert_eq!(keyless, vec![&before["children"][3]], "{after}");
     assert_eq!(after["autopilot"], before["autopilot"]);
     assert_eq!(after["fleet_toml"], before["fleet_toml"]);
 

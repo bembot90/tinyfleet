@@ -150,11 +150,22 @@ fn an_unreadable_instrument_is_three_and_prints_the_chain() {
 
 /// Row 5. The stream's refusal, reached through the cli's mapping rather than
 /// asserted about the controller: a rest with no projection beside it is a rest
-/// nothing would collect.
+/// nothing would collect. The seat IS on the list — a seat argument is resolved
+/// before the stream is asked anything — so the 5 is the missing collector's.
 #[test]
 fn no_collector_is_five() {
     let machine = Machine::new("no-collector");
-    let out = machine.run(&["event", "rest", "builder-1", "--reason", "x"]);
+    std::fs::write(
+        machine.root.join("config.json"),
+        format!(
+            "{{\"fleet_toml\": {:?}, \"children\": [{{\"id\": \
+             \"01a0d1f1-0aec-765f-9abe-d4f993b9739a\", \"name\": \"Orla\", \
+             \"worktrees\": {{\"demo\": \"/wt/orla\"}}}}]}}",
+            machine.root.join("fleet.toml").to_string_lossy()
+        ),
+    )
+    .expect("the seat list is written");
+    let out = machine.run(&["event", "rest", "Orla", "--reason", "x"]);
     assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
     assert!(
         stderr(&out).contains("no collector is consuming"),

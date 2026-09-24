@@ -24,6 +24,7 @@ use crate::item::{
     control_token, render, Events, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner, Stop,
     ITEM_DISPATCHED, NO_SESSION, REFUSED,
 };
+use crate::seat::identity::{resolve, SeatRef};
 use crate::store::{keys, Item, Orders, Store, StoreError};
 
 /// The kind of order this verb writes. The reference's other two grammars —
@@ -119,9 +120,9 @@ pub struct Wiring<'a> {
     pub project: &'a Project,
     pub packs: &'a Packs,
     pub briefs_dir: &'a Path,
-    /// The seats the machine's config carries. A `--to` naming anything else is
-    /// a seat this fleet does not run.
-    pub seats: &'a [String],
+    /// The seats the machine's config carries. A `--to` that resolves to none of
+    /// them — or to more than one — is a seat this fleet does not run.
+    pub seats: &'a [SeatRef],
     pub ring: &'a dyn Ring,
     pub spawner: &'a dyn Spawner,
     pub events: &'a dyn Events,
@@ -222,16 +223,10 @@ fn refuse_unless_dispatchable(order: &Order, item: &Item, wiring: &Wiring) -> Re
     let Some(seat) = order.to else {
         return Ok(());
     };
-    if !wiring.seats.iter().any(|known| known == seat) {
-        return Err(Stop::refused(format!(
-            "`{seat}` is not a seat this machine runs — the seats it carries are {}",
-            if wiring.seats.is_empty() {
-                "none".to_string()
-            } else {
-                wiring.seats.join(", ")
-            }
-        )));
-    }
+    // THE MEMBERSHIP IS THE RESOLVER'S: a `--to` is any seat argument — the
+    // name, the machine name, eight hex digits of the id or all of it. What is
+    // written onto the item below is still the argument as given.
+    resolve(wiring.seats, seat).map_err(Stop::from)?;
     // What the seat HOLDS, in deliver's own reading: an item merely assigned
     // to it — an epic, a bug nobody ordered — is not work it was given.
     let held: Vec<String> = holds(wiring.store, seat)?

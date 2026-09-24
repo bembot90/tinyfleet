@@ -124,6 +124,12 @@ enum SpawnWait {
 
 /// The five per-call seams, named once so the stub that reads a file and the
 /// rig that writes it cannot spell one differently.
+/// The rig's one seat. Its row is keyed by the id and carries the seat's own
+/// name; every directory, stream line, session name and argument the loop and
+/// the verbs write about it is the machine name those two give.
+const SEAT_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
+const SEAT: &str = "orla-93b9739a";
+
 const HANG: &str = "hang";
 const VERSION_HANG: &str = "version-hang-seam";
 const DESCENDANT: &str = "descendant";
@@ -554,7 +560,7 @@ impl Rig {
     fn one_seat_config(&self, policy: PathBuf) -> String {
         format!(
             r#"{{"fleet_toml": "{}", "children": [
-                 {{"name":"builder-1","chosen_name":"Orla",
+                 {{"id":"{SEAT_ID}","name":"Orla",
                    "worktrees":{{"demo":"{}"}}}}
                ]}}"#,
             policy.display(),
@@ -569,7 +575,7 @@ impl Rig {
     fn one_seat_config_carrying_model_and_transient(&self, policy: PathBuf) -> String {
         format!(
             r#"{{"fleet_toml": "{}", "children": [
-                 {{"name":"builder-1","chosen_name":"Orla",
+                 {{"id":"{SEAT_ID}","name":"Orla",
                    "model":"a-model","transient":true,
                    "worktrees":{{"demo":"{}"}}}}
                ]}}"#,

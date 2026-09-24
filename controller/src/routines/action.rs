@@ -148,7 +148,7 @@ pub fn argv_of(routine: &Routine, machine: &Machine) -> Vec<String> {
         return run_argv(&binary, routine, workflow);
     }
     if let Some(nudge) = &action.nudge {
-        let seat = machine.seats.iter().find(|row| row.seat_dir == nudge.seat);
+        let seat = view_of(nudge, machine);
         let (worktree, display) = match seat {
             Some(row) => (row.worktree.clone(), row.display_name.clone()),
             None => (String::new(), nudge.seat.clone()),
@@ -174,8 +174,15 @@ fn nudge_text(nudge: &super::file::Nudge) -> String {
     format!("{}\nauthority: {}", nudge.text, nudge.authority)
 }
 
+/// The view of the seat the nudge resolved to at load, found by its id: the
+/// name the file gave is for the lines, and the row is the one the id holds.
+fn view_of<'a>(nudge: &super::file::Nudge, machine: &'a Machine) -> Option<&'a SeatView> {
+    let id = nudge.seat_id?;
+    machine.seats.iter().find(|row| row.id == id)
+}
+
 fn run_nudge(nudge: &super::file::Nudge, machine: &Machine) -> Done {
-    let Some(seat) = machine.seats.iter().find(|row| row.seat_dir == nudge.seat) else {
+    let Some(seat) = view_of(nudge, machine) else {
         return Done::plain(
             Outcome::CouldNotTell,
             format!(

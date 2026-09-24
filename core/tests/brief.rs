@@ -12,6 +12,7 @@ use common::{shared_store, Fixture, Scratch, StubEvents};
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
 use fleet_core::item::dispatch::{self, Order, Wiring};
 use fleet_core::item::{table_at, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner};
+use fleet_core::seat::identity::{Kind, SeatId, SeatRef};
 use fleet_core::seat::retire;
 use fleet_core::store::{AssignedItem, Bd, Item, Orders, Store};
 use fleet_core::test_support::FakeStore;
@@ -583,7 +584,12 @@ impl Rig {
                 project: &self.project,
                 packs: &self.packs,
                 briefs_dir: &self.fixture.path("briefs"),
-                seats: &[SEAT.to_string()],
+                seats: &[SeatRef {
+                    id: SeatId::parse("01a0d1f1-0aec-765f-9abe-d4f993b9739a")
+                        .expect("the rig's seat id parses"),
+                    name: Some(SEAT.to_string()),
+                    kind: Kind::Agent,
+                }],
                 ring: &Heard,
                 spawner,
                 events: &StubEvents::default(),

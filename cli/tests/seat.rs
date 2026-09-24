@@ -32,6 +32,9 @@ const CALM: [(&str, &str); 2] = [("FLEET_LOAD_AVERAGE", "0.1"), ("FLEET_CPUS", "
 /// a number either of them reads back can only have come from the belt.
 const HELD: [(&str, &str); 2] = [("FLEET_LOAD_AVERAGE", "3.75"), ("FLEET_CPUS", "4")];
 
+/// The id of the one named — not transient — row an arm writes by hand.
+const NAMED_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
+
 /// A pid no process on this box holds, read the way the verb under test reads
 /// it.
 ///
@@ -543,7 +546,10 @@ fn the_three_verbs_run_end_to_end_through_the_shipped_binary() {
     let seat = the_seat(&spawned);
     assert!(rig.worktrees.join(&seat).is_dir());
     let row = &rig.seats()["children"][0];
-    assert_eq!(row["name"], seat.as_str());
+    assert!(
+        row.get("name").is_none(),
+        "a transient seat has no name of its own, so its row carries none: {row}"
+    );
     assert_eq!(row["transient"], true);
     assert_eq!(row["model"], "a-model");
     assert_eq!(row["kind"], "agent", "the row carries the seat's kind");
@@ -588,6 +594,130 @@ fn the_three_verbs_run_end_to_end_through_the_shipped_binary() {
         rig.seats()["children"].as_array().map(Vec::len),
         Some(0),
         "the seat-list row is dropped"
+    );
+}
+
+/// Every seat argument `seat feed` and `seat retire` take goes through the one
+/// resolver, before the controller is asked anything: the full id, the short id
+/// and the machine name each find the spawned seat. A name two rows answer to
+/// is refused naming both, and one no row answers to is refused listing the
+/// seats — each exit 1, and neither guessed.
+#[test]
+fn feed_and_retire_take_the_full_id_the_short_id_and_the_machine_name() {
+    let rig = Rig::new("resolve", true);
+    let spawned = rig.run(&[
+        "seat",
+        "spawn",
+        "--first-turn",
+        &rig.turn.display().to_string(),
+    ]);
+    assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
+    let seat = the_seat(&spawned);
+    let id = rig.seats()["children"][0]["id"]
+        .as_str()
+        .expect("the row carries the seat's id")
+        .to_string();
+    let short = id[id.len() - 8..].to_string();
+    assert!(seat.ends_with(&short), "{seat} {id}");
+
+    // The feed, three times, once by each spelling: each reaches the one live
+    // session and says so under the seat's machine name.
+    rig.live(&seat, "idle");
+    let next = rig.root.join("the-next-turn.md");
+    std::fs::write(&next, "the next turn\n").expect("the turn is written");
+    for arg in [id.as_str(), short.as_str(), seat.as_str()] {
+        let fed = rig.run(&[
+            "seat",
+            "feed",
+            arg,
+            "--first-turn",
+            &next.display().to_string(),
+        ]);
+        assert_eq!(fed.status.code(), Some(0), "{arg}: {}", stderr(&fed));
+        assert!(
+            stdout(&fed).contains(&format!("fed {seat}")),
+            "{arg}: {}",
+            stdout(&fed)
+        );
+    }
+
+    // The retire by the short id and the machine name, each reaching the
+    // controller's own refusal for THIS seat — `--dead` over a live row — which
+    // it can only name once the argument has resolved to it.
+    for arg in [short.as_str(), seat.as_str()] {
+        let refused = rig.run(&["seat", "retire", arg, "--dead"]);
+        assert_eq!(
+            refused.status.code(),
+            Some(1),
+            "{arg}: {}",
+            stderr(&refused)
+        );
+        assert!(
+            stderr(&refused).contains(&format!("`{seat}` is not dead")),
+            "{arg}: {}",
+            stderr(&refused)
+        );
+    }
+    // And the retire proper, by the full id.
+    let retired = rig.run(&["seat", "retire", &id]);
+    assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
+    assert!(
+        stdout(&retired).contains(&format!("retired {seat}")),
+        "{}",
+        stdout(&retired)
+    );
+    assert_eq!(
+        rig.seats()["children"].as_array().map(Vec::len),
+        Some(0),
+        "the seat-list row is dropped"
+    );
+
+    // Two rows one name answers to: the name is refused naming both, and no
+    // row is taken for it.
+    std::fs::write(
+        rig.machine.join("config.json"),
+        format!(
+            "{{\"fleet_toml\": {policy}, \"children\": [\
+             {{\"id\": \"{NAMED_ID}\", \"name\": \"Twin\", \"transient\": true, \
+               \"worktrees\": {{\"a-project\": \"/wt/one\"}}}}, \
+             {{\"id\": \"01a0d1f1-0aec-765f-9abe-5c21e8a04b17\", \"name\": \"twin\", \
+               \"transient\": true, \"worktrees\": {{\"a-project\": \"/wt/two\"}}}}]}}\n",
+            policy = json_string(&rig.project.join("fleet.toml").display().to_string()),
+        ),
+    )
+    .expect("the seat list is written");
+    let both = rig.run(&["seat", "retire", "Twin"]);
+    assert_eq!(both.status.code(), Some(1), "{}", stderr(&both));
+    assert!(
+        stderr(&both).contains(&format!(
+            "fleet seat retire: Twin names 2 seats — twin-93b9739a ({NAMED_ID}), twin-e8a04b17 \
+             (01a0d1f1-0aec-765f-9abe-5c21e8a04b17) — say more of the id"
+        )),
+        "{}",
+        stderr(&both)
+    );
+
+    // A name no row answers to: refused listing the seats there are.
+    let nobody = rig.run(&[
+        "seat",
+        "feed",
+        "nobody",
+        "--first-turn",
+        &next.display().to_string(),
+    ]);
+    assert_eq!(nobody.status.code(), Some(1), "{}", stderr(&nobody));
+    assert!(
+        stderr(&nobody).contains(&format!(
+            "fleet seat feed: nobody names no seat — the seats are twin-93b9739a ({NAMED_ID}), \
+             twin-e8a04b17 (01a0d1f1-0aec-765f-9abe-5c21e8a04b17)"
+        )),
+        "{}",
+        stderr(&nobody)
+    );
+    assert_eq!(
+        rig.seats()["children"].as_array().map(Vec::len),
+        Some(2),
+        "and neither refusal touched the list"
     );
 }
 
@@ -1390,8 +1520,8 @@ fn a_named_dispatch_writes_the_event_with_no_base() {
     std::fs::write(
         rig.machine.join("config.json"),
         format!(
-            "{{\"fleet_toml\": {policy}, \"children\": [{{\"name\": \"s-cli-named\", \
-             \"chosen_name\": \"Orla\", \"worktrees\": {{\"a-project\": {tree}}}}}]}}\n",
+            "{{\"fleet_toml\": {policy}, \"children\": [{{\"id\": \"{NAMED_ID}\", \
+             \"name\": \"s-cli-named\", \"worktrees\": {{\"a-project\": {tree}}}}}]}}\n",
             policy = json_string(&rig.project.join("fleet.toml").display().to_string()),
             tree = json_string(&rig.project.display().to_string()),
         ),
@@ -1450,8 +1580,8 @@ fn a_dispatch_that_starts_nothing_prints_no_belt_legs() {
     std::fs::write(
         rig.machine.join("config.json"),
         format!(
-            "{{\"fleet_toml\": {policy}, \"children\": [{{\"name\": \"s-cli-belts\", \
-             \"chosen_name\": \"Orla\", \"worktrees\": {{\"a-project\": {tree}}}}}]}}\n",
+            "{{\"fleet_toml\": {policy}, \"children\": [{{\"id\": \"{NAMED_ID}\", \
+             \"name\": \"s-cli-belts\", \"worktrees\": {{\"a-project\": {tree}}}}}]}}\n",
             policy = json_string(&rig.project.join("fleet.toml").display().to_string()),
             tree = json_string(&rig.project.display().to_string()),
         ),

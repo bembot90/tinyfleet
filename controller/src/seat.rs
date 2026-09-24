@@ -222,6 +222,9 @@ fn fresh_projection(machine_dir: &Path) -> Result<serde_json::Value, (u8, String
 /// Whether the seat list marks this row transient. A list that cannot be read
 /// answers `false`: refusing a named seat's rest over an unreadable file would
 /// leave the one kind of seat that does rest unable to ask.
+///
+/// `seat` is the machine name the verb resolved its argument to, which is what
+/// the stream and the projection are still keyed on.
 fn is_transient(machine_dir: &Path, seat: &str) -> bool {
     config::read(&machine_dir.join("config.json"))
         .ok()
@@ -229,7 +232,7 @@ fn is_transient(machine_dir: &Path, seat: &str) -> bool {
             config
                 .seats
                 .iter()
-                .any(|row| row.name == seat && row.transient)
+                .any(|row| row.machine_name() == seat && row.transient)
         })
         .unwrap_or(false)
 }

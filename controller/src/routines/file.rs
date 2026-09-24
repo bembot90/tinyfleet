@@ -7,6 +7,7 @@
 //! key is a duty that silently never runs.
 
 use super::trigger::Trigger;
+use fleet_core::seat::identity::{resolve, SeatId, SeatRef};
 use std::path::{Path, PathBuf};
 
 /// Where a routine was loaded from, as it is published and printed.
@@ -30,7 +31,12 @@ impl Source {
 /// Ring a seat with one sentence and the authority behind it.
 #[derive(Clone, Debug)]
 pub struct Nudge {
+    /// The seat as the file names it, which is how every line about the ring
+    /// names it back.
     pub seat: String,
+    /// The one seat that name resolved to at load. `None` only on a file the
+    /// load refused, which is never run.
+    pub seat_id: Option<SeatId>,
     pub text: String,
     pub authority: String,
 }
@@ -227,7 +233,7 @@ pub fn routine_name_of(path: &Path) -> Result<String, String> {
 ///
 /// `seats` is the machine's seat list, because a nudge action names a row of it
 /// and a seat this machine does not carry is a ring nobody would ever answer.
-pub fn read(path: &Path, source: &Source, project_root: &Path, seats: &[String]) -> Loaded {
+pub fn read(path: &Path, source: &Source, project_root: &Path, seats: &[SeatRef]) -> Loaded {
     let name = match routine_name_of(path) {
         Ok(name) => name,
         Err(reason) => {
@@ -269,7 +275,7 @@ pub fn parse(
     source: &Source,
     project_root: &Path,
     body: &str,
-    seats: &[String],
+    seats: &[SeatRef],
 ) -> Loaded {
     let mut reasons: Vec<String> = Vec::new();
     let defective = |reasons: Vec<String>| {
@@ -456,7 +462,7 @@ pub fn parse(
 }
 
 /// `[action.<kind>]`: exactly one, or the fallback pair.
-fn read_action(reasons: &mut Vec<String>, document: &toml::Table, seats: &[String]) -> Action {
+fn read_action(reasons: &mut Vec<String>, document: &toml::Table, seats: &[SeatRef]) -> Action {
     let Some(action) = table_at(document, "action") else {
         reasons.push("carries no [action.<kind>] table".to_string());
         return Action::default();
@@ -472,15 +478,25 @@ fn read_action(reasons: &mut Vec<String>, document: &toml::Table, seats: &[Strin
     if let Some(table) = table_at(action, "nudge") {
         unknown_keys(reasons, table, "action.nudge", &NUDGE_KEYS);
         let seat = required_line(reasons, table, "action.nudge", "seat");
-        if !seat.is_empty() && !seats.iter().any(|row| row == &seat) {
-            reasons.push(format!(
-                "[action.nudge] seat is `{seat}`, which names no row of this machine's seat list"
-            ));
-        }
+        // RESOLVED HERE, at load, through the resolver every seat argument
+        // takes: the ring then goes to the row this found, by its id, and a
+        // seat nobody holds — or two that both answer — refuses the file.
+        let seat_id = if seat.is_empty() {
+            None
+        } else {
+            match resolve(seats, &seat) {
+                Ok(index) => Some(seats[index].id),
+                Err(unresolved) => {
+                    reasons.push(format!("[action.nudge] seat is {seat}, which {unresolved}"));
+                    None
+                }
+            }
+        };
         built.nudge = Some(Nudge {
             text: required_line(reasons, table, "action.nudge", "text"),
             authority: required_line(reasons, table, "action.nudge", "authority"),
             seat,
+            seat_id,
         });
     }
     if let Some(table) = table_at(action, "item") {

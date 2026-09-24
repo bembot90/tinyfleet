@@ -18,6 +18,7 @@ use fleet_controller::routines::load::Registry;
 use fleet_controller::routines::trigger::Due;
 use fleet_controller::routines::{self, action, load, state, trigger, Outcome, SeatView};
 use fleet_controller::{clock, config, events, observe, platform, policy, sessions};
+use fleet_core::seat::identity::{SeatId, SeatRef};
 use std::path::{Path, PathBuf};
 
 use crate::exit::Exit;
@@ -129,10 +130,10 @@ fn resolve() -> Result<Fleet, String> {
     let seats = config::read(&machine_dir.join("config.json"))
         .map(|machine| machine.seats)
         .unwrap_or_default();
-    let names: Vec<String> = seats.iter().map(|seat| seat.name.clone()).collect();
+    let refs: Vec<SeatRef> = seats.iter().map(config::Seat::as_ref).collect();
     let registry = load::load(
         &load::roots(&fleet_root, &machine_dir, &projects_of(&fleet_root)),
-        &names,
+        &refs,
     );
     // A policy that will not read is the defaults: the four verbs below need
     // the nudge model and its bound, and refusing to LIST routines over a policy
@@ -166,11 +167,15 @@ fn seat_views(fleet: &Fleet, needs_roster: bool) -> Vec<SeatView> {
     // The table read ONCE for the whole pass: every spawned seat's session is
     // held under a configuration directory of its own, which a read and a ring
     // both have to go through, and it lives on that seat's own row.
+    //
+    // The table is still keyed on the seat's machine name, so it is asked by
+    // that; the seat itself is found by its id.
     let recorded = sessions::read(&sessions::path_in(&fleet.machine_dir)).0;
-    let config_dir_of = |seat: &str| {
+    let config_dir_of = |seat: &SeatId| {
+        let name = fleet.seats.iter().find(|s| s.id == *seat)?.machine_name();
         recorded
             .as_ref()
-            .and_then(|table| table.newest_for(seat))
+            .and_then(|table| table.newest_for(&name))
             .and_then(|row| row.config_dir.clone())
     };
     let read = if needs_roster {
@@ -198,7 +203,7 @@ fn seat_views(fleet: &Fleet, needs_roster: bool) -> Vec<SeatView> {
             let (_, worktree) = seat.worktrees.first()?;
             let state = match &read {
                 Some((rosters, agent)) => {
-                    let under = config_dir_of(&seat.name);
+                    let under = config_dir_of(&seat.id);
                     let recency = observe::Recency {
                         window_ms: fleet.policy.stopped_recency_hours * 60 * 60 * 1000,
                         ended_at: &|worktree: &str, session: &str| {
@@ -210,7 +215,7 @@ fn seat_views(fleet: &Fleet, needs_roster: bool) -> Vec<SeatView> {
                         },
                     };
                     observe::observe_seat(
-                        rosters.for_seat(&seat.name),
+                        rosters.for_seat(&seat.id),
                         seat,
                         clock::now_ms(),
                         &recency,
@@ -219,15 +224,14 @@ fn seat_views(fleet: &Fleet, needs_roster: bool) -> Vec<SeatView> {
                 }
                 None => observe::RosterState::Absent,
             };
+            let machine_name = seat.machine_name();
             Some(SeatView {
-                seat_dir: seat.name.clone(),
-                display_name: fleet_controller::effect::display_name(
-                    seat.chosen_name.as_deref(),
-                    &seat.name,
-                ),
+                id: seat.id,
+                display_name: fleet_controller::effect::display_name(None, &machine_name),
+                seat_dir: machine_name,
                 worktree: dir_key(worktree).to_string(),
                 state,
-                config_dir: config_dir_of(&seat.name),
+                config_dir: config_dir_of(&seat.id),
             })
         })
         .collect()

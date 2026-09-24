@@ -51,6 +51,7 @@ use crate::item::{
     TRUNK_BRANCH, VERDICT_MARKERS,
 };
 use crate::policy;
+use crate::seat::identity::{resolve, Kind, SeatId, SeatRef};
 use crate::store::{Item, Store, StoreError, EXPORT};
 
 /// The landing-note grammar, in core's pack and shadowable like every other
@@ -370,8 +371,13 @@ pub fn land(
 /// IT REFUSES RATHER THAN FALLING BACK. Every path out of here that is not a
 /// worktree is the primary, and a landing that ran there would squash onto the
 /// trunk checkout somebody else is standing in — so a seat the table does not
-/// name, and a seat it names with no worktree for this project, are each a
-/// refusal naming the seat and the file.
+/// name, one it names twice, and a seat it names with no worktree for this
+/// project, are each a refusal naming the seat and the file.
+///
+/// THE REVIEWER IS RESOLVED, not matched: `[core] reviewer` is any seat
+/// argument — the seat's name, its machine name or its id — and core's one
+/// resolver turns it into the row, over each row's `id` and `name`. A row with
+/// no id that parses is no seat this table can name.
 fn reviewers_worktree(landing: &Landing, wiring: &Wiring) -> Result<PathBuf, Stop> {
     let seat = crate::item::deliver::reviewer_of(wiring.project)?;
     let table = landing.machine_dir.join(SEATS);
@@ -385,18 +391,31 @@ fn reviewers_worktree(landing: &Landing, wiring: &Wiring) -> Result<PathBuf, Sto
     let document: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
         Stop::could_not_tell(format!("{} is not readable JSON: {e}", table.display()))
     })?;
-    let row = document
+    let rows: Vec<(SeatRef, &serde_json::Value)> = document
         .get(SEAT_ROWS)
         .and_then(serde_json::Value::as_array)
         .into_iter()
         .flatten()
-        .find(|row| row.get("name").and_then(serde_json::Value::as_str) == Some(seat.as_str()));
-    let Some(row) = row else {
-        return Err(Stop::refused(format!(
-            "`{seat}` is this fleet's `[core] reviewer` and carries no row in {} — a landing runs \
-             from the reviewer's own worktree and that table is where it is named",
-            table.display()
-        )));
+        .filter_map(|row| {
+            let text = |key: &str| row.get(key).and_then(serde_json::Value::as_str);
+            let id = SeatId::parse(text("id")?).ok()?;
+            let seat = SeatRef {
+                id,
+                name: text("name").map(str::to_string),
+                kind: Kind::Agent,
+            };
+            Some((seat, row))
+        })
+        .collect();
+    let seats: Vec<SeatRef> = rows.iter().map(|(seat, _)| seat.clone()).collect();
+    let row = match resolve(&seats, &seat) {
+        Ok(index) => rows[index].1,
+        Err(unresolved) => {
+            return Err(Stop::refused(format!(
+                "[core] reviewer = \"{seat}\" {unresolved} in {}",
+                table.display()
+            )))
+        }
     };
     let named = row
         .get(WORKTREES)

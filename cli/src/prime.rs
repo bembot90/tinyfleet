@@ -81,8 +81,11 @@ pub fn command() -> Exit {
     }
 
     if let Some(machine) = machine {
+        // The items are held under the seat's machine name, which is what a
+        // dispatch to a transient seat assigns and what a seat's own session
+        // is named.
         if let Some((seat, project_root)) = seat_here(&machine, &cwd) {
-            print_items(&project_root, &seat);
+            print_items(&project_root, &seat.machine_name());
         }
     }
 
@@ -205,13 +208,16 @@ fn first_refusal(refusals: &[resolve::Refusal]) -> String {
 /// names a worktree root, and a session under some other checkout inside it is
 /// not that seat's (lessons claude-code B5 — a cwd names a seat and proves
 /// nothing, so the weakest reading is the one taken).
-fn seat_here(machine: &config::MachineConfig, cwd: &Path) -> Option<(String, PathBuf)> {
+fn seat_here<'a>(
+    machine: &'a config::MachineConfig,
+    cwd: &Path,
+) -> Option<(&'a config::Seat, PathBuf)> {
     let here = canonical(cwd);
     for seat in &machine.seats {
         for (_project, path) in &seat.worktrees {
             let root = PathBuf::from(path);
             if canonical(&root) == here {
-                return Some((seat.name.clone(), root));
+                return Some((seat, root));
             }
         }
     }

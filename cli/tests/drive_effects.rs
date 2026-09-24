@@ -58,7 +58,7 @@ mod effects {
         // 5 — no collector. Nothing has published, so nothing would read it.
         let out = rig
             .binary()
-            .args(["event", "rest", "builder-1", "--reason", "x"])
+            .args(["event", "rest", SEAT, "--reason", "x"])
             .output()
             .expect("the built binary runs");
         assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
@@ -69,20 +69,47 @@ mod effects {
         );
 
         // 4 — a seat the projection carries no row for. The poll below publishes
-        // one seat, and any other name is one nothing knows.
+        // one seat, and a second row added to the list after it is a seat the
+        // collector has not published.
         rig.write_roster(&live_row(&rig.worktree(), "a-session"));
         let out = rig.observe();
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         assert_eq!(seat_row(&rig)["roster_state"], "present");
+        rig.write_config(&format!(
+            r#"{{"fleet_toml": "{}", "children": [
+                 {{"id":"{SEAT_ID}","name":"Orla","worktrees":{{"demo":"{}"}}}},
+                 {{"id":"01a0d1f1-0aec-765f-9abe-5c21e8a04b17","name":"Pell",
+                   "worktrees":{{"demo":"{}"}}}}
+               ]}}"#,
+            rig.policy_path().display(),
+            rig.worktree().display(),
+            rig.root.join("wt").join("pell").display()
+        ));
 
+        let out = rig
+            .binary()
+            .args(["event", "rest", "Pell", "--reason", "x"])
+            .output()
+            .expect("the built binary runs");
+        assert_eq!(out.status.code(), Some(4), "{}", stderr(&out));
+        assert!(
+            stderr(&out).contains("pell-e8a04b17 has no live session"),
+            "the seat is named by the machine name its argument resolved to: {}",
+            stderr(&out)
+        );
+
+        // 1 — a seat argument that names no seat at all, refused by the resolver
+        // before any stream is read, listing the seats it could have meant.
         let out = rig
             .binary()
             .args(["event", "rest", "builder-2", "--reason", "x"])
             .output()
             .expect("the built binary runs");
-        assert_eq!(out.status.code(), Some(4), "{}", stderr(&out));
+        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
         assert!(
-            stderr(&out).contains("has no live session"),
+            stderr(&out).contains(
+                "fleet event rest: builder-2 names no seat — the seats are orla-93b9739a"
+            ),
             "{}",
             stderr(&out)
         );
@@ -91,13 +118,13 @@ mod effects {
         // status is taken from the read-back rather than from the append.
         let out = rig
             .binary()
-            .args(["event", "rest", "builder-1", "--reason", "a nap"])
+            .args(["event", "rest", SEAT, "--reason", "a nap"])
             .output()
             .expect("the built binary runs");
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         let last = rig.events().pop().expect("the stream carries the rest");
         assert_eq!(last["type"], "seat.resting");
-        assert_eq!(last["actor"], "builder-1");
+        assert_eq!(last["actor"], SEAT);
         assert_eq!(last["payload"]["reason"], "a nap");
 
         // The other three verbs, each exiting 0 and each advancing the sequence
@@ -110,13 +137,13 @@ mod effects {
         ] {
             let out = rig
                 .binary()
-                .args(["event", verb, "builder-1"])
+                .args(["event", verb, SEAT])
                 .output()
                 .expect("the built binary runs");
             assert_eq!(out.status.code(), Some(0), "{verb}: {}", stderr(&out));
             let line = rig.events().pop().expect("the stream carries the record");
             assert_eq!(line["type"], kind);
-            assert_eq!(line["actor"], "builder-1");
+            assert_eq!(line["actor"], SEAT);
             let seq = line["seq"].as_u64().expect("the line carries a seq");
             assert_eq!(
                 seq,
@@ -148,7 +175,7 @@ mod effects {
         for verb in ["woke", "handed-off", "exited"] {
             let out = rig
                 .binary()
-                .args(["event", verb, "builder-1", "--reason", "x"])
+                .args(["event", verb, SEAT, "--reason", "x"])
                 .output()
                 .expect("the built binary runs");
             assert_eq!(out.status.code(), Some(2), "{verb}: {}", stderr(&out));
@@ -168,7 +195,7 @@ mod effects {
             // the 2 above is the flag and not the verb.
             let out = rig
                 .binary()
-                .args(["event", verb, "builder-1"])
+                .args(["event", verb, SEAT])
                 .output()
                 .expect("the built binary runs");
             assert_eq!(out.status.code(), Some(0), "{verb}: {}", stderr(&out));
@@ -185,13 +212,13 @@ mod effects {
         // the payload, read back from the stream.
         let out = rig
             .binary()
-            .args(["event", "rest", "builder-1", "--reason", "a nap"])
+            .args(["event", "rest", SEAT, "--reason", "a nap"])
             .output()
             .expect("the built binary runs");
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         let last = rig.events().pop().expect("the stream carries the rest");
         assert_eq!(last["type"], "seat.resting");
-        assert_eq!(last["actor"], "builder-1");
+        assert_eq!(last["actor"], SEAT);
         assert_eq!(last["payload"]["reason"], "a nap");
     }
 
@@ -213,7 +240,7 @@ mod effects {
         ] {
             let out = rig
                 .binary()
-                .args(["seat", verb, "builder-1"])
+                .args(["seat", verb, SEAT])
                 .output()
                 .expect("the built binary runs");
             assert_eq!(out.status.code(), Some(2), "{verb}: {}", stderr(&out));
@@ -228,7 +255,7 @@ mod effects {
         // controller, and answers with the state rather than with usage.
         let out = rig
             .binary()
-            .args(["event", "rest", "builder-1", "--reason", "x"])
+            .args(["event", "rest", SEAT, "--reason", "x"])
             .output()
             .expect("the built binary runs");
         assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
@@ -241,7 +268,7 @@ mod effects {
         // the four writers rather than about a typo.
         let out = rig
             .binary()
-            .args(["seat", "ring", "builder-1"])
+            .args(["seat", "ring", SEAT])
             .output()
             .expect("the built binary runs");
         assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
@@ -273,19 +300,19 @@ mod effects {
 
         for (args, rewrite) in [
             (
-                vec!["seat", "rest", "builder-1", "--reason", "a nap"],
+                vec!["seat", "rest", SEAT, "--reason", "a nap"],
                 "fleet event rest",
             ),
             (
-                vec!["seat", "woke", "builder-1", "--reason", "x"],
+                vec!["seat", "woke", SEAT, "--reason", "x"],
                 "fleet event woke",
             ),
             (
-                vec!["seat", "handed-off", "builder-1", "--reason", "x"],
+                vec!["seat", "handed-off", SEAT, "--reason", "x"],
                 "fleet event handed-off",
             ),
             (
-                vec!["seat", "exited", "builder-1", "--reason", "x"],
+                vec!["seat", "exited", SEAT, "--reason", "x"],
                 "fleet event exited",
             ),
         ] {
@@ -336,7 +363,7 @@ mod effects {
         // unrecognised line, and still names no `event` spelling.
         let out = rig
             .binary()
-            .args(["seat", "ring", "builder-1", "--text", "x"])
+            .args(["seat", "ring", SEAT, "--text", "x"])
             .output()
             .expect("the built binary runs");
         assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
@@ -365,12 +392,12 @@ mod effects {
 
         let out = rig
             .binary()
-            .args(["event", "rest", "builder-1", "--reason", "x"])
+            .args(["event", "rest", SEAT, "--reason", "x"])
             .output()
             .expect("the built binary runs");
         assert_eq!(out.status.code(), Some(6), "{}", stderr(&out));
         assert!(
-            stderr(&out).contains("fleet seat retire builder-1"),
+            stderr(&out).contains(&format!("fleet seat retire {SEAT}")),
             "the refusal names the verb this kind of seat wants: {}",
             stderr(&out)
         );
@@ -383,7 +410,7 @@ mod effects {
         assert_eq!(control.observe().status.code(), Some(0));
         let out = control
             .binary()
-            .args(["event", "rest", "builder-1", "--reason", "x"])
+            .args(["event", "rest", SEAT, "--reason", "x"])
             .output()
             .expect("the built binary runs");
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -393,7 +420,7 @@ mod effects {
         append_event(
             &rig,
             "seat.resting",
-            "builder-1",
+            SEAT,
             serde_json::json!({"reason": "x"}),
         );
         let out = rig.observe();
@@ -426,10 +453,10 @@ mod effects {
 
         let argv = rig.start_argv();
         assert_eq!(argv.first().map(String::as_str), Some("--bg"));
-        assert_eq!(flag_value(&argv, "--name"), "orla");
+        assert_eq!(flag_value(&argv, "--name"), SEAT);
         assert_eq!(flag_value(&argv, "--model"), "claude-opus-5");
         assert_eq!(flag_value(&argv, "--permission-mode"), "auto");
-        assert_eq!(argv.last().map(String::as_str), Some("/wake builder-1"));
+        assert_eq!(argv.last(), Some(&format!("/wake {SEAT}")));
         assert_eq!(
             rig.start_cwd(),
             std::fs::canonicalize(rig.worktree()).expect("the worktree resolves")
@@ -450,11 +477,11 @@ mod effects {
         let table = rig.sessions();
         assert_eq!(table["schema"], 1);
         let row = &table["sessions"][0];
-        assert_eq!(row["seat"], "builder-1");
-        assert_eq!(row["name"], "orla");
+        assert_eq!(row["seat"], SEAT);
+        assert_eq!(row["name"], SEAT);
         assert_eq!(row["model"], "claude-opus-5");
         assert_eq!(row["posture"], "auto");
-        assert_eq!(row["first_turn"], "/wake builder-1");
+        assert_eq!(row["first_turn"], format!("/wake {SEAT}"));
         let spawned = rig
             .events()
             .into_iter()
@@ -527,8 +554,8 @@ mod effects {
             .position(|word| word == "--plugin-dir")
             .expect("the flag is in the argv");
         assert_eq!(
-            argv.get(at + 2).map(String::as_str),
-            Some("/wake builder-1"),
+            argv.get(at + 2),
+            Some(&format!("/wake {SEAT}")),
             "the element after the root's value is the first turn: {argv:?}"
         );
         assert_eq!(
@@ -628,7 +655,7 @@ mod effects {
 
         let out = rig
             .binary()
-            .args(["event", "rest", "builder-1", "--reason", "a nap"])
+            .args(["event", "rest", SEAT, "--reason", "a nap"])
             .output()
             .expect("the built binary runs");
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -652,7 +679,7 @@ mod effects {
             "the cursor moved past the event this tick consumed: {table}"
         );
         assert_eq!(table["sessions"].as_array().map(Vec::len), Some(1));
-        assert_eq!(table["sessions"][0]["seat"], "builder-1");
+        assert_eq!(table["sessions"][0]["seat"], SEAT);
 
         // AC8 — the in-flight field is CLEARED once the effect returned.
         assert!(
@@ -669,7 +696,7 @@ mod effects {
         rig.set_seam(STOP_EXIT, Some(1));
         let out = rig
             .binary()
-            .args(["event", "rest", "builder-1", "--reason", "a nap"])
+            .args(["event", "rest", SEAT, "--reason", "a nap"])
             .output()
             .expect("the built binary runs");
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -717,7 +744,7 @@ mod effects {
         rig.set_seam(START_EXIT, Some(1));
         let out = rig
             .binary()
-            .args(["event", "rest", "builder-1", "--reason", "a nap"])
+            .args(["event", "rest", SEAT, "--reason", "a nap"])
             .output()
             .expect("the built binary runs");
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -798,7 +825,7 @@ mod effects {
         let out = rig.observe();
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         assert_eq!(rig.events_of("session.nudged"), 2);
-        assert_eq!(rig.sessions()["nudged"]["builder-1"], "cd34");
+        assert_eq!(rig.sessions()["nudged"][SEAT], "cd34");
     }
 
     /// AC3(e) — a start that exits non-zero inside the watch window is a failure
@@ -857,7 +884,7 @@ mod effects {
         rig.write_roster("[]");
         rig.write_config(&format!(
             r#"{{"fleet_toml": "{}", "children": [
-                 {{"name":"builder-1","chosen_name":"Orla",
+                 {{"id":"{SEAT_ID}","name":"Orla",
                    "model":"claude-haiku-4-5-20251001",
                    "worktrees":{{"demo":"{}"}}}}
                ]}}"#,
@@ -1003,7 +1030,7 @@ mod effects {
             rig.projection()
         );
         assert_eq!(rig.events_of("dispatch.blind"), 1);
-        assert_eq!(rig.sessions()["seats"]["builder-1"]["blind"], 1);
+        assert_eq!(rig.sessions()["seats"][SEAT]["blind"], 1);
 
         // And the failed attach opened no window: the row still carries its
         // session, so the next poll decides about the same pid-less row again.
@@ -1054,7 +1081,7 @@ mod effects {
         // The remedy: a person's request, consumed on the next tick.
         let out = rig
             .binary()
-            .args(["event", "clear-halt", "builder-1"])
+            .args(["event", "clear-halt", SEAT])
             .output()
             .expect("the built binary runs");
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -1084,7 +1111,7 @@ mod effects {
         // 5 — nothing has published, so nothing would consume the request.
         let out = rig
             .binary()
-            .args(["event", "clear-halt", "builder-1"])
+            .args(["event", "clear-halt", SEAT])
             .output()
             .expect("the built binary runs");
         assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
@@ -1103,7 +1130,7 @@ mod effects {
 
         let out = rig
             .binary()
-            .args(["event", "clear-halt", "builder-1"])
+            .args(["event", "clear-halt", SEAT])
             .output()
             .expect("the built binary runs");
         assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
@@ -1191,7 +1218,7 @@ mod effects {
             .find(|e| e["type"] == "session.adopted")
             .expect("the event is in the stream");
         assert_eq!(adopted["payload"]["session"], "a-session");
-        assert_eq!(adopted["actor"], "builder-1");
+        assert_eq!(adopted["actor"], SEAT);
         assert_eq!(
             rig.calls().len(),
             before,
@@ -1273,7 +1300,7 @@ mod effects {
             assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         }
         assert_eq!(rig.events_of("session.halted"), 1);
-        assert_eq!(rig.sessions()["seats"]["builder-1"]["halted"], true);
+        assert_eq!(rig.sessions()["seats"][SEAT]["halted"], true);
         assert_eq!(rig.sessions()["daemon_pid"], 4242);
 
         write(&rig.machine().join("sessions.json"), "{not json at all");
@@ -1295,7 +1322,7 @@ mod effects {
         // no hold at all.
         let out = rig
             .binary()
-            .args(["event", "clear-halt", "builder-1"])
+            .args(["event", "clear-halt", SEAT])
             .output()
             .expect("the built binary runs");
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -1328,7 +1355,7 @@ mod effects {
             assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         }
         assert_eq!(rig.events_of("session.halted"), 1);
-        assert_eq!(rig.sessions()["seats"]["builder-1"]["halted"], true);
+        assert_eq!(rig.sessions()["seats"][SEAT]["halted"], true);
 
         // The control that the file was there to lose: the poll below reads a
         // path that resolves to nothing.
@@ -1518,7 +1545,7 @@ mod isolation {
     fn one_transient_seat(rig: &Rig) -> String {
         format!(
             r#"{{"fleet_toml": "{}", "children": [
-                 {{"name":"builder-1","chosen_name":"Orla","transient":true,
+                 {{"id":"{SEAT_ID}","name":"Orla","transient":true,
                    "worktrees":{{"demo":"{}"}}}}
                ]}}"#,
             rig.policy_path().display(),
@@ -1532,8 +1559,8 @@ mod isolation {
     fn table_naming(config_dir: &Path, item: &str, worktree: &Path) -> String {
         format!(
             r#"{{"schema":1,"consumed_seq":0,"nudged":{{}},"seats":{{}},"sessions":[
-                 {{"seat":"builder-1","project":"demo","worktree":"{}",
-                   "name":"orla","model":"a-model","posture":"dontAsk",
+                 {{"seat":"{SEAT}","project":"demo","worktree":"{}",
+                   "name":"{SEAT}","model":"a-model","posture":"dontAsk",
                    "first_turn":"a brief","transient":true,
                    "config_dir":"{}","item":"{}",
                    "dispatch_id":"a-dispatch","dispatched_at":1000}}
@@ -1600,7 +1627,7 @@ mod isolation {
     #[test]
     fn a_transient_rows_listing_is_read_under_its_own_configuration_directory() {
         let rig = Rig::new("isolation-per-row-listing");
-        let config_dir = rig.machine().join("config").join("builder-1");
+        let config_dir = rig.machine().join("config").join(SEAT);
         std::fs::create_dir_all(&config_dir).expect("the per-row directory is made");
         rig.write_config(&one_transient_seat(&rig));
         // The FLEET's listing names nothing, which is what a per-row daemon
@@ -1650,7 +1677,7 @@ mod isolation {
     #[test]
     fn a_logged_out_first_turn_writes_one_dispatch_failed_naming_the_seat_and_the_item() {
         let rig = Rig::new("isolation-logged-out");
-        let config_dir = rig.machine().join("config").join("builder-1");
+        let config_dir = rig.machine().join("config").join(SEAT);
         std::fs::create_dir_all(&config_dir).expect("the per-row directory is made");
         rig.write_config(&one_transient_seat(&rig));
         rig.write_roster("[]");
@@ -1677,8 +1704,8 @@ mod isolation {
             .into_iter()
             .find(|e| e["type"] == "dispatch.failed")
             .expect("the line is on the stream");
-        assert_eq!(line["actor"], "builder-1");
-        assert_eq!(line["payload"]["seat"], "builder-1");
+        assert_eq!(line["actor"], SEAT);
+        assert_eq!(line["payload"]["seat"], SEAT);
         assert_eq!(line["payload"]["item"], "an-item");
         assert_eq!(line["payload"]["cause"], "authentication_failed");
 
@@ -1702,7 +1729,7 @@ mod isolation {
     #[test]
     fn a_first_turn_that_answered_writes_no_dispatch_failed() {
         let rig = Rig::new("isolation-answered");
-        let config_dir = rig.machine().join("config").join("builder-1");
+        let config_dir = rig.machine().join("config").join(SEAT);
         std::fs::create_dir_all(&config_dir).expect("the per-row directory is made");
         rig.write_config(&one_transient_seat(&rig));
         rig.write_roster("[]");

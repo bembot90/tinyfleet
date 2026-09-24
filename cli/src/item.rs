@@ -26,6 +26,7 @@ use fleet_core::item::{
     RingOutcome, Stop, HOLD_CLEARED, ITEM_DELIVERED, ITEM_DISPATCHED, ITEM_HELD, ITEM_LANDED,
     ITEM_RETURNED, ITEM_REVIEWED, TRUNK,
 };
+use fleet_core::seat::identity::SeatRef;
 use fleet_core::store::Bd;
 
 use crate::envelope;
@@ -880,7 +881,8 @@ pub struct Here {
     /// SIBLING of the packs directory so a caller naming its own packs dir names
     /// the pair.
     pub defaults_dir: PathBuf,
-    pub seats: Vec<String>,
+    /// The seats the machine's config carries, as every reader names them.
+    pub seats: Vec<SeatRef>,
     /// The policy file in force, as one path: the embedded fleet's own
     /// `fleet.toml`, or the file a standalone fleet's machine config names.
     /// `run` copies it byte for byte, so which file it is has to be resolved
@@ -1167,10 +1169,10 @@ fn defaults_dir(chosen: &Option<PathBuf>, machine_dir: &Path) -> PathBuf {
     }
 }
 
-fn seats_of(machine: &Result<config::MachineConfig, String>) -> Vec<String> {
+fn seats_of(machine: &Result<config::MachineConfig, String>) -> Vec<SeatRef> {
     machine
         .as_ref()
-        .map(|machine| machine.seats.iter().map(|s| s.name.clone()).collect())
+        .map(|machine| machine.seats.iter().map(config::Seat::as_ref).collect())
         .unwrap_or_default()
 }
 
@@ -1235,9 +1237,15 @@ impl SeatRing {
             Ok(machine) => machine,
             Err(cause) => return rang_nobody(cause),
         };
-        let Some(row) = machine.seats.iter().find(|row| row.name == seat) else {
-            return rang_nobody(format!("`{seat}` is not a row of config.json"));
+        // THE ROW THROUGH THE RESOLVER, so a ring names its seat the way every
+        // other seat argument does. From here the seat is its machine name,
+        // which is what the session table and the agent's session are keyed on.
+        let row = match machine.resolve(seat) {
+            Ok(row) => row,
+            Err(unresolved) => return rang_nobody(unresolved.to_string()),
         };
+        let name = row.machine_name();
+        let seat = name.as_str();
         // A seat may hold worktrees for several projects; the one this order is
         // about is the session to ring, and the first is the answer only where
         // the project names none.
@@ -1297,13 +1305,12 @@ impl SeatRing {
             Err(cause) => return rang_nobody(cause),
         };
         let agent = agent.with_effect_bin(effect_bin);
-        let display = row.chosen_name.clone().unwrap_or_else(|| row.name.clone());
         let outcome = match agent.nudge(
             under,
             seat,
             &worktree,
             &policy.nudge_model,
-            &effect::nudge_prompt(&display, text),
+            &effect::nudge_prompt(&effect::display_name(None, seat), text),
             timeout.unwrap_or_else(|| Duration::from_secs(policy.nudge_timeout_seconds)),
         ) {
             Ok(()) => RingOutcome::Delivered,

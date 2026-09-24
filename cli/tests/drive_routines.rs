@@ -181,7 +181,7 @@ mod routines {
         rig.write_roster(&live_row(&rig.worktree(), "a-session"));
         rig.write_routine(
             "ring",
-            &a_cooldown_nudge("builder-1", "look at the board", "the operator"),
+            &a_cooldown_nudge("Orla", "look at the board", "the operator"),
         );
         rig.set_clock(BASE);
         assert_eq!(rig.observe().status.code(), Some(0));
@@ -219,12 +219,12 @@ mod routines {
             &format!(
                 "{}[action.item]\ntitle = \"the ring found nobody\"\nwhen = \"absent\"\n\
                  dedupe = \"open\"\ntype = \"task\"\npriority = 3\nlabels = [\"lane\"]\n",
-                a_cooldown_nudge("builder-1", "look at the board", "the operator")
+                a_cooldown_nudge("Orla", "look at the board", "the operator")
             ),
         );
         rig.write_routine(
             "no-fallback",
-            &a_cooldown_nudge("builder-1", "nowhere to leave it", "the operator"),
+            &a_cooldown_nudge("Orla", "nowhere to leave it", "the operator"),
         );
 
         common::take_a_board_with(&bd, &rig.root, "drive");

@@ -174,6 +174,10 @@ pub fn feed_command(args: &FeedArgs) -> Exit {
         Ok(here) => here,
         Err(stop) => return stopped(FEED, &stop, args.json),
     };
+    let seat = match seat_named(&here.machine_dir, &args.seat) {
+        Ok(seat) => seat,
+        Err(stop) => return stopped(FEED, &stop, args.json),
+    };
     let first_turn = match turn_text(&args.first_turn) {
         Ok(text) => text,
         Err(stop) => return stopped(FEED, &stop, args.json),
@@ -193,7 +197,7 @@ pub fn feed_command(args: &FeedArgs) -> Exit {
     };
     let machine = machine_of(&here, &at, &agent, &policy);
 
-    match transient::feed(&machine, &args.seat, &first_turn) {
+    match transient::feed(&machine, &seat, &first_turn) {
         Ok(fed) => {
             if args.json {
                 // THE TURNS ARE THEIR FIRST LINES, which is the shape the
@@ -225,6 +229,10 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
         Ok(here) => here,
         Err(stop) => return stopped(RETIRE, &stop, args.json),
     };
+    let seat = match seat_named(&here.machine_dir, &args.seat) {
+        Ok(seat) => seat,
+        Err(stop) => return stopped(RETIRE, &stop, args.json),
+    };
     let home = platform::home_dir();
     let agent = match effect_agent(&here, &home) {
         Ok(agent) => agent,
@@ -244,7 +252,7 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
     // BEFORE the retire drops the row that names it. Neither is a reading this
     // verb refuses over: a seat nobody can name an item for retires exactly as
     // it always did and keeps its branch.
-    let dispatched = held_item(&here, &args.seat);
+    let dispatched = held_item(&here, &seat);
     let notes = dispatched
         .as_deref()
         .and_then(|item| notes_of(&here, item))
@@ -285,7 +293,7 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
         Ok(held.into_iter().map(|row| row.id).collect())
     };
 
-    match transient::retire_with(&machine, &args.seat, args.dead, &withdrawal) {
+    match transient::retire_with(&machine, &seat, args.dead, &withdrawal) {
         Ok(reclaimed) => {
             if !args.json {
                 println!(
@@ -562,6 +570,27 @@ pub(crate) fn resolved(project: Option<&str>) -> Result<Here, Stop> {
         }
     }
     Ok(here)
+}
+
+/// The machine name of the one row a seat argument names — its full id, eight
+/// or more of its hex digits, its name or its machine name — resolved through
+/// the seat list before anything is asked of the controller.
+///
+/// THE MACHINE NAME IS WHAT IS HANDED ON, because the session table, the
+/// stream and the projection are still keyed on it. A refusal is the
+/// resolver's own, with the exit it carries; a seat list nobody could read is
+/// could-not-tell, never a fleet with no seats.
+pub(crate) fn seat_named(machine_dir: &Path, arg: &str) -> Result<String, Stop> {
+    let path = machine_dir.join("config.json");
+    let machine = config::read(&path).map_err(|why| {
+        Stop::could_not_tell(format!(
+            "the seat list could not be read, so no seat can be named: {why}"
+        ))
+    })?;
+    machine
+        .resolve(arg)
+        .map(config::Seat::machine_name)
+        .map_err(Stop::from)
 }
 
 /// The slot the pack layers carry a transient seat's permission rules in.

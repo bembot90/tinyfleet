@@ -45,7 +45,14 @@ static ENV: Mutex<()> = Mutex::new(());
 /// the run starts. Three is the smallest roster the upgrade shape can read —
 /// its floor is two pid-less seats AND half the fleet — so a poll that reads all
 /// three pid-less is the whole-fleet reading the incident's log line carried.
-const SEATS: [&str; 3] = ["a-seat", "b-seat", "c-seat"];
+/// Each row is keyed by its id, and the loop names each seat by the machine
+/// name its id gives, in the same order.
+const SEAT_IDS: [&str; 3] = [
+    "01a0d1f1-0aec-765f-9abe-5c21e8a04b17",
+    "01a0d1f1-0aec-765f-9abe-d4f993b9739a",
+    "01a0d1f1-0aec-765f-9abe-00007e3fa2c0",
+];
+const SEATS: [&str; 3] = ["agent-e8a04b17", "agent-93b9739a", "agent-7e3fa2c0"];
 const SESSIONS: [&str; 3] = ["a-session", "b-session", "c-session"];
 const ADDRESSES: [&str; 3] = ["ab12", "cd34", "ef56"];
 const PROJECT: &str = "a-project";
@@ -121,12 +128,12 @@ impl Rig {
                  arrival_window_seconds = {WINDOW_SECONDS}\n"
             ),
         );
-        let children: Vec<String> = SEATS
+        let children: Vec<String> = SEAT_IDS
             .iter()
             .zip(&rig.worktrees)
-            .map(|(seat, worktree)| {
+            .map(|(id, worktree)| {
                 format!(
-                    "{{\"name\": \"{seat}\", \"worktrees\": {{\"{PROJECT}\": \"{}\"}}}}",
+                    "{{\"id\": \"{id}\", \"worktrees\": {{\"{PROJECT}\": \"{}\"}}}}",
                     worktree.display()
                 )
             })

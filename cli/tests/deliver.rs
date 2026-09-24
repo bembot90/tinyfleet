@@ -22,6 +22,8 @@ use common::hermetic::Hermetic;
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 const REVIEWER: &str = "a-reviewer";
+/// The reviewer seat's id, which keys its row; [`REVIEWER`] is its name.
+const REVIEWER_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
 /// One guard opted out, so a brief rendered off this file carries a line only
 /// this file could have put there.
 const POLICY: &str = "[guards]\nrecord = { enabled = false }\n\n\
@@ -116,7 +118,7 @@ impl Rig {
             rig.machine.join("config.json"),
             format!(
                 r#"{{"fleet_toml": {fleet_toml}, "children": [
-                     {{"name": "{REVIEWER}", "chosen_name": "Kite",
+                     {{"id": "{REVIEWER_ID}", "name": "{REVIEWER}",
                       "worktrees": {{"a-project": {worktree}}}}}
                    ]}}"#,
                 fleet_toml = json_string(&rig.project.join("fleet.toml").display().to_string()),
@@ -461,8 +463,8 @@ fn a_live_reviewer_is_rung_with_the_item_and_the_commit_the_delivery_made() {
         "the reviewer is rung with the item and the commit:\n{argv}"
     );
     assert!(
-        argv.contains("Kite"),
-        "the reviewer is addressed by name:\n{argv}"
+        argv.contains("a-reviewer-93b9739a"),
+        "the reviewer is addressed by the machine name its name resolved to:\n{argv}"
     );
 }
 

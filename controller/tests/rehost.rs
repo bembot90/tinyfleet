@@ -42,12 +42,15 @@ mod common;
 static ENV: Mutex<()> = Mutex::new(());
 
 /// The seat whose session is live on the first tick and re-hosting on the
-/// second — the subject.
-const HOSTED: &str = "a-seat";
+/// second — the subject. Its row is keyed by the id, and everything the loop
+/// writes about it names it by the machine name that id gives.
+const HOSTED_ID: &str = "01a0d1f1-0aec-765f-9abe-5c21e8a04b17";
+const HOSTED: &str = "agent-e8a04b17";
 /// The seat standing on a pid-less row from the first tick on, which this
 /// controller has therefore never seen live. It is the control: no sighting
 /// covers it, so the revive it takes is the one the subject was spared.
-const NEVER_LIVE: &str = "b-seat";
+const NEVER_LIVE_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
+const NEVER_LIVE: &str = "agent-93b9739a";
 const PROJECT: &str = "a-project";
 const HOSTED_SESSION: &str = "a-session";
 const HOSTED_ADDRESS: &str = "ab12";
@@ -117,8 +120,8 @@ impl Rig {
             &rig.machine.join("config.json"),
             &format!(
                 "{{\"fleet_toml\": \"{}\", \"children\": [\
-                 {{\"name\": \"{HOSTED}\", \"worktrees\": {{\"{PROJECT}\": \"{}\"}}}}, \
-                 {{\"name\": \"{NEVER_LIVE}\", \"worktrees\": {{\"{PROJECT}\": \"{}\"}}}}]}}\n",
+                 {{\"id\": \"{HOSTED_ID}\", \"worktrees\": {{\"{PROJECT}\": \"{}\"}}}}, \
+                 {{\"id\": \"{NEVER_LIVE_ID}\", \"worktrees\": {{\"{PROJECT}\": \"{}\"}}}}]}}\n",
                 rig.root.join("fleet.toml").display(),
                 rig.hosted.display(),
                 rig.never_live.display()

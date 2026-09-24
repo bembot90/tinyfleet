@@ -536,8 +536,8 @@ fn rendered_seats(run: &FirstRun) -> Result<(Vec<config::RenderedSeat>, usize), 
         .into_iter()
         .filter(|seat| seat.seat.kind == Kind::Agent && !seat.parked)
         .map(|seat| config::RenderedSeat {
-            name: seat.seat.machine_name(),
             id: seat.seat.id,
+            name: seat.seat.name.clone(),
             model: run.policy.model_for(seat.model.as_deref()),
             worktrees: vec![(
                 at.name.to_string(),
@@ -1239,8 +1239,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A RENAME MOVES NO WORKTREE. The row takes the seat's new machine name,
-    /// and its worktree is the one directory already standing that ends in
+    /// A RENAME MOVES NO WORKTREE. The row takes the seat's new name, and its
+    /// worktree is the one directory already standing that ends in
     /// the seat's short id — which is the part of the name a rename keeps.
     #[test]
     fn a_renamed_seat_keeps_the_worktree_that_ends_in_its_short_id() {
@@ -1281,7 +1281,8 @@ mod tests {
         let (rows, humans) = rendered_seats(&run).expect("the roster renders");
         assert_eq!(humans, 1, "the human seat is counted and not rendered");
         assert_eq!(rows.len(), 1, "{rows:?}");
-        assert_eq!(rows[0].name, "wren-93b9739a");
+        assert_eq!(rows[0].name.as_deref(), Some("Wren"));
+        assert_eq!(rows[0].machine_name(), "wren-93b9739a");
         assert_eq!(
             rows[0].id.to_string(),
             "01a0d1f1-0aec-765f-9abe-d4f993b9739a"

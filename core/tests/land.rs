@@ -516,22 +516,26 @@ fn project(scratch: &dyn Rooted) -> Project {
     }
 }
 
+/// The reviewer seat's id, which keys its row in the seat table. Its name is
+/// [`REVIEWER`], so the policy can name it either way.
+const REVIEWER_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
+
 /// The machine's seat table under the rig's own machine directory: the file a
 /// landing handed the primary reads to find the tree it belongs in. One row per
-/// (seat, project, worktree), written whole each time, because an arm that
+/// (id, name, project, worktree), written whole each time, because an arm that
 /// takes a worktree away is asserting on the file and not on an edit to it.
-fn seat_table(scratch: &dyn Rooted, rows: &[(&str, &str, &Path)]) {
+fn seat_table(scratch: &dyn Rooted, rows: &[(&str, &str, &str, &Path)]) {
     let machine = scratch.root().join("machine");
     std::fs::create_dir_all(&machine).expect("the machine directory is made");
     let children: Vec<serde_json::Value> = rows
         .iter()
-        .map(|(seat, project, worktree)| {
+        .map(|(id, name, project, worktree)| {
             let mut worktrees = serde_json::Map::new();
             worktrees.insert(
                 (*project).to_string(),
                 serde_json::Value::String(worktree.display().to_string()),
             );
-            serde_json::json!({ "name": seat, "worktrees": worktrees })
+            serde_json::json!({ "id": id, "name": name, "worktrees": worktrees })
         })
         .collect();
     std::fs::write(
@@ -1904,7 +1908,7 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
     // text would answer about a path's spelling and not about a directory.
     let worktree = scratch.root().join("the-reviewers-worktree");
     std::fs::create_dir_all(&worktree).expect("the reviewer's worktree is made");
-    seat_table(scratch, &[(REVIEWER, "a-project", &worktree)]);
+    seat_table(scratch, &[(REVIEWER_ID, REVIEWER, "a-project", &worktree)]);
     let policy = scratch.root().join("a-suite-that-says-where.toml");
     std::fs::write(
         &policy,
@@ -1982,6 +1986,107 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
         "and the primary's board was not touched"
     );
 
+    // THE FULL ID FINDS THE SAME ROW. `[core] reviewer` is any seat argument,
+    // resolved over the table's ids and names, so the policy naming the seat
+    // by its id lands in the same worktree the name did.
+    let by_id = an_item(
+        bd,
+        "an item whose reviewer is named by its id",
+        Some(("ACCEPTED", SHA)),
+    );
+    std::fs::remove_file(worktree.join(SUITE_RAN)).expect("the first run's mark is cleared");
+    let id_policy = scratch.root().join("a-reviewer-named-by-id.toml");
+    std::fs::write(
+        &id_policy,
+        format!(
+            "[landing]\nci_marker = \"printf '[skip ci]'\"\n\n[core]\nreviewer = \"{REVIEWER_ID}\"\n"
+        ),
+    )
+    .expect("the policy is written");
+    let id_table = fleet_core::item::table_at(&id_policy);
+    let id_project = Project {
+        root: scratch.root().to_path_buf(),
+        name: "a-project".to_string(),
+        guards: id_table.clone(),
+        policy: id_table,
+    };
+    let mut git = StubGit::clean();
+    git.linked = false;
+    let ran = run_against(
+        scratch,
+        bd,
+        &git,
+        &by_id,
+        SHA,
+        &[],
+        None,
+        &id_project,
+        Some(&says_where),
+        &StubEvents::default(),
+        &lane::Unread,
+    );
+    ran.landed.as_ref().unwrap_or_else(|stop| {
+        panic!(
+            "the landing by id was refused: {}\n{}",
+            stop.message, ran.out
+        );
+    });
+    assert_eq!(
+        git.calls().get(1),
+        Some(&format!("at {}", worktree.display())),
+        "the id resolved to the reviewer's worktree: {:?}",
+        git.calls()
+    );
+    assert!(
+        worktree.join(SUITE_RAN).is_file(),
+        "and the suite ran there"
+    );
+
+    // A REVIEWER THE TABLE DOES NOT HOLD refuses with the resolver's own
+    // reason, naming the value and the table — and the list of seats it does.
+    let stranger = an_item(
+        bd,
+        "an item whose reviewer the table does not hold",
+        Some(("ACCEPTED", SHA)),
+    );
+    let stranger_policy = scratch.root().join("a-reviewer-nobody-holds.toml");
+    std::fs::write(
+        &stranger_policy,
+        "[landing]\nci_marker = \"printf '[skip ci]'\"\n\n[core]\nreviewer = \"Kite\"\n",
+    )
+    .expect("the policy is written");
+    let stranger_table = fleet_core::item::table_at(&stranger_policy);
+    let stranger_project = Project {
+        root: scratch.root().to_path_buf(),
+        name: "a-project".to_string(),
+        guards: stranger_table.clone(),
+        policy: stranger_table,
+    };
+    let mut git = StubGit::clean();
+    git.linked = false;
+    let ran = run_against(
+        scratch,
+        bd,
+        &git,
+        &stranger,
+        SHA,
+        &[],
+        None,
+        &stranger_project,
+        Some(&says_where),
+        &StubEvents::default(),
+        &lane::Unread,
+    );
+    assert_eq!(ran.code(), Some(1), "{}", ran.why());
+    assert!(
+        ran.why()
+            .starts_with("[core] reviewer = \"Kite\" Kite names no seat — the seats are "),
+        "{}",
+        ran.why()
+    );
+    assert!(ran.why().contains("a-reviewer-93b9739a"), "{}", ran.why());
+    assert!(ran.why().contains("config.json"), "{}", ran.why());
+
     // THE REVIEWER WITH NO WORKTREE FOR THIS PROJECT refuses, naming the seat
     // and the table. The resolution never falls back to the tree it was handed,
     // because that tree is the one it exists to keep a landing out of.
@@ -1990,7 +2095,10 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
         "an item whose reviewer holds no worktree here",
         Some(("ACCEPTED", SHA)),
     );
-    seat_table(scratch, &[(REVIEWER, "some-other-project", &worktree)]);
+    seat_table(
+        scratch,
+        &[(REVIEWER_ID, REVIEWER, "some-other-project", &worktree)],
+    );
     let mut git = StubGit::clean();
     git.linked = false;
     let ran = run_against(
@@ -2051,6 +2159,7 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
     seat_table(
         scratch,
         &[(
+            REVIEWER_ID,
             REVIEWER,
             "a-project",
             &scratch.root().join("also-a-primary"),

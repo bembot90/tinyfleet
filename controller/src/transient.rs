@@ -36,6 +36,7 @@ use crate::events::{self, EventLog};
 use crate::platform;
 use crate::policy::Policy;
 use crate::sessions::{self, Table};
+use fleet_core::seat::identity::{resolve, SeatRef};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -119,17 +120,24 @@ impl Machine<'_> {
         sessions::path_in(self.machine_dir)
     }
 
-    /// The configuration directory a spawned seat of this name comes up under:
-    /// one per seat, under the machine directory, so nothing from the person's
-    /// home directory reaches a flight.
+    /// The configuration directory a spawned seat comes up under: one per
+    /// seat, under the machine directory and named by its machine name, so
+    /// nothing from the person's home directory reaches a flight.
     ///
     /// The LOCATION is the machine directory's and no policy key names it: a
     /// second spelling of it is a second place a stale value can live.
-    fn config_dir_for(&self, seat: &str) -> PathBuf {
-        self.machine_dir.join(CONFIG_DIRS).join(seat)
+    fn config_dir_for(&self, seat: &Seat) -> PathBuf {
+        self.config_dir_named(&seat.machine_name())
     }
 
-    /// The directory a seat's own session row names, where it names one.
+    /// The same directory for a seat known so far only by the machine name a
+    /// claim took — which is what a rollback holds before any row reads back.
+    fn config_dir_named(&self, machine_name: &str) -> PathBuf {
+        self.machine_dir.join(CONFIG_DIRS).join(machine_name)
+    }
+
+    /// The directory a seat's own session row names, where it names one. The
+    /// table is keyed on the seat's machine name.
     fn recorded_config_dir(&self, seat: &str) -> Option<String> {
         sessions::read(&self.table_path())
             .0?
@@ -260,21 +268,23 @@ impl Machine<'_> {
         }
     }
 
-    /// The row of the seat list this name belongs to, with the two refusals a
-    /// verb over a transient seat owes: a name nothing carries, and a named row
-    /// where a transient one was required.
-    fn transient_row(&self, seats: &[Seat], name: &str) -> Result<Seat, Refusal> {
-        let Some(row) = seats.iter().find(|seat| seat.name == name) else {
-            return Err(Refusal::refused(format!(
-                "`{name}` is not a row of this machine's seat list"
-            )));
+    /// The row of the seat list this argument names, through the one resolver
+    /// every seat argument takes, with the refusals a verb over a transient
+    /// seat owes: an argument that names no one row, and a named row where a
+    /// transient one was required.
+    fn transient_row(&self, seats: &[Seat], arg: &str) -> Result<Seat, Refusal> {
+        let refs: Vec<SeatRef> = seats.iter().map(Seat::as_ref).collect();
+        let row = match resolve(&refs, arg) {
+            Ok(index) => &seats[index],
+            Err(unresolved) => return Err(Refusal::at(unresolved.code(), unresolved.to_string())),
         };
         if !row.transient {
             return Err(Refusal::at(
                 NOT_TRANSIENT,
                 format!(
-                    "`{name}` is a named seat — named seats are rung and rested, and only a \
-                     transient row is fed and retired"
+                    "{} is a named seat — named seats are rung and rested, and only a \
+                     transient row is fed and retired",
+                    row.machine_name()
                 ),
             ));
         }
@@ -291,7 +301,10 @@ impl Machine<'_> {
             .or_else(|| row.worktrees.first())
             .map(|(_, path)| path.clone())
             .ok_or_else(|| {
-                Refusal::refused(format!("`{}` carries no worktree to act in", row.name))
+                Refusal::refused(format!(
+                    "`{}` carries no worktree to act in",
+                    row.machine_name()
+                ))
             })
     }
 }
@@ -396,7 +409,7 @@ impl Belt {
             .filter(|seat| {
                 recorded
                     .as_ref()
-                    .and_then(|table| table.newest_for(&seat.name))
+                    .and_then(|table| table.newest_for(&seat.machine_name()))
                     .and_then(|row| row.config_dir.as_ref())
                     .is_none()
             })
@@ -411,7 +424,7 @@ impl Belt {
         for seat in seats.iter().filter(|seat| seat.transient) {
             let Some(config_dir) = recorded
                 .as_ref()
-                .and_then(|table| table.newest_for(&seat.name))
+                .and_then(|table| table.newest_for(&seat.machine_name()))
                 .and_then(|row| row.config_dir.clone())
             else {
                 continue;
@@ -630,13 +643,15 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
             .map(|_| ())
         },
     );
-    let (name, worktree) = match claimed {
-        Ok(claimed) => (claimed.name, claimed.worktree),
+    let claimed = match claimed {
+        Ok(claimed) => claimed,
         Err(config::ClaimError::Nothing(why)) => return Err(Refusal::refused(why)),
         Err(config::ClaimError::Made { worktree, why }) => {
-            return Err(rolled_back(machine, REFUSED, "", &worktree, &why))
+            return Err(rolled_back(machine, REFUSED, None, &worktree, &why))
         }
     };
+    let name = claimed.name.clone();
+    let worktree = claimed.worktree.clone();
     let worktree_arg = worktree.display().to_string();
     // READ HERE, right after the add and inside the rollback window: this is the
     // one moment the tree exists and nothing of the seat's has touched it, so
@@ -645,27 +660,34 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
     // it, not a precondition of it.
     let base = base_of(&worktree);
 
-    match machine.seats() {
-        Ok(seats) if seats.iter().any(|seat| seat.name == name && seat.transient) => {}
-        Ok(_) => {
-            return Err(rolled_back(
-                machine,
-                COULD_NOT_TELL,
-                &name,
-                &worktree,
-                &format!("the seat list does not read back a transient row for {name}"),
-            ))
-        }
+    // The read-back finds the row by the id the claim minted, which is the
+    // one key the row is written under.
+    let row = match machine.seats() {
+        Ok(seats) => match seats
+            .into_iter()
+            .find(|seat| seat.id == claimed.id && seat.transient)
+        {
+            Some(row) => row,
+            None => {
+                return Err(rolled_back(
+                    machine,
+                    COULD_NOT_TELL,
+                    Some(&claimed),
+                    &worktree,
+                    &format!("the seat list does not read back a transient row for {name}"),
+                ))
+            }
+        },
         Err(refusal) => {
             return Err(rolled_back(
                 machine,
                 refusal.code,
-                &name,
+                Some(&claimed),
                 &worktree,
                 &refusal.message,
             ))
         }
-    }
+    };
 
     // (c2) The permission rules, inside the rollback window and BEFORE the
     // start: a session that came up without them is one that cannot write, and
@@ -675,7 +697,13 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
             match write_settings(machine.agent.local_settings(), &worktree, template) {
                 Ok(did) => Some(did),
                 Err(why) => {
-                    return Err(rolled_back(machine, COULD_NOT_TELL, &name, &worktree, &why))
+                    return Err(rolled_back(
+                        machine,
+                        COULD_NOT_TELL,
+                        Some(&claimed),
+                        &worktree,
+                        &why,
+                    ))
                 }
             }
         }
@@ -687,9 +715,15 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
     // window and before the start, because the start is what the directory is
     // for and a session that came up under the person's own directory is the
     // isolation failure this whole slice is against.
-    let config_dir = machine.config_dir_for(&name);
+    let config_dir = machine.config_dir_for(&row);
     if let Err(why) = make_config_dir(&config_dir, ask.config_files) {
-        return Err(rolled_back(machine, COULD_NOT_TELL, &name, &worktree, &why));
+        return Err(rolled_back(
+            machine,
+            COULD_NOT_TELL,
+            Some(&claimed),
+            &worktree,
+            &why,
+        ));
     }
 
     // (d) The start, through the same effect the loop's own spawn takes. The
@@ -701,7 +735,7 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
         return Err(rolled_back(
             machine,
             refusal.code,
-            &name,
+            Some(&claimed),
             &worktree,
             &refusal.message,
         ));
@@ -751,7 +785,7 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
         return Err(rolled_back(
             machine,
             REFUSED,
-            &name,
+            Some(&claimed),
             &worktree,
             &format!(
                 "the start for {name} failed inside its {}s watch window; its output is at {}",
@@ -1015,9 +1049,9 @@ fn merged_settings(project: &str, pack: &str) -> Result<String, String> {
         .map_err(|e| format!("the merged document could not be written out: {e}"))
 }
 
-/// Undo everything the window covers, and say what the undo did. An empty
-/// `name` is a claim that made the worktree and never wrote the row, where the
-/// drop below finds nothing and says so.
+/// Undo everything the window covers, and say what the undo did. `None` for
+/// the claim is one that made the worktree and never wrote the row, where there
+/// is nothing to drop and the line says so.
 ///
 /// NEVER A BRANCH. `git worktree remove` leaves refs alone, so a branch made
 /// inside the worktree survives — which is the point: it is exactly what a
@@ -1027,7 +1061,13 @@ fn merged_settings(project: &str, pack: &str) -> Result<String, String> {
 /// of answer this is: a table nobody could read is still could-not-tell after
 /// the worktree has been taken back, and rounding it to a refusal would tell the
 /// caller the machine said no when it said it could not say.
-fn rolled_back(machine: &Machine, code: u8, name: &str, worktree: &Path, why: &str) -> Refusal {
+fn rolled_back(
+    machine: &Machine,
+    code: u8,
+    claimed: Option<&config::Claimed>,
+    worktree: &Path,
+    why: &str,
+) -> Refusal {
     let removed = match git(
         machine.primary,
         "worktree remove",
@@ -1041,11 +1081,10 @@ fn rolled_back(machine: &Machine, code: u8, name: &str, worktree: &Path, why: &s
         Ok(_) => format!("the worktree at {} was removed", worktree.display()),
         Err(cause) => format!("THE WORKTREE AT {} SURVIVES: {cause}", worktree.display()),
     };
-    let held_config = machine.config_dir_for(name);
-    let unconfigured = if name.is_empty() || !held_config.exists() {
-        "no configuration directory was left to remove".to_string()
-    } else {
-        match std::fs::remove_dir_all(&held_config) {
+    let held_config = claimed.map(|claimed| machine.config_dir_named(&claimed.name));
+    let unconfigured = match held_config.filter(|dir| dir.exists()) {
+        None => "no configuration directory was left to remove".to_string(),
+        Some(held_config) => match std::fs::remove_dir_all(&held_config) {
             Ok(()) => format!(
                 "the configuration directory at {} was removed",
                 held_config.display()
@@ -1054,18 +1093,20 @@ fn rolled_back(machine: &Machine, code: u8, name: &str, worktree: &Path, why: &s
                 "THE CONFIGURATION DIRECTORY AT {} SURVIVES: {e}",
                 held_config.display()
             ),
-        }
+        },
     };
-    // An empty name is a claim that made the worktree and never reached the row,
-    // so there is nothing to look for and the line says that rather than naming
-    // a seat with no name.
-    let dropped = if name.is_empty() {
-        "no seat-list row was written to drop".to_string()
-    } else {
-        match config::drop_seat(&machine.config_path(), name) {
-            Ok(true) => format!("the seat-list row for {name} was dropped"),
-            Ok(false) => format!("the seat list carried no row for {name} to drop"),
-            Err(cause) => format!("THE SEAT-LIST ROW FOR {name} SURVIVES: {cause}"),
+    // No claim is one that made the worktree and never reached the row, so
+    // there is nothing to look for and the line says that rather than naming a
+    // seat that was never written.
+    let dropped = match claimed {
+        None => "no seat-list row was written to drop".to_string(),
+        Some(claimed) => {
+            let name = &claimed.name;
+            match config::drop_seat(&machine.config_path(), &claimed.id) {
+                Ok(true) => format!("the seat-list row for {name} was dropped"),
+                Ok(false) => format!("the seat list carried no row for {name} to drop"),
+                Err(cause) => format!("THE SEAT-LIST ROW FOR {name} SURVIVES: {cause}"),
+            }
         }
     };
     Refusal::at(
@@ -1111,6 +1152,10 @@ pub struct Fed {
 pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refusal> {
     let seats = machine.seats()?;
     let row = machine.transient_row(&seats, seat)?;
+    // From here the seat is its machine name, which is what the session table,
+    // the stream and the agent's own session are still keyed on.
+    let name = row.machine_name();
+    let seat = name.as_str();
     let worktree = machine.worktree_of(&row)?;
     let key = dir_key(&worktree);
 
@@ -1294,6 +1339,10 @@ pub fn retire_with(
 ) -> Result<Reclaimed, Refusal> {
     let seats = machine.seats()?;
     let row = machine.transient_row(&seats, seat)?;
+    // From here the seat is its machine name, which is what the session table,
+    // the stream and the record's assignee are still keyed on.
+    let name = row.machine_name();
+    let seat = name.as_str();
     let worktree = machine.worktree_of(&row)?;
     let key = dir_key(&worktree).to_string();
 
@@ -1429,7 +1478,7 @@ pub fn retire_with(
         ),
     })?;
 
-    config::drop_seat(&machine.config_path(), seat).map_err(|cause| {
+    config::drop_seat(&machine.config_path(), &row.id).map_err(|cause| {
         Refusal::could_not_tell(format!(
             "the seat-list row for `{seat}` could not be dropped: {cause}"
         ))
@@ -1443,7 +1492,7 @@ pub fn retire_with(
     drop(held);
 
     // FROM HERE THE TWO ROWS ARE ALREADY GONE, so every refusal below says so:
-    // a re-run would be refused at the seat list with "is not a row", which
+    // a re-run would be refused at the seat list with "names no seat", which
     // tells the person nothing about what is still standing.
     verify_from_outside(machine, seat, under, &worktree, &key, pid).map_err(|refusal| Refusal {
         code: refusal.code,
@@ -1464,7 +1513,7 @@ pub fn retire_with(
     // removal before it would leave that probe with nothing to ask and passing
     // vacuously. A refused verification leaves the directory standing, which is
     // right: something is still running under it.
-    let held_config = machine.config_dir_for(seat);
+    let held_config = machine.config_dir_for(&row);
     if held_config.exists() {
         std::fs::remove_dir_all(&held_config).map_err(|e| {
             Refusal::could_not_tell(format!(
@@ -1598,6 +1647,10 @@ pub fn priced_with(
 ) -> Result<Priced, Refusal> {
     let seats = machine.seats()?;
     let row = machine.transient_row(&seats, seat)?;
+    // From here the seat is its machine name, which is what the session table
+    // and the stream are still keyed on.
+    let name = row.machine_name();
+    let seat = name.as_str();
     let worktree = machine.worktree_of(&row)?;
 
     // The session row, for the id the transcript is keyed by and the stamp the

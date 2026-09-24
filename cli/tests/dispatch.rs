@@ -26,6 +26,11 @@ use common::hermetic::Hermetic;
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 const MODEL: &str = "a-cheap-model";
+
+/// The id every arm's one seat row is keyed by. Each arm's seat carries a name
+/// of its own, which is what `--to` names it by and what the order is written
+/// against, so the shared board still holds one seat's work per arm.
+const SEAT_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
 const POLICY: &str = "[controller]\nnudge_model = \"a-cheap-model\"\n\
                       nudge_timeout_seconds = 20\n";
 
@@ -215,7 +220,7 @@ impl Rig {
             rig.machine.join("config.json"),
             format!(
                 r#"{{"fleet_toml": {fleet_toml}, "children": [
-                     {{"name": "{seat}", "chosen_name": "Orla",
+                     {{"id": "{SEAT_ID}", "name": "{seat}",
                       "worktrees": {{"a-project": {worktree}}}}}
                    ]}}"#,
                 seat = rig.seat,
@@ -379,8 +384,8 @@ fn a_live_row_in_the_seats_worktree_is_rung_with_the_item_and_the_brief() {
         "the prompt names the brief's path:\n{argv}"
     );
     assert!(
-        argv.contains("Orla"),
-        "the seat is addressed by its name:\n{argv}"
+        argv.contains(&format!("{}-93b9739a", rig.seat)),
+        "the seat is addressed by the machine name its name resolved to:\n{argv}"
     );
 
     let (assignee, notes, orders) = project.order_of(&item);

@@ -10,6 +10,7 @@
 //! element and not a second reader.
 
 use super::file::{self, Defect, Loaded, Routine, Source};
+use fleet_core::seat::identity::SeatRef;
 use std::path::{Path, PathBuf};
 
 /// One place routines are read from.
@@ -104,7 +105,7 @@ pub fn roots(fleet_root: &Path, machine_dir: &Path, projects: &[(String, PathBuf
 /// Shadowing a routine by layering a pack over another is the resolver's
 /// question and not this reader's, and picking one of two silently is how a
 /// duty runs from a file nobody is looking at.
-pub fn load(roots: &[Root], seats: &[String]) -> Registry {
+pub fn load(roots: &[Root], seats: &[SeatRef]) -> Registry {
     let mut registry = Registry::default();
     let mut seen: Vec<(String, PathBuf)> = Vec::new();
     let mut clashed: Vec<String> = Vec::new();

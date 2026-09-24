@@ -669,10 +669,10 @@ fn observe(once: bool) -> Result<Exit> {
 }
 
 // The four seat events. This is argv and nothing else: which event a
-// verb names, which seat it is about, and the reason a rest carries. Every
-// refusal, every status and the read-back are `seat::record`'s, in the
-// controller, so the check that a rest is answerable lives beside the loop that
-// would answer it.
+// verb names, which seat it is about — resolved through the seat list, as every
+// seat argument is — and the reason a rest carries. Every other refusal, every
+// status and the read-back are `seat::record`'s, in the controller, so the
+// check that a rest is answerable lives beside the loop that would answer it.
 fn event_command(verb: &EventVerb) -> Result<Exit> {
     let (name, kind, seat, reason) = match verb {
         EventVerb::Woke(e) => ("woke", events::SEAT_WOKE, &e.seat, None),
@@ -694,7 +694,17 @@ fn event_command(verb: &EventVerb) -> Result<Exit> {
         EventVerb::Show { id, json } => return Ok(stream::show(id, *json)),
     };
 
-    match seat::record(&platform::machine_dir(), kind, seat, reason) {
+    // The seat argument through the seat list's resolver first, and its
+    // machine name from here on: the stream and the projection are keyed on it.
+    let machine_dir = platform::machine_dir();
+    let seat = match transient::seat_named(&machine_dir, seat) {
+        Ok(seat) => seat,
+        Err(stop) => {
+            eprintln!("fleet event {name}: {}", stop.message);
+            return Exit::from_status(stop.code).with_context(|| format!("fleet event {name}"));
+        }
+    };
+    match seat::record(&machine_dir, kind, &seat, reason) {
         Ok(line) => {
             println!("{line}");
             Ok(Exit::Done)

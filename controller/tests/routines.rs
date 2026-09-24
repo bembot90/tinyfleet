@@ -8,11 +8,30 @@
 use fleet_controller::routines::file::{self, Action, Loaded, Routine, Source, When};
 use fleet_controller::routines::load;
 use fleet_controller::routines::trigger::{self, CheckOutcome, Due, LocalMinute, Trigger};
+use fleet_core::seat::identity::{Kind, SeatId, SeatRef};
 use std::path::{Path, PathBuf};
 
+/// The fixed ids this suite's seats carry.
+const BUILDER: &str = "01a0d1f1-0aec-765f-9abe-5c21e8a04b17";
+const ARCHITECT: &str = "01a0d1f1-0aec-765f-9abe-0000000a90e5";
+const ORLA: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
+
+fn seat_ref(id: &str, name: &str) -> SeatRef {
+    SeatRef {
+        id: SeatId::parse(id).expect("a hand-written seat id parses"),
+        name: Some(name.to_string()),
+        kind: Kind::Agent,
+    }
+}
+
 /// The seat list every arm validates a ring against, unless it says otherwise.
-fn seats() -> Vec<String> {
-    vec!["builder-1".to_string(), "architect".to_string()]
+/// A ring names its seat the way a person would, so every row carries a name.
+fn seats() -> Vec<SeatRef> {
+    vec![
+        seat_ref(BUILDER, "builder-1"),
+        seat_ref(ARCHITECT, "architect"),
+        seat_ref(ORLA, "Orla"),
+    ]
 }
 
 /// One file's read, with the whole file's text passed in.
@@ -352,24 +371,85 @@ fn an_unknown_action_kind_and_a_second_action_are_both_refused() {
 }
 
 /// A ring names a row of THIS machine's seat list, or it is a ring nobody would
-/// ever answer.
+/// ever answer. The seat is RESOLVED AT LOAD, through the resolver every seat
+/// argument takes: a name nobody holds refuses the file with the resolver's own
+/// reason, and one that resolves is stored as the id it found.
 #[test]
 fn a_nudge_to_a_seat_this_machine_does_not_carry_is_refused() {
     let body = "[order]\ndescription = \"d\"\ntrigger = \"cron\"\nschedule = \"* * * * *\"\n\
-                [action.nudge]\nseat = \"builder-9\"\ntext = \"t\"\nauthority = \"a\"\n";
+                [action.nudge]\nseat = \"nobody\"\ntext = \"t\"\nauthority = \"a\"\n";
     let why = refusal(body);
     assert!(
-        why.contains("seat is `builder-9`, which names no row"),
+        why.contains("[action.nudge] seat is nobody, which nobody names no seat — the seats are "),
         "{why}"
     );
+    assert!(why.contains("orla-93b9739a"), "the seats are listed: {why}");
 
-    // The control: the same file naming a row that IS on the list reads.
-    let known = body.replace("builder-9", "builder-1");
+    // The control: the same file naming a row that IS on the list reads, and
+    // carries the id the name resolved to.
+    let known = body.replace("nobody", "Orla");
     let routine = routine_of(&known);
+    let nudge = routine.action.nudge.as_ref().expect("the nudge is read");
+    assert_eq!(nudge.seat, "Orla");
     assert_eq!(
-        routine.action.nudge.as_ref().map(|n| n.seat.as_str()),
-        Some("builder-1")
+        nudge.seat_id.map(|id| id.to_string()).as_deref(),
+        Some(ORLA)
     );
+}
+
+/// The ring goes to the ROW THE LOAD RESOLVED, found by its id: a nudge naming
+/// `Orla` rings Orla's session, under the machine name her directory and her
+/// session are keyed on, and never a neighbour's — the control is a second live
+/// seat on the same machine that the ring passes by.
+#[test]
+fn a_nudge_to_a_seat_by_its_name_fires_at_that_seats_row() {
+    use fleet_controller::observe::RosterState;
+    use fleet_controller::policy;
+    use fleet_controller::routines::{action, action::Machine, Outcome, SeatView};
+    use fleet_controller::test_support::StubAgent;
+
+    let routine = routine_of(
+        "[order]\ndescription = \"d\"\ntrigger = \"cron\"\nschedule = \"* * * * *\"\n\
+         [action.nudge]\nseat = \"Orla\"\ntext = \"t\"\nauthority = \"a\"\n",
+    );
+    let view = |id: &str, seat_dir: &str, worktree: &str| SeatView {
+        id: SeatId::parse(id).unwrap(),
+        seat_dir: seat_dir.to_string(),
+        display_name: seat_dir.to_string(),
+        worktree: worktree.to_string(),
+        state: RosterState::Present,
+        config_dir: None,
+    };
+    let views = vec![
+        view(BUILDER, "builder-1-e8a04b17", "/wt/builder"),
+        view(ORLA, "orla-93b9739a", "/wt/orla"),
+    ];
+    let policy = policy::parse("").expect("the empty policy is the defaults");
+    let agent = StubAgent::new();
+    let root = scratch("nudge-by-name");
+    let machine = Machine {
+        machine_dir: &root,
+        child_path: "/usr/bin:/bin",
+        policy: &policy,
+        seats: &views,
+        agent: Some(&agent),
+        effects_off: None,
+    };
+
+    let done = action::run(&routine, &machine, "2026-09-18T00:00:00Z");
+    assert_eq!(done.outcome, Outcome::Delivered, "{}", done.detail);
+    assert!(done.detail.contains("/wt/orla"), "{}", done.detail);
+    let rung: Vec<String> = agent
+        .calls_of(StubAgent::NUDGE)
+        .into_iter()
+        .map(|call| call.about)
+        .collect();
+    assert_eq!(rung, vec!["orla-93b9739a".to_string()], "only Orla is rung");
+
+    // The dry run reads the same row.
+    let argv = action::argv_of(&routine, &machine);
+    assert_eq!(argv.last().map(String::as_str), Some("(in /wt/orla)"));
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// The item table's own vocabulary, each value refused by name.

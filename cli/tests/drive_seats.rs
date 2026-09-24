@@ -11,23 +11,6 @@ include!("drive/rig.rs");
 
 mod common;
 
-/// The rig's seat list as `fleet start` renders a row since seat identity: no
-/// row carries `chosen_name`, whatever else it holds. The rig's own fixture
-/// keeps the key for the effect arms that read a display name off it.
-fn as_rendered(config: &str) -> String {
-    let mut document: serde_json::Value =
-        serde_json::from_str(config).expect("the rig's seat list parses");
-    for row in document["children"]
-        .as_array_mut()
-        .expect("children is an array")
-    {
-        row.as_object_mut()
-            .expect("a row is an object")
-            .remove("chosen_name");
-    }
-    document.to_string()
-}
-
 /// The window is measured from the session's END, and this is the reading that
 /// separates that from the start: a session that RAN for 25 hours and finished
 /// a minute ago. Keyed on the start it is a day-old row and its transcript goes
@@ -114,7 +97,6 @@ fn the_stopped_window_is_the_policys_and_not_a_constant() {
 #[test]
 fn a_poll_publishes_the_seat_and_the_context_it_is_carrying() {
     let rig = Rig::new("publish");
-    rig.write_config(&as_rendered(&rig.one_seat_config(rig.policy_path())));
     rig.write_roster(&live_row(&rig.worktree(), "a-session"));
     rig.write_transcript(
         "a-session",
@@ -131,10 +113,10 @@ fn a_poll_publishes_the_seat_and_the_context_it_is_carrying() {
     assert_eq!(published["agent_version_expected"], "9.9.9");
     assert_eq!(published["fleet"]["poll_seconds"], 1);
     assert!(published["fleet"]["mtime"].as_str().is_some());
-    assert_eq!(published["seats"][0]["seat_dir"], "builder-1");
+    assert_eq!(published["seats"][0]["seat_dir"], SEAT);
     assert!(
         published["seats"][0].get("chosen_name").is_none(),
-        "a row carries no chosen_name, so the projection publishes none: {}",
+        "the projection publishes no chosen_name, whatever the row's name: {}",
         published["seats"][0]
     );
     assert_eq!(published["seats"][0]["roster_state"], "present");
@@ -160,14 +142,12 @@ fn a_poll_publishes_the_seat_and_the_context_it_is_carrying() {
 /// an existing field is a leak the shape holds still for. The set is the one
 /// this fixture's state produces, which the positive control above fixes: the
 /// two cause keys are absent exactly because this row is a found seat that is
-/// neither Unknown nor prompt-blocked, and `chosen_name` because no row
-/// carries one since seat identity.
+/// neither Unknown nor prompt-blocked, and `chosen_name` because the loop
+/// publishes none since seat identity, whatever name the row carries.
 #[test]
 fn a_published_row_carries_neither_the_seats_model_nor_its_transience() {
     let rig = Rig::new("publish-no-porter-intent");
-    rig.write_config(&as_rendered(
-        &rig.one_seat_config_carrying_model_and_transient(rig.policy_path()),
-    ));
+    rig.write_config(&rig.one_seat_config_carrying_model_and_transient(rig.policy_path()));
     rig.write_roster(&live_row(&rig.worktree(), "a-session"));
 
     let out = rig.observe();
@@ -178,7 +158,7 @@ fn a_published_row_carries_neither_the_seats_model_nor_its_transience() {
     // this the absences below would pass over a document that never reached the
     // shape a leak rides.
     let row = &rig.projection()["seats"][0];
-    assert_eq!(row["seat_dir"], "builder-1");
+    assert_eq!(row["seat_dir"], SEAT);
     assert_eq!(row["roster_state"], "present");
 
     let keys: BTreeSet<&str> = row
@@ -381,13 +361,15 @@ fn an_unreadable_listing_is_unknown_for_every_seat_and_never_absent() {
 fn a_row_with_no_worktree_is_skipped_loudly_and_never_defaulted() {
     let rig = Rig::new("skipped");
     rig.write_config(&format!(
-        r#"{{"fleet_toml": "{}", "children": [{{"name":"builder-9"}}]}}"#,
+        r#"{{"fleet_toml": "{}", "children": [
+             {{"id":"01a0d1f1-0aec-765f-9abe-5c21e8a04b17","name":"Pell"}}
+           ]}}"#,
         rig.policy_path().display()
     ));
     let out = rig.observe();
     assert_eq!(out.status.code(), Some(0));
     assert!(
-        stderr(&out).contains("builder-9"),
+        stderr(&out).contains("pell-e8a04b17 carries no worktrees entry"),
         "the skipped row is named: {}",
         stderr(&out)
     );

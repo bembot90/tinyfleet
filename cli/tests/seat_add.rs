@@ -251,10 +251,19 @@ fn an_agent_seat_is_appended_and_start_renders_it() {
     let rows = list["children"].as_array().expect("children is an array");
     let row = rows
         .iter()
-        .find(|row| row["name"] == format!("orla-{short}"))
-        .unwrap_or_else(|| panic!("start renders orla-{short}: {list}"));
-    assert_eq!(row["id"], id.to_string());
+        .find(|row| row["id"] == id.to_string())
+        .unwrap_or_else(|| panic!("start renders a row keyed by {id}: {list}"));
+    assert_eq!(row["name"], "Orla", "the row carries the seat's own name");
     assert_eq!(row["model"], "m");
+    assert_eq!(
+        row["worktrees"]["a-project"],
+        rig.root
+            .join("a-project-worktrees")
+            .join(format!("orla-{short}"))
+            .display()
+            .to_string(),
+        "and its worktree is the machine name the next line named"
+    );
 }
 
 /// A person's seat is this machine's identity, minted where there is none,

@@ -15,6 +15,7 @@ use fleet_controller::observe::{
 use fleet_controller::platform::{self, Grant, Listing, GRANT_OK, GRANT_PENDING};
 use fleet_controller::policy::DEFAULT_STOPPED_RECENCY_HOURS;
 use fleet_controller::projection::{render, EffectsView, PolicyView, Projection, SeatRow, VERSION};
+use fleet_core::seat::identity::SeatId;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -40,12 +41,18 @@ fn started() -> Recency<'static> {
     }
 }
 
+/// The fixed ids this suite's seats carry.
+const SEAT_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
+const TRANSIENT_ID: &str = "01a0d1f1-0aec-765f-9abe-00007e3fa2c0";
+
+fn id(text: &str) -> SeatId {
+    SeatId::parse(text).expect("a hand-written seat id parses")
+}
+
 fn seat() -> Seat {
     Seat {
-        name: "builder-1".to_string(),
-        // No row a render writes carries one since seat identity; the field
-        // stays on the seat, always absent, until the projection drops it.
-        chosen_name: None,
+        id: id(SEAT_ID),
+        name: None,
         model: None,
         transient: false,
         worktrees: vec![("demo".to_string(), WORKTREE.to_string())],
@@ -91,8 +98,8 @@ fn ended(cwd: &str, session: &str, started_at: u64) -> String {
 /// directory.
 fn transient_seat() -> Seat {
     Seat {
-        name: "builder-9".to_string(),
-        chosen_name: None,
+        id: id(TRANSIENT_ID),
+        name: None,
         model: None,
         transient: true,
         worktrees: vec![("demo".to_string(), OTHER.to_string())],
@@ -650,7 +657,7 @@ mod lessons {
         };
         let rosters = Rosters::gather(
             &seats,
-            &|seat: &str| (seat == "builder-9").then(|| per_row_dir.to_string()),
+            &|seat: &SeatId| (*seat == spawned.id).then(|| per_row_dir.to_string()),
             &reads,
         );
 
@@ -666,7 +673,7 @@ mod lessons {
         // And the row is decided against the listing that could see it, while the
         // fleet's — the same moment, the same fold — reads it absent.
         assert_eq!(
-            observe_seat(rosters.for_seat(&spawned.name), &spawned, 2_000, &started()).state,
+            observe_seat(rosters.for_seat(&spawned.id), &spawned, 2_000, &started()).state,
             RosterState::Present
         );
         assert_eq!(
@@ -791,9 +798,11 @@ fn the_projection_carries_no_model_and_no_transient() {
     );
 
     let mut document = projection(Some("2.1.261"), Some("2.1.261"));
+    // No `chosen_name`: the loop publishes none since seat identity, and the
+    // field stays absent until the projection drops it.
     document.seats = vec![SeatRow::from_observation(
-        &configured.name,
-        configured.chosen_name.as_deref(),
+        &configured.machine_name(),
+        None,
         &seen,
         Some(1234),
     )];
@@ -802,10 +811,10 @@ fn the_projection_carries_no_model_and_no_transient() {
     // The positive control: the row IS this seat's, so the absences below are
     // the projection's silence and not an empty document.
     let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(parsed["seats"][0]["seat_dir"], "builder-1");
+    assert_eq!(parsed["seats"][0]["seat_dir"], "agent-93b9739a");
     assert!(
         parsed["seats"][0].get("chosen_name").is_none(),
-        "a seat with no chosen_name publishes none: {body}"
+        "a seat publishes no chosen_name: {body}"
     );
     assert_eq!(parsed["seats"][0]["roster_state"], "present");
 
@@ -955,11 +964,11 @@ fn a_transient_row_is_seen_through_its_own_directory_and_unseen_through_the_flee
     };
     let rosters = Rosters::gather(
         &seats,
-        &|seat: &str| (seat == "builder-9").then(|| per_row_dir.to_string()),
+        &|seat: &SeatId| (*seat == spawned.id).then(|| per_row_dir.to_string()),
         &reads,
     );
 
-    let seen = observe_seat(rosters.for_seat(&spawned.name), &spawned, 2_000, &started());
+    let seen = observe_seat(rosters.for_seat(&spawned.id), &spawned, 2_000, &started());
     assert_eq!(seen.state, RosterState::Present, "{seen:?}");
     assert_eq!(seen.session_id.as_deref(), Some("spawned-session"));
 
@@ -971,7 +980,7 @@ fn a_transient_row_is_seen_through_its_own_directory_and_unseen_through_the_flee
     assert_eq!(missed.session_id, None);
 
     // And the named seat is still decided against the fleet's, unchanged.
-    let named_seen = observe_seat(rosters.for_seat(&named.name), &named, 2_000, &started());
+    let named_seen = observe_seat(rosters.for_seat(&named.id), &named, 2_000, &started());
     assert_eq!(named_seen.state, RosterState::Present, "{named_seen:?}");
     assert_eq!(named_seen.session_id.as_deref(), Some("named-session"));
 }
@@ -992,11 +1001,11 @@ fn a_per_row_listing_that_cannot_be_read_leaves_that_row_unknown_and_the_rest_de
     };
     let rosters = Rosters::gather(
         &seats,
-        &|seat: &str| (seat == "builder-9").then(|| "/machine/config/builder-9".to_string()),
+        &|seat: &SeatId| (*seat == spawned.id).then(|| "/machine/config/builder-9".to_string()),
         &reads,
     );
 
-    let blind = observe_seat(rosters.for_seat(&spawned.name), &spawned, 2_000, &started());
+    let blind = observe_seat(rosters.for_seat(&spawned.id), &spawned, 2_000, &started());
     assert_eq!(blind.state, RosterState::Unknown, "{blind:?}");
     assert!(
         blind
@@ -1007,7 +1016,7 @@ fn a_per_row_listing_that_cannot_be_read_leaves_that_row_unknown_and_the_rest_de
         "the cause is carried: {blind:?}"
     );
 
-    let decided = observe_seat(rosters.for_seat(&named.name), &named, 2_000, &started());
+    let decided = observe_seat(rosters.for_seat(&named.id), &named, 2_000, &started());
     assert_eq!(decided.state, RosterState::Present, "{decided:?}");
     assert!(decided.unknown_cause.is_none());
 }

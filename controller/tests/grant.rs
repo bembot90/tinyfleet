@@ -94,8 +94,10 @@ impl Rig {
             &rig.machine.join("config.json"),
             &format!(
                 "{{\"fleet_toml\": \"{}\", \"children\": [\
-                 {{\"name\": \"a-seat\", \"worktrees\": {{\"a-project\": \"{}\"}}}}, \
-                 {{\"name\": \"b-seat\", \"worktrees\": {{\"a-project\": \"{}\"}}}}]}}\n",
+                 {{\"id\": \"01a0d1f1-0aec-765f-9abe-5c21e8a04b17\", \"name\": \"a-seat\", \
+                   \"worktrees\": {{\"a-project\": \"{}\"}}}}, \
+                 {{\"id\": \"01a0d1f1-0aec-765f-9abe-d4f993b9739a\", \"name\": \"b-seat\", \
+                   \"worktrees\": {{\"a-project\": \"{}\"}}}}]}}\n",
                 rig.root.join("fleet.toml").display(),
                 rig.worktree.display(),
                 rig.live.display()

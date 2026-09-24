@@ -33,9 +33,16 @@ struct Rig {
     nudge_argv: PathBuf,
     nudge_exit: PathBuf,
     nudge_sleep: PathBuf,
-    /// One seat name per arm, so two arms' readings never name one row.
+    /// The seat's machine name: what the projection, the ring and the stream
+    /// name it by. The verb is handed the seat's own name, [`NAME`], and
+    /// resolves it to this.
     seat: String,
 }
+
+/// The seat's id and its own name. Its row is keyed by the id, and a person
+/// names it by the name.
+const SEAT_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
+const NAME: &str = "Orla";
 
 impl Rig {
     fn new(label: &str) -> Rig {
@@ -59,7 +66,7 @@ impl Rig {
             nudge_argv: root.join("nudge-argv"),
             nudge_exit: root.join("nudge-exit"),
             nudge_sleep: root.join("nudge-sleep"),
-            seat: format!("s-{label}"),
+            seat: "orla-93b9739a".to_string(),
             root,
             project,
             machine,
@@ -69,10 +76,9 @@ impl Rig {
             rig.machine.join("config.json"),
             format!(
                 r#"{{"fleet_toml": {fleet_toml}, "children": [
-                     {{"name": "{seat}", "chosen_name": "Orla",
+                     {{"id": "{SEAT_ID}", "name": "{NAME}",
                       "worktrees": {{"a-project": {worktree}}}}}
                    ]}}"#,
-                seat = rig.seat,
                 fleet_toml = json_string(&rig.project.join("fleet.toml").display().to_string()),
                 worktree = json_string(&rig.worktree.display().to_string()),
             ),
@@ -173,7 +179,7 @@ impl Rig {
     }
 
     fn nudge(&self, extra: &[&str]) -> Output {
-        let call = ["seat", "nudge", self.seat.as_str(), "--text", TEXT];
+        let call = ["seat", "nudge", NAME, "--text", TEXT];
         self.run(&[&call[..], extra].concat())
     }
 
@@ -237,8 +243,8 @@ fn a_live_row_and_a_fresh_projection_carry_the_text_and_say_sent() {
     let argv = rig.nudge_argv();
     assert!(argv.contains(TEXT), "the text is carried verbatim:\n{argv}");
     assert!(
-        argv.contains("Orla"),
-        "the seat is addressed by its display name:\n{argv}"
+        argv.contains(&rig.seat),
+        "the seat is addressed by the machine name its name resolved to:\n{argv}"
     );
 
     let events = rig.nudged_events();

@@ -30,9 +30,14 @@ use fleet_controller::policy::{self, Policy};
 use fleet_controller::sessions;
 use fleet_controller::test_support::FakeClock;
 use fleet_controller::transient::{self, Machine, Readings, Refusal, Spawn};
+use fleet_core::seat::identity::SeatId;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+/// The id of the one named — not transient — row the refusal arms add beside a
+/// spawned seat.
+const NAMED_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -388,13 +393,20 @@ impl Rig {
     }
 
     /// The seat list's row for this machine name, read off the raw document:
-    /// the controller's reader folds on the name and does not keep the id.
+    /// the row is keyed by its id, and a transient seat's machine name is
+    /// `agent-` and that id's short form.
     fn row_of(&self, seat: &str) -> serde_json::Value {
         let document: serde_json::Value =
             serde_json::from_slice(&self.config_bytes()).expect("the seat list is JSON");
+        let named = |row: &serde_json::Value| {
+            row["id"]
+                .as_str()
+                .and_then(|id| SeatId::parse(id).ok())
+                .is_some_and(|id| format!("agent-{}", id.short()) == seat)
+        };
         document["children"]
             .as_array()
-            .and_then(|rows| rows.iter().find(|row| row["name"] == seat))
+            .and_then(|rows| rows.iter().find(|row| named(row)))
             .cloned()
             .unwrap_or_else(|| panic!("the seat list carries a row for {seat}: {document}"))
     }
@@ -863,11 +875,11 @@ fn the_transient_cap_refuses_when_more_seats_are_mid_turn_than_the_cap() {
     let one = rig.worktrees.join("agent-0a1b2c3d").display().to_string();
     let two = rig.worktrees.join("agent-4e5f6a7b").display().to_string();
     rig.write_config(&format!(
-        "[{{\"name\": \"agent-0a1b2c3d\", \"transient\": true, \
+        "[{{\"id\": \"01a0d1f1-0aec-765f-9abe-00000a1b2c3d\", \"transient\": true, \
            \"worktrees\": {{\"a-project\": {one}}}}}, \
-          {{\"name\": \"agent-4e5f6a7b\", \"transient\": true, \
+          {{\"id\": \"01a0d1f1-0aec-765f-9abe-00004e5f6a7b\", \"transient\": true, \
            \"worktrees\": {{\"a-project\": {two}}}}}, \
-          {{\"name\": \"a-named-seat\", \
+          {{\"id\": \"{NAMED_ID}\", \"name\": \"a-named-seat\", \
            \"worktrees\": {{\"a-project\": {named}}}}}]",
         one = json_string(&one),
         two = json_string(&two),
@@ -1208,8 +1220,12 @@ fn a_spawn_makes_a_detached_worktree_a_row_and_a_session_and_prints_its_name() {
         .seats;
     let row = seats
         .iter()
-        .find(|row| row.name == seat)
+        .find(|row| row.machine_name() == seat)
         .expect("the row is on the file");
+    assert!(
+        row.name.is_none(),
+        "a transient seat has no name of its own"
+    );
     assert!(row.transient, "the row says transient");
     assert_eq!(row.model.as_deref(), Some("a-model"), "the policy's model");
     assert_eq!(
@@ -1314,7 +1330,7 @@ fn two_concurrent_spawns_take_two_different_names() {
         .expect("the seat list parses")
         .seats;
     assert_eq!(seats.len(), 2, "and the file carries both rows");
-    let mut rows: Vec<String> = seats.into_iter().map(|seat| seat.name).collect();
+    let mut rows: Vec<String> = seats.iter().map(config::Seat::machine_name).collect();
     rows.sort();
     assert_eq!(
         rows, sorted,
@@ -1428,6 +1444,7 @@ fn feed_refuses_a_named_row_an_absent_session_an_unreadable_roster_and_a_busy_on
         .as_array_mut()
         .expect("children is an array")
         .push(serde_json::json!({
+            "id": NAMED_ID,
             "name": "a-named-seat",
             "worktrees": { "a-project": rig.primary.display().to_string() },
         }));
@@ -1603,7 +1620,7 @@ fn a_retire_stops_removes_prunes_drops_both_rows_and_prints_the_reclaim() {
         .expect("the seat list parses")
         .seats;
     assert!(
-        !seats.iter().any(|row| row.name == seat),
+        !seats.iter().any(|row| row.machine_name() == seat),
         "the seat-list row is dropped"
     );
     assert!(
@@ -1771,6 +1788,7 @@ fn retire_refuses_a_named_seat_an_unreadable_roster_and_a_row_the_stop_does_not_
         .as_array_mut()
         .expect("children is an array")
         .push(serde_json::json!({
+            "id": NAMED_ID,
             "name": "a-named-seat",
             "worktrees": { "a-project": rig.primary.display().to_string() },
         }));
@@ -2548,7 +2566,7 @@ fn a_refusal_after_the_rows_are_dropped_says_they_are_gone_and_what_stands() {
     // re-run meets the seat list rather than the probe.
     let again = transient::retire(&machine, &seat, false).expect_err("the row is gone");
     assert_eq!(again.code, 1, "{}", again.message);
-    assert!(again.message.contains("is not a row"), "{}", again.message);
+    assert!(again.message.contains("names no seat"), "{}", again.message);
 }
 
 // ---- the ledger -------------------------------------------------------------
@@ -2996,7 +3014,7 @@ fn a_spawn_passes_the_callers_model_to_the_start_over_the_policys_default() {
         .expect("the seat list parses")
         .seats
         .into_iter()
-        .find(|seat| seat.name == spawn.seat)
+        .find(|seat| seat.machine_name() == spawn.seat)
         .expect("the row is on the file");
     assert_eq!(
         row.model.as_deref(),

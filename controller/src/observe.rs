@@ -3,6 +3,7 @@
 
 use crate::adapter::{dir_key, AgentRow, RosterRead};
 use crate::config::Seat;
+use fleet_core::seat::identity::SeatId;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -140,7 +141,7 @@ pub struct SeatObservation {
 /// record of which read failed.
 pub struct Rosters {
     fleet: RosterRead,
-    per_seat: BTreeMap<String, RosterRead>,
+    per_seat: BTreeMap<SeatId, RosterRead>,
 }
 
 impl Rosters {
@@ -154,14 +155,14 @@ impl Rosters {
     /// reads answer alike.
     pub fn gather(
         seats: &[Seat],
-        config_dir_of: &dyn Fn(&str) -> Option<String>,
+        config_dir_of: &dyn Fn(&SeatId) -> Option<String>,
         read: &dyn Fn(Option<&Path>) -> RosterRead,
     ) -> Rosters {
         let fleet = read(None);
         let mut by_dir: BTreeMap<String, RosterRead> = BTreeMap::new();
         let mut per_seat = BTreeMap::new();
         for seat in seats {
-            let Some(dir) = config_dir_of(&seat.name) else {
+            let Some(dir) = config_dir_of(&seat.id) else {
                 continue;
             };
             let listing = match by_dir.get(&dir) {
@@ -172,7 +173,7 @@ impl Rosters {
                     listing
                 }
             };
-            per_seat.insert(seat.name.clone(), listing);
+            per_seat.insert(seat.id, listing);
         }
         Rosters { fleet, per_seat }
     }
@@ -184,8 +185,8 @@ impl Rosters {
     }
 
     /// The listing this seat is decided against.
-    pub fn for_seat(&self, name: &str) -> &RosterRead {
-        self.per_seat.get(name).unwrap_or(&self.fleet)
+    pub fn for_seat(&self, id: &SeatId) -> &RosterRead {
+        self.per_seat.get(id).unwrap_or(&self.fleet)
     }
 
     /// Every row of every READABLE listing this poll took, folded into one.
@@ -270,7 +271,7 @@ pub fn observe_seat(
              working directory names a seat without proving a session is that \
              seat's, so these are unattributed rather than the seat's",
             live.len(),
-            seat.name
+            seat.machine_name()
         ));
         return unknown;
     }

@@ -22,6 +22,7 @@ use fleet_core::item::{
     control_token, render, table_at, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner,
     ITEM_DISPATCHED,
 };
+use fleet_core::seat::identity::{Kind, SeatId, SeatRef};
 use fleet_core::store::{AssignedItem, Item, Store, StoreError};
 
 const POLICY: &str = "[guards]\n";
@@ -253,6 +254,19 @@ impl Rig {
     ) -> Answer {
         let mut out: Vec<u8> = Vec::new();
         let mut err: Vec<u8> = Vec::new();
+        // Every arm names its seats by name, which is how a `--to` names one;
+        // each is keyed by an id of its own, as the machine's rows are.
+        let seats: Vec<SeatRef> = seats
+            .iter()
+            .enumerate()
+            .map(|(at, name)| SeatRef {
+                id: SeatId::parse(&format!("01a0d1f1-0aec-765f-9abe-{at:012x}"))
+                    .expect("the rig's seat id parses"),
+                name: Some(name.clone()),
+                kind: Kind::Agent,
+            })
+            .collect();
+        let seats = seats.as_slice();
         let answer = dispatch::dispatch(
             &mut out,
             &mut err,

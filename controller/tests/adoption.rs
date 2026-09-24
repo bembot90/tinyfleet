@@ -43,12 +43,16 @@ mod common;
 /// refusing it here would fail every other arm for it.
 static ENV: Mutex<()> = Mutex::new(());
 
-/// The seat whose session the table names — the one an adoption can claim.
-const OWNED: &str = "a-seat";
+/// The seat whose session the table names — the one an adoption can claim. Its
+/// row is keyed by the id, and the table and the stream name it by the machine
+/// name that id gives.
+const OWNED_ID: &str = "01a0d1f1-0aec-765f-9abe-5c21e8a04b17";
+const OWNED: &str = "agent-e8a04b17";
 /// The seat standing on the same shaped row with nothing in the table naming its
 /// session. It is the control: no claim can cover it, so the revive it gets is
 /// what the other seat would have got.
-const UNOWNED: &str = "b-seat";
+const UNOWNED_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
+const UNOWNED: &str = "agent-93b9739a";
 const PROJECT: &str = "a-project";
 const OWNED_SESSION: &str = "a-session";
 const OWNED_ADDRESS: &str = "ab12";
@@ -163,8 +167,8 @@ impl Rig {
             &rig.machine.join("config.json"),
             &format!(
                 "{{\"fleet_toml\": \"{}\", \"children\": [\
-                 {{\"name\": \"{OWNED}\", \"worktrees\": {{\"{PROJECT}\": \"{}\"}}}}, \
-                 {{\"name\": \"{UNOWNED}\", \"worktrees\": {{\"{PROJECT}\": \"{}\"}}}}]}}\n",
+                 {{\"id\": \"{OWNED_ID}\", \"worktrees\": {{\"{PROJECT}\": \"{}\"}}}}, \
+                 {{\"id\": \"{UNOWNED_ID}\", \"worktrees\": {{\"{PROJECT}\": \"{}\"}}}}]}}\n",
                 rig.root.join("fleet.toml").display(),
                 rig.owned.display(),
                 rig.unowned.display()
@@ -484,7 +488,7 @@ impl Drop for Watchdog {
 /// alone. The second poll starts from nothing but the session table on disk,
 /// exactly as a restarted controller does.
 ///
-/// TWO SEATS ON ONE LISTING. `b-seat` stands on a pid-less row the whole way
+/// TWO SEATS ON ONE LISTING. `UNOWNED` stands on a pid-less row the whole way
 /// with nothing in the table naming its session; it is the control and it IS
 /// revived — which is what makes the other seat's leave-alone a reading of the
 /// claim rather than a fixture that never reached the revive arm at all.
@@ -635,7 +639,7 @@ fn one_controller_polling_twice_revives_a_claimed_pid_less_row_on_neither_tick()
 /// claim is taken on the SIGHTING: a pid is there, so the session is running,
 /// so it is this fleet's.
 ///
-/// The control is the same as the arms above: `b-seat`, pid-less and unclaimed,
+/// The control is the same as the arms above: `UNOWNED`, pid-less and unclaimed,
 /// reaching the revive the claimed seat is spared.
 #[test]
 fn a_live_idle_session_is_claimed_at_its_first_sighting() {

@@ -20,6 +20,7 @@ use crate::clock;
 use crate::events::{self, EventLog};
 use crate::observe::RosterState;
 use file::Routine;
+use fleet_core::seat::identity::SeatId;
 use serde::{Deserialize, Serialize};
 use state::{RoutineState, State};
 use std::path::Path;
@@ -83,6 +84,10 @@ impl Outcome {
 /// and what the roster said about it this tick.
 #[derive(Clone, Debug)]
 pub struct SeatView {
+    /// The seat, and what a nudge action finds its view by.
+    pub id: SeatId,
+    /// The seat's machine name: the directory, the session and the actor are
+    /// all still keyed on it.
     pub seat_dir: String,
     pub display_name: String,
     pub worktree: String,
