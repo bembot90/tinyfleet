@@ -42,7 +42,7 @@ three read files and write nothing.
 
 ```sh
 $ fleet status
-projection <stamp> — <age>s old — controller 0.1.0, agent 2.1.261
+projection <stamp> — <age>s old — controller 0.1.0, agent 2.1.280
 
 roster
   builder-1 (orla)  present  decision leave-alone, outcome none  project demo, worktree /work/demo/builder-1
@@ -83,12 +83,12 @@ reads `STALE, <stale-age>s old`. A stamp fleet cannot read as a time reads
 `STALE, an age nothing can read it at`. A stale page still exits 0.
 
 When the agent version the controller read differs from the one it expects,
-both are printed: `agent 2.1.262 (expected 2.1.261)`. The version it expects
+both are printed: `agent 2.1.261 (expected 2.1.280)`. The version it expects
 is the fleet's own `[substrate]` pin, or the version fleet supports when
 there is none; see
 [The controller and seats](seats.md#the-claude-code-version). When the
 controller could not read the agent's version, the line says
-`agent not read (expected 2.1.261)`.
+`agent not read (expected 2.1.280)`.
 
 ### A pending grant
 
@@ -99,7 +99,7 @@ Until that access is granted, the controller carries out no effects, and the
 
 ```sh
 $ fleet status
-projection <stale-stamp> — STALE, <stale-age>s old — controller 0.1.0, agent 2.1.262 (expected 2.1.261)
+projection <stale-stamp> — STALE, <stale-age>s old — controller 0.1.0, agent 2.1.261 (expected 2.1.280)
 
 GRANT PENDING — the listing of /work/demo/reviewer has not answered within 10s and is still outstanding
 

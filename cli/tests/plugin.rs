@@ -1378,17 +1378,20 @@ fn tracker_rig(label: &str, version: &str) -> (Scratch, PathBuf, PathBuf, PathBu
     (s, cwd, fleet_dir, stub)
 }
 
-/// The line that installs the pin, as line 2 and the doctor check print it.
-fn install_line() -> String {
+/// Where to install the pin, as line 2 prints it: beads' own installation
+/// page at the pin's tag, naming the pinned version. The doctor check points
+/// at the same page.
+fn install_pointer() -> String {
+    let pin = fleet_core::store::PINNED_BD;
     format!(
-        "CGO_ENABLED=0 go install -tags gms_pure_go github.com/steveyegge/beads/cmd/bd@v{}",
-        fleet_core::store::PINNED_BD
+        "install the pinned bd {pin} by beads' own instructions: \
+         https://github.com/gastownhall/beads/blob/v{pin}/docs/getting-started/installation.md"
     )
 }
 
 /// fleet-reb: line 2 is the tracker's version against `store::PINNED_BD`. The
-/// pin reads as itself; another version is NAMED with the line that installs
-/// the pin, and the item line still prints beneath it, because the verbs still
+/// pin reads as itself; another version is NAMED with where to install the
+/// pin, and the item line still prints beneath it, because the verbs still
 /// run on it. The mismatch arm is what makes the match arm worth anything: a
 /// line that called any answer the pin would pass the first alone.
 #[test]
@@ -1405,8 +1408,8 @@ fn line_two_names_the_tracker_s_version_against_the_pin() {
             String::from("echo 'bd version 1.2.2 (Homebrew)'"),
             format!(
                 "bd: 1.2.2, not the pinned {pin} — the verbs still run, on answers fleet was not \
-                 measured against; install the pin: {}",
-                install_line()
+                 measured against; {}",
+                install_pointer()
             ),
         ),
     ] {
@@ -1424,12 +1427,11 @@ fn line_two_names_the_tracker_s_version_against_the_pin() {
 }
 
 /// A tracker nothing resolves, and one that never answers its version, are
-/// line 2's third answer — each naming why and the line that installs the pin
-/// — and cost nothing else: the hung one is cut at line 2's own two-second
+/// line 2's third answer — each naming why and where to install the pin —
+/// and cost nothing else: the hung one is cut at line 2's own two-second
 /// bound, and the item line after it still prints.
 #[test]
 fn a_tracker_that_does_not_answer_its_version_is_line_two_s_own_answer() {
-    let pin = fleet_core::store::PINNED_BD;
     let (s, cwd, fleet_dir, _) = tracker_rig("bd-absent", "true");
     let absent = s.root.join("no-such-dir/bd");
     let out = prime(&cwd, &fleet_dir, &[("FLEET_BD_BIN", &text_of(&absent))]);
@@ -1440,9 +1442,9 @@ fn a_tracker_that_does_not_answer_its_version_is_line_two_s_own_answer() {
         Some(
             format!(
                 "bd: could not be read — the item-tracker seam names `{}`, which is not an \
-                 executable file; the pinned version is {pin}: {}",
+                 executable file; {}",
                 text_of(&absent),
-                install_line()
+                install_pointer()
             )
             .as_str()
         ),
@@ -1459,10 +1461,9 @@ fn a_tracker_that_does_not_answer_its_version_is_line_two_s_own_answer() {
         text.lines().nth(1),
         Some(
             format!(
-                "bd: could not be read — `{} version` did not answer within 2s; the pinned \
-                 version is {pin}: {}",
+                "bd: could not be read — `{} version` did not answer within 2s; {}",
                 text_of(&stub),
-                install_line()
+                install_pointer()
             )
             .as_str()
         ),

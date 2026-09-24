@@ -8,7 +8,8 @@
 //!
 //! Line 2 is the tracker's version against the one the store was measured on
 //! (`store::PINNED_BD`). Another version is NAMED AND NOT REFUSED: the verbs
-//! still run on it, and the line says so beside the one that installs the pin.
+//! still run on it, and the line says so beside where beads says to install
+//! the pin.
 
 use fleet_controller::{config, platform};
 use fleet_core::add;
@@ -223,21 +224,18 @@ fn canonical(path: &Path) -> PathBuf {
 
 /// Line 2: the tracker a session's verbs reach, by the same resolution the
 /// item lines take, against the pinned release — the pin, another version
-/// with the line that installs the pin, or a tracker that did not answer,
-/// which is this line's third answer as it is the item line's.
+/// with where to install the pin, or a tracker that did not answer, which is
+/// this line's third answer as it is the item line's.
 fn bd_line(bin: Result<PathBuf, String>) -> String {
     match bin.and_then(|bin| version_of(&bin)) {
         Ok(first) if carries_pin(&first) => format!("bd: {PINNED_BD}, the pinned version"),
         Ok(first) => format!(
             "bd: {}, not the pinned {PINNED_BD} — the verbs still run, on answers fleet was not \
-             measured against; install the pin: {}",
+             measured against; {}",
             named_version(&first),
-            install_line()
+            install_pointer()
         ),
-        Err(why) => format!(
-            "bd: could not be read — {why}; the pinned version is {PINNED_BD}: {}",
-            install_line()
-        ),
+        Err(why) => format!("bd: could not be read — {why}; {}", install_pointer()),
     }
 }
 
@@ -279,11 +277,15 @@ fn named_version(first: &str) -> String {
         .unwrap_or_else(|| format!("`{first}`"))
 }
 
-/// The line that installs the pinned release — beads' own `go install`
-/// guidance, at the pin's tag. The defaults' doctor check prints the same.
-fn install_line() -> String {
+/// Where to install the pinned release: beads' own installation page, read at
+/// the pin's tag so it describes the release named, because bd installs
+/// several ways and which one fits is the machine's. The defaults' doctor
+/// check points at the same page, and a pin move checks the page is still at
+/// this path at the new tag.
+fn install_pointer() -> String {
     format!(
-        "CGO_ENABLED=0 go install -tags gms_pure_go github.com/steveyegge/beads/cmd/bd@v{PINNED_BD}"
+        "install the pinned bd {PINNED_BD} by beads' own instructions: \
+         https://github.com/gastownhall/beads/blob/v{PINNED_BD}/docs/getting-started/installation.md"
     )
 }
 

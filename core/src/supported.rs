@@ -11,17 +11,20 @@
 //!
 //! Another version is NAMED AND NOT REFUSED, for every tool here: the verbs and
 //! the controller still run on it, and what reports the spread says so beside
-//! the line that installs the supported release.
+//! how to install the supported release: Claude Code's own install command,
+//! and for bd beads' installation page at the pin's tag.
 
 /// The bd release the store adapter was measured against, and the one the
 /// defaults' `bd-version` doctor check and `fleet prime`'s second line compare
 /// `bd version` with. Declared in the store, whose claims it dates.
 pub use crate::store::PINNED_BD;
 
-/// The Claude Code release the controller's adapter was last measured against:
-/// the one its behaviours were re-read on (lessons claude-code A1), and the one
-/// the defaults' `claude-code-version` doctor check compares `claude --version`
-/// with.
+/// The Claude Code release fleet supports: the one the defaults'
+/// `claude-code-version` doctor check compares `claude --version` with, and
+/// the one fleet is developed on and its suites run beside. The adapter's
+/// version-scoped behaviours were last re-read on an earlier release (lessons
+/// claude-code A1 names it), so the spread between the two is a re-measure
+/// owed.
 ///
 /// It is also the controller's DEFAULT EXPECTATION. A fleet whose policy pins
 /// nothing under `[substrate]` expects this release, so a `substrate.moved`
@@ -31,4 +34,4 @@ pub use crate::store::PINNED_BD;
 /// adapter reads re-run on the new release and restated, or its code changed
 /// where the behaviour moved. The doctor check carries its own copy, because a
 /// shell script cannot read this, and a suite arm fails until the two agree.
-pub const PINNED_CLAUDE_CODE: &str = "2.1.261";
+pub const PINNED_CLAUDE_CODE: &str = "2.1.280";

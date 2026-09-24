@@ -10,7 +10,7 @@
 #   broken  bd did not run, or answered another version. The first is a fleet
 #           whose every store read fails at the exec; the second one whose
 #           verbs still run, on answers nobody measured. Both exit 1, and both
-#           name the line that installs the pin.
+#           point at beads' own installation docs, naming the pin to install.
 #
 # PINNED IS A COPY of `fleet_core::store::PINNED_BD`, because a script cannot
 # read a Rust constant. The core suite reads this line and fails until the two
@@ -22,11 +22,17 @@
 #
 # FLEET_BD_BIN names the binary where it is set — the seam `fleet prime` reads
 # the tracker through — and otherwise it is the first `bd` on PATH.
+#
+# THE INSTALL IS BEADS' OWN PAGE, not a command: bd installs several ways
+# (Homebrew, npm, a script, go install with or without cgo) and which one fits
+# is the machine's. The page is read at the pin's tag, so it describes the
+# release named, and a pin move checks the page is still at that path there.
 
 set -u
 
 PINNED=1.3.0
-INSTALL="CGO_ENABLED=0 go install -tags gms_pure_go github.com/steveyegge/beads/cmd/bd@v$PINNED"
+DOCS="https://github.com/gastownhall/beads/blob/v$PINNED/docs/getting-started/installation.md"
+INSTALL="Install the pinned bd $PINNED by beads' own instructions: $DOCS"
 
 bin=${FLEET_BD_BIN:-bd}
 
@@ -37,7 +43,7 @@ reported=$("$bin" version 2>/dev/null)
 rc=$?
 if [ "$rc" -ne 0 ] || [ -z "$reported" ]; then
 	echo "bd-version: pinned bd $PINNED"
-	echo "bd-version: broken — \`$bin version\` did not answer (exit $rc); no bd answers there, so every verb that reads the work graph fails at the exec. Install the pin: $INSTALL"
+	echo "bd-version: broken — \`$bin version\` did not answer (exit $rc); no bd answers there, so every verb that reads the work graph fails at the exec. $INSTALL"
 	exit 1
 fi
 
@@ -63,5 +69,5 @@ if [ "$found" = yes ]; then
 	exit 0
 fi
 
-echo "bd-version: broken — this bd is not the pinned $PINNED, so the answers fleet's store reads were not measured on it; the verbs still run. Install the pin: $INSTALL"
+echo "bd-version: broken — this bd is not the pinned $PINNED, so the answers fleet's store reads were not measured on it; the verbs still run. $INSTALL"
 exit 1

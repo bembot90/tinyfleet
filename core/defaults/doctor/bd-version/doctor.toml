@@ -13,5 +13,6 @@ run = "run.sh"
 # and reads its answers by shapes measured on the pinned release — the row
 # caps, the envelope, the stderr an ambiguous id is told by. A bd at another
 # version still runs every verb, and this entry is where a person is told the
-# shapes those verbs read were not measured on it, with the line that installs
-# the pin. `fleet prime` says the same on its second line.
+# shapes those verbs read were not measured on it, pointed at beads' own
+# installation docs for the pin. `fleet prime` says the same on its second
+# line.

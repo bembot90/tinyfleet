@@ -44,16 +44,17 @@ first_turn = "/wake {seat}"
 nudge_model = "claude-haiku-4-5-20251001"
 
 [substrate.claude_code]
-# The agent release this fleet's measurements are pinned to — the most recent
-# one ../brain/lessons/claude-code.md re-measured against, not the release every
-# entry there was taken on. The projection publishes it beside the version the
-# binary reports this poll; a spread between them is a flag to re-measure.
-version = "2.1.261"
+# The agent release this fleet expects. With no pin, fleet expects the version
+# it supports (PINNED_CLAUDE_CODE in ../core/src/supported.rs); pin only to hold
+# this fleet to a different release. The projection publishes the expected
+# release beside the version the binary reports this poll, and a spread between
+# them is a `substrate.moved` on the stream.
+# version = "<release>"
 
 # Whether the provider's two isolation knobs still scope a spawned seat's
 # configuration directory WITHOUT logging it out — `holds` or `broken`. Written
 # by a person from the `isolation-pair` doctor entry the binary's defaults ship,
-# at every move of the version above, and by no check: a policy file edited by
+# at every move of the release the fleet runs, and by no check: a policy file edited by
 # a check is one
 # nobody can read as a record of what a person confirmed. `broken` is a fleet
 # whose spawned seats come up logged out and whose every first turn fails.

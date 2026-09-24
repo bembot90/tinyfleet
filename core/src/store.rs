@@ -35,8 +35,8 @@ pub const BD: &str = "bd";
 /// The bd release this fleet is measured against: every "measured on" claim in
 /// this file was taken on it, and the defaults' `bd-version` doctor check and
 /// `fleet prime`'s second line compare `bd version` with it. A bd at another
-/// version is named, with the line that installs this one, and the verbs still
-/// run on it.
+/// version is named, pointed at beads' installation page for this one, and
+/// the verbs still run on it.
 ///
 /// A pin move is THIS LINE PLUS THE RE-MEASURE: every claim here re-run on the
 /// new release and restated, or its code changed where the behaviour moved.

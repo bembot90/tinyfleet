@@ -30,7 +30,7 @@
 
 set -u
 
-SUPPORTED=2.1.261
+SUPPORTED=2.1.280
 INSTALL="claude install $SUPPORTED"
 FRESH="curl -fsSL https://claude.ai/install.sh | bash -s $SUPPORTED"
 
@@ -54,7 +54,7 @@ set -- $reported
 unset IFS
 first=$1
 
-# A whole token, never a substring: 2.1.261 is not a match for 12.1.2610, and
+# A whole token, never a substring: 2.1.280 is not a match for 12.1.2800, and
 # the leading-v form is the same version written the other way.
 found=no
 for token in $first; do

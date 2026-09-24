@@ -61,14 +61,13 @@ full path, so start the controller from the copy you mean to keep.
 
 ## What fleet runs on
 
-Fleet runs four other tools. Three of them have a supported version: the
-release fleet was measured against. A doctor check measures the one you have
-installed against it.
+Fleet runs four other tools. Three of them have a supported version, and a
+doctor check measures the one you have installed against it.
 
 | Tool | Supported version | What measures it |
 | --- | --- | --- |
 | `bd` | 1.3.0 | the `bd-version` doctor check, and the second line of `fleet prime` |
-| Claude Code (`claude`) | 2.1.261 | the `claude-code-version` doctor check, and the controller's `substrate.moved` event |
+| Claude Code (`claude`) | 2.1.280 | the `claude-code-version` doctor check, and the controller's `substrate.moved` event |
 | Deno (`deno`) | 2.9.7, pinned by the `ts` pack | the `runtime-version` doctor check, which `fleet run` runs before it opens a run, and the `ts` pack's `deno-version` |
 | `git` | none: fleet pins no version | nothing |
 
@@ -78,7 +77,7 @@ and the controller still run on it. Deno is different: while the
 [Runs and workflows](runs.md).
 
 The controller compares Claude Code's version with the one it expects on
-every poll. That is 2.1.261 unless the fleet's `fleet.toml` pins another; see
+every poll. That is 2.1.280 unless the fleet's `fleet.toml` pins another; see
 [The controller and seats](seats.md#the-claude-code-version).
 
 ### Running a doctor check
@@ -93,24 +92,26 @@ bd-version: pinned bd 1.3.0; `bd version` answers: bd version 1.3.0 (<build>)
 bd-version: holds
 ```
 
-It exits 0. On another version, the check says `broken`, names the line that
-installs the supported one, and exits 1:
+It exits 0. On another version, the check says `broken`, says how to install
+the supported one, and exits 1:
 
 ```sh
 $ sh <machine>/defaults/doctor/claude-code-version/run.sh
-claude-code-version: supported Claude Code 2.1.261; `claude --version` answers: <version> (Claude Code)
-claude-code-version: broken — this claude is not the supported 2.1.261, so the shapes the controller reads were not measured on it; the controller still runs. Install the supported release: claude install 2.1.261
+claude-code-version: supported Claude Code 2.1.280; `claude --version` answers: <version> (Claude Code)
+claude-code-version: broken — this claude is not the supported 2.1.280, so the shapes the controller reads were not measured on it; the controller still runs. Install the supported release: claude install 2.1.280
 ```
 
 A tool that does not answer at all is `broken` too, with the exit it gave:
-`did not answer (exit 127)` when it is not on your `PATH`. The lines each
-check names are:
+`did not answer (exit 127)` when it is not on your `PATH`. What each check
+names to install is:
 
-- `bd-version`:
-  `CGO_ENABLED=0 go install -tags gms_pure_go github.com/steveyegge/beads/cmd/bd@v1.3.0`
-- `claude-code-version`: `claude install 2.1.261` when `claude` answered
+- `bd-version`: `Install the pinned bd 1.3.0 by beads' own instructions:`
+  and beads' installation page for that release,
+  `https://github.com/gastownhall/beads/blob/v1.3.0/docs/getting-started/installation.md`,
+  whether `bd` answered another version or nothing answered.
+- `claude-code-version`: `claude install 2.1.280` when `claude` answered
   another version, and
-  `curl -fsSL https://claude.ai/install.sh | bash -s 2.1.261` when nothing
+  `curl -fsSL https://claude.ai/install.sh | bash -s 2.1.280` when nothing
   answered.
 
 `bd-version` asks the binary `FLEET_BD_BIN` names, or else the first `bd` on
@@ -329,11 +330,12 @@ Five things no verb guesses, each one a lesson somebody already paid for:
 It exits 0, always. With no pack installed, the first line says
 `packs: none installed`. On another `bd` the second line reads
 `bd: <version>, not the pinned 1.3.0 — the verbs still run, on answers fleet
-was not measured against; install the pin:` and the install line from
+was not measured against; install the pinned bd 1.3.0 by beads' own
+instructions:` and the installation page from
 [Running a doctor check](#running-a-doctor-check). When `bd` does not answer,
-it reads `bd: could not be read — ` with the reason, then the pinned version
-and the same install line. Outside every fleet it prints one line,
-`fleet 0.1.0 — no fleet config found above <directory>`. When the directory
+it reads `bd: could not be read — ` with the reason, then the same
+`install the pinned bd 1.3.0` pointer and page. Outside every fleet it
+prints one line, `fleet 0.1.0 — no fleet config found above <directory>`. When the directory
 is a seat's worktree, it also lists the items assigned to that seat.
 
 The plugin carries a `version` skill that runs `fleet --version`, and the

@@ -255,7 +255,7 @@ version = "<version>"
 claude_code = "<version>"
 ```
 
-With no pin, it expects the version fleet supports, 2.1.261 (see
+With no pin, it expects the version fleet supports, 2.1.280 (see
 [What fleet runs on](getting-started.md#what-fleet-runs-on)). A blank pin, or
 a `claude_code` entry in any other shape, pins nothing.
 
@@ -266,7 +266,7 @@ nothing for it.
 
 ```sh
 $ fleet event tail --type substrate.moved
-{"id":"<id>","seq":2,"ts":"<event-stamp>","type":"substrate.moved","actor":"controller","payload":{"agent":"claude_code","expected":"2.1.261","observed":"<version>"}}
+{"id":"<id>","seq":2,"ts":"<event-stamp>","type":"substrate.moved","actor":"controller","payload":{"agent":"claude_code","expected":"2.1.280","observed":"<version>"}}
 ```
 
 A running controller writes one event per difference, not one per poll. A

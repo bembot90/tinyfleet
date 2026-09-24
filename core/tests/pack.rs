@@ -591,7 +591,8 @@ fn the_runtime_doctor_shape_reads_the_pinned_version_against_the_binary_on_path(
 fn the_bd_doctor_check_reads_bd_version_against_the_pin() {
     let pin = fleet_core::store::PINNED_BD;
     let install = format!(
-        "CGO_ENABLED=0 go install -tags gms_pure_go github.com/steveyegge/beads/cmd/bd@v{pin}"
+        "Install the pinned bd {pin} by beads' own instructions: \
+         https://github.com/gastownhall/beads/blob/v{pin}/docs/getting-started/installation.md"
     );
     let defaults = Defaults::new("bd-doctor");
     let check = defaults.path().join("doctor/bd-version/run.sh");
@@ -648,7 +649,7 @@ fn the_bd_doctor_check_reads_bd_version_against_the_pin() {
             && said.contains(&format!("is not the pinned {pin}"))
             && said.contains("the verbs still run")
             && said.contains(&install),
-        "the mismatch is named, with the line that installs the pin: {said}"
+        "the mismatch is named, pointed at where to install the pin: {said}"
     );
 
     let (code, said) = run(&fixture.path("nothing"), None);
@@ -667,10 +668,10 @@ fn the_bd_doctor_check_reads_bd_version_against_the_pin() {
 /// real script against stub agents, and its copy of the pin held to
 /// `supported::PINNED_CLAUDE_CODE`, as the bd check's is held to its own.
 ///
-/// The mismatch arm is a claude answering 2.1.280, a release past the pin, in
-/// the shape `claude --version` prints; absence is measured with no claude on
-/// PATH at all. `FLEET_CLAUDE_BIN` is the seam the controller reads the agent
-/// through, and names the binary over PATH.
+/// The mismatch arm is a claude answering 2.1.261, a release before the pin,
+/// in the shape `claude --version` prints; absence is measured with no claude
+/// on PATH at all. `FLEET_CLAUDE_BIN` is the seam the controller reads the
+/// agent through, and names the binary over PATH.
 #[test]
 fn the_claude_code_doctor_check_reads_claude_version_against_the_pin() {
     let pin = fleet_core::supported::PINNED_CLAUDE_CODE;
@@ -701,7 +702,7 @@ fn the_claude_code_doctor_check_reads_claude_version_against_the_pin() {
         dir
     };
     let pinned = fake("pinned", &format!("{pin} (Claude Code)"));
-    let other = fake("other", "2.1.280 (Claude Code)");
+    let other = fake("other", "2.1.261 (Claude Code)");
 
     let run = |path: &std::path::Path, seam: Option<&std::path::Path>| -> (i32, String) {
         let mut cmd = std::process::Command::new("/bin/sh");
@@ -727,7 +728,7 @@ fn the_claude_code_doctor_check_reads_claude_version_against_the_pin() {
     let (code, said) = run(&other, None);
     assert_eq!(code, 1, "another claude on PATH: {said}");
     assert!(
-        said.contains("answers: 2.1.280 (Claude Code)")
+        said.contains("answers: 2.1.261 (Claude Code)")
             && said.contains(&format!("is not the supported {pin}"))
             && said.contains("the controller still runs")
             && said.contains(&format!("claude install {pin}")),
