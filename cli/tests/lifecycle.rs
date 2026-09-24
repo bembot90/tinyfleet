@@ -26,6 +26,15 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 /// The one agent name the adapters answer to.
 const AGENT: &str = "claude_code";
 
+/// Seat ids written out by hand, so a row's `<slug>-<short>` name is read
+/// against a spelling this suite fixed and not one it computed. They share
+/// their first eight characters the way ids minted in one minute do, and each
+/// ends in its own eight — the short id.
+const SEAT_A: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
+const SEAT_B: &str = "01a0d1f1-0aec-765f-9abe-5c21e8a04b17";
+const SEAT_C: &str = "01a0d1f1-0aec-765f-9abe-0f3b6d2c8e44";
+const SEAT_H: &str = "01a0d1f1-0aec-765f-9abe-7a9e1c4f05d2";
+
 /// What `fleet create --embedded` writes, byte for byte.
 const EMBEDDED: &str = "\
 # This fleet is EMBEDDED: this file is its policy and it sits at the
@@ -45,12 +54,14 @@ record.enabled = true
 [telemetry]
 enabled = false
 
-# One table per seat, rendered into the machine's seat list by
-# `fleet start`. A row looks like this:
+# One table per seat, keyed by the seat's id. fleet seat add writes them
+# and fleet start renders the agent seats into the machine's seat list.
+# A row looks like this:
 #
-#   [seats.a-seat]
+#   [seats.01a0d1f1-0aec-765f-9abe-d4f993b9739a]
+#   kind = \"agent\"
+#   name = \"what a person calls it\"
 #   model = \"claude-opus-5\"
-#   chosen_name = \"what a person calls it\"
 #   status = \"active\"
 [seats]
 ";
@@ -561,7 +572,10 @@ fn create_standalone_names_the_fleet_and_one_start_renders_the_seat() {
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let policy = fleet.join("fleet.toml");
     let body = std::fs::read_to_string(&policy).expect("the policy is there");
-    write(&policy, &format!("{body}\n[seats.one]\n"));
+    write(
+        &policy,
+        &format!("{body}\n[seats.{SEAT_A}]\nkind = \"agent\"\n"),
+    );
     // ACT ONE LEAVES NO SEAT LIST. It is `start` that writes one, and the whole
     // point of this arm is that no start has run.
     assert!(
@@ -619,7 +633,9 @@ fn create_standalone_names_the_fleet_and_one_start_renders_the_seat() {
         map.get("a-project").map(ToString::to_string),
         Some(format!(
             "\"{}\"",
-            rig.root.join("a-project-worktrees/one").display()
+            rig.root
+                .join("a-project-worktrees/agent-93b9739a")
+                .display()
         )),
         "the row is keyed on the registered project: {after}"
     );
@@ -1513,23 +1529,30 @@ fn the_foreground_loop_advances_a_waiting_run() {
     );
 }
 
-/// The `[seats]` table, rendered.
+/// The `[seats.<id>]` tables, rendered: every active agent seat a row named
+/// by its machine name and carrying its id and kind, and no row for a parked
+/// seat or for a person's.
 #[test]
 fn the_seats_table_is_rendered_into_rows_and_a_transient_row_survives_it() {
     let rig = Rig::new("seats");
-    rig.created().policy_says(
-        "\n[seats.one]\nmodel = \"a-model\"\nchosen_name = \"Kite\"\n\
-         \n[seats.two]\n\
-         \n[seats.three]\nstatus = \"parked\"\n",
-    );
+    rig.created().policy_says(&format!(
+        "\n[seats.{SEAT_A}]\nkind = \"agent\"\nname = \"Kite\"\nmodel = \"a-model\"\n\
+         \n[seats.{SEAT_B}]\nkind = \"agent\"\n\
+         \n[seats.{SEAT_C}]\nkind = \"agent\"\nstatus = \"parked\"\n\
+         \n[seats.{SEAT_H}]\nkind = \"human\"\nname = \"Orla\"\n",
+    ));
     // A transient row and an unknown key, written before the render: both are
-    // what the document-edit discipline exists for.
+    // what the document-edit discipline exists for. B's row is already there
+    // and still carries the `chosen_name` a render before seat identity wrote,
+    // which this render owns and takes off.
     write(
         &rig.machine.join("config.json"),
         &format!(
             "{{\n  \"fleet_toml\": \"{}\",\n  \"autopilot\": {{\"on\": true}},\n  \
              \"children\": [\n    {{\"name\": \"transient-1\", \"transient\": true, \
              \"spawned_by\": \"somebody\", \"worktrees\": {{\"a-project\": \"/wt/t1\"}}}},\n    \
+             {{\"name\": \"agent-e8a04b17\", \"chosen_name\": \"Pell\", \
+             \"worktrees\": {{\"a-project\": \"/wt/b\"}}}},\n    \
              {{\"name\": \"gone\", \"worktrees\": {{\"a-project\": \"/wt/gone\"}}}}\n  ]\n}}\n",
             rig.project.join("fleet.toml").display()
         ),
@@ -1546,27 +1569,57 @@ fn the_seats_table_is_rendered_into_rows_and_a_transient_row_survives_it() {
             .find(|r| r["name"] == name)
             .unwrap_or_else(|| panic!("no row for {name}: {after}"))
     };
-    assert_eq!(row("one")["model"], "a-model");
-    assert_eq!(row("one")["chosen_name"], "Kite");
+    assert_eq!(row("kite-93b9739a")["id"], SEAT_A);
+    assert_eq!(row("kite-93b9739a")["kind"], "agent");
+    assert_eq!(row("kite-93b9739a")["model"], "a-model");
     assert_eq!(
-        row("one")["worktrees"]["a-project"],
+        row("kite-93b9739a")["worktrees"]["a-project"],
         rig.root
-            .join("a-project-worktrees/one")
+            .join("a-project-worktrees/kite-93b9739a")
             .display()
-            .to_string()
+            .to_string(),
+        "with no directory ending in its short id, a seat's worktree is its machine name"
     );
     assert_eq!(
-        row("two")["model"],
+        row("agent-e8a04b17")["id"],
+        SEAT_B,
+        "a seat with no name takes its kind as its slug"
+    );
+    assert_eq!(row("agent-e8a04b17")["kind"], "agent");
+    assert_eq!(
+        row("agent-e8a04b17")["model"],
         "claude-opus-5",
         "a row naming no model takes the policy's default"
     );
+    for (id, who) in [(SEAT_C, "the parked seat"), (SEAT_H, "the human seat")] {
+        assert!(
+            !rows.iter().any(|r| r["id"] == id),
+            "{who} is not rendered: {after}"
+        );
+    }
     assert!(
-        !rows.iter().any(|r| r["name"] == "three"),
-        "a parked seat is not rendered: {after}"
+        !rows
+            .iter()
+            .any(|r| r["name"] == "agent-6d2c8e44" || r["name"] == "orla-1c4f05d2"),
+        "nor under its machine name: {after}"
     );
     assert!(
         !rows.iter().any(|r| r["name"] == "gone"),
         "a named row whose seat left the table is dropped: {after}"
+    );
+    assert_eq!(
+        rows.len(),
+        3,
+        "the two agent rows and the transient: {after}"
+    );
+    assert!(
+        rows.iter().all(|r| r.get("chosen_name").is_none()),
+        "no row carries chosen_name: {after}"
+    );
+    assert!(
+        stderr(&out).contains("1 human seat(s) listed and not rendered"),
+        "{}",
+        stderr(&out)
     );
 
     // BYTE-IDENTICAL: the transient row and the unknown key survive, field for
@@ -1589,6 +1642,38 @@ fn the_seats_table_is_rendered_into_rows_and_a_transient_row_survives_it() {
     // The worktree directory is NOT created: starting a named seat is the
     // person's, and the done message names the git command.
     assert!(!rig.root.join("a-project-worktrees").exists());
+}
+
+/// THE CLEAN BREAK: a seat table keyed by a name is refused, and nothing
+/// migrates it. A start that read around it would come up short of the seat
+/// its person wrote down, so it stops before the render with core's refusal.
+#[test]
+fn a_seat_table_keyed_by_a_name_is_refused_by_start() {
+    let rig = Rig::new("seats-by-name");
+    rig.created()
+        .policy_says("\n[seats.alpha]\nkind = \"agent\"\n");
+
+    let out = rig.run(&["start"]);
+    assert_eq!(code(&out), 3, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("[seats.alpha] is keyed by a name"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        !rig.seat_list()["children"]
+            .as_array()
+            .expect("children is an array")
+            .iter()
+            .any(|row| row["name"] == "alpha"),
+        "no row is rendered for a table keyed by a name: {}",
+        rig.seat_list()
+    );
+    assert!(
+        rig.of_class("load").is_empty(),
+        "nothing is loaded after the refusal: {:?}",
+        rig.calls()
+    );
 }
 
 /// `config.json` is local and beats policy per key, through the same readers
@@ -1748,10 +1833,11 @@ fn the_first_run_sequence_leaves_the_grant_ok_with_no_worktree_made_yet() {
     // from the seat list before the loop reads it (lessons claude-code D3), and
     // a dropped row has no worktree to probe, which would leave this arm
     // measuring nothing.
-    rig.created().policy_says("\n[seats.one]\n");
+    rig.created()
+        .policy_says(&format!("\n[seats.{SEAT_A}]\nkind = \"agent\"\n"));
 
     assert_eq!(code(&rig.run(&["start"])), 0);
-    let worktree = rig.root.join("a-project-worktrees/one");
+    let worktree = rig.root.join("a-project-worktrees/agent-93b9739a");
     assert!(
         !worktree.exists(),
         "the render does not create the worktree: {}",
@@ -1915,7 +2001,10 @@ fn an_embedded_fleet_inside_a_registered_project_keys_its_rows_on_that_project()
     );
     let policy = inside.join("fleet.toml");
     let body = std::fs::read_to_string(&policy).expect("the policy is there");
-    write(&policy, &format!("{body}\n[seats.one]\n"));
+    write(
+        &policy,
+        &format!("{body}\n[seats.{SEAT_A}]\nkind = \"agent\"\n"),
+    );
 
     let out = rig
         .command(&["start"])
@@ -1932,7 +2021,10 @@ fn an_embedded_fleet_inside_a_registered_project_keys_its_rows_on_that_project()
     assert_eq!(map.len(), 1, "one project key: {after}");
     assert_eq!(
         map.get("outer").map(ToString::to_string),
-        Some(format!("\"{}\"", worktrees.join("one").display())),
+        Some(format!(
+            "\"{}\"",
+            worktrees.join("agent-93b9739a").display()
+        )),
         "the row is keyed on the containing project: {after}"
     );
     assert!(
@@ -1973,7 +2065,7 @@ fn an_embedded_fleet_inside_a_registered_project_keys_its_rows_on_that_project()
         map.get("fleet").map(ToString::to_string),
         Some(format!(
             "\"{}\"",
-            rig.project.join("fleet-worktrees/one").display()
+            rig.project.join("fleet-worktrees/agent-93b9739a").display()
         )),
         "with no register above it, the fleet's own directory is the project: {after}"
     );

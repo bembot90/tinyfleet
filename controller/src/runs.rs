@@ -4,10 +4,12 @@
 //! and the seats a run spawned let go when it ends.
 //!
 //! WHY THE ACTS ARE A SEAM AND THE DECISION IS NOT. This crate takes nothing
-//! from core but its bounded runner (`fleet_core::process`) and the release it
-//! supports (`fleet_core::supported`), and every one of the three acts needs a
-//! resolution this crate cannot make: a re-run needs the project's store, its
-//! packs and its policy file; a park needs the store's hold; a retire needs the
+//! from core but its bounded runner (`fleet_core::process`), the release it
+//! supports (`fleet_core::supported`) and a seat's identity
+//! (`fleet_core::seat::identity`: the id, the fleet.toml roster and the
+//! resolver), and every one of the three acts needs a resolution this crate
+//! cannot make: a re-run needs the project's store, its packs and its policy
+//! file; a park needs the store's hold; a retire needs the
 //! project's primary checkout and its worktrees directory. All of those are
 //! wired in the binary, so the acts are a seam the binary fills. The
 //! DECISION is different: it is a fold of the machine's own stream against one

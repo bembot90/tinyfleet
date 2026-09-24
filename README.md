@@ -15,7 +15,10 @@ work and the process table is kept in the type system rather than in discipline:
 `cli/tests/workspace.rs` reads `cargo metadata --no-deps` and refuses the edge.
 Core depends on neither of the other members. The dependency that is allowed
 runs the other way: the controller depends on core, for the bounded runner
-(`fleet_core::process`) and nothing else, and the cli crate is where both meet.
+(`fleet_core::process`), the Claude Code release it supports
+(`fleet_core::supported`) and a seat's identity (`fleet_core::seat::identity`:
+the id, the fleet.toml roster and the resolver), and nothing else, and the cli
+crate is where both meet.
 
 The root manifest lists its members explicitly and never by glob, so a crate
 under this directory cannot be absorbed by a manifest that did not name it. That

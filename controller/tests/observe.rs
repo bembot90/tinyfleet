@@ -43,7 +43,9 @@ fn started() -> Recency<'static> {
 fn seat() -> Seat {
     Seat {
         name: "builder-1".to_string(),
-        chosen_name: Some("Orla".to_string()),
+        // No row a render writes carries one since seat identity; the field
+        // stays on the seat, always absent, until the projection drops it.
+        chosen_name: None,
         model: None,
         transient: false,
         worktrees: vec![("demo".to_string(), WORKTREE.to_string())],
@@ -801,7 +803,10 @@ fn the_projection_carries_no_model_and_no_transient() {
     // the projection's silence and not an empty document.
     let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(parsed["seats"][0]["seat_dir"], "builder-1");
-    assert_eq!(parsed["seats"][0]["chosen_name"], "Orla");
+    assert!(
+        parsed["seats"][0].get("chosen_name").is_none(),
+        "a seat with no chosen_name publishes none: {body}"
+    );
     assert_eq!(parsed["seats"][0]["roster_state"], "present");
 
     for forbidden in ["\"model\"", "\"transient\"", "a-model"] {

@@ -14,6 +14,7 @@
 use crate::events::{self, EventLog, CONTROLLER};
 use crate::policy::{self, Policy};
 use crate::{clock, config, platform};
+use fleet_core::seat::identity::{roster_in, Kind, SeatRef};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -104,12 +105,14 @@ pub fn embedded_text(agent: &str, written_by: &str) -> String {
          [telemetry]\n\
          enabled = false\n\
          \n\
-         # One table per seat, rendered into the machine's seat list by\n\
-         # `fleet start`. A row looks like this:\n\
+         # One table per seat, keyed by the seat's id. fleet seat add writes them\n\
+         # and fleet start renders the agent seats into the machine's seat list.\n\
+         # A row looks like this:\n\
          #\n\
-         #   [seats.a-seat]\n\
+         #   [seats.01a0d1f1-0aec-765f-9abe-d4f993b9739a]\n\
+         #   kind = \"agent\"\n\
+         #   name = \"what a person calls it\"\n\
          #   model = \"{model}\"\n\
-         #   chosen_name = \"what a person calls it\"\n\
          #   status = \"active\"\n\
          [seats]\n",
         model = policy::DEFAULT_MODEL,
@@ -425,15 +428,15 @@ pub fn first_run(run: &FirstRun) -> Result<FirstRunReport, String> {
         ));
     }
 
-    let seats = rendered_seats(run)?;
+    let (seats, humans) = rendered_seats(run)?;
     let render = config::render_seats(&config_path, &seats)?;
     changed |= render.moved();
-    lines.push(match (seats.len(), render.moved()) {
+    let mut said = match (seats.len(), render.moved()) {
         (0, _) if run.project.is_none() => "seats: no project resolves from this directory, so \
              no row was rendered — run `fleet start` from inside a registered project to render \
              them"
             .to_string(),
-        (0, _) => "seats: the policy names none, so no row was rendered".to_string(),
+        (0, _) => "seats: the policy names no agent seat, so no row was rendered".to_string(),
         (n, false) => format!("seats: {n} row(s) already rendered"),
         (n, true) => format!(
             "seats: {n} row(s) rendered — {} added, {} updated, {} dropped",
@@ -441,7 +444,16 @@ pub fn first_run(run: &FirstRun) -> Result<FirstRunReport, String> {
             render.updated.len(),
             render.dropped.len()
         ),
-    });
+    };
+    // A person's seat is on the roster and on no row, and the line says so
+    // rather than leave a count that reads one short.
+    if humans > 0 {
+        said.push_str(&format!(
+            "; {humans} human seat(s) listed and not rendered — the controller runs agent seats \
+             only"
+        ));
+    }
+    lines.push(said);
 
     let wrote = run.service.write()?;
     changed |= wrote;
@@ -495,26 +507,69 @@ pub fn write_seat_list(config_path: &Path, fleet_toml: &Path) -> Result<bool, St
     Ok(true)
 }
 
-/// The active seats of the fleet's policy file, as rows.
-fn rendered_seats(run: &FirstRun) -> Result<Vec<config::RenderedSeat>, String> {
-    let Some(at) = &run.project else {
-        return Ok(Vec::new());
-    };
+/// The active agent seats of the fleet's policy file, as rows, and beside them
+/// how many human seats it lists.
+///
+/// THE SEATS ARE READ THROUGH CORE'S ROSTER and nowhere else [ASSUMES D2], so
+/// the clean break is refused here as everywhere: a table keyed by a name
+/// stops the start rather than being read around. The roster is read before
+/// the project is asked for, so a start that renders nothing refuses it too.
+///
+/// A PERSON'S SEAT IS LISTED AND NEVER RENDERED: the controller runs agent
+/// seats only, and a parked agent is kept and not run.
+///
+/// RENDERING IS `fleet start`'S ACT and never the loop's: the controller re-reads
+/// `config.json` and never this table, so a changed `[seats]` table is followed
+/// by a stop and a start.
+fn rendered_seats(run: &FirstRun) -> Result<(Vec<config::RenderedSeat>, usize), String> {
     let body = std::fs::read_to_string(run.fleet_toml)
         .map_err(|e| format!("{}: {e}", run.fleet_toml.display()))?;
-    Ok(policy::seats_in(&body)?
+    let roster = roster_in(&body)?;
+    let humans = roster
+        .iter()
+        .filter(|seat| seat.seat.kind == Kind::Human)
+        .count();
+    let Some(at) = &run.project else {
+        return Ok((Vec::new(), humans));
+    };
+    let rows = roster
         .into_iter()
-        .filter(|seat| !seat.parked)
+        .filter(|seat| seat.seat.kind == Kind::Agent && !seat.parked)
         .map(|seat| config::RenderedSeat {
+            name: seat.seat.machine_name(),
+            id: seat.seat.id,
             model: run.policy.model_for(seat.model.as_deref()),
-            chosen_name: seat.chosen_name,
             worktrees: vec![(
                 at.name.to_string(),
-                at.worktrees_dir.join(&seat.name).display().to_string(),
+                worktree_for(at.worktrees_dir, &seat.seat)
+                    .display()
+                    .to_string(),
             )],
-            name: seat.name,
         })
-        .collect())
+        .collect();
+    Ok((rows, humans))
+}
+
+/// A seat's worktree under `dir`: the one entry already there whose name ends
+/// in `-<short>`, and `<dir>/<machine name>` where there is none — or more than
+/// one, which is no answer either.
+///
+/// A RENAME MOVES NO WORKTREE [ASSUMES D1]. The slug is the part of a machine
+/// name a person can change and the short id the part they cannot, so a
+/// worktree made under the seat's old name is found by the part it kept.
+fn worktree_for(dir: &Path, seat: &SeatRef) -> PathBuf {
+    let tail = format!("-{}", seat.id.short());
+    let fallback = || dir.join(seat.machine_name());
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return fallback();
+    };
+    let mut found = entries
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(&tail));
+    match (found.next(), found.next()) {
+        (Some(only), None) => only.path(),
+        _ => fallback(),
+    }
 }
 
 /// Telemetry: off, and asked (lessons gas-city G2).
@@ -786,7 +841,23 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("[telemetry]\nenabled = false"), "{text}");
-        assert!(text.trim_end().ends_with("[seats]"), "{text}");
+        assert!(
+            text.ends_with(&format!(
+                "\n\
+                 # One table per seat, keyed by the seat's id. fleet seat add writes them\n\
+                 # and fleet start renders the agent seats into the machine's seat list.\n\
+                 # A row looks like this:\n\
+                 #\n\
+                 #   [seats.01a0d1f1-0aec-765f-9abe-d4f993b9739a]\n\
+                 #   kind = \"agent\"\n\
+                 #   name = \"what a person calls it\"\n\
+                 #   model = \"{}\"\n\
+                 #   status = \"active\"\n\
+                 [seats]\n",
+                policy::DEFAULT_MODEL
+            )),
+            "the file ends on the seats table, keyed by an id: {text}"
+        );
 
         // Nothing the controller defaults: the keys a reader would otherwise
         // check against the code are absent, and the file still parses.
@@ -798,8 +869,8 @@ mod tests {
         }
         let policy = policy::parse(&text).expect("the written file parses as policy");
         assert_eq!(policy.poll_seconds, policy::DEFAULT_POLL_SECONDS);
-        assert!(policy::seats_in(&text)
-            .expect("the seats table parses")
+        assert!(roster_in(&text)
+            .expect("the seats table parses through core's roster")
             .is_empty());
 
         // The two guards read as ON through core's own reader, which is the
@@ -1165,6 +1236,93 @@ mod tests {
         let rows = registered(&dir).expect("the register still parses");
         assert_eq!(rows[2].name, "a \"name\"");
         assert_eq!(rows[2].root, "/p/\"three\"");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A RENAME MOVES NO WORKTREE. The row takes the seat's new machine name,
+    /// and its worktree is the one directory already standing that ends in
+    /// the seat's short id — which is the part of the name a rename keeps.
+    #[test]
+    fn a_renamed_seat_keeps_the_worktree_that_ends_in_its_short_id() {
+        let dir = std::env::temp_dir().join(format!("fleet-worktree-for-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let worktrees = dir.join("a-project-worktrees");
+        std::fs::create_dir_all(worktrees.join("orla-93b9739a")).unwrap();
+        // Another seat's worktree, which shares no short id with this one.
+        std::fs::create_dir_all(worktrees.join("kite-e8a04b17")).unwrap();
+        let fleet_toml = dir.join("fleet.toml");
+        std::fs::write(
+            &fleet_toml,
+            "[seats.01a0d1f1-0aec-765f-9abe-d4f993b9739a]\nkind = \"agent\"\nname = \"Wren\"\n\
+             \n[seats.01a0d1f1-0aec-765f-9abe-7a9e1c4f05d2]\nkind = \"human\"\nname = \"Orla\"\n",
+        )
+        .unwrap();
+        let machine_dir = dir.join("machine");
+        let policy = policy::parse("").expect("an empty policy parses");
+        let service = platform::Service::resolve(
+            &dir,
+            &machine_dir,
+            Path::new("/usr/local/bin/fleet"),
+            None,
+            Some("/bin/sh"),
+        )
+        .expect("the service is composed");
+        let run = FirstRun {
+            machine_dir: &machine_dir,
+            fleet_toml: &fleet_toml,
+            project: Some(ProjectAt {
+                name: "a-project",
+                worktrees_dir: &worktrees,
+            }),
+            policy: &policy,
+            service: &service,
+        };
+
+        let (rows, humans) = rendered_seats(&run).expect("the roster renders");
+        assert_eq!(humans, 1, "the human seat is counted and not rendered");
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].name, "wren-93b9739a");
+        assert_eq!(
+            rows[0].id.to_string(),
+            "01a0d1f1-0aec-765f-9abe-d4f993b9739a"
+        );
+        assert_eq!(
+            rows[0].worktrees,
+            vec![(
+                "a-project".to_string(),
+                worktrees.join("orla-93b9739a").display().to_string()
+            )],
+            "the worktree the seat already had, under the name it had then"
+        );
+
+        // With no directory ending in the short id, the worktree is the one the
+        // seat's machine name gives — and so it is where no directory stands
+        // at all.
+        std::fs::remove_dir_all(worktrees.join("orla-93b9739a")).unwrap();
+        let (rows, _) = rendered_seats(&run).expect("the roster renders");
+        assert_eq!(
+            rows[0].worktrees[0].1,
+            worktrees.join("wren-93b9739a").display().to_string()
+        );
+        let roster = roster_in(&std::fs::read_to_string(&fleet_toml).unwrap()).unwrap();
+        let seat = &roster
+            .iter()
+            .find(|s| s.seat.kind == Kind::Agent)
+            .expect("the agent seat is on the roster")
+            .seat;
+        assert_eq!(
+            worktree_for(&dir.join("no-such-directory"), seat),
+            dir.join("no-such-directory/wren-93b9739a")
+        );
+
+        // The control: two directories ending in the short id are no answer,
+        // so neither is taken and the machine name is.
+        std::fs::create_dir_all(worktrees.join("orla-93b9739a")).unwrap();
+        std::fs::create_dir_all(worktrees.join("kite-93b9739a")).unwrap();
+        assert_eq!(
+            worktree_for(&worktrees, seat),
+            worktrees.join("wren-93b9739a")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

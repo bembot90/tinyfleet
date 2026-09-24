@@ -8,6 +8,7 @@
 //! is not: two spawns that read the same file and then each rename their own
 //! version over it leave one row, and both would have taken the same name.
 
+use fleet_core::seat::identity::{Kind, SeatId};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -225,11 +226,13 @@ pub fn drop_seat(path: &Path, name: &str) -> Result<bool, String> {
 
 // ---- the `[seats]` render ---------------------------------------------------
 
-/// One named seat, as `fleet start` renders it into a row.
+/// One agent seat, as `fleet start` renders it into a row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RenderedSeat {
+    /// The seat's machine name, `<slug>-<short>`: the key the render still
+    /// upserts on, until the rows are keyed by id.
     pub name: String,
-    pub chosen_name: Option<String>,
+    pub id: SeatId,
     /// Always present: a start with no model flag comes up on the cheapest
     /// available model (lessons claude-code A5), so the row carries the policy's
     /// default where the table names none.
@@ -253,7 +256,8 @@ impl Rendered {
     }
 }
 
-/// Render the fleet's active seats into `config.json`'s rows, upserting by name.
+/// Render the fleet's active agent seats into `config.json`'s rows, upserting
+/// by the machine name.
 ///
 /// UNDER THE SAME LOCK AND THE SAME DOCUMENT-EDIT DISCIPLINE as
 /// [`claim_transient_seat`]: the document is edited in place and never
@@ -304,13 +308,12 @@ pub fn render_seats(path: &Path, seats: &[RenderedSeat]) -> Result<Rendered, Str
                             changed = true;
                         }
                     }
-                    // A row keeps no `chosen_name` the table does not give:
-                    // one left behind publishes a display name the fleet's own
-                    // file does not say.
-                    if seat.chosen_name.is_none() {
-                        if let Some(object) = existing.as_object_mut() {
-                            changed |= object.remove("chosen_name").is_some();
-                        }
+                    // A row this render owns keeps no `chosen_name`: the key
+                    // is the shape seat identity retired, and one left behind
+                    // publishes a display name the fleet's own file no longer
+                    // says.
+                    if let Some(object) = existing.as_object_mut() {
+                        changed |= object.remove("chosen_name").is_some();
                     }
                     if changed {
                         moved.updated.push(seat.name.clone());
@@ -328,19 +331,17 @@ pub fn render_seats(path: &Path, seats: &[RenderedSeat]) -> Result<Rendered, Str
 }
 
 fn row_of(seat: &RenderedSeat) -> serde_json::Value {
-    let mut row = serde_json::json!({
+    serde_json::json!({
         "name": seat.name,
+        "id": seat.id.to_string(),
+        "kind": Kind::Agent.as_str(),
         "model": seat.model,
         "worktrees": seat
             .worktrees
             .iter()
             .map(|(project, path)| (project.clone(), serde_json::Value::String(path.clone())))
             .collect::<serde_json::Map<String, serde_json::Value>>(),
-    });
-    if let Some(chosen) = &seat.chosen_name {
-        row["chosen_name"] = serde_json::Value::String(chosen.clone());
-    }
-    row
+    })
 }
 
 /// The seat list as a raw document.
@@ -490,16 +491,17 @@ mod tests {
         let before: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
 
+        let id = |text: &str| SeatId::parse(text).expect("a hand-written seat id parses");
         let seats = vec![
             RenderedSeat {
                 name: "one".to_string(),
-                chosen_name: None,
+                id: id("01a0d1f1-0aec-765f-9abe-d4f993b9739a"),
                 model: "a-new-model".to_string(),
                 worktrees: vec![("p".to_string(), "/wt/one".to_string())],
             },
             RenderedSeat {
                 name: "two".to_string(),
-                chosen_name: Some("Pell".to_string()),
+                id: id("01a0d1f1-0aec-765f-9abe-5c21e8a04b17"),
                 model: "a-model".to_string(),
                 worktrees: vec![("p".to_string(), "/wt/two".to_string())],
             },
@@ -515,16 +517,20 @@ mod tests {
         let rows = after["children"].as_array().unwrap();
         let row = |name: &str| rows.iter().find(|r| r["name"] == name).expect(name);
         assert_eq!(row("one")["model"], "a-new-model");
+        assert_eq!(row("one")["id"], "01a0d1f1-0aec-765f-9abe-d4f993b9739a");
+        assert_eq!(row("one")["kind"], "agent");
         assert!(
-            row("one")["chosen_name"].is_null(),
-            "a name the table stopped giving is taken off the row: {after}"
+            row("one").get("chosen_name").is_none(),
+            "a row this render owns keeps no chosen_name, whatever it carried: {after}"
         );
         assert_eq!(
             row("one")["kept_by_another_tool"],
             7,
             "a key this render has nothing to say about survives it"
         );
-        assert_eq!(row("two")["chosen_name"], "Pell");
+        assert_eq!(row("two")["id"], "01a0d1f1-0aec-765f-9abe-5c21e8a04b17");
+        assert_eq!(row("two")["kind"], "agent");
+        assert!(row("two").get("chosen_name").is_none(), "{after}");
         assert!(!rows.iter().any(|r| r["name"] == "gone"));
 
         // The transient row and the unknown top-level key, unchanged.
