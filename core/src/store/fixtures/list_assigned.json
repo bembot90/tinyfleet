@@ -1,26 +1,26 @@
 {
   "data": [
     {
-      "id": "fx-zd1",
+      "id": "fx-5e1",
       "title": "unreadable orders",
-      "description": "orders is a string",
+      "description": "fleet.orders is a string",
       "status": "open",
       "priority": 2,
       "issue_type": "task",
       "assignee": "seat-1",
       "owner": "fx@example.invalid",
-      "created_at": "2026-09-24T05:32:23Z",
+      "created_at": "2026-09-24T07:02:56Z",
       "created_by": "rec",
-      "updated_at": "2026-09-24T05:32:26Z",
+      "updated_at": "2026-09-24T07:02:59Z",
       "metadata": {
-        "orders": "not an object"
+        "fleet.orders": "not an object"
       },
       "dependency_count": 0,
       "dependent_count": 0,
       "comment_count": 0
     },
     {
-      "id": "fx-9kb",
+      "id": "fx-5n2",
       "title": "downstream",
       "description": "depends on three",
       "notes": "a note on downstream",
@@ -29,18 +29,20 @@
       "issue_type": "task",
       "assignee": "seat-1",
       "owner": "fx@example.invalid",
-      "created_at": "2026-09-24T05:32:22Z",
+      "created_at": "2026-09-24T07:02:55Z",
       "created_by": "rec",
-      "updated_at": "2026-09-24T05:32:26Z",
+      "updated_at": "2026-09-24T07:02:59Z",
       "metadata": {
-        "run": {
+        "fleet.run": {
+          "v": 1,
           "ok": true,
           "steps": [
             1,
             2
           ]
         },
-        "orders": {
+        "fleet.orders": {
+          "v": 1,
           "at": "2026-09-23T10:00:00Z",
           "by": "alberto",
           "kind": "build",
@@ -49,30 +51,30 @@
       },
       "labels": [
         "fleet",
-        "run"
+        "fleet:run"
       ],
       "dependencies": [
         {
-          "issue_id": "fx-9kb",
-          "depends_on_id": "fx-vea",
-          "type": "blocks",
-          "created_at": "2026-09-24T05:32:24Z",
-          "created_by": "rec",
-          "metadata": "{}"
-        },
-        {
-          "issue_id": "fx-9kb",
-          "depends_on_id": "fx-36d",
+          "issue_id": "fx-5n2",
+          "depends_on_id": "fx-g73",
           "type": "discovered-from",
-          "created_at": "2026-09-24T05:32:24Z",
+          "created_at": "2026-09-24T07:02:58Z",
           "created_by": "rec",
           "metadata": "{}"
         },
         {
-          "issue_id": "fx-9kb",
-          "depends_on_id": "fx-gjy",
+          "issue_id": "fx-5n2",
+          "depends_on_id": "fx-q10",
           "type": "blocks",
-          "created_at": "2026-09-24T05:32:23Z",
+          "created_at": "2026-09-24T07:02:57Z",
+          "created_by": "rec",
+          "metadata": "{}"
+        },
+        {
+          "issue_id": "fx-5n2",
+          "depends_on_id": "fx-kb4",
+          "type": "blocks",
+          "created_at": "2026-09-24T07:02:57Z",
           "created_by": "rec",
           "metadata": "{}"
         }

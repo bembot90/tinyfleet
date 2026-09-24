@@ -249,7 +249,7 @@ fn an_ordered_item(store: &dyn Store, title: &str, seat: &str) -> String {
         .set_orders(
             &item,
             &format!(
-                r#"{{"orders": {{"by": "a-flight", "kind": "dispatch", "seat": "{seat}", "at": "{AT}"}}}}"#
+                r#"{{"fleet.orders": {{"v": 1, "by": "a-flight", "kind": "dispatch", "seat": "{seat}", "at": "{AT}"}}}}"#
             ),
             "a-flight",
         )
@@ -631,7 +631,7 @@ fn a_runs_record_parks_off_the_trunk_and_performs_no_git_act() {
     scratch.label(&item, run::LABEL);
     scratch.set_metadata(
         &item,
-        &format!(r#"{{"run": {{"hash": "{RUN_HASH}", "workflow": "takeoff"}}}}"#),
+        &format!(r#"{{"fleet.run": {{"v": 1, "hash": "{RUN_HASH}", "workflow": "takeoff"}}}}"#),
     );
     let note = a_note(scratch, "run", QUESTION);
     let git = StubGit {
@@ -697,7 +697,7 @@ fn an_item_that_is_not_a_runs_record_is_refused_the_park_on_the_trunk() {
     let item = an_item(&scratch.store, "an item that is not a run's record");
     scratch.set_metadata(
         &item,
-        &format!(r#"{{"run": {{"hash": "{RUN_HASH}", "workflow": "takeoff"}}}}"#),
+        &format!(r#"{{"fleet.run": {{"v": 1, "hash": "{RUN_HASH}", "workflow": "takeoff"}}}}"#),
     );
     let note = a_note(scratch, "not-a-run", QUESTION);
     let before = scratch.json(&item);
@@ -728,6 +728,53 @@ fn an_item_that_is_not_a_runs_record_is_refused_the_park_on_the_trunk() {
         git.calls()
     );
     assert_eq!(before, scratch.json(&item), "the item is byte-identical");
+}
+
+/// The bare `run` label is another writer's word and not fleet's run label: a
+/// seat's item carrying it, and a bare `run` key beside it, parks like any
+/// seat's item — the whole tree committed on the work branch — and never as a
+/// run's park, which touches no git (fleet-4j6 AC3).
+#[test]
+fn an_item_labelled_bare_run_parks_and_commits_like_any_seats_item() {
+    let scratch = &store();
+    let seat = "g-bare-run";
+    let item = an_ordered_item(&scratch.store, "an item another tool labels run", seat);
+    scratch.label(&item, common::FOREIGN_LABEL);
+    scratch.set_metadata(
+        &item,
+        &format!(r#"{{"run": {{"hash": "{RUN_HASH}", "workflow": "theirs"}}}}"#),
+    );
+    let note = a_note(scratch, "bare-run", QUESTION);
+    let git = StubGit::holding_work();
+
+    let asked = ask_with(
+        None,
+        &note,
+        seat,
+        &Seams {
+            store: &scratch.store,
+            git: &git,
+            project: &project(scratch),
+            packs: &packs(scratch),
+            events: &StubEvents::default(),
+        },
+    )
+    .expect("the question is asked");
+
+    assert_eq!(asked.item, item, "the seat's one ordered item");
+    assert_eq!(asked.branch, BRANCH, "the work branch, not a run's");
+    assert_eq!(
+        asked.commit, SHA,
+        "the commit of the tree, not a run's hash"
+    );
+    let calls = git.calls();
+    assert!(
+        calls.iter().any(|call| call == "add_all")
+            && calls
+                .iter()
+                .any(|call| call.starts_with(&format!("commit {item}: parked"))),
+        "the whole tree is committed: {calls:?}"
+    );
 }
 
 #[test]
@@ -933,7 +980,7 @@ fn an_epic_is_refused_before_the_commit_and_nothing_is_written() {
 /// The row the gating fake answers for the item a seat holds.
 fn a_held_row(item: &str, seat: &str) -> String {
     format!(
-        r#"{{"id":"{item}","title":"an item whose gate fails","status":"open","issue_type":"task","assignee":"{seat}","metadata":{{"orders":{{"by":"a-flight","kind":"dispatch","seat":"{seat}","at":"{AT}"}}}}}}"#
+        r#"{{"id":"{item}","title":"an item whose gate fails","status":"open","issue_type":"task","assignee":"{seat}","metadata":{{"fleet.orders":{{"v":1,"by":"a-flight","kind":"dispatch","seat":"{seat}","at":"{AT}"}}}}}}"#
     )
 }
 
@@ -1301,7 +1348,7 @@ fn a_runs_record(scratch: &Board, title: &str) -> String {
     scratch.label(&run, run::LABEL);
     scratch.set_metadata(
         &run,
-        &format!(r#"{{"run": {{"hash": "{RUN_HASH}", "workflow": "takeoff"}}}}"#),
+        &format!(r#"{{"fleet.run": {{"v": 1, "hash": "{RUN_HASH}", "workflow": "takeoff"}}}}"#),
     );
     run
 }

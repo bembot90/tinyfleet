@@ -141,7 +141,7 @@ impl Project {
                 "update",
                 &item,
                 "--metadata",
-                r#"{"orders": {"by": "lead-1", "kind": "dispatch", "at": "2026-09-09T00:00:00Z"}}"#,
+                r#"{"fleet.orders": {"v": 1, "by": "lead-1", "kind": "dispatch", "at": "2026-09-09T00:00:00Z"}}"#,
                 "--actor",
                 "lead-1",
             ])
@@ -166,7 +166,7 @@ impl Project {
                 .unwrap_or_default()
                 .to_string(),
             row.get("metadata")
-                .and_then(|m| m.get("orders"))
+                .and_then(|m| m.get("fleet.orders"))
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         )

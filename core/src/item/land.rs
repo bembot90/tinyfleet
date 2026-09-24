@@ -1750,9 +1750,9 @@ fn rebased_from(delivery: &str, landed_on: &str) -> String {
 /// in its own name.
 ///
 /// A workflow calls every verb as the RUN: the `by` it hands in is the run's
-/// record id, and the `run` label on the item the store answers for that id is
-/// the only mark that tells one from every other item — the same discriminator
-/// `ask` reads to tell a run's park from a seat's. A `by` the store has no item
+/// record id, and the `fleet:run` label on the item the store answers for that
+/// id is the only mark that tells one from every other item — the same
+/// discriminator `ask` reads to tell a run's park from a seat's. A `by` the store has no item
 /// for is a seat name, which is not an id at all; a store that could not answer
 /// is a could-not-tell and never a seat.
 fn caller_run(store: &dyn Store, by: &str) -> Result<Option<Item>, Stop> {

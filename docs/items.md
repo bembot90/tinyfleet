@@ -19,8 +19,11 @@ verb that writes, writes a note on the item and reads it back before it exits
 - **The record**: the item's notes in order, plus its assignee and its order
   index.
 - **Order**: the note `dispatch` writes, ending in `orders given`, together
-  with a machine-read copy of it in the item's metadata under `orders`. An
-  item with no order note has not been given to anybody.
+  with a machine-read copy of it in the item's metadata under `fleet.orders`,
+  an object carrying `"v": 1`. An item with no order note has not been given
+  to anybody. fleet reads no other key for the copy: an `orders` key another
+  tool wrote is not an order, whatever it holds, and fleet leaves it as it
+  is.
 - **Brief**: the first turn a dispatched seat reads, rendered from the item.
 - **Ring**: one message sent to a seat's live session, naming the item and,
   from `dispatch`, where its brief is.
@@ -84,8 +87,8 @@ It exits 0. In one act it writes three things and reads all three back:
 
 - the assignee: `<seat>`;
 - the order note on the item: `dispatched by <you> — orders given`;
-- the order index in the item's metadata, `orders`: `by`, `kind` (`dispatch`),
-  `seat` and `at`.
+- the order index in the item's metadata, `fleet.orders`: `by`, `kind`
+  (`dispatch`), `seat`, `at` and `v` (`1`).
 
 Then it writes `item.dispatched` to the event stream, naming the item and the
 seat, and the brief to `<fleet-dir>/briefs/<item>.md`. Last, it rings the
@@ -624,6 +627,7 @@ Exits follow the table every command shares; see
 | `dispatch` of an item that is not open | 1 | ``<item> is not ready — its status is `<status>` `` | Pick a ready item |
 | `dispatch` of an item not in the store | 1 | `<item>: no issues found matching the provided IDs` | Check the id |
 | `dispatch` of an item already ordered | 1 | `<item> already carries an order — kind=dispatch by=<you> at=<time>` | Nothing: it is given |
+| `dispatch` of an item whose `fleet.orders` is not an object at `v` 1 | 3 | ``<item> carries a `fleet.orders` this fleet cannot read — it is not an object at v 1 — and a dispatch will not guess whether it is an order`` | Read the key; dispatch with the fleet that wrote it |
 | `dispatch --to` a seat the machine does not run | 1 | `` `<name>` is not a seat this machine runs — the seats it carries are <seats> `` | Name a seat from the list |
 | `dispatch --to` a seat holding open work | 1 | `` `<seat>` already holds <item> (open) — one item at a time `` | Wait, or pick another seat |
 | `dispatch` rang no live session | 4 | `ORDERED, NOT RUNG: no live session for <seat>; the order stands …` | Nothing: the order stands |

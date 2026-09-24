@@ -258,7 +258,7 @@ fn an_ordered_item(graph: &Graph, title: &str, seat: &str) -> String {
         .set_orders(
             &item,
             &format!(
-                r#"{{"orders": {{"by": "an-architect", "kind": "dispatch", "seat": "{seat}", "at": "{AT}"}}}}"#
+                r#"{{"fleet.orders": {{"v": 1, "by": "an-architect", "kind": "dispatch", "seat": "{seat}", "at": "{AT}"}}}}"#
             ),
             "an-architect",
         )
@@ -419,6 +419,59 @@ fn a_clean_delivery_commits_reassigns_and_writes_the_note_it_rendered() {
         rung[0].1.contains(&item) && rung[0].1.contains(SHA),
         "{:?}",
         rung
+    );
+}
+
+/// Another writer's bare `orders` and the bare `run` label are not fleet's:
+/// on the delivered item they ride through the delivery byte-identical, and a
+/// second item the seat is assigned that carries only them is not an order it
+/// holds (fleet-4j6 AC1, the delivery).
+#[test]
+fn another_writers_orders_key_and_run_label_ride_through_a_delivery() {
+    let scratch = &store();
+    let seat = "s-foreign";
+    let item = an_ordered_item(scratch, "an item another tool indexes too", seat);
+    let theirs = scratch.item("an item only another tool ordered");
+    scratch.assign(&theirs, seat);
+    for held in [&item, &theirs] {
+        scratch
+            .store()
+            .set_metadata(held, common::FOREIGN_ORDERS, "another-tool")
+            .expect("the other writer's key lands");
+        scratch.label(held, common::FOREIGN_LABEL);
+    }
+    let before = common::foreign_of(scratch.store(), &item);
+    let note = a_note(scratch, "foreign", WHOLE);
+    let git = StubGit::clean();
+    let ring = StubRing::answering(RingOutcome::Delivered);
+    let events = StubEvents::default();
+
+    let delivered = deliver_with(
+        None,
+        &note,
+        seat,
+        &Seams {
+            store: scratch.store(),
+            git: &git,
+            ring: &ring,
+            project: &project(scratch),
+            packs: &packs(scratch),
+            events: &events,
+        },
+    )
+    .expect("the delivery is made");
+
+    assert_eq!(delivered.item, item, "the seat's one ordered item");
+    assert_eq!(read(scratch, &item).assignee.as_deref(), Some(REVIEWER));
+    assert_eq!(
+        common::foreign_of(scratch.store(), &item),
+        before,
+        "the other writer's key and label are byte-identical"
+    );
+    assert_eq!(
+        read(scratch, &theirs).assignee.as_deref(),
+        Some(seat),
+        "the item only another tool ordered is left where it was"
     );
 }
 

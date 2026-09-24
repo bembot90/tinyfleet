@@ -353,12 +353,12 @@ fn every_read_opens_the_envelope() {
     .file(
         "answers/show-fx-held.json",
         "{\"data\": [{\"id\": \"fx-held\", \"title\": \"a held item\", \"status\": \"open\", \
-         \"assignee\": \"a-seat\", \"metadata\": {\"orders\": {\"by\": \"an-architect\"}}}], \
+         \"assignee\": \"a-seat\", \"metadata\": {\"fleet.orders\": {\"v\": 1, \"by\": \"an-architect\"}}}], \
          \"schema_version\": 1}\nTip: a line after the answer\n",
     )
     .file(
         "answers/list.json",
-        r#"{"data": [{"id": "fx-listed", "title": "a listed item", "status": "open", "metadata": {"orders": {"by": "an-architect"}}}], "schema_version": 1}"#,
+        r#"{"data": [{"id": "fx-listed", "title": "a listed item", "status": "open", "metadata": {"fleet.orders": {"v": 1, "by": "an-architect"}}}], "schema_version": 1}"#,
     )
     .file(
         "answers/gate-list.json",

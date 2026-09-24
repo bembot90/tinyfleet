@@ -24,7 +24,7 @@ use crate::item::{
     control_token, render, Events, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner, Stop,
     ITEM_DISPATCHED, NO_SESSION, REFUSED,
 };
-use crate::store::{Item, Store, StoreError};
+use crate::store::{keys, Item, Orders, Store, StoreError};
 
 /// The kind of order this verb writes. The reference's other two grammars —
 /// a run's feed, a spawn's own line — are that repository's; here there is one
@@ -199,10 +199,23 @@ fn refuse_unless_dispatchable(order: &Order, item: &Item, wiring: &Wiring) -> Re
     }
     refuse_an_epic(item)?;
     if item.has_orders_key {
+        // A key this binary cannot read is not an order it can weigh: it may
+        // be one, at a version a newer fleet wrote, so it is could-not-tell and
+        // never taken for absent or overwritten.
+        let Some(index) = item.orders.as_ref() else {
+            return Err(Stop::could_not_tell(format!(
+                "{} carries a `{}` this fleet cannot read — it is not an object at {} {} — and \
+                 a dispatch will not guess whether it is an order",
+                order.item,
+                keys::ORDERS,
+                keys::VERSION_FIELD,
+                keys::VERSION
+            )));
+        };
         return Err(Stop::refused(format!(
             "{} already carries an order — {}",
             order.item,
-            standing(item)
+            standing(index)
         )));
     }
 
@@ -454,7 +467,7 @@ fn withdraw(err: &mut dyn Write, order: &Order, wiring: &Wiring, cause: &str) ->
     if item.has_orders_key {
         return Err(stands(
             order.item,
-            "the index still carries an orders key after the withdrawal",
+            "the index still carries a fleet.orders key after the withdrawal",
         ));
     }
     let _ = writeln!(err, "withdrawn: {line}");
@@ -481,7 +494,7 @@ fn not_told(err: &mut dyn Write, order: &Order, wiring: &Wiring, cause: &str) ->
     if !item.has_orders_key {
         return Err(stands(
             order.item,
-            "the index carries no orders key after a spawn that could not be told",
+            "the index carries no fleet.orders key after a spawn that could not be told",
         ));
     }
     let _ = writeln!(err, "could not tell: {line}");
@@ -534,12 +547,7 @@ pub fn index(by: &str, kind: &str, seat: Option<&str>, at: &str) -> String {
         index.insert("seat".into(), seat.into());
     }
     index.insert("at".into(), at.into());
-    serde_json::Value::Object(
-        [("orders".to_string(), serde_json::Value::Object(index))]
-            .into_iter()
-            .collect(),
-    )
-    .to_string()
+    keys::stamped(keys::ORDERS, index).to_string()
 }
 
 /// The order note the pack's template renders, for a caller that writes its own
@@ -567,7 +575,7 @@ fn read_back(
                 "assignee",
                 wanted,
                 item.assignee.as_deref(),
-                order,
+                &assignee_repair(order, wanted),
             ));
         }
     }
@@ -575,10 +583,10 @@ fn read_back(
     let Some(index) = item.orders.as_ref() else {
         return Err(disagrees(
             order.item,
-            "metadata.orders",
-            "an object",
+            keys::ORDERS,
+            &format!("an object at {} {}", keys::VERSION_FIELD, keys::VERSION),
             None,
-            order,
+            &index_repair(order),
         ));
     };
     let wanted: [(&str, Option<&str>, Option<&str>); 4] = [
@@ -591,10 +599,10 @@ fn read_back(
         if want != got {
             return Err(disagrees(
                 order.item,
-                &format!("metadata.orders.{field}"),
+                &format!("{}.{field}", keys::ORDERS),
                 want.unwrap_or("(absent)"),
                 got,
-                order,
+                &index_repair(order),
             ));
         }
     }
@@ -610,11 +618,19 @@ fn read_back(
                     "the last order note",
                     note,
                     seen.as_deref(),
-                    order,
+                    &index_repair(order),
                 ));
             }
         }
-        None => return Err(disagrees(order.item, "the notes", note, None, order)),
+        None => {
+            return Err(disagrees(
+                order.item,
+                "the notes",
+                note,
+                None,
+                &index_repair(order),
+            ))
+        }
     }
 
     let control = control_token();
@@ -715,16 +731,13 @@ fn why_not_ready(item: &Item) -> String {
     format!("it is blocked by {}", item.blockers.join(", "))
 }
 
-fn standing(item: &Item) -> String {
-    match item.orders.as_ref() {
-        Some(index) => format!(
-            "kind={} by={} at={}",
-            index.kind.as_deref().unwrap_or("(none)"),
-            index.by.as_deref().unwrap_or("(none)"),
-            index.at.as_deref().unwrap_or("(none)")
-        ),
-        None => "its orders key is not an object".to_string(),
-    }
+fn standing(index: &Orders) -> String {
+    format!(
+        "kind={} by={} at={}",
+        index.kind.as_deref().unwrap_or("(none)"),
+        index.by.as_deref().unwrap_or("(none)"),
+        index.at.as_deref().unwrap_or("(none)")
+    )
 }
 
 fn wrote_nothing(item: &str, what: &str, e: &StoreError) -> Stop {
@@ -742,12 +755,31 @@ fn stands(item: &str, why: &str) -> Stop {
     ))
 }
 
-fn disagrees(item: &str, field: &str, wanted: &str, got: Option<&str>, order: &Order) -> Stop {
+/// A read-back that disagrees, with the repair for THE FIELD THAT DISAGREED:
+/// the caller names it, because an assignee handed the index's write would
+/// read back lost again.
+fn disagrees(item: &str, field: &str, wanted: &str, got: Option<&str>, repair: &str) -> Stop {
     Stop::could_not_tell(format!(
         "{item} read back with {field} == {}\n  wanted: {wanted} (from the arguments)\n  \
-         RERUN: bd update {item} --metadata '{}' --actor {}",
+         RERUN: {repair}",
         got.unwrap_or("(absent)"),
+    ))
+}
+
+/// The assignee written again, as the store's own command.
+fn assignee_repair(order: &Order, seat: &str) -> String {
+    format!(
+        "bd update {} --assignee {seat} --actor {}",
+        order.item, order.by
+    )
+}
+
+/// The index written again whole, as the store's own command.
+fn index_repair(order: &Order) -> String {
+    format!(
+        "bd update {} --metadata '{}' --actor {}",
+        order.item,
         index_payload(order, order.to),
         order.by
-    ))
+    )
 }

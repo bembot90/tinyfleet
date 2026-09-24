@@ -4,14 +4,14 @@
 //! `transient-N` off the seat list, so a name a retire freed is a name the next
 //! spawn takes — and an order left standing against the retired seat is
 //! inherited whole by that next one: the board still assigns it the item, the
-//! item still carries an orders key, and the new seat's first delivery is
-//! refused for an item it never saw. The retire is the act that frees the name,
+//! item still carries a `fleet.orders` key, and the new seat's first delivery
+//! is refused for an item it never saw. The retire is the act that frees the name,
 //! so it is the act that owes the name a clean record.
 //!
 //! The query is the `ordered` half of [`crate::item::deliver::holds`] — every
-//! OPEN item assigned to the seat that carries an orders key, whatever its
-//! type — so what is withdrawn here is every order the next seat of that name
-//! would inherit.
+//! OPEN item assigned to the seat that carries a `fleet.orders` key, whatever
+//! its type — so what is withdrawn here is every order the next seat of that
+//! name would inherit.
 //!
 //! IT IS COUNTED IN STORE CALLS, because every retire pays it and a fleet
 //! retires a seat per dispatched item: ONE call to read the board, then one
@@ -67,7 +67,7 @@ pub fn withdraw(store: &dyn Store, items: &[String], seat: &str, by: &str) -> Re
             .map_err(|e| halfway(item, &e.to_string()))?;
         let read = store.show(item)?;
         if read.has_orders_key {
-            return Err(halfway(item, "it still carries an orders key"));
+            return Err(halfway(item, "it still carries a fleet.orders key"));
         }
         if let Some(assignee) = read
             .assignee
@@ -107,6 +107,6 @@ fn nothing_written(item: &str, why: &str) -> Stop {
 fn halfway(item: &str, why: &str) -> Stop {
     Stop::could_not_tell(format!(
         "{item} was not fully withdrawn: {why}\n  finish it by hand — the assignee cleared and \
-         the orders key unset — before the name is given to anybody else"
+         the fleet.orders key unset — before the name is given to anybody else"
     ))
 }

@@ -1140,6 +1140,50 @@ fn a_landing_handed_no_test_lands_and_says_not_tested() {
     );
 }
 
+/// Another writer's bare `orders` and the bare `run` label are not fleet's: the
+/// item lands as a seat's landing — the reviewer closing its own — and both
+/// ride through the landing and the close byte-identical (fleet-4j6 AC1, the
+/// landing).
+#[test]
+fn another_writers_orders_key_and_run_label_ride_through_a_landing() {
+    let scratch = Board::new("land-foreign");
+    scratch.fleet_toml("[landing]\n");
+    let item = an_item(
+        &scratch.store,
+        "an item another tool indexes too",
+        Some(("ACCEPTED", SHA)),
+    );
+    scratch
+        .store
+        .set_metadata(&item, common::FOREIGN_ORDERS, "another-tool")
+        .expect("the other writer's key lands");
+    scratch.label(&item, common::FOREIGN_LABEL);
+    let before = common::foreign_of(&scratch.store, &item);
+
+    let ran = run_untested(
+        &scratch,
+        &scratch.store,
+        &StubGit::clean(),
+        &item,
+        &StubEvents::default(),
+    );
+    let landed = ran
+        .landed
+        .as_ref()
+        .unwrap_or_else(|stop| panic!("{}\n{}", stop.message, ran.out));
+    assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
+    assert_eq!(
+        scratch.store.show(&item).expect("the item reads").status,
+        "closed",
+        "and closed the item"
+    );
+    assert_eq!(
+        common::foreign_of(&scratch.store, &item),
+        before,
+        "the other writer's key and label are byte-identical"
+    );
+}
+
 /// `fleet land --test <command>` runs the command it is handed ON THE LAND
 /// BRANCH — after the squash and the commit, before the push — and records the
 /// command and its rc 0 on the note's first line, the gate reading and
@@ -4078,7 +4122,7 @@ fn a_run(store: &dyn Store, answered_by: Option<&str>) -> String {
                 title: "a run of takeoff",
                 description: "a run's record",
                 item_type: "task",
-                labels: &["run"],
+                labels: &[fleet_core::item::run::LABEL],
             },
             REVIEWER,
         )

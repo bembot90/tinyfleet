@@ -96,6 +96,8 @@ impl Spawner for StubSpawner {
 struct Doctored<'a> {
     inner: &'a dyn Store,
     assignee: Option<String>,
+    /// The seat the order index reads back naming.
+    seat: Option<String>,
     append: Option<String>,
 }
 
@@ -120,6 +122,9 @@ impl Store for Doctored<'_> {
         let mut read = self.inner.show(item)?;
         if let Some(assignee) = &self.assignee {
             read.assignee = Some(assignee.clone());
+        }
+        if let (Some(seat), Some(index)) = (&self.seat, read.orders.as_mut()) {
+            index.seat = Some(seat.clone());
         }
         if let Some(extra) = &self.append {
             read.document.push_str(extra);
@@ -437,7 +442,7 @@ fn an_item_already_ordered_is_refused_and_nothing_is_written() {
         .store()
         .set_orders(
             &item,
-            r#"{"orders":{"by":"someone","kind":"dispatch","at":"then"}}"#,
+            r#"{"fleet.orders":{"v":1,"by":"someone","kind":"dispatch","at":"then"}}"#,
             "someone",
         )
         .expect("the order index lands");
@@ -468,6 +473,112 @@ fn an_item_already_ordered_is_refused_and_nothing_is_written() {
     );
     assert_eq!(rig.graph.json(&item), before, "the item is untouched");
     assert_eq!(rig.events.count(), 0, "a refusal appends nothing");
+}
+
+/// A `fleet.orders` at a version this binary does not know, or at none, is
+/// present and unreadable — never absent, never an order — and a dispatch
+/// could-not-tell over it with nothing written (fleet-4j6 AC4).
+#[test]
+fn a_fleet_orders_at_an_unknown_version_is_unreadable_and_dispatch_could_not_tell() {
+    let rig = Rig::new("unversioned");
+    for (label, payload) in [
+        (
+            "v2",
+            r#"{"fleet.orders":{"v":2,"by":"a-newer-fleet","kind":"dispatch","at":"then"}}"#,
+        ),
+        (
+            "no-v",
+            r#"{"fleet.orders":{"by":"an-older-fleet","kind":"dispatch","at":"then"}}"#,
+        ),
+    ] {
+        let item = rig.graph.item(&format!("an item ordered at {label}"));
+        rig.graph
+            .store()
+            .set_orders(&item, payload, "another-fleet")
+            .expect("the order index lands");
+        let read = rig.graph.store().show(&item).expect("the item reads");
+        assert!(
+            read.has_orders_key && read.orders.is_none(),
+            "{label}: present and unreadable: {:?} {}",
+            read.orders,
+            read.document
+        );
+
+        let before = rig.graph.json(&item);
+        let seat = format!("s-unversioned-{label}");
+        let ring = StubRing::answering(RingOutcome::Delivered);
+        let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
+        let answer = rig.run(
+            &item,
+            Some(&seat),
+            std::slice::from_ref(&seat),
+            rig.graph.store(),
+            &ring,
+            &spawner,
+        );
+
+        assert_eq!(answer.code, Some(3), "{label}: {}", answer.why);
+        assert!(
+            answer.why.contains("`fleet.orders` this fleet cannot read")
+                && answer.why.contains("v 1"),
+            "{label}: the key and the version this fleet reads are named: {}",
+            answer.why
+        );
+        assert_eq!(
+            rig.graph.json(&item),
+            before,
+            "{label}: the item is untouched"
+        );
+        assert!(ring.calls().is_empty(), "{label}: nobody is rung");
+    }
+    assert_eq!(rig.events.count(), 0, "a could-not-tell appends nothing");
+}
+
+/// Another writer's bare `orders`, of any shape, and the bare `run` label are
+/// not fleet's: the item dispatches as an unordered one, and both are
+/// byte-identical afterwards (fleet-4j6 AC1, the dispatch).
+#[test]
+fn another_writers_orders_key_and_run_label_are_neither_read_nor_moved() {
+    let rig = Rig::new("foreign");
+    let seat = String::from("s-foreign");
+    let item = rig
+        .graph
+        .item("an item another tool keeps its own index on");
+    rig.graph
+        .store()
+        .set_metadata(&item, common::FOREIGN_ORDERS, "another-tool")
+        .expect("the other writer's key lands");
+    rig.graph.label(&item, common::FOREIGN_LABEL);
+    let before = common::foreign_of(rig.graph.store(), &item);
+    let read = rig.graph.store().show(&item).expect("the item reads");
+    assert!(
+        !read.has_orders_key && read.orders.is_none(),
+        "a bare `orders` reads as no order: {}",
+        read.document
+    );
+
+    let ring = StubRing::answering(RingOutcome::Delivered);
+    let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
+    let answer = rig.run(
+        &item,
+        Some(&seat),
+        std::slice::from_ref(&seat),
+        rig.graph.store(),
+        &ring,
+        &spawner,
+    );
+
+    assert_eq!(answer.code, None, "{}", answer.why);
+    assert_eq!(
+        index_of(&rig, &item).seat.as_deref(),
+        Some(seat.as_str()),
+        "fleet's own index names the seat"
+    );
+    assert_eq!(
+        common::foreign_of(rig.graph.store(), &item),
+        before,
+        "the other writer's key and label are byte-identical"
+    );
 }
 
 /// An epic is refused BY ITS TYPE and not by the ready list: the store calls an
@@ -667,6 +778,7 @@ fn a_read_back_that_disagrees_exits_three_with_both_values() {
     let bent = Doctored {
         inner: rig.graph.store(),
         assignee: Some(String::from("somebody-else")),
+        seat: None,
         append: None,
     };
 
@@ -689,7 +801,20 @@ fn a_read_back_that_disagrees_exits_three_with_both_values() {
         "the value wanted: {}",
         answer.why
     );
-    assert!(answer.why.contains("RERUN: bd update"), "{}", answer.why);
+    // THE REPAIR FOR THE FIELD THAT DISAGREED: a lost assignee is set again,
+    // and handing it the index write instead would leave it lost.
+    assert!(
+        answer.why.contains(&format!(
+            "RERUN: bd update {item} --assignee {seat} --actor {BY}"
+        )),
+        "the assignee's own repair: {}",
+        answer.why
+    );
+    assert!(
+        !answer.why.contains("--metadata"),
+        "and not the index's: {}",
+        answer.why
+    );
     assert!(
         ring.calls().is_empty(),
         "nothing is rung on a read-back that disagrees"
@@ -715,6 +840,59 @@ fn a_read_back_that_disagrees_exits_three_with_both_values() {
     assert_eq!(answer.code, None, "{}", answer.why);
 }
 
+/// The index's own disagreement gets the index's own repair: the whole
+/// `fleet.orders` object written again, and not the assignee's write.
+#[test]
+fn an_index_that_reads_back_wrong_is_handed_the_index_repair() {
+    let rig = Rig::new("disagree-index");
+    let item = rig.graph.item("a ready item whose index reads back wrong");
+    let seat = String::from("s-disagree-index");
+    let ring = StubRing::answering(RingOutcome::Delivered);
+    let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
+    let bent = Doctored {
+        inner: rig.graph.store(),
+        assignee: None,
+        seat: Some(String::from("somebody-else")),
+        append: None,
+    };
+
+    let answer = rig.run(
+        &item,
+        Some(&seat),
+        std::slice::from_ref(&seat),
+        &bent,
+        &ring,
+        &spawner,
+    );
+    assert_eq!(answer.code, Some(3), "{}", answer.why);
+    assert!(
+        answer.why.contains(&format!(
+            "{item} read back with fleet.orders.seat == somebody-else"
+        )),
+        "the field and the value read: {}",
+        answer.why
+    );
+    assert!(
+        answer.why.contains(&format!(
+            "RERUN: bd update {item} --metadata '{}' --actor {BY}",
+            dispatch::index(BY, "dispatch", Some(&seat), AT)
+        )),
+        "the index's own repair, versioned: {}",
+        answer.why
+    );
+    assert!(
+        answer.why.contains(r#""fleet.orders":{"#) && answer.why.contains(r#""v":1"#),
+        "the repair writes fleet's key at its version: {}",
+        answer.why
+    );
+    assert!(
+        !answer.why.contains("--assignee"),
+        "and not the assignee's: {}",
+        answer.why
+    );
+    assert!(ring.calls().is_empty(), "nobody is rung");
+}
+
 #[test]
 fn the_negative_control_catches_a_read_that_is_not_this_items() {
     let rig = Rig::new("control");
@@ -727,6 +905,7 @@ fn the_negative_control_catches_a_read_that_is_not_this_items() {
     let bent = Doctored {
         inner: rig.graph.store(),
         assignee: None,
+        seat: None,
         append: Some(control_token().to_string()),
     };
 

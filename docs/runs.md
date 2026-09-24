@@ -14,8 +14,9 @@ carried on by the controller when the answer or the work arrives.
   is the file name without its extension, whatever language the file is in.
 - **run**: one execution of a workflow, known by the id of its record item.
 - **run record**: the item `fleet run` files for the run in the project's
-  work graph. It carries the label `run`, its title is its own id, and it is
-  open while the run can still move.
+  work graph. It carries the label `fleet:run`, its title is its own id, and
+  it is open while the run can still move. An item labelled `run` and not
+  `fleet:run` is not a run record.
 - **run directory**: `runs/<run>/` under the machine directory, holding what
   the run is pinned to and what its process printed.
 - **pinned inputs**: the `--input` pairs and the pack's settings, written into
@@ -102,15 +103,17 @@ that holds it, else the runtime installer's `bin` — for Deno,
 
 In this order, once every check has passed:
 
-1. The run record, filed in the project's work graph with the label `run`
-   and a description naming the workflow, the pack and the project.
+1. The run record, filed in the project's work graph with the label
+   `fleet:run` and a description naming the workflow, the pack and the
+   project.
 2. The run directory `runs/<run>/` under the machine directory, holding
    `inputs.toml` (the workflow, the pack, the file, who ran it, when, the
    `[inputs]` and the `[config]` settings), `policy.toml` (a byte-for-byte copy
    of the `fleet.toml` in force) and `bundle` (what the pack's bundle command
    wrote).
 3. The hash, a sha256 over those three files, and the workflow, the pack and
-   the file, written to the run record's `run` metadata.
+   the file, written to the run record's `fleet.run` metadata, an object
+   carrying `"v": 1`.
 4. `run.started` on the event stream, carrying the run, the hash and the
    workflow.
 

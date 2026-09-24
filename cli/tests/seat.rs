@@ -290,7 +290,7 @@ impl Rig {
                 .unwrap_or_default()
                 .to_string(),
             row.get("metadata")
-                .and_then(|m| m.get("orders"))
+                .and_then(|m| m.get("fleet.orders"))
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         )

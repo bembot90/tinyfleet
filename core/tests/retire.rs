@@ -122,6 +122,58 @@ fn a_retire_leaves_what_the_seat_does_not_hold_under_an_open_order() {
     );
 }
 
+/// ANOTHER WRITER'S `orders` IS NOT AN ORDER: an item the retiring seat is
+/// assigned that carries a bare `orders` and no `fleet.orders` is neither
+/// named nor written, and the withdrawal of an item carrying both unsets
+/// fleet's key alone (fleet-4j6 AC2).
+#[test]
+fn a_retire_leaves_another_writers_orders_key_untouched() {
+    const THEIRS: &str = "fx-theirs";
+    let store = board();
+    store.seed(item(THEIRS, "open", SEAT, false));
+    for held in [THEIRS, HELD] {
+        store
+            .set_metadata(held, common::FOREIGN_ORDERS, "another-tool")
+            .expect("the other writer's key lands");
+    }
+    let before = [
+        common::foreign_of(&store, THEIRS),
+        common::foreign_of(&store, HELD),
+    ];
+
+    let held = retire::held(&store, SEAT).expect("the board answers");
+    assert_eq!(
+        held,
+        vec![HELD.to_string()],
+        "the query names fleet's order alone"
+    );
+    retire::withdraw(&store, &held, SEAT, BY).expect("the withdrawal lands");
+
+    let theirs = read(&store, THEIRS);
+    assert_eq!(
+        theirs.assignee.as_deref(),
+        Some(SEAT),
+        "{THEIRS} keeps its assignee"
+    );
+    assert!(
+        theirs.notes.is_none(),
+        "and carries no note: {:?}",
+        theirs.notes
+    );
+    assert!(
+        !read(&store, HELD).has_orders_key,
+        "fleet's own order is withdrawn"
+    );
+    assert_eq!(
+        [
+            common::foreign_of(&store, THEIRS),
+            common::foreign_of(&store, HELD),
+        ],
+        before,
+        "the other writer's key is byte-identical on both"
+    );
+}
+
 /// AN EPIC IS NEVER HELD, AND ITS ORDER IS STILL WITHDRAWN: dispatch and
 /// deliver do not count an epic as work the seat carries, but an order left
 /// on one is still an order standing against the name, and the next seat of

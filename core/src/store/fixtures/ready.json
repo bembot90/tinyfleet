@@ -1,34 +1,44 @@
 {
   "data": [
     {
-      "id": "fx-36d",
+      "id": "fx-5e1",
+      "title": "unreadable orders",
+      "description": "fleet.orders is a string",
+      "status": "open",
+      "priority": 2,
+      "issue_type": "task",
+      "assignee": "seat-1",
+      "owner": "fx@example.invalid",
+      "created_at": "2026-09-24T07:02:56Z",
+      "created_by": "rec",
+      "updated_at": "2026-09-24T07:02:59Z",
+      "metadata": {
+        "fleet.orders": "not an object"
+      },
+      "dependency_count": 0,
+      "dependent_count": 0,
+      "comment_count": 0
+    },
+    {
+      "id": "fx-g73",
       "title": "discovered source",
       "description": "a discovered-from link",
       "status": "open",
       "priority": 2,
       "issue_type": "bug",
       "owner": "fx@example.invalid",
-      "created_at": "2026-09-24T05:32:23Z",
+      "created_at": "2026-09-24T07:02:56Z",
       "created_by": "rec",
-      "updated_at": "2026-09-24T05:32:23Z",
-      "dependency_count": 0,
-      "dependent_count": 0,
-      "comment_count": 0
-    },
-    {
-      "id": "fx-zd1",
-      "title": "unreadable orders",
-      "description": "orders is a string",
-      "status": "open",
-      "priority": 2,
-      "issue_type": "task",
-      "assignee": "seat-1",
-      "owner": "fx@example.invalid",
-      "created_at": "2026-09-24T05:32:23Z",
-      "created_by": "rec",
-      "updated_at": "2026-09-24T05:32:26Z",
+      "updated_at": "2026-09-24T07:02:59Z",
       "metadata": {
-        "orders": "not an object"
+        "run": "another tool",
+        "orders": {
+          "by": 7,
+          "kind": [
+            "someone",
+            "else"
+          ]
+        }
       },
       "dependency_count": 0,
       "dependent_count": 0,

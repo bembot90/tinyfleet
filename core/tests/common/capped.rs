@@ -29,7 +29,7 @@ pub struct Held<'a> {
 ///   is that seat's;
 /// - `show <id>` that row;
 /// - `update <id>` only as a withdrawal fenced on `seat` (`--if-assignee
-///   <seat>`, then `--assignee ''` with `--unset-metadata orders`), which leaves
+///   <seat>`, then `--assignee ''` with `--unset-metadata fleet.orders`), which leaves
 ///   the row open, unassigned and unordered;
 /// - `note` as a write it accepts and does not keep.
 pub fn capped_bd(dir: &Fixture, seat: &str, rows: &[Held], log: &Path) -> PathBuf {
@@ -38,7 +38,7 @@ pub fn capped_bd(dir: &Fixture, seat: &str, rows: &[Held], log: &Path) -> PathBu
     for row in rows {
         let orders = if row.ordered {
             format!(
-                ",\"metadata\":{{\"orders\":{{\"by\":\"an-architect\",\"kind\":\"dispatch\",\
+                ",\"metadata\":{{\"fleet.orders\":{{\"v\":1,\"by\":\"an-architect\",\"kind\":\"dispatch\",\
                  \"seat\":\"{seat}\",\"at\":\"2026-09-14T10:40:39Z\"}}}}"
             )
         } else {
@@ -76,13 +76,14 @@ pub fn capped_bd(dir: &Fixture, seat: &str, rows: &[Held], log: &Path) -> PathBu
              \x20 printf ']\\n' ;;\n\
              show) printf '['; cat \"$items/$2.json\"; printf ']\\n' ;;\n\
              update)\n\
-             \x20 case \" $* \" in *' --if-assignee {seat} --assignee  --unset-metadata orders '*) ;; *) exit 1 ;; esac\n\
+             \x20 case \" $* \" in *' --if-assignee {seat} --assignee  --unset-metadata {orders_key} '*) ;; *) exit 1 ;; esac\n\
              \x20 printf '{{\"id\":\"%s\",\"status\":\"open\"}}' \"$2\" > \"$items/$2.json\" ;;\n\
              note) ;;\n\
              *) echo 'the fake answers list, show, update and note only' >&2; exit 1 ;;\n\
              esac\n",
             log = log.display(),
             items = items.display(),
+            orders_key = fleet_core::store::keys::ORDERS,
         ),
     )
     .expect("the fake is written");

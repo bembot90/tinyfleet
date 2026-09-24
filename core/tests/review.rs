@@ -274,7 +274,7 @@ fn a_delivered_item(store: &dyn Store, title: &str, builder: &str) -> String {
         .set_orders(
             &item,
             &format!(
-                r#"{{"orders": {{"by": "an-architect", "kind": "dispatch", "seat": "{builder}", "at": "{AT}"}}}}"#
+                r#"{{"fleet.orders": {{"v": 1, "by": "an-architect", "kind": "dispatch", "seat": "{builder}", "at": "{AT}"}}}}"#
             ),
             "an-architect",
         )
@@ -640,6 +640,74 @@ fn a_return_writes_the_findings_count_first_and_hands_the_item_back() {
     assert_eq!(rung.len(), 1);
     assert_eq!(rung[0].0, builder);
     assert!(rung[0].1.contains(&item), "{:?}", rung);
+}
+
+/// Another writer's bare `orders` — whose `seat` names a seat fleet never
+/// ordered — and the bare `run` label are not fleet's: a return goes to the
+/// seat fleet's own index names, an accept is written as any other, and both
+/// ride through byte-identical (fleet-4j6 AC1, the review).
+#[test]
+fn another_writers_orders_key_and_run_label_ride_through_a_review() {
+    let scratch = &store();
+    let builder = "s-foreign";
+    let returned = a_delivered_item(&scratch.store, "an item to return", builder);
+    let accepted = a_delivered_item(&scratch.store, "an item to accept", builder);
+    for item in [&returned, &accepted] {
+        scratch
+            .store
+            .set_metadata(item, common::FOREIGN_ORDERS, "another-tool")
+            .expect("the other writer's key lands");
+        scratch.label(item, common::FOREIGN_LABEL);
+    }
+    let before = [
+        common::foreign_of(&scratch.store, &returned),
+        common::foreign_of(&scratch.store, &accepted),
+    ];
+    let findings = file(scratch, "foreign", "F1 the one finding.\n");
+    let ring = StubRing::new();
+
+    let (said, code) = run(
+        scratch,
+        &returned,
+        Mode::Return(&findings),
+        &StubGit::answering(a_diff()),
+        &ring,
+    );
+    assert_eq!(code, 0, "{}{}", said.err, said.stop);
+    assert_eq!(
+        scratch
+            .store
+            .show(&returned)
+            .expect("the item reads")
+            .assignee
+            .as_deref(),
+        Some(builder),
+        "the return goes to the seat fleet's index names"
+    );
+    assert_eq!(ring.calls()[0].0, builder, "and that seat is rung");
+
+    let (said, code) = run(
+        scratch,
+        &accepted,
+        Mode::Land,
+        &StubGit::answering(a_diff()),
+        &StubRing::new(),
+    );
+    assert_eq!(code, 0, "{}{}", said.err, said.stop);
+    assert!(
+        review::last_verdict(&notes(&scratch.store, &accepted))
+            .is_some_and(|verdict| verdict.starts_with("ACCEPTED")),
+        "the accept is written"
+    );
+
+    assert_eq!(
+        [
+            common::foreign_of(&scratch.store, &returned),
+            common::foreign_of(&scratch.store, &accepted),
+        ],
+        before,
+        "the other writer's key and label are byte-identical"
+    );
 }
 
 /// The return's second write is read back like its first: an assignee that

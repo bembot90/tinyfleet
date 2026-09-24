@@ -723,6 +723,25 @@ impl fleet_core::item::Events for StubEvents {
     }
 }
 
+/// Another writer's order index, of the kind a board fleet is added to may
+/// already carry: a bare `orders` in a shape fleet never wrote, whose `seat` is
+/// a seat name a misreading would route work to.
+pub const FOREIGN_ORDERS: &str =
+    r#"{"orders":{"seat":"another-tools-seat","by":7,"kind":["theirs",{"nested":true}]}}"#;
+
+/// Another writer's label, the bare word fleet's run label once was.
+pub const FOREIGN_LABEL: &str = "run";
+
+/// The item's bare `orders` key and its labels, as the store answers them: what
+/// an arm holds byte-identical across a verb that must neither read nor move
+/// them.
+pub fn foreign_of(store: &dyn Store, item: &str) -> (String, Vec<String>) {
+    let read = store.show(item).expect("the item reads");
+    let document: serde_json::Value =
+        serde_json::from_str(&read.document).expect("the document is JSON");
+    (document["metadata"]["orders"].to_string(), read.labels)
+}
+
 /// The payload's keys, sorted, against the table core declares for that kind.
 ///
 /// The assertion every verb's arm makes about its own event: a key the verb

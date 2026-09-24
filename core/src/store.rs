@@ -27,6 +27,7 @@ use crate::process::{deadline_cause, run_bounded};
 
 mod bd_cli;
 mod bd_wire;
+pub mod keys;
 
 /// The binary every write and read goes through when the caller names no
 /// other, resolved on the process's own `PATH`.
@@ -76,11 +77,12 @@ pub struct Item {
     pub status: String,
     pub assignee: Option<String>,
     pub notes: Option<String>,
-    /// `metadata.orders`, as the store holds it.
+    /// `metadata["fleet.orders"]` ([`keys::ORDERS`]), as the store holds it.
     pub orders: Option<Orders>,
-    /// Whether `metadata` carried an `orders` key at all, which `orders` alone
-    /// cannot say: a key holding something that is not an object is present and
-    /// unreadable, and a withdrawal has to tell that from absent.
+    /// Whether `metadata` carried a `fleet.orders` key at all, which `orders`
+    /// alone cannot say: a key holding something that is not an object at
+    /// [`keys::VERSION`] is present and unreadable, and a withdrawal has to
+    /// tell that from absent.
     pub has_orders_key: bool,
     /// The open items that block this one by a type bd's ready set honours —
     /// one of `BLOCKING` — by id.
@@ -90,9 +92,10 @@ pub struct Item {
     pub item_type: String,
     /// The item's OWN labels and no parent's, which is what the store answers.
     pub labels: Vec<String>,
-    /// `metadata.run`, as free JSON, for a run's record item. A top-level key
-    /// of its own, which is what lets bd's top-level merge leave the item's
-    /// other keys standing.
+    /// `metadata["fleet.run"]` ([`keys::RUN`]), as free JSON and as the store
+    /// holds it, for a run's record item — its version is the reader's to
+    /// check, through [`keys::versioned`]. A top-level key of its own, which is
+    /// what lets bd's top-level merge leave the item's other keys standing.
     pub run: Option<serde_json::Value>,
     /// The decoded document, as text. The negative control reads this, so the
     /// control asks the SAME answer for a token nothing wrote.
@@ -129,11 +132,12 @@ pub struct AssignedItem {
     /// session's start carries beside the id.
     pub title: String,
     pub status: String,
-    /// Whether `metadata` carried an `orders` key, read off THIS ROW and not
-    /// off a second call: the listing answers each row's metadata, so a caller
-    /// asking which of a seat's items are ordered pays one call and not one per
-    /// row. The same third answer [`Item::has_orders_key`] carries — a key
-    /// holding something that is not an object is present and unreadable.
+    /// Whether `metadata` carried a `fleet.orders` key, read off THIS ROW and
+    /// not off a second call: the listing answers each row's metadata, so a
+    /// caller asking which of a seat's items are ordered pays one call and not
+    /// one per row. The same third answer [`Item::has_orders_key`] carries — a key
+    /// holding something that is not an object at [`keys::VERSION`] is present
+    /// and unreadable.
     pub has_orders_key: bool,
     /// The type, as the listing spells it (`issue_type`), read off this row.
     pub item_type: String,
@@ -217,11 +221,12 @@ pub trait Store {
 
     fn note(&self, item: &str, text: &str, by: &str) -> Result<(), StoreError>;
 
-    /// `metadata.orders`, written as one object that replaces the key whole.
+    /// `metadata["fleet.orders"]`, written as one object that replaces the key
+    /// whole.
     fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError>;
 
     /// One metadata object written by the same call `set_orders` makes, for a
-    /// top-level key that is not `orders`.
+    /// top-level key that is not `fleet.orders`.
     ///
     /// It is the SIBLING of that method and not a generalisation of it: the
     /// write MERGES at the top level — measured on bd 1.3.0, where a second
@@ -627,16 +632,20 @@ fn sole(value: serde_json::Value) -> Option<serde_json::Value> {
 }
 
 /// The order index off a document's metadata, and whether the key was there at
-/// all. The metadata is bd's raw JSON and not a typed map, so an `orders`
-/// holding something that is not an object still reads as present.
+/// all. The metadata is bd's raw JSON and not a typed map, so a `fleet.orders`
+/// holding something that is not an object — or an object at a version this
+/// binary does not know — still reads as present, and never as an order.
+///
+/// ONLY FLEET'S KEY. A bare `orders` is some other writer's, whatever shape it
+/// holds, and an item carrying one and no `fleet.orders` reads as unordered.
 fn orders_of(metadata: Option<&serde_json::Value>) -> (Option<Orders>, bool) {
-    let Some(held) = metadata.and_then(|m| m.get("orders")) else {
+    let Some(held) = metadata.and_then(|m| m.get(keys::ORDERS)) else {
         return (None, false);
     };
     if held.is_null() {
         return (None, false);
     }
-    let Some(table) = held.as_object() else {
+    let Ok(table) = keys::versioned(keys::ORDERS, held) else {
         return (None, true);
     };
     let read = |key: &str| table.get(key).and_then(|v| v.as_str()).map(str::to_string);
@@ -820,15 +829,22 @@ impl Store for Bd {
     }
 
     fn unset_orders(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&["update", item, "--unset-metadata", "orders", "--actor", by])
+        self.wrote(&[
+            "update",
+            item,
+            "--unset-metadata",
+            keys::ORDERS,
+            "--actor",
+            by,
+        ])
     }
 
     /// Both flags on one `update`, which bd takes: the empty assignee is what
     /// clears the field, measured on 1.3.0 — the one call left no `assignee`
-    /// and no `orders`, and the `run` key beside it standing. `--if-assignee`
-    /// names the retiring seat, which is what bd 1.3.0 takes from a retirer on
-    /// an item that seat marked `in_progress` — measured, where the same call
-    /// without it is refused.
+    /// and no `fleet.orders`, and the `fleet.run` key beside it standing.
+    /// `--if-assignee` names the retiring seat, which is what bd 1.3.0 takes
+    /// from a retirer on an item that seat marked `in_progress` — measured,
+    /// where the same call without it is refused.
     fn withdraw_order(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
         self.fenced(
             &[
@@ -839,7 +855,7 @@ impl Store for Bd {
                 "--assignee",
                 "",
                 "--unset-metadata",
-                "orders",
+                keys::ORDERS,
                 "--actor",
                 by,
             ],
@@ -924,11 +940,12 @@ pub fn item_from(id: &str, row: &serde_json::Value) -> Result<Item, StoreError> 
         labels: wire.labels.unwrap_or_default(),
         // The same read `orders_of` makes, one key over: absent when the key
         // is absent, so a run that wrote nothing is told from one that wrote
-        // an empty object.
+        // an empty object. A bare `run` is some other writer's and reads as
+        // no run at all.
         run: wire
             .metadata
             .as_ref()
-            .and_then(|m| m.get("run"))
+            .and_then(|m| m.get(keys::RUN))
             .filter(|held| !held.is_null())
             .cloned(),
         id: wire.id.unwrap_or_else(|| id.to_string()),

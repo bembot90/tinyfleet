@@ -44,7 +44,7 @@ reason so a dropped row is visible in the list of what will not fly:
    load-bearing: the default answers a hundred rows and a row past that is
    invisible.
 4. **An epic** — never fed; its children are rows of their own.
-5. **Already in flight** — an `orders` key on the item, an `On flight` note
+5. **Already in flight** — a `fleet.orders` key on the item, an `On flight` note
    with no `LEFT FLIGHT` after it, or an open run whose record names it:
    `ASSIGNED`. Boarding it would feed work someone is carrying.
 6. **Held** — a `HOLD` line on the item or on its parent epic, in the title,

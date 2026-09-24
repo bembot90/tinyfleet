@@ -305,15 +305,15 @@ pub fn held_item(store: &dyn Store, by: &str, named: Option<&str>) -> Result<Str
 pub(crate) struct Holds {
     /// Every open row assigned to the seat.
     pub(crate) open: Vec<AssignedItem>,
-    /// Of those, every one that carries an orders key, whatever its type: the
-    /// orders standing against the seat's name.
+    /// Of those, every one that carries a `fleet.orders` key, whatever its
+    /// type: the orders standing against the seat's name.
     pub(crate) ordered: Vec<AssignedItem>,
     /// Of those, every one that is not an epic: what the seat HOLDS.
     pub(crate) held: Vec<AssignedItem>,
 }
 
 /// THE ONE READING of what a seat holds: an open item assigned to it that
-/// carries an orders key and is not an epic. [`held_item`] and dispatch's
+/// carries a `fleet.orders` key and is not an epic. [`held_item`] and dispatch's
 /// one-item-at-a-time refusal both ask it, and an item one of them counted and
 /// the other did not is a seat refused a dispatch over work nobody gave it — a
 /// bug assigned a month ago and never ordered, an epic still naming an old

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use crate::store::{AssignedItem, Item, NewItem, Orders, Store, StoreError};
+use crate::store::{keys, AssignedItem, Item, NewItem, Orders, Store, StoreError};
 
 /// Names one board's directory apart from the next in the same process.
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -266,20 +266,22 @@ impl FakeStore {
 }
 
 /// The metadata a seeded item carries in its own fields, as the object a read
-/// decodes from. `has_orders_key` with no orders is a key holding something
-/// that is not an object, which is a third answer and not an absence.
+/// decodes from, under fleet's own keys. `has_orders_key` with no orders is a
+/// key holding something that is not an object, which is a third answer and
+/// not an absence. A seeded run is written as the store would hold it, so a
+/// seed that wants one readable carries its own version.
 fn seeded_metadata(item: &Item) -> serde_json::Map<String, serde_json::Value> {
     let mut object = serde_json::Map::new();
     if let Some(run) = &item.run {
-        object.insert(String::from("run"), run.clone());
+        object.insert(String::from(keys::RUN), run.clone());
     }
     match (&item.orders, item.has_orders_key) {
         (Some(orders), _) => {
-            object.insert(String::from("orders"), orders_json(orders));
+            object.insert(String::from(keys::ORDERS), orders_json(orders));
         }
         (None, true) => {
             object.insert(
-                String::from("orders"),
+                String::from(keys::ORDERS),
                 serde_json::Value::String(String::new()),
             );
         }
@@ -300,6 +302,7 @@ fn orders_json(orders: &Orders) -> serde_json::Value {
             index.insert(String::from(key), serde_json::Value::String(value.clone()));
         }
     }
+    index.insert(String::from(keys::VERSION_FIELD), keys::VERSION.into());
     serde_json::Value::Object(index)
 }
 
@@ -575,7 +578,7 @@ impl Store for FakeStore {
                     // write has removed answers here as the real listing does.
                     has_orders_key: self
                         .metadata_of(item)
-                        .get("orders")
+                        .get(keys::ORDERS)
                         .is_some_and(|held| !held.is_null()),
                     item_type: item.item_type.clone(),
                 });
@@ -621,7 +624,7 @@ impl Store for FakeStore {
     fn unset_orders(&self, item: &str, by: &str) -> Result<(), StoreError> {
         self.log(format!("unset_orders {item} {by}"))?;
         self.metadata_write(item, |object| {
-            object.remove("orders");
+            object.remove(keys::ORDERS);
         })
     }
 
@@ -633,7 +636,7 @@ impl Store for FakeStore {
         self.held_by(item, seat)?;
         self.moving(item, |held| held.assignee = Some(String::new()))?;
         self.metadata_write(item, |object| {
-            object.remove("orders");
+            object.remove(keys::ORDERS);
         })
     }
 

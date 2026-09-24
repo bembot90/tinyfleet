@@ -52,7 +52,7 @@ use crate::pack::{self, Runtime};
 use crate::policy;
 use crate::resolve::Layer;
 use crate::settings;
-use crate::store::{Item, NewItem, Store, StoreError};
+use crate::store::{keys, Item, NewItem, Store, StoreError};
 
 /// Where the run directories go, under the machine directory.
 pub const RUNS: &str = "runs";
@@ -84,14 +84,13 @@ pub const DOCTOR_TOML: &str = "doctor.toml";
 pub const PACK_DIR: &str = "FLEET_PACK_DIR";
 
 /// The label a run's record item carries, and the only mark that tells one from
-/// every other item in the store.
-pub const LABEL: &str = "run";
+/// every other item in the store. Namespaced, because a board fleet is added
+/// to may already label its own items `run`, and a bare `run` means nothing to
+/// fleet.
+pub const LABEL: &str = "fleet:run";
 
 /// The store's own word for the record item's type.
 pub const RECORD_TYPE: &str = "task";
-
-/// The metadata key the run's own object lives under.
-pub const OBJECT: &str = "run";
 
 /// The title the record carries between the create and the retitle.
 pub const UNTITLED: &str = "a run being filed";
@@ -389,11 +388,12 @@ pub fn rerun(out: &mut dyn Write, again: &Again, wiring: &Wiring) -> Result<Ende
             again.run
         )));
     }
-    let object = record.run.ok_or_else(|| {
+    let object = object_of(&record)?.ok_or_else(|| {
         Stop::refused(format!(
-            "{} carries no `run` object — a re-run is over a run this fleet opened, and the \
+            "{} carries no `{}` object — a re-run is over a run this fleet opened, and the \
              record does not say it opened one",
-            again.run
+            again.run,
+            keys::RUN
         ))
     })?;
     let pinned = |key: &str| -> Result<String, Stop> {
@@ -403,9 +403,10 @@ pub fn rerun(out: &mut dyn Write, again: &Again, wiring: &Wiring) -> Result<Ende
             .map(str::to_string)
             .ok_or_else(|| {
                 Stop::refused(format!(
-                    "{}'s `run` object names no {key} — the pins a re-run reads are the ones the \
+                    "{}'s `{}` object names no {key} — the pins a re-run reads are the ones the \
                      open wrote",
-                    again.run
+                    again.run,
+                    keys::RUN
                 ))
             })
     };
@@ -1179,16 +1180,13 @@ fn write_the_pins(
     order: &Order,
     wiring: &Wiring,
 ) -> Result<(), Stop> {
-    let payload = serde_json::json!({
-        OBJECT: {
-            "hash": hash,
-            "workflow": resolved.name,
-            "pack": resolved.pack.name,
-            "entry": resolved.relative,
-            "started_at": order.at,
-        }
-    })
-    .to_string();
+    let mut object = serde_json::Map::new();
+    object.insert("hash".into(), hash.into());
+    object.insert("workflow".into(), resolved.name.clone().into());
+    object.insert("pack".into(), resolved.pack.name.clone().into());
+    object.insert("entry".into(), resolved.relative.clone().into());
+    object.insert("started_at".into(), order.at.into());
+    let payload = keys::stamped(keys::RUN, object).to_string();
     wiring
         .store
         .set_metadata(id, &payload, order.by)
@@ -1202,7 +1200,7 @@ fn write_the_pins(
         })?;
 
     let read_back = read(wiring.store, id)?;
-    let object = read_back.run.as_ref();
+    let object = object_of(&read_back)?;
     let field = |key: &str| {
         object
             .and_then(|object| object.get(key))
@@ -1577,6 +1575,24 @@ fn read(store: &dyn Store, id: &str) -> Result<Item, Stop> {
     store
         .show(id)
         .map_err(|e: StoreError| Stop::could_not_tell(format!("{id} could not be read: {e}")))
+}
+
+/// The run's own object off its record, at the one version this binary reads,
+/// or `None` where the record carries no `fleet.run` at all.
+///
+/// A key at another version, or at none, is could-not-tell naming the key and
+/// the version: a run a newer fleet opened is not executed again, or read
+/// back, as though this binary knew its shape.
+fn object_of(record: &Item) -> Result<Option<&serde_json::Map<String, serde_json::Value>>, Stop> {
+    let Some(held) = record.run.as_ref() else {
+        return Ok(None);
+    };
+    keys::versioned(keys::RUN, held).map(Some).map_err(|why| {
+        Stop::could_not_tell(format!(
+            "{}'s {why} — this fleet will not guess at a run's shape it does not know",
+            record.id
+        ))
+    })
 }
 
 fn disagrees(id: &str, key: &str, wrote: &str, read_back: &str) -> Stop {

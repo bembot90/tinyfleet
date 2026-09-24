@@ -585,13 +585,18 @@ fn the_front_half_pins_the_inputs_the_bundle_and_one_hash_over_all_three() {
 
     let record = rig.document(id);
     assert_eq!(
-        record["metadata"]["run"]["hash"].as_str(),
+        record["metadata"]["fleet.run"]["hash"].as_str(),
         Some(hash),
         "the hash is on the record item: {record}"
     );
     assert_eq!(
-        record["metadata"]["run"]["workflow"].as_str(),
+        record["metadata"]["fleet.run"]["workflow"].as_str(),
         Some(workflow.as_str())
+    );
+    assert_eq!(
+        record["metadata"]["fleet.run"]["v"].as_u64(),
+        Some(fleet_core::store::keys::VERSION),
+        "the run's object carries its version: {record}"
     );
     assert_eq!(
         record["issue_type"].as_str(),
@@ -1873,6 +1878,56 @@ fn a_cancelled_waiting_run_is_closed_announced_and_never_executed_again() {
         stop.message
     );
     none_of(&rig, from, fleet_core::item::RUN_STARTED);
+}
+
+/// A record whose `fleet.run` is at a version this binary does not know, or at
+/// none, is could-not-tell naming the key and the version, and is never
+/// executed again as though its shape were known — whatever another writer's
+/// bare `run` beside it holds (fleet-4j6).
+#[test]
+fn a_run_object_at_an_unknown_version_is_could_not_tell_and_never_executed() {
+    use fleet_core::store::Store;
+    let rig = Rig::new(
+        "rerun-version",
+        &Pack::running(WAITS),
+        &cap_that_is_not_the_subject(),
+    );
+    let out = rig.run(&["run", &rig.workflow(ONE), "--by", BY]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let (id, _) = started_line(&out);
+    let store = fleet_core::store::Bd::at(&rig.project);
+    let pinned = rig.document(&id)["metadata"]["fleet.run"].clone();
+
+    for (found, object) in [("v 2", Some(2)), ("no v", None)] {
+        let mut written = pinned.clone();
+        match object {
+            Some(v) => written["v"] = serde_json::json!(v),
+            None => {
+                written
+                    .as_object_mut()
+                    .expect("the run's object is an object")
+                    .remove("v");
+            }
+        }
+        let payload = serde_json::json!({ "fleet.run": written, "run": pinned }).to_string();
+        store
+            .set_metadata(&id, &payload, "a-newer-fleet")
+            .expect("the object is rewritten");
+
+        let from = rig.stream_length();
+        let stop = rerun_in_this_process(&rig, &id).expect_err("the run is not executed");
+        assert_eq!(stop.code, 3, "{found}: {}", stop.message);
+        let named = match object {
+            Some(v) => format!("`fleet.run` carries v {v}, and this fleet reads v 1"),
+            None => String::from("`fleet.run` carries no v, and this fleet reads v 1"),
+        };
+        assert!(
+            stop.message.contains(&named),
+            "{found}: the key and the version are named: {}",
+            stop.message
+        );
+        none_of(&rig, from, fleet_core::item::RUN_STARTED);
+    }
 }
 
 /// One run parked on a real store the way the controller's run pass leaves one

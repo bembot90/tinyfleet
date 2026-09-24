@@ -35,7 +35,8 @@ pub struct CliError {
 /// The FIXTURES were recorded from bd 1.3.0 on a scratch board — `bd init` in
 /// a temporary directory, five items, three dependencies (an open `blocks`, a
 /// closed `blocks` and a `discovered-from`), metadata holding an order index
-/// and a run on one item and an `orders` string on another, and a gate — with
+/// and a run on one item, a `fleet.orders` string on another and a foreign
+/// bare `orders` and `run` on a third, and a gate — with
 /// `BD_JSON_ENVELOPE=1`, the way every call the adapter makes is sent. Moving
 /// the pin re-records them.
 #[cfg(test)]
@@ -167,7 +168,7 @@ mod tests {
         assert_eq!(item.item_type, "task");
         assert_eq!(item.assignee.as_deref(), Some("seat-1"));
         assert_eq!(item.notes.as_deref(), Some("a note on downstream"));
-        assert_eq!(item.labels, vec!["fleet", "run"]);
+        assert_eq!(item.labels, vec!["fleet", "fleet:run"]);
         assert_eq!(item.blockers, vec![dependency_titled("upstream open")]);
         assert!(item.has_orders_key);
         assert_eq!(
@@ -181,7 +182,7 @@ mod tests {
         );
         assert_eq!(
             item.run,
-            Some(serde_json::json!({ "ok": true, "steps": [1, 2] }))
+            Some(serde_json::json!({ "v": 1, "ok": true, "steps": [1, 2] }))
         );
         assert!(
             item.id.starts_with("fx-"),
@@ -191,7 +192,9 @@ mod tests {
     }
 
     /// The three states of the order index, off bd 1.3.0's answers where it
-    /// has them: an object, a key holding no object, and no key at all.
+    /// has them: an object, a key holding no object, and no fleet key at all —
+    /// which is what a row holding only another writer's bare `orders` and
+    /// `run` answers.
     #[test]
     fn an_orders_key_holding_no_object_is_present_and_unreadable() {
         let row = shown("fx", answer(SHOW_UNREADABLE_ORDERS), "").expect("the item is there");
@@ -202,6 +205,10 @@ mod tests {
             .into_iter()
             .find(|row| row["title"] == "discovered source")
             .expect("the recorded ready set holds the discovered source");
+        assert!(
+            bare["metadata"]["orders"].is_object() && bare["metadata"]["run"].is_string(),
+            "the discovered source carries another writer's bare keys: {bare}"
+        );
         let item = item_from("fx", &bare).expect("a ready row decodes as a show row");
         assert_eq!(
             (item.orders, item.has_orders_key, item.run),

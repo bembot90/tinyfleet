@@ -195,10 +195,10 @@ pub fn print(
 
 /// The brief for one item, read out of the store and printed.
 ///
-/// The order INDEX is the gate — `metadata.orders`, the reading dispatch,
-/// deliver, review and retire all take: an item carrying none has not been
-/// given to anybody, and a brief for it would tell a seat it may begin when
-/// nothing said so. The notes are never searched for it, because a withdrawal
+/// The order INDEX is the gate — `metadata["fleet.orders"]`, the reading
+/// dispatch, deliver, review and retire all take: an item carrying none has not
+/// been given to anybody, and a brief for it would tell a seat it may begin
+/// when nothing said so. The notes are never searched for it, because a withdrawal
 /// unsets the index and leaves the order note standing.
 ///
 /// The order the brief prints is rendered from the index, through the template

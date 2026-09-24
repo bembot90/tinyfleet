@@ -27,7 +27,8 @@ mod common;
 use std::path::Path;
 
 use common::shared_store;
-use fleet_core::store::{Bd, NewItem, Store, StoreError};
+use fleet_core::item::dispatch;
+use fleet_core::store::{keys, Bd, NewItem, Store, StoreError};
 use fleet_core::test_support::Board;
 
 const BY: &str = "the-contract";
@@ -50,6 +51,7 @@ const CHECKS: &[(&str, Check)] = &[
     ("set_orders then unset_orders", orders),
     ("hand_over and withdraw_order's holder fence", fenced),
     ("set_metadata's merge", metadata_merge),
+    ("fleet.orders and fleet.run keep each other", fleet_keys),
     ("gate, open_gates, resolve_gate", gates),
     ("close", close),
     ("export", export),
@@ -205,7 +207,7 @@ fn orders(store: &dyn Store, _: &Path, which: &str) {
     store
         .set_orders(
             &item,
-            r#"{"orders":{"by":"an-architect","kind":"dispatch","seat":"a-seat","at":"2026-09-13T00:00:00Z"}}"#,
+            r#"{"fleet.orders":{"v":1,"by":"an-architect","kind":"dispatch","seat":"a-seat","at":"2026-09-13T00:00:00Z"}}"#,
             BY,
         )
         .expect("the order index lands");
@@ -235,7 +237,7 @@ fn fenced(store: &dyn Store, _: &Path, which: &str) {
         .assign(&item, "a-seat", BY)
         .expect("the seat holds it");
     store
-        .set_orders(&item, r#"{"orders":{"seat":"a-seat"}}"#, BY)
+        .set_orders(&item, r#"{"fleet.orders":{"v":1,"seat":"a-seat"}}"#, BY)
         .expect("the order index lands");
 
     match store.withdraw_order(&item, "another-seat", BY) {
@@ -291,7 +293,7 @@ fn metadata_merge(store: &dyn Store, _: &Path, which: &str) {
         .set_metadata(&item, r#"{"a_prior_key":{"kept":true}}"#, BY)
         .expect("the first key lands");
     store
-        .set_metadata(&item, r#"{"run":{"items":["fx-one"]}}"#, BY)
+        .set_metadata(&item, r#"{"fleet.run":{"v":1,"items":["fx-one"]}}"#, BY)
         .expect("the second key lands");
 
     let read = store.show(&item).expect("the item reads");
@@ -302,23 +304,109 @@ fn metadata_merge(store: &dyn Store, _: &Path, which: &str) {
     );
     assert_eq!(
         read.run,
-        Some(serde_json::json!({ "items": ["fx-one"] })),
+        Some(serde_json::json!({ "v": 1, "items": ["fx-one"] })),
         "{which}: and the key it wrote is there"
     );
 
     store
-        .set_metadata(&item, r#"{"run":{"hash":"deadbeef"}}"#, BY)
+        .set_metadata(&item, r#"{"fleet.run":{"v":1,"hash":"deadbeef"}}"#, BY)
         .expect("a second write of the same key lands");
     let read = store.show(&item).expect("the item reads");
     assert_eq!(
         read.run,
-        Some(serde_json::json!({ "hash": "deadbeef" })),
+        Some(serde_json::json!({ "v": 1, "hash": "deadbeef" })),
         "{which}: one key's own object is REPLACED, not merged into"
     );
     assert!(
         read.document.contains("a_prior_key"),
         "{which}: the top level still merged: {}",
         read.document
+    );
+}
+
+/// A run's object, as the run's own writer stamps it.
+fn a_run_object(hash: &str) -> String {
+    let mut object = serde_json::Map::new();
+    object.insert(String::from("hash"), hash.into());
+    keys::stamped(keys::RUN, object).to_string()
+}
+
+/// FLEET'S TWO KEYS, EACH WITH ITS OWN WRITER, KEEP EACH OTHER (fleet-4j6):
+/// the run's object and the order index are dotted top-level keys, so a write
+/// of either — and the order's withdrawal — leaves the other standing, and
+/// another writer's bare `orders` beside them is neither read nor removed.
+fn fleet_keys(store: &dyn Store, _: &Path, which: &str) {
+    let item = filed(store, "an item carrying both of fleet's keys");
+    let foreign = r#"{"orders":{"seat":"another-tools-seat","by":7}}"#;
+    let foreign_of = |read: &fleet_core::store::Item| {
+        let document: serde_json::Value =
+            serde_json::from_str(&read.document).expect("the document is JSON");
+        document["metadata"]["orders"].clone()
+    };
+
+    store
+        .set_metadata(&item, &a_run_object("h1"), BY)
+        .expect("the run's object lands");
+    store
+        .set_orders(
+            &item,
+            &dispatch::index("an-architect", dispatch::KIND, Some("a-seat"), "then"),
+            BY,
+        )
+        .expect("the order index lands");
+    let read = store.show(&item).expect("the item reads");
+    assert_eq!(
+        read.run,
+        Some(serde_json::json!({ "v": 1, "hash": "h1" })),
+        "{which}: the index's write kept the run's object: {}",
+        read.document
+    );
+    assert_eq!(
+        read.orders.and_then(|index| index.seat).as_deref(),
+        Some("a-seat"),
+        "{which}: and the index reads at its version"
+    );
+
+    store
+        .set_metadata(&item, &a_run_object("h2"), BY)
+        .expect("the run's object is rewritten");
+    store
+        .set_metadata(&item, foreign, "another-tool")
+        .expect("another writer's key lands");
+    let read = store.show(&item).expect("the item reads");
+    assert_eq!(
+        read.run,
+        Some(serde_json::json!({ "v": 1, "hash": "h2" })),
+        "{which}: the run's own write replaced its object"
+    );
+    assert_eq!(
+        read.orders.and_then(|index| index.seat).as_deref(),
+        Some("a-seat"),
+        "{which}: and kept the index, which the bare `orders` beside it is not: {}",
+        read.document
+    );
+
+    store
+        .assign(&item, "a-seat", BY)
+        .expect("the seat holds it");
+    store
+        .withdraw_order(&item, "a-seat", BY)
+        .expect("the holder's withdraw lands");
+    let read = store.show(&item).expect("the item reads");
+    assert!(
+        !read.has_orders_key,
+        "{which}: the order is withdrawn: {}",
+        read.document
+    );
+    assert_eq!(
+        read.run,
+        Some(serde_json::json!({ "v": 1, "hash": "h2" })),
+        "{which}: and the run's object stands"
+    );
+    assert_eq!(
+        foreign_of(&read),
+        serde_json::json!({ "seat": "another-tools-seat", "by": 7 }),
+        "{which}: and so does the other writer's key"
     );
 }
 
@@ -433,6 +521,11 @@ fn a_fenced_write_lands_only_while_the_holder_it_names_holds_the_item() {
 #[test]
 fn a_metadata_write_merges_at_the_top_level_and_replaces_one_keys_object_whole() {
     in_memory("contract-metadata", metadata_merge);
+}
+
+#[test]
+fn fleet_orders_and_fleet_run_keep_each_other_through_every_write() {
+    in_memory("contract-fleet-keys", fleet_keys);
 }
 
 #[test]
