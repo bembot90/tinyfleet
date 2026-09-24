@@ -7,12 +7,13 @@
 //! loss. The proof has to be the argv; the count is what cannot be measured.
 //! One arm per such read, and an arm is what says the argument is still there.
 //!
-//! `Bd::at` runs `store::BD`, a bare name resolved on the process's own
-//! `PATH`, so a directory prepended to `PATH` is the seam a shim enters
-//! through for those arms — and `PATH` is process-wide. Every arm here
-//! therefore takes `PATH_LOCK`, the arms wanting the real binary included: an
-//! arm reading a real store while another has the shim in front of it would be
-//! reading the shim.
+//! The row-cap arms open the store with `Bd::at`, which runs `store::BD`, a
+//! bare name resolved on the process's own `PATH`, so a directory prepended to
+//! `PATH` is the seam their shim enters through — and `PATH` is process-wide.
+//! The other arms name their stub by absolute path through `Bd::at_bin`, which
+//! no `PATH` reaches. Every arm here takes `PATH_LOCK` all the same, the arms
+//! wanting the real binary included: an arm reading a real store while another
+//! has the shim in front of it would be reading the shim.
 //!
 //! The ENVELOPE arms answer in the shape bd gives with `BD_JSON_ENVELOPE=1`,
 //! the shape v2.0 makes the default, copied from bd 1.2.2's own answers: each
@@ -26,10 +27,12 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use common::capped::{calls, capped_bd, Held};
 use common::Fixture;
 use fleet_core::item::{Stop, COULD_NOT_TELL, REFUSED};
+use fleet_core::process::DRAIN_GRACE;
 use fleet_core::store::{item_from, Bd, NewItem, Store, StoreError};
 
 /// Serialises every arm in this binary, because the seam they share is the
@@ -355,7 +358,7 @@ fn every_read_opens_the_envelope() {
     )
     .file(
         "answers/list.json",
-        r#"{"data": [{"id": "fx-listed", "status": "open", "metadata": {"orders": {"by": "an-architect"}}}], "schema_version": 1}"#,
+        r#"{"data": [{"id": "fx-listed", "title": "a listed item", "status": "open", "metadata": {"orders": {"by": "an-architect"}}}], "schema_version": 1}"#,
     )
     .file(
         "answers/gate-list.json",
@@ -395,6 +398,10 @@ fn every_read_opens_the_envelope() {
         .expect("the seat listing decodes");
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].id, "fx-listed");
+    assert_eq!(
+        rows[0].title, "a listed item",
+        "the row's own title is read"
+    );
     assert!(rows[0].has_orders_key, "the row's own metadata is read");
 
     assert_eq!(
@@ -556,6 +563,116 @@ fn a_newer_schema_is_read_anyway() {
         .show("fx-later")
         .expect("a newer schema is still read");
     assert_eq!(read.title, "from a newer bd");
+}
+
+/// A `bd` that never answers: it records its own pid and the pid of the child
+/// it leaves in its group, then waits on that child for longer than any arm
+/// runs.
+fn hung_bd(dir: &Fixture) -> PathBuf {
+    let bin = dir.path("bd");
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\n\
+             sleep 30 &\n\
+             printf '%s\\n' \"$$\" \"$!\" > '{pids}'\n\
+             wait\n",
+            pids = dir.path("pids").display(),
+        ),
+    )
+    .expect("the shim is written");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+        .expect("the shim is executable");
+    bin
+}
+
+/// Whether `pid` still names a process, asked for up to two seconds: a killed
+/// grandchild is reaped by whoever adopted it, not at once.
+fn still_running(pid: &str) -> bool {
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        let alive = std::process::Command::new("/bin/sh")
+            .args(["-c", &format!("kill -0 {pid} 2>/dev/null")])
+            .status()
+            .expect("the probe runs")
+            .success();
+        if !alive || Instant::now() >= until {
+            return alive;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A store that does not answer is Unreadable inside its bound plus
+/// `DRAIN_GRACE`, and the call leaves nothing of its own running: the stub
+/// and the child it forked share the group the bound kills.
+///
+/// The bound is SHORTENED through `with_timeout`, because the store's own is a
+/// minute; the refusal names the call and the bound it ran on, and a read's
+/// refusal says nothing about a write.
+#[test]
+fn a_store_that_does_not_answer_is_unreadable_within_its_bound() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-hung-read");
+    let bin = hung_bd(&dir);
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+    let bound = Duration::from_secs(1);
+
+    let started = Instant::now();
+    let answer = Bd::at_bin(&root, &bin).with_timeout(bound).ready();
+    let took = started.elapsed();
+
+    let Err(StoreError::Unreadable(why)) = answer else {
+        panic!("a store that never answers is Unreadable: {answer:?}");
+    };
+    assert!(
+        took < bound + DRAIN_GRACE,
+        "the refusal came inside the bound plus DRAIN_GRACE: {took:?}"
+    );
+    assert_eq!(
+        why,
+        format!(
+            "`{} ready --json -n 0` did not answer within 1s",
+            bin.display()
+        )
+    );
+    assert_eq!(Stop::from(StoreError::Unreadable(why)).code, COULD_NOT_TELL);
+
+    let pids = std::fs::read_to_string(dir.path("pids")).expect("the stub recorded its pids");
+    let pids: Vec<&str> = pids.lines().collect();
+    assert_eq!(pids.len(), 2, "the stub and its child: {pids:?}");
+    for pid in pids {
+        assert!(!still_running(pid), "{pid} outlived the bound's kill");
+    }
+}
+
+/// The same bound on a WRITE says what the kill cannot: whether the write
+/// landed, so the item is read before anything is written to it again.
+#[test]
+fn a_write_that_does_not_answer_says_its_effect_cannot_be_told() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-hung-write");
+    let bin = hung_bd(&dir);
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+
+    let answer = Bd::at_bin(&root, &bin)
+        .with_timeout(Duration::from_millis(200))
+        .note("fx-1", "a note", "the-test");
+
+    let Err(StoreError::Unreadable(why)) = answer else {
+        panic!("a write that never answers is Unreadable: {answer:?}");
+    };
+    assert!(
+        why.starts_with(&format!(
+            "`{} note fx-1 a note --actor the-test` did not answer within 200ms — the write's \
+             effect cannot be told",
+            bin.display()
+        )),
+        "{why}"
+    );
 }
 
 /// A `show` row in the shape bd 1.2.2 answers, holding one dependency on an

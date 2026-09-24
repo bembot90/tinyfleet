@@ -16,11 +16,11 @@ use fleet_core::item::brief::Packs;
 use fleet_core::item::land::{self, Release};
 use fleet_core::item::{render, Spawn, SpawnOutcome, Spawner, Stop, COULD_NOT_TELL};
 use fleet_core::seat;
-use fleet_core::store::{Bd, Store};
+use fleet_core::store::Store;
 
 use crate::envelope;
 use crate::exit::Exit;
-use crate::item::{resolve_at, Here};
+use crate::item::{open_store, resolve_at, Here};
 
 /// The three verb names the envelope's documents carry, which are also the
 /// words each verb's own stderr line names itself by.
@@ -254,7 +254,7 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
     // graph to do for itself. It runs inside the retire, at the last moment the
     // verb can still stop: the name this frees is the one the next spawn takes,
     // and an order left standing against it is one that seat would inherit.
-    let store = Bd::at(&here.project.root);
+    let store = open_store(&here.project.root);
     let by = args
         .by
         .clone()
@@ -414,7 +414,7 @@ fn held_item(here: &Here, seat: &str) -> Option<String> {
 /// That item's notes. A store that will not answer reads as no notes, which is
 /// the answer that keeps the branch.
 fn notes_of(here: &Here, item: &str) -> Option<String> {
-    Bd::at(&here.project.root).show(item).ok()?.notes
+    open_store(&here.project.root).show(item).ok()?.notes
 }
 
 // ---- the spawner seam -------------------------------------------------------

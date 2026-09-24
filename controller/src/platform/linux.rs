@@ -180,17 +180,20 @@ pub fn after_write(child_path: &str, _label: &str, _file: &Path) -> Vec<String> 
     let mut command = Command::new(&bin);
     command.args(["show-user", "--property=Linger"]);
     match run_bounded(command, ASIDE_TIMEOUT) {
-        Ok(run) if run.ok && run.stdout.contains("Linger=yes") => {
+        Ok(run)
+            if run.status.success()
+                && String::from_utf8_lossy(&run.stdout).contains("Linger=yes") =>
+        {
             vec!["lingering is on: the controller survives a logout".to_string()]
         }
-        Ok(run) if run.ok => vec![format!(
+        Ok(run) if run.status.success() => vec![format!(
             "lingering is off, so the controller stops at logout — run this yourself: {} \
              enable-linger",
             bin.display()
         )],
         Ok(run) => vec![format!(
             "lingering could not be read: {}",
-            run.stderr
+            String::from_utf8_lossy(&run.stderr)
                 .trim()
                 .lines()
                 .next()

@@ -19,6 +19,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+use crate::process::{deadline_cause, run_bounded};
 
 /// The binary every write and read goes through when the caller names no
 /// other, resolved on the process's own `PATH`.
@@ -105,6 +108,9 @@ pub struct Orders {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AssignedItem {
     pub id: String,
+    /// What a person calls this item, read off this row — the words a
+    /// session's start carries beside the id.
+    pub title: String,
     pub status: String,
     /// Whether `metadata` carried an `orders` key, read off THIS ROW and not
     /// off a second call: the listing answers each row's metadata, so a caller
@@ -245,7 +251,16 @@ pub trait Store {
 pub struct Bd {
     root: PathBuf,
     bin: PathBuf,
+    timeout: Duration,
 }
+
+/// The bound on one store call, fixed and not policy.
+///
+/// No legitimate store call comes close: every one is a local read or write
+/// of one project's store. A call that outruns it is a store that is not
+/// answering, and it is killed and read as Unreadable rather than left to hang
+/// the verb. A landing's suite is not a store call and is not bounded here.
+const STORE_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl Bd {
     pub fn at(root: &Path) -> Bd {
@@ -262,28 +277,47 @@ impl Bd {
         Bd {
             root: root.to_path_buf(),
             bin: bin.to_path_buf(),
+            timeout: STORE_TIMEOUT,
         }
     }
 
-    /// One call, with its status read from the command itself.
+    /// The same store under a shorter bound, for a caller that cannot wait the
+    /// whole of `STORE_TIMEOUT` — a session-start hook is one.
+    pub fn with_timeout(self, timeout: Duration) -> Bd {
+        Bd { timeout, ..self }
+    }
+
+    /// One call, with its status read from the command itself, bounded by
+    /// this store's timeout.
     ///
     /// The envelope is asked for on EVERY call and not only on the JSON reads:
     /// bd applies it to a `--json` answer alone — measured on 1.2.2, where the
     /// rendering, the export and a write's own line were byte-identical with
     /// it and without — so one setting here cannot leave a read out.
+    ///
+    /// A call that outruns the bound is killed with its whole process group.
+    /// On a WRITE — told by its `--actor`, which every call that changes an
+    /// item carries and no read does — the refusal also says what a kill
+    /// cannot: whether the write landed before it.
     fn run(&self, args: &[&str]) -> Result<Output, StoreError> {
-        Command::new(&self.bin)
-            .env(ENVELOPE, "1")
-            .arg("-C")
-            .arg(&self.root)
-            .args(args)
-            .output()
-            .map_err(|e| {
-                StoreError::Unreadable(format!(
-                    "`{}` could not be run ({e}) — nothing was written",
+        let mut cmd = Command::new(&self.bin);
+        cmd.env(ENVELOPE, "1").arg("-C").arg(&self.root).args(args);
+        run_bounded(cmd, self.timeout).map_err(|why| {
+            if why != deadline_cause(self.timeout) {
+                return StoreError::Unreadable(format!(
+                    "`{}` could not be run ({why}) — nothing was written",
                     self.bin.display()
-                ))
-            })
+                ));
+            }
+            let mut refusal = format!("{} {why}", self.named(args));
+            if args.contains(&"--actor") {
+                refusal.push_str(
+                    " — the write's effect cannot be told, so the item must be read \
+                     before anything is written to it again",
+                );
+            }
+            StoreError::Unreadable(refusal)
+        })
     }
 
     /// The call as a message names it: the binary this store runs and the argv
@@ -645,6 +679,7 @@ impl Store for Bd {
             .filter_map(|row| {
                 Some(AssignedItem {
                     id: text_field(row, "id")?,
+                    title: text_field(row, "title").unwrap_or_default(),
                     status: text_field(row, "status").unwrap_or_default(),
                     has_orders_key: orders_of(row).1,
                     item_type: text_field(row, "issue_type").unwrap_or_default(),

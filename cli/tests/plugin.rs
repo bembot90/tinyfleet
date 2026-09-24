@@ -1223,7 +1223,7 @@ fn the_item_lines_are_this_seat_s_open_work() {
     let asked = std::fs::read_to_string(&argv).expect("the stub recorded its arguments");
     assert_eq!(
         asked.trim(),
-        format!("-C {} list -a seat-a --json", text_of(&cwd)),
+        format!("-C {} list -a seat-a --json -n 0", text_of(&cwd)),
         "the listing is asked of the row's own project root, for the row's seat"
     );
 }
@@ -1289,12 +1289,51 @@ fn a_listing_that_cannot_be_read_is_its_own_answer() {
     assert_eq!(out.status.code(), Some(0), "prime still exits 0");
     let text = utf8(out.stdout);
     assert!(
-        text.contains("item: could not be read — the listing exited Some(4) — the store is locked"),
+        text.contains(&format!(
+            "item: could not be read — `{} list -a seat-a --json -n 0` exit status: 4: the store \
+             is locked",
+            text_of(&stub)
+        )),
         "the third answer names what happened rather than reading as `none`: {text}"
     );
     assert!(
         !text.contains("item: none"),
         "and it is not `none`, which would tell a seat it is free: {text}"
+    );
+}
+
+/// A tracker that never answers costs the item line and nothing else: prime
+/// prints its third answer inside the listing's five-second bound, names that
+/// bound, and still exits 0 — a session-start hook that waited on a hung store
+/// would hold the session with it.
+#[test]
+fn a_listing_that_never_answers_is_its_own_answer_inside_the_bound() {
+    let s = Scratch::new("items-hung");
+    let cwd = s.dir("cwd");
+    let fleet_dir = s.dir("fleet-dir");
+    let fleet_toml = s.write("fleet-root/fleet.toml", "");
+    let row = format!(
+        "{{\"name\": \"seat-a\", \"worktrees\": {{\"demo\": {}}}}}",
+        serde_json::Value::String(text_of(&cwd))
+    );
+    s.write("fleet-dir/config.json", &config_json(&fleet_toml, &row));
+    let stub = s.script("bd", "#!/bin/sh\nsleep 30\n");
+
+    let started = std::time::Instant::now();
+    let out = prime(&cwd, &fleet_dir, &[("FLEET_BD_BIN", &text_of(&stub))]);
+    let took = started.elapsed();
+    assert_eq!(out.status.code(), Some(0), "prime still exits 0");
+    let text = utf8(out.stdout);
+    assert!(
+        text.contains(&format!(
+            "item: could not be read — `{} list -a seat-a --json -n 0` did not answer within 5s",
+            text_of(&stub)
+        )),
+        "the third answer names the bound the listing outran: {text}"
+    );
+    assert!(
+        took < std::time::Duration::from_secs(7),
+        "prime answered about five seconds in, not when the tracker gave up: {took:?}"
     );
 }
 
@@ -1402,7 +1441,7 @@ fn with_no_seam_the_tracker_comes_off_the_constructed_child_path() {
     let direct = Command::new(&named)
         .arg("-C")
         .arg(&cwd)
-        .args(["list", "-a", "seat-a", "--json"])
+        .args(["list", "-a", "seat-a", "--json", "-n", "0"])
         .output()
         .expect("the resolved tracker runs");
     let fingerprint = if direct.status.success() {
@@ -1492,7 +1531,7 @@ fn a_session_under_a_seat_s_worktree_gets_no_item_line() {
     let asked = std::fs::read_to_string(&argv).expect("the stub recorded its arguments");
     assert_eq!(
         asked.trim(),
-        format!("-C {} list -a seat-a --json", text_of(&root)),
+        format!("-C {} list -a seat-a --json -n 0", text_of(&root)),
         "and it is asked of the row's own root, never of the subdirectory"
     );
 }

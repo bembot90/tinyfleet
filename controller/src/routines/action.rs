@@ -311,19 +311,20 @@ fn file_item(routine: &Routine, item: &Item, machine: &Machine, now_stamp: &str)
                 )
             }
         };
-        if !run.ok {
+        if !run.status.success() {
             return Done::plain(
                 Outcome::CouldNotTell,
                 format!(
                     "the dedupe query exited {}: {}",
-                    run.code
+                    run.status
+                        .code()
                         .map(|c| c.to_string())
                         .unwrap_or_else(|| "on a signal".to_string()),
-                    run.stderr.trim()
+                    String::from_utf8_lossy(&run.stderr).trim()
                 ),
             );
         }
-        match open_ids(&run.stdout) {
+        match open_ids(&String::from_utf8_lossy(&run.stdout)) {
             None => {
                 return Done::plain(
                     Outcome::CouldNotTell,
@@ -351,19 +352,20 @@ fn file_item(routine: &Routine, item: &Item, machine: &Machine, now_stamp: &str)
         Ok(run) => run,
         Err(why) => return Done::plain(Outcome::Failed, format!("the create did not run: {why}")),
     };
-    if !run.ok {
+    if !run.status.success() {
         return Done::plain(
             Outcome::Failed,
             format!(
                 "the create exited {}: {}",
-                run.code
+                run.status
+                    .code()
                     .map(|c| c.to_string())
                     .unwrap_or_else(|| "on a signal".to_string()),
-                run.stderr.trim()
+                String::from_utf8_lossy(&run.stderr).trim()
             ),
         );
     }
-    let Some(created) = created_id(&run.stdout) else {
+    let Some(created) = created_id(&String::from_utf8_lossy(&run.stdout)) else {
         return Done::plain(
             Outcome::Failed,
             "the create exited 0 and named no id this run can read".to_string(),
@@ -385,7 +387,7 @@ fn file_item(routine: &Routine, item: &Item, machine: &Machine, now_stamp: &str)
     ]);
     let noted = platform::run_bounded(note, bound);
     let trail = match noted {
-        Ok(run) if run.ok => String::new(),
+        Ok(run) if run.status.success() => String::new(),
         _ => format!(" (the note could not be appended to {created})"),
     };
     Done {
@@ -540,18 +542,22 @@ fn run_workflow(routine: &Routine, workflow: &Run, machine: &Machine) -> Done {
     if let Some(dir) = log.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let _ = std::fs::write(&log, format!("{}{}", ran.stdout, ran.stderr));
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&ran.stdout),
+        String::from_utf8_lossy(&ran.stderr),
+    );
+    let _ = std::fs::write(&log, format!("{stdout}{stderr}"));
     let mut extra: Vec<(String, serde_json::Value)> =
         vec![("log".to_string(), log.display().to_string().into())];
-    let run = run_id_of(&ran.stdout);
+    let run = run_id_of(&stdout);
     if let Some(id) = &run {
         extra.push(("run".to_string(), id.clone().into()));
     }
     let named = run.as_deref().unwrap_or("no run");
-    let said = run_word_of(&ran.stdout)
-        .or_else(|| ran.stderr.lines().last().map(str::to_string))
+    let said = run_word_of(&stdout)
+        .or_else(|| stderr.lines().last().map(str::to_string))
         .unwrap_or_default();
-    let (outcome, detail) = match ran.code {
+    let (outcome, detail) = match ran.status.code() {
         Some(0) if run.is_some() => (Outcome::Ran, format!("{named} {said}")),
         Some(0) => (
             Outcome::CouldNotTell,

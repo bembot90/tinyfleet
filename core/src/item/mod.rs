@@ -132,8 +132,9 @@ pub const RUN_CANCELLED: &str = "run.cancelled";
 ///
 /// Named here beside the five above because it is the same lifecycle's
 /// vocabulary and a kind spelled twice is two kinds — the controller crate
-/// depends on no other member of this workspace, so it carries its own spelling
-/// and a test in the binary holds the two to one string.
+/// takes nothing from this one but the bounded runner (`crate::process`), so it
+/// carries its own spelling and a test in the binary holds the two to one
+/// string.
 ///
 /// IT IS NOT AN ENDING. A run ends on one of the four rows of the exit table;
 /// this says the seats that run spawned are gone, which is a fact about the

@@ -552,6 +552,7 @@ impl Store for FakeStore {
             if mine && !rows.iter().any(|row| row.id == item.id) {
                 rows.push(AssignedItem {
                     id: item.id.clone(),
+                    title: item.title.clone(),
                     status: item.status.clone(),
                     // Off the METADATA this store would answer a read with, and
                     // not off the seeded field, so a row whose orders key a

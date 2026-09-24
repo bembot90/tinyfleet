@@ -65,9 +65,9 @@ pub fn observe_with(options: &Options, grant: platform::Grant) -> u8 {
 
 /// The loop with the RUN seam handed in beside the gate.
 ///
-/// The seam exists because this crate depends on no other fleet crate and the
-/// three acts a run's advance needs are wired in the binary (controller PRD
-/// R35–R37). `None` is a loop that knows nothing of runs and polls exactly as it
+/// The seam exists because this crate takes nothing from core but its bounded
+/// runner — no store, no packs, no policy reader — and the three acts a run's
+/// advance needs are wired in the binary (controller PRD R35–R37). `None` is a loop that knows nothing of runs and polls exactly as it
 /// did before they existed.
 pub fn observe_runs(
     options: &Options,

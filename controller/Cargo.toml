@@ -36,7 +36,14 @@ test-support = []
 # zone this machine is set to) and `tzdb-zoneinfo` (the system database the two
 # target platforms both ship); the bundled database, the fat transition tables
 # and the concatenated Android format are all left out.
+#
+# fleet-core: the bounded runner — the process group, the deadline and the
+# drains — is core's, because the store bounds its own calls with it and core
+# may depend on no other member. The controller takes it from there rather
+# than keep a second copy; the edge runs the one way the workspace allows
+# (cli/tests/workspace.rs refuses the other).
 [dependencies]
+fleet-core = { path = "../core" }
 jiff = { version = "=0.2.35", default-features = false, features = [
     "std",
     "tz-system",

@@ -148,12 +148,13 @@ fn the_dependency_list_core_was_read_from_is_populated() {
 
 /// The run lifecycle's vocabulary is spelled in two crates and is one fact.
 ///
-/// The controller crate depends on no other member of this workspace, so the
-/// kinds its run pass folds and writes, and the environment variable a run's
-/// children carry, are spelled there as well as in core. This is the one member
-/// that can see both, which makes it the place the two spellings are held to one
-/// string — a kind spelled twice is two kinds, and a fold that met the second
-/// would report a stream with no runs in it.
+/// The controller crate takes nothing from core but its bounded runner
+/// (`fleet_core::process`), so the kinds its run pass folds and writes, and the
+/// environment variable a run's children carry, are spelled there as well as in
+/// core. This is the one member that can see both, which makes it the place
+/// the two spellings are held to one string — a kind spelled twice is two
+/// kinds, and a fold that met the second would report a stream with no runs in
+/// it.
 #[test]
 fn the_run_vocabulary_is_one_string_in_both_crates() {
     use fleet_controller::runs;

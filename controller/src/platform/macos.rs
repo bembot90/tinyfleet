@@ -181,14 +181,16 @@ pub fn after_write(child_path: &str, _label: &str, file: &Path) -> Vec<String> {
     let mut command = Command::new(&linter);
     command.args(["-lint", &file.display().to_string()]);
     match run_bounded(command, ASIDE_TIMEOUT) {
-        Ok(run) if run.ok => vec![format!("the service file parses: {}", file.display())],
+        Ok(run) if run.status.success() => {
+            vec![format!("the service file parses: {}", file.display())]
+        }
         Ok(run) => vec![format!(
             "the service file does NOT parse: {}",
-            run.stdout
+            String::from_utf8_lossy(&run.stdout)
                 .trim()
                 .lines()
                 .next()
-                .unwrap_or(run.stderr.trim())
+                .unwrap_or(String::from_utf8_lossy(&run.stderr).trim())
         )],
         Err(why) => vec![format!("the service file could not be checked: {why}")],
     }

@@ -12,8 +12,8 @@ use fleet_core::defaults;
 use fleet_core::guard;
 use fleet_core::lock;
 use fleet_core::resolve::{self, Layer};
+use fleet_core::store::{Bd, Store};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use crate::exit::Exit;
@@ -226,41 +226,21 @@ fn print_items(project_root: &Path, seat: &str) {
 /// The seat's open and in-progress items, `(id, title)`, in the order the
 /// tracker listed them.
 ///
-/// NOT `fleet_core::store::Bd`, which makes this same call: that reader waits
-/// on `bd` without a bound, and a session-start hook needs a deadline (see
-/// `ITEMS_TIMEOUT`). It also answers `AssignedItem`, which carries no title,
-/// and this line carries the title.
+/// The store's own reader, under `ITEMS_TIMEOUT` rather than the store's
+/// bound: a session-start hook cannot wait a minute. The binary is resolved
+/// strictly and never falls back to the bare name the verbs keep: a session
+/// the controller started carries a `PATH` a bare `bd` finds nothing on
+/// (lessons claude-code D1), so a tracker nothing resolves is this line's
+/// third answer.
 fn items(project_root: &Path, seat: &str) -> Result<Vec<(String, String)>, String> {
     let bin = resolve_bd()?;
-    let mut cmd = Command::new(bin);
-    cmd.arg("-C")
-        .arg(project_root)
-        .args(["list", "-a", seat, "--json"]);
-    let out = platform::run_bounded(cmd, ITEMS_TIMEOUT)?;
-    if !out.ok {
-        let cause = out
-            .stderr
-            .lines()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("no message")
-            .trim()
-            .to_string();
-        return Err(format!("the listing exited {:?} — {cause}", out.code));
-    }
-    let rows: serde_json::Value =
-        serde_json::from_str(&out.stdout).map_err(|e| format!("the listing is not JSON: {e}"))?;
-    let Some(rows) = rows.as_array() else {
-        return Err("the listing is not an array".to_string());
-    };
-    Ok(rows
-        .iter()
-        .filter(|row| matches!(row["status"].as_str(), Some("open" | "in_progress")))
-        .filter_map(|row| {
-            Some((
-                row["id"].as_str()?.to_string(),
-                row["title"].as_str().unwrap_or("").to_string(),
-            ))
-        })
+    let store = Bd::at_bin(project_root, &bin).with_timeout(ITEMS_TIMEOUT);
+    Ok(store
+        .assigned_to(seat)
+        .map_err(|why| why.to_string())?
+        .into_iter()
+        .filter(|row| matches!(row.status.as_str(), "open" | "in_progress"))
+        .map(|row| (row.id, row.title))
         .collect())
 }
 

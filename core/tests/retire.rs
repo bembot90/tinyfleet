@@ -242,6 +242,7 @@ fn a_retire_that_cannot_read_the_board_refuses_rather_than_reading_no_hold() {
             SEAT.to_string(),
             vec![AssignedItem {
                 id: HELD.to_string(),
+                title: String::new(),
                 status: String::from("open"),
                 has_orders_key: true,
                 item_type: String::from("task"),

@@ -107,6 +107,7 @@ pub mod lock;
 mod os_litter;
 pub mod pack;
 pub mod policy;
+pub mod process;
 pub mod registry;
 pub mod remove;
 pub mod resolve;

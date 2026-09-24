@@ -13,8 +13,9 @@ One binary, three crates.
 **Core never depends on the controller.** The boundary between pack-and-project
 work and the process table is kept in the type system rather than in discipline:
 `cli/tests/workspace.rs` reads `cargo metadata --no-deps` and refuses the edge.
-The dependency that is allowed runs the other way, and the cli crate is where
-both meet.
+Core depends on neither of the other members. The dependency that is allowed
+runs the other way: the controller depends on core, for the bounded runner
+(`fleet_core::process`) and nothing else, and the cli crate is where both meet.
 
 The root manifest lists its members explicitly and never by glob, so a crate
 under this directory cannot be absorbed by a manifest that did not name it. That

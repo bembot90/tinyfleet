@@ -498,19 +498,20 @@ impl Agent for ClaudeCode {
             Err(cause) => return DaemonRead::Unreadable { cause },
         };
         // The status is read from the command itself and never through a pipe.
-        if !run.ok {
+        if !run.status.success() {
             return DaemonRead::Unreadable {
                 cause: format!(
                     "`{} daemon status` exited {}: {}",
                     self.bin,
-                    run.code
+                    run.status
+                        .code()
                         .map(|c| c.to_string())
                         .unwrap_or_else(|| "on a signal".to_string()),
-                    run.stderr.trim()
+                    String::from_utf8_lossy(&run.stderr).trim()
                 ),
             };
         }
-        DaemonRead::Readable(parse_daemon_status(&run.stdout))
+        DaemonRead::Readable(parse_daemon_status(&String::from_utf8_lossy(&run.stdout)))
     }
 
     /// The three answers, read from the exit AND the stdout (lessons claude-code
@@ -574,19 +575,20 @@ impl Agent for ClaudeCode {
             Ok(run) => run,
             Err(cause) => return RosterRead::Unreadable { cause },
         };
-        if !run.ok {
+        if !run.status.success() {
             return RosterRead::Unreadable {
                 cause: format!(
                     "`{} agents --json --all` exited {}: {}",
                     self.bin,
-                    run.code
+                    run.status
+                        .code()
                         .map(|c| c.to_string())
                         .unwrap_or_else(|| "on a signal".to_string()),
-                    run.stderr.trim()
+                    String::from_utf8_lossy(&run.stderr).trim()
                 ),
             };
         }
-        parse_roster(&run.stdout)
+        parse_roster(&String::from_utf8_lossy(&run.stdout))
     }
 
     fn transcript(
@@ -630,10 +632,10 @@ impl Agent for ClaudeCode {
         let mut cmd = self.read_command(&self.bin, None);
         cmd.arg("--version");
         let run = run_bounded(cmd, self.timeout).ok()?;
-        if !run.ok {
+        if !run.status.success() {
             return None;
         }
-        parse_version(&run.stdout)
+        parse_version(&String::from_utf8_lossy(&run.stdout))
     }
 }
 
@@ -648,8 +650,8 @@ impl ClaudeCode {
         let mut cmd = self.effect_command_under(config_dir)?;
         cmd.args(args);
         let run = run_bounded(cmd, self.timeout)?;
-        if run.ok {
-            return Ok(run.stdout);
+        if run.status.success() {
+            return Ok(String::from_utf8_lossy(&run.stdout).into_owned());
         }
         // The binary that RAN, which is the effect one and not `bin`: a cause
         // naming a file this call did not exec sends the operator to the wrong
@@ -658,10 +660,11 @@ impl ClaudeCode {
             "`{} {}` exited {}: {}",
             self.effect_bin_name(),
             args.join(" "),
-            run.code
+            run.status
+                .code()
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "on a signal".to_string()),
-            run.stderr.trim()
+            String::from_utf8_lossy(&run.stderr).trim()
         ))
     }
 

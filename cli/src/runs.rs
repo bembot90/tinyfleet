@@ -2,8 +2,9 @@
 //! that crate cannot make (controller PRD R35–R37).
 //!
 //! WHY THE ACTS ARE HERE AND NOT IN CORE OR THE CONTROLLER. core depends on no
-//! controller and the controller depends on no core, so neither of them can
-//! wire a store, a project's packs and the transient-seat primitives at once.
+//! other member, and the controller takes nothing from core but its bounded
+//! runner (`fleet_core::process`), so neither of them can wire a store, a
+//! project's packs and the transient-seat primitives at once.
 //! This module is the one that can, which is also why the tick's run pass is a
 //! seam rather than a call.
 //!
@@ -40,12 +41,9 @@ pub trait Stores {
 /// runs it by absolute path. The pass's own process is a launchd service whose
 /// `PATH` holds neither a package manager's prefix nor the user's local bin, so
 /// a store that searches that `PATH` finds no `bd` and refuses every tick
-/// (lessons claude-code D1). `fleet prime`'s resolver is the one used, so the
-/// binary a session is told about and the one a run's re-run uses are the same
-/// file.
-///
-/// A box where nothing resolves keeps the bare name: it then fails the way it
-/// has always failed rather than in some new way, and the refusal names it.
+/// (lessons claude-code D1). The resolution is the verbs' own
+/// ([`crate::item::bd_bin`]), bare-name fallback and all, so a run's re-run and
+/// a person's verb write through the same file.
 pub struct BdStores {
     bd: PathBuf,
 }
@@ -53,7 +51,7 @@ pub struct BdStores {
 impl BdStores {
     pub fn resolved() -> BdStores {
         BdStores {
-            bd: crate::prime::resolve_bd().unwrap_or_else(|_| PathBuf::from(fleet_core::store::BD)),
+            bd: crate::item::bd_bin(),
         }
     }
 }
@@ -413,7 +411,7 @@ mod tests {
                 ("FLEET_BD_BIN", bd.as_os_str()),
             ]);
             (
-                Bd::at(&root).ready(),
+                Bd::at_bin(&root, Path::new(fleet_core::store::BD)).ready(),
                 Engine::on(dir.join("machine")).stores.open(&root).ready(),
             )
         };

@@ -237,7 +237,7 @@ pub fn cancel_command(args: &CancelArgs) -> Exit {
         return Exit::Usage;
     };
     let cancelled = resolve_at(args.packs_dir.clone()).and_then(|here| {
-        let store = Bd::at(&here.project.root);
+        let store = open_store(&here.project.root);
         let events = StreamEvents {
             path: here.machine_dir.join(EVENTS),
         };
@@ -316,7 +316,7 @@ fn run_the_workflow(
     }
 
     let here = resolve_at(parsed.packs_dir.clone())?;
-    let store = Bd::at(&here.project.root);
+    let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let events = StreamEvents {
         path: here.machine_dir.join(EVENTS),
@@ -384,7 +384,7 @@ fn run_land(
     err: &mut dyn Write,
 ) -> Result<Landed, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
-    let store = Bd::at(&here.project.root);
+    let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
         root: here.project.root.clone(),
@@ -509,7 +509,7 @@ pub fn answer_command(args: &AnswerArgs) -> Exit {
 
 fn run_ask(parsed: &AskArgs, by: &str, out: &mut dyn Write) -> Result<gate::Asked, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
-    let store = Bd::at(&here.project.root);
+    let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
         root: here.project.root.clone(),
@@ -539,7 +539,7 @@ fn run_ask(parsed: &AskArgs, by: &str, out: &mut dyn Write) -> Result<gate::Aske
 
 fn run_answer(parsed: &AnswerArgs, by: &str, out: &mut dyn Write) -> Result<gate::Replied, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
-    let store = Bd::at(&here.project.root);
+    let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
         root: here.project.root.clone(),
@@ -605,7 +605,7 @@ fn run_deliver(
     err: &mut dyn Write,
 ) -> Result<deliver::Delivered, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
-    let store = Bd::at(&here.project.root);
+    let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
         root: here.project.root.clone(),
@@ -646,7 +646,7 @@ fn run_review(
     err: &mut dyn Write,
 ) -> Result<review::Read, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
-    let store = Bd::at(&here.project.root);
+    let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
         root: here.project.root.clone(),
@@ -804,7 +804,7 @@ fn run_dispatch(
     err: &mut dyn Write,
 ) -> Result<dispatch::Given, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
-    let store = Bd::at(&here.project.root);
+    let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let ring = SeatRing {
         machine_dir: here.machine_dir.clone(),
@@ -854,7 +854,7 @@ fn run_dispatch(
 
 fn run_brief(parsed: &BriefArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<(), Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
-    let store = Bd::at(&here.project.root);
+    let store = open_store(&here.project.root);
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
 
     brief::for_item(
@@ -965,6 +965,25 @@ pub fn derived_worktrees_dir(root: &Path) -> PathBuf {
     let mut name = root.file_name().unwrap_or_default().to_os_string();
     name.push("-worktrees");
     root.with_file_name(name)
+}
+
+/// The `bd` every store this binary opens runs: `fleet prime`'s resolver's
+/// answer — `FLEET_BD_BIN` when absolute, else the first `bd` on the
+/// constructed child PATH — so the binary a session is told about, the one a
+/// verb writes through and the one the controller's run pass reads are the
+/// same file (lessons claude-code D1).
+///
+/// ONLY WHERE THAT RESOLUTION FAILS does it fall back to the bare name, which
+/// the process's own `PATH` then answers or does not: the store fails the way
+/// it always has rather than in some new way, and its refusal names the bare
+/// `bd` it tried, so a fallback that did not run is said.
+pub(crate) fn bd_bin() -> PathBuf {
+    crate::prime::resolve_bd().unwrap_or_else(|_| PathBuf::from(fleet_core::store::BD))
+}
+
+/// The project's store, over [`bd_bin`]: the one way a verb opens it.
+pub(crate) fn open_store(root: &Path) -> Bd {
+    Bd::at_bin(root, &bd_bin())
 }
 
 /// A DECLARED PROJECT FIRST at each level, then the embedded file: a directory

@@ -142,6 +142,7 @@ name = "fleet-controller"
 version = "0.1.0"
 dependencies = [
  "fleet-controller",
+ "fleet-core",
  "jiff",
  "serde",
  "serde_json",

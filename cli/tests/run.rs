@@ -1343,9 +1343,10 @@ fn the_agent_binary_seams_reach_the_workflow_from_the_environment() {
     );
 }
 
-/// The system directories and the one directory that holds `bd`, which the
-/// store shells out to by bare name — the whole of what a fleet process needs,
-/// and nothing a rig's runtime stub is ever written to.
+/// The system directories and the one directory that holds `bd` — where the
+/// store finds it by bare name on a box whose constructed child PATH holds no
+/// `bd`, the fallback the verbs' resolver keeps — the whole of what a fleet
+/// process needs, and nothing a rig's runtime stub is ever written to.
 fn a_path_no_runtime_is_on() -> String {
     let held = std::env::var("PATH").unwrap_or_default();
     let bd = std::env::split_paths(&held)
