@@ -25,7 +25,7 @@ dependencies are the real blockers.
 | fleet-016 | History out of comments, `Row` renamed `AssignedItem`, fix `open_labelled`'s doc (F3+F4+F6) | lands after fleet-16s (same lines) | ☑ |
 | fleet-reb | Pin bd at 1.3.0, checked, and re-measure the store's quirks | Alberto upgrades bd (`brew upgrade beads`) | ☐ |
 | fleet-ay8 | `fleet ask` on an epic leaves an edgeless gate; `ready` lets epics through | fleet-ah4 (`gate()`); with fleet-16s (`ready`) | ☑ |
-| fleet-998 | `fleet dispatch <suffix>` refuses a ready item | fleet-16s (same line, `dispatch.rs:182`) | ☐ |
+| fleet-998 | `fleet dispatch <suffix>` refuses a ready item | fleet-16s (same line, `dispatch.rs:182`) | ☑ |
 | fleet-pg7 | dispatch's hold check counts ordered items only (ruled) | fleet-fhi (`assigned_to`) | ☑ |
 | fleet-bk115 | A test for the store opener's bd resolution (`cli/src/runs.rs:53`) | — | ☑ |
 
@@ -33,9 +33,9 @@ dependencies are the real blockers.
 
 | Bead | What | Blocked by | Landed |
 | --- | --- | --- | --- |
-| fleet-45m | The SDK takes a returned delivery as carried (RETAKEN, `until(delivered)`) (Required) | — | ☐ |
-| fleet-d11 | Delete the flight engine's leftovers: dead constants, the resume path, the rule matcher, seven census rows | — | ☐ |
-| fleet-rzixz | One reader of the item store: the runner moves into core, bd calls bounded at 60s, one opener, prime's reader folded in | — | ☐ |
+| fleet-45m | The SDK takes a returned delivery as carried (RETAKEN, `until(delivered)`) (Required) | — | ☑ |
+| fleet-d11 | Delete the flight engine's leftovers: dead constants, the resume path, the rule matcher, seven census rows | — | ☑ |
+| fleet-rzixz | One reader of the item store: the runner moves into core, bd calls bounded at 60s, one opener, prime's reader folded in | — | ☑ |
 | fleet-xie | Generate the bd adapter's wire types from beads' OpenAPI spec at the pin (pin-stamp test) | fleet-reb (bd 1.3.0 installed) | ☐ |
 
 ## Flight 4 — the renames, namespacing and the archive
