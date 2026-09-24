@@ -12,6 +12,7 @@
 pub mod brief;
 pub mod deliver;
 pub mod dispatch;
+pub mod doctor;
 pub mod hold;
 pub mod land;
 pub mod lane;

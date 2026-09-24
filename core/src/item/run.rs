@@ -42,6 +42,7 @@ use std::process::{Command, ExitStatus, Stdio};
 
 use crate::add;
 use crate::item::brief::Packs;
+use crate::item::doctor::{self, Invocation, Verdict, DOCTOR_TOML, RUNTIME_VERSION, SLOT};
 use crate::item::pins;
 use crate::item::{
     control_token, read_table, Events, Project, Stop, HOLD_CLEARED, RUN_CANCELLED, RUN_CLOSED,
@@ -71,17 +72,6 @@ pub const CONFIG: &str = "config";
 
 /// The slot a workflow name resolves through, overlay first.
 pub const WORKFLOWS: &str = "workflows";
-
-/// The doctor entry that measures the pinned runtime, and the file inside it
-/// that names which script to run. The binary's defaults ship the shape against
-/// no table of their own; a pack that pins a runtime shadows it with the
-/// instance.
-pub const RUNTIME_CHECK: &str = "doctor/runtime-version";
-pub const DOCTOR_TOML: &str = "doctor.toml";
-
-/// The environment variable the check reads to learn which pack's manifest it
-/// is measuring.
-pub const PACK_DIR: &str = "FLEET_PACK_DIR";
 
 /// The label a run's record item carries, and the only mark that tells one from
 /// every other item in the store. Namespaced, because a board fleet is added
@@ -283,7 +273,7 @@ pub fn run(out: &mut dyn Write, order: &Order, wiring: &Wiring) -> Result<Ran, S
     refuse_at_the_cap(&open, wiring)?;
     let resolved = resolve_workflow(order.workflow, wiring)?;
     let pinned = read_the_runtime(&resolved, wiring, order.machine_dir)?;
-    let path = child_path_for(&pinned, wiring.child_path);
+    let path = child_path_for(&pinned.runtime.name, wiring.child_path);
     the_doctor_is_green(&resolved, &pinned, &path, wiring)?;
     let policy_bytes = std::fs::read(wiring.policy_file).map_err(|e| {
         Stop::could_not_tell(format!(
@@ -452,7 +442,7 @@ pub fn rerun(out: &mut dyn Write, again: &Again, wiring: &Wiring) -> Result<Ende
         pack,
     };
     let pinned = read_the_runtime(&resolved, wiring, again.machine_dir)?;
-    let path = child_path_for(&pinned, wiring.child_path);
+    let path = child_path_for(&pinned.runtime.name, wiring.child_path);
 
     // The two `Order` fields a re-run does not carry. The workflow is the pinned
     // name so the shape reads true; the inputs are empty because the child is
@@ -798,7 +788,7 @@ struct Pinned {
     pack: Layer,
 }
 
-fn manifest_of(layer: &Layer) -> Result<pack::Manifest, Stop> {
+pub(crate) fn manifest_of(layer: &Layer) -> Result<pack::Manifest, Stop> {
     let manifest = layer.root.join(pack::MANIFEST);
     let text = std::fs::read_to_string(&manifest).map_err(|e| {
         Stop::could_not_tell(format!("{} could not be read: {e}", manifest.display()))
@@ -941,11 +931,11 @@ fn read_the_runtime(
 /// put where the lines will look. Only when the base misses it: a runtime the
 /// base already resolves keeps the platform's order, where the system
 /// directories lead.
-fn child_path_for(pinned: &Pinned, base: &str) -> String {
+pub fn child_path_for(runtime: &str, base: &str) -> String {
     if base.is_empty() {
         return std::env::var("PATH").unwrap_or_default();
     }
-    let name = pinned.runtime.name.as_str();
+    let name = runtime;
     if holding(base, name).is_some() {
         return base.to_string();
     }
@@ -1002,48 +992,53 @@ fn is_program(path: &Path) -> bool {
 /// It runs on [`child_path_for`], the `PATH` the bundle and run lines will
 /// run on: a check measuring some other search path is green about a binary
 /// those lines cannot exec, or red about one they can.
+///
+/// It runs through [`doctor::run`], so it is bounded by [`doctor::TIMEOUT`]:
+/// a check that gave no exit of its own — past the bound, never started, or
+/// killed by a signal — did not answer, which is could-not-tell and not red.
+/// Any exit but 0 is red, as it always was.
 fn the_doctor_is_green(
     resolved: &Resolved,
     pinned: &Pinned,
     path: &str,
     wiring: &Wiring,
 ) -> Result<(), Stop> {
-    let declared = format!("{RUNTIME_CHECK}/{DOCTOR_TOML}");
-    let toml_path = wiring.packs.slot(&declared).map_err(|_| {
+    let declared = format!("{SLOT}/{RUNTIME_VERSION}/{DOCTOR_TOML}");
+    let unmeasurable = || {
         Stop::could_not_tell(format!(
             "no installed pack carries `{declared}` — the pinned runtime cannot be measured, and \
              a run core cannot measure the runtime of is one it will not open"
         ))
-    })?;
-    let text = wiring.packs.read(&declared)?;
-    let parsed: toml::Table = text.parse().map_err(|e| {
-        Stop::could_not_tell(format!(
-            "{} does not parse as TOML: {e}",
-            toml_path.display()
-        ))
-    })?;
-    let script = parsed
-        .get("run")
-        .and_then(toml::Value::as_str)
-        .ok_or_else(|| {
-            Stop::could_not_tell(format!(
-                "{} names no `run` script for the check to run",
-                toml_path.display()
-            ))
-        })?;
-    let runner = wiring.packs.slot(&format!("{RUNTIME_CHECK}/{script}"))?;
+    };
+    let entry = doctor::entry(wiring.packs, RUNTIME_VERSION).ok_or_else(unmeasurable)?;
+    if let Err(why) = &entry.script {
+        return Err(if wiring.packs.resolution.files.contains_key(&declared) {
+            Stop::could_not_tell(why.clone())
+        } else {
+            unmeasurable()
+        });
+    }
 
-    let answered = Command::new("sh")
-        .arg(&runner)
-        .env(PACK_DIR, &pinned.pack.root)
-        .env("PATH", path)
-        .output()
-        .map_err(|e| Stop::could_not_tell(format!("{} did not run: {e}", runner.display())))?;
-    if answered.status.success() {
+    let checked = doctor::run(
+        &entry,
+        &Invocation {
+            pack_dir: &pinned.pack.root,
+            path,
+            cwd: None,
+            env: &[],
+            timeout: doctor::TIMEOUT,
+        },
+    );
+    if checked.verdict == Verdict::Pass {
         return Ok(());
     }
-    let said = String::from_utf8_lossy(&answered.stdout);
-    let said = said.trim();
+    if checked.exit.is_none() {
+        return Err(Stop::could_not_tell(format!(
+            "`{}`'s runtime check did not answer, so `{}` is not opened — {}",
+            pinned.pack.name, resolved.name, checked.line
+        )));
+    }
+    let said = checked.stdout.trim();
     Err(Stop::refused(format!(
         "`{}`'s runtime check is red, so `{}` is not opened — {}",
         pinned.pack.name,

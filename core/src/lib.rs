@@ -80,6 +80,10 @@
 //! hashed onto the record, the pack's bundle and run commands, and the exit
 //! table its process answers on.
 //!
+//! `doctor` is the doctor slot as a runner: every `doctor/<name>/` entry the
+//! layers resolve, its `doctor.toml`'s script run bounded, and the verdict its
+//! exit gives.
+//!
 //! `seat` is the record half of the verbs that end a seat, and `retire` is
 //! the one it carries: the orders the seat still holds are withdrawn — the
 //! item reopened, the assignee cleared, the order index unset, one note saying
