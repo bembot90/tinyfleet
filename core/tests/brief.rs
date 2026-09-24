@@ -13,7 +13,7 @@ use fleet_core::item::brief::{self, Packs, TRANSIENT};
 use fleet_core::item::dispatch::{self, Order, Wiring};
 use fleet_core::item::{table_at, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner};
 use fleet_core::seat::retire;
-use fleet_core::store::{Bd, Item, Orders, Store};
+use fleet_core::store::{AssignedItem, Bd, Item, Orders, Store};
 use fleet_core::test_support::FakeStore;
 
 /// A policy file with one guard opted out, so the on/off line is read rather
@@ -614,7 +614,12 @@ fn a_withdrawn_order_is_refused_and_writes_nothing() {
         &Spawns(SpawnOutcome::Refused(String::new())),
     )
     .expect("the dispatch lands");
-    retire::withdraw(&retired, &[ITEM.to_string()], SEAT, BY).expect("the retire withdraws");
+    let row = AssignedItem {
+        id: ITEM.to_string(),
+        status: String::from("open"),
+        ..AssignedItem::default()
+    };
+    retire::withdraw(&retired, &[row], SEAT, BY).expect("the retire withdraws");
 
     // The refused spawn's: dispatched to no seat, withdrawn in the same act.
     let refused = store_with(None);

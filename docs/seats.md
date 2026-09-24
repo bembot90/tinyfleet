@@ -510,12 +510,17 @@ row, checks from outside that nothing of the seat is still running or on
 disk, removes its configuration directory, and writes `session.stopped`. The
 name is free for the next spawn.
 
-Before it drops the row, it takes back every open item on the project's board
-assigned to the seat with a dispatch on it: the item stays open, unassigned,
-with a note saying `ORDER WITHDRAWN at retire`, written by `--by <name>`,
-`FLEET_ACTOR` or `BEADS_ACTOR`, or `fleet`. When the board cannot be read and
-the seat was dispatched nothing, it says so on standard error and retires the
-seat anyway.
+Before it drops the row, it takes back every `open` or `in_progress` item on
+the project's board assigned to the seat with a dispatch on it: the item goes
+back to `open`, unassigned and with no dispatch on it, with a note saying
+`ORDER WITHDRAWN at retire`, written by `--by <name>`, `FLEET_ACTOR` or
+`BEADS_ACTOR`, or `fleet`. An item nothing blocks is back in the store's ready
+set, so `fleet dispatch` can give it to another seat. A closed item is never
+reopened: when an item was closed, or taken by another seat, after the retire
+read the board, the retire writes nothing to it and refuses (exit 1). The
+session and the worktree are gone by then and the seat's row stands, so read
+the item and retire again. When the board cannot be read and the seat was
+dispatched nothing, it says so on standard error and retires the seat anyway.
 
 It deletes the seat's work branch only when the last landing on the seat's
 item marks that same branch `SAFE`; otherwise it prints `work branch kept —

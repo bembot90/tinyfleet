@@ -28,8 +28,9 @@ pub struct Held<'a> {
 ///   another limit — the seat filter is not applied, because every row it holds
 ///   is that seat's;
 /// - `show <id>` that row;
-/// - `update <id>` only as a withdrawal fenced on `seat` (`--if-assignee
-///   <seat>`, then `--assignee ''` with `--unset-metadata fleet.orders`), which leaves
+/// - `update <id>` only as a withdrawal fenced on `seat` and the row's open
+///   status (`--if-assignee <seat> --if-status open`, then `--assignee ''`
+///   with `--unset-metadata fleet.orders` and `--status open`), which leaves
 ///   the row open, unassigned and unordered;
 /// - `note` as a write it accepts and does not keep.
 pub fn capped_bd(dir: &Fixture, seat: &str, rows: &[Held], log: &Path) -> PathBuf {
@@ -76,7 +77,7 @@ pub fn capped_bd(dir: &Fixture, seat: &str, rows: &[Held], log: &Path) -> PathBu
              \x20 printf ']\\n' ;;\n\
              show) printf '['; cat \"$items/$2.json\"; printf ']\\n' ;;\n\
              update)\n\
-             \x20 case \" $* \" in *' --if-assignee {seat} --assignee  --unset-metadata {orders_key} '*) ;; *) exit 1 ;; esac\n\
+             \x20 case \" $* \" in *' --if-assignee {seat} --if-status open --assignee  --unset-metadata {orders_key} --status open '*) ;; *) exit 1 ;; esac\n\
              \x20 printf '{{\"id\":\"%s\",\"status\":\"open\"}}' \"$2\" > \"$items/$2.json\" ;;\n\
              note) ;;\n\
              *) echo 'the fake answers list, show, update and note only' >&2; exit 1 ;;\n\

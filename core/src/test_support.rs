@@ -195,6 +195,20 @@ impl FakeStore {
         Ok(())
     }
 
+    /// The fence beside it: the item reading `status`, or
+    /// [`StoreError::Moved`] and nothing written — the rule bd's `--if-status`
+    /// keeps.
+    fn status_is(&self, item: &str, status: &str) -> Result<(), StoreError> {
+        let items = self.items.lock().expect("the items are not poisoned");
+        let held = items
+            .get(item)
+            .ok_or_else(|| StoreError::Missing(format!("{item} is not here")))?;
+        if held.status != status {
+            return Err(crate::store::restatused(item, status, &held.status));
+        }
+        Ok(())
+    }
+
     /// The items an open hold stands against, which is what takes one out of
     /// the ready set until somebody clears that hold.
     fn on_hold(&self) -> Vec<String> {
@@ -394,6 +408,10 @@ impl Store for FakeStore {
     /// The seeded ids, plus every item this store holds that it calls ready:
     /// open, with no dependency standing and no hold raised against it. A
     /// store computes its own ready set and never holds a second copy of it.
+    ///
+    /// OPEN AND NOT MERELY UNCLOSED: `bd ready` leaves an `in_progress` item
+    /// out, measured on 1.3.0, and a fake that listed one would pass an arm
+    /// asserting a withdrawal put its item back in the ready set.
     fn ready(&self) -> Result<Vec<String>, StoreError> {
         if let Some(refused) = self.refuse() {
             return refused;
@@ -406,7 +424,7 @@ impl Store for FakeStore {
             .expect("the items are not poisoned")
             .values()
         {
-            let open = item.status != "closed";
+            let open = item.status == "open";
             let free = item.blockers.is_empty() && !on_hold.contains(&item.id);
             if open && free && !ids.contains(&item.id) {
                 ids.push(item.id.clone());
@@ -628,13 +646,30 @@ impl Store for FakeStore {
         })
     }
 
-    /// One log line and both moves, which is what the real store's one call
+    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
+        self.log(format!("reopen {item} {by}"))?;
+        self.moving(item, |held| held.status = String::from("open"))
+    }
+
+    /// One log line and every move, which is what the real store's one call
     /// leaves: an arm counting the calls a retire makes counts this as one.
-    /// Neither move is made while another seat holds the item.
-    fn withdraw_order(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
+    /// No move is made while another seat holds the item, or while it reads a
+    /// status other than the one the caller named — bd's `--if-status`, which
+    /// is what keeps a closed item closed.
+    fn withdraw_order(
+        &self,
+        item: &str,
+        seat: &str,
+        status: &str,
+        by: &str,
+    ) -> Result<(), StoreError> {
         self.log(format!("withdraw_order {item} {by}"))?;
         self.held_by(item, seat)?;
-        self.moving(item, |held| held.assignee = Some(String::new()))?;
+        self.status_is(item, status)?;
+        self.moving(item, |held| {
+            held.assignee = Some(String::new());
+            held.status = String::from("open");
+        })?;
         self.metadata_write(item, |object| {
             object.remove(keys::ORDERS);
         })
@@ -785,8 +820,17 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     fn hand_over(&self, item: &str, from: &str, to: &str, by: &str) -> Result<(), StoreError> {
         (**self).hand_over(item, from, to, by)
     }
-    fn withdraw_order(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
-        (**self).withdraw_order(item, seat, by)
+    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
+        (**self).reopen(item, by)
+    }
+    fn withdraw_order(
+        &self,
+        item: &str,
+        seat: &str,
+        status: &str,
+        by: &str,
+    ) -> Result<(), StoreError> {
+        (**self).withdraw_order(item, seat, status, by)
     }
     fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
         (**self).hold(item, reason, by)

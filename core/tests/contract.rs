@@ -49,7 +49,7 @@ const CHECKS: &[(&str, Check)] = &[
     ("note", note),
     ("set_title", set_title),
     ("set_orders then unset_orders", orders),
-    ("hand_over and withdraw_order's holder fence", fenced),
+    ("hand_over and withdraw_order's fences", fenced),
     ("set_metadata's merge", metadata_merge),
     ("fleet.orders and fleet.run keep each other", fleet_keys),
     ("hold, open_holds, clear_hold", holds),
@@ -230,7 +230,9 @@ fn orders(store: &dyn Store, _: &Path, which: &str) {
 
 /// A fenced write lands only while the holder it names still holds the item,
 /// and is `Moved` with NOTHING written where somebody else does — bd's
-/// `--if-assignee`, which both halves keep.
+/// `--if-assignee`, which both halves keep. A withdrawal is fenced on the
+/// status it names too — bd's `--if-status` — so a closed item is never
+/// reopened by one, and the one that lands leaves the item open.
 fn fenced(store: &dyn Store, _: &Path, which: &str) {
     let item = filed(store, "an item a fenced write reaches");
     store
@@ -239,24 +241,55 @@ fn fenced(store: &dyn Store, _: &Path, which: &str) {
     store
         .set_orders(&item, r#"{"fleet.orders":{"v":1,"seat":"a-seat"}}"#, BY)
         .expect("the order index lands");
+    let untouched = |store: &dyn Store, status: &str, what: &str| {
+        let read = store.show(&item).expect("the item reads");
+        assert_eq!(
+            read.assignee.as_deref(),
+            Some("a-seat"),
+            "{which}: {what} — nothing was written, the holder stands"
+        );
+        assert!(
+            read.has_orders_key,
+            "{which}: {what} — and so does its order"
+        );
+        assert_eq!(read.status, status, "{which}: {what} — and its status");
+    };
 
-    match store.withdraw_order(&item, "another-seat", BY) {
+    match store.withdraw_order(&item, "another-seat", "open", BY) {
         Err(StoreError::Moved(why)) => assert!(
             why.contains(&item) && why.contains("another-seat"),
             "{which}: the refusal names the item and the holder it expected: {why}"
         ),
         other => panic!("{which}: a withdraw naming a seat that does not hold it: {other:?}"),
     }
-    let read = store.show(&item).expect("the item reads");
-    assert_eq!(
-        read.assignee.as_deref(),
-        Some("a-seat"),
-        "{which}: nothing was written — the holder stands"
-    );
-    assert!(read.has_orders_key, "{which}: and so does its order");
+    untouched(store, "open", "another seat named");
+
+    match store.withdraw_order(&item, "a-seat", "in_progress", BY) {
+        Err(StoreError::Moved(why)) => assert!(
+            why.contains(&item) && why.contains("in_progress"),
+            "{which}: the refusal names the item and the status it expected: {why}"
+        ),
+        other => panic!("{which}: a withdraw naming a status the item is not in: {other:?}"),
+    }
+    untouched(store, "open", "another status named");
 
     store
-        .withdraw_order(&item, "a-seat", BY)
+        .close(&item, "landed by its seat", "a-seat")
+        .expect("the holder closes it");
+    match store.withdraw_order(&item, "a-seat", "open", BY) {
+        Err(StoreError::Moved(why)) => assert!(
+            why.contains(&item) && why.contains("closed"),
+            "{which}: the refusal names the item and the status it reads: {why}"
+        ),
+        other => panic!("{which}: a withdraw of an item closed since it was read: {other:?}"),
+    }
+    untouched(store, "closed", "a closed item");
+
+    store.reopen(&item, BY).expect("the reopen lands");
+    untouched(store, "open", "a reopen");
+
+    store
+        .withdraw_order(&item, "a-seat", "open", BY)
         .expect("the holder's withdraw lands");
     let read = store.show(&item).expect("the item reads");
     assert!(
@@ -265,6 +298,7 @@ fn fenced(store: &dyn Store, _: &Path, which: &str) {
         read.assignee
     );
     assert!(!read.has_orders_key, "{which}: and the order unset");
+    assert_eq!(read.status, "open", "{which}: and the item open");
 
     match store.hand_over(&item, "a-seat", "the-builder", BY) {
         Err(StoreError::Moved(_)) => {}
@@ -390,7 +424,7 @@ fn fleet_keys(store: &dyn Store, _: &Path, which: &str) {
         .assign(&item, "a-seat", BY)
         .expect("the seat holds it");
     store
-        .withdraw_order(&item, "a-seat", BY)
+        .withdraw_order(&item, "a-seat", "open", BY)
         .expect("the holder's withdraw lands");
     let read = store.show(&item).expect("the item reads");
     assert!(

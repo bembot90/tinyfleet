@@ -235,18 +235,44 @@ pub trait Store {
 
     fn unset_orders(&self, item: &str, by: &str) -> Result<(), StoreError>;
 
-    /// The assignee cleared and the order index unset in ONE call, and only
-    /// while `seat` still holds the item: [`hand_over`](Store::hand_over)'s
-    /// fence, because a retire's actor is never the seat it retires.
+    /// The item's status set back to `open`, which is all this writes.
+    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError>;
+
+    /// The item reopened, the assignee cleared and the order index unset in
+    /// ONE call, and only while `seat` still holds the item under `status`:
+    /// [`hand_over`](Store::hand_over)'s fence, because a retire's actor is
+    /// never the seat it retires, and the status beside it, because an item
+    /// closed since the caller read it is never reopened.
     ///
-    /// The pair is what a withdrawal always writes together, and a retire pays
-    /// it on every seat it ends — so the store that talks to `bd` sends one
-    /// `update` rather than two, which is a call the verb does not make while
-    /// another suite is queueing behind it. The DEFAULT is the two writes in
-    /// order, so an implementation that has nothing to gain by folding them
-    /// says nothing; what neither form may do is leave the assignee cleared
-    /// with the index still set, which the caller's read-back is what catches.
-    fn withdraw_order(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
+    /// `status` is the one the caller read the item under, and a withdrawal
+    /// reads only `open` or `in_progress`. The reopen is the point of the
+    /// second: an item left `in_progress` with nobody holding it is out of the
+    /// ready set, and no dispatch reaches it until somebody reopens it by hand.
+    ///
+    /// The three are what a withdrawal always writes together, and a retire
+    /// pays them on every seat it ends — so the store that talks to `bd` sends
+    /// one `update` rather than three, which is a call the verb does not make
+    /// while another suite is queueing behind it. The DEFAULT is the writes in
+    /// order behind one read of the fence, the reopen FIRST: a default cut
+    /// short after it leaves an item still held and ordered, which a second
+    /// retire lists and finishes. What no form may do is leave the assignee
+    /// cleared with the index still set, which the caller's read-back catches.
+    fn withdraw_order(
+        &self,
+        item: &str,
+        seat: &str,
+        status: &str,
+        by: &str,
+    ) -> Result<(), StoreError> {
+        let read = self.show(item)?;
+        let held = read.assignee.unwrap_or_default();
+        if held != seat {
+            return Err(moved(item, seat, &held));
+        }
+        if read.status != status {
+            return Err(restatused(item, status, &read.status));
+        }
+        self.reopen(item, by)?;
         self.hand_over(item, seat, "", by)?;
         self.unset_orders(item, by)
     }
@@ -460,15 +486,16 @@ impl Bd {
         self.answered(args).map(|_| ())
     }
 
-    /// A write carrying `--if-assignee <holder>`, whose exit 13 is bd's word
-    /// that the holder moved and nothing was written — measured on 1.3.0:
-    /// `assignee mismatch: X is held by "s2", expected "s1"`, exit 13.
-    fn fenced(&self, args: &[&str], item: &str, holder: &str) -> Result<(), StoreError> {
+    /// A write carrying `--if-assignee <holder>`, and `--if-status` beside it
+    /// where `fence` names a status too, whose exit 13 is bd's word that the
+    /// item moved and nothing was written — measured on 1.3.0: `assignee
+    /// mismatch: X is held by "s2", expected "s1"` and `status mismatch: X has
+    /// status "closed", expected "in_progress"`, both exit 13.
+    fn fenced(&self, args: &[&str], item: &str, fence: &str) -> Result<(), StoreError> {
         let out = self.run(args)?;
         if out.status.code() == Some(FENCE_MISMATCH) {
             return Err(StoreError::Moved(format!(
-                "{item} is not held by {} — nothing was written ({})",
-                holder_named(holder),
+                "{item} is not {fence} — nothing was written ({})",
                 tail(&out)
             )));
         }
@@ -489,6 +516,14 @@ pub(crate) fn moved(item: &str, expected: &str, held: &str) -> StoreError {
         "{item} is held by {} and not by {} — nothing was written",
         holder_named(held),
         holder_named(expected)
+    ))
+}
+
+/// The refusal a fenced withdrawal answers when the item's status is not the
+/// one the write named.
+pub(crate) fn restatused(item: &str, expected: &str, now: &str) -> StoreError {
+    StoreError::Moved(format!(
+        "{item} reads {now} and not {expected} — nothing was written"
     ))
 }
 
@@ -814,7 +849,7 @@ impl Store for Bd {
                 by,
             ],
             item,
-            from,
+            &format!("held by {}", holder_named(from)),
         )
     }
 
@@ -843,28 +878,48 @@ impl Store for Bd {
         ])
     }
 
-    /// Both flags on one `update`, which bd takes: the empty assignee is what
+    /// Taken from a writer who is not the holder on an `in_progress` item —
+    /// measured on 1.3.0, where it is the assignee and not the status that bd
+    /// keeps for the holder alone.
+    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
+        self.wrote(&["update", item, "--status", "open", "--actor", by])
+    }
+
+    /// Every flag on one `update`, which bd takes: the empty assignee is what
     /// clears the field, measured on 1.3.0 — the one call left no `assignee`
-    /// and no `fleet.orders`, and the `fleet.run` key beside it standing.
+    /// and no `fleet.orders`, the `fleet.run` key beside it standing, and an
+    /// item its seat had marked `in_progress` open and in `bd ready` again.
     /// `--if-assignee` names the retiring seat, which is what bd 1.3.0 takes
     /// from a retirer on an item that seat marked `in_progress` — measured,
-    /// where the same call without it is refused.
-    fn withdraw_order(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
+    /// where the same call without it is refused. `--if-status` is what keeps
+    /// the reopen off a CLOSED item: measured, the call without it reopened an
+    /// item its holder had closed, and with it wrote nothing and exited 13.
+    fn withdraw_order(
+        &self,
+        item: &str,
+        seat: &str,
+        status: &str,
+        by: &str,
+    ) -> Result<(), StoreError> {
         self.fenced(
             &[
                 "update",
                 item,
                 "--if-assignee",
                 seat,
+                "--if-status",
+                status,
                 "--assignee",
                 "",
                 "--unset-metadata",
                 keys::ORDERS,
+                "--status",
+                "open",
                 "--actor",
                 by,
             ],
             item,
-            seat,
+            &format!("held by {} as {status}", holder_named(seat)),
         )
     }
 

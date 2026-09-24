@@ -279,10 +279,10 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
             Err(stop) => return Err(as_refusal(stop)),
         };
         if held.is_empty() {
-            return Ok(held);
+            return Ok(Vec::new());
         }
         seat::retire::withdraw(&store, &held, seat, &by).map_err(as_refusal)?;
-        Ok(held)
+        Ok(held.into_iter().map(|row| row.id).collect())
     };
 
     match transient::retire_with(&machine, &args.seat, args.dead, &withdrawal) {
@@ -312,7 +312,7 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
             }
             for item in &reclaimed.withdrawn {
                 eprintln!(
-                    "{}: {item} — it stays open, unassigned",
+                    "{}: {item} — it is open and unassigned",
                     seat::retire::WITHDRAWN
                 );
             }

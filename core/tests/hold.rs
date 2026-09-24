@@ -185,6 +185,10 @@ impl Store for Swallowing<'_> {
         self.inner.unset_orders(item, by)
     }
 
+    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
+        self.inner.reopen(item, by)
+    }
+
     fn hold(&self, _item: &str, _reason: &str, _by: &str) -> Result<String, StoreError> {
         Ok(String::from("fx-nothing"))
     }

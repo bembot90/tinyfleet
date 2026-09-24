@@ -1743,7 +1743,7 @@ fn a_retire_withdraws_the_order_the_seat_still_holds() {
     assert!(orders.is_null(), "and carries no orders key: {orders}");
     assert!(
         notes.contains("ORDER WITHDRAWN at retire: transient-1 retired by")
-            && notes.contains("the item stays open, unassigned"),
+            && notes.contains("the item is open and unassigned"),
         "the withdrawal is on the record: {notes}"
     );
     // The dispatch's own order note is still there under it: the withdrawal
@@ -1792,6 +1792,28 @@ fn a_retire_withdraws_an_item_the_seat_marked_in_progress() {
     assert!(
         notes.contains("ORDER WITHDRAWN at retire: transient-1 retired by"),
         "the withdrawal is on the record: {notes}"
+    );
+    // fleet-3e6: AND IT IS OPEN AGAIN. An item left `in_progress` with nobody
+    // holding it is out of bd's ready set, so no dispatch would ever reach it
+    // again without somebody reopening it by hand.
+    let shown = rig.bd(&["-q", "show", &item, "--json"]);
+    let shown: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&shown.stdout).trim())
+            .expect("bd show answers JSON");
+    assert_eq!(
+        shown[0]["status"].as_str(),
+        Some("open"),
+        "the claimed item reads open: {shown}"
+    );
+    let ready = rig.bd(&["ready", "--json", "-n", "0"]);
+    let ready: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&ready.stdout).trim())
+            .expect("bd ready answers JSON");
+    assert!(
+        ready
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["id"].as_str() == Some(&item))),
+        "and bd calls it ready: {ready}"
     );
 }
 

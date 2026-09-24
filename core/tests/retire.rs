@@ -60,12 +60,21 @@ fn read(store: &FakeStore, id: &str) -> Item {
     store.show(id).expect("the store answers about the item")
 }
 
+/// The ids of the rows `held` answered, in the order it answered them.
+fn ids_of(held: &[AssignedItem]) -> Vec<String> {
+    held.iter().map(|row| row.id.clone()).collect()
+}
+
 #[test]
 fn a_retire_withdraws_every_open_ordered_item_the_seat_still_holds() {
     let store = board();
 
     let held = retire::held(&store, SEAT).expect("the board answers");
-    assert_eq!(held, vec![HELD.to_string()], "the query names one item");
+    assert_eq!(
+        ids_of(&held),
+        vec![HELD.to_string()],
+        "the query names one item"
+    );
 
     retire::withdraw(&store, &held, SEAT, BY).expect("the withdrawal lands");
 
@@ -84,14 +93,110 @@ fn a_retire_withdraws_every_open_ordered_item_the_seat_still_holds() {
     let notes = after.notes.unwrap_or_default();
     assert_eq!(
         notes,
-        format!("{WITHDRAWN}: {SEAT} retired by {BY}; the item stays open, unassigned"),
+        format!("{WITHDRAWN}: {SEAT} retired by {BY}; the item is open and unassigned"),
         "one note, naming the seat and who retired it"
     );
 }
 
-/// Read beside the arm above: the three items the query must NOT name are
-/// exactly the three shapes a wider query would sweep up — an item held under
-/// no order, a closed one, and another seat's.
+/// fleet-3e6: AN ITEM THE SEAT MARKED `in_progress` GOES BACK TO OPEN. Left
+/// `in_progress` with nobody holding it, it is out of the ready set, and no
+/// dispatch reaches it until somebody reopens it by hand — so the withdrawal
+/// reopens it, and it reads open, unassigned, unordered and ready.
+#[test]
+fn a_retire_reopens_an_item_the_seat_marked_in_progress() {
+    let store = board();
+    store.seed(item(HELD, "in_progress", SEAT, true));
+    assert!(
+        !store
+            .ready()
+            .expect("the store answers")
+            .contains(&HELD.to_string()),
+        "an in_progress item is not ready, which is the whole defect"
+    );
+
+    let held = retire::held(&store, SEAT).expect("the board answers");
+    assert_eq!(ids_of(&held), vec![HELD.to_string()], "the query names it");
+    retire::withdraw(&store, &held, SEAT, BY).expect("the withdrawal lands");
+
+    let after = read(&store, HELD);
+    assert_eq!(after.status, "open", "the claimed item reads open");
+    assert!(
+        after.assignee.as_deref().unwrap_or("").trim().is_empty() && !after.has_orders_key,
+        "and unassigned and unordered: {}",
+        after.document
+    );
+    assert!(
+        store
+            .ready()
+            .expect("the store answers")
+            .contains(&HELD.to_string()),
+        "and back in the ready set"
+    );
+}
+
+/// A CLOSED ITEM IS NEVER REOPENED. The listing read the item `in_progress`,
+/// and its own seat closed it before the write — a landing keeps the assignee
+/// and the order on the item it closes — so the fence on the listed status
+/// refuses the withdrawal with nothing written, and the item stays closed.
+#[test]
+fn a_retire_whose_item_was_closed_after_the_listing_is_refused_and_reopens_nothing() {
+    let store = board();
+    store.seed(item(HELD, "in_progress", SEAT, true));
+    let held = retire::held(&store, SEAT).expect("the board answers");
+    store
+        .close(HELD, "landed", SEAT)
+        .expect("the seat lands its item after the listing");
+
+    let stop = retire::withdraw(&store, &held, SEAT, BY).expect_err("the item was closed");
+
+    assert_eq!(
+        stop.code, REFUSED,
+        "an item closed since the listing is the record's answer: {}",
+        stop.message
+    );
+    assert!(
+        stop.message.contains(HELD) && stop.message.contains("closed"),
+        "the refusal names the item and what it reads now: {}",
+        stop.message
+    );
+    let after = read(&store, HELD);
+    assert_eq!(after.status, "closed", "the item stays closed");
+    assert!(
+        after.has_orders_key && after.assignee.as_deref() == Some(SEAT),
+        "nothing was written: {}",
+        after.document
+    );
+    assert_eq!(after.notes, None, "and no withdrawal note either");
+}
+
+/// A ROW THE CALLER HANDS IN CLOSED is refused before any write: the fence
+/// would take the status it names, so the one guard against reopening a closed
+/// item that no listing produced is the withdrawal's own.
+#[test]
+fn a_retire_handed_a_closed_row_writes_nothing() {
+    let store = board();
+    let row = AssignedItem {
+        id: CLOSED.to_string(),
+        status: String::from("closed"),
+        has_orders_key: true,
+        ..AssignedItem::default()
+    };
+
+    let stop = retire::withdraw(&store, &[row], SEAT, BY).expect_err("a closed row");
+
+    assert!(
+        stop.message.contains(CLOSED) && stop.message.contains("listed closed"),
+        "{}",
+        stop.message
+    );
+    assert!(store.wrote().is_empty(), "{:?}", store.wrote());
+    assert_eq!(read(&store, CLOSED).status, "closed");
+}
+
+/// Read beside `a_retire_withdraws_every_open_ordered_item_the_seat_still_holds`:
+/// the three items the query must NOT name are exactly the three shapes a
+/// wider query would sweep up — an item held under no order, a closed one, and
+/// another seat's.
 #[test]
 fn a_retire_leaves_what_the_seat_does_not_hold_under_an_open_order() {
     let store = board();
@@ -143,7 +248,7 @@ fn a_retire_leaves_another_writers_orders_key_untouched() {
 
     let held = retire::held(&store, SEAT).expect("the board answers");
     assert_eq!(
-        held,
+        ids_of(&held),
         vec![HELD.to_string()],
         "the query names fleet's order alone"
     );
@@ -187,9 +292,9 @@ fn a_retire_withdraws_an_ordered_epic_the_seat_still_names() {
     });
 
     let mut held = retire::held(&store, SEAT).expect("the board answers");
-    held.sort();
+    held.sort_by(|a, b| a.id.cmp(&b.id));
     assert_eq!(
-        held,
+        ids_of(&held),
         vec![EPIC.to_string(), HELD.to_string()],
         "the query names the ordered epic beside the ordered task"
     );
@@ -378,7 +483,7 @@ fn a_retire_withdraws_an_ordered_item_past_the_fiftieth_row() {
 
     let held = retire::held(&store, SEAT).expect("the board answers");
     assert_eq!(
-        held,
+        ids_of(&held),
         vec![String::from("fx-row-51")],
         "the query names the ordered item at row 51"
     );

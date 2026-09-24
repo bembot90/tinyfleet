@@ -225,10 +225,10 @@ impl Runs for Engine {
 fn withdrawn_from(store: &dyn Store, seat: &str, by: &str) -> Result<Vec<String>, Refusal> {
     let held = seat::retire::held(store, seat).map_err(as_refusal)?;
     if held.is_empty() {
-        return Ok(held);
+        return Ok(Vec::new());
     }
     seat::retire::withdraw(store, &held, seat, by).map_err(as_refusal)?;
-    Ok(held)
+    Ok(held.into_iter().map(|row| row.id).collect())
 }
 
 /// The run seam's own half of the retire, which no end-to-end arm reaches: the
@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(after.status, "open", "the work itself is still to be done");
         assert_eq!(
             after.notes.unwrap_or_default(),
-            format!("{WITHDRAWN}: {SEAT} retired by controller; the item stays open, unassigned"),
+            format!("{WITHDRAWN}: {SEAT} retired by controller; the item is open and unassigned"),
             "the withdrawal says who took it, and the cleanup is the controller"
         );
     }

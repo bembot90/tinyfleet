@@ -440,6 +440,10 @@ impl Store for Doctored<'_> {
         self.inner.unset_orders(item, by)
     }
 
+    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
+        self.inner.reopen(item, by)
+    }
+
     fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
         self.inner.hold(item, reason, by)
     }
