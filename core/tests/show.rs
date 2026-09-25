@@ -8,14 +8,14 @@
 
 use fleet_core::entry::{
     to_json, About, Body, CheckResult, CheckRow, Choice, Classification, Clearance, Cleared,
-    Decision, Delivered, Entry, Finding, Held, HoldReason, Landed, NotProven, NotTested, OrderKind,
+    Decision, Delivered, Entry, Finding, Held, HoldReason, Landed, NotProven, NotTested,
     OrderWithdrawn, Ordered, Ran, Reviewed, Ruling, RulingKind, Size, SpecCorrection, SuiteRun,
     Verdict, Withdrawal, WorkBranch,
 };
 use fleet_core::item::show::{document, entry_lines, render};
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
-use fleet_core::store::{Item, Order, OrderState, Stamp, Status};
+use fleet_core::store::{Item, Order, OrderKind, OrderState, Stamp, Status};
 
 const C1: &str = "1111111111111111111111111111111111111111";
 const C2: &str = "2222222222222222222222222222222222222222";
@@ -40,7 +40,7 @@ fn words(text: &str) -> String {
 /// the seat named or to none yet.
 fn an_order(seat: Option<SeatId>) -> OrderState {
     OrderState::Ordered(Order {
-        kind: fleet_core::store::OrderKind::Dispatch,
+        kind: OrderKind::Dispatch,
         by: actor("run:lead-1"),
         seat,
         at: Stamp::parse("2026-09-23T10:00:00Z").expect("a stamp"),

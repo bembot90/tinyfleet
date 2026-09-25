@@ -267,9 +267,6 @@ impl From<Stamp> for String {
 // ---- the order ------------------------------------------------------------------
 
 /// What an order asks of the seat it names.
-///
-/// Not [`crate::entry::OrderKind`], which is the `ordered` entry's and spells
-/// only the dispatch its writers make today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OrderKind {

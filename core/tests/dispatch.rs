@@ -19,7 +19,7 @@ use common::{
     a_dispatch, agent, full, keys_agree, seat_id, signal, sweep_dead_stores, Fixture, Graph,
     Rooted, StubEvents,
 };
-use fleet_core::entry::{Body, Entry, OrderKind, OrderWithdrawn, Ordered, Timeline, Withdrawal};
+use fleet_core::entry::{Body, Entry, OrderWithdrawn, Ordered, Timeline, Withdrawal};
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
 use fleet_core::item::dispatch::{self, Order, Wiring, NOT_TOLD, WITHDRAWN};
 use fleet_core::item::{
@@ -461,7 +461,7 @@ fn timeline_of(rig: &Rig, item: &str) -> Vec<Entry> {
 /// The entry a dispatch appends: the order, to `seat` or to no seat yet.
 fn ordered_to(seat: Option<SeatId>) -> Body {
     Body::Ordered(Ordered {
-        order: OrderKind::Dispatch,
+        order: store::OrderKind::Dispatch,
         seat,
     })
 }

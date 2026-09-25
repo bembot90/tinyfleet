@@ -35,15 +35,15 @@ use std::time::{Duration, Instant};
 
 use common::capped::{calls, capped_bd, Held};
 use common::{a_delivery, seat_actor, Fixture, A_COMMIT};
-use fleet_core::entry::{Body, OrderKind, Ordered};
+use fleet_core::entry::{Body, Ordered};
 use fleet_core::item::{recorded, Stop, Unrecorded, COULD_NOT_TELL, REFUSED};
 use fleet_core::process::DRAIN_GRACE;
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
 use fleet_core::store::bd::{item_from, Bd};
 use fleet_core::store::{
-    self, Filter, HoldId, ItemId, ItemSummary, NewItem, Order, OrderState, RunRecord, Stamp, Store,
-    StoreError, Update,
+    self, Filter, HoldId, ItemId, ItemSummary, NewItem, Order, OrderKind, OrderState, RunRecord,
+    Stamp, Store, StoreError, Update,
 };
 use fleet_core::test_support::the_test;
 

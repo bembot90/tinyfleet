@@ -32,7 +32,7 @@ use super::{
     Status, Store, StoreError, Update,
 };
 use crate::entry::{
-    self, Body, Delivered, NotProven, OrderWithdrawn, Ordered, Ran, SuiteRun, Withdrawal,
+    Body, Delivered, NotProven, OrderWithdrawn, Ordered, Ran, SuiteRun, Withdrawal,
 };
 use crate::seat::actor::{Actor, ActorKind};
 use crate::seat::identity::SeatId;
@@ -776,7 +776,7 @@ fn timeline(ctx: &Ctx) -> Answer {
     let author = Actor::seat(seat);
     let bodies = [
         Body::Ordered(Ordered {
-            order: entry::OrderKind::Dispatch,
+            order: OrderKind::Dispatch,
             seat: Some(seat),
         }),
         Body::OrderWithdrawn(OrderWithdrawn {
@@ -975,7 +975,7 @@ fn export(ctx: &Ctx) -> Answer {
         ctx.store.append(
             &id,
             &Body::Ordered(Ordered {
-                order: entry::OrderKind::Dispatch,
+                order: OrderKind::Dispatch,
                 seat: None,
             }),
             &Actor::seat(SeatId::mint()),

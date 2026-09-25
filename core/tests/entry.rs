@@ -9,12 +9,12 @@
 use fleet_core::entry::{
     decode, encode, full_sha, read_row, to_json, About, Body, CheckResult, CheckRow, Choice,
     Classification, Clearance, Cleared, Decision, Delivered, Entry, Finding, Held, HoldReason,
-    Landed, NotProven, NotTested, OrderKind, OrderWithdrawn, Ordered, Ran, Read, Reviewed, Ruling,
-    RulingKind, Size, SpecCorrection, SuiteRun, Timeline, Verdict, Withdrawal, WorkBranch, KEY,
-    KINDS, VERSION,
+    Landed, NotProven, NotTested, OrderWithdrawn, Ordered, Ran, Read, Reviewed, Ruling, RulingKind,
+    Size, SpecCorrection, SuiteRun, Timeline, Verdict, Withdrawal, WorkBranch, KEY, KINDS, VERSION,
 };
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::SeatId;
+use fleet_core::store::OrderKind;
 
 const C1: &str = "1111111111111111111111111111111111111111";
 const C2: &str = "2222222222222222222222222222222222222222";
@@ -235,6 +235,26 @@ fn every_kind_encodes_and_decodes_back_to_the_same_body() {
         );
         assert_eq!(decode(&text), Read::Entry(body), "{text}");
     }
+}
+
+#[test]
+fn an_ordered_dispatch_is_this_text_to_the_byte() {
+    assert_eq!(
+        encode(&ordered(Some(seat()))),
+        format!(r#"{{"fleet.entry":1,"kind":"ordered","order":"dispatch","seat":"{SEAT}"}}"#)
+    );
+}
+
+#[test]
+fn an_ordered_review_reads_as_an_entry() {
+    let text = r#"{"fleet.entry":1,"kind":"ordered","order":"review"}"#;
+    assert_eq!(
+        decode(text),
+        Read::Entry(Body::Ordered(Ordered {
+            order: OrderKind::Review,
+            seat: None,
+        }))
+    );
 }
 
 #[test]

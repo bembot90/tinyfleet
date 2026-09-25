@@ -861,10 +861,10 @@ impl Rig {
 /// answers every question wrong.
 #[test]
 fn item_show_prints_the_item_and_its_entries_and_refuses_what_it_cannot_read() {
-    use fleet_core::entry::{Body, OrderKind, Ordered};
+    use fleet_core::entry::{Body, Ordered};
     use fleet_core::seat::actor::Actor;
     use fleet_core::store::bd::Bd;
-    use fleet_core::store::Store;
+    use fleet_core::store::{OrderKind, Store};
 
     let rig = Rig::new("show");
     let item = rig.a_ready_item();

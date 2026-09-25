@@ -19,7 +19,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::entry::{Body, OrderKind, OrderWithdrawn, Ordered, Withdrawal};
+use crate::entry::{Body, OrderWithdrawn, Ordered, Withdrawal};
 use crate::item::brief::{self, Packs, Subject, TRANSIENT};
 use crate::item::deliver::holds;
 use crate::item::{
@@ -578,7 +578,7 @@ fn write_order(
     first: bool,
 ) -> Result<String, Stop> {
     let ordered = Body::Ordered(Ordered {
-        order: OrderKind::Dispatch,
+        order: store::OrderKind::Dispatch,
         seat: seat.copied(),
     });
     let entry = recorded(wiring.store, order.item, &ordered, order.by).map_err(|unrecorded| {

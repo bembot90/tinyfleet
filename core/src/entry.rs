@@ -32,6 +32,7 @@ use serde_json::Value;
 
 use crate::seat::actor::Actor;
 use crate::seat::identity::SeatId;
+use crate::store::OrderKind;
 
 /// The key an entry's text carries, and the version it carries it at.
 pub const KEY: &str = "fleet.entry";
@@ -100,13 +101,6 @@ pub struct Ordered {
     pub order: OrderKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seat: Option<SeatId>,
-}
-
-/// What an order asks for. Dispatch is the one kind HEAD writes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OrderKind {
-    Dispatch,
 }
 
 /// An order taken back, and why.

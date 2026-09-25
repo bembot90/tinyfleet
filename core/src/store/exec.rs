@@ -836,7 +836,7 @@ mod tests {
             at: String::from("2026-09-23T10:00:00Z"),
             by: by(),
             body: Body::Ordered(entry::Ordered {
-                order: entry::OrderKind::Dispatch,
+                order: crate::store::OrderKind::Dispatch,
                 seat: Some(crate::seat::identity::SeatId::parse(SEAT).expect("a seat id")),
             }),
         };
