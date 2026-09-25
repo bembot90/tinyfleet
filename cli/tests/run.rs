@@ -1958,20 +1958,15 @@ fn a_run_object_at_an_unknown_version_is_could_not_tell_and_never_executed() {
 
 /// One run held on a real store the way the controller's run pass leaves one
 /// at `[core.run] max_crashes`: a workflow nothing could classify, then the hold
-/// on its record. `noted` is the park the seam makes now, hold and note; unset,
-/// it is the bare hold the seam raised before the note existed.
-fn a_run_held_at_the_cap(rig: &Rig, noted: bool) -> (String, String) {
+/// on its record. `entered` is the park the seam makes now, the hold and its
+/// held entry; unset, it is a bare hold nothing on the record names.
+fn a_run_held_at_the_cap(rig: &Rig, entered: bool) -> (String, String) {
     use fleet_core::store::Store;
     let out = rig.run(&["run", &rig.workflow(ONE), "--by", BY]);
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     let (id, _) = started_line(&out);
     let store = fleet_core::store::Bd::at(&rig.project);
-    let hold = if noted {
-        let packs = fleet_core::item::brief::Packs::under(
-            &rig.machine.join("packs"),
-            &rig.machine.join(fleet_core::defaults::DIR),
-        )
-        .unwrap_or_else(|stop| panic!("the layers resolve: {}", stop.message));
+    let hold = if entered {
         fleet_core::item::hold::park_at_the_cap(
             &fleet_core::item::hold::Capped {
                 run: &id,
@@ -1980,20 +1975,19 @@ fn a_run_held_at_the_cap(rig: &Rig, noted: bool) -> (String, String) {
                 by: &the_controller(),
             },
             &store,
-            &packs,
         )
         .unwrap_or_else(|stop| panic!("the park is made: {}", stop.message))
     } else {
         store
-            .hold(&id, "a park from before the note", "controller")
+            .hold(&id, "a hold nothing on the record names", "controller")
             .expect("the bare hold is raised")
     };
     (id, hold)
 }
 
 /// The crash cap's park, cleared through the shipped binary on a real store:
-/// `fleet clear` finds the park the note names, clears the hold the store
-/// raised, and says so on the stream.
+/// `fleet clear` finds the hold the held entry names, writes the cleared entry,
+/// clears the hold the store raised, and says so on the stream.
 #[test]
 fn a_run_held_at_the_crash_cap_clears_through_fleet_clear() {
     let rig = Rig::new(
@@ -2011,13 +2005,41 @@ fn a_run_held_at_the_crash_cap_clears_through_fleet_clear() {
     assert_eq!(cleared["payload"]["item"].as_str(), Some(id.as_str()));
     assert_eq!(cleared["payload"]["hold"].as_str(), Some(hold.as_str()));
     assert!(!open_holds(&rig).contains(&hold), "the hold is cleared");
+
+    // The record: one held entry at the cap, by the controller, and the
+    // person's clearance of it.
+    use fleet_core::store::Store;
+    let entries = fleet_core::store::Bd::at(&rig.project)
+        .timeline(&id)
+        .expect("the record's timeline reads");
+    assert_eq!(entries.len(), 2, "{entries:?}");
+    assert!(
+        matches!(
+            &entries[0].body,
+            fleet_core::entry::Body::Held(held)
+                if held.hold == hold
+                    && held.reason == fleet_core::entry::HoldReason::MaxCrashes
+                    && held.run_hash.is_some()
+        ),
+        "{entries:?}"
+    );
+    assert_eq!(entries[0].by, the_controller());
+    assert_eq!(
+        entries[1].body,
+        fleet_core::entry::Body::Cleared(fleet_core::entry::Cleared {
+            hold: hold.clone(),
+            how: fleet_core::entry::Clearance::Answer,
+            letter: Some(String::from("B")),
+            text: None,
+        })
+    );
+    assert_eq!(entries[1].by.to_string(), PERSON);
 }
 
 /// `fleet cancel` on a held run clears the hold standing on its record and
-/// closes it — here the bare hold a park raised before its note existed, which
-/// `fleet clear` cannot reach and which kept the record's close blocked. The
-/// holds are the store's own answer, so a noted park's hold is found the same
-/// way.
+/// closes it — here a bare hold nothing on the record names, which `fleet
+/// clear` cannot reach and which kept the record's close blocked. The holds
+/// are the store's own answer, so a held entry's hold is found the same way.
 #[test]
 fn a_cancel_clears_the_hold_on_a_held_runs_record_and_closes_it() {
     let rig = Rig::new(
@@ -2049,6 +2071,31 @@ fn a_cancel_clears_the_hold_on_a_held_runs_record_and_closes_it() {
         cleared["payload"]["letter"].is_null(),
         "nobody chose a letter: {cleared}"
     );
+
+    // THE RECORD SAYS CANCELLED, and never a letter nobody chose: one cleared
+    // entry for the hold, by whoever cancelled, carrying no letter and no text.
+    //
+    // RED-PROOF: before the cleared entry, the only record of this was the
+    // stream's line above, its letter null.
+    use fleet_core::store::Store;
+    let entries = fleet_core::store::Bd::at(&rig.project)
+        .timeline(&id)
+        .expect("the closed record's timeline reads");
+    let clearances: Vec<_> = entries
+        .iter()
+        .filter(|entry| matches!(entry.body, fleet_core::entry::Body::Cleared(_)))
+        .collect();
+    assert_eq!(clearances.len(), 1, "one per hold: {entries:?}");
+    assert_eq!(
+        clearances[0].body,
+        fleet_core::entry::Body::Cleared(fleet_core::entry::Cleared {
+            hold: bare.clone(),
+            how: fleet_core::entry::Clearance::Cancel,
+            letter: None,
+            text: None,
+        })
+    );
+    assert_eq!(clearances[0].by.to_string(), PERSON, "by who cancelled");
 }
 
 /// The refusals, each exit 1 on the record as it stands and each leaving it so:

@@ -43,14 +43,14 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::entry::{Timeline, Verdict};
+use crate::entry::{Body, Clearance, Timeline, Verdict};
 use crate::item::brief::Packs;
 use crate::item::deliver::{named, reviewer_of};
 use crate::item::lane;
 use crate::item::run;
 use crate::item::{
-    control_token, last_answer, last_landing, marker_block, render, Events, Git, Project, Stop,
-    CHECK_READ, ITEM_LANDED, LANDING_MARKERS, TRUNK, TRUNK_BRANCH,
+    control_token, last_landing, marker_block, render, Events, Git, Project, Stop, CHECK_READ,
+    ITEM_LANDED, LANDING_MARKERS, TRUNK, TRUNK_BRANCH,
 };
 use crate::policy;
 use crate::seat::actor::{Actor, ActorKind};
@@ -595,9 +595,18 @@ fn run(
     }
     // THE RUN'S LICENCE. A seat answers for its own landing by making it; a run
     // answers for nothing, so a run's landing stands on the reviewer's own
-    // answer to the hold this run raised and is refused where there is none.
+    // clearance of the hold this run raised about the item, and is refused
+    // where there is none.
     if let Some(record) = &by_run {
-        licensed(record, closer, wiring.seats)?;
+        let entries = wiring.store.timeline(&record.id)?;
+        licensed(
+            &record.id,
+            &Timeline(&entries),
+            &item.id,
+            commit,
+            closer,
+            wiring.seats,
+        )?;
     }
     // The name the landing is written under wherever one is asked for and two
     // are the fact: the seat a person reads and the id a script can pass.
@@ -1835,51 +1844,67 @@ fn neither(by: &Actor) -> Stop {
     ))
 }
 
-/// The reviewer's own answer to the hold this run raised, which is the whole
-/// licence for a run to land anything.
+/// The reviewer's own clearance of the hold this run raised about the item,
+/// which is the whole licence for a run to land it (fleet-zlk D8).
 ///
-/// The hold is raised on the RUN's record and cleared there, so that record is
-/// where the answer is read; the landing the answer licenses is on the item.
-/// Whoever answered is read as the typed actor `clear` signed with, and
-/// licenses the landing only where it is a seat and that seat is the reviewer:
-/// an answer signed by any other seat, by another kind, or with text that is
-/// no typed actor at all is refused, naming what it says.
-fn licensed(record: &Item, reviewer: SeatId, seats: &Directory) -> Result<(), Stop> {
+/// The hold is raised on the RUN's record and cleared there, so that timeline
+/// is where the licence is read; the landing it licenses is on the item. The
+/// hold read is the LAST held entry whose `about` names the item — at this
+/// commit, where it names one — and it licenses the landing only where its
+/// clearance is an answer, by the reviewer's seat, with the letter `about`
+/// says licenses it. Each piece missing is its own refusal.
+fn licensed(
+    run: &str,
+    timeline: &Timeline,
+    item: &str,
+    commit: &str,
+    reviewer: SeatId,
+    seats: &Directory,
+) -> Result<(), Stop> {
     let wanted = seats.label(&reviewer);
-    let notes = record.notes.clone().unwrap_or_default();
-    let Some(answer) = last_answer(&notes) else {
+    let about_this = timeline.0.iter().rev().find_map(|entry| match &entry.body {
+        Body::Held(held) => held
+            .about
+            .as_ref()
+            .filter(|about| {
+                about.items.iter().any(|named| named == item)
+                    && about.commit.as_deref().is_none_or(|named| named == commit)
+            })
+            .map(|about| (&held.hold, about)),
+        _ => None,
+    });
+    let Some((hold, about)) = about_this else {
         return Err(Stop::refused(format!(
-            "run {} carries no cleared hold — a run lands what `{wanted}` answered for, and \
-             nobody has answered this run anything",
-            record.id
+            "run {run} raised no hold about {item} — a run lands what {wanted} cleared, and \
+             nobody was asked about this item"
         )));
     };
-    let Some(who) = after_dash(&answer) else {
-        return Err(Stop::could_not_tell(format!(
-            "run {}'s last answer names nobody after its em dash — who answered is what licenses \
-             the landing",
-            record.id
+    let Some((cleared_by, cleared)) = timeline.clearance(hold) else {
+        return Err(Stop::refused(format!(
+            "run {run}'s hold {hold} about {item} is not cleared yet"
         )));
     };
-    let answered = Actor::typed(&who).and_then(Result::ok);
-    if answered.as_ref().and_then(Actor::seat_id) == Some(reviewer) {
-        return Ok(());
+    if cleared.how == Clearance::Cancel {
+        return Err(Stop::refused(format!(
+            "run {run}'s hold {hold} about {item} was cancelled, and a cancel licenses nothing"
+        )));
     }
-    let who = answered.map_or(who, |actor| actor.to_string());
-    Err(Stop::refused(format!(
-        "run {}'s last hold was cleared by `{who}` and not by `{wanted}` — a run lands as the \
-         `[core] reviewer` and on that seat's own answer",
-        record.id
-    )))
-}
-
-/// What a note's own first line names after its em dash: the seat on a
-/// delivery, the reviewer on a verdict.
-fn after_dash(region: &str) -> Option<String> {
-    let first = region.lines().next()?;
-    let (_, who) = first.split_once(" — ")?;
-    let who = who.trim();
-    (!who.is_empty()).then(|| who.to_string())
+    if cleared_by.by.seat_id() != Some(reviewer) {
+        return Err(Stop::refused(format!(
+            "run {run}'s hold {hold} was cleared by {} and not by {wanted} — a run lands as the \
+             [core] reviewer and on that seat's own clearance",
+            cleared_by.by
+        )));
+    }
+    let letter = cleared.letter.as_deref().unwrap_or_default();
+    if letter != about.licenses {
+        return Err(Stop::refused(format!(
+            "run {run}'s hold {hold} was cleared {letter}, and {} is the letter that licenses a \
+             landing",
+            about.licenses
+        )));
+    }
+    Ok(())
 }
 
 /// The commit's message: the subject, the marker where there is one, and the

@@ -454,6 +454,7 @@ pub fn hold_command(args: &HoldArgs) -> Exit {
                 "item": held.item,
                 "state": state(ITEM_HELD),
                 "hold": held.hold,
+                "entry": held.entry,
             }),
             args.json,
         ),
@@ -470,6 +471,7 @@ pub fn clear_command(args: &ClearArgs) -> Exit {
                 "item": cleared.item,
                 "state": state(HOLD_CLEARED),
                 "hold": cleared.hold,
+                "entry": cleared.entry,
             }),
             args.json,
         ),
@@ -489,7 +491,6 @@ fn run_hold(parsed: &HoldArgs, out: &mut dyn Write) -> Result<hold::Held, Stop> 
     let here = resolve_at(parsed.packs_dir.clone())?;
     let by = acting("hold", parsed.by.as_deref(), &here)?;
     let store = open_store(&here.project.root);
-    let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
         root: here.project.root.clone(),
     };
@@ -509,7 +510,6 @@ fn run_hold(parsed: &HoldArgs, out: &mut dyn Write) -> Result<hold::Held, Stop> 
         &hold::Wiring {
             store: &store,
             git: &git,
-            packs: &packs,
             project: &here.project,
             events: &events,
         },
@@ -520,7 +520,6 @@ fn run_clear(parsed: &ClearArgs, out: &mut dyn Write) -> Result<hold::Cleared, S
     let here = resolve_at(parsed.packs_dir.clone())?;
     let by = acting("clear", parsed.by.as_deref(), &here)?;
     let store = open_store(&here.project.root);
-    let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
         root: here.project.root.clone(),
     };
@@ -539,7 +538,6 @@ fn run_clear(parsed: &ClearArgs, out: &mut dyn Write) -> Result<hold::Cleared, S
         &hold::Wiring {
             store: &store,
             git: &git,
-            packs: &packs,
             project: &here.project,
             events: &events,
         },

@@ -34,8 +34,8 @@ What each verb writes, so you know what to look for afterwards:
 | `deliver` | the commit on the work branch, and the delivery note on the item, rendered from the JSON file `--delivery` names |
 | `review` | the reviewed entry: accepted, or returned with its findings |
 | `land` | the squashed commit on the trunk, the landing note, and the closed item |
-| `hold` | everything the tree holds, committed on the work branch; the hold, carrying the question from the JSON file `--question` names; the park on the item |
-| `clear` | the answer note on the item, and the hold cleared |
+| `hold` | everything the tree holds, committed on the work branch; the hold, carrying the question from the JSON file `--question` names; the held entry on the item |
+| `clear` | the cleared entry on the item, with the letter and any `--text`, and the hold cleared |
 
 When a question blocks you and nobody here can answer it, `fleet hold
 --question <file>` is the way to stop: it commits everything your tree holds,

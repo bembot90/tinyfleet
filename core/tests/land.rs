@@ -2590,11 +2590,16 @@ fn an_accept_another_seat_wrote_is_refused_before_the_trunk_is_touched() {
 fn a_runs_landing_lands_its_own_runs_accept_and_no_other_runs() {
     let board = store();
     let scratch = &board;
-    let answered = as_reviewer().to_string();
-    let record = a_run(&scratch.store, Some(&answered));
-    let other = a_run(&scratch.store, Some(&answered));
-
     let foreign = an_item(&scratch.store, "an item another run accepted", None);
+    let own = an_item(&scratch.store, "an item its own run accepted", None);
+    // THE LANDING'S OWN RUN, licensed for both items by the reviewer's clearance
+    // of one flight-wide hold: the licence is read before the verdict is, so
+    // only the verdict is left to refuse.
+    let record = a_run_holding(&scratch.store, about(&[&foreign, &own], None));
+    cleared(&scratch.store, &record, &as_reviewer(), Some("A"));
+    // THE OTHER RUN, whose record lends its accept a typed author and no more.
+    let other = a_run_holding(&scratch.store, about(&[&foreign], Some(SHA)));
+
     scratch
         .store
         .append(
@@ -2624,7 +2629,6 @@ fn a_runs_landing_lands_its_own_runs_accept_and_no_other_runs() {
     assert!(no_fetch(&git), "{:?}", git.calls());
 
     // THE CONTROL: the accept the landing's own run wrote.
-    let own = an_item(&scratch.store, "an item its own run accepted", None);
     scratch
         .store
         .append(&own, &a_review(Verdict::Accepted, SHA), &the_run(&record))
@@ -4582,12 +4586,23 @@ fn the_suite_runs_under_the_constructed_path_and_the_reading_names_it() {
 
 // ---- a run's landing ---------------------------------------------------------
 
-/// The hold a run raises on its own record, as `hold` writes it and `clear`
-/// clears it. `answered_by` is `None` for the run nobody answered, and
-/// otherwise the text the answer is signed with — `clear` signs with the
-/// clearer's typed actor.
-fn a_run(store: &dyn Store, answered_by: Option<&str>) -> String {
-    let reviewer = as_reviewer().to_string();
+/// The hold id every run below raises on its record.
+const A_HOLD: &str = "a-hold";
+
+/// What a run's hold is about: the items it names, the commit where it names
+/// one, and A as the letter that licenses them — takeoff's shape.
+fn about(items: &[&str], commit: Option<&str>) -> fleet_core::entry::About {
+    fleet_core::entry::About {
+        items: items.iter().map(|item| item.to_string()).collect(),
+        commit: commit.map(String::from),
+        licenses: String::from("A"),
+    }
+}
+
+/// A run's record carrying the held entry `hold` appends on it by the run:
+/// the question takeoff asks, its two options, the run's hash, and what the
+/// hold is about.
+fn a_run_holding(store: &dyn Store, about: fleet_core::entry::About) -> String {
     let run = store
         .create(
             &fleet_core::store::NewItem {
@@ -4596,33 +4611,62 @@ fn a_run(store: &dyn Store, answered_by: Option<&str>) -> String {
                 item_type: "task",
                 labels: &[fleet_core::item::run::LABEL],
             },
-            &reviewer,
+            &as_reviewer().to_string(),
         )
         .expect("the run's record is filed");
+    let option = |letter: &str, text: &str| fleet_core::entry::Choice {
+        letter: letter.to_string(),
+        text: text.to_string(),
+    };
     store
-        .note(
+        .append(
             &run,
-            &format!(
-                "PARKED {run} — ask\n\
-                 branch:  (run)\n\
-                 commit:  {OLD}\n\
-                 hold:    a-hold\n\
-                 QUESTION Accept the delivery?\n\
-                 A. accept and land\n\
-                 B. return to the builder"
-            ),
-            &reviewer,
+            &Body::Held(fleet_core::entry::Held {
+                hold: A_HOLD.to_string(),
+                reason: fleet_core::entry::HoldReason::Ask,
+                question: String::from("Accept the delivery?"),
+                context: None,
+                options: vec![
+                    option("A", "accept and land"),
+                    option("B", "return to the builder"),
+                ],
+                branch: None,
+                commit: None,
+                run_hash: Some(OLD.to_string()),
+                about: Some(about),
+            }),
+            &the_run(&run),
         )
-        .expect("the park is on the run");
-    if let Some(who) = answered_by {
-        store
-            .note(
-                &run,
-                &format!("ANSWERED a-hold — {who}\nletter:  A\ntext:    (none)"),
-                who,
-            )
-            .expect("the answer is on the run");
-    }
+        .expect("the held entry is on the run");
+    run
+}
+
+/// The run's hold cleared by `by`, as `clear` appends it: answered with the
+/// letter, or — with none — cancelled, as `cancel` appends it.
+fn cleared(store: &dyn Store, run: &str, by: &Actor, letter: Option<&str>) {
+    let how = match letter {
+        Some(_) => fleet_core::entry::Clearance::Answer,
+        None => fleet_core::entry::Clearance::Cancel,
+    };
+    store
+        .append(
+            run,
+            &Body::Cleared(fleet_core::entry::Cleared {
+                hold: A_HOLD.to_string(),
+                how,
+                letter: letter.map(String::from),
+                text: None,
+            }),
+            by,
+        )
+        .expect("the cleared entry is on the run");
+}
+
+/// A run whose hold about `item` at [`SHA`] the reviewer cleared A: the whole
+/// licence a run's landing of that item stands on.
+fn a_licensed_run(store: &dyn Store, item: &str) -> String {
+    let run = a_run_holding(store, about(&[item], Some(SHA)));
+    cleared(store, &run, &as_reviewer(), Some("A"));
     run
 }
 
@@ -4664,9 +4708,9 @@ fn run_as(
 /// A RUN LANDS AS THE REVIEWER, WITH THE RUN NAMED BESIDE IT. The caller is
 /// `run:<record id>`, the item is held by the `[core] reviewer` — `deliver`
 /// hands every item to that seat, so on a workflow's landing the holder is
-/// never the caller — and the run carries that reviewer's own answer. The
-/// landing stands, and each of the three places one name is asked for carries
-/// both.
+/// never the caller — and the run carries that reviewer's own clearance of
+/// its hold about the item. The landing stands, and each of the three places
+/// one name is asked for carries both.
 #[test]
 fn a_run_lands_as_the_reviewer_and_names_the_run_beside_it() {
     let board = store();
@@ -4676,7 +4720,7 @@ fn a_run_lands_as_the_reviewer_and_names_the_run_beside_it() {
         "an item a run lands",
         Some(("ACCEPTED", SHA)),
     );
-    let run = a_run(&scratch.store, Some(&as_reviewer().to_string()));
+    let run = a_licensed_run(&scratch.store, &item);
     let events = StubEvents::default();
 
     let git = StubGit::clean();
@@ -4787,7 +4831,7 @@ fn a_runs_landing_is_refused_an_item_another_seat_holds() {
         .store
         .assign(&item, &full(BUILDER), REVIEWER)
         .expect("the builder holds it");
-    let run = a_run(&scratch.store, Some(&as_reviewer().to_string()));
+    let run = a_licensed_run(&scratch.store, &item);
 
     let git = StubGit::clean();
     let ran = run_as(
@@ -4817,127 +4861,243 @@ fn a_runs_landing_is_refused_an_item_another_seat_holds() {
     );
 }
 
-/// A RUN LANDS ON AN ANSWER OR NOT AT ALL. A seat answers for its own landing
-/// by making it; a run answers for nothing, so a run whose hold nobody cleared
-/// is refused — with the run named, because the answer is on its record.
+/// THE LICENCE, ARM BY ARM (fleet-zlk D8). A run's landing of an item stands
+/// on the last hold on the run's record about that item — at the commit landed,
+/// where the hold names one — cleared by the `[core] reviewer` with the letter
+/// the hold says licenses it. Each piece missing is exit 1 naming the run and
+/// the hold, and nothing is pushed.
+///
+/// RED-PROOF, (b): the answer-note licence this replaces read who answered and
+/// never the letter, so a hold the reviewer answered B licensed the landing.
 #[test]
-fn a_runs_landing_is_refused_where_nobody_cleared_its_hold() {
+fn a_runs_landing_is_refused_each_piece_of_its_licence_that_is_missing() {
     let board = store();
     let scratch = &board;
     let item = an_item(
         &scratch.store,
-        "an item nobody cleared a hold for",
+        "an item a run tries to land",
         Some(("ACCEPTED", SHA)),
     );
-    let unanswered = a_run(&scratch.store, None);
+    let other = an_item(&scratch.store, "an item the run was asked about", None);
+    let wanted = reviewer().machine_name();
+    let builder = seat_actor(BUILDER);
 
-    let git = StubGit::clean();
-    let ran = run_as(
-        scratch,
-        &scratch.store,
-        &git,
-        &item,
-        &the_run(&unanswered),
-        &StubEvents::default(),
-    );
-    assert_eq!(ran.code(), Some(1), "{}", ran.why());
-    assert!(
-        ran.why()
-            .contains(&format!("run {unanswered} carries no cleared hold")),
-        "{}",
-        ran.why()
-    );
-    assert!(
-        git.calls()
-            .iter()
-            .all(|call| !call.starts_with("push_head")),
-        "nothing was pushed: {:?}",
-        git.calls()
-    );
+    // (a) no hold about the item: none at all, one about another item, and
+    // one about this item at a commit other than the one landed.
+    let silent = scratch
+        .store
+        .create(
+            &fleet_core::store::NewItem {
+                title: "a run that asked nothing",
+                description: "a run's record",
+                item_type: "task",
+                labels: &[fleet_core::item::run::LABEL],
+            },
+            REVIEWER,
+        )
+        .expect("the run's record is filed");
+    let elsewhere = a_run_holding(&scratch.store, about(&[&other], None));
+    cleared(&scratch.store, &elsewhere, &as_reviewer(), Some("A"));
+    let at_other = a_run_holding(&scratch.store, about(&[&item], Some(OTHER)));
+    cleared(&scratch.store, &at_other, &as_reviewer(), Some("A"));
+    let mut cases: Vec<(&str, String, String)> = [&silent, &elsewhere, &at_other]
+        .into_iter()
+        .map(|run| {
+            (
+                "no hold about the item",
+                run.clone(),
+                format!(
+                    "run {run} raised no hold about {item} — a run lands what {wanted} cleared, \
+                     and nobody was asked about this item"
+                ),
+            )
+        })
+        .collect();
 
-    // THE CONTROL, on the same board and the same item: the one thing that
-    // changed is that somebody answered, and the landing stands.
-    let answered = a_run(&scratch.store, Some(&as_reviewer().to_string()));
-    let git = StubGit::clean();
-    let ran = run_as(
-        scratch,
-        &scratch.store,
-        &git,
-        &item,
-        &the_run(&answered),
-        &StubEvents::default(),
-    );
-    assert!(
-        ran.landed.is_ok(),
-        "the same landing with an answer behind it: {}",
-        ran.why()
-    );
-}
+    // A hold about it nobody cleared.
+    let open = a_run_holding(&scratch.store, about(&[&item], Some(SHA)));
+    cases.push((
+        "not cleared",
+        open.clone(),
+        format!("run {open}'s hold {A_HOLD} about {item} is not cleared yet"),
+    ));
 
-/// THE LICENCE IS THE REVIEWER'S OWN SEAT'S ANSWER, READ AS THE TYPED ACTOR
-/// `clear` signed it with. An answer signed by another seat is refused naming
-/// both; so is one signed with the reviewer's machine name, which is no typed
-/// actor at all and so names no seat; and the reviewer's `seat:<id>` — in
-/// either case — licenses the landing.
-#[test]
-fn a_runs_licence_is_the_reviewers_seat_and_any_other_answer_is_refused() {
-    let board = store();
-    let scratch = &board;
+    // (b) cleared B by the reviewer, where A licenses.
+    let declined = a_run_holding(&scratch.store, about(&[&item], Some(SHA)));
+    cleared(&scratch.store, &declined, &as_reviewer(), Some("B"));
+    cases.push((
+        "cleared B",
+        declined.clone(),
+        format!(
+            "run {declined}'s hold {A_HOLD} was cleared B, and A is the letter that licenses a \
+             landing"
+        ),
+    ));
 
-    let item = an_item(
-        &scratch.store,
-        "an item another seat answered for",
-        Some(("ACCEPTED", SHA)),
-    );
-    let builder = seat_actor(BUILDER).to_string();
-    let untyped = reviewer().machine_name();
-    for signed in [builder.as_str(), untyped.as_str()] {
-        let foreign = a_run(&scratch.store, Some(signed));
+    // (c) cleared A by another seat.
+    let foreign = a_run_holding(&scratch.store, about(&[&item], Some(SHA)));
+    cleared(&scratch.store, &foreign, &builder, Some("A"));
+    cases.push((
+        "cleared by another seat",
+        foreign.clone(),
+        format!(
+            "run {foreign}'s hold {A_HOLD} was cleared by {builder} and not by {wanted} — a run \
+             lands as the [core] reviewer and on that seat's own clearance"
+        ),
+    ));
+
+    // (e) cancelled.
+    let cancelled = a_run_holding(&scratch.store, about(&[&item], Some(SHA)));
+    cleared(&scratch.store, &cancelled, &as_reviewer(), None);
+    cases.push((
+        "cancelled",
+        cancelled.clone(),
+        format!(
+            "run {cancelled}'s hold {A_HOLD} about {item} was cancelled, and a cancel licenses \
+             nothing"
+        ),
+    ));
+
+    for (case, run, why) in cases {
         let git = StubGit::clean();
         let ran = run_as(
             scratch,
             &scratch.store,
             &git,
             &item,
-            &the_run(&foreign),
+            &the_run(&run),
             &StubEvents::default(),
         );
-        assert_eq!(ran.code(), Some(1), "{signed}: {}", ran.why());
-        assert_eq!(
-            ran.why(),
-            format!(
-                "run {foreign}'s last hold was cleared by `{signed}` and not by `{}` — a run \
-                 lands as the `[core] reviewer` and on that seat's own answer",
-                reviewer().machine_name()
-            )
-        );
+        assert_eq!(ran.code(), Some(1), "{case}: {}", ran.why());
+        assert_eq!(ran.why(), why, "{case}");
         assert!(
             git.calls()
                 .iter()
                 .all(|call| !call.starts_with("push_head")),
-            "{signed}: nothing was pushed: {:?}",
+            "{case}: nothing was pushed: {:?}",
             git.calls()
         );
     }
 
-    // THE CONTROL, on the same item: the reviewer's typed id, as a person
-    // might paste it in capitals, is the same seat.
-    let upper = format!("seat:{}", REVIEWER_ID.to_uppercase());
-    let by_seat = a_run(&scratch.store, Some(&upper));
-    let git = StubGit::clean();
+    // (d) THE CONTROL, on the same board and the same item: the one thing that
+    // changed is that the reviewer cleared it A, and the landing stands.
+    let licensed = a_licensed_run(&scratch.store, &item);
     let ran = run_as(
         scratch,
         &scratch.store,
-        &git,
+        &StubGit::clean(),
         &item,
-        &the_run(&by_seat),
+        &the_run(&licensed),
         &StubEvents::default(),
     );
     assert!(
         ran.landed.is_ok(),
-        "the reviewer's answer, by its typed id: {}",
+        "the reviewer's A licenses the landing: {}",
         ran.why()
     );
+}
+
+/// THE LAST HOLD ABOUT THE ITEM IS THE ONE READ. A run asked twice about the
+/// same item — cleared A, then asked again and cleared B — is licensed by the
+/// second answer, which licenses nothing.
+#[test]
+fn a_runs_later_hold_about_the_item_is_the_one_its_licence_reads() {
+    let board = store();
+    let scratch = &board;
+    let item = an_item(
+        &scratch.store,
+        "an item a run asked about twice",
+        Some(("ACCEPTED", SHA)),
+    );
+    let run = a_licensed_run(&scratch.store, &item);
+    let later = "a-later-hold";
+    let option = |letter: &str, text: &str| fleet_core::entry::Choice {
+        letter: letter.to_string(),
+        text: text.to_string(),
+    };
+    scratch
+        .store
+        .append(
+            &run,
+            &Body::Held(fleet_core::entry::Held {
+                hold: later.to_string(),
+                reason: fleet_core::entry::HoldReason::Ask,
+                question: String::from("Land it after all?"),
+                context: None,
+                options: vec![option("A", "land it"), option("B", "keep it back")],
+                branch: None,
+                commit: None,
+                run_hash: Some(OLD.to_string()),
+                about: Some(about(&[&item], Some(SHA))),
+            }),
+            &the_run(&run),
+        )
+        .expect("the second hold is on the run");
+    scratch
+        .store
+        .append(
+            &run,
+            &Body::Cleared(fleet_core::entry::Cleared {
+                hold: later.to_string(),
+                how: fleet_core::entry::Clearance::Answer,
+                letter: Some(String::from("B")),
+                text: None,
+            }),
+            &as_reviewer(),
+        )
+        .expect("the second clearance is on the run");
+
+    let ran = run_as(
+        scratch,
+        &scratch.store,
+        &StubGit::clean(),
+        &item,
+        &the_run(&run),
+        &StubEvents::default(),
+    );
+    assert_eq!(ran.code(), Some(1), "{}", ran.why());
+    assert_eq!(
+        ran.why(),
+        format!(
+            "run {run}'s hold {later} was cleared B, and A is the letter that licenses a landing"
+        )
+    );
+}
+
+/// ONE LICENCE FOR A WHOLE FLIGHT (fleet-zlk D9, fleet-w4w). takeoff's
+/// `review=accept` raises one hold before any review, about every item it
+/// flies and naming no commit, and the reviewer's A on it licenses each of
+/// their landings.
+///
+/// RED-PROOF: the answer-note licence this replaces found no answer note on a
+/// run whose record carries only entries, and refused "carries no cleared
+/// hold".
+#[test]
+fn a_clearance_of_a_flight_wide_hold_licenses_each_item_it_names() {
+    let board = store();
+    let scratch = &board;
+    let item = an_item(
+        &scratch.store,
+        "an item a flight-wide licence lands",
+        Some(("ACCEPTED", SHA)),
+    );
+    let run = a_run_holding(&scratch.store, about(&["fx-another", &item], None));
+    cleared(&scratch.store, &run, &as_reviewer(), Some("A"));
+
+    let events = StubEvents::default();
+    let ran = run_as(
+        scratch,
+        &scratch.store,
+        &StubGit::clean(),
+        &item,
+        &the_run(&run),
+        &events,
+    );
+    let landed = ran.landed.as_ref().unwrap_or_else(|stop| {
+        panic!("the flight's licence lands the item: {}", stop.message);
+    });
+    assert_eq!(landed.sha, LANDED);
+    assert_eq!(events.one(ITEM_LANDED).1["run"], serde_json::json!(run));
 }
 
 /// A LANDING IS A SEAT'S OR A RUN'S, BY KIND. A routine and the controller are

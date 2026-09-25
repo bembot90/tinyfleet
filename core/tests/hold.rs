@@ -18,14 +18,11 @@ use std::sync::Mutex;
 
 use common::holding::{holding_bd, standing, LEFT_BEHIND};
 use common::{full, keys_agree, seat_actor, shared_store, Rooted, Scratch, StubEvents};
+use fleet_core::entry::{self, Body, Choice, Entry, HoldReason, Timeline};
 use fleet_core::input::{Checked, QuestionInput, QUESTION_SCHEMA};
-use fleet_core::item::brief::Packs;
 use fleet_core::item::hold::{self, Clearance, Question, Wiring};
 use fleet_core::item::run;
-use fleet_core::item::{
-    last_answer, last_park, Change, Git, Project, Stop, ANSWER_MARKERS, HOLD_CLEARED, ITEM_HELD,
-    PARK_MARKERS,
-};
+use fleet_core::item::{Change, Git, Project, Stop, HOLD_CLEARED, ITEM_HELD};
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::store::{AssignedItem, Bd, Item, NewItem, Store, StoreError};
 use fleet_core::test_support::Board;
@@ -55,6 +52,8 @@ struct StubGit {
     branch: String,
     /// What `staged` answers AFTER `add_all` has been called.
     staged: Vec<String>,
+    /// What `commit` answers.
+    made: String,
     calls: Mutex<Vec<String>>,
 }
 
@@ -65,6 +64,7 @@ impl StubGit {
         StubGit {
             branch: BRANCH.to_string(),
             staged: vec!["a/file.rs".to_string()],
+            made: SHA.to_string(),
             calls: Mutex::new(Vec::new()),
         }
     }
@@ -122,7 +122,7 @@ impl Git for StubGit {
 
     fn commit(&self, message: &str) -> Result<String, String> {
         self.record(&format!("commit {message}"));
-        Ok(SHA.to_string())
+        Ok(self.made.clone())
     }
 
     fn numstat(&self, from: &str, to: &str) -> Result<Vec<Change>, String> {
@@ -134,9 +134,10 @@ impl Git for StubGit {
 /// The real store with its two WRITES swallowed, so an arm can force the
 /// disagreement the read-back exists to catch with the item untouched.
 ///
-/// A hold that answers an id nothing raised and a note that lands nowhere are
-/// the one failure a real store will not produce on demand, and between them
-/// they leave the record byte for byte as they found it.
+/// A hold that answers an id nothing raised and an append that answers an id
+/// it kept nothing under are the one failure a real store will not produce on
+/// demand, and between them they leave the record byte for byte as they found
+/// it.
 struct Swallowing<'a> {
     inner: &'a dyn Store,
 }
@@ -174,8 +175,8 @@ impl Store for Swallowing<'_> {
         self.inner.assign(item, seat, by)
     }
 
-    fn note(&self, _item: &str, _text: &str, _by: &str) -> Result<(), StoreError> {
-        Ok(())
+    fn note(&self, item: &str, text: &str, by: &str) -> Result<(), StoreError> {
+        self.inner.note(item, text, by)
     }
 
     fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
@@ -212,11 +213,11 @@ impl Store for Swallowing<'_> {
 
     fn append(
         &self,
-        item: &str,
-        body: &fleet_core::entry::Body,
-        by: &fleet_core::seat::actor::Actor,
+        _item: &str,
+        _body: &Body,
+        _by: &fleet_core::seat::actor::Actor,
     ) -> Result<String, StoreError> {
-        self.inner.append(item, body, by)
+        Ok(String::from("c-nothing"))
     }
 
     fn timeline(&self, item: &str) -> Result<Vec<fleet_core::entry::Entry>, StoreError> {
@@ -255,10 +256,6 @@ fn project(scratch: &dyn Rooted) -> Project {
         guards: table.clone(),
         policy: table,
     }
-}
-
-fn packs(scratch: &dyn Rooted) -> Packs {
-    Packs::under(scratch.packs_dir(), scratch.defaults_dir()).expect("the defaults resolve")
 }
 
 /// One item, held by this arm's own seat and carrying an order.
@@ -314,13 +311,30 @@ fn notes_of(store: &dyn Store, item: &str) -> String {
     read(store, item).notes.unwrap_or_default()
 }
 
+fn timeline_of(store: &dyn Store, item: &str) -> Vec<Entry> {
+    store.timeline(item).expect("the timeline reads")
+}
+
+/// The one entry the store keeps under `id`, which the verb answered.
+fn entry_of(store: &dyn Store, item: &str, id: &str) -> Entry {
+    let entries = timeline_of(store, item);
+    Timeline(&entries)
+        .entry(id)
+        .unwrap_or_else(|| panic!("{item}'s timeline holds {id}: {entries:?}"))
+        .clone()
+}
+
+/// The options [`QUESTION`] offers, as the held entry carries them.
+fn question_options() -> Vec<Choice> {
+    asked(QUESTION).options
+}
+
 /// What an arm varies, gathered so the call below reads as the arm and not as
 /// the wiring.
 struct Seams<'a> {
     store: &'a dyn Store,
     git: &'a dyn Git,
     project: &'a Project,
-    packs: &'a Packs,
     events: &'a StubEvents,
 }
 
@@ -342,7 +356,6 @@ fn hold_with(
         &Wiring {
             store: seams.store,
             git: seams.git,
-            packs: seams.packs,
             project: seams.project,
             events: seams.events,
         },
@@ -367,7 +380,6 @@ fn clear_with(
         &Wiring {
             store: seams.store,
             git: seams.git,
-            packs: seams.packs,
             project: seams.project,
             events: seams.events,
         },
@@ -387,7 +399,6 @@ fn a_held_item(scratch: &Board, label: &str, seat: &str) -> (String, String) {
             store: &scratch.store,
             git: &StubGit::holding_work(),
             project: &project(scratch),
-            packs: &packs(scratch),
             events: &StubEvents::default(),
         },
     )
@@ -423,7 +434,6 @@ fn a_clean_hold_commits_the_whole_tree_raises_the_hold_and_parks() {
         &Wiring {
             store: bd,
             git: &git,
-            packs: &packs(scratch),
             project: &project(scratch),
             events: &events,
         },
@@ -478,37 +488,30 @@ fn a_clean_hold_commits_the_whole_tree_raises_the_hold_and_parks() {
         "the hold takes the item off the ready set"
     );
 
-    // (c) THE PARK REGION, with the four values and the question beneath them.
-    let park = last_park(&notes_of(bd, &item)).expect("the item carries a park");
+    // (c) THE HELD ENTRY, by the seat, on bd's own comments: the hold, the
+    // question and its options, and the branch and the whole commit it stopped
+    // on — and no note beside it.
+    let entry = entry_of(bd, &item, &held.entry);
+    assert_eq!(entry.by, seat_actor(seat), "by the seat that asked");
     assert_eq!(
-        park, held.note,
-        "the note the store holds is the one written"
+        entry.body,
+        Body::Held(entry::Held {
+            hold: held.hold.clone(),
+            reason: HoldReason::Ask,
+            question: asked(QUESTION).question,
+            context: None,
+            options: question_options(),
+            branch: Some(BRANCH.to_string()),
+            commit: Some(SHA.to_string()),
+            run_hash: None,
+            about: None,
+        })
     );
     assert!(
-        park.starts_with(&format!("{} {item} — ask", PARK_MARKERS[0])),
-        "{park}"
+        !notes_of(bd, &item).contains("PARKED"),
+        "no park note is written: {}",
+        notes_of(bd, &item)
     );
-    for line in [
-        format!("branch:  {BRANCH}"),
-        format!("commit:  {SHA}"),
-        format!("hold:    {}", held.hold),
-    ] {
-        assert!(park.contains(&line), "the park carries `{line}`:\n{park}");
-    }
-    assert!(
-        park.contains("the table the spec names is not there")
-            && park.contains("A. build the table")
-            && park.contains("B. read the value"),
-        "and the question with both options beneath them:\n{park}"
-    );
-    let text = hold::question_text(&asked(QUESTION));
-    for line in text.lines() {
-        assert!(
-            park.lines().any(|parked| parked == format!("  {line}")),
-            "the question's `{line}` is moved OFF column zero, so no line of it can end the \
-             region:\n{park}"
-        );
-    }
 
     // (d) THE ONE EVENT, with the five keys the table names.
     assert_eq!(events.count(), 1, "exactly one event");
@@ -548,7 +551,6 @@ fn an_item_named_by_its_suffix_is_held_under_its_full_id() {
             store: &scratch.store,
             git: &git,
             project: &project(scratch),
-            packs: &packs(scratch),
             events: &events,
         },
     )
@@ -556,7 +558,7 @@ fn an_item_named_by_its_suffix_is_held_under_its_full_id() {
 
     assert_eq!(held.item, item);
     let wrote = scratch.store.wrote();
-    for verb in ["hold", "note"] {
+    for verb in ["hold", "append"] {
         assert!(
             wrote
                 .iter()
@@ -577,10 +579,10 @@ fn an_item_named_by_its_suffix_is_held_under_its_full_id() {
         "the commit subject names the full id: {:?}",
         git.calls()
     );
-    let park = last_park(&notes_of(&scratch.store, &item)).expect("the item carries a park");
+    let entries = timeline_of(&scratch.store, &item);
     assert!(
-        park.starts_with(&format!("{} {item} — ask", PARK_MARKERS[0])),
-        "{park}"
+        Timeline(&entries).held(&held.hold).is_some(),
+        "the held entry is on {item}: {entries:?}"
     );
     let (_, payload) = events.one(ITEM_HELD);
     assert_eq!(payload["item"], serde_json::json!(item));
@@ -602,7 +604,6 @@ fn a_tree_with_nothing_to_commit_parks_on_head() {
             store: &scratch.store,
             git: &git,
             project: &project(scratch),
-            packs: &packs(scratch),
             events: &StubEvents::default(),
         },
     )
@@ -614,8 +615,14 @@ fn a_tree_with_nothing_to_commit_parks_on_head() {
         "and nothing was committed: {:?}",
         git.calls()
     );
-    let park = last_park(&notes_of(&scratch.store, &item)).expect("the item carries a park");
-    assert!(park.contains(&format!("commit:  {HEAD}")), "{park}");
+    let Body::Held(entry) = entry_of(&scratch.store, &item, &held.entry).body else {
+        panic!("the entry is a held one");
+    };
+    assert_eq!(
+        entry.commit.as_deref(),
+        Some(HEAD),
+        "the entry stands on HEAD"
+    );
 }
 
 #[test]
@@ -638,7 +645,6 @@ fn the_trunk_is_refused_and_the_item_is_untouched() {
             store: &scratch.store,
             git: &git,
             project: &project(scratch),
-            packs: &packs(scratch),
             events: &StubEvents::default(),
         },
     )
@@ -694,7 +700,6 @@ fn a_runs_record_parks_off_the_trunk_and_performs_no_git_act() {
         &Wiring {
             store: &scratch.store,
             git: &git,
-            packs: &packs(scratch),
             project: &project(scratch),
             events: &events,
         },
@@ -712,15 +717,24 @@ fn a_runs_record_parks_off_the_trunk_and_performs_no_git_act() {
     assert_eq!(held.branch, hold::RUN_BRANCH);
     assert_eq!(held.commit, RUN_HASH, "the hash the run's open pinned");
 
-    // (b) THE PARK, carrying the two values and the hold the store raised.
-    let park = last_park(&notes_of(&scratch.store, &item)).expect("the item carries a park");
-    for line in [
-        format!("branch:  {}", hold::RUN_BRANCH),
-        format!("commit:  {RUN_HASH}"),
-        format!("hold:    {}", held.hold),
-    ] {
-        assert!(park.contains(&line), "the park carries `{line}`:\n{park}");
-    }
+    // (b) THE HELD ENTRY, by the run, standing on the hash its open pinned and
+    // on no branch or commit.
+    let entry = entry_of(&scratch.store, &item, &held.entry);
+    assert_eq!(entry.by, its_run);
+    assert_eq!(
+        entry.body,
+        Body::Held(entry::Held {
+            hold: held.hold.clone(),
+            reason: HoldReason::Ask,
+            question: asked(QUESTION).question,
+            context: None,
+            options: question_options(),
+            branch: None,
+            commit: None,
+            run_hash: Some(RUN_HASH.to_string()),
+            about: None,
+        })
+    );
 
     // (c) THE EVENT the SDK's hold step reads, reaching the stream exactly as a
     // seat's does.
@@ -745,7 +759,6 @@ fn a_runs_record_parks_off_the_trunk_and_performs_no_git_act() {
             store: &scratch.store,
             git: &git,
             project: &project(scratch),
-            packs: &packs(scratch),
             events: &StubEvents::default(),
         },
     )
@@ -788,7 +801,6 @@ fn an_item_that_is_not_a_runs_record_is_refused_the_park_on_the_trunk() {
             store: &scratch.store,
             git: &git,
             project: &project(scratch),
-            packs: &packs(scratch),
             events: &StubEvents::default(),
         },
     )
@@ -829,7 +841,6 @@ fn an_item_labelled_bare_run_is_held_and_commits_like_any_seats_item() {
             store: &scratch.store,
             git: &git,
             project: &project(scratch),
-            packs: &packs(scratch),
             events: &StubEvents::default(),
         },
     )
@@ -867,7 +878,6 @@ fn a_seat_holding_no_ordered_item_is_refused() {
             store: &scratch.store,
             git: &git,
             project: &project(scratch),
-            packs: &packs(scratch),
             events: &StubEvents::default(),
         },
     )
@@ -889,8 +899,9 @@ fn a_seat_holding_no_ordered_item_is_refused() {
 
 /// A JSON QUESTION IS A HOLD, AND ONE A PERSON CLEARS. The store's hold
 /// carries [`hold::question_text`] as its reason — the question, its context
-/// on the next line, one `<letter>. <text>` line per option — and the park
-/// carries the same text, which `fleet clear` reads the letter off.
+/// on the next line, one `<letter>. <text>` line per option — and the held
+/// entry carries the question typed, context and all, which `fleet clear`
+/// checks the letter against.
 #[test]
 fn a_json_question_is_held_under_its_text_and_cleared_by_its_letter() {
     let scratch = &store();
@@ -915,7 +926,6 @@ fn a_json_question_is_held_under_its_text_and_cleared_by_its_letter() {
             store: &scratch.store,
             git: &git,
             project: &project(scratch),
-            packs: &packs(scratch),
             events: &StubEvents::default(),
         },
     )
@@ -938,7 +948,17 @@ fn a_json_question_is_held_under_its_text_and_cleared_by_its_letter() {
         "the store hold's reason is the question's text"
     );
 
-    // THE PARK IS STILL WHAT A CLEARANCE READS.
+    let Body::Held(entry) = entry_of(&scratch.store, &item, &held.entry).body else {
+        panic!("the entry is a held one");
+    };
+    assert_eq!(
+        entry.context.as_deref(),
+        Some("The spec names one the tree does not have."),
+        "the context rides the entry"
+    );
+    assert_eq!(entry.options, asked(body).options);
+
+    // THE HELD ENTRY IS WHAT A CLEARANCE READS.
     let cleared = clear_with(
         &item,
         "B",
@@ -948,11 +968,10 @@ fn a_json_question_is_held_under_its_text_and_cleared_by_its_letter() {
             store: &scratch.store,
             git: &git,
             project: &project(scratch),
-            packs: &packs(scratch),
             events: &StubEvents::default(),
         },
     )
-    .unwrap_or_else(|stop| panic!("the park is answerable: {}", stop.message));
+    .unwrap_or_else(|stop| panic!("the held entry is answerable: {}", stop.message));
     assert_eq!(cleared.hold, held.hold);
     assert_eq!(cleared.letter, "B");
     assert!(
@@ -1023,7 +1042,6 @@ fn a_question_that_does_not_read_is_usage_naming_the_schema_and_nothing_is_writt
                 store: &scratch.store,
                 git: &git,
                 project: &project(scratch),
-                packs: &packs(scratch),
                 events: &events,
             },
         )
@@ -1064,7 +1082,7 @@ fn a_question_that_does_not_read_is_usage_naming_the_schema_and_nothing_is_writt
 fn a_read_back_that_disagrees_is_could_not_tell() {
     let scratch = &store();
     let seat = "g-readback";
-    let item = an_ordered_item(&scratch.store, "an item whose park does not land", seat);
+    let item = an_ordered_item(&scratch.store, "an item whose entry does not land", seat);
     let question = a_question(scratch, "readback", QUESTION);
     let before = scratch.json(&item);
     let events = StubEvents::default();
@@ -1079,20 +1097,75 @@ fn a_read_back_that_disagrees_is_could_not_tell() {
             },
             git: &StubGit::holding_work(),
             project: &project(scratch),
-            packs: &packs(scratch),
             events: &events,
         },
     )
-    .expect_err("a park nobody can read back is could-not-tell");
+    .expect_err("a held entry nobody can read back is could-not-tell");
 
     assert_eq!(stop.code, 3, "{}", stop.message);
-    assert!(
-        stop.message.contains(&item) && stop.message.contains("(absent)"),
-        "the message names the item and what it read: {}",
-        stop.message
+    assert_eq!(
+        stop.message,
+        format!(
+            "{item}'s timeline does not hold the held entry c-nothing the store answered for \
+             it\n  the commit {SHA} STANDS on the work branch and the hold fx-nothing STANDS on \
+             {item}"
+        ),
+        "the message names the entry it did not read and what stands"
     );
     assert_eq!(events.count(), 0, "and nothing reached the stream");
     assert_eq!(before, scratch.json(&item), "the item is byte-identical");
+}
+
+/// A HELD ENTRY THE STORE REFUSES is could-not-tell, saying the commit and the
+/// hold both STAND: here a commit that is not a whole sha, which no held entry
+/// is written with.
+#[test]
+fn a_held_entry_the_store_refuses_is_could_not_tell_and_names_what_stands() {
+    let scratch = &store();
+    let seat = "g-refused";
+    let item = an_ordered_item(&scratch.store, "an item whose entry is refused", seat);
+    let question = a_question(scratch, "refused", QUESTION);
+    let events = StubEvents::default();
+    let git = StubGit {
+        made: String::from("abc1234"),
+        ..StubGit::holding_work()
+    };
+
+    let stop = hold_with(
+        None,
+        &question,
+        seat,
+        &Seams {
+            store: &scratch.store,
+            git: &git,
+            project: &project(scratch),
+            events: &events,
+        },
+    )
+    .expect_err("an entry the store refuses is could-not-tell");
+
+    assert_eq!(stop.code, 3, "{}", stop.message);
+    assert!(
+        stop.message.starts_with(&format!(
+            "the held entry did not land: the held entry for {item} does not validate: `commit` \
+             is not a full 40-hex sha: abc1234"
+        )),
+        "{}",
+        stop.message
+    );
+    assert!(
+        stop.message.ends_with(&format!(
+            "\n  the commit abc1234 STANDS on the work branch and the hold hold-1 STANDS on \
+             {item}"
+        )),
+        "{}",
+        stop.message
+    );
+    assert!(
+        timeline_of(&scratch.store, &item).is_empty(),
+        "nothing was appended"
+    );
+    assert_eq!(events.count(), 0, "and nothing reached the stream");
 }
 
 /// An epic is refused before any git act: no seat is ever given one, and a
@@ -1130,7 +1203,6 @@ fn an_epic_is_refused_before_the_commit_and_nothing_is_written() {
             store: &scratch.store,
             git: &git,
             project: &project(scratch),
-            packs: &packs(scratch),
             events: &events,
         },
     )
@@ -1204,7 +1276,6 @@ fn a_hold_left_behind_by_a_failed_create_is_cleared_and_named() {
             store: &bd,
             git: &StubGit::holding_work(),
             project: &project(scratch),
-            packs: &packs(scratch),
             events: &events,
         },
     )
@@ -1286,7 +1357,6 @@ fn a_hold_left_behind_that_cannot_be_cleared_is_named_with_its_command() {
             store: &bd,
             git: &StubGit::holding_work(),
             project: &project(scratch),
-            packs: &packs(scratch),
             events: &StubEvents::default(),
         },
     )
@@ -1308,8 +1378,27 @@ fn a_hold_left_behind_that_cannot_be_cleared_is_named_with_its_command() {
 
 // ---- AC2: the clearance ------------------------------------------------------
 
+/// The seams a clearance acts through: the board's store, and a stream the arm
+/// reads.
+fn clearing<'a>(
+    scratch: &'a Board,
+    git: &'a StubGit,
+    project: &'a Project,
+    events: &'a StubEvents,
+) -> Seams<'a> {
+    Seams {
+        store: &scratch.store,
+        git,
+        project,
+        events,
+    }
+}
+
+/// `clear A` appends `cleared{hold, answer, A}` by the clearer, then clears the
+/// store's hold and announces it — and a second clearance of the same item
+/// finds no open hold on its timeline.
 #[test]
-fn a_clearance_writes_the_answer_clears_the_hold_and_announces_it() {
+fn a_clearance_writes_the_cleared_entry_clears_the_hold_and_announces_it() {
     let scratch = &store();
     let seat = "g-answer";
     let (item, hold_id) = a_held_item(scratch, "answer", seat);
@@ -1327,31 +1416,35 @@ fn a_clearance_writes_the_answer_clears_the_hold_and_announces_it() {
         &Wiring {
             store: &scratch.store,
             git: &StubGit::holding_work(),
-            packs: &packs(scratch),
             project: &project(scratch),
             events: &events,
         },
     )
     .expect("the answer is written");
 
-    assert_eq!(cleared.hold, hold_id, "the hold the park named");
+    assert_eq!(cleared.hold, hold_id, "the hold the held entry named");
     assert_eq!(cleared.letter, "A");
 
-    let answered =
-        last_answer(&notes_of(&scratch.store, &item)).expect("the item carries an answer");
-    assert_eq!(answered, cleared.note);
-    assert!(
-        answered.starts_with(&format!(
-            "{} {hold_id} — {}",
-            ANSWER_MARKERS[0],
-            seat_actor("a-person")
-        )),
-        "{answered}"
+    // THE CLEARED ENTRY, by the person, after the held one.
+    let entry = entry_of(&scratch.store, &item, &cleared.entry);
+    assert_eq!(entry.by, seat_actor("a-person"), "by who cleared it");
+    assert_eq!(
+        entry.body,
+        Body::Cleared(entry::Cleared {
+            hold: hold_id.clone(),
+            how: entry::Clearance::Answer,
+            letter: Some(String::from("A")),
+            text: None,
+        })
     );
-    assert!(answered.contains("letter:  A"), "{answered}");
+    let entries = timeline_of(&scratch.store, &item);
     assert!(
-        answered.contains("text:    (none)"),
-        "an unsaid text is `(none)` and not a blank line:\n{answered}"
+        Timeline(&entries).open_hold().is_none(),
+        "the timeline carries no open hold: {entries:?}"
+    );
+    assert!(
+        !notes_of(&scratch.store, &item).contains("ANSWERED"),
+        "no answer note is written"
     );
 
     // The hold is off the open list and the item is ready again.
@@ -1371,6 +1464,17 @@ fn a_clearance_writes_the_answer_clears_the_hold_and_announces_it() {
             .contains(&item),
         "and the item is back in the ready set"
     );
+    let wrote = scratch.store.wrote();
+    let appended = wrote
+        .iter()
+        .rposition(|line| line.starts_with(&format!("append {item} cleared ")));
+    let resolved = wrote
+        .iter()
+        .position(|line| line.starts_with(&format!("clear_hold {hold_id} ")));
+    assert!(
+        appended.is_some() && appended < resolved,
+        "the entry is appended before the store's hold is cleared: {wrote:?}"
+    );
 
     assert_eq!(events.count(), 1, "exactly one event");
     let (actor, payload) = events.one(HOLD_CLEARED);
@@ -1386,45 +1490,62 @@ fn a_clearance_writes_the_answer_clears_the_hold_and_announces_it() {
         "and the line says which hold was cleared"
     );
 
-    // THE PARK REGION IS STILL READABLE UNDER THE ANSWER. The answer ends it
-    // rather than extending it, so the question and its options are unchanged.
-    let park = last_park(&notes_of(&scratch.store, &item)).expect("the park is still there");
-    assert!(
-        !park.contains(ANSWER_MARKERS[0]),
-        "the park region stops at the answer:\n{park}"
+    // A SECOND CLEARANCE finds nothing open on the timeline, and writes nothing.
+    let before = scratch.json(&item);
+    let wrote = scratch.store.wrote();
+    let git = StubGit::holding_work();
+    let project = project(scratch);
+    let events = StubEvents::default();
+    let stop = clear_with(
+        &item,
+        "B",
+        None,
+        "a-person",
+        &clearing(scratch, &git, &project, &events),
+    )
+    .expect_err("a second clearance is refused");
+    assert_eq!(stop.code, 1, "{}", stop.message);
+    assert_eq!(
+        stop.message,
+        format!(
+            "{item} carries no open hold — a clearance settles a question somebody asked, and \
+             this item has none"
+        )
     );
-    assert!(park.contains("A. build the table"), "{park}");
+    assert_eq!(scratch.store.wrote(), wrote, "nothing was written");
+    assert_eq!(before, scratch.json(&item), "the item is byte-identical");
+    assert_eq!(events.count(), 0, "and nothing reached the stream");
 }
 
 #[test]
 fn an_unnamed_letter_is_accepted_with_text_and_refused_without_it() {
     let scratch = &store();
+    let git = StubGit::holding_work();
+    let project = project(scratch);
+    let events = StubEvents::default();
 
     // With --text: the letter the options do not name is what a person saw
-    // that the seat did not, and the text is on the note.
+    // that the seat did not, and the text is on the entry.
     let seat = "g-text";
     let (item, hold_id) = a_held_item(scratch, "text", seat);
+    let said = "neither — the spec is wrong and the bead is going back";
     let cleared = clear_with(
         &item,
         "C",
-        Some("neither — the spec is wrong and the bead is going back"),
+        Some(said),
         "a-person",
-        &Seams {
-            store: &scratch.store,
-            git: &StubGit::holding_work(),
-            project: &project(scratch),
-            packs: &packs(scratch),
-            events: &StubEvents::default(),
-        },
+        &clearing(scratch, &git, &project, &events),
     )
     .expect("an unnamed letter with text is an answer");
     assert_eq!(cleared.hold, hold_id);
-    let answered =
-        last_answer(&notes_of(&scratch.store, &item)).expect("the item carries an answer");
-    assert!(answered.contains("letter:  C"), "{answered}");
-    assert!(
-        answered.contains("the spec is wrong and the bead is going back"),
-        "{answered}"
+    assert_eq!(
+        entry_of(&scratch.store, &item, &cleared.entry).body,
+        Body::Cleared(entry::Cleared {
+            hold: hold_id,
+            how: entry::Clearance::Answer,
+            letter: Some(String::from("C")),
+            text: Some(said.to_string()),
+        })
     );
 
     // Without it: usage, and the item untouched.
@@ -1436,13 +1557,7 @@ fn an_unnamed_letter_is_accepted_with_text_and_refused_without_it() {
         "C",
         None,
         "a-person",
-        &Seams {
-            store: &scratch.store,
-            git: &StubGit::holding_work(),
-            project: &project(scratch),
-            packs: &packs(scratch),
-            events: &StubEvents::default(),
-        },
+        &clearing(scratch, &git, &project, &events),
     )
     .expect_err("an unnamed letter with nothing said is refused");
     assert_eq!(stop.code, 2, "{}", stop.message);
@@ -1452,76 +1567,134 @@ fn an_unnamed_letter_is_accepted_with_text_and_refused_without_it() {
         stop.message
     );
     assert_eq!(before, scratch.json(&item), "the item is byte-identical");
+    assert_eq!(
+        timeline_of(&scratch.store, &item).len(),
+        1,
+        "the held entry alone"
+    );
 }
 
+/// The two refusals before anything is written: an item whose timeline
+/// carries no open hold — one nobody held, and one whose hold only a note
+/// names — and an open held entry whose hold the store no longer lists open,
+/// cleared by hand.
 #[test]
-fn no_park_and_a_hold_already_cleared_are_both_refused() {
+fn no_open_hold_and_a_hold_cleared_by_hand_are_both_refused() {
     let scratch = &store();
+    let git = StubGit::holding_work();
+    let project = project(scratch);
+    let events = StubEvents::default();
 
-    // An item nobody parked.
-    let unparked = scratch.item("an item nobody parked");
-    let before = scratch.json(&unparked);
-    let stop = clear_with(
-        &unparked,
-        "A",
-        None,
-        "a-person",
-        &Seams {
-            store: &scratch.store,
-            git: &StubGit::holding_work(),
-            project: &project(scratch),
-            packs: &packs(scratch),
-            events: &StubEvents::default(),
-        },
-    )
-    .expect_err("an item with no park is refused");
-    assert_eq!(stop.code, 1, "{}", stop.message);
-    assert!(stop.message.contains(&unparked), "{}", stop.message);
-    assert_eq!(
-        before,
-        scratch.json(&unparked),
-        "the item is byte-identical"
+    // An item nobody held, and one carrying only a park NOTE — a person's
+    // prose to the timeline, and no question it can clear.
+    let unheld = scratch.item("an item nobody held");
+    let noted = scratch.item("an item a note alone parks");
+    let hold = scratch
+        .store
+        .hold(&noted, "a hold only a note names", "a-flight")
+        .expect("the hold is raised");
+    scratch.note(
+        &noted,
+        &format!("PARKED {noted} — ask\nbranch:  b\ncommit:  {SHA}\nhold:    {hold}"),
+        "a-flight",
     );
+    for item in [&unheld, &noted] {
+        let before = scratch.json(item);
+        let stop = clear_with(
+            item,
+            "A",
+            None,
+            "a-person",
+            &clearing(scratch, &git, &project, &events),
+        )
+        .expect_err("an item with no open hold is refused");
+        assert_eq!(stop.code, 1, "{}", stop.message);
+        assert_eq!(
+            stop.message,
+            format!(
+                "{item} carries no open hold — a clearance settles a question somebody asked, \
+                 and this item has none"
+            )
+        );
+        assert_eq!(before, scratch.json(item), "the item is byte-identical");
+    }
 
-    // And a second clearance on one item, whose hold the store does not list open.
-    let seat = "g-twice";
-    let (item, hold_id) = a_held_item(scratch, "twice", seat);
-    clear_with(
-        &item,
-        "A",
-        None,
-        "a-person",
-        &Seams {
-            store: &scratch.store,
-            git: &StubGit::holding_work(),
-            project: &project(scratch),
-            packs: &packs(scratch),
-            events: &StubEvents::default(),
-        },
-    )
-    .expect("the first answer lands");
+    // A held entry whose hold was cleared by hand, and so is not open.
+    let seat = "g-by-hand";
+    let (item, hold_id) = a_held_item(scratch, "by-hand", seat);
+    scratch
+        .store
+        .clear_hold(&hold_id, "a-person")
+        .expect("the hold is cleared by hand");
     let before = scratch.json(&item);
     let stop = clear_with(
         &item,
-        "B",
+        "A",
         None,
         "a-person",
-        &Seams {
-            store: &scratch.store,
-            git: &StubGit::holding_work(),
-            project: &project(scratch),
-            packs: &packs(scratch),
-            events: &StubEvents::default(),
-        },
+        &clearing(scratch, &git, &project, &events),
     )
     .expect_err("a hold already cleared is refused");
     assert_eq!(stop.code, 1, "{}", stop.message);
-    assert!(
-        stop.message.contains(&hold_id),
-        "the refusal names the hold: {}",
-        stop.message
+    assert_eq!(
+        stop.message,
+        format!(
+            "{item}'s hold {hold_id} is not one the store lists open — it has been cleared \
+             already, or by hand"
+        )
     );
     assert_eq!(before, scratch.json(&item), "the item is byte-identical");
+    assert_eq!(
+        timeline_of(&scratch.store, &item).len(),
+        1,
+        "no cleared entry was written"
+    );
+    assert_eq!(events.count(), 0, "and nothing reached the stream");
+}
+
+/// A cleared entry that does not read back is could-not-tell, and the store's
+/// hold is left standing: the clearance is written before the hold is cleared.
+#[test]
+fn a_cleared_entry_that_does_not_read_back_leaves_the_hold_standing() {
+    let scratch = &store();
+    let seat = "g-clear-deaf";
+    let (item, hold_id) = a_held_item(scratch, "clear-deaf", seat);
+    let git = StubGit::holding_work();
+    let project = project(scratch);
+    let events = StubEvents::default();
+
+    let stop = clear_with(
+        &item,
+        "A",
+        None,
+        "a-person",
+        &Seams {
+            store: &Swallowing {
+                inner: &scratch.store,
+            },
+            git: &git,
+            project: &project,
+            events: &events,
+        },
+    )
+    .expect_err("an entry nobody can read back is could-not-tell");
+    assert_eq!(stop.code, 3, "{}", stop.message);
+    assert_eq!(
+        stop.message,
+        format!(
+            "{item}'s timeline does not hold the cleared entry c-nothing the store answered for \
+             it\n  {hold_id} is not cleared and {item} is still blocked"
+        )
+    );
+    assert!(
+        scratch
+            .store
+            .open_holds()
+            .expect("the open list answers")
+            .contains(&hold_id),
+        "the hold stands"
+    );
+    assert_eq!(events.count(), 0, "and nothing reached the stream");
 }
 
 // ---- the crash cap's park ----------------------------------------------------
@@ -1542,16 +1715,15 @@ fn a_runs_record(scratch: &Board, title: &str) -> String {
     run
 }
 
-/// A run held at `[core.run] max_crashes` is CLEARABLE: the park carries the
-/// PARKED note `fleet clear` reads — the run's branch, the hash its open
-/// pinned, the hold the store raised, and a question with lettered options —
-/// so the clearance clears the hold the cap raised and the record is no longer
-/// blocked by it.
+/// A run held at `[core.run] max_crashes` is CLEARABLE: the park is exactly
+/// one `held` entry on the record — reason `max_crashes`, standing on the hash
+/// its open pinned, under the hold the store raised, with a question and its
+/// lettered options — and no note, so the clearance clears the hold the cap
+/// raised and the record is no longer blocked by it.
 ///
-/// THE ONE PARK THAT HAD NO NOTE. A hold raised with nothing on the record
-/// naming it is a question `fleet clear` refuses as "carries no park", and the
-/// open hold blocks the record's close as well, so the run held its
-/// `[core.run] max_open` slot for good.
+/// ONE ENTRY WHERE THERE WERE TWO DISAGREEING RECORDS: the park note said
+/// `max_crashes` where the controller's `item.held` said the pass's reason,
+/// and the entry is now the record of the park.
 #[test]
 fn a_run_held_at_the_crash_cap_is_cleared_like_any_other_park() {
     let scratch = &store();
@@ -1568,10 +1740,34 @@ fn a_run_held_at_the_crash_cap_is_cleared_like_any_other_park() {
         directory: &directory,
         by: &controller,
     };
-    let hold_id =
-        hold::park_at_the_cap(&capped, &scratch.store, &packs(scratch)).expect("the park is made");
+    let hold_id = hold::park_at_the_cap(&capped, &scratch.store).expect("the park is made");
 
-    // (a) THE ANSWER, which is what a person meets first.
+    // (a) THE ONE HELD ENTRY, by the controller, and no note.
+    let cap = hold::cap_question(&capped);
+    let entries = timeline_of(&scratch.store, &run);
+    assert_eq!(entries.len(), 1, "exactly one entry: {entries:?}");
+    assert_eq!(entries[0].by, controller);
+    assert_eq!(
+        entries[0].body,
+        Body::Held(entry::Held {
+            hold: hold_id.clone(),
+            reason: HoldReason::MaxCrashes,
+            question: cap.question.clone(),
+            context: cap.context.clone(),
+            options: cap.options.clone(),
+            branch: None,
+            commit: None,
+            run_hash: Some(RUN_HASH.to_string()),
+            about: None,
+        })
+    );
+    assert_eq!(
+        notes_of(&scratch.store, &run),
+        "",
+        "no note is written beside it"
+    );
+
+    // (b) THE ANSWER, which is what a person meets first.
     let events = StubEvents::default();
     let cleared = clear_with(
         &run,
@@ -1582,7 +1778,6 @@ fn a_run_held_at_the_crash_cap_is_cleared_like_any_other_park() {
             store: &scratch.store,
             git: &StubGit::holding_work(),
             project: &project(scratch),
-            packs: &packs(scratch),
             events: &events,
         },
     )
@@ -1602,34 +1797,8 @@ fn a_run_held_at_the_crash_cap_is_cleared_like_any_other_park() {
     let (_, payload) = events.one(HOLD_CLEARED);
     assert_eq!(payload["item"], serde_json::json!(run));
 
-    // (b) THE PARK IT ANSWERED: a run's, standing on the hash its open pinned.
-    let park = last_park(&notes_of(&scratch.store, &run)).expect("the record carries a park");
-    for line in [
-        format!("{} {run} — {}", PARK_MARKERS[0], hold::CAPPED),
-        format!("branch:  {}", hold::RUN_BRANCH),
-        format!("commit:  {RUN_HASH}"),
-        format!("hold:    {hold_id}"),
-    ] {
-        assert!(park.contains(&line), "the park carries `{line}`:\n{park}");
-    }
-    assert!(
-        park.contains(CAPPED_REASON),
-        "the question is the pass's own reading:\n{park}"
-    );
-    assert!(
-        park.contains(&directory.display().to_string()),
-        "and says where the logs are:\n{park}"
-    );
-    assert!(
-        park.contains(&format!(
-            "A. cancel it: fleet cancel {run} closes its record"
-        )),
-        "and names the verb that ends the run:\n{park}"
-    );
-
     // (c) THE QUESTION IS A QUESTION INPUT, read by the rules a seat's is held
     // to, and the hold's reason is its whole text, options and all.
-    let cap = hold::cap_question(&capped);
     cap.check()
         .unwrap_or_else(|why| panic!("the cap's question reads as a seat's would: {why}"));
     assert_eq!(
@@ -1646,52 +1815,108 @@ fn a_run_held_at_the_crash_cap_is_cleared_like_any_other_park() {
             .as_str()
         )
     );
+    assert!(
+        cap.options[0]
+            .text
+            .starts_with(&format!("cancel it: fleet cancel {run} closes its record")),
+        "and names the verb that ends the run: {:?}",
+        cap.options
+    );
     assert_eq!(cap.about, None);
     let raised = scratch.store.raised();
     assert_eq!(raised.len(), 1, "one hold: {raised:?}");
-    assert_eq!(raised[0].1, hold::question_text(&cap));
-    let letters: Vec<char> = hold::options_in(&raised[0].1)
-        .into_iter()
-        .map(|(letter, _)| letter)
-        .collect();
     assert_eq!(
-        letters,
-        vec!['A', 'B'],
-        "the hold's reason is the whole question, options and all, as a seat's is: {}",
-        raised[0].1
+        raised[0].1,
+        hold::question_text(&cap),
+        "the hold's reason is the whole question, options and all, as a seat's is"
+    );
+}
+
+/// A HELD ENTRY THE STORE REFUSES WITHDRAWS THE HOLD, so the next poll parks
+/// the run again rather than leaving a hold no entry names: here a reason
+/// over two lines, which no held entry's question is.
+#[test]
+fn a_crash_cap_park_whose_entry_is_refused_withdraws_its_hold() {
+    let scratch = &store();
+    let run = a_runs_record(scratch, "a run whose park is refused");
+    let directory = scratch.root.join("runs").join(&run);
+    let controller = Actor {
+        kind: ActorKind::Controller,
+        id: full("this-machine"),
+    };
+
+    let stop = hold::park_at_the_cap(
+        &hold::Capped {
+            run: &run,
+            reason: "one line\nand another",
+            directory: &directory,
+            by: &controller,
+        },
+        &scratch.store,
+    )
+    .expect_err("a refused entry is could-not-tell");
+
+    assert_eq!(stop.code, 3, "{}", stop.message);
+    assert!(
+        stop.message.starts_with(&format!(
+            "the held entry did not land: the held entry for {run} does not validate: \
+             `question` runs over more than one line"
+        )),
+        "{}",
+        stop.message
+    );
+    assert!(
+        stop.message
+            .ends_with("\n  the hold hold-1 is withdrawn and the next poll parks it again"),
+        "{}",
+        stop.message
+    );
+    assert_eq!(
+        scratch.store.raised().len(),
+        1,
+        "the one hold the park raised"
+    );
+    assert!(
+        !scratch
+            .store
+            .open_holds()
+            .expect("the open list answers")
+            .contains(&String::from("hold-1")),
+        "is withdrawn"
+    );
+    assert!(
+        timeline_of(&scratch.store, &run).is_empty(),
+        "and nothing is on the record"
     );
 }
 
 // ---- AC5: the defaults -------------------------------------------------------
 
-/// The answer's grammar is in the defaults and the registry; the question's
-/// grammar is gone from both, and its schema is what the registry names.
+/// The park and answer grammars are gone from the defaults and the registry,
+/// as the question's is: a park and a clearance are entries. The question's
+/// schema is what the registry names.
 #[test]
-fn the_defaults_carry_the_answer_template_and_the_question_schema() {
+fn the_defaults_carry_no_park_or_answer_template_and_the_question_schema() {
     let scratch = Board::new("hold-pack");
     let installed = scratch.defaults_dir.clone();
-    let body = std::fs::read_to_string(installed.join(hold::ANSWER_NOTE))
-        .expect("the template is readable");
-    assert!(
-        body.starts_with(ANSWER_MARKERS[0]),
-        "`{}` opens on its own marker:\n{body}",
-        hold::ANSWER_NOTE
-    );
-    assert!(
-        !installed.join("assets/question-note.md").exists(),
-        "the question grammar is gone: a question is JSON"
-    );
-
     let registry = std::fs::read_to_string(installed.join("assets/shadow-registry.toml"))
         .expect("the registry is readable");
-    for slot in [hold::ANSWER_NOTE, QUESTION_SCHEMA] {
+    for gone in [
+        "assets/park-note.md",
+        "assets/answer-note.md",
+        "assets/question-note.md",
+    ] {
         assert!(
-            registry.contains(&format!("path = \"{slot}\"")),
-            "the registry names `{slot}`:\n{registry}"
+            !installed.join(gone).exists(),
+            "`{gone}` is gone: a park and its clearance are entries"
+        );
+        assert!(
+            !registry.contains(gone),
+            "and the registry names no `{gone}`:\n{registry}"
         );
     }
     assert!(
-        !registry.contains("assets/question-note.md"),
-        "and names no question grammar:\n{registry}"
+        registry.contains(&format!("path = \"{QUESTION_SCHEMA}\"")),
+        "the registry names `{QUESTION_SCHEMA}`:\n{registry}"
     );
 }

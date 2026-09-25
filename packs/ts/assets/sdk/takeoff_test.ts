@@ -1,7 +1,8 @@
 // tiny's takeoff workflow against the fake fleet binary `verbs_test.ts` runs
 // the verbs on: each arm reads the steps the flight records, in order, the
 // argv the fake saw per verb, and the exit a re-run takes — so a Waiting at an
-// item's delivery spawns nothing twice, and a hold's letter is the verdict.
+// item's delivery spawns nothing twice, a hold's letter is the verdict, and a
+// `review=accept` flight lands only on the one licence it asks for first.
 //
 // The deliveries the flight waits on are appended by the arm in the stored
 // shape, the way the verbs' suite appends a park or a landing.
@@ -16,6 +17,7 @@ import {
   commandOf,
   FINDINGS_DIR,
   itemsOf,
+  LICENCE,
   NOT_TESTED,
   policyOf,
   REPORT,
@@ -35,14 +37,23 @@ const here = import.meta.dirname!;
 
 /** The question file a review=hold flight writes for it-1 at aaa1111: the
  * JSON `fleet hold --question` reads, each of the flight's OPTIONS taken
- * apart into its letter and its text. */
+ * apart into its letter and its text, and about it-1 at that commit, which A
+ * licenses the run to land. */
 const ACCEPT_IT_1 = JSON.stringify({
   question: "Accept it-1 at aaa1111?",
   options: [
     { letter: "A", text: "accept and land" },
     { letter: "B", text: "return to the builder" },
   ],
+  about: { items: ["it-1"], commit: "aaa1111", licenses: "A" },
 });
+
+/** The question a review=accept flight of it-1 and it-2 asks before anything
+ * else: one hold about both, naming no commit, whose A licenses each landing. */
+const LICENSE_BOTH = "Land what this flight's review accepts? it-1, it-2";
+
+/** The step that hold records, by the name the SDK gives a hold's step. */
+const LICENCE_STEP = `hold ${LICENSE_BOTH}`;
 
 interface Faked extends Scratch {
   fake: string;
@@ -106,6 +117,28 @@ function verbs(seen: string[][]): string[] {
   return seen.map((argv) => argv[0]);
 }
 
+/** The flight's licence hold canned as `licence-1` — the verb answers it and
+ * `item.held` names it — and, with a letter, cleared by a person with it. */
+async function licensed(s: Faked, letter?: string): Promise<void> {
+  const runId = s.env.runId;
+  await can(s, "hold", { item: runId, state: "held", hold: "licence-1" }, [{
+    type: "item.held",
+    payload: {
+      item: runId,
+      reason: "ask",
+      branch: "(run)",
+      commit: "",
+      hold: "licence-1",
+    },
+  }]);
+  if (letter !== undefined) {
+    await append(s.env.stream, "hold.cleared", {
+      kind: "seat",
+      id: "a-person",
+    }, { item: runId, hold: "licence-1", letter });
+  }
+}
+
 async function delivered(
   s: Faked,
   item: string,
@@ -142,10 +175,12 @@ function pinned(
 const INPUTS = ["input items", "input policy", "input test", "input touched"];
 
 /** The step names a two-item flight records under `review=accept`, in order:
- * the four inputs, then per item spawn, until, review and land with the second
- * spawn fed by the first landing at width 1, then the report and the tick. */
-const FOURTEEN = [
+ * the four inputs, the flight's licence, then per item spawn, until, review
+ * and land with the second spawn fed by the first landing at width 1, then the
+ * report and the tick. */
+const FIFTEEN = [
   ...INPUTS,
+  LICENCE_STEP,
   "spawn it-1",
   "until delivered it-1",
   "review it-1",
@@ -158,19 +193,22 @@ const FOURTEEN = [
   "tick",
 ];
 
-Deno.test("AC1 takeoff — two items through spawn, until, review and land: fourteen steps in order, the report and the tick in the run directory, and a replay that spawns nothing", async () => {
+Deno.test("AC1 takeoff — two items through the licence, then spawn, until, review and land: fifteen steps in order, the report and the tick in the run directory, and a replay that spawns nothing", async () => {
   const s = await scratch();
+  await licensed(s, "A");
   await delivered(s, "it-1", "aaa1111");
   await delivered(s, "it-2", "bbb2222");
   const stdin = pinned("it-1,it-2", "review=accept");
 
   assertEquals(await replay(takeoff, s.env, stdin), { code: 0 });
   const recorded = closes(await lines(s));
-  assertEquals(recorded.map((l) => l.payload.n), FOURTEEN.map((_, i) => i + 1));
-  assertEquals(recorded.map((l) => l.payload.name), FOURTEEN);
-  assertEquals(recorded.length, 14, "the flight's own steps, counted");
+  assertEquals(recorded.map((l) => l.payload.n), FIFTEEN.map((_, i) => i + 1));
+  assertEquals(recorded.map((l) => l.payload.name), FIFTEEN);
+  assertEquals(recorded.length, 15, "the flight's own steps, counted");
 
-  const seen = await calls(s);
+  const all = await calls(s);
+  assertEquals(all[0][0], "hold", "the flight's licence is asked first");
+  const seen = all.slice(1);
   assertEquals(verbs(seen), [
     "dispatch",
     "review",
@@ -209,23 +247,24 @@ Deno.test("AC1 takeoff — two items through spawn, until, review and land: four
   const tick = await Deno.readTextFile(`${s.env.runDir}/${TICK}`);
   assertMatch(tick, /^- ☑ it-1 fedcba9$/m);
   assertMatch(tick, /^- ☑ it-2 fedcba9$/m);
-  assertEquals(recorded[12].payload.result, {
+  assertEquals(recorded[13].payload.result, {
     path: `${s.env.runDir}/${REPORT}`,
     landed: 2,
     returned: 0,
   });
-  assertEquals(recorded[13].payload.result, {
+  assertEquals(recorded[14].payload.result, {
     path: `${s.env.runDir}/${TICK}`,
     ticked: ["it-1", "it-2"],
   });
 
   assertEquals(await replay(takeoff, s.env, stdin), { code: 0 });
-  assertEquals(closes(await lines(s)).length, 14, "a replay records nothing");
-  assertEquals((await calls(s)).length, 6, "and spawns nothing");
+  assertEquals(closes(await lines(s)).length, 15, "a replay records nothing");
+  assertEquals((await calls(s)).length, 7, "and spawns nothing");
 });
 
 Deno.test("AC2 re-run — Waiting at the second item's until: exit 2 naming it, the re-run spawns nothing (the fake's spawn counter stays at 2), and the flight closes once the delivery lands", async () => {
   const s = await scratch();
+  await licensed(s, "A");
   await delivered(s, "it-1", "aaa1111");
   const stdin = pinned('["it-1", "it-2"]', "review=accept");
 
@@ -242,7 +281,7 @@ Deno.test("AC2 re-run — Waiting at the second item's until: exit 2 naming it, 
   );
   assertEquals(
     closes(await lines(s)).map((l) => l.payload.name),
-    FOURTEEN.slice(0, 9),
+    FIFTEEN.slice(0, 10),
   );
 
   assertEquals(await replay(takeoff, s.env, stdin), {
@@ -250,13 +289,94 @@ Deno.test("AC2 re-run — Waiting at the second item's until: exit 2 naming it, 
     waiting: ["it-2"],
   });
   assertEquals(spawns(await calls(s)), 2, "the re-run spawns nothing");
-  assertEquals((await calls(s)).length, 4, "nor reviews or lands again");
-  assertEquals(closes(await lines(s)).length, 9, "and records no step");
+  assertEquals(
+    (await calls(s)).length,
+    5,
+    "nor asks, reviews or lands again",
+  );
+  assertEquals(closes(await lines(s)).length, 10, "and records no step");
 
   await delivered(s, "it-2", "bbb2222");
   assertEquals(await replay(takeoff, s.env, stdin), { code: 0 });
   assertEquals(spawns(await calls(s)), 2);
-  assertEquals(closes(await lines(s)).map((l) => l.payload.name), FOURTEEN);
+  assertEquals(closes(await lines(s)).map((l) => l.payload.name), FIFTEEN);
+});
+
+/** The question file the licence hold writes: LICENCE taken apart, and about
+ * both items with no commit. */
+const LICENSE_BOTH_FILE = JSON.stringify({
+  question: LICENSE_BOTH,
+  options: [
+    { letter: "A", text: "land each accepted delivery" },
+    { letter: "B", text: "land nothing — end the flight" },
+  ],
+  about: { items: ["it-1", "it-2"], licenses: "A" },
+});
+
+Deno.test("AC6 review=accept — one hold before any review, about every item and naming no commit: the flight waits on it, A reviews and lands each item", async () => {
+  const s = await scratch();
+  await licensed(s);
+  await delivered(s, "it-1", "aaa1111");
+  await delivered(s, "it-2", "bbb2222");
+  const stdin = pinned("it-1,it-2", "review=accept");
+
+  assertEquals(await replay(takeoff, s.env, stdin), {
+    code: 2,
+    waiting: "licence-1",
+  });
+  assertEquals(
+    await Deno.readTextFile(`${s.env.runDir}/holds/1.json`),
+    LICENSE_BOTH_FILE,
+  );
+  assertEquals(
+    LICENCE.map((o) => o.slice(0, 1)),
+    ["A", "B"],
+    "the licence's own letters",
+  );
+  assertEquals(
+    verbs(await calls(s)),
+    ["hold"],
+    "the licence is asked before anything is spawned or reviewed",
+  );
+  assertEquals(closes(await lines(s)).map((l) => l.payload.name), INPUTS);
+
+  await append(s.env.stream, "hold.cleared", { kind: "seat", id: "a-person" }, {
+    item: s.env.runId,
+    hold: "licence-1",
+    letter: "A",
+  });
+  assertEquals(await replay(takeoff, s.env, stdin), { code: 0 });
+  assertEquals(verbs(await calls(s)), [
+    "hold",
+    "dispatch",
+    "review",
+    "land",
+    "dispatch",
+    "review",
+    "land",
+  ], "one ask, then each item reviewed and landed");
+  assertEquals(closes(await lines(s)).map((l) => l.payload.name), FIFTEEN);
+});
+
+Deno.test("AC6 review=accept — B fails the run with the declined message, and nothing is spawned, reviewed or landed", async () => {
+  const s = await scratch();
+  await licensed(s, "B");
+  await delivered(s, "it-1", "aaa1111");
+  await delivered(s, "it-2", "bbb2222");
+
+  assertEquals(
+    await replay(takeoff, s.env, pinned("it-1,it-2", "review=accept")),
+    {
+      code: 1,
+      reason:
+        "takeoff: the person declined to license this flight's landings (answered B)",
+    },
+  );
+  assertEquals(verbs(await calls(s)), ["hold"], "only the licence was asked");
+  assertEquals(closes(await lines(s)).map((l) => l.payload.name), [
+    ...INPUTS,
+    LICENCE_STEP,
+  ]);
 });
 
 Deno.test("AC1 hold — under review=hold every verdict is a hold: the flight waits on the hold id, holds once across the re-runs, lands on A and returns on B with the findings file", async () => {
@@ -449,6 +569,7 @@ async function flown(
   more: { inputs?: Record<string, string>; config?: Record<string, string> },
 ): Promise<{ dispatch: string[]; land: string[]; report: string }> {
   const s = await scratch();
+  await licensed(s, "A");
   await delivered(s, "it-1", "aaa1111");
   assertEquals(
     await replay(takeoff, s.env, pinned("it-1", "review=accept", more)),

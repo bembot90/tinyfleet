@@ -74,16 +74,8 @@ path = "assets/landing-note.md"
 purpose = "the note a landing renders, with the one line a script reads the landed sha and the suite off"
 
 [[shadow]]
-path = "assets/park-note.md"
-purpose = "the note a park renders, carrying the question, the branch, the commit and the hold the clearance clears"
-
-[[shadow]]
 path = "assets/question.schema.json"
 purpose = "the JSON shape a seat's question takes, shown in its brief; fleet hold reads it against the binary's own type"
-
-[[shadow]]
-path = "assets/answer-note.md"
-purpose = "the note an answer renders, carrying the hold it cleared, the letter a person chose and what they said beyond it"
 
 [[shadow]]
 path = "assets/rules.md"

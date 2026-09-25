@@ -186,15 +186,12 @@ impl Runs for Engine {
         .map_err(|stop| stop.message)
     }
 
-    /// THE PARK AND NOT THE BARE HOLD: the note beside the hold is what
-    /// `fleet clear` clears it through, and the packs are resolved here
-    /// because the note is written in the park grammar they carry.
+    /// THE PARK AND NOT THE BARE HOLD: the held entry beside the hold is
+    /// what `fleet clear` clears it through.
     fn hold(&self, run: &str, reason: &str) -> Result<String, String> {
         let here = self.project_holding(run)?;
         let by = self.controller()?;
         let store = self.stores.open(&here.project.root);
-        let packs =
-            Packs::under(&here.packs_dir, &here.defaults_dir).map_err(|stop| stop.message)?;
         let directory = self.machine_dir.join(workflow_run::RUNS).join(run);
         hold::park_at_the_cap(
             &hold::Capped {
@@ -204,7 +201,6 @@ impl Runs for Engine {
                 by: &by,
             },
             store.as_ref(),
-            &packs,
         )
         .map_err(|stop| stop.message)
     }

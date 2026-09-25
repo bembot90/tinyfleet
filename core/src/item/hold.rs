@@ -21,60 +21,41 @@
 //! a worktree, a work branch and a tree to commit. A run's record has none of
 //! the three — the git wiring resolves to the project root, which is whoever's
 //! checkout the run was started inside — so `hold` on one reads no branch,
-//! stages nothing and commits nothing, and its park names [`RUN_BRANCH`] where
-//! a seat's names its branch. Everything after the commit is the same act.
+//! stages nothing and commits nothing, and its held entry stands on the run's
+//! hash where a seat's stands on a branch and a commit. Everything after the
+//! commit is the same act.
 //!
-//! THE QUESTION IS CARRIED TWICE AND WRITTEN ONCE. The seat hands it in as
-//! JSON and [`question_text`] renders it whole: that text is the hold's
-//! reason, which is what a person meets on the store's hold list, and the same
-//! text sits under the park note's four lines MOVED OFF COLUMN ZERO — so no
-//! line a seat wrote inside its question can end the region it is written in.
+//! THE QUESTION IS CARRIED TWICE. The seat hands it in as JSON: [`question_text`]
+//! renders it whole as the hold's reason, which is what a person meets on the
+//! store's hold list, and the `held` entry carries it typed — the question,
+//! its context, its lettered options and what it is about — which is what
+//! `clear` checks a letter against and a run's landing reads its licence off.
 
 use std::io::Write;
 use std::path::Path;
 
-use crate::entry::Choice;
-use crate::input::{self, QuestionInput, QUESTION_SCHEMA};
-use crate::item::brief::Packs;
+use crate::entry::{self, Body, Choice, HoldReason, Timeline};
+use crate::input::{self, QuestionInput, Standing, QUESTION_SCHEMA};
 use crate::item::deliver::held_item;
 use crate::item::dispatch::refuse_an_epic;
 use crate::item::run;
 use crate::item::{
-    control_token, label_value, last_answer, last_park, marker_block, render, Events, Git, Project,
-    Stop, ANSWER_MARKERS, HOLD_CLEARED, ITEM_HELD, PARK_MARKERS, TRUNK_BRANCH,
+    recorded, Events, Git, Project, Stop, Unrecorded, HOLD_CLEARED, ITEM_HELD, TRUNK_BRANCH,
 };
 use crate::seat::actor::Actor;
 use crate::store::{Item, Store, BD};
 
-/// The park-note grammar, in core's pack and shadowable like every other asset.
-pub const PARK_NOTE: &str = "assets/park-note.md";
-
-/// What a reading nobody could take is written as, on the park note and in the
-/// payload beside it. A blank line and an unread one are the same bytes and not
-/// the same fact.
-pub const UNREAD: &str = "(none)";
-
-/// What a run's record parks on where a seat's park names its work branch. It
-/// is not [`UNREAD`]: a branch nobody could read and an item that has no branch
-/// at all are two different facts, and a reader cutting a worktree from a park
-/// must meet the second as a value and not as a missing one.
+/// What `item.held` names as a run's branch, where a seat's names its work
+/// branch: a run's record has no branch at all, and a reader of the stream
+/// must meet that as a value and not as a missing one.
 pub const RUN_BRANCH: &str = "(run)";
 
 /// The key the run's own hash sits under in the record's `run` object, written
 /// by [`run::run`] at the open.
 const HASH: &str = "hash";
 
-/// The grammar a clearance is written in, a slot in the pack.
-pub const ANSWER_NOTE: &str = "assets/answer-note.md";
-
-/// What the park note's reason reads as for each of the parks raised here: a
-/// seat's own question, and a run the controller stopped executing at
-/// `[core.run] max_crashes`, named by the key that stopped it.
+/// What `item.held` names as the reason for a seat's own question.
 pub const ASK: &str = "ask";
-pub const CAPPED: &str = "max_crashes";
-
-/// The label the park note carries the hold a clearance clears under.
-pub const HOLD: &str = "hold";
 
 // ---- the question ------------------------------------------------------------
 
@@ -96,7 +77,6 @@ pub struct Question<'a> {
 pub struct Wiring<'a> {
     pub store: &'a dyn Store,
     pub git: &'a dyn Git,
-    pub packs: &'a Packs,
     pub project: &'a Project,
     pub events: &'a dyn Events,
 }
@@ -108,8 +88,8 @@ pub struct Held {
     pub hold: String,
     pub branch: String,
     pub commit: String,
-    /// The park note as it was written.
-    pub note: String,
+    /// The held entry's id, as the store keeps it.
+    pub entry: String,
 }
 
 pub fn hold(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result<Held, Stop> {
@@ -189,19 +169,28 @@ pub fn hold(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result
         }
     })?;
 
-    // (c) THE PARK NOTE, read back as the last park region.
-    let note = park_note(wiring.packs, &item, ASK, &branch, &commit, &hold, &written)?;
-    wiring.store.note(&item, &note, &by).map_err(|e| {
-        held(
-            &item,
-            &commit,
-            &hold,
-            &format!("the park note did not land: {e}"),
-        )
+    // (c) THE HELD ENTRY, appended and read back through the one helper every
+    // entry writer goes through, under the hold the store just answered.
+    let standing = if of_a_run {
+        Standing::Run {
+            hash: commit.clone(),
+        }
+    } else {
+        Standing::Work {
+            branch: branch.clone(),
+            commit: commit.clone(),
+        }
+    };
+    let entry = Body::Held(asked.into_held(hold.clone(), HoldReason::Ask, standing));
+    let entry = recorded(wiring.store, &item, &entry, question.by).map_err(|unrecorded| {
+        let why = match unrecorded {
+            Unrecorded::NotWritten(e) => format!("the held entry did not land: {e}"),
+            Unrecorded::Unconfirmed(why) => why,
+        };
+        held(&item, &commit, &hold, &why)
     })?;
-    read_back(&item, &note, wiring.store)?;
 
-    // (d) THE EVENT, after the note and its read-back.
+    // (d) THE EVENT, after the entry and its read-back.
     wiring
         .events
         .append(
@@ -230,21 +219,21 @@ pub fn hold(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result
         hold,
         branch,
         commit,
-        note,
+        entry,
     })
 }
 
 /// The hash a run is pinned to, off its record's own `run` object, which is
 /// what a run stands on where a seat stands on a commit. A record whose open
-/// never wrote the object reads [`UNREAD`] rather than refusing: the question
-/// is the point of the park and the hash is context beside it.
+/// never wrote the object reads `(none)` rather than refusing: the question is
+/// the point of the park and the hash is context beside it.
 fn run_hash(record: &Item) -> String {
     record
         .run
         .as_ref()
         .and_then(|object| object.get(HASH))
         .and_then(|value| value.as_str())
-        .unwrap_or(UNREAD)
+        .unwrap_or("(none)")
         .to_string()
 }
 
@@ -252,7 +241,7 @@ fn run_hash(record: &Item) -> String {
 /// where it carries one, and one `<letter>. <text>` line per option.
 ///
 /// It is the store hold's reason, so the store's own hold list shows the whole
-/// question, and the park note's body, which [`clear`] reads the options off.
+/// question.
 pub fn question_text(question: &QuestionInput) -> String {
     let mut lines = vec![question.question.clone()];
     lines.extend(question.context.clone());
@@ -263,98 +252,6 @@ pub fn question_text(question: &QuestionInput) -> String {
             .map(|choice| format!("{}. {}", choice.letter, choice.text)),
     );
     lines.join("\n")
-}
-
-/// Every lettered option a text names, in its order.
-///
-/// The lines are TRIMMED before they are read, because the text read is a park
-/// region, where [`question_text`] sits moved off column zero.
-pub fn options_in(text: &str) -> Vec<(char, String)> {
-    text.lines()
-        .filter_map(|line| {
-            let line = line.trim_start();
-            let mut letters = line.chars();
-            let letter = letters.next()?;
-            if !letter.is_ascii_uppercase() || letters.next()? != '.' {
-                return None;
-            }
-            let said = line.get(2..)?.trim();
-            (!said.is_empty()).then(|| (letter, said.to_string()))
-        })
-        .collect()
-}
-
-/// The four lines the pack's park grammar names, with the question beneath them.
-fn park_note(
-    packs: &Packs,
-    item: &str,
-    reason: &str,
-    branch: &str,
-    commit: &str,
-    hold: &str,
-    question: &str,
-) -> Result<String, Stop> {
-    let template = packs.read(PARK_NOTE)?;
-    let block = marker_block(&template, PARK_MARKERS[0]).ok_or_else(|| {
-        Stop::could_not_tell(format!(
-            "`{PARK_NOTE}` carries no `{}` block — the pack's park grammar names one",
-            PARK_MARKERS[0]
-        ))
-    })?;
-    let head = render(
-        &block,
-        &[
-            ("item", item),
-            ("reason", reason),
-            ("branch", branch),
-            ("commit", commit),
-            ("hold", hold),
-        ],
-    )
-    .map_err(|name| {
-        Stop::could_not_tell(format!(
-            "`{PARK_NOTE}` writes `{{{name}}}`, which is not a placeholder this verb resolves"
-        ))
-    })?;
-    Ok(format!("{head}\n{}", off_column_zero(question)))
-}
-
-/// Every line of a text moved off column zero, so no line of it can end the
-/// region it is written inside.
-fn off_column_zero(text: &str) -> String {
-    text.lines()
-        .map(|line| {
-            if line.trim().is_empty() {
-                String::new()
-            } else {
-                format!("  {line}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim_end()
-        .to_string()
-}
-
-/// One read, asserting the park region against the note that was written — plus
-/// a token nothing wrote.
-fn read_back(item: &str, note: &str, store: &dyn Store) -> Result<(), Stop> {
-    let read = store.show(item)?;
-    let seen = read.notes.as_deref().and_then(last_park);
-    if seen.as_deref().map(normalised) != Some(normalised(note)) {
-        return Err(Stop::could_not_tell(format!(
-            "{item} read back with its last park ==\n{}\n  wanted:\n{note}",
-            seen.as_deref().unwrap_or("(absent)")
-        )));
-    }
-    let control = control_token();
-    if read.document.contains(control) {
-        return Err(Stop::could_not_tell(format!(
-            "the read-back on {item} carries {control}, which nothing wrote — the read is not \
-             reading this item"
-        )));
-    }
-    Ok(())
 }
 
 // ---- the crash cap -----------------------------------------------------------
@@ -371,62 +268,60 @@ pub struct Capped<'a> {
     pub by: &'a Actor,
 }
 
-/// The hold on a run's record at `[core.run] max_crashes` and the park note
+/// The hold on a run's record at `[core.run] max_crashes` and the held entry
 /// that names it, answered as the hold's own id.
 ///
 /// THE SAME PARK `hold` MAKES ON A RUN'S RECORD, with the question written
 /// here rather than by a seat: the hold carries the whole question as its
-/// reason, and the note carries the four lines [`clear`] reads the hold off. A
-/// hold with no note beside it is the one park `fleet clear` refuses — "carries
-/// no park" — and its open hold blocks the record's close too, so the run it
-/// stopped held a `[core.run] max_open` slot for good.
+/// reason, and ONE `held` entry — reason `max_crashes`, on the run's hash — is
+/// the record of it, which [`clear`] reads the hold off. A hold with no entry
+/// beside it is one `fleet clear` refuses — "carries no open hold" — and its
+/// open hold blocks the record's close too, so the run it stopped would hold
+/// a `[core.run] max_open` slot until it is cancelled.
 ///
 /// NO EVENT. `item.held` is the controller's own line and its latch: the
 /// pass writes it once this answers, so a park that stopped half way here is
 /// asked for again on the next poll rather than announced.
 ///
 /// A FAILURE AFTER THE HOLD WITHDRAWS IT. The next poll raises a hold of its
-/// own, and one left behind with no note naming it is exactly the unclearable
-/// hold this park exists not to leave.
-pub fn park_at_the_cap(capped: &Capped, store: &dyn Store, packs: &Packs) -> Result<String, Stop> {
+/// own, and one left behind with no entry naming it is exactly the hold this
+/// park exists not to leave.
+pub fn park_at_the_cap(capped: &Capped, store: &dyn Store) -> Result<String, Stop> {
     let record = store.show(capped.run)?;
-    let question = question_text(&cap_question(capped));
+    let question = cap_question(capped);
     let by = capped.by.to_string();
-    let hold = store.hold(capped.run, &question, &by).map_err(|e| {
-        Stop::could_not_tell(format!(
-            "the hold was not raised: {e}\n  {} carries no park",
-            capped.run
-        ))
-    })?;
-    let noted = park_note(
-        packs,
-        capped.run,
-        CAPPED,
-        RUN_BRANCH,
-        &run_hash(&record),
-        &hold,
-        &question,
-    )
-    .and_then(|note| {
-        store
-            .note(capped.run, &note, &by)
-            .map_err(|e| Stop::could_not_tell(format!("the park note did not land: {e}")))?;
-        read_back(capped.run, &note, store)
-    });
-    noted.map(|()| hold.clone()).map_err(|stop| {
-        let withdrawn = match store.clear_hold(&hold, &by) {
-            Ok(()) => format!("the hold {hold} is withdrawn and the next poll parks it again"),
-            Err(e) => format!(
-                "the hold {hold} STANDS on {} with no park naming it, and withdrawing it failed: \
-                 {e}",
+    let hold = store
+        .hold(capped.run, &question_text(&question), &by)
+        .map_err(|e| {
+            Stop::could_not_tell(format!(
+                "the hold was not raised: {e}\n  {} carries no park",
                 capped.run
-            ),
-        };
-        Stop {
-            code: stop.code,
-            message: format!("{}\n  {withdrawn}", stop.message),
-        }
-    })
+            ))
+        })?;
+    let entry = Body::Held(question.into_held(
+        hold.clone(),
+        HoldReason::MaxCrashes,
+        Standing::Run {
+            hash: run_hash(&record),
+        },
+    ));
+    recorded(store, capped.run, &entry, capped.by)
+        .map(|_| hold.clone())
+        .map_err(|unrecorded| {
+            let why = match unrecorded {
+                Unrecorded::NotWritten(e) => format!("the held entry did not land: {e}"),
+                Unrecorded::Unconfirmed(why) => why,
+            };
+            let withdrawn = match store.clear_hold(&hold, &by) {
+                Ok(()) => format!("the hold {hold} is withdrawn and the next poll parks it again"),
+                Err(e) => format!(
+                    "the hold {hold} STANDS on {} with no held entry naming it, and withdrawing \
+                     it failed: {e}",
+                    capped.run
+                ),
+            };
+            Stop::could_not_tell(format!("{why}\n  {withdrawn}"))
+        })
 }
 
 /// The question a crash-cap park asks, as the input a seat's question is: the
@@ -487,85 +382,83 @@ pub struct Cleared {
     pub item: String,
     pub hold: String,
     pub letter: String,
-    pub note: String,
+    /// The cleared entry's id, as the store keeps it.
+    pub entry: String,
 }
 
 pub fn clear(out: &mut dyn Write, clearance: &Clearance, wiring: &Wiring) -> Result<Cleared, Stop> {
     // Resolved once: from here on the clearance names the id the store
-    // answered, so the note, the event and every refusal carry the full one.
+    // answered, so the entry, the event and every refusal carry the full one.
     let read = wiring.store.show(clearance.item)?;
     let clearance = &Clearance {
         item: &read.id,
         ..*clearance
     };
-    let notes = read.notes.clone().unwrap_or_default();
-    let Some(park) = last_park(&notes) else {
+    // THE QUESTION IS THE TIMELINE'S OPEN HOLD: the last held entry no
+    // cleared entry naming its hold came after.
+    let entries = wiring.store.timeline(clearance.item)?;
+    let Some((_, held)) = Timeline(&entries).open_hold() else {
         return Err(Stop::refused(format!(
-            "{} carries no park — a clearance settles a question somebody asked, and this item \
-             has none",
+            "{} carries no open hold — a clearance settles a question somebody asked, and this \
+             item has none",
             clearance.item
         )));
     };
-    let Some(hold) = label_value(&park, HOLD) else {
-        return Err(Stop::refused(format!(
-            "{}'s last park names no `{HOLD}:` — there is no object for a clearance to clear",
-            clearance.item
-        )));
-    };
+    let hold = held.hold.clone();
 
-    // THE OPEN LIST IS FILTERED BY THE PARK'S OWN HOLD ID and by nothing else:
+    // THE OPEN LIST IS FILTERED BY THE ENTRY'S OWN HOLD ID and by nothing else:
     // the listing answers which holds are open and never which item each one
     // blocks, so the item's own record is what ties the two together.
     let open = wiring.store.open_holds()?;
     if !open.contains(&hold) {
         return Err(Stop::refused(format!(
-            "{}'s hold {hold} is not one the store lists open — it has been cleared already, \
-             by `fleet clear` or by hand",
+            "{}'s hold {hold} is not one the store lists open — it has been cleared already, or \
+             by hand",
             clearance.item
         )));
     }
 
     let letter = one_letter(clearance.letter)?;
-    let options = options_in(&park);
-    let named = options
+    let named = held
+        .options
         .iter()
-        .find(|(carried, _)| *carried == letter)
-        .map(|(_, said)| said.clone());
-    if named.is_none() && clearance.text.is_none() {
+        .any(|choice| choice.letter == letter.to_string());
+    if !named && clearance.text.is_none() {
         return Err(Stop::usage(format!(
             "the question on {} names no option `{letter}` — its options are {}, and a letter \
              outside them needs `--text <text>` saying what was decided",
             clearance.item,
-            if options.is_empty() {
+            if held.options.is_empty() {
                 "none".to_string()
             } else {
-                options
+                held.options
                     .iter()
-                    .map(|(carried, _)| carried.to_string())
+                    .map(|choice| choice.letter.as_str())
                     .collect::<Vec<_>>()
                     .join(", ")
             }
         )));
     }
 
-    // The string form the note signs with, every write carries and the event
-    // names: the answer a run's landing reads its licence off.
+    // THE CLEARED ENTRY, by the clearer: the answer a run's landing reads its
+    // licence off, appended and read back before the store's hold is cleared.
     let by = clearance.by.to_string();
-    let note = answer_note(wiring.packs, &hold, &by, letter, clearance.text)?;
-    wiring.store.note(clearance.item, &note, &by)?;
-    let seen = wiring
-        .store
-        .show(clearance.item)?
-        .notes
-        .as_deref()
-        .and_then(last_answer);
-    if seen.as_deref().map(normalised) != Some(normalised(&note)) {
-        return Err(Stop::could_not_tell(format!(
-            "{} read back with its last answer ==\n{}\n  wanted:\n{note}",
-            clearance.item,
-            seen.as_deref().unwrap_or("(absent)")
-        )));
-    }
+    let answer = Body::Cleared(entry::Cleared {
+        hold: hold.clone(),
+        how: entry::Clearance::Answer,
+        letter: Some(letter.to_string()),
+        text: clearance.text.map(String::from),
+    });
+    let entry =
+        recorded(wiring.store, clearance.item, &answer, clearance.by).map_err(|unrecorded| {
+            match unrecorded {
+                Unrecorded::NotWritten(e) => Stop::from(e),
+                Unrecorded::Unconfirmed(why) => Stop::could_not_tell(format!(
+                    "{why}\n  {hold} is not cleared and {} is still blocked",
+                    clearance.item
+                )),
+            }
+        })?;
 
     wiring.store.clear_hold(&hold, &by)?;
     let still = wiring.store.open_holds()?;
@@ -601,7 +494,7 @@ pub fn clear(out: &mut dyn Write, clearance: &Clearance, wiring: &Wiring) -> Res
         item: clearance.item.to_string(),
         hold,
         letter: letter.to_string(),
-        note,
+        entry,
     })
 }
 
@@ -617,43 +510,7 @@ fn one_letter(given: &str) -> Result<char, Stop> {
     }
 }
 
-fn answer_note(
-    packs: &Packs,
-    hold: &str,
-    by: &str,
-    letter: char,
-    text: Option<&str>,
-) -> Result<String, Stop> {
-    let template = packs.read(ANSWER_NOTE)?;
-    let block = marker_block(&template, ANSWER_MARKERS[0]).ok_or_else(|| {
-        Stop::could_not_tell(format!(
-            "`{ANSWER_NOTE}` carries no `{}` block — the pack's answer grammar names one",
-            ANSWER_MARKERS[0]
-        ))
-    })?;
-    render(
-        &block,
-        &[
-            ("hold", hold),
-            ("by", by),
-            ("letter", &letter.to_string()),
-            ("text", text.unwrap_or(UNREAD)),
-        ],
-    )
-    .map_err(|name| {
-        Stop::could_not_tell(format!(
-            "`{ANSWER_NOTE}` writes `{{{name}}}`, which is not a placeholder this verb resolves"
-        ))
-    })
-}
-
 // ---- the stops ---------------------------------------------------------------
-
-/// Whitespace normalised to single spaces, because the store keeps a note with
-/// the wrapping it was written with and the comparison is about the words.
-fn normalised(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
 
 /// A failure after the commit and before the hold. The commit is real and the
 /// message says so, because a caller that read this as "nothing happened" would

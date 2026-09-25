@@ -99,7 +99,7 @@ pub trait Runs {
     fn rerun(&self, run: &str) -> Result<(), String>;
 
     /// Raise a hold on the run's record and say why, answering with the hold's
-    /// own id — with the park note beside it that `fleet clear` clears the
+    /// own id — with the held entry beside it that `fleet clear` clears the
     /// hold through, or the hold is one nobody can clear.
     fn hold(&self, run: &str, reason: &str) -> Result<String, String>;
 

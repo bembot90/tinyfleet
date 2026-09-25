@@ -576,16 +576,18 @@ pub const VERDICT_MARKERS: [&str; 2] = ["ACCEPTED", "RETURNED WITH FINDINGS"];
 /// covers region).
 pub const LANDING_MARKERS: [&str; 1] = ["LANDED"];
 
-/// The one a park opens on. It shares no prefix with the three above, and it
-/// ENDS each of their regions: a park written after a delivery is a region of
-/// its own, so a reader taking the last delivery does not read the park's
+/// The one a park note opened on. It shares no prefix with the three above, and
+/// it ENDS each of their regions: a park written after a delivery is a region
+/// of its own, so a reader taking the last delivery does not read the park's
 /// branch and commit as the delivery's.
+///
+/// No verb writes a park note: a park is the timeline's `held` entry. The
+/// marker stays for the regions it ends on records written before.
 pub const PARK_MARKERS: [&str; 1] = ["PARKED"];
 
-/// The one a person's answer opens on. It ends the park it answers, which is
-/// the whole of why it is a marker at all: a park's region carries the question
-/// and its options, and an answer written inside that region would be read back
-/// as part of the question.
+/// The one a person's answer note opened on, ending the park it answered. No
+/// verb writes one: a clearance is the timeline's `cleared` entry, and the
+/// marker stays for the regions it ends.
 pub const ANSWER_MARKERS: [&str; 1] = ["ANSWERED"];
 
 /// Whether this line opens a note with one of these markers, at column zero.
@@ -647,34 +649,6 @@ pub fn last_landing(notes: &str) -> Option<String> {
     )
 }
 
-/// The last park region of an item's notes, ended by anything that follows it.
-pub fn last_park(notes: &str) -> Option<String> {
-    last_region(
-        notes,
-        &PARK_MARKERS,
-        &[
-            &DELIVERY_MARKERS,
-            &VERDICT_MARKERS,
-            &LANDING_MARKERS,
-            &ANSWER_MARKERS,
-        ],
-    )
-}
-
-/// The last answer region of an item's notes.
-pub fn last_answer(notes: &str) -> Option<String> {
-    last_region(
-        notes,
-        &ANSWER_MARKERS,
-        &[
-            &DELIVERY_MARKERS,
-            &VERDICT_MARKERS,
-            &LANDING_MARKERS,
-            &PARK_MARKERS,
-        ],
-    )
-}
-
 /// A template's block for one marker: the paragraph it opens. What follows the
 /// blocks is the prose that teaches them, and a note is not made of prose.
 pub fn marker_block(template: &str, marker: &str) -> Option<String> {
@@ -691,17 +665,6 @@ pub fn marker_block(template: &str, marker: &str) -> Option<String> {
         }
     }
     (!block.is_empty()).then(|| block.join("\n"))
-}
-
-/// The value of a `label:` line at column zero, trimmed. The first such line
-/// wins: a note carrying two is a note the grammar does not describe, and the
-/// one a reader meets first is the one it reads.
-pub fn label_value(region: &str, label: &str) -> Option<String> {
-    let head = format!("{label}:");
-    region
-        .lines()
-        .find(|line| line.starts_with(&head))
-        .map(|line| line[head.len()..].trim().to_string())
 }
 
 /// A token nothing wrote, for the read-backs to ask their own answer about.

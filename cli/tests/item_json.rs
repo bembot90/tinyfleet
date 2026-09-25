@@ -333,13 +333,6 @@ impl Rig {
         value[0].clone()
     }
 
-    fn notes_of(&self, item: &str) -> String {
-        self.item_json(item)["notes"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string()
-    }
-
     /// The stub: `agents` is the roster read, `-p` is the one print-mode turn.
     fn write_stub(&self) {
         std::fs::write(
@@ -564,7 +557,8 @@ fn deliver_prints_the_commit_it_made_and_review_the_state_its_verdict_moved_the_
 }
 
 /// `hold --json` and `clear --json`: the hold id, which only these two carry,
-/// and which the second reads back from the first.
+/// and which the second reads back from the first; and the entry each wrote, by
+/// the id `item show` lists it under.
 #[test]
 fn hold_and_clear_print_the_hold_one_raised_and_the_other_cleared() {
     let rig = Rig::new("hold");
@@ -583,11 +577,22 @@ fn hold_and_clear_print_the_hold_one_raised_and_the_other_cleared() {
     assert_eq!(data["state"], serde_json::json!("held"), "{data}");
     let hold = data["hold"].as_str().expect("a hold id").to_string();
     assert!(!hold.is_empty(), "the hold `hold` raised: {data}");
-    assert!(
-        rig.notes_of(&item).contains(&hold),
-        "which the park on the record names too: {}",
-        rig.notes_of(&item)
-    );
+    let last_entry = |kind: &str| {
+        let shown = rig.item_show(&[&item, "--json"]);
+        assert_eq!(shown.status.code(), Some(0), "{}", stderr(&shown));
+        let timeline = data_of(&shown, "item show")["timeline"].clone();
+        let last = timeline
+            .as_array()
+            .and_then(|entries| entries.last())
+            .cloned()
+            .expect("the timeline carries an entry");
+        assert_eq!(last["kind"], serde_json::json!(kind), "{timeline}");
+        assert_eq!(last["hold"], serde_json::json!(hold), "{timeline}");
+        last
+    };
+    let held = last_entry("held");
+    assert!(data["entry"].is_string(), "{data}");
+    assert_eq!(data["entry"], held["id"], "the held entry's id: {data}");
 
     let out = rig.run(&["clear", &item, "B", "--by", PERSON, "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -598,6 +603,13 @@ fn hold_and_clear_print_the_hold_one_raised_and_the_other_cleared() {
         data["hold"],
         serde_json::json!(hold),
         "the same hold `hold` raised: {data}"
+    );
+    let cleared = last_entry("cleared");
+    assert_eq!(cleared["letter"], serde_json::json!("B"), "{cleared}");
+    assert!(data["entry"].is_string(), "{data}");
+    assert_eq!(
+        data["entry"], cleared["id"],
+        "the cleared entry's id: {data}"
     );
 }
 

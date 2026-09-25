@@ -1428,7 +1428,7 @@ fn start_refreshes_a_defaults_set_this_binary_no_longer_carries() {
     );
 
     let root = rig.machine.join(fleet_core::defaults::DIR);
-    let dropped = root.join("assets/park-note.md");
+    let dropped = root.join("assets/brief.md");
     let body = std::fs::read(&dropped).expect("the default reads");
     std::fs::remove_file(&dropped).expect("the older set is one file short");
     let older = fleet_core::defaults::tree_hash(&root).expect("the older set hashes");

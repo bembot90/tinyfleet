@@ -41,12 +41,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 use crate::add;
+use crate::entry::{self, Body};
 use crate::item::brief::Packs;
 use crate::item::doctor::{self, Invocation, Verdict, DOCTOR_TOML, RUNTIME_VERSION, SLOT};
 use crate::item::pins;
 use crate::item::{
-    control_token, read_table, Events, Project, Stop, HOLD_CLEARED, RUN_CANCELLED, RUN_CLOSED,
-    RUN_COULD_NOT_TELL, RUN_FAILED, RUN_STARTED, RUN_WAITING,
+    control_token, read_table, recorded, Events, Project, Stop, Unrecorded, HOLD_CLEARED,
+    RUN_CANCELLED, RUN_CLOSED, RUN_COULD_NOT_TELL, RUN_FAILED, RUN_STARTED, RUN_WAITING,
 };
 use crate::lock;
 use crate::pack::{self, Runtime};
@@ -510,19 +511,20 @@ pub struct Cancelled {
     pub holds: Vec<String>,
 }
 
-/// A run ended by hand: every hold standing on its record cleared, the record
-/// closed as cancelled, then [`RUN_CANCELLED`] and one [`HOLD_CLEARED`] per
-/// hold on the stream.
+/// A run ended by hand: every hold standing on its record cleared — a
+/// `cleared` entry of how `cancel` on the record, then the store's hold — the
+/// record closed as cancelled, then [`RUN_CANCELLED`] and one [`HOLD_CLEARED`]
+/// per hold on the stream.
 ///
 /// THE WAY OUT FOR A RUN NOTHING ELSE ENDS. A run whose process died before it
 /// wrote a row of the exit table, one held at `[core.run] max_crashes`, one
 /// waiting on a wake that will never come: each holds its record open, and the
 /// open records are what `[core.run] max_open` counts.
 ///
-/// THE HOLDS ARE THE STORE'S ANSWER, not a park note's: the record's own open
-/// dependencies that the store lists as open holds. A park written before its
-/// note existed raised a hold nothing on the record names, and it blocks the
-/// close exactly as a noted one does.
+/// THE HOLDS ARE THE STORE'S ANSWER, not the timeline's: the record's own open
+/// dependencies that the store lists as open holds. A hold nothing on the
+/// record names blocks the close exactly as one a held entry names does, and
+/// is cancelled the same way.
 ///
 /// IT STOPS NO PROCESS AND RETIRES NO SEAT. A run holds no process between its
 /// executions, and one under way when the cancel lands runs to its end; the
@@ -575,7 +577,24 @@ pub fn cancel(
         .filter(|blocker| open.contains(blocker))
         .cloned()
         .collect();
+    // ONE CLEARED ENTRY PER HOLD, before the store's hold is cleared: the
+    // record says the hold was cancelled, never that somebody chose no letter.
     for hold in &holds {
+        let cancelled = Body::Cleared(entry::Cleared {
+            hold: hold.clone(),
+            how: entry::Clearance::Cancel,
+            letter: None,
+            text: None,
+        });
+        recorded(store, run, &cancelled, cancel.by).map_err(|unrecorded| {
+            let why = match unrecorded {
+                Unrecorded::NotWritten(e) => {
+                    format!("the cleared entry for {hold} did not land on {run}: {e}")
+                }
+                Unrecorded::Unconfirmed(why) => why,
+            };
+            Stop::could_not_tell(format!("{why}\n  {run} is NOT cancelled"))
+        })?;
         store.clear_hold(hold, &by).map_err(|e| {
             Stop::could_not_tell(format!(
                 "{hold} on {run} was not cleared: {e}\n  {run} is NOT cancelled"

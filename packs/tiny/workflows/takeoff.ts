@@ -2,10 +2,11 @@
 // the preboard skill with the person present, hands this run its items, its
 // policy and the test command its landings run; the run spawns a builder per
 // item, waits on each delivery, reviews it — every verdict a hold when the
-// policy says so — lands the accepted ones on the test it was handed, and ends
-// on the report and the board tick as its last two steps. Every act is a
-// numbered step over the SDK, so a re-run after a Waiting exit replays to
-// where it stopped and spawns nothing twice.
+// policy says so, and one hold licensing the whole flight when it does not —
+// lands the accepted ones on the test it was handed, and ends on the report
+// and the board tick as its last two steps. Every act is a numbered step over
+// the SDK, so a re-run after a Waiting exit replays to where it stopped and
+// spawns nothing twice.
 import { type Run, workflow } from "../../ts/assets/sdk/mod.ts";
 
 export async function takeoff(run: Run): Promise<void> {
@@ -22,6 +23,26 @@ export async function takeoff(run: Run): Promise<void> {
   const rows: Row[] = [];
   const decisions: Decision[] = [];
 
+  // THE FLIGHT'S LICENCE under `review=accept`: a run lands an item only on
+  // the reviewer's clearance of a hold about it, so one hold about every item,
+  // asked before anything is spawned or reviewed, is what lets each accepted
+  // delivery land. Anything but A ends the flight with nothing reviewed.
+  if (policy.review === "accept") {
+    const licence = await run.hold(
+      `Land what this flight's review accepts? ${items.join(", ")}`,
+      LICENCE,
+      { items, licenses: "A" },
+    );
+    if (licence === "cancelled") {
+      throw new Error("takeoff: the flight's licence hold was cancelled");
+    }
+    if (licence !== "A") {
+      throw new Error(
+        `takeoff: the person declined to license this flight's landings (answered ${licence})`,
+      );
+    }
+  }
+
   // The flight, `policy.width` items in the air at once: the first wave is
   // spawned up front and every landing or return feeds the next unspawned item.
   let next = 0;
@@ -34,7 +55,11 @@ export async function takeoff(run: Run): Promise<void> {
     let letter = "A";
     if (policy.review === "hold") {
       const question = `Accept ${item} at ${commit}?`;
-      letter = await run.hold(question, OPTIONS);
+      letter = await run.hold(question, OPTIONS, {
+        items: [item],
+        commit,
+        licenses: "A",
+      });
       decisions.push({ n: decisions.length + 1, item, question, letter });
     }
     if (letter === "A") {
@@ -69,8 +94,17 @@ export async function takeoff(run: Run): Promise<void> {
 }
 
 /** The hold every verdict is read from under `review=hold`; the letter the
- * person clears it with is the verdict. */
+ * person clears it with is the verdict, and A is the letter that licenses the
+ * run's landing of that item at that commit. */
 export const OPTIONS = ["A. accept and land", "B. return to the builder"];
+
+/** The one hold a `review=accept` flight raises before anything else, about
+ * every item it flies: A licenses the run's landing of each delivery its
+ * review accepts, and B ends the flight. */
+export const LICENCE = [
+  "A. land each accepted delivery",
+  "B. land nothing — end the flight",
+];
 
 /** The flight report's markdown, written into the run directory. */
 export const REPORT = "report.md";
@@ -89,12 +123,17 @@ export const NOT_TESTED =
 
 /** What the flight pins. `items` is the ids in board order, as a JSON array or
  * a comma-separated list. `policy` is `key=value` pairs, comma-separated:
- * `review` is `hold` (every verdict asked of the person, the default) or
- * `accept` (every delivery landed); `width` is how many items fly at once,
- * 1 unless named. `test` is the command each landing runs on the rebased tree
- * and `touched` the one each builder's brief names; each is read from the
- * run's input, else from `takeoff.test` / `takeoff.touched` under
- * [packs.tiny] in fleet.toml, and the input wins. */
+ * `review` is `hold` (every verdict asked of the person, the default: one hold
+ * per delivery, about that item at its commit, whose A lands it) or `accept`
+ * (every delivery landed on one licence: a single hold before anything is
+ * spawned, about every item, whose A licenses each landing and whose B fails
+ * the flight with nothing reviewed); `width` is how many items fly at once,
+ * 1 unless named. A run's landing stands on the `[core] reviewer`'s clearance
+ * of a hold about the item, so the person clears either kind as that seat.
+ * `test` is the command each landing runs on the rebased tree and `touched`
+ * the one each builder's brief names; each is read from the run's input, else
+ * from `takeoff.test` / `takeoff.touched` under [packs.tiny] in fleet.toml,
+ * and the input wins. */
 export interface Policy {
   review: "hold" | "accept";
   width: number;
