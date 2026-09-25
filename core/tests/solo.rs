@@ -86,7 +86,7 @@ struct Site {
 fn every_rig_that_asserts_on_the_whole_board_is_in_the_solo_table() {
     let root = workspace();
 
-    let reads = set_reads(&read(&root.join("core/src/store.rs")));
+    let reads = set_reads(&read(&root.join("core/src/store/mod.rs")));
     assert!(
         reads.contains("ready") && reads.contains("open_holds"),
         "the set reads are parsed off the trait: {reads:?}"
@@ -221,7 +221,7 @@ fn rig_files(rigs: &Path) -> Vec<PathBuf> {
 fn set_reads(store: &str) -> BTreeSet<String> {
     let code = code_only(store);
     let Some(open) = code.find("pub trait Store {") else {
-        panic!("core/src/store.rs declares `pub trait Store`");
+        panic!("core/src/store/mod.rs declares `pub trait Store`");
     };
     let body = &code[open..];
     let end = body

@@ -49,7 +49,7 @@ place, `core/src/supported.rs`:
 
 | Tool | Constant | Where it is declared | Checked by |
 | --- | --- | --- | --- |
-| bd | `PINNED_BD` | `core/src/store.rs`, named again in `supported.rs` | `doctor/bd-version`, `fleet prime`'s second line |
+| bd | `PINNED_BD` | `core/src/store/mod.rs`, named again in `supported.rs` | `doctor/bd-version`, `fleet prime`'s second line |
 | Claude Code | `PINNED_CLAUDE_CODE` | `core/src/supported.rs` | `doctor/claude-code-version`, the controller's `substrate.moved` when a fleet pins none |
 
 Deno is a pack's, not the binary's: `packs/ts/pack.toml`'s `[runtime]` table,
@@ -67,7 +67,7 @@ measured by `doctor/runtime-version`. git carries no pin.
    For bd, confirm that page exists at the new tag before the move lands; no
    suite can.
 2. Re-measure every claim that rests on the old release, on the new one: for
-   bd, every "measured on" comment in `core/src/store.rs`; for Claude Code,
+   bd, every "measured on" comment in `core/src/store/mod.rs`; for Claude Code,
    the version-scoped entries in `brain/lessons/claude-code.md` the adapter
    reads. Restate each one that held, and change the code where a behaviour
    moved.

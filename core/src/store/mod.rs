@@ -29,6 +29,7 @@ use crate::seat::actor::Actor;
 mod bd_cli;
 mod bd_wire;
 pub mod keys;
+pub mod types;
 
 /// The binary every write and read goes through when the caller names no
 /// other, resolved on the process's own `PATH`.
