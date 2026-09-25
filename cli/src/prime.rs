@@ -7,22 +7,20 @@
 //! in their own words and the next part still prints.
 //!
 //! Line 2 is the tracker's version against the one the store was measured on
-//! (`store::bd::PINNED_BD`). Another version is NAMED AND NOT REFUSED: the verbs
-//! still run on it, and the line says so beside where beads says to install
-//! the pin.
+//! (`supported::PINNED_BD`), as the store's adapter reads it. Another version
+//! is NAMED AND NOT REFUSED: the verbs still run on it, and the line says so
+//! beside where the tracker's own project says to install the pin.
 
 use fleet_controller::{config, platform};
 use fleet_core::add;
 use fleet_core::defaults;
 use fleet_core::guard;
 use fleet_core::lock;
-use fleet_core::process::run_bounded;
 use fleet_core::resolve::{self, Layer};
 use fleet_core::seat::identity::SeatId;
-use fleet_core::store::bd::{Bd, PINNED_BD};
-use fleet_core::store::{Filter, Status, Store};
+use fleet_core::store::{self, Filter, Opening, Status};
+use fleet_core::supported;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use crate::exit::Exit;
@@ -30,15 +28,6 @@ use crate::exit::Exit;
 /// The bound on the item listing. Well under a hook's own deadline: a store
 /// that will not answer costs the line and never the session start.
 const ITEMS_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// The bound on `bd version`, which reads no store and answered in 60ms on the
-/// box this was written on: a tracker that hangs costs line 2 and never more
-/// than this of a session start.
-const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// The item-tracker binary when nothing names one, resolved on the constructed
-/// child PATH and never by a bare name (lessons claude-code D1).
-const DEFAULT_BD: &str = "bd";
 
 /// The rules file, as a path under a pack's `assets` slot.
 const RULES: &str = "assets/rules.md";
@@ -73,7 +62,10 @@ pub fn command() -> Exit {
         packs_of(&layering, &machine_dir.join(lock::LOCK)),
         guards_of(&policy),
     );
-    println!("{}", bd_line(resolve_bd()));
+    println!(
+        "{}",
+        supported::tracker_line(&platform::child_path(&platform::home_dir()))
+    );
 
     if let Some(rules) = rules_of(&layering) {
         print!("{rules}");
@@ -229,73 +221,6 @@ fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Line 2: the tracker a session's verbs reach, by the same resolution the
-/// item lines take, against the pinned release — the pin, another version
-/// with where to install the pin, or a tracker that did not answer, which is
-/// this line's third answer as it is the item line's.
-fn bd_line(bin: Result<PathBuf, String>) -> String {
-    match bin.and_then(|bin| version_of(&bin)) {
-        Ok(first) if carries_pin(&first) => format!("bd: {PINNED_BD}, the pinned version"),
-        Ok(first) => format!(
-            "bd: {}, not the pinned {PINNED_BD} — the verbs still run, on answers fleet was not \
-             measured against; {}",
-            named_version(&first),
-            install_pointer()
-        ),
-        Err(why) => format!("bd: could not be read — {why}; {}", install_pointer()),
-    }
-}
-
-/// The first line `bd version` printed, which is where bd prints its own.
-fn version_of(bin: &Path) -> Result<String, String> {
-    let mut cmd = Command::new(bin);
-    cmd.arg("version");
-    let out = run_bounded(cmd, VERSION_TIMEOUT)
-        .map_err(|why| format!("`{} version` {why}", bin.display()))?;
-    let said = String::from_utf8_lossy(&out.stdout);
-    let first = said.lines().next().unwrap_or_default().trim();
-    if !out.status.success() || first.is_empty() {
-        return Err(format!(
-            "`{} version` {} and printed no version",
-            bin.display(),
-            out.status
-        ));
-    }
-    Ok(first.to_string())
-}
-
-/// The pin as a WHOLE token of that line, bare or with a leading `v` — the
-/// reading the defaults' `bd-version` doctor check takes, so the two agree.
-fn carries_pin(first: &str) -> bool {
-    first
-        .split_whitespace()
-        .any(|token| token.strip_prefix('v').unwrap_or(token) == PINNED_BD)
-}
-
-/// The version a line names: its first token that opens on a digit, or the
-/// whole line where none does, so a tracker that answered something else is
-/// quoted rather than read as a version.
-fn named_version(first: &str) -> String {
-    first
-        .split_whitespace()
-        .map(|token| token.strip_prefix('v').unwrap_or(token))
-        .find(|token| token.starts_with(|c: char| c.is_ascii_digit()))
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("`{first}`"))
-}
-
-/// Where to install the pinned release: beads' own installation page, read at
-/// the pin's tag so it describes the release named, because bd installs
-/// several ways and which one fits is the machine's. The defaults' doctor
-/// check points at the same page, and a pin move checks the page is still at
-/// this path at the new tag.
-fn install_pointer() -> String {
-    format!(
-        "install the pinned bd {PINNED_BD} by beads' own instructions: \
-         https://github.com/gastownhall/beads/blob/v{PINNED_BD}/docs/getting-started/installation.md"
-    )
-}
-
 fn print_items(project_root: &Path, seat: &SeatId) {
     match items(project_root, seat) {
         Ok(items) if items.is_empty() => println!("item: none"),
@@ -313,15 +238,23 @@ fn print_items(project_root: &Path, seat: &SeatId) {
 /// The seat's open and in-progress items, `(id, title)`, in the order the
 /// tracker listed them.
 ///
-/// The store's own reader, under `ITEMS_TIMEOUT` rather than the store's
-/// bound: a session-start hook cannot wait a minute. The binary is resolved
-/// strictly and never falls back to the bare name the verbs keep: a session
-/// the controller started carries a `PATH` a bare `bd` finds nothing on
-/// (lessons claude-code D1), so a tracker nothing resolves is this line's
+/// The store the project's own file names, through the opener every verb
+/// takes, under `ITEMS_TIMEOUT` rather than the store's bound: a session-start
+/// hook cannot wait a minute. STRICT: a binary the constructed child PATH does
+/// not resolve never falls back to the bare name the verbs keep, because a
+/// session the controller started carries a `PATH` a bare name finds nothing
+/// on (lessons claude-code D1), so a tracker nothing resolves is this line's
 /// third answer.
 fn items(project_root: &Path, seat: &SeatId) -> Result<Vec<(String, String)>, String> {
-    let bin = resolve_bd()?;
-    let store = Bd::at_bin(project_root, &bin).with_timeout(ITEMS_TIMEOUT);
+    let policy = store::project_policy(project_root).map_err(|why| why.to_string())?;
+    let store = store::open(&Opening {
+        root: project_root,
+        policy: &policy,
+        search_path: &platform::child_path(&platform::home_dir()),
+        strict: true,
+        timeout: ITEMS_TIMEOUT,
+    })
+    .map_err(|why| why.to_string())?;
     Ok(store
         .list(&Filter::Assignee(*seat))
         .map_err(|why| why.to_string())?
@@ -329,25 +262,4 @@ fn items(project_root: &Path, seat: &SeatId) -> Result<Vec<(String, String)>, St
         .filter(|row| matches!(row.status, Status::Open | Status::InProgress))
         .map(|row| (row.id.to_string(), row.title))
         .collect())
-}
-
-/// `FLEET_BD_BIN` when it names an ABSOLUTE path, else the first `bd` on the
-/// constructed child PATH — the shape every other binary this workspace runs
-/// is resolved by.
-pub(crate) fn resolve_bd() -> Result<PathBuf, String> {
-    let child_path = platform::child_path(&platform::home_dir());
-    match std::env::var("FLEET_BD_BIN").ok().as_deref().map(str::trim) {
-        Some(bin) if !bin.is_empty() => {
-            if !Path::new(bin).is_absolute() {
-                return Err(format!(
-                    "the item-tracker seam names `{bin}`, which is not an absolute path"
-                ));
-            }
-            platform::resolve_on_path(&child_path, bin).ok_or_else(|| {
-                format!("the item-tracker seam names `{bin}`, which is not an executable file")
-            })
-        }
-        _ => platform::resolve_on_path(&child_path, DEFAULT_BD)
-            .ok_or_else(|| format!("no `{DEFAULT_BD}` on the constructed child PATH")),
-    }
 }

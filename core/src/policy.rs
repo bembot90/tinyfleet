@@ -4,7 +4,7 @@
 //! A verb that reads a key not listed here is a defect, so the reader answers
 //! an unlisted pair with an error and never with a value — the pair is checked
 //! before the config is even walked. Two tests hold the other half: that every
-//! table named below is one of the eight, and that every call site in this
+//! table named below is one of the nine, and that every call site in this
 //! workspace names a listed pair.
 
 use std::fmt;
@@ -17,12 +17,13 @@ use std::fmt;
 /// shape from an absent one in a signature.
 pub use toml::Value;
 
-/// The eight tables, and no ninth. `core` and `core.flight` are the fleet's own
+/// The nine tables, and no tenth. `core` and `core.flight` are the fleet's own
 /// policy, `core.run` the run lifecycle's, `guards` its opt-outs and
 /// `guards.targets` what a pack's guards refuse on, `landing` the landing's CI
 /// marker, `permissions` a seat's command words, and `project` the two
-/// directories a transient seat is made in.
-pub const TABLES: [&str; 8] = [
+/// directories a transient seat is made in. `store` names the adapter the
+/// project's work graph is reached through.
+pub const TABLES: [&str; 9] = [
     "core",
     "core.flight",
     "core.run",
@@ -31,11 +32,12 @@ pub const TABLES: [&str; 8] = [
     "landing",
     "permissions",
     "project",
+    "store",
 ];
 
 /// The pairs the verbs and the guards may read. `guards` is a map keyed by guard
 /// name, so its entry is the pattern every guard's row matches.
-pub const CENSUS: [(&str, &str); 18] = [
+pub const CENSUS: [(&str, &str); 19] = [
     ("core", "reviewer"),
     // The runs open at once. It is `[core.run]` and not a second key under
     // `[core.flight]` because a run is not a flight: the two caps are set by
@@ -90,6 +92,9 @@ pub const CENSUS: [(&str, &str); 18] = [
     // the file names neither.
     ("project", "primary"),
     ("project", "worktrees"),
+    // Which store this project's work graph lives in: "bd" (built in) or an
+    // absolute path to an adapter executable (docs/store.md).
+    ("store", "adapter"),
 ];
 
 /// The pairs a policy file may NOT set, each with where its value is set

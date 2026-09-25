@@ -13,8 +13,8 @@ items that block it and a run's record; the holds raised on items; and each
 item's timeline of entries. bd is built in. Any other store is an executable,
 named by `[store] adapter`, that answers the verbs on this page.
 
-**Status:** The contract is being built (fleet-0q4). `[store] adapter` and
-`fleet store check` are not yet available.
+**Status:** `[store] adapter` is live; `fleet store check` is not yet
+available.
 
 ## Choosing an adapter
 
@@ -379,7 +379,7 @@ ids, and the store sets each entry's id and time.
 ## Checking an adapter
 
 `fleet store check [--adapter <path>]` checks an adapter against this
-contract. Like `[store] adapter`, it is not yet available.
+contract. It is not yet available.
 
 ## See also
 

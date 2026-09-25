@@ -1295,3 +1295,196 @@ fn recorded_of_an_entry_that_does_not_validate_is_not_written() {
         other => panic!("a body that does not validate is not written: {other:?}"),
     }
 }
+
+// ---- the opener: `[store] adapter`, read out of the project's own file ------
+
+/// A project's policy as the opener reads it, parsed from `text`.
+fn policy_of(text: &str) -> toml::Table {
+    text.parse().expect("the fixture policy parses")
+}
+
+/// The opener over `policy` for the project at `root`, not strict and under
+/// `timeout`, on a search path holding nothing.
+fn opened(
+    root: &Path,
+    policy: &toml::Table,
+    timeout: Duration,
+) -> Result<Box<dyn Store>, StoreError> {
+    store::open(&store::Opening {
+        root,
+        policy,
+        search_path: "",
+        strict: false,
+        timeout,
+    })
+}
+
+/// An adapter executable in `dir` that copies its request to `request.json`
+/// and then runs `answer`.
+fn an_adapter(dir: &Fixture, answer: &str) -> PathBuf {
+    let bin = dir.path("adapter");
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\ncat > '{dir}/request.json'\n{answer}\n",
+            dir = dir.root.display(),
+        ),
+    )
+    .expect("the adapter is written");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+        .expect("the adapter is executable");
+    bin
+}
+
+/// `[store] adapter` naming an executable by absolute path opens the store
+/// that executable answers: a `show` is one call to it, carrying the project's
+/// root, and the item is the one it answered. The bound the caller hands in is
+/// the call's own — an adapter that outruns it is could not tell.
+#[test]
+fn an_adapter_named_by_absolute_path_is_the_store_opened() {
+    let dir = Fixture::new("store-open-exec");
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+    let adapter = an_adapter(
+        &dir,
+        r#"printf '%s\n' '{"schema_version":1,"item":{"id":"fx-c3d4","title":"an item the adapter holds","status":"open","type":"task","labels":[],"order":{"state":"none"}}}'"#,
+    );
+    let policy = policy_of(&format!("[store]\nadapter = {:?}\n", adapter.display()));
+
+    let store =
+        opened(&root, &policy, store::STORE_TIMEOUT).expect("the adapter is an executable file");
+    let item = store.show("c3d4").expect("the adapter answered an item");
+
+    assert_eq!(item.id, ItemId::from("fx-c3d4"));
+    assert_eq!(item.title, "an item the adapter holds");
+    let request: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path("request.json")).expect("the adapter was called"),
+    )
+    .expect("the request is one JSON value");
+    assert_eq!(
+        request["root"],
+        serde_json::json!(root.display().to_string()),
+        "the request names the root the opener was handed: {request}"
+    );
+
+    let slow = Fixture::new("store-open-exec-slow");
+    let adapter = an_adapter(&slow, "sleep 5");
+    let policy = policy_of(&format!("[store]\nadapter = {:?}\n", adapter.display()));
+    let started = Instant::now();
+    let refused = opened(&root, &policy, Duration::from_millis(300))
+        .expect("the adapter is an executable file")
+        .show("c3d4");
+    assert!(
+        matches!(&refused, Err(StoreError::Unreadable(why)) if why.contains("did not answer within")),
+        "an adapter that outruns the opener's bound is could not tell: {refused:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "the bound was the opener's and not the store's own: {:?}",
+        started.elapsed()
+    );
+}
+
+/// `"bd"`, or no `[store] adapter` at all, opens the built-in store: the one
+/// whose capabilities are answered without a call and declare its export.
+#[test]
+fn the_built_in_store_is_opened_where_the_file_names_it_or_names_nothing() {
+    let dir = Fixture::new("store-open-built-in");
+    for policy in [
+        policy_of(""),
+        policy_of("[store]\n"),
+        policy_of(&format!("[store]\nadapter = {:?}\n", store::bd::NAME)),
+    ] {
+        let store =
+            opened(&dir.root, &policy, store::STORE_TIMEOUT).expect("the built-in store opens");
+        let export = store
+            .capabilities()
+            .expect("the built-in store answers without a call")
+            .export
+            .expect("and declares its export");
+        assert_eq!(export.file, store::bd::EXPORT, "{policy:?}");
+    }
+}
+
+/// A path that is no executable file, and a value that is neither form, are
+/// could not tell before anything is run, each naming what the file said.
+#[test]
+fn an_adapter_that_is_no_executable_or_neither_form_is_could_not_tell() {
+    let dir = Fixture::new("store-open-refused");
+    dir.file("not-executable", "#!/bin/sh\nexit 0\n");
+    for path in [
+        dir.path("not-executable"),
+        dir.path("absent"),
+        dir.root.clone(),
+    ] {
+        let policy = policy_of(&format!("[store]\nadapter = {:?}\n", path.display()));
+        match opened(&dir.root, &policy, store::STORE_TIMEOUT) {
+            Err(StoreError::Unreadable(why)) => assert_eq!(
+                why,
+                format!(
+                    "[store] adapter names `{}`, which is not an executable file",
+                    path.display()
+                )
+            ),
+            Err(other) => panic!("wanted Unreadable, got {other:?}"),
+            Ok(_) => panic!("{} opened as an adapter", path.display()),
+        }
+    }
+    for (value, named) in [
+        ("\"sqlite\"", "sqlite"),
+        ("\"bin/adapter\"", "bin/adapter"),
+        ("\"\"", ""),
+        ("3", "3"),
+    ] {
+        let policy = policy_of(&format!("[store]\nadapter = {value}\n"));
+        match opened(&dir.root, &policy, store::STORE_TIMEOUT) {
+            Err(StoreError::Unreadable(why)) => assert_eq!(
+                why,
+                format!(
+                    "[store] adapter is `{named}` — it is \"bd\" or an absolute path to an \
+                     adapter executable"
+                )
+            ),
+            Err(other) => panic!("wanted Unreadable, got {other:?}"),
+            Ok(_) => panic!("{value} opened a store"),
+        }
+    }
+}
+
+/// The project's own file: a declared project's `.fleet/project.toml` first,
+/// else an embedded fleet's `fleet.toml`, else nothing — and a file that does
+/// not parse is could not tell, naming it.
+#[test]
+fn the_projects_own_file_is_its_declaration_else_its_fleet_file() {
+    let dir = Fixture::new("store-project-policy");
+    assert_eq!(
+        store::project_policy(&dir.root).expect("no file is an empty policy"),
+        toml::Table::new()
+    );
+
+    dir.file("fleet.toml", "[store]\nadapter = \"/embedded\"\n");
+    assert_eq!(
+        store::project_policy(&dir.root).expect("the fleet file reads"),
+        policy_of("[store]\nadapter = \"/embedded\"\n")
+    );
+
+    dir.file(".fleet/project.toml", "[store]\nadapter = \"/declared\"\n");
+    assert_eq!(
+        store::project_policy(&dir.root).expect("the declaration reads"),
+        policy_of("[store]\nadapter = \"/declared\"\n"),
+        "the declaration is the project's own statement, and wins"
+    );
+
+    dir.file(".fleet/project.toml", "[store\n");
+    match store::project_policy(&dir.root) {
+        Err(StoreError::Unreadable(why)) => assert!(
+            why.starts_with(&format!(
+                "{} does not parse as TOML: ",
+                dir.path(".fleet/project.toml").display()
+            )),
+            "{why}"
+        ),
+        other => panic!("wanted Unreadable, got {other:?}"),
+    }
+}

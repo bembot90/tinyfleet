@@ -1486,9 +1486,10 @@ fn a_tracker_that_does_not_answer_its_version_is_line_two_s_own_answer() {
     );
 }
 
-/// `resolve_bd`'s DEFAULT branch: with no `FLEET_BD_BIN`, the tracker is the
-/// first `bd` on the CONSTRUCTED child PATH — the platform's own directory list
-/// over the home — and the `PATH` this process inherited contributes nothing.
+/// `store::bd::resolve`'s DEFAULT branch: with no `FLEET_BD_BIN`, the tracker
+/// is the first `bd` on the CONSTRUCTED child PATH — the platform's own
+/// directory list over the home — and the `PATH` this process inherited
+/// contributes nothing.
 ///
 /// The decoy is the control: it is first on the child's inherited `PATH` and on
 /// no entry of the constructed one, so it is reachable by a bare name and by

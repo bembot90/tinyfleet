@@ -18,7 +18,7 @@ use fleet_core::item::land::{self, Release};
 use fleet_core::item::{render, Spawn, SpawnOutcome, Spawner, Stop, COULD_NOT_TELL};
 use fleet_core::seat;
 use fleet_core::seat::identity::{Kind, SeatId, SeatRef};
-use fleet_core::store::{ItemId, Store};
+use fleet_core::store::ItemId;
 
 use crate::envelope;
 use crate::exit::Exit;
@@ -273,12 +273,15 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
     // graph to do for itself. It runs inside the retire, at the last moment the
     // verb can still stop: the name this frees is the one the next spawn takes,
     // and an order left standing against it is one that seat would inherit.
-    let store = open_store(&here.project.root);
+    let store = match open_store(&here) {
+        Ok(store) => store,
+        Err(stop) => return stopped(RETIRE, &stop, args.json),
+    };
     // THE ROW'S ID, which is what the order was assigned to; the note and the
     // sentences name the seat by its machine name. The retire hands its
     // withdrawal the name it resolved, which is this same row.
     let withdrawal = |seat: &str| -> Result<Vec<String>, Refusal> {
-        let held = match seat::retire::held(&store, &row.id) {
+        let held = match seat::retire::held(store.as_ref(), &row.id) {
             Ok(held) => held,
             // A BOARD THAT WILL NOT ANSWER IS A QUESTION wherever this fleet
             // gave this seat something, and the retire stops on it rather than
@@ -298,8 +301,14 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
         if held.is_empty() {
             return Ok(Vec::new());
         }
-        seat::retire::withdraw(&store, &held, &row.id, &here.seats.label(&row.id), &by)
-            .map_err(as_refusal)?;
+        seat::retire::withdraw(
+            store.as_ref(),
+            &held,
+            &row.id,
+            &here.seats.label(&row.id),
+            &by,
+        )
+        .map_err(as_refusal)?;
         Ok(held.into_iter().map(|row| row.id.to_string()).collect())
     };
 
@@ -432,9 +441,7 @@ fn held_item(here: &Here, seat: &SeatId) -> Option<String> {
 /// That item's timeline. A store that will not answer reads as no entries,
 /// which is the answer that keeps the branch.
 fn timeline_of(here: &Here, item: &str) -> Option<Vec<Entry>> {
-    open_store(&here.project.root)
-        .timeline(&ItemId::from(item))
-        .ok()
+    open_store(here).ok()?.timeline(&ItemId::from(item)).ok()
 }
 
 // ---- the spawner seam -------------------------------------------------------

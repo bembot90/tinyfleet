@@ -1,5 +1,5 @@
 //! The census, which every key a verb reads has to be in. Two arms: that every
-//! table it names is one of the eight, and that every reader call site in this
+//! table it names is one of the nine, and that every reader call site in this
 //! workspace's source names a pair the census carries.
 
 mod common;
@@ -8,7 +8,7 @@ use common::workspace;
 use fleet_core::policy;
 
 #[test]
-fn the_census_names_only_the_eight_tables() {
+fn the_census_names_only_the_nine_tables() {
     for (table, key) in policy::CENSUS {
         assert!(
             policy::TABLES.contains(&table),
@@ -18,17 +18,24 @@ fn the_census_names_only_the_eight_tables() {
     }
     assert_eq!(
         policy::CENSUS.len(),
-        18,
+        19,
         "the census is read, not empty — a shrunk list would satisfy the arm above saying nothing"
     );
     assert_eq!(
         policy::TABLES.len(),
-        8,
+        9,
         "every table a pair names is listed, and no table nothing reads"
     );
     assert!(
         !policy::TABLES.contains(&"gates"),
         "[gates] is a table nothing reads — its keys moved by purpose"
+    );
+    // The store the project's work graph is reached through is read out of the
+    // project's own file, by its one key.
+    assert!(policy::in_census("store", "adapter"));
+    assert!(
+        !policy::in_census("store", "bin"),
+        "the table has one key, and a neighbouring name is not it"
     );
 }
 

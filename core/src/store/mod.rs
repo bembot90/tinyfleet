@@ -372,6 +372,97 @@ pub trait Store {
 /// the verb. A landing's suite is not a store call and is not bounded here.
 pub const STORE_TIMEOUT: Duration = Duration::from_secs(60);
 
+// ---- the opener ---------------------------------------------------------------
+
+/// What [`open`] is handed: the project, its own file, where a binary is
+/// looked for and how long one call may take. A caller builds one and every
+/// store it opens comes out of this one function.
+pub struct Opening<'a> {
+    /// The project's root, which every call of the store opened is scoped to.
+    pub root: &'a Path,
+    /// The project's OWN file, which `[store] adapter` is read out of: a
+    /// declared project's `.fleet/project.toml`, else an embedded fleet's
+    /// `fleet.toml`. A standalone fleet's file is the fleet's, not the
+    /// project's, and names no store.
+    pub policy: &'a toml::Table,
+    /// The search path the built-in store's binary is resolved on: the
+    /// caller's constructed child `PATH`, and never this process's own, which
+    /// under a service holds neither a package manager's prefix nor the user's
+    /// local bin (lessons claude-code D1).
+    pub search_path: &'a str,
+    /// Whether a binary nothing resolves is could not tell. Not strict, it is
+    /// the bare name, which the process's own `PATH` then answers or does not.
+    pub strict: bool,
+    /// The bound on each call of the store opened: [`STORE_TIMEOUT`], or less
+    /// for a caller that cannot wait that long.
+    pub timeout: Duration,
+}
+
+/// The project's store, as `[store] adapter` in its own file names it: `"bd"`,
+/// or no key at all, is the built-in store; an absolute path to an executable
+/// file is an adapter that answers the contract at that path. Anything else is
+/// could not tell, naming what the file said, and nothing is run.
+///
+/// ONE OPENER FOR EVERY CALLER — the verbs, the run pass and `fleet prime` —
+/// so the store a verb writes to and the one the pass reads are one store.
+pub fn open(at: &Opening) -> Result<Box<dyn Store>, StoreError> {
+    let named = crate::policy::read("store", "adapter", at.policy)
+        .map_err(|unlisted| StoreError::Unreadable(unlisted.to_string()))?;
+    match named {
+        None => bd::open(at),
+        Some(toml::Value::String(name)) if name == bd::NAME => bd::open(at),
+        Some(toml::Value::String(path)) if path.starts_with('/') => {
+            let adapter = Path::new(path);
+            if !executable_file(adapter) {
+                return Err(StoreError::Unreadable(format!(
+                    "[store] adapter names `{path}`, which is not an executable file"
+                )));
+            }
+            Ok(Box::new(
+                exec::Exec::at(adapter, at.root).with_timeout(at.timeout),
+            ))
+        }
+        Some(toml::Value::String(other)) => Err(neither_form(other)),
+        Some(other) => Err(neither_form(&other.to_string())),
+    }
+}
+
+/// The refusal a `[store] adapter` answers that is neither form.
+fn neither_form(said: &str) -> StoreError {
+    StoreError::Unreadable(format!(
+        "[store] adapter is `{said}` — it is \"bd\" or an absolute path to an adapter executable"
+    ))
+}
+
+/// The project's own file as a table, for a caller that has resolved no
+/// project around the root: `<root>/.fleet/project.toml` where it is a file,
+/// else `<root>/fleet.toml`, else an empty table — which opens the built-in
+/// store. A file that will not read or parse is could not tell, naming it.
+pub fn project_policy(root: &Path) -> Result<toml::Table, StoreError> {
+    let Some(file) = [root.join(".fleet/project.toml"), root.join("fleet.toml")]
+        .into_iter()
+        .find(|file| file.is_file())
+    else {
+        return Ok(toml::Table::new());
+    };
+    let text = std::fs::read_to_string(&file).map_err(|e| {
+        StoreError::Unreadable(format!("{} could not be read: {e}", file.display()))
+    })?;
+    text.parse::<toml::Table>().map_err(|e| {
+        StoreError::Unreadable(format!("{} does not parse as TOML: {e}", file.display()))
+    })
+}
+
+/// A file that is there and executable. Beside the opener and not inside an
+/// adapter: the opener asks it of an adapter's path, and the bd adapter of a
+/// binary it resolves.
+pub(crate) fn executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
 /// The refusal a fenced hand-over answers when the item's holder is not the
 /// one the write named.
 pub(crate) fn moved(item: &str, expected: &str, held: &str) -> StoreError {

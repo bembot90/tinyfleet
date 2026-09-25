@@ -957,3 +957,156 @@ fn item_show_prints_the_item_and_its_entries_and_refuses_what_it_cannot_read() {
         stderr(&out)
     );
 }
+
+// ---- the store a project names: `[store] adapter` in its own file ----------
+
+/// A project with no board of its own and the adapter it names: its
+/// `fleet.toml` carrying `[store] adapter = <adapter>`, a machine directory
+/// with the defaults in it, and nothing else. No `bd init`: the store the
+/// file names is the only one these arms can reach.
+struct Named {
+    root: PathBuf,
+    project: PathBuf,
+    machine: PathBuf,
+}
+
+impl Named {
+    fn new(label: &str) -> Named {
+        let n = NEXT.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!(
+            "fleet-cli-item-json-{label}-{}-{n}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("a-project");
+        let machine = root.join("machine");
+        for dir in [&project, &machine] {
+            std::fs::create_dir_all(dir).expect("the fixture directory is created");
+        }
+        defaults_into(&machine);
+        Named {
+            root,
+            project,
+            machine,
+        }
+    }
+
+    /// The project's file, naming `adapter` as its store.
+    fn naming(&self, adapter: &str) -> &Named {
+        std::fs::write(
+            self.project.join("fleet.toml"),
+            format!("{POLICY}\n[store]\nadapter = {}\n", json_string(adapter)),
+        )
+        .expect("the policy is written");
+        self
+    }
+
+    fn item_show(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_fleet"))
+            .args(["item", "show"])
+            .args(args)
+            .current_dir(&self.project)
+            .hermetic(&self.root.join("home"), &self.machine, None)
+            .output()
+            .expect("the built binary runs")
+    }
+
+    /// An adapter executable in the rig's own directory, which records every
+    /// verb it is called with and the `show` request it is handed, answers
+    /// `show` with one item and `timeline` with none, and refuses every other
+    /// verb as a usage row.
+    fn adapter(&self) -> PathBuf {
+        let adapter = self.root.join("adapter");
+        std::fs::write(
+            &adapter,
+            format!(
+                "#!/bin/sh\n\
+                 printf '%s\\n' \"$1\" >> '{dir}/verbs'\n\
+                 case \"$1\" in\n\
+                 \x20 show) cat > '{dir}/request.json'\n\
+                 \x20   printf '%s\\n' '{SHOWN}' ;;\n\
+                 \x20 timeline) cat > /dev/null\n\
+                 \x20   printf '%s\\n' '{{\"schema_version\":1,\"entries\":[]}}' ;;\n\
+                 \x20 *) cat > /dev/null; exit 2 ;;\n\
+                 esac\n",
+                dir = self.root.display(),
+            ),
+        )
+        .expect("the adapter is written");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755))
+            .expect("the adapter is executable");
+        adapter
+    }
+}
+
+impl Drop for Named {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// The one item the adapter holds, as its `show` answers it.
+const SHOWN: &str = r#"{"schema_version":1,"item":{"id":"fx-c3d4","title":"an item only the adapter holds","status":"open","type":"task","labels":["fleet"],"order":{"state":"none"}}}"#;
+
+/// `[store] adapter` naming an executable by absolute path: `item show` reads
+/// the item through it, and the item's title is the one the adapter answered.
+/// The `show` request names the project's root — the contract's envelope,
+/// which only the opener that picked this adapter for this project can fill.
+///
+/// RED BEFORE THE OPENER: a verb that opens the built-in store whatever the
+/// file says never calls the adapter, and reads no item on a project with no
+/// board of its own.
+#[test]
+fn a_project_naming_an_adapter_executable_is_read_through_it() {
+    let named = Named::new("adapter");
+    let adapter = named.adapter();
+    let out = named
+        .naming(&adapter.display().to_string())
+        .item_show(&["c3d4", "--json"]);
+
+    let verbs = std::fs::read_to_string(named.root.join("verbs")).unwrap_or_default();
+    assert_eq!(
+        verbs.lines().collect::<Vec<_>>(),
+        ["show", "timeline"],
+        "the read and its timeline, one call to the adapter each: {}",
+        stderr(&out)
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let data = data_of(&out, "item show");
+    assert_eq!(data["id"], "fx-c3d4", "the id the adapter answered: {data}");
+    assert_eq!(data["title"], "an item only the adapter holds", "{data}");
+
+    let request = std::fs::read_to_string(named.root.join("request.json"))
+        .expect("the adapter recorded the show request");
+    let request: serde_json::Value =
+        serde_json::from_str(&request).expect("the request is one JSON value");
+    let root = std::fs::canonicalize(&named.project).expect("the project root resolves");
+    assert_eq!(
+        request["root"],
+        serde_json::json!(root.display().to_string()),
+        "the request names the project's root: {request}"
+    );
+    assert_eq!(request["id"], "c3d4", "and the id as typed: {request}");
+}
+
+/// `[store] adapter` naming neither the built-in store nor a path is a store
+/// fleet cannot open: the item verb exits 3, could not tell, naming the value
+/// and the two forms the key takes.
+#[test]
+fn an_adapter_that_is_neither_bd_nor_a_path_is_could_not_tell() {
+    let named = Named::new("sqlite");
+    let out = named.naming("sqlite").item_show(&["fx-c3d4", "--json"]);
+
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    let refusal = refusal_of(&out, "item show");
+    assert_eq!(refusal["code"], serde_json::json!("could_not_tell"));
+    let said = "[store] adapter is `sqlite` — it is \"bd\" or an absolute path to an adapter \
+                executable";
+    assert_eq!(refusal["why"], said, "{refusal}");
+    assert!(
+        stderr(&out).contains(&format!("fleet item show: {said}")),
+        "{}",
+        stderr(&out)
+    );
+}

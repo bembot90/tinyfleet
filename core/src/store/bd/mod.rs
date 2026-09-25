@@ -1101,6 +1101,324 @@ fn summary_of(row: bd_wire::IssueWithCounts) -> Option<ItemSummary> {
     })
 }
 
+// ---- the opener's half: which `bd`, and the store over it ---------------------
+
+/// What `[store] adapter` says to select this store, which is also what a
+/// project that names no adapter gets.
+pub const NAME: &str = "bd";
+
+/// The `bd` a store [`open`] makes runs: `FLEET_BD_BIN` when it names an
+/// ABSOLUTE path to an executable file, else the first `bd` on `search_path` —
+/// the shape every other binary this workspace runs is resolved by, and never
+/// this process's own `PATH`.
+///
+/// WHERE NOTHING RESOLVES, `strict` is could not tell, saying why. Not strict,
+/// it is the bare name, which the process's own `PATH` then answers or does
+/// not: the store fails the way it always has rather than in some new way, and
+/// its refusal names the bare `bd` it tried.
+pub fn resolve(search_path: &str, strict: bool) -> Result<PathBuf, StoreError> {
+    let found = match std::env::var("FLEET_BD_BIN").ok().as_deref().map(str::trim) {
+        Some(bin) if !bin.is_empty() => {
+            if Path::new(bin).is_absolute() {
+                resolve_on_path(search_path, bin).ok_or_else(|| {
+                    format!("the item-tracker seam names `{bin}`, which is not an executable file")
+                })
+            } else {
+                Err(format!(
+                    "the item-tracker seam names `{bin}`, which is not an absolute path"
+                ))
+            }
+        }
+        _ => resolve_on_path(search_path, BD)
+            .ok_or_else(|| format!("no `{BD}` on the constructed child PATH")),
+    };
+    match found {
+        Ok(bin) => Ok(bin),
+        Err(why) if strict => Err(StoreError::Unreadable(why)),
+        Err(_) => Ok(PathBuf::from(BD)),
+    }
+}
+
+/// The built-in store for [`super::open`]: the project's root, over the `bd`
+/// [`resolve`] answers, under the caller's bound.
+pub fn open(at: &super::Opening) -> Result<Box<dyn Store>, StoreError> {
+    let bin = resolve(at.search_path, at.strict)?;
+    Ok(Box::new(Bd::at_bin(at.root, &bin).with_timeout(at.timeout)))
+}
+
+/// The first `name` on `path` that is there and executable, as an absolute
+/// path. A `name` that is already a path resolves to itself. The controller's
+/// own resolver, copied: core takes nothing from the controller.
+fn resolve_on_path(path: &str, name: &str) -> Option<PathBuf> {
+    if name.is_empty() {
+        return None;
+    }
+    if name.contains('/') {
+        let named = PathBuf::from(name);
+        return super::executable_file(&named).then_some(named);
+    }
+    std::env::split_paths(path)
+        .map(|dir| dir.join(name))
+        .find(|candidate| super::executable_file(candidate))
+}
+
+/// The bound on `bd version`, which reads no store and answered in 60ms on the
+/// box this was written on: a `bd` that hangs costs [`tracker_line`] and never
+/// more than this of a session start.
+const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// `fleet prime`'s second line: the `bd` a session's verbs reach, resolved
+/// strictly on `search_path` as [`open`] resolves it, against [`PINNED_BD`] —
+/// the pin, another version with where to install the pin, or a `bd` that did
+/// not answer, which is this line's third answer as it is the item line's.
+pub fn tracker_line(search_path: &str) -> String {
+    let first = resolve(search_path, true)
+        .map_err(|why| why.to_string())
+        .and_then(|bin| version_of(&bin));
+    match first {
+        Ok(first) if carries_pin(&first) => format!("bd: {PINNED_BD}, the pinned version"),
+        Ok(first) => format!(
+            "bd: {}, not the pinned {PINNED_BD} — the verbs still run, on answers fleet was not \
+             measured against; {}",
+            named_version(&first),
+            install_pointer()
+        ),
+        Err(why) => format!("bd: could not be read — {why}; {}", install_pointer()),
+    }
+}
+
+/// The first line `bd version` printed, which is where bd prints its own.
+fn version_of(bin: &Path) -> Result<String, String> {
+    let mut cmd = Command::new(bin);
+    cmd.arg("version");
+    let out = run_bounded(cmd, VERSION_TIMEOUT)
+        .map_err(|why| format!("`{} version` {why}", bin.display()))?;
+    let said = String::from_utf8_lossy(&out.stdout);
+    let first = said.lines().next().unwrap_or_default().trim();
+    if !out.status.success() || first.is_empty() {
+        return Err(format!(
+            "`{} version` {} and printed no version",
+            bin.display(),
+            out.status
+        ));
+    }
+    Ok(first.to_string())
+}
+
+/// The pin as a WHOLE token of that line, bare or with a leading `v` — the
+/// reading the defaults' `bd-version` doctor check takes, so the two agree.
+fn carries_pin(first: &str) -> bool {
+    first
+        .split_whitespace()
+        .any(|token| token.strip_prefix('v').unwrap_or(token) == PINNED_BD)
+}
+
+/// The version a line names: its first token that opens on a digit, or the
+/// whole line where none does, so a `bd` that answered something else is
+/// quoted rather than read as a version.
+fn named_version(first: &str) -> String {
+    first
+        .split_whitespace()
+        .map(|token| token.strip_prefix('v').unwrap_or(token))
+        .find(|token| token.starts_with(|c: char| c.is_ascii_digit()))
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("`{first}`"))
+}
+
+/// Where to install the pinned release: beads' own installation page, read at
+/// the pin's tag so it describes the release named, because bd installs
+/// several ways and which one fits is the machine's. The defaults' doctor
+/// check points at the same page, and a pin move checks the page is still at
+/// this path at the new tag.
+fn install_pointer() -> String {
+    format!(
+        "install the pinned bd {PINNED_BD} by beads' own instructions: \
+         https://github.com/gastownhall/beads/blob/v{PINNED_BD}/docs/getting-started/installation.md"
+    )
+}
+
+/// The resolution and the opener over it. `FLEET_BD_BIN` is process-wide and
+/// these arms move it, so they hold one lock and put it back on a panic too.
+#[cfg(test)]
+mod opening_tests {
+    use super::{open, resolve, Filter, StoreError, BD, STORE_TIMEOUT};
+    use crate::store::Opening;
+    use std::path::{Path, PathBuf};
+
+    /// Serialises the arms here, because `cargo test` runs this binary's arms
+    /// as threads of one process and the seam is its environment.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Variables moved for one arm and put back when it ends — on a panic too,
+    /// so a red arm never leaves the seam set for a sibling. `None` is a
+    /// variable taken away.
+    struct EnvHeld(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl EnvHeld {
+        fn set(moved: &[(&'static str, Option<&std::ffi::OsStr>)]) -> EnvHeld {
+            let held = EnvHeld(
+                moved
+                    .iter()
+                    .map(|(key, _)| (*key, std::env::var_os(key)))
+                    .collect(),
+            );
+            for (key, value) in moved {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+            held
+        }
+    }
+
+    impl Drop for EnvHeld {
+        fn drop(&mut self) {
+            for (key, before) in self.0.iter().rev() {
+                match before {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    fn scratch(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("fleet-bd-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("project")).expect("the project root is created");
+        dir
+    }
+
+    /// The store the opener makes runs the `bd` it resolved on the search path
+    /// it was HANDED, by absolute path — the situation of the controller's run
+    /// pass on every tick, whose own `PATH` is a service's and holds no `bd`.
+    /// Then the same through `FLEET_BD_BIN`, over a search path holding none.
+    ///
+    /// THE STUB IS ON NO ENTRY OF THIS PROCESS'S `PATH`, and it is what records
+    /// the argv: a store that ran a bare `bd` would have reached some other
+    /// file and left the log empty. The process's `PATH` is not moved to prove
+    /// it, because this binary's own arms read it.
+    #[test]
+    fn the_bd_on_a_search_path_is_run_by_absolute_path() {
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = scratch("search-path");
+        let root = dir.join("project");
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).expect("the stub's directory is created");
+
+        // A `bd` that records the argv it was handed and answers an empty list.
+        let log = dir.join("argv");
+        let bd = bin.join("bd");
+        std::fs::write(
+            &bd,
+            format!(
+                "#!/bin/sh\n\
+                 for a in \"$@\"; do printf '%s\\n' \"$a\" >> '{log}'; done\n\
+                 printf '[]\\n'\n",
+                log = log.display(),
+            ),
+        )
+        .expect("the stub is written");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bd, std::fs::Permissions::from_mode(0o755))
+            .expect("the stub is executable");
+        let own = std::env::var_os("PATH").unwrap_or_default();
+        assert!(
+            !std::env::split_paths(&own).any(|entry| entry == bin),
+            "the stub is on no entry of this process's own PATH"
+        );
+
+        let search_path = format!("/usr/bin:/bin:{}", bin.display());
+        let policy = toml::Table::new();
+        let opening = |search_path: &str| {
+            open(&Opening {
+                root: &root,
+                policy: &policy,
+                search_path,
+                strict: true,
+                timeout: STORE_TIMEOUT,
+            })
+            .map(|store| store.list(&Filter::Ready))
+        };
+        let (resolved, by_search_path, by_seam) = {
+            let _held = EnvHeld::set(&[("FLEET_BD_BIN", None)]);
+            let resolved = resolve(&search_path, true);
+            let by_search_path = opening(&search_path);
+            let _seam = EnvHeld::set(&[("FLEET_BD_BIN", Some(bd.as_os_str()))]);
+            (resolved, by_search_path, opening("/usr/bin:/bin"))
+        };
+
+        assert_eq!(resolved, Ok(bd.clone()), "the absolute path, and no other");
+        for (read, how) in [(by_search_path, "search path"), (by_seam, "seam")] {
+            assert!(
+                read.expect("the bd resolves")
+                    .expect("the stub answers a list")
+                    .is_empty(),
+                "through the {how}"
+            );
+        }
+        let argv: Vec<String> = std::fs::read_to_string(&log)
+            .expect("the stub recorded its argv")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let one = [
+            String::from("-C"),
+            root.display().to_string(),
+            String::from("ready"),
+            String::from("--json"),
+            String::from("-n"),
+            String::from("0"),
+        ];
+        assert_eq!(
+            argv,
+            [one.clone(), one].concat(),
+            "exactly the two reads reached the stub"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Where nothing resolves — no `bd` on the search path, or a seam naming a
+    /// path that is not absolute — a strict caller is refused, saying why, and
+    /// any other is handed the bare name.
+    #[test]
+    fn nothing_resolving_is_refused_when_strict_and_the_bare_name_otherwise() {
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = scratch("unresolved");
+        let empty = dir.join("project").display().to_string();
+
+        let unresolved = |seam: Option<&str>| {
+            let _held = EnvHeld::set(&[("FLEET_BD_BIN", seam.map(std::ffi::OsStr::new))]);
+            (resolve(&empty, true), resolve(&empty, false))
+        };
+        for (seam, why) in [
+            (None, String::from("no `bd` on the constructed child PATH")),
+            (
+                Some("relative/bd"),
+                String::from(
+                    "the item-tracker seam names `relative/bd`, which is not an absolute path",
+                ),
+            ),
+            (
+                Some("/no/such/bd"),
+                String::from(
+                    "the item-tracker seam names `/no/such/bd`, which is not an executable file",
+                ),
+            ),
+        ] {
+            let (strict, lenient) = unresolved(seam);
+            assert_eq!(strict, Err(StoreError::Unreadable(why)), "{seam:?}");
+            assert_eq!(lenient, Ok(Path::new(BD).to_path_buf()), "{seam:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// The mapping [`item_from`] makes of fleet's two keys, one arm per answer.
 #[cfg(test)]
 mod tests {

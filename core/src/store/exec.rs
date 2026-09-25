@@ -18,8 +18,8 @@
 //! process group is killed and the call is could not tell — and for a write,
 //! a write whose effect cannot be told.
 //!
-//! Nothing selects this store yet: `[store] adapter` is read by the opener
-//! that picks one, which is fleet-0q4.10's.
+//! SELECTED BY `[store] adapter` naming an executable by absolute path, which
+//! [`super::open`] reads out of the project's own file.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

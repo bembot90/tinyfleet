@@ -17,7 +17,6 @@
 
 use fleet_core::item::list::{self, Filter, Row};
 use fleet_core::item::{show, Stop};
-use fleet_core::store::Store;
 
 use crate::envelope;
 use crate::exit::Exit;
@@ -123,15 +122,15 @@ fn refused(verb: &str, stop: &Stop, json: bool) -> Exit {
 fn listed(filter: &Filter) -> Result<Vec<Row>, Stop> {
     filter.named()?;
     let here = resolve_at(None)?;
-    let store = open_store(&here.project.root);
-    list::list(&store, filter)
+    let store = open_store(&here)?;
+    list::list(store.as_ref(), filter)
 }
 
 /// The item resolved from what was typed — the store resolves a part of an id,
 /// and the timeline is read under the full one it answered — then both shapes.
 fn read(id: &str) -> Result<(String, serde_json::Value), Stop> {
     let here = resolve_at(None)?;
-    let store = open_store(&here.project.root);
+    let store = open_store(&here)?;
     let item = store.show(id)?;
     let timeline = store.timeline(&item.id)?;
     Ok((

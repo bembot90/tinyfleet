@@ -28,7 +28,7 @@ use fleet_core::item::{
 };
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::{identity_or_mint, roster, Directory, IDENTITY};
-use fleet_core::store::bd::Bd;
+use fleet_core::store::{self, Opening, Store, STORE_TIMEOUT};
 
 use crate::envelope;
 use crate::exit::Exit;
@@ -255,7 +255,7 @@ pub struct CancelArgs {
 pub fn cancel_command(args: &CancelArgs) -> Exit {
     let cancelled = resolve_at(args.packs_dir.clone()).and_then(|here| {
         let by = acting("cancel", args.by.as_deref(), &here)?;
-        let store = open_store(&here.project.root);
+        let store = open_store(&here)?;
         let events = StreamEvents {
             path: here.machine_dir.join(EVENTS),
         };
@@ -265,7 +265,7 @@ pub fn cancel_command(args: &CancelArgs) -> Exit {
                 run: &args.run,
                 by: &by,
             },
-            &store,
+            store.as_ref(),
             &events,
         )
     });
@@ -323,7 +323,7 @@ fn run_the_workflow(parsed: &RunArgs, out: &mut dyn Write) -> Result<workflow_ru
 
     let here = resolve_at(parsed.packs_dir.clone())?;
     let by = acting("run", parsed.by.as_deref(), &here)?;
-    let store = open_store(&here.project.root);
+    let store = open_store(&here)?;
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let events = StreamEvents {
         path: here.machine_dir.join(EVENTS),
@@ -344,7 +344,7 @@ fn run_the_workflow(parsed: &RunArgs, out: &mut dyn Write) -> Result<workflow_ru
             fleet_bin: &fleet_bin,
         },
         &workflow_run::Wiring {
-            store: &store,
+            store: store.as_ref(),
             project: &here.project,
             packs: &packs,
             policy_file: &here.policy_file,
@@ -382,7 +382,7 @@ fn run_land(
 ) -> Result<Landed, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
     let by = acting("land", parsed.by.as_deref(), &here)?;
-    let store = open_store(&here.project.root);
+    let store = open_store(&here)?;
     let git = RealGit {
         root: here.project.root.clone(),
     };
@@ -413,7 +413,7 @@ fn run_land(
             machine_dir: &here.machine_dir,
         },
         &land::Wiring {
-            store: &store,
+            store: store.as_ref(),
             git: &git,
             project: &here.project,
             progress: &progress,
@@ -488,7 +488,7 @@ fn run_hold(parsed: &HoldArgs, out: &mut dyn Write) -> Result<hold::Held, Stop> 
     };
     let here = resolve_at(parsed.packs_dir.clone())?;
     let by = acting("hold", parsed.by.as_deref(), &here)?;
-    let store = open_store(&here.project.root);
+    let store = open_store(&here)?;
     let git = RealGit {
         root: here.project.root.clone(),
     };
@@ -506,7 +506,7 @@ fn run_hold(parsed: &HoldArgs, out: &mut dyn Write) -> Result<hold::Held, Stop> 
             at: &stamp,
         },
         &hold::Wiring {
-            store: &store,
+            store: store.as_ref(),
             git: &git,
             project: &here.project,
             events: &events,
@@ -517,7 +517,7 @@ fn run_hold(parsed: &HoldArgs, out: &mut dyn Write) -> Result<hold::Held, Stop> 
 fn run_clear(parsed: &ClearArgs, out: &mut dyn Write) -> Result<hold::Cleared, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
     let by = acting("clear", parsed.by.as_deref(), &here)?;
-    let store = open_store(&here.project.root);
+    let store = open_store(&here)?;
     let git = RealGit {
         root: here.project.root.clone(),
     };
@@ -534,7 +534,7 @@ fn run_clear(parsed: &ClearArgs, out: &mut dyn Write) -> Result<hold::Cleared, S
             by: &by,
         },
         &hold::Wiring {
-            store: &store,
+            store: store.as_ref(),
             git: &git,
             project: &here.project,
             events: &events,
@@ -586,7 +586,7 @@ fn run_deliver(
     };
     let here = resolve_at(parsed.packs_dir.clone())?;
     let by = acting("deliver", parsed.by.as_deref(), &here)?;
-    let store = open_store(&here.project.root);
+    let store = open_store(&here)?;
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
         root: here.project.root.clone(),
@@ -610,7 +610,7 @@ fn run_deliver(
             at: &stamp,
         },
         &deliver::Wiring {
-            store: &store,
+            store: store.as_ref(),
             git: &git,
             packs: &packs,
             project: &here.project,
@@ -628,7 +628,7 @@ fn run_review(
 ) -> Result<review::Read, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
     let by = acting("review", parsed.by.as_deref(), &here)?;
-    let store = open_store(&here.project.root);
+    let store = open_store(&here)?;
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
         root: here.project.root.clone(),
@@ -659,7 +659,7 @@ fn run_review(
             mode,
         },
         &review::Wiring {
-            store: &store,
+            store: store.as_ref(),
             git: &git,
             packs: &packs,
             project: &here.project,
@@ -768,7 +768,7 @@ fn run_dispatch(
 ) -> Result<dispatch::Given, Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
     let by = acting("dispatch", parsed.by.as_deref(), &here)?;
-    let store = open_store(&here.project.root);
+    let store = open_store(&here)?;
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let ring = SeatRing {
         machine_dir: here.machine_dir.clone(),
@@ -803,7 +803,7 @@ fn run_dispatch(
             touched: parsed.touched.as_deref(),
         },
         &Wiring {
-            store: &store,
+            store: store.as_ref(),
             project: &here.project,
             packs: &packs,
             briefs_dir: &here.machine_dir.join(BRIEFS),
@@ -818,7 +818,7 @@ fn run_dispatch(
 
 fn run_brief(parsed: &BriefArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<(), Stop> {
     let here = resolve_at(parsed.packs_dir.clone())?;
-    let store = open_store(&here.project.root);
+    let store = open_store(&here)?;
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     // `--to` names a seat this machine runs, as dispatch's does, and the brief
     // says who it is for by the seat's machine name; no `--to` is the
@@ -833,7 +833,7 @@ fn run_brief(parsed: &BriefArgs, out: &mut dyn Write, err: &mut dyn Write) -> Re
         err,
         &packs,
         &here.project,
-        &store,
+        store.as_ref(),
         &parsed.item,
         &seat,
         parsed.touched.as_deref(),
@@ -941,23 +941,23 @@ pub fn derived_worktrees_dir(root: &Path) -> PathBuf {
     root.with_file_name(name)
 }
 
-/// The `bd` every store this binary opens runs: `fleet prime`'s resolver's
-/// answer — `FLEET_BD_BIN` when absolute, else the first `bd` on the
-/// constructed child PATH — so the binary a session is told about, the one a
-/// verb writes through and the one the controller's run pass reads are the
-/// same file (lessons claude-code D1).
+/// The project's store, as `[store] adapter` in its own file names it: the one
+/// way a verb opens it.
 ///
-/// ONLY WHERE THAT RESOLUTION FAILS does it fall back to the bare name, which
-/// the process's own `PATH` then answers or does not: the store fails the way
-/// it always has rather than in some new way, and its refusal names the bare
-/// `bd` it tried, so a fallback that did not run is said.
-pub(crate) fn bd_bin() -> PathBuf {
-    crate::prime::resolve_bd().unwrap_or_else(|_| PathBuf::from(fleet_core::store::bd::BD))
-}
-
-/// The project's store, over [`bd_bin`]: the one way a verb opens it.
-pub(crate) fn open_store(root: &Path) -> Bd {
-    Bd::at_bin(root, &bd_bin())
+/// The store's binary is resolved on the constructed child PATH, as `fleet
+/// prime` and the controller's run pass resolve it, so the binary a session
+/// is told about, the one a verb writes through and the one the pass reads are
+/// the same file (lessons claude-code D1). NOT STRICT: where that resolution
+/// fails, the bare name is tried and its refusal names it, so a verb fails the
+/// way it always has. A store that cannot be opened at all is could not tell.
+pub(crate) fn open_store(here: &Here) -> Result<Box<dyn Store>, Stop> {
+    Ok(store::open(&Opening {
+        root: &here.project.root,
+        policy: &here.project.policy,
+        search_path: &platform::child_path(&platform::home_dir()),
+        strict: false,
+        timeout: STORE_TIMEOUT,
+    })?)
 }
 
 /// A DECLARED PROJECT FIRST at each level, then the embedded file: a directory
@@ -1020,7 +1020,7 @@ pub fn resolve_from(
     //
     // THE ROOT IS THE CALLER'S OWN CHECKOUT, and the fallback is owed only to a
     // caller that has one. This root is where every verb's git runs and where
-    // its store is read (`RealGit { root }`, `Bd::at`), so a root taken from the
+    // its store is read (`RealGit { root }`, the store's opener), so a root taken from the
     // fleet's own directory would point a seat's `deliver` at the primary's
     // working tree rather than at the branch the seat built on. A committed
     // policy file resolves a seat's worktree to ITSELF, and this reproduces that

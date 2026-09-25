@@ -19,6 +19,11 @@
 /// `bd version` with. Declared in the bd adapter, whose claims it dates.
 pub use crate::store::bd::PINNED_BD;
 
+/// `fleet prime`'s second line: the bd a session's verbs reach, resolved on
+/// the search path handed in, against [`PINNED_BD`]. Declared in the bd
+/// adapter, beside the resolution it reads and the pin it compares with.
+pub use crate::store::bd::tracker_line;
+
 /// The Claude Code release fleet supports: the one the defaults'
 /// `claude-code-version` doctor check compares `claude --version` with, and
 /// the one fleet is developed on and its suites run beside. The adapter's

@@ -25,7 +25,6 @@ use fleet_controller::seat::COLLECTOR_STALE_POLLS;
 use fleet_controller::{clock, config, platform};
 use fleet_core::item::{rules, Stop};
 use fleet_core::policy as core_policy;
-use fleet_core::store::Store;
 
 use crate::exit::Exit;
 use crate::item::{open_store, resolve_from};
@@ -380,12 +379,15 @@ fn open_holds_on(machine_dir: &Path) -> Result<BTreeSet<String>, String> {
         let Ok(here) = resolve_from(&root, machine_dir.to_path_buf(), None) else {
             continue;
         };
-        let holds = open_store(&here.project.root).holds_open().map_err(|e| {
-            format!(
-                "the holds were not counted — {}'s store did not answer: {e}",
-                root.display()
-            )
-        })?;
+        let holds = open_store(&here)
+            .map_err(|stop| stop.message)
+            .and_then(|store| store.holds_open().map_err(|e| e.to_string()))
+            .map_err(|e| {
+                format!(
+                    "the holds were not counted — {}'s store did not answer: {e}",
+                    root.display()
+                )
+            })?;
         open.extend(holds.into_iter().map(|hold| hold.to_string()));
     }
     Ok(open)

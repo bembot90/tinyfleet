@@ -23,11 +23,11 @@ use fleet_core::entry::{Body, HoldReason};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::hold;
 use fleet_core::item::run as workflow_run;
+use fleet_core::item::Project;
 use fleet_core::seat;
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::{identity_or_mint, SeatId};
-use fleet_core::store::bd::Bd;
-use fleet_core::store::{ItemId, Store};
+use fleet_core::store::{self, ItemId, Opening, Store, StoreError, STORE_TIMEOUT};
 
 use crate::item::{resolve_from, Here, StreamEvents, EVENTS};
 use crate::transient::{as_refusal, effect_agent, machine_of, policy_of, Where};
@@ -36,35 +36,42 @@ use crate::transient::{as_refusal, effect_agent, machine_of, policy_of, Where};
 ///
 /// AN OPENER AND NOT A STORE, because [`Engine`] holds no project and resolves
 /// one per run: a machine whose runs belong to two projects needs a store per
-/// root, and a single handle could not serve both.
+/// project, and a single handle could not serve both.
 pub trait Stores {
-    fn open(&self, root: &Path) -> Box<dyn Store>;
+    fn open(&self, project: &Project) -> Result<Box<dyn Store>, StoreError>;
 }
 
-/// The opener the binary runs on: `bd` at the project's own root.
+/// The opener the binary runs on: the store `[store] adapter` names in each
+/// project's own file, through the one opener every verb takes.
 ///
-/// THE BINARY IS RESOLVED ONCE, HERE, and every store this opener hands back
-/// runs it by absolute path. The pass's own process is a launchd service whose
-/// `PATH` holds neither a package manager's prefix nor the user's local bin, so
-/// a store that searches that `PATH` finds no `bd` and refuses every tick
-/// (lessons claude-code D1). The resolution is the verbs' own
-/// ([`crate::item::bd_bin`]), bare-name fallback and all, so a run's re-run and
-/// a person's verb write through the same file.
-pub struct BdStores {
-    bd: PathBuf,
+/// THE SEARCH PATH IS CONSTRUCTED ONCE, HERE, and every store this opener
+/// hands back resolves its binary on it. The pass's own process is a launchd
+/// service whose `PATH` holds neither a package manager's prefix nor the
+/// user's local bin, so a store that searched that `PATH` would find nothing
+/// and refuse every tick (lessons claude-code D1). It is the verbs' own search
+/// path, bare-name fallback and all, so a run's re-run and a person's verb
+/// write through the same file.
+pub struct ProjectStores {
+    search_path: String,
 }
 
-impl BdStores {
-    pub fn resolved() -> BdStores {
-        BdStores {
-            bd: crate::item::bd_bin(),
+impl ProjectStores {
+    pub fn resolved() -> ProjectStores {
+        ProjectStores {
+            search_path: platform::child_path(&platform::home_dir()),
         }
     }
 }
 
-impl Stores for BdStores {
-    fn open(&self, root: &Path) -> Box<dyn Store> {
-        Box::new(Bd::at_bin(root, &self.bd))
+impl Stores for ProjectStores {
+    fn open(&self, project: &Project) -> Result<Box<dyn Store>, StoreError> {
+        store::open(&Opening {
+            root: &project.root,
+            policy: &project.policy,
+            search_path: &self.search_path,
+            strict: false,
+            timeout: STORE_TIMEOUT,
+        })
     }
 }
 
@@ -86,7 +93,7 @@ impl Engine {
         Engine {
             machine_dir,
             home: platform::home_dir(),
-            stores: Box::new(BdStores::resolved()),
+            stores: Box::new(ProjectStores::resolved()),
         }
     }
 
@@ -114,7 +121,11 @@ impl Engine {
             let Ok(here) = resolve_from(&root, self.machine_dir.clone(), None) else {
                 continue;
             };
-            if self.stores.open(&here.project.root).show(run).is_ok() {
+            let holding = self
+                .stores
+                .open(&here.project)
+                .and_then(|store| store.show(run));
+            if holding.is_ok() {
                 return Ok(here);
             }
         }
@@ -155,7 +166,7 @@ impl Runs for Engine {
     fn rerun(&self, run: &str) -> Result<(), String> {
         let here = self.project_holding(run)?;
         let by = self.controller()?;
-        let store = self.stores.open(&here.project.root);
+        let store = self.stores.open(&here.project).map_err(|e| e.to_string())?;
         let packs =
             Packs::under(&here.packs_dir, &here.defaults_dir).map_err(|stop| stop.message)?;
         let events = StreamEvents::at(self.machine_dir.join(EVENTS));
@@ -195,7 +206,7 @@ impl Runs for Engine {
     fn hold(&self, run: &str, reason: &str) -> Result<(String, String), String> {
         let here = self.project_holding(run)?;
         let by = self.controller()?;
-        let store = self.stores.open(&here.project.root);
+        let store = self.stores.open(&here.project).map_err(|e| e.to_string())?;
         let directory = self.machine_dir.join(workflow_run::RUNS).join(run);
         hold::park_at_the_cap(
             &hold::Capped {
@@ -214,7 +225,10 @@ impl Runs for Engine {
     /// held entries too, and none of them is the park.
     fn capped(&self, run: &str) -> Result<Option<CapHold>, String> {
         let here = self.project_holding(run)?;
-        let store = self.stores.open(&here.project.root);
+        let store = self
+            .stores
+            .open(&here.project)
+            .map_err(|e| format!("{run}'s store could not be opened: {e}"))?;
         let entries = store
             .timeline(&ItemId::from(run))
             .map_err(|e| format!("{run}'s timeline could not be read: {e}"))?;
@@ -244,7 +258,7 @@ impl Runs for Engine {
         // for itself. A cleanup retires seats whose items were delivered and
         // seats whose items are still open — a park leaves the order standing —
         // and the name this frees is the one the next spawn takes.
-        let store = self.stores.open(&here.project.root);
+        let store = self.stores.open(&here.project).map_err(|e| e.to_string())?;
         // The retire hands its withdrawal the machine name of the row it
         // resolved; the order was assigned to that row's ID, so the name is
         // resolved back to it here, exactly, through the short id it carries.
@@ -302,7 +316,7 @@ mod tests {
     use super::*;
     use fleet_core::entry::{Body, OrderWithdrawn, Withdrawal};
     use fleet_core::item::COULD_NOT_TELL;
-    use fleet_core::store::{Filter, Item, Order, OrderKind, OrderState, Stamp, Status};
+    use fleet_core::store::{Item, Order, OrderKind, OrderState, Stamp, Status};
     use fleet_core::test_support::FakeStore;
 
     /// The seat's full id, which the order was assigned to and the withdrawal
@@ -424,7 +438,7 @@ mod tests {
     #[test]
     fn a_board_that_will_not_answer_stops_the_cleanups_retire() {
         let store = FakeStore {
-            unreadable: Some(String::from("bd is not on this path")),
+            unreadable: Some(String::from("the store is not on this path")),
             ..FakeStore::default()
         };
 
@@ -433,7 +447,7 @@ mod tests {
 
         assert_eq!(refused.code, COULD_NOT_TELL);
         assert!(
-            refused.message.contains("bd is not on this path"),
+            refused.message.contains("the store is not on this path"),
             "{}",
             refused.message
         );
@@ -463,121 +477,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The `PATH` a launchd agent is started with, which is the whole of this
-    /// box's search path for the controller: no package-manager prefix, where
-    /// `bd` actually is, and no user local bin either.
-    const SERVICE_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
-
-    /// Serialises the arms here that move the process's environment, because
-    /// `cargo test` runs this binary's arms as threads of one process.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Variables moved for one arm and put back when it ends — on a panic too,
-    /// so a red arm never leaves the service `PATH` behind for a sibling.
-    struct EnvHeld(Vec<(&'static str, Option<std::ffi::OsString>)>);
-
-    impl EnvHeld {
-        fn set(moved: &[(&'static str, &std::ffi::OsStr)]) -> EnvHeld {
-            let held = EnvHeld(
-                moved
-                    .iter()
-                    .map(|(key, _)| (*key, std::env::var_os(key)))
-                    .collect(),
-            );
-            for (key, value) in moved {
-                std::env::set_var(key, value);
-            }
-            held
-        }
-    }
-
-    impl Drop for EnvHeld {
-        fn drop(&mut self) {
-            for (key, before) in self.0.iter().rev() {
-                match before {
-                    Some(value) => std::env::set_var(key, value),
-                    None => std::env::remove_var(key),
-                }
-            }
-        }
-    }
-
-    /// The opener the binary builds runs the `bd` it resolved, by absolute
-    /// path, when the process's own `PATH` is the service's and holds no `bd`
-    /// at all — which is the controller's situation on every tick.
-    ///
-    /// THE ENGINE AND NOT THE OPENER: [`Engine::on`] is the one place the pass
-    /// gets its stores, so the arm reaches the store through it. THE CONTROL
-    /// AND THE PROOF ARE ON ONE `PATH`: the shim is named to the resolver by
-    /// absolute path and is unreachable by bare name, so a store that fell
-    /// back to the bare name would be refused rather than find it.
+    /// The opener the binary runs on resolves every store's binary on the
+    /// constructed child PATH — the search path the verbs hand the same opener
+    /// — and never on the pass's own, which under a launchd service holds
+    /// neither a package manager's prefix nor the user's local bin. That the
+    /// opener runs what it resolved by absolute path is the store's own arm.
     #[test]
-    fn the_engines_store_runs_the_resolved_bd_on_a_service_path() {
-        let _lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = std::env::temp_dir().join(format!("fleet-runs-bd-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let root = dir.join("project");
-        std::fs::create_dir_all(&root).expect("the project root is created");
-
-        // A `bd` that records the argv it was handed and answers an empty list.
-        let log = dir.join("argv");
-        let bd = dir.join("bd");
-        std::fs::write(
-            &bd,
-            format!(
-                "#!/bin/sh\n\
-                 for a in \"$@\"; do printf '%s\\n' \"$a\" >> '{log}'; done\n\
-                 printf '[]\\n'\n",
-                log = log.display(),
-            ),
-        )
-        .expect("the shim is written");
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bd, std::fs::Permissions::from_mode(0o755))
-            .expect("the shim is executable");
-
-        let (by_name, by_engine) = {
-            let _held = EnvHeld::set(&[
-                ("PATH", SERVICE_PATH.as_ref()),
-                ("FLEET_BD_BIN", bd.as_os_str()),
-            ]);
-            (
-                Bd::at_bin(&root, Path::new(fleet_core::store::bd::BD)).list(&Filter::Ready),
-                Engine::on(dir.join("machine"))
-                    .stores
-                    .open(&root)
-                    .list(&Filter::Ready),
-            )
-        };
-
-        let refusal = by_name.expect_err("a bare `bd` is not on the service PATH");
-        assert!(
-            format!("{refusal:?}").contains("could not be run"),
-            "the bare name must fail because nothing could be run, not for some \
-             other reason — {refusal:?}"
-        );
-        assert!(by_engine
-            .expect("the engine's store runs the shim, which answers a list")
-            .is_empty());
-        let argv: Vec<String> = std::fs::read_to_string(&log)
-            .expect("the shim recorded its argv")
-            .lines()
-            .map(str::to_string)
-            .collect();
+    fn the_engines_stores_hand_the_constructed_child_path() {
         assert_eq!(
-            argv,
-            vec![
-                String::from("-C"),
-                root.display().to_string(),
-                String::from("ready"),
-                String::from("--json"),
-                String::from("-n"),
-                String::from("0"),
-            ],
-            "exactly the engine's read reached the shim"
+            ProjectStores::resolved().search_path,
+            platform::child_path(&platform::home_dir())
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
