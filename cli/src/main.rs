@@ -22,6 +22,7 @@ mod runs;
 mod seat_add;
 mod status;
 mod step;
+mod store;
 mod stream;
 mod transient;
 mod ui;
@@ -132,6 +133,12 @@ woke, rest, handed-off and exited are said under `fleet event`.")]
     Item {
         #[command(subcommand)]
         verb: item_show::Verb,
+    },
+
+    /// the work-graph store this project reads and writes
+    Store {
+        #[command(subcommand)]
+        verb: store::Verb,
     },
 
     // THE OLD SPELLING OF THE FAMILY, kept for one release and refused: a
@@ -636,6 +643,7 @@ fn dispatch() -> Result<Exit> {
         Family::Pack { verb } => pack_command(&ui, &verb),
         Family::Routine { verb } => Ok(routines::command(&verb)),
         Family::Item { verb } => Ok(item_show::command(&verb)),
+        Family::Store { verb } => Ok(store::command(&verb)),
         Family::Order(_) => Ok(routines::old_name()),
         Family::Dispatch(args) => Ok(item::dispatch_command(&args)),
         Family::Brief(args) => Ok(item::brief_command(&args)),

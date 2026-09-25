@@ -13,8 +13,7 @@ items that block it and a run's record; the holds raised on items; and each
 item's timeline of entries. bd is built in. Any other store is an executable,
 named by `[store] adapter`, that answers the verbs on this page.
 
-**Status:** `[store] adapter` is live; `fleet store check` is not yet
-available.
+**Status:** The contract is live.
 
 ## Choosing an adapter
 
@@ -378,8 +377,60 @@ ids, and the store sets each entry's id and time.
 
 ## Checking an adapter
 
-`fleet store check [--adapter <path>]` checks an adapter against this
-contract. It is not yet available.
+`fleet store check [--adapter <path>]` runs every check of this contract
+against an adapter and prints what each one answered.
+
+Without `--adapter` it checks the adapter the project you are in selects:
+the one `[store] adapter` names in the project's own file, else bd. Outside
+a project it checks bd. `--adapter` takes the absolute path to an adapter
+executable and checks that one instead.
+
+The checks write, so they never run on your project's store. fleet makes a
+temporary directory, asks the adapter's `scratch` verb for a new store
+inside it, runs every check on that store, and removes the directory when it
+finishes, whatever the checks answered. An adapter whose capabilities do not
+declare `scratch` is asked for nothing beyond its capabilities, and no check
+runs.
+
+In a project whose file names no adapter:
+
+```sh
+$ fleet store check
+PASS  empty listings
+PASS  version
+PASS  capabilities
+...
+PASS  fenced writes
+SKIP  another writer's keys: no other writer was handed to this run, so nothing plants another tool's keys
+store check: bd — 22 passed, 0 failed, 1 skipped
+```
+
+It exits 0.
+
+Each check prints one line on standard output, in the same order every
+run: `PASS` and the check's name, `SKIP` with why the check does not apply,
+or `FAIL` with what the store answered instead. Every check runs whatever
+the one before it answered, so one run names every disagreement. The last
+line names the adapter, by the name its `version` answers, else by its path,
+and counts the checks that passed, failed and were skipped.
+
+Two checks can be skipped. `export` is skipped for a store whose
+capabilities declare no export. `another writer's keys` is always skipped
+here, because `fleet store check` has no way to put another tool's keys on
+an item.
+
+### When it refuses
+
+| Situation | Exit | What you see |
+| --- | --- | --- |
+| a check failed | 1 | its `FAIL` line, and the summary's count of failures |
+| the adapter declares no `scratch` | 1 | `fleet store check: <adapter> declares no scratch capability, and the check runs only on a store it makes for the purpose — nothing was run` |
+| `--adapter` names a relative path | 2 | `fleet store check: --adapter takes an absolute path to an executable, and <path> is not one` |
+| nothing executable is at the path | 3 | ``fleet store check: [store] adapter names `<path>`, which is not an executable file`` |
+| the adapter cannot be run, or does not answer `capabilities` or `scratch` | 3 | `fleet store check:` and the reason |
+
+Only a failed check prints check lines; every other refusal comes before
+any check runs, and prints none.
 
 ## See also
 

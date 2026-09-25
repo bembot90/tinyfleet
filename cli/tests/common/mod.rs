@@ -20,6 +20,15 @@ pub mod hermetic;
 
 pub use board::{bd_init_server_args, run_board};
 
+/// One line for one `bd init` a rig does not run itself — `fleet store
+/// check`'s, the bd adapter's own scratch — counted where the run reads its
+/// count. A function and not a re-export, because every rig includes this
+/// module and a re-export only one of them reads is an unused import in the
+/// rest.
+pub fn note_bd_init(label: &str) {
+    board::note_bd_init(label);
+}
+
 /// A work graph at `root`: the run's board copied in, or a `bd init` of this
 /// rig's own where no run made one.
 ///

@@ -31,7 +31,7 @@ use serde_json::{json, Map, Value};
 
 use super::types::{
     self, Answered, Appended, Capabilities, Created, Exported, Listed, OpenHolds, Raised, Refusal,
-    RefusalReason, Resolved, Shown,
+    RefusalReason, Resolved, Scratched, Shown,
 };
 use super::{
     first_value, tail, unchanged, validated, Filter, HoldId, Item, ItemId, ItemSummary, NewItem,
@@ -400,9 +400,21 @@ impl Store for Exec {
         Ok(PathBuf::from(file))
     }
 
-    // scratch: the trait has no method for it yet. The day it does, it calls
-    // the verb only where capabilities().scratch is declared, and otherwise
-    // answers Unreadable("the adapter declares no scratch").
+    /// Asked only of an adapter whose capabilities declare a scratch store,
+    /// and `into` goes out absolute, as the export's does.
+    fn scratch(&self, into: &Path) -> Result<PathBuf, StoreError> {
+        if !self.capabilities()?.scratch {
+            return Err(StoreError::Unreadable(String::from(
+                "the adapter declares no scratch",
+            )));
+        }
+        let into = std::path::absolute(into).unwrap_or_else(|_| into.to_path_buf());
+        let (Scratched { root }, _) = self.call(
+            "scratch",
+            fields(json!({ "into": into.display().to_string() })),
+        )?;
+        Ok(PathBuf::from(root))
+    }
 }
 
 /// One timeline entry read into an [`Entry`]: `id`, `at` and `by` taken off
@@ -882,5 +894,35 @@ esac"#,
         assert_eq!(written, PathBuf::from("/work/store/export.jsonl"));
         assert_eq!(stub.verbs(), ["capabilities", "export"]);
         assert_eq!(stub.request()["into"], stub.dir.display().to_string());
+    }
+
+    /// A scratch store is asked only of an adapter that declares one, and
+    /// its root is the one the adapter answered.
+    ///
+    /// RED-PROOF: with no `scratch` of its own, `Exec` takes the trait's
+    /// default, which runs nothing and answers "this store declares no
+    /// scratch" — for the adapter that declares one too.
+    #[test]
+    fn a_scratch_is_asked_only_where_it_is_declared() {
+        let stub = Stub::new(
+            "no-scratch",
+            &answers(r#"{"schema_version":1,"scratch":false}"#, 0),
+        );
+        let why = unreadable(stub.exec().scratch(&stub.dir.join("store")));
+        assert_eq!(why, "the adapter declares no scratch");
+        assert_eq!(stub.verbs(), ["capabilities"], "scratch was never run");
+
+        let stub = Stub::new(
+            "scratch",
+            r#"case "$1" in
+capabilities) echo '{"schema_version":1,"scratch":true}' ;;
+scratch) echo '{"schema_version":1,"root":"/tmp/fleet-scratch/store"}' ;;
+esac"#,
+        );
+        let into = stub.dir.join("store");
+        let root = stub.exec().scratch(&into).expect("the scratch was made");
+        assert_eq!(root, PathBuf::from("/tmp/fleet-scratch/store"));
+        assert_eq!(stub.verbs(), ["capabilities", "scratch"]);
+        assert_eq!(stub.request()["into"], into.display().to_string());
     }
 }
