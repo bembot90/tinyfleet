@@ -352,8 +352,8 @@ impl ReadProof {
 // ---- items ----------------------------------------------------------------------
 
 /// One item as a read answers it: its id, title, description, status and
-/// type, its own labels, who holds it, its order, what blocks it and a run's
-/// record.
+/// type, its own labels, who holds it, its order, what blocks it, a run's
+/// record and the names of the keys another writer keeps on it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Item {
     pub id: ItemId,
@@ -393,6 +393,11 @@ pub struct Item {
     /// shape this fleet does not read is no item at all: the read refuses.
     #[serde(default)]
     pub run: Option<RunRecord>,
+    /// The names of the keys the store holds on the item that are not
+    /// fleet's: another tool's, named so a person adopting the board can map
+    /// them. Never what they hold, which fleet neither reads nor writes.
+    #[serde(default)]
+    pub foreign: Vec<String>,
     /// The whole text the read answered. The negative control asks it, so the
     /// control asks the SAME answer for a token nothing wrote.
     #[serde(skip)]
@@ -412,6 +417,10 @@ pub struct ItemSummary {
     pub labels: Vec<String>,
     #[serde(default)]
     pub order: OrderState,
+    /// The store's keys on the item that are not fleet's, as [`Item`] names
+    /// them.
+    #[serde(default)]
+    pub foreign: Vec<String>,
 }
 
 /// Which items a listing asks for: the ready ones, those carrying a label, or
@@ -782,7 +791,10 @@ mod tests {
   "blockers": [
     "fx-c3d4"
   ],
-  "run": null
+  "run": null,
+  "foreign": [
+    "sprint"
+  ]
 }"#;
 
     fn seat(id: &str) -> SeatId {
@@ -1134,6 +1146,7 @@ mod tests {
         assert_eq!(read.assignee, Some(seat(SEAT)));
         assert_eq!(read.order, OrderState::Ordered(an_order(Some(seat(SEAT)))));
         assert_eq!(read.blockers, vec![ItemId::from("fx-c3d4")]);
+        assert_eq!(read.foreign, vec![String::from("sprint")]);
         assert_eq!(read.proof, ReadProof::default());
         assert_eq!(serde_json::to_string_pretty(&read).unwrap(), ITEM_EXAMPLE);
     }
@@ -1256,6 +1269,7 @@ mod tests {
             item_type: String::from("task"),
             labels: vec![String::from("fleet")],
             order: OrderState::None,
+            foreign: vec![String::from("sprint")],
         };
         let new_item = NewItem {
             title: String::from("Name the stamp's fields"),

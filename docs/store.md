@@ -9,8 +9,9 @@ read it when you connect fleet to a store of your own.
 
 The store is the work graph fleet reads and writes: each item with its title,
 description, status, type and labels, who holds it, the order it stands
-under, the open items that block it and a run's record; the holds raised on
-items; and each item's timeline of entries. bd is built in. Any other store is an executable,
+under, the open items that block it, a run's record and the names of the
+keys other tools keep on it; the holds raised on items; and each item's
+timeline of entries. bd is built in. Any other store is an executable,
 named by `[store] adapter`, that answers the verbs on this page.
 
 **Status:** The contract is live.
@@ -213,25 +214,35 @@ it, and blocked by one open item.
   "blockers": [
     "fx-c3d4"
   ],
-  "run": null
+  "run": null,
+  "foreign": [
+    "sprint"
+  ]
 }
 ```
 
 `description` is what the item says; `fleet item show` prints it. `labels`
 are the item's own. `assignee` is the seat that holds the item, or `null`.
 `order` is an order state. `blockers` are the ids of the open items that
-block this one. `run` is a run record, or `null`. `id`, `title`, `status` and
-`type` are always there; an item that leaves out `description`, `labels`,
-`assignee`, `order`, `blockers` or `run` reads as having no description, no
-labels, nobody assigned, `{"state":"none"}`, no blockers and no run record.
+block this one. `run` is a run record, or `null`. `foreign` names the keys
+the store keeps on the item beyond its order and its run record: another
+tool's. It carries their names only, never what they hold. `id`, `title`,
+`status` and `type` are always there; an item that leaves out
+`description`, `labels`, `assignee`, `order`, `blockers`, `run` or `foreign`
+reads as having no description, no labels, nobody assigned,
+`{"state":"none"}`, no blockers, no run record and no foreign keys.
 
 ### Item summary
 
 One item as a listing answers it:
 
 ```json
-{"id":"fx-c3d4","title":"Name the stamp's fields","status":"open","type":"task","labels":["fleet"],"order":{"state":"none"}}
+{"id":"fx-c3d4","title":"Name the stamp's fields","status":"open","type":"task","labels":["fleet"],"order":{"state":"none"},"foreign":["sprint"]}
 ```
+
+`foreign` is the item's, as `show` answers it. A summary that leaves out
+`labels`, `order` or `foreign` reads as having no labels, `{"state":"none"}`
+and no foreign keys. `fleet item list --json` prints each row's `foreign`.
 
 ### Entry
 
@@ -482,7 +493,8 @@ PASS  capabilities
 ...
 PASS  fenced withdraw with reopen
 SKIP  another writer's keys: no other writer was handed to this run, so nothing plants another tool's keys
-store check: bd — 25 passed, 0 failed, 1 skipped
+SKIP  another writer's keys are listed as foreign: no other writer was handed to this run, so nothing plants another tool's keys
+store check: bd — 25 passed, 0 failed, 2 skipped
 ```
 
 It exits 0.
@@ -496,10 +508,10 @@ it answered, so one run names every disagreement. The last line names the
 adapter, by the name its `version` answers, else by its path, and counts
 the checks that passed, failed and were skipped.
 
-Two checks can be skipped. `export` is skipped for a store whose
-capabilities declare no export. `another writer's keys` is always skipped
-here, because `fleet store check` has no way to put another tool's keys on
-an item.
+Three checks can be skipped. `export` is skipped for a store whose
+capabilities declare no export. `another writer's keys` and `another
+writer's keys are listed as foreign` are always skipped here, because `fleet
+store check` has no way to put another tool's keys on an item.
 
 ### When it refuses
 

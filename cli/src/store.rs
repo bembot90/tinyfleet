@@ -13,8 +13,9 @@
 //!
 //! NO OTHER WRITER IS HANDED IN. Planting another tool's keys on an item takes
 //! a way in beside the contract, which only the suites own (the board held in
-//! memory through its rig, bd through the binary), so "another writer's keys"
-//! is printed as SKIP here, saying why.
+//! memory through its rig, bd through the binary), so the two checks that
+//! plant them, "another writer's keys" and "another writer's keys are listed
+//! as foreign", are printed as SKIP here, saying why.
 
 use std::collections::BTreeMap;
 use std::io::Write;

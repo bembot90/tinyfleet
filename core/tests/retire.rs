@@ -506,6 +506,7 @@ fn a_retire_that_cannot_read_the_board_refuses_rather_than_reading_no_hold() {
                 order: an_order(),
                 item_type: String::from("task"),
                 labels: Vec::new(),
+                foreign: Vec::new(),
             }],
         )]
         .into_iter()

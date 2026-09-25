@@ -3,8 +3,9 @@
 //! The store's three listings are the filters, so what this suite proves is
 //! which ids each one answers, what two of them answer together, and that a
 //! row carries `item show`'s fields plus the run's record — the typed fields
-//! the item carries, and no raw metadata. The shipped binary and a real board
-//! are the cli's `adopt.rs`.
+//! the item carries, and no raw metadata — and the names of the store's keys
+//! that are not fleet's. The shipped binary and a real board are the cli's
+//! `adopt.rs`.
 
 use fleet_core::item::list::{document, ids, list, render, Filter};
 use fleet_core::item::{COULD_NOT_TELL, USAGE};
@@ -163,9 +164,10 @@ fn a_store_that_does_not_answer_is_could_not_tell() {
 }
 
 /// The rows: `item show`'s fields and the run's record, each as the item
-/// carries it — and no raw metadata, the board's own keys and fleet's alike.
+/// carries it, and the board's own keys by name under `foreign` — never what
+/// they hold, and never fleet's own two.
 #[test]
-fn a_row_carries_the_fields_and_the_run_record() {
+fn a_row_carries_the_fields_the_run_record_and_the_boards_own_keys_by_name() {
     let store = a_store();
     let items = list(&store, &filter(true, None, None)).expect("the ready set");
     let document = document(&items);
@@ -182,7 +184,7 @@ fn a_row_carries_the_fields_and_the_run_record() {
         keys.sort_unstable();
         assert_eq!(
             keys,
-            ["assignee", "id", "labels", "order", "run", "status", "title", "type"],
+            ["assignee", "foreign", "id", "labels", "order", "run", "status", "title", "type"],
             "{row}"
         );
     }
@@ -205,6 +207,18 @@ fn a_row_carries_the_fields_and_the_run_record() {
         "the board's own key is not handed on: {foreign}"
     );
     assert_eq!(foreign["labels"], serde_json::json!(["backend"]));
+    assert_eq!(
+        foreign["foreign"],
+        serde_json::json!(["orders"]),
+        "the board's own key is named, and fleet's beside it is not: {foreign}"
+    );
+    for id in ["fx-1", "fx-3", "fx-4"] {
+        assert_eq!(
+            by_id(id)["foreign"],
+            serde_json::json!([]),
+            "fleet's own keys are never foreign: {document}"
+        );
+    }
 
     let record = by_id("fx-3");
     assert_eq!(

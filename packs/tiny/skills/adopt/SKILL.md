@@ -37,12 +37,12 @@ report; say so rather than let "found" read as "the whole board".
 ## 2. Walk the report, one row and one question at a time
 
 Take the rows in the report's order and skip the ones that say `none`. For a
-row, read each example id through `fleet item show <id> --json` **before**
-saying anything about it: the report says where to look, the item says what is
-there. A row that says `not counted` is a key fleet does not read, and a list
-row carries no raw metadata: say what the row means, and ask the person whether
-their board keeps such a key and on which items. Never read the store's own
-binary to count them.
+row, read each example id through `fleet item show <id> --json` — and the
+board's own keys off its row in `fleet item list --ready --json`, where
+`foreign` names them — **before** saying anything about it: the report says
+where to look, the item says what is there. A row names a key and never what
+it holds; ask the person what their board keeps under it rather than read the
+store's own binary for the value.
 Then say what the row means, what fleet reads instead, and the choices; ask
 the person to choose, and wait. One question per turn.
 

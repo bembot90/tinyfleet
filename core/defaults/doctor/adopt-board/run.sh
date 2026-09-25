@@ -4,11 +4,12 @@
 #
 #   1. names fleet owns that fail fleet's schema — a `fleet.orders` at a
 #      version or shape this binary does not read, `fleet:run` on an item that
-#      is not a run's record, and any other `fleet:` label, which fleet never
-#      writes;
+#      is not a run's record, and any other `fleet.` key or `fleet:` label,
+#      which fleet never writes;
 #   2. the board's own conventions a person may want mapped onto fleet's — a
-#      run label that is not `fleet:run` — with the types and labels the items
-#      carry listed for `[[core.flight.rules]]` to match;
+#      metadata key that is order-like, run-like or assignee-like and not
+#      fleet's, and a run label that is not `fleet:run` — with the types and
+#      labels the items carry listed for `[[core.flight.rules]]` to match;
 #   3. fleet's old marker words in a person's notes or comments, which this
 #      check CANNOT READ: fleet reads no notes, and no comment it did not write
 #      (fleet-zlk), so the class is named and not counted. Fleet parses none of
@@ -16,13 +17,13 @@
 #
 # Each row gives a count and up to five example ids.
 #
-# THE ROWS FLEET CANNOT COUNT ARE NAMED, AS THE THIRD CLASS IS. A row of the
-# list is the fields fleet reads (fleet-0q4.4) and never an item's raw
-# metadata, so a key fleet does not read — another `fleet.` key, or the
-# board's own order-like, run-like or assignee-like one — is not in it. And a
-# `fleet.run` this binary does not read is no row at all: it refuses the read,
-# so the list exits 3 naming the item, and this check says it could not read
-# the board with that refusal printed under it.
+# A KEY IS READ BY ITS NAME ALONE. A row of the list is the fields fleet reads
+# and never an item's raw metadata; the keys the store holds that are not
+# fleet's are named under `foreign`, and what they hold is not in the row. So
+# this check sorts a key by the last word of its name and says nothing of what
+# it holds. And a `fleet.run` this binary does not read is no row at all: it
+# refuses the read, so the list exits 3 naming the item, and this check says
+# it could not read the board with that refusal printed under it.
 #
 # THREE EXITS, the doctor's own: 0 when the items read carry nothing in the
 # first two classes, 1 when they do and the rows above say where, 3 when the
@@ -167,6 +168,7 @@ function seen(d, type, v,   it) {
 	if (d == 4 && seg[4] == "run" && type == "object") runp[it] = 1
 	if (d == 5 && seg[4] == "labels" && type == "string") labels[it] = labels[it] SEP v
 	if (d == 5 && seg[4] == "order" && seg[5] == "unreadable" && v == "true") orders_off[it] = 1
+	if (d == 5 && seg[4] == "foreign" && type == "string") foreign[it] = foreign[it] SEP v
 }
 
 # One item counted under row r, and the name it was counted by.
@@ -183,17 +185,18 @@ function mark(r, it, what,   k) {
 	}
 }
 
-# A row this check names and cannot count, for the reason every one shares.
-function uncounted(what) {
-	print name ":    " what ": not counted — `fleet item list` answers the fields fleet reads, never the raw metadata of an item"
-}
-
 function tally(which, what) {
 	if (!((which SEP what) in tallied)) {
 		tallied[which SEP what] = 1
 		tally_order[which] = tally_order[which] SEP what
 	}
 	tallies[which SEP what]++
+}
+
+# The last word of a key, after its last dot or colon, lowered.
+function last_word(key,   n, parts) {
+	n = split(key, parts, /[.:]/)
+	return tolower(parts[n])
 }
 
 function row(r, what, noun,   line) {
@@ -250,6 +253,15 @@ END {
 			else if (label[j] == "run" || (length(label[j]) > 4 && substr(label[j], length(label[j]) - 3) == ":run")) mark("2d", it, label[j])
 		}
 		if (fleet_run && (!runp[it] || typ[it] != "task")) mark("1c", it, "")
+
+		n = split(foreign[it], key, SEP)
+		for (j = 2; j <= n; j++) {
+			if (substr(key[j], 1, 6) == "fleet.") { mark("1d", it, key[j]); continue }
+			word = last_word(key[j])
+			if (word == "orders" || word == "order") mark("2a", it, key[j])
+			else if (word == "run" || word == "runs") mark("2b", it, key[j])
+			else if (word == "assignee" || word == "owner" || word == "reviewer" || word == "seat" || word == "assigned" || word == "assigned_to") mark("2c", it, key[j])
+		}
 	}
 
 	first = count_class("1"); second = count_class("2")
@@ -260,12 +272,11 @@ END {
 	row("1a", "fleet.orders at a version or shape fleet does not read", "")
 	print name ":    fleet.run at a version or shape fleet does not read: none read — one refuses the list itself, and this check then could not read the board, with the refusal naming the item"
 	row("1c", "fleet:run on an item that is not a run record (a task carrying fleet.run)", "")
-	row("1d", "a fleet: label fleet never writes", "labels")
-	uncounted("a fleet. key fleet never writes")
+	row("1d", "a fleet. key or fleet: label fleet never writes", "names")
 	print name ": 2. conventions of the board itself, to map onto the ones fleet reads — " items(second)
-	uncounted("an order-like metadata key that is not fleet.orders")
-	uncounted("a run-like metadata key that is not fleet.run")
-	uncounted("an assignee-like metadata key")
+	row("2a", "an order-like metadata key that is not fleet.orders", "keys")
+	row("2b", "a run-like metadata key that is not fleet.run", "keys")
+	row("2c", "an assignee-like metadata key", "keys")
 	row("2d", "a run label that is not fleet:run", "labels")
 	tallied_line("type", "types on the items read, for [[core.flight.rules]] to match")
 	tallied_line("label", "labels on the items read, for [[core.flight.rules]] to match")

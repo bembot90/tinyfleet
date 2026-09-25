@@ -48,10 +48,11 @@ against a seat. Each row is then read for its assignee and its run's record,
 which a listing's row does not carry.
 
 --json prints {\"items\": [...]}, each row item show's fields without the
-timeline, plus the run's record where the item carries one. It writes
-nothing. Exit 2 when no listing is named or --assignee is not a seat's full
-id, 3 when the store does not answer or an item carries a run record this
-fleet does not read.")]
+timeline, plus the run's record where the item carries one and, under
+foreign, the names of the keys the store holds on the item that are not
+fleet's. It writes nothing. Exit 2 when no listing is named or --assignee is
+not a seat's full id, 3 when the store does not answer or an item carries a
+run record this fleet does not read.")]
     List {
         /// the store's ready set: open and unblocked
         #[arg(long)]

@@ -496,6 +496,22 @@ pub(crate) fn order_of(metadata: Option<&serde_json::Value>) -> OrderState {
     }
 }
 
+/// The keys a row's metadata holds that are not fleet's two: another writer's,
+/// named and never read. A bare `orders` is one of them, and so is a `fleet.`
+/// key fleet never writes. Metadata that is not an object holds no key.
+pub(crate) fn foreign_of(metadata: Option<&serde_json::Value>) -> Vec<String> {
+    metadata
+        .and_then(serde_json::Value::as_object)
+        .map(|object| {
+            object
+                .keys()
+                .filter(|key| *key != keys::ORDERS && *key != keys::RUN)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// A run's record off a row's metadata: absent or `null` is no record, and
 /// one at [`keys::VERSION`] that reads as a [`RunRecord`] is the record.
 ///
@@ -1188,6 +1204,7 @@ pub fn item_from(id: &str, row: &serde_json::Value) -> Result<Item, StoreError> 
         run: run_of(&id, metadata)?,
         assignee: holder_of(&id, wire.assignee.as_deref())?,
         order: order_of(metadata),
+        foreign: foreign_of(metadata),
         item_type: wire.issue_type.unwrap_or_default(),
         // The item's own labels, absent when the key is absent — which the
         // store spells as `null` and not as an empty array.
@@ -1215,11 +1232,13 @@ fn holder_of(id: &str, held: Option<&str>) -> Result<Option<SeatId>, StoreError>
 
 /// One listing row as the summary a listing answers, through the readers
 /// [`item_from`] reads a row with: the status and the labels as the store
-/// spells them, the order by [`order_of`], and the type off `issue_type`. A
-/// row naming no id is no row.
+/// spells them, the order by [`order_of`], another writer's keys by
+/// [`foreign_of`], and the type off `issue_type`. A row naming no id is no
+/// row.
 fn summary_of(row: bd_wire::IssueWithCounts) -> Option<ItemSummary> {
     Some(ItemSummary {
         order: order_of(row.metadata.as_ref()),
+        foreign: foreign_of(row.metadata.as_ref()),
         id: ItemId::from(row.id?),
         title: row.title.unwrap_or_default(),
         status: Status::from(row.status.unwrap_or_default()),
@@ -1568,11 +1587,11 @@ mod opening_tests {
     }
 }
 
-/// The mapping [`item_from`] makes of fleet's two keys and of the holder, one arm
-/// per answer.
+/// The mapping [`item_from`] makes of fleet's two keys, of another writer's and
+/// of the holder, one arm per answer.
 #[cfg(test)]
 mod tests {
-    use super::{item_from, item_prefix_in, OrderState, StoreError};
+    use super::{bd_wire, item_from, item_prefix_in, summary_of, OrderState, StoreError};
     use crate::seat::actor::Actor;
     use crate::store::{Order, OrderKind, RunRecord, Stamp};
 
@@ -1769,5 +1788,42 @@ mod tests {
                 "{held}: {refusal:?}"
             );
         }
+    }
+
+    /// Every metadata key but fleet's two is another writer's, named on the
+    /// read and on the listing's row alike — a bare `orders` and a `fleet.`
+    /// key fleet never writes among them — and metadata that is no object, or
+    /// none, names nothing.
+    #[test]
+    fn every_metadata_key_but_fleets_two_is_foreign_on_a_read_and_a_row() {
+        let metadata = serde_json::json!({
+            "fleet.orders": { "v": 1, "by": BY, "kind": "dispatch", "at": AT },
+            "fleet.run": null,
+            "orders": { "owner": "alice" },
+            "fleet.lane": "b",
+            "sprint": 7,
+        });
+        let wanted = ["fleet.lane", "orders", "sprint"];
+        let mut read = item_from("fx-1", &row(metadata.clone()))
+            .expect("reads")
+            .foreign;
+        read.sort();
+        assert_eq!(read, wanted, "the read");
+        let listed: bd_wire::IssueWithCounts =
+            serde_json::from_value(row(metadata)).expect("a listing row decodes");
+        let mut listed = summary_of(listed).expect("a row naming an id").foreign;
+        listed.sort();
+        assert_eq!(listed, wanted, "the listing's row");
+
+        for metadata in [
+            serde_json::json!({}),
+            serde_json::json!([1, 2]),
+            serde_json::json!("a string"),
+        ] {
+            let read = item_from("fx-1", &row(metadata.clone())).expect("reads");
+            assert!(read.foreign.is_empty(), "{metadata}: {:?}", read.foreign);
+        }
+        let bare = serde_json::json!({ "id": "fx-1", "title": "an item" });
+        assert!(item_from("fx-1", &bare).expect("reads").foreign.is_empty());
     }
 }

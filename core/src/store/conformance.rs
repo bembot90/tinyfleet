@@ -79,7 +79,8 @@ pub type Check = fn(&Ctx) -> Result<Passed, String>;
 /// suite had grown beside them before it moved here — an order read back,
 /// an update naming nothing, the fenced writes, and another writer's keys —
 /// so nothing it asked is lost in the move, with the three that check the
-/// contract's own fences before the last of them.
+/// contract's own fences before the last of them; then another writer's
+/// keys as the read and the listing name them.
 pub const CHECKS: &[(&str, Check)] = &[
     ("empty listings", empty_listings),
     ("version", version),
@@ -107,6 +108,10 @@ pub const CHECKS: &[(&str, Check)] = &[
     ("reopen through update", reopen_through_update),
     ("fenced withdraw with reopen", fenced_withdraw),
     ("another writer's keys", another_writers_keys),
+    (
+        "another writer's keys are listed as foreign",
+        another_writers_keys_are_foreign,
+    ),
 ];
 
 /// Every check against the one store, in [`CHECKS`]' order, each answer
@@ -1516,5 +1521,53 @@ fn another_writers_keys(ctx: &Ctx) -> Answer {
         &Some(record),
     )?;
     unmoved(&now, "a withdrawal")?;
+    Ok(Passed::Pass)
+}
+
+/// The keys another writer keeps on an item are named as `foreign`, by the
+/// read and by the listing's row alike, and fleet's own are never among them:
+/// with an order and a run's record written, an item carrying nobody else's
+/// key names none, and once another writer's two are planted beside fleet's it
+/// names exactly those two.
+///
+/// Compared as a set: the contract fixes which keys and not their order.
+fn another_writers_keys_are_foreign(ctx: &Ctx) -> Answer {
+    let Some(plant) = ctx.another_writer else {
+        return Ok(Passed::Skip(String::from(
+            "no other writer was handed to this run, so nothing plants another tool's keys",
+        )));
+    };
+    let id = filed(ctx, "an item whose other keys are named", &[])?;
+    ordered(ctx, &id, &an_order(Some(SeatId::mint()))?)?;
+    recorded(ctx, &id, &a_record("h1", "greet")?)?;
+    let named = |foreign: &[String]| -> BTreeSet<String> { foreign.iter().cloned().collect() };
+    same(
+        "the keys named foreign where fleet's alone are written",
+        &named(&read(ctx, &id)?.foreign),
+        &BTreeSet::new(),
+    )?;
+
+    plant(
+        &id,
+        r#"{"orders":{"seat":"another-tools-seat"},"a_prior_key":7}"#,
+    )
+    .map_err(|why| format!("another writer's metadata on {id}: {why}"))?;
+    let theirs: BTreeSet<String> = ["a_prior_key", "orders"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    same(
+        "the keys the read names foreign",
+        &named(&read(ctx, &id)?.foreign),
+        &theirs,
+    )?;
+    let row = row_in(ctx, &Filter::Label(String::from(LABEL)), &id)?.ok_or_else(|| {
+        format!("{id} is open under {LABEL}, and its label's listing left it out")
+    })?;
+    same(
+        "the keys the listing's row names foreign",
+        &named(&row.foreign),
+        &theirs,
+    )?;
     Ok(Passed::Pass)
 }

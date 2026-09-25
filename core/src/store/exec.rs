@@ -467,7 +467,7 @@ mod tests {
     const SEAT: &str = "0199a3c4-7d8e-7f90-a1b2-c3d4e5f60718";
 
     /// The item `docs/store.md` prints, as a `show` answer.
-    const SHOWN: &str = r#"{"schema_version":1,"item":{"id":"fx-a1b2","title":"Teach the parser the new stamp","status":"in_progress","type":"task","labels":["fleet"],"assignee":"0199a3c4-7d8e-7f90-a1b2-c3d4e5f60718","order":{"state":"ordered","order":{"kind":"dispatch","by":"seat:0199a3c4-5e6f-7a8b-9c0d-1e2f3a4b5c6d","seat":"0199a3c4-7d8e-7f90-a1b2-c3d4e5f60718","at":"2026-09-23T10:00:00Z"}},"blockers":["fx-c3d4"],"run":null}}"#;
+    const SHOWN: &str = r#"{"schema_version":1,"item":{"id":"fx-a1b2","title":"Teach the parser the new stamp","status":"in_progress","type":"task","labels":["fleet"],"assignee":"0199a3c4-7d8e-7f90-a1b2-c3d4e5f60718","order":{"state":"ordered","order":{"kind":"dispatch","by":"seat:0199a3c4-5e6f-7a8b-9c0d-1e2f3a4b5c6d","seat":"0199a3c4-7d8e-7f90-a1b2-c3d4e5f60718","at":"2026-09-23T10:00:00Z"}},"blockers":["fx-c3d4"],"run":null,"foreign":["sprint"]}}"#;
 
     /// An adapter written as a `#!/bin/sh` stub in a directory of its own,
     /// which is also the project root it is handed. The stub writes its pid to
@@ -591,6 +591,7 @@ mod tests {
         assert!(matches!(item.order, types::OrderState::Ordered(_)));
         assert_eq!(item.blockers, [ItemId::from("fx-c3d4")]);
         assert_eq!(item.run, None);
+        assert_eq!(item.foreign, ["sprint"]);
         assert!(
             item.proof.carries("Teach the parser the new stamp"),
             "the proof is the raw answer"
@@ -1094,5 +1095,27 @@ esac"#,
         assert_eq!(root, PathBuf::from("/tmp/fleet-scratch/store"));
         assert_eq!(stub.verbs(), ["capabilities", "scratch"]);
         assert_eq!(stub.request()["into"], into.display().to_string());
+    }
+
+    /// A listing's rows carry the store's other keys as the adapter names
+    /// them, and a row naming none reads as naming none: an adapter that
+    /// leaves `foreign` out still answers.
+    #[test]
+    fn a_listing_reads_each_rows_foreign_keys_and_none_where_it_names_none() {
+        let stub = Stub::new(
+            "list",
+            &answers(
+                r#"{"schema_version":1,"items":[{"id":"fx-c3d4","title":"Name the stamp's fields","status":"open","type":"task","labels":["fleet"],"order":{"state":"none"},"foreign":["sprint"]},{"id":"fx-e5f6","title":"t","status":"open","type":"task"}]}"#,
+                0,
+            ),
+        );
+        let rows = stub
+            .exec()
+            .list(&Filter::Ready)
+            .expect("the stub answered rows");
+        assert_eq!(stub.verbs(), ["list"]);
+        assert_eq!(stub.request()["filter"], "ready");
+        let foreign: Vec<&[String]> = rows.iter().map(|row| row.foreign.as_slice()).collect();
+        assert_eq!(foreign, [&[String::from("sprint")][..], &[][..]]);
     }
 }

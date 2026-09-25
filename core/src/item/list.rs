@@ -16,8 +16,9 @@
 //! one store call per row answered, beside the listings. A record this fleet
 //! does not read refuses that read, and so the list, naming the item: it is
 //! never a row. The row carries what the item carries and no raw metadata: a
-//! key the store holds that fleet does not read is the store's, and it is not
-//! handed on.
+//! key the store holds that fleet does not read is the store's, and the row
+//! names it under `foreign` — the listing's own field — and never hands on
+//! what it holds.
 //!
 //! It writes nothing.
 //!
@@ -187,6 +188,7 @@ pub fn row(row: &Row) -> Value {
         "assignee": row.assignee,
         "order": show::order_json(&summary.order),
         "run": row.run,
+        "foreign": summary.foreign,
     })
 }
 

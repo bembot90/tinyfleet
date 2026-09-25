@@ -16,7 +16,8 @@ use crate::entry::{self, Body, Entry};
 use crate::seat::actor::Actor;
 use crate::seat::identity::SeatId;
 use crate::store::bd::{
-    item_from, keys, opened, order_metadata, order_of, run_metadata, shown, SCHEMA_VERSION,
+    foreign_of, item_from, keys, opened, order_metadata, order_of, run_metadata, shown,
+    SCHEMA_VERSION,
 };
 use crate::store::types::{Capabilities, ExportSpec};
 use crate::store::{
@@ -351,18 +352,21 @@ impl FakeStore {
             .collect()
     }
 
-    /// One stored item as a listing's row answers it, its order read off the
-    /// METADATA this store would answer a read with, and not off the seeded
-    /// field, by the reading the real listing's rows take — so a row whose
-    /// index a write has removed answers here as the real listing does.
+    /// One stored item as a listing's row answers it, its order and another
+    /// writer's keys read off the METADATA this store would answer a read
+    /// with, and not off the seeded fields, by the readings the real
+    /// listing's rows take — so a row whose index a write has removed answers
+    /// here as the real listing does.
     fn summary(&self, item: &Item) -> ItemSummary {
+        let metadata = serde_json::Value::Object(self.metadata_of(item));
         ItemSummary {
             id: item.id.clone(),
             title: item.title.clone(),
             status: item.status.clone(),
             item_type: item.item_type.clone(),
             labels: item.labels.clone(),
-            order: order_of(Some(&serde_json::Value::Object(self.metadata_of(item)))),
+            order: order_of(Some(&metadata)),
+            foreign: foreign_of(Some(&metadata)),
         }
     }
 
@@ -511,11 +515,19 @@ impl FakeStore {
 /// The metadata a seeded item carries in its own fields, as the object a read
 /// decodes from, under fleet's own keys and at the version each is written at.
 /// An unreadable order is a key holding something that is not an object, which
-/// is a third answer and not an absence. A seed that wants a run's record the
-/// fleet cannot read, or an index at another version, writes that metadata
-/// itself: the item's own fields hold only what reads.
+/// is a third answer and not an absence. Another writer's key is there by name,
+/// holding an empty object: fleet reads the name and never the value. A seed
+/// that wants a run's record the fleet cannot read, or an index at another
+/// version, writes that metadata itself: the item's own fields hold only what
+/// reads.
 fn seeded_metadata(item: &Item) -> serde_json::Map<String, serde_json::Value> {
     let mut object = serde_json::Map::new();
+    for key in &item.foreign {
+        object.insert(
+            key.clone(),
+            serde_json::Value::Object(serde_json::Map::new()),
+        );
+    }
     if let Some(run) = &item.run {
         object.extend(top_level(run_metadata(run)));
     }

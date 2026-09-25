@@ -301,6 +301,11 @@ fn another_writers_keys_are_neither_read_nor_moved_by_fleets_writes() {
     in_memory("another writer's keys");
 }
 
+#[test]
+fn another_writers_keys_are_named_foreign_and_fleets_own_never_are() {
+    in_memory("another writer's keys are listed as foreign");
+}
+
 // ---- the real half ----------------------------------------------------------
 
 /// THE OTHER HALF: every check, against the store `bd` answers.

@@ -205,8 +205,8 @@ fn read(out: &Output, adapter: &str) -> Read {
 }
 
 /// Arm 1. A project whose file names no store is checked on the built-in bd:
-/// every check passes or is skipped, and the one skipped is another writer's
-/// keys, since the verb hands no other writer in.
+/// every check passes or is skipped, and the two skipped are the ones that
+/// plant another writer's keys, since the verb hands no other writer in.
 ///
 /// This costs one `bd init`, the bd adapter's own scratch, on bd's embedded
 /// engine inside the verb's temp dir.
@@ -228,7 +228,9 @@ fn a_project_naming_no_store_is_checked_on_the_built_in_bd() {
         read.skip,
         [
             "another writer's keys: no other writer was handed to this run, so nothing plants \
-          another tool's keys"
+          another tool's keys",
+            "another writer's keys are listed as foreign: no other writer was handed to this \
+             run, so nothing plants another tool's keys"
         ],
         "{}",
         read.summary
