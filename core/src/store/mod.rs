@@ -428,6 +428,22 @@ pub fn open(at: &Opening) -> Result<Box<dyn Store>, StoreError> {
     }
 }
 
+/// The adapter `[store] adapter` names, as a line names it to a person: the
+/// built-in store's name where the key names nothing, and otherwise the file
+/// name of what it names, which for a bare name is that name.
+///
+/// A NAME AND NOT A CHECK: read beside a store [`open`] opened, which has
+/// already refused every value that is neither form.
+pub fn adapter_name(policy: &toml::Table) -> String {
+    match crate::policy::read("store", "adapter", policy) {
+        Ok(Some(toml::Value::String(named))) => Path::new(named)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| named.clone()),
+        _ => String::from(bd::NAME),
+    }
+}
+
 /// The refusal a `[store] adapter` answers that is neither form.
 fn neither_form(said: &str) -> StoreError {
     StoreError::Unreadable(format!(

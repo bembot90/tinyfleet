@@ -437,11 +437,11 @@ impl Store for NoScratch {
     }
 }
 
-/// bd names itself `bd`, and its version is the first line `bd --version`
-/// prints, trimmed — asked of the binary beside it, so the arm holds on
+/// bd names itself `bd`, and its version is a whole token of the first line
+/// `bd --version` prints — asked of the binary beside it, so the arm holds on
 /// whatever bd this box has.
 #[test]
-fn bds_version_is_the_first_line_it_prints() {
+fn bds_version_is_named_on_the_first_line_it_prints() {
     let scratch = shared_store("contract");
     let answered = Bd::at(&scratch.root).version().expect("bd's version reads");
     let printed = scratch.bd(&["--version"]);
@@ -454,7 +454,13 @@ fn bds_version_is_the_first_line_it_prints() {
         .to_string();
     assert!(!first.is_empty(), "bd --version prints a line");
     assert_eq!(answered.name, "bd");
-    assert_eq!(answered.version, first);
+    assert!(
+        first
+            .split_whitespace()
+            .any(|token| token.strip_prefix('v').unwrap_or(token) == answered.version),
+        "{:?} is a token of `{first}`",
+        answered.version
+    );
 }
 
 /// The JSON a call to the binary answered, opened out of its envelope where it

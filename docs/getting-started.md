@@ -66,7 +66,7 @@ doctor check measures the one you have installed against it.
 
 | Tool | Supported version | What measures it |
 | --- | --- | --- |
-| `bd` | 1.3.0 | the `bd-version` doctor check, and the second line of `fleet prime` |
+| `bd` | 1.3.0 | the `bd-version` doctor check |
 | Claude Code (`claude`) | 2.1.280 | the `claude-code-version` doctor check, and the controller's `substrate.moved` event |
 | Deno (`deno`) | 2.9.7, pinned by the `ts` pack | the `runtime-version` doctor check, which `fleet run` runs before it opens a run, and the `ts` pack's `deno-version` |
 | `git` | none: fleet pins no version | nothing |
@@ -332,25 +332,30 @@ before every shell command it runs the four guards in order: `shell-trap`,
 `record`, `release-ref` and `production-write`. See [Guards](guards.md).
 
 `fleet prime` names the fleet's installed packs and its guards on its first
-line, the `bd` it runs against the supported version on its second, then
-prints the resolved rules:
+line, the project's store on its second, then prints the resolved rules:
 
 ```sh
 $ fleet prime
 fleet 0.1.0 — packs: tiny, ts; guards: shell-trap on, record on, release-ref on, production-write on
-bd: 1.3.0, the pinned version
+store: bd 1.3.0 (adapter bd)
 Five things no verb guesses, each one a lesson somebody already paid for:
 ...
 ```
 
 It exits 0, always. With no pack installed, the first line says
-`packs: none installed`. On another `bd` the second line reads
-`bd: <version>, not the pinned 1.3.0 — the verbs still run, on answers fleet
-was not measured against; install the pinned bd 1.3.0 by beads' own
-instructions:` and the installation page from
-[Running a doctor check](#running-a-doctor-check). When `bd` does not answer,
-it reads `bd: could not be read — ` with the reason, then the same
-`install the pinned bd 1.3.0` pointer and page. Outside every fleet it
+`packs: none installed`. The second line names the store by the name and
+version it answers with, then the adapter that answered: `bd` for the
+built-in store, or the file name of the adapter the project's
+[`[store] adapter`](store.md#choosing-an-adapter) names. The project is the
+seat's worktree when the directory is one, and otherwise the nearest
+directory, at or above it, that holds a `fleet.toml` or a
+`.fleet/project.toml`. The line does not compare the version with the
+supported one; the `bd-version` doctor check does (see
+[Running a doctor check](#running-a-doctor-check)). When the store cannot be
+opened, or does not answer within two seconds, the line reads
+`store: could not be read — ` and the reason. The built-in store is read in
+the project's directory, so a project with no `bd` board gets that line too.
+With no project, it reads `store: none (no project here)`. Outside every fleet it
 prints one line, `fleet 0.1.0 — no fleet config found above <directory>`. When the directory
 is a seat's worktree, it also lists the items assigned to that seat.
 

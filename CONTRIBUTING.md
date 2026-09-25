@@ -44,12 +44,12 @@ Every commit on a release or hotfix branch is **one item, squashed**:
 
 ## Supported versions
 
-The releases of the tools fleet runs on that it supports are declared in one
-place, `core/src/supported.rs`:
+The releases of the tools fleet runs on that it supports are declared beside
+what they date:
 
 | Tool | Constant | Where it is declared | Checked by |
 | --- | --- | --- | --- |
-| bd | `PINNED_BD` | `core/src/store/bd/mod.rs`, the built-in store's adapter, and re-exported by `supported.rs` as `supported::PINNED_BD` beside `tracker_line` | `doctor/bd-version`, `fleet prime`'s second line |
+| bd | `PINNED_BD` | `core/src/store/bd/mod.rs`, the built-in store's adapter, beside every claim measured on it | `doctor/bd-version` |
 | Claude Code | `PINNED_CLAUDE_CODE` | `core/src/supported.rs` | `doctor/claude-code-version`, the controller's `substrate.moved` when a fleet pins none |
 
 Deno is a pack's, not the binary's: `packs/ts/pack.toml`'s `[runtime]` table,
@@ -61,8 +61,7 @@ measured by `doctor/runtime-version`. git carries no pin.
    (`PINNED=` or `SUPPORTED=`). The core suite fails until the two agree.
    The install pointers follow the copy: Claude Code's check names
    `claude install <version>` and the native installer at that version, and
-   bd's check and `fleet prime`'s second line link beads' installation page
-   at the pin's tag
+   bd's check links beads' installation page at the pin's tag
    (`github.com/gastownhall/beads/blob/v<pin>/docs/getting-started/installation.md`).
    For bd, confirm that page exists at the new tag before the move lands; no
    suite can.

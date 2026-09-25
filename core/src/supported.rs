@@ -2,31 +2,20 @@
 //! place: what each was measured against, and so what the defaults' doctor
 //! checks and the controller compare the installed one with.
 //!
-//! TWO ARE THE BINARY'S, and both are here. The built-in store's is its
-//! adapter's constant, re-exported below rather than copied, because every
-//! "measured on" claim it rests on sits in that file beside it. Claude Code's
-//! is declared here. The workflow runtime is NOT the binary's: a pack pins it
-//! in its own `[runtime]` table (the ts pack pins Deno), and the defaults'
-//! `runtime-version` check measures whichever pack declares one. git carries
-//! no pin at all.
+//! ONE IS DECLARED HERE, Claude Code's. The built-in store's pin is its
+//! adapter's own constant, in `store::bd`, and is not read through this
+//! module: every "measured on" claim it rests on sits in that file beside it,
+//! and what compares the installed store with it is the defaults'
+//! `bd-version` doctor check. The workflow runtime is NOT the binary's: a pack
+//! pins it in its own `[runtime]` table (the ts pack pins Deno), and the
+//! defaults' `runtime-version` check measures whichever pack declares one. git
+//! carries no pin at all.
 //!
-//! Another version is NAMED AND NOT REFUSED, for every tool here: the verbs and
-//! the controller still run on it, and what reports the spread says so beside
-//! how to install the supported release: Claude Code's own install command,
-//! and for the built-in store its own installation page at the pin's tag.
-
-/// The release of the built-in store's binary its adapter was measured
-/// against, and the one the defaults' version doctor check and `fleet
-/// prime`'s second line compare the installed one with. Declared in the
-/// built-in adapter, whose claims it dates; re-exported here, where every
-/// supported release is read.
-pub use crate::store::bd::PINNED_BD;
-
-/// `fleet prime`'s second line: the built-in store's binary a session's verbs
-/// reach, resolved on the search path handed in, against [`PINNED_BD`].
-/// Declared in the built-in adapter, beside the resolution it reads and the
-/// pin it compares with.
-pub use crate::store::bd::tracker_line;
+//! Another version is NAMED AND NOT REFUSED, for both pins: the verbs and the
+//! controller still run on it, and the doctor check that reports the spread
+//! says so beside how to install the supported release: Claude Code's own
+//! install command, and for the built-in store its own installation page at
+//! the pin's tag.
 
 /// The Claude Code release fleet supports: the one the defaults'
 /// `claude-code-version` doctor check compares `claude --version` with, and

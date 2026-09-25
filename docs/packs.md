@@ -261,7 +261,7 @@ the defaults:
 ```sh
 $ fleet prime
 fleet 0.1.0 — packs: tiny, ts; guards: shell-trap on, record on, release-ref on, production-write on
-bd: 1.3.0, the pinned version
+store: bd 1.3.0 (adapter bd)
 ...
 ```
 

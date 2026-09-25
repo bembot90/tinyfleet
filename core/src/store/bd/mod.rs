@@ -42,10 +42,9 @@ pub mod keys;
 pub const BD: &str = "bd";
 
 /// The bd release this fleet is measured against: every "measured on" claim in
-/// this file was taken on it, and the defaults' `bd-version` doctor check and
-/// `fleet prime`'s second line compare `bd version` with it. A bd at another
-/// version is named, pointed at beads' installation page for this one, and
-/// the verbs still run on it.
+/// this file was taken on it, and the defaults' `bd-version` doctor check
+/// compares `bd version` with it. A bd at another version is named, pointed at
+/// beads' installation page for this one, and the verbs still run on it.
 ///
 /// A pin move is THIS LINE PLUS THE RE-MEASURE: every claim here re-run on the
 /// new release and restated, or its code changed where the behaviour moved.
@@ -969,9 +968,15 @@ impl Store for Bd {
         })
     }
 
-    /// The first line of `bd --version`, trimmed — `bd version 1.3.0
-    /// (Homebrew)` on this box — as bd prints it: the version a person
-    /// installed is named the way bd names it, and nothing here parses it.
+    /// The version the first line of `bd --version` names — `1.3.0` of `bd
+    /// version 1.3.0 (Homebrew)`, measured on 1.3.0 — as the contract's
+    /// `version` is a version and not a sentence about one. A first line naming
+    /// none is answered whole, so a `bd` that printed something else is quoted
+    /// rather than read as a version.
+    ///
+    /// `-C` is asked of a directory with no `.beads` too, and bd refuses there
+    /// — measured on 1.3.0, exit 1, `no beads project found` — so a project
+    /// with no board answers this as it answers every other call.
     fn version(&self) -> Result<Version, StoreError> {
         let args = ["--version"];
         let out = self.answered(&args)?;
@@ -985,8 +990,8 @@ impl Store for Bd {
             )));
         }
         Ok(Version {
-            name: String::from("bd"),
-            version: first.to_string(),
+            name: String::from(NAME),
+            version: version_token(first).unwrap_or(first).to_string(),
         })
     }
 
@@ -1175,14 +1180,13 @@ fn resolve_on_path(path: &str, name: &str) -> Option<PathBuf> {
 }
 
 /// The bound on `bd version`, which reads no store and answered in 60ms on the
-/// box this was written on: a `bd` that hangs costs [`tracker_line`] and never
-/// more than this of a session start.
+/// box this was written on: a `bd` that hangs costs [`tracker_line`] no more
+/// than this.
 const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// `fleet prime`'s second line: the `bd` a session's verbs reach, resolved
-/// strictly on `search_path` as [`open`] resolves it, against [`PINNED_BD`] —
-/// the pin, another version with where to install the pin, or a `bd` that did
-/// not answer, which is this line's third answer as it is the item line's.
+/// The `bd` a session's verbs reach, resolved strictly on `search_path` as
+/// [`open`] resolves it, against [`PINNED_BD`], as one line: the pin, another
+/// version with where to install the pin, or a `bd` that did not answer.
 pub fn tracker_line(search_path: &str) -> String {
     let first = resolve(search_path, true)
         .map_err(|why| why.to_string())
@@ -1229,12 +1233,18 @@ fn carries_pin(first: &str) -> bool {
 /// whole line where none does, so a `bd` that answered something else is
 /// quoted rather than read as a version.
 fn named_version(first: &str) -> String {
+    version_token(first)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("`{first}`"))
+}
+
+/// The first token of a line that opens on a digit, bare of a leading `v` —
+/// where bd prints its own version, on every release this was read on.
+fn version_token(first: &str) -> Option<&str> {
     first
         .split_whitespace()
         .map(|token| token.strip_prefix('v').unwrap_or(token))
         .find(|token| token.starts_with(|c: char| c.is_ascii_digit()))
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("`{first}`"))
 }
 
 /// Where to install the pinned release: beads' own installation page, read at

@@ -1059,22 +1059,34 @@ fn a_create_names_its_priority_only_where_the_item_does() {
     );
 }
 
-/// The version is `bd`, at the FIRST line `bd --version` prints, trimmed.
+/// The version is `bd`, at the version the FIRST line `bd --version` prints
+/// names: its first token opening on a digit, bare of a leading `v`. A line
+/// naming none is answered whole and trimmed, so what bd said is still read.
 #[test]
-fn the_version_is_the_first_line_bd_prints_trimmed() {
+fn the_version_is_the_one_bd_s_first_line_names() {
     let _guard = path_lock();
-    let dir = Fixture::new("store-version");
-    let log = dir.path("argv");
-    let bin = argv_bd(&dir, &log, "  bd version 9.9.9 (a stub)  ");
-    let root = dir.path("project");
-    std::fs::create_dir_all(&root).expect("the project root is created");
+    for (label, printed, version) in [
+        ("store-version", "  bd version 9.9.9 (a stub)  ", "9.9.9"),
+        ("store-version-v", "bd version v2.0.1", "2.0.1"),
+        (
+            "store-version-none",
+            "  not a version at all  ",
+            "not a version at all",
+        ),
+    ] {
+        let dir = Fixture::new(label);
+        let log = dir.path("argv");
+        let bin = argv_bd(&dir, &log, printed);
+        let root = dir.path("project");
+        std::fs::create_dir_all(&root).expect("the project root is created");
 
-    let answered = Bd::at_bin(&root, &bin)
-        .version()
-        .expect("the version reads");
-    assert_eq!(answered.name, "bd");
-    assert_eq!(answered.version, "bd version 9.9.9 (a stub)");
-    assert_eq!(argvs(&log, &root), ["[--version]"]);
+        let answered = Bd::at_bin(&root, &bin)
+            .version()
+            .expect("the version reads");
+        assert_eq!(answered.name, "bd", "{label}");
+        assert_eq!(answered.version, version, "{label}");
+        assert_eq!(argvs(&log, &root), ["[--version]"], "{label}");
+    }
 }
 
 /// A `show` row in the shape bd 1.3.0 answers, holding one dependency on an

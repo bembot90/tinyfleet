@@ -3,13 +3,14 @@
 //! THE EXIT IS ALWAYS DONE AND NOTHING IS READ FROM STDIN. A session-start hook
 //! that fails closed takes the session down with it, so every branch here ends
 //! on a line rather than on a status: a layering this fleet cannot resolve, a
-//! rules file that is not there and a tracker that will not answer each say so
+//! rules file that is not there and a store that will not answer each say so
 //! in their own words and the next part still prints.
 //!
-//! Line 2 is the tracker's version against the one the store was measured on
-//! (`supported::PINNED_BD`), as the store's adapter reads it. Another version
-//! is NAMED AND NOT REFUSED: the verbs still run on it, and the line says so
-//! beside where the tracker's own project says to install the pin.
+//! Line 2 is the project's store as it names itself: its answer to the
+//! contract's `version`, through the opener every verb takes, and the adapter
+//! that gave it. It COMPARES WITH NO PIN. Which release a store was measured
+//! on is its doctor check's to say, and the doctor is what `fleet run` and a
+//! person consult for it.
 
 use fleet_controller::{config, platform};
 use fleet_core::add;
@@ -18,8 +19,8 @@ use fleet_core::guard;
 use fleet_core::lock;
 use fleet_core::resolve::{self, Layer};
 use fleet_core::seat::identity::SeatId;
+use fleet_core::store::types::Version;
 use fleet_core::store::{self, Filter, Opening, Status};
-use fleet_core::supported;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -28,6 +29,11 @@ use crate::exit::Exit;
 /// The bound on the item listing. Well under a hook's own deadline: a store
 /// that will not answer costs the line and never the session start.
 const ITEMS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The bound on line 2's `version` call, which reads no items: the built-in
+/// store's own bound on the same question is this too, and a store that will
+/// not answer it costs the line and never the session start.
+const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The rules file, as a path under a pack's `assets` slot.
 const RULES: &str = "assets/rules.md";
@@ -42,8 +48,9 @@ pub fn command() -> Exit {
     // about one file: an embedded fleet's own, and — for a declared project,
     // which wins at its own level — the FLEET's, named by the machine
     // directory.
-    let fleet_toml = match crate::walk_up_config(&cwd) {
-        Some(crate::Found::Embedded(path)) => Some(path),
+    let found = crate::walk_up_config(&cwd);
+    let fleet_toml = match &found {
+        Some(crate::Found::Embedded(path)) => Some(path.clone()),
         Some(crate::Found::Declared(_)) | None => machine.as_ref().map(|m| m.fleet_toml.clone()),
     };
 
@@ -62,10 +69,16 @@ pub fn command() -> Exit {
         packs_of(&layering, &machine_dir.join(lock::LOCK)),
         guards_of(&policy),
     );
-    println!(
-        "{}",
-        supported::tracker_line(&platform::child_path(&platform::home_dir()))
+    // The items are held under the seat's full id, which is what every
+    // dispatch assigns: a name moves, and the record is keyed by the seat.
+    let seat = machine
+        .as_ref()
+        .and_then(|machine| seat_here(machine, &cwd));
+    let project = project_root(
+        seat.as_ref().map(|(_, root)| root.as_path()),
+        found.as_ref(),
     );
+    println!("{}", store_line(project.as_deref()));
 
     if let Some(rules) = rules_of(&layering) {
         print!("{rules}");
@@ -74,12 +87,8 @@ pub fn command() -> Exit {
         }
     }
 
-    if let Some(machine) = machine {
-        // The items are held under the seat's full id, which is what every
-        // dispatch assigns: a name moves, and the record is keyed by the seat.
-        if let Some((seat, project_root)) = seat_here(&machine, &cwd) {
-            print_items(&project_root, &seat.id);
-        }
+    if let Some((seat, project_root)) = seat {
+        print_items(&project_root, &seat.id);
     }
 
     Exit::Done
@@ -193,6 +202,55 @@ fn first_refusal(refusals: &[resolve::Refusal]) -> String {
         .first()
         .map(|r| r.to_string())
         .unwrap_or_else(|| "the layering refused without saying why".to_string())
+}
+
+/// The project line 2 reads the store of: the seat's worktree where a row
+/// names this directory, which is the root the item line reads, so the two
+/// lines name one store; else the directory the walk found the project's own
+/// file in.
+fn project_root(seat_root: Option<&Path>, found: Option<&crate::Found>) -> Option<PathBuf> {
+    if let Some(root) = seat_root {
+        return Some(root.to_path_buf());
+    }
+    match found? {
+        crate::Found::Embedded(file) => file.parent(),
+        crate::Found::Declared(file) => file.parent().and_then(Path::parent),
+    }
+    .map(Path::to_path_buf)
+}
+
+/// Line 2: the store's name and version and the adapter that answered them, or
+/// why they could not be read, or that there is no project here to have one.
+fn store_line(project_root: Option<&Path>) -> String {
+    let Some(root) = project_root else {
+        return String::from("store: none (no project here)");
+    };
+    match store_version(root) {
+        Ok((version, adapter)) => format!(
+            "store: {} {} (adapter {adapter})",
+            version.name, version.version
+        ),
+        Err(why) => format!("store: could not be read — {why}"),
+    }
+}
+
+/// The store the project's own file names, asked its version through the
+/// opener every verb takes, and the adapter's name. NOT STRICT, as the verbs
+/// are not: the line names the store a verb run here writes to, so a binary
+/// the constructed child PATH does not resolve is the bare name, and that
+/// name's refusal is the line's answer.
+fn store_version(root: &Path) -> Result<(Version, String), String> {
+    let policy = store::project_policy(root).map_err(|why| why.to_string())?;
+    let store = store::open(&Opening {
+        root,
+        policy: &policy,
+        search_path: &platform::child_path(&platform::home_dir()),
+        strict: false,
+        timeout: VERSION_TIMEOUT,
+    })
+    .map_err(|why| why.to_string())?;
+    let version = store.version().map_err(|why| why.to_string())?;
+    Ok((version, store::adapter_name(&policy)))
 }
 
 /// The seat whose row names this directory as a worktree, and that worktree.

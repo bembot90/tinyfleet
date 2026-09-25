@@ -742,9 +742,9 @@ fn line_one(out: &Output) -> String {
         .to_string()
 }
 
-/// Line 1, line 2 and what follows them. Line 2 is the tracker's version, read
-/// off whichever `bd` the arm resolves — the box's own where it sets no seam —
-/// so an arm about what follows it asserts its shape and not its words.
+/// Line 1, line 2 and what follows them, for an arm run from a directory no
+/// project claims: its line 2 is the store's third answer, and no store is
+/// asked anything.
 fn past_line_two(text: &str) -> (&str, &str, &str) {
     let (first, rest) = text
         .split_once('\n')
@@ -752,9 +752,9 @@ fn past_line_two(text: &str) -> (&str, &str, &str) {
     let (second, rest) = rest
         .split_once('\n')
         .expect("prime printed more than two lines");
-    assert!(
-        second.starts_with("bd: "),
-        "line 2 is the tracker's: {text}"
+    assert_eq!(
+        second, "store: none (no project here)",
+        "line 2 is the store's: {text}"
     );
     (first, second, rest)
 }
@@ -1323,8 +1323,8 @@ fn a_listing_that_cannot_be_read_is_its_own_answer() {
 /// A tracker that never answers costs the item line and nothing else: prime
 /// prints its third answer inside the listing's five-second bound, names that
 /// bound, and still exits 0 — a session-start hook that waited on a hung store
-/// would hold the session with it. The stub answers line 2's `version` at once,
-/// so the bound measured is the listing's alone.
+/// would hold the session with it. The stub answers line 2's `--version` at
+/// once, so the bound measured is the listing's alone.
 #[test]
 fn a_listing_that_never_answers_is_its_own_answer_inside_the_bound() {
     let s = Scratch::new("items-hung");
@@ -1338,10 +1338,7 @@ fn a_listing_that_never_answers_is_its_own_answer_inside_the_bound() {
     s.write("fleet-dir/config.json", &config_json(&fleet_toml, &row));
     let stub = s.script(
         "bd",
-        &format!(
-            "#!/bin/sh\n[ \"$1\" = version ] && {{ echo 'bd version {}'; exit 0; }}\nsleep 30\n",
-            fleet_core::store::bd::PINNED_BD
-        ),
+        "#!/bin/sh\n[ \"$3\" = --version ] && { echo 'bd version 1.3.0'; exit 0; }\nsleep 30\n",
     );
 
     let started = std::time::Instant::now();
@@ -1362,9 +1359,9 @@ fn a_listing_that_never_answers_is_its_own_answer_inside_the_bound() {
     );
 }
 
-/// A seat's rig whose tracker answers `version` with `version` and every other
-/// call with one open item, so an arm reads line 2 and the item line off one
-/// prime.
+/// A seat's rig whose tracker answers `--version` with `version` and every
+/// other call with one open item, so an arm reads line 2 and the item line off
+/// one prime.
 fn tracker_rig(label: &str, version: &str) -> (Scratch, PathBuf, PathBuf, PathBuf) {
     let s = Scratch::new(label);
     let cwd = s.dir("cwd");
@@ -1378,54 +1375,39 @@ fn tracker_rig(label: &str, version: &str) -> (Scratch, PathBuf, PathBuf, PathBu
     let stub = s.script(
         "bd",
         &format!(
-            "#!/bin/sh\n[ \"$1\" = version ] && {{ {version}; exit 0; }}\ncat <<'JSON'\n[\
+            "#!/bin/sh\n[ \"$3\" = --version ] && {{ {version}; exit 0; }}\ncat <<'JSON'\n[\
              {{\"id\": \"x-1\", \"title\": \"the open one\", \"status\": \"open\"}}]\nJSON\n"
         ),
     );
     (s, cwd, fleet_dir, stub)
 }
 
-/// Where to install the pin, as line 2 prints it: beads' own installation
-/// page at the pin's tag, naming the pinned version. The doctor check points
-/// at the same page.
-fn install_pointer() -> String {
-    let pin = fleet_core::store::bd::PINNED_BD;
-    format!(
-        "install the pinned bd {pin} by beads' own instructions: \
-         https://github.com/gastownhall/beads/blob/v{pin}/docs/getting-started/installation.md"
-    )
-}
-
-/// fleet-reb: line 2 is the tracker's version against `store::bd::PINNED_BD`. The
-/// pin reads as itself; another version is NAMED with where to install the
-/// pin, and the item line still prints beneath it, because the verbs still
-/// run on it. The mismatch arm is what makes the match arm worth anything: a
-/// line that called any answer the pin would pass the first alone.
+/// fleet-wpf0.3: line 2 is the store's own answer to the contract's `version`
+/// and the adapter that gave it, read off the seat's worktree, the root the
+/// item line reads. It COMPARES WITH NO PIN: a bd at another release reads the
+/// same way as one at the pin, with no pointer and no verdict, and the item
+/// line still prints beneath it. The version is the one bd's first line names,
+/// not the sentence it names it in.
 #[test]
-fn line_two_names_the_tracker_s_version_against_the_pin() {
-    let pin = fleet_core::store::bd::PINNED_BD;
+fn line_two_is_the_store_s_own_version_and_its_adapter() {
     for (label, version, line) in [
         (
-            "bd-pinned",
-            format!("echo 'bd version {pin} (Homebrew)'"),
-            format!("bd: {pin}, the pinned version"),
+            "store-at-one",
+            "echo 'bd version 1.3.0 (Homebrew)'",
+            "store: bd 1.3.0 (adapter bd)",
         ),
         (
-            "bd-other",
-            String::from("echo 'bd version 1.2.2 (Homebrew)'"),
-            format!(
-                "bd: 1.2.2, not the pinned {pin} — the verbs still run, on answers fleet was not \
-                 measured against; {}",
-                install_pointer()
-            ),
+            "store-at-another",
+            "echo 'bd version 1.2.2 (Homebrew)'",
+            "store: bd 1.2.2 (adapter bd)",
         ),
     ] {
-        let (_s, cwd, fleet_dir, stub) = tracker_rig(label, &version);
+        let (_s, cwd, fleet_dir, stub) = tracker_rig(label, version);
         let out = prime(&cwd, &fleet_dir, &[("FLEET_BD_BIN", &text_of(&stub))]);
         assert_eq!(out.status.code(), Some(0), "prime always exits 0");
         let text = utf8(out.stdout);
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.get(1), Some(&line.as_str()), "{label}: {text}");
+        assert_eq!(lines.get(1), Some(&line), "{label}: {text}");
         assert!(
             lines.contains(&"item: x-1 — the open one"),
             "{label}: the item line still prints: {text}"
@@ -1433,57 +1415,123 @@ fn line_two_names_the_tracker_s_version_against_the_pin() {
     }
 }
 
-/// A tracker nothing resolves, and one that never answers its version, are
-/// line 2's third answer — each naming why and where to install the pin —
-/// and cost nothing else: the hung one is cut at line 2's own two-second
-/// bound, and the item line after it still prints.
-#[test]
-fn a_tracker_that_does_not_answer_its_version_is_line_two_s_own_answer() {
-    let (s, cwd, fleet_dir, _) = tracker_rig("bd-absent", "true");
-    let absent = s.root.join("no-such-dir/bd");
-    let out = prime(&cwd, &fleet_dir, &[("FLEET_BD_BIN", &text_of(&absent))]);
-    assert_eq!(out.status.code(), Some(0), "prime always exits 0");
-    let text = utf8(out.stdout);
-    assert_eq!(
-        text.lines().nth(1),
-        Some(
-            format!(
-                "bd: could not be read — the item-tracker seam names `{}`, which is not an \
-                 executable file; {}",
-                text_of(&absent),
-                install_pointer()
-            )
-            .as_str()
-        ),
-        "{text}"
-    );
+/// The contract's stub adapter, at an absolute path whose file name is
+/// `fleet-store-stub`: it answers `version` as `stub` at `0`, and every other
+/// verb as a usage row.
+fn stub_adapter(s: &Scratch, relative: &str) -> PathBuf {
+    s.script(
+        relative,
+        "#!/bin/sh\ncat > /dev/null\n[ \"$1\" = version ] && \
+         { echo '{\"schema_version\":1,\"name\":\"stub\",\"version\":\"0\"}'; exit 0; }\nexit 2\n",
+    )
+}
 
-    let (_s, cwd, fleet_dir, stub) = tracker_rig("bd-hung", "sleep 30");
-    let started = std::time::Instant::now();
-    let out = prime(&cwd, &fleet_dir, &[("FLEET_BD_BIN", &text_of(&stub))]);
-    let took = started.elapsed();
-    assert_eq!(out.status.code(), Some(0), "prime still exits 0");
-    let text = utf8(out.stdout);
-    assert_eq!(
-        text.lines().nth(1),
-        Some(
+/// `[store] adapter = <path>` as a project's own file carries it.
+fn naming_adapter(adapter: &str) -> String {
+    format!(
+        "[store]\nadapter = {}\n",
+        serde_json::Value::String(adapter.to_string())
+    )
+}
+
+/// fleet-wpf0.3: an adapter the project's own file names answers line 2
+/// through the contract — its `version`, and the adapter by the file name of
+/// its path. Both files a project names its store in are read, an embedded
+/// fleet's `fleet.toml` and a standalone project's `.fleet/project.toml`, from
+/// a directory under the project the walk finds it from, and no seat row is
+/// needed for it: line 2 is the project's, and the item line the seat's.
+#[test]
+fn line_two_reads_the_adapter_the_project_names() {
+    for (label, file) in [
+        ("adapter-embedded", "fleet.toml"),
+        ("adapter-declared", ".fleet/project.toml"),
+    ] {
+        let s = Scratch::new(label);
+        let under = s.dir("project/src");
+        let fleet_dir = s.dir("fleet-dir");
+        let fleet_toml = s.write("fleet-root/fleet.toml", "");
+        s.write("fleet-dir/config.json", &config_json(&fleet_toml, ""));
+        let adapter = stub_adapter(&s, "adapters/fleet-store-stub");
+        s.write(
+            &format!("project/{file}"),
+            &naming_adapter(&text_of(&adapter)),
+        );
+
+        let out = prime(&under, &fleet_dir, &[]);
+        assert_eq!(out.status.code(), Some(0), "prime always exits 0");
+        let text = utf8(out.stdout);
+        assert_eq!(
+            text.lines().nth(1),
+            Some("store: stub 0 (adapter fleet-store-stub)"),
+            "{label}: {text}"
+        );
+        assert!(
+            !text.contains("item:"),
+            "{label}: no row names this directory: {text}"
+        );
+    }
+}
+
+/// fleet-wpf0.3: a store that cannot be opened, or will not answer, is line
+/// 2's own answer, and costs nothing else: prime exits 0 and the rules still
+/// follow. An adapter path that is not executable and a bare name that is
+/// neither form are refused by the opener before anything runs; an adapter
+/// that never answers `version` is cut at line 2's two-second bound.
+#[test]
+fn a_store_that_cannot_be_read_is_line_two_s_own_answer() {
+    let adapters = Scratch::new("adapter-inert");
+    let inert = adapters.write("fleet-store-stub", "#!/bin/sh\nexit 0\n");
+    let hung = adapters.script("hung", "#!/bin/sh\nsleep 30\n");
+    for (label, named, line) in [
+        (
+            "not-executable",
+            text_of(&inert),
             format!(
-                "bd: could not be read — `{} version` did not answer within 2s; {}",
-                text_of(&stub),
-                install_pointer()
-            )
-            .as_str()
+                "store: could not be read — [store] adapter names `{}`, which is not an \
+                 executable file",
+                text_of(&inert)
+            ),
         ),
-        "{text}"
-    );
-    assert!(
-        text.lines().any(|l| l == "item: x-1 — the open one"),
-        "the item line still prints: {text}"
-    );
-    assert!(
-        took < std::time::Duration::from_secs(4),
-        "prime answered about two seconds in, not when the tracker gave up: {took:?}"
-    );
+        (
+            "neither-form",
+            String::from("sqlite"),
+            String::from(
+                "store: could not be read — [store] adapter is `sqlite` — it is \"bd\" or an \
+                 absolute path to an adapter executable",
+            ),
+        ),
+        (
+            "never-answers",
+            text_of(&hung),
+            format!(
+                "store: could not be read — {} version did not answer within 2s",
+                text_of(&hung)
+            ),
+        ),
+    ] {
+        let s = Scratch::new(&format!("adapter-{label}"));
+        s.shipped_defaults();
+        let project = s.dir("project");
+        let fleet_dir = s.dir("fleet-dir");
+        s.write("project/fleet.toml", &naming_adapter(&named));
+
+        let started = std::time::Instant::now();
+        let out = prime(&project, &fleet_dir, &[]);
+        let took = started.elapsed();
+        assert_eq!(out.status.code(), Some(0), "{label}: prime always exits 0");
+        let text = utf8(out.stdout);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.get(1), Some(&line.as_str()), "{label}: {text}");
+        assert!(
+            lines.len() > 2,
+            "{label}: the rules still follow line 2: {text}"
+        );
+        assert!(
+            took < std::time::Duration::from_secs(4),
+            "{label}: prime answered inside line 2's bound, not when the store gave up: \
+             {took:?}"
+        );
+    }
 }
 
 /// `store::bd::resolve`'s DEFAULT branch: with no `FLEET_BD_BIN`, the tracker
@@ -1635,9 +1683,10 @@ fn with_no_seam_the_tracker_comes_off_the_constructed_child_path() {
 /// nothing, so the weakest reading is the one taken).
 ///
 /// The tracker stub would answer with one item, and its argv file — holding
-/// the LAST call it was handed — is the witness that it was asked its version
-/// for line 2 and never for a listing. The same fixture run from the root is
-/// the control: there the item line appears and the listing is the last call.
+/// the LAST call it was handed — is the witness that it was asked nothing: no
+/// row names the subdirectory and no project file sits above it, so line 2
+/// has no store to ask either. The same fixture run from the root is the
+/// control: there the item line appears and the listing is the last call.
 #[test]
 fn a_session_under_a_seat_s_worktree_gets_no_item_line() {
     let s = Scratch::new("items-descendant");
@@ -1672,11 +1721,14 @@ fn a_session_under_a_seat_s_worktree_gets_no_item_line() {
         items.len()
     );
     assert_eq!(
-        std::fs::read_to_string(&argv)
-            .expect("the stub recorded line 2's call")
-            .trim(),
-        "version",
-        "the tracker was asked its version and never for a listing"
+        text.lines().nth(1),
+        Some("store: none (no project here)"),
+        "{text}"
+    );
+    assert!(
+        !argv.exists(),
+        "the tracker was asked nothing, and it recorded: {}",
+        std::fs::read_to_string(&argv).unwrap_or_default()
     );
 
     let out = prime(&root, &fleet_dir, &[("FLEET_BD_BIN", &text_of(&stub))]);
