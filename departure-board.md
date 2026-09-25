@@ -95,8 +95,8 @@ dependencies are the real blockers.
 
 | Bead | What | Blocked by | Landed |
 | --- | --- | --- | --- |
-| fleet-0q4.1 | Store contract types in core: ids, Status, Order, OrderState, Item, ItemSummary, Filter, Update, Capabilities and the… | fleet-iex.1, fleet-zlk.1 | ☐ |
-| fleet-0q4.2 | docs/store.md: the store contract an adapter implements | fleet-0q4.1 | ☐ |
+| fleet-0q4.1 | Store contract types in core: ids, Status, Order, OrderState, Item, ItemSummary, Filter, Update, Capabilities and the… | fleet-iex.1, fleet-zlk.1 | ☑ |
+| fleet-0q4.2 | docs/store.md: the store contract an adapter implements | fleet-0q4.1 | ☑ |
 | fleet-0q4.3 | The bd adapter becomes its own module, and land reads the export file and the store's directory from the adapter | fleet-0q4.1 | ☐ |
 | fleet-0q4.4 | Item speaks the contract's domain types: Status, OrderState, ItemId, RunRecord and a read proof in place of document | fleet-0q4.3, fleet-iex.12, fleet-zlk.17 | ☐ |
 | fleet-0q4.5 | The store's reads become resolve and list(filter); ready, open_labelled and assigned_to go | fleet-0q4.4 | ☐ |
@@ -108,7 +108,7 @@ dependencies are the real blockers.
 | fleet-0q4.11 | fleet store check [--adapter <path>]: the conformance suite against an adapter on a scratch store it makes | fleet-0q4.10, fleet-0q4.8 | ☐ |
 | fleet-0q4.12 | Repair lines print a fleet command, not a bd one, and core names bd only inside the adapter | fleet-0q4.7, fleet-zlk.4 | ☐ |
 | fleet-0q4.13 | Routines file items through the store, fleet create reads the item prefix from the adapter, and no file outside the a… | fleet-0q4.10, fleet-0q4.12, fleet-iex.9 | ☐ |
-| fleet-0ml | Adopt an existing board: a doctor check that reads the board through fleet, and a mapping skill | fleet-2u3.1, fleet-zlk.4 | ☐ |
+| fleet-0ml | Adopt an existing board: a doctor check that reads the board through fleet, and a mapping skill | fleet-2u3.1, fleet-zlk.4 | ☑ |
 
 ## The walkthrough
 
