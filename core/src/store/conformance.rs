@@ -554,9 +554,10 @@ fn unreadable_is_could_not_tell(ctx: &Ctx) -> Answer {
     Ok(Passed::Pass)
 }
 
-/// A new item is ready, as one row carrying its title, status, type, own labels
-/// and order; a hold takes it out, the hold's clear brings it back and a close
-/// takes it out again.
+/// A new item is ready, as one row carrying its title, status, type, own
+/// labels, order, nobody holding it and no run's record — and the record once
+/// one is written, off the row and not a second read; a hold takes it out,
+/// the hold's clear brings it back and a close takes it out again.
 fn ready(ctx: &Ctx) -> Answer {
     let id = filed(ctx, "an item the ready set answers", &[])?;
     let row = row_in(ctx, &Filter::Ready, &id)?
@@ -574,6 +575,22 @@ fn ready(ctx: &Ctx) -> Answer {
         &vec![String::from(LABEL)],
     )?;
     same("the ready row's order", &row.order, &OrderState::None)?;
+    same(
+        "the ready row's assignee, of an item nobody has assigned",
+        &row.assignee,
+        &None,
+    )?;
+    same("the ready row's run record", &row.run, &None)?;
+
+    let record = a_record("h1", "greet")?;
+    recorded(ctx, &id, &record)?;
+    let row = row_in(ctx, &Filter::Ready, &id)?
+        .ok_or_else(|| format!("{id} is not in the ready set once a run's record is on it"))?;
+    same(
+        "the ready row's run record once run.set wrote one",
+        &row.run,
+        &Some(record),
+    )?;
 
     let hold = answered(
         &format!("hold.raise on {id}"),
@@ -616,9 +633,9 @@ fn label_filter(ctx: &Ctx) -> Answer {
     Ok(Passed::Pass)
 }
 
-/// An item assigned to a seat is in that seat's listing, and still is once it
-/// is closed, reading closed: a seat's listing is of every item it holds,
-/// whatever its status.
+/// An item assigned to a seat is in that seat's listing, its row naming the
+/// seat, and still is once it is closed, reading closed: a seat's listing is
+/// of every item it holds, whatever its status.
 ///
 /// The close is by the seat itself, because a store may close an assigned
 /// item only for its assignee — the built-in store at its pinned release
@@ -636,6 +653,11 @@ fn assignee_filter(ctx: &Ctx) -> Answer {
         &format!("the items list Assignee({seat}) answers"),
         &ids(&rows),
         &vec![id.to_string()],
+    )?;
+    same(
+        &format!("the assignee on {id}'s row in its seat's listing"),
+        &rows[0].assignee,
+        &Some(seat),
     )?;
     closed(ctx, &id, "closed by its holder", &Actor::seat(seat))?;
     let row = row_in(ctx, &Filter::Assignee(seat), &id)?

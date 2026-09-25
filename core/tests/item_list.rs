@@ -242,15 +242,15 @@ fn a_row_carries_the_fields_the_run_record_and_the_boards_own_keys_by_name() {
     );
     assert_eq!(render(&[]), "(no items)");
 
-    // The assignee is no listing's field: it is read off the item.
+    // The assignee is the listing's own field, off the seat's listing.
     let held = list(&store, &filter(false, None, Some(HOLDER))).expect("the seat's items");
     let held = fleet_core::item::list::document(&held);
     assert_eq!(held["items"][0]["assignee"], HOLDER, "{held}");
     assert_eq!(held["items"][0]["status"], "in_progress", "{held}");
 }
 
-/// A `fleet.run` this binary does not read is no row: it refuses the read of
-/// its item, and so the list, naming the item and the version it carries —
+/// A `fleet.run` this binary does not read is no row: it refuses the listing
+/// it is in, and so the list, naming the item and the version it carries —
 /// never a row that reads as though the item carried no run.
 #[test]
 fn a_run_record_this_fleet_does_not_read_refuses_the_list() {

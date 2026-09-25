@@ -342,6 +342,56 @@ fn a_seat_listing_lifts_the_row_cap() {
     );
 }
 
+/// `item list` asks the store once per filter it names and never once per
+/// row: three filters are three listings and no `show`, and each row carries
+/// its holder and its run's record off the listing's own answer. The argv is
+/// the proof, because a read per row answers the same rows, at a cost only a
+/// board of a hundred items shows.
+#[test]
+fn item_list_is_one_bd_call_per_filter_and_none_per_row() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-list-calls");
+    let log = dir.path("argv");
+    let rows = format!(
+        r#"[{{"id": "fx-1", "title": "a run", "status": "open", "issue_type": "task", "assignee": "{SEAT}", "labels": ["fleet:run"], "metadata": {{"fleet.run": {{"v": 1, "hash": "h1", "workflow": "greet", "pack": "ts", "entry": "greet.ts", "started_at": "2026-09-24T10:00:00Z"}}}}}}, {{"id": "fx-2", "title": "another", "status": "open", "issue_type": "task", "assignee": "{SEAT}", "labels": ["fleet:run"]}}]"#
+    );
+    let bin = argv_bd(&dir, &log, &rows);
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+    let store = Bd::at_bin(&root, &bin);
+    let seat = SeatId::parse(SEAT).expect("the seat's id parses");
+
+    let listed = fleet_core::item::list::list(
+        &store,
+        &fleet_core::item::list::Filter {
+            ready: true,
+            label: Some(String::from("fleet:run")),
+            assignee: Some(String::from(SEAT)),
+        },
+    )
+    .expect("the listings answer");
+
+    assert_eq!(
+        argvs(&log, &root),
+        [
+            String::from("[ready][--json][-n][0]"),
+            String::from("[list][--label][fleet:run][--status][open][--json][-n][0]"),
+            format!("[list][-a][{SEAT}][--all][--json][-n][0]"),
+        ],
+        "one listing per filter, and no read per row"
+    );
+    assert_eq!(
+        listed.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+        ["fx-1", "fx-2"]
+    );
+    assert!(listed.iter().all(|row| row.assignee == Some(seat)));
+    assert_eq!(
+        listed[0].run.as_ref().map(|run| run.hash.as_str()),
+        Some("h1")
+    );
+    assert_eq!(listed[1].run, None);
+}
+
 /// A `bd` that answers each verb from `answers/<key>.json` under `dir` — the
 /// key is `show-<id>`, `gate-<sub>` or the verb itself — and records, one line
 /// per call, what `BD_JSON_ENVELOPE` it was handed. Where `<key>.err` is

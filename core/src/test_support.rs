@@ -16,8 +16,7 @@ use crate::entry::{self, Body, Entry};
 use crate::seat::actor::Actor;
 use crate::seat::identity::SeatId;
 use crate::store::bd::{
-    foreign_of, item_from, keys, opened, order_metadata, order_of, run_metadata, shown,
-    SCHEMA_VERSION,
+    item_from, keys, opened, order_metadata, run_metadata, shown, summary_from, SCHEMA_VERSION,
 };
 use crate::store::types::{Capabilities, ExportSpec, Vocabulary};
 use crate::store::{
@@ -354,35 +353,31 @@ impl FakeStore {
             .collect()
     }
 
-    /// One stored item as a listing's row answers it, its order and another
-    /// writer's keys read off the METADATA this store would answer a read
-    /// with, and not off the seeded fields, by the readings the real
-    /// listing's rows take — so a row whose index a write has removed answers
-    /// here as the real listing does.
-    fn summary(&self, item: &Item) -> ItemSummary {
-        let metadata = serde_json::Value::Object(self.metadata_of(item));
-        ItemSummary {
-            id: item.id.clone(),
-            title: item.title.clone(),
-            status: item.status.clone(),
-            item_type: item.item_type.clone(),
-            labels: item.labels.clone(),
-            order: order_of(Some(&metadata)),
-            foreign: foreign_of(Some(&metadata)),
-        }
+    /// One stored item as a listing's row answers it: the item's row in bd's
+    /// own shape, its order, its run's record and another writer's keys off
+    /// the METADATA this store would answer a read with and not off the
+    /// seeded fields, read by the reader the real listing's rows take — so a
+    /// row whose index a write has removed answers here as the real listing
+    /// does, and a record or a holder the real listing refuses refuses this
+    /// one.
+    fn summary(&self, item: &Item) -> Result<ItemSummary, StoreError> {
+        let row = row_of(item, &self.metadata_of(item), None);
+        summary_from(&row)?.ok_or_else(|| {
+            StoreError::Unreadable(format!("{} answered a row naming no id", item.id))
+        })
     }
 
     /// Each id as the summary of the item stored under it, and an id-only
     /// summary where nothing is: a seeded id names no item of its own.
-    fn summaries(&self, ids: Vec<String>) -> Vec<ItemSummary> {
+    fn summaries(&self, ids: Vec<String>) -> Result<Vec<ItemSummary>, StoreError> {
         let items = self.items.lock().expect("the items are not poisoned");
         ids.into_iter()
             .map(|id| match items.get(&id) {
                 Some(item) => self.summary(item),
-                None => ItemSummary {
+                None => Ok(ItemSummary {
                     id: ItemId::from(id),
                     ..ItemSummary::default()
-                },
+                }),
             })
             .collect()
     }
@@ -432,7 +427,7 @@ impl FakeStore {
 
     /// The seeded rows for the seat, plus every item this store holds assigned
     /// to it, under the seat's full id.
-    fn assigned(&self, seat: &SeatId) -> Vec<ItemSummary> {
+    fn assigned(&self, seat: &SeatId) -> Result<Vec<ItemSummary>, StoreError> {
         let mut rows = self
             .held
             .get(&seat.to_string())
@@ -446,10 +441,10 @@ impl FakeStore {
         {
             let mine = item.assignee == Some(*seat);
             if mine && !rows.iter().any(|row| row.id == item.id) {
-                rows.push(self.summary(item));
+                rows.push(self.summary(item)?);
             }
         }
-        rows
+        Ok(rows)
     }
 
     /// The answer `bd show --json` gives under the envelope — the row as an
@@ -657,11 +652,11 @@ impl Store for FakeStore {
         if let Some(refused) = self.refuse() {
             return refused;
         }
-        Ok(match filter {
+        match filter {
             Filter::Ready => self.summaries(self.ready_ids()),
             Filter::Label(label) => self.summaries(self.labelled_ids(label)),
             Filter::Assignee(seat) => self.assigned(seat),
-        })
+        }
     }
 
     /// The id `show` would answer, resolved by the same [`named`] and read

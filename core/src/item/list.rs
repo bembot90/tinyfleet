@@ -10,15 +10,14 @@
 //! named, blocked and unlabelled) is not in it.
 //!
 //! A ROW IS `item show`'s FIELDS, not its timeline. The id, title, status,
-//! type, labels and order are the listing's row, the order as
-//! [`show::document`] reads it. The assignee and the run's record are not on a
-//! listing's row, so each row is read through [`Store::show`] for those two —
-//! one store call per row answered, beside the listings. A record this fleet
-//! does not read refuses that read, and so the list, naming the item: it is
-//! never a row. The row carries what the item carries and no raw metadata: a
-//! key the store holds that fleet does not read is the store's, and the row
-//! names it under `foreign` — the listing's own field — and never hands on
-//! what it holds.
+//! type, labels, assignee, order and run's record are the listing's row, the
+//! order as [`show::document`] reads it, so a list is one store call per
+//! filter named and never one per row. A record this fleet does not read, or
+//! a holder that is no seat, refuses the listing, and so the list, naming the
+//! item: it is never a row. The row carries what the item carries and no raw
+//! metadata: a key the store holds that fleet does not read is the store's,
+//! and the row names it under `foreign` — the listing's own field — and never
+//! hands on what it holds.
 //!
 //! It writes nothing.
 //!
@@ -28,7 +27,7 @@ use serde_json::Value;
 
 use crate::item::{show, Stop};
 use crate::seat::identity::SeatId;
-use crate::store::{self, ItemSummary, RunRecord, Store, StoreError};
+use crate::store::{self, ItemSummary, Store, StoreError};
 
 /// What a list is asked for: each field one of the store's listings, and a
 /// list naming none of them is not a call this verb can answer.
@@ -92,13 +91,14 @@ impl Filter {
     }
 }
 
-/// The listing's rows every named filter answers, in the first listing's
-/// order, each once.
+/// The items every named filter answers, as the listings' rows — each
+/// carrying its assignee and its run's record — in the first listing's order,
+/// each once.
 ///
 /// A listing that refuses refuses the list: a list missing one listing's
 /// answer is an intersection nobody asked for, and it reads exactly like a
 /// whole one.
-pub fn summaries(store: &dyn Store, filter: &Filter) -> Result<Vec<ItemSummary>, Stop> {
+pub fn list(store: &dyn Store, filter: &Filter) -> Result<Vec<ItemSummary>, Stop> {
     filter.named()?;
     let mut reads: Vec<Vec<ItemSummary>> = Vec::new();
     for asked in filter.filters()? {
@@ -131,76 +131,40 @@ fn unread(asked: &store::Filter, e: StoreError) -> Stop {
 
 /// The ids every named listing answers, in the first listing's order.
 pub fn ids(store: &dyn Store, filter: &Filter) -> Result<Vec<String>, Stop> {
-    Ok(summaries(store, filter)?
+    Ok(list(store, filter)?
         .into_iter()
         .map(|row| row.id.to_string())
         .collect())
 }
 
-/// One item as the list answers it: the listing's row, and the two fields a
-/// listing's row does not carry, read off the item.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Row {
-    pub summary: ItemSummary,
-    pub assignee: Option<SeatId>,
-    pub run: Option<RunRecord>,
-}
-
-/// The items the filter answers: the listings' rows, each with its assignee
-/// and its run's record read through `show`.
-///
-/// AN ID A LISTING ANSWERED AND `show` THEN DID NOT is could-not-tell and not
-/// a row dropped: the two reads disagree, and a list that quietly left the
-/// item out would answer as though it had never been there.
-pub fn list(store: &dyn Store, filter: &Filter) -> Result<Vec<Row>, Stop> {
-    summaries(store, filter)?
-        .into_iter()
-        .map(|summary| {
-            let item = store.show(&summary.id).map_err(|e| {
-                Stop::could_not_tell(format!(
-                    "{} was listed and could not then be read: {e}",
-                    summary.id
-                ))
-            })?;
-            Ok(Row {
-                summary,
-                assignee: item.assignee,
-                run: item.run,
-            })
-        })
-        .collect()
-}
-
 /// The list as a caller parses it: `{"items": [<row>, …]}`.
-pub fn document(rows: &[Row]) -> Value {
+pub fn document(rows: &[ItemSummary]) -> Value {
     serde_json::json!({ "items": rows.iter().map(row).collect::<Vec<_>>() })
 }
 
 /// One item's row.
-pub fn row(row: &Row) -> Value {
-    let summary = &row.summary;
+pub fn row(summary: &ItemSummary) -> Value {
     serde_json::json!({
         "id": summary.id,
         "title": summary.title,
         "status": summary.status,
         "type": summary.item_type,
         "labels": summary.labels,
-        "assignee": row.assignee,
+        "assignee": summary.assignee,
         "order": show::order_json(&summary.order),
-        "run": row.run,
+        "run": summary.run,
         "foreign": summary.foreign,
     })
 }
 
 /// The list as a person reads it: one line per item, or a line saying there
 /// is none. No trailing newline.
-pub fn render(rows: &[Row]) -> String {
+pub fn render(rows: &[ItemSummary]) -> String {
     if rows.is_empty() {
         return String::from("(no items)");
     }
     rows.iter()
-        .map(|row| {
-            let summary = &row.summary;
+        .map(|summary| {
             let labels = if summary.labels.is_empty() {
                 String::from("none")
             } else {
@@ -213,7 +177,7 @@ pub fn render(rows: &[Row]) -> String {
                 summary.status,
                 summary.item_type,
                 labels,
-                show::holder_or_none(row.assignee)
+                show::holder_or_none(summary.assignee)
             )
         })
         .collect::<Vec<_>>()

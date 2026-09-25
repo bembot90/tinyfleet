@@ -496,7 +496,7 @@ fn sole(value: serde_json::Value) -> Option<serde_json::Value> {
 ///
 /// ONLY FLEET'S KEY. A bare `orders` is some other writer's, whatever shape it
 /// holds, and an item carrying one and no `fleet.orders` reads as unordered.
-pub(crate) fn order_of(metadata: Option<&serde_json::Value>) -> OrderState {
+fn order_of(metadata: Option<&serde_json::Value>) -> OrderState {
     let Some(held) = metadata.and_then(|m| m.get(keys::ORDERS)) else {
         return OrderState::None;
     };
@@ -517,7 +517,7 @@ pub(crate) fn order_of(metadata: Option<&serde_json::Value>) -> OrderState {
 /// The keys a row's metadata holds that are not fleet's two: another writer's,
 /// named and never read. A bare `orders` is one of them, and so is a `fleet.`
 /// key fleet never writes. Metadata that is not an object holds no key.
-pub(crate) fn foreign_of(metadata: Option<&serde_json::Value>) -> Vec<String> {
+fn foreign_of(metadata: Option<&serde_json::Value>) -> Vec<String> {
     metadata
         .and_then(serde_json::Value::as_object)
         .map(|object| {
@@ -670,6 +670,13 @@ impl Store for Bd {
     /// <seat>` and back with `--all`, reading `closed`. A caller reads the
     /// status off each row, and the conformance suite's assignee check is the
     /// arm that found the two stores disagreeing.
+    ///
+    /// EACH ROW CARRIES ITS HOLDER AND ITS METADATA, so the assignee and the
+    /// run's record come off the listing's own rows and no row is shown after
+    /// it: measured on 1.3.0, `ready`, `list --label` and `list -a` each
+    /// answered `assignee` and the whole `metadata` object on every row. An
+    /// open item a person holds is in `ready` — measured on 1.3.0 too — and
+    /// refuses the listing it is in, as it refuses its own read.
     fn list(&self, filter: &Filter) -> Result<Vec<ItemSummary>, StoreError> {
         let seat;
         let args: Vec<&str> = match filter {
@@ -682,11 +689,10 @@ impl Store for Bd {
                 vec!["list", "-a", &seat, "--all", "--json", "-n", "0"]
             }
         };
-        Ok(self
-            .listed::<bd_wire::IssueWithCounts>(&args)?
+        self.listed::<bd_wire::IssueWithCounts>(&args)?
             .into_iter()
-            .filter_map(summary_of)
-            .collect())
+            .filter_map(|row| summary_of(row).transpose())
+            .collect()
     }
 
     /// `--priority` only where the item names one: bd files an item that
@@ -1220,19 +1226,40 @@ fn holder_of(id: &str, held: Option<&str>) -> Result<Option<SeatId>, StoreError>
 
 /// One listing row as the summary a listing answers, through the readers
 /// [`item_from`] reads a row with: the status and the labels as the store
-/// spells them, the order by [`order_of`], another writer's keys by
-/// [`foreign_of`], and the type off `issue_type`. A row naming no id is no
-/// row.
-fn summary_of(row: bd_wire::IssueWithCounts) -> Option<ItemSummary> {
-    Some(ItemSummary {
-        order: order_of(row.metadata.as_ref()),
-        foreign: foreign_of(row.metadata.as_ref()),
-        id: ItemId::from(row.id?),
+/// spells them, the type off `issue_type`, the order by [`order_of`], another
+/// writer's keys by [`foreign_of`], and the holder and the run's record by
+/// [`holder_of`] and [`run_of`] — each refusing the listing where it refuses
+/// the item's own read, in the same order and the same words. A row naming no
+/// id is no row.
+fn summary_of(row: bd_wire::IssueWithCounts) -> Result<Option<ItemSummary>, StoreError> {
+    let Some(id) = row.id else {
+        return Ok(None);
+    };
+    let metadata = row.metadata.as_ref();
+    Ok(Some(ItemSummary {
+        run: run_of(&id, metadata)?,
+        assignee: holder_of(&id, row.assignee.as_deref())?,
+        order: order_of(metadata),
+        foreign: foreign_of(metadata),
         title: row.title.unwrap_or_default(),
         status: Status::from(row.status.unwrap_or_default()),
         item_type: row.issue_type.unwrap_or_default(),
         labels: row.labels.unwrap_or_default(),
-    })
+        id: ItemId::from(id),
+    }))
+}
+
+/// One row in bd's listing shape as the summary [`Bd::list`] answers for it,
+/// or `None` for a row naming no id: the board held in memory reads its
+/// listings through this, so it cannot answer a row the real listing reads
+/// differently.
+pub fn summary_from(row: &serde_json::Value) -> Result<Option<ItemSummary>, StoreError> {
+    let wire: bd_wire::IssueWithCounts = decoded(row).map_err(|why| {
+        StoreError::Unreadable(format!(
+            "a listing answered a row bd's wire types do not read: {why}"
+        ))
+    })?;
+    summary_of(wire)
 }
 
 // ---- the opener's half: which `bd`, and the store over it ---------------------
@@ -1579,7 +1606,7 @@ mod opening_tests {
 /// of the holder, one arm per answer.
 #[cfg(test)]
 mod tests {
-    use super::{bd_wire, item_from, item_prefix_in, summary_of, OrderState, StoreError};
+    use super::{item_from, item_prefix_in, summary_from, OrderState, StoreError};
     use crate::seat::actor::Actor;
     use crate::store::{Order, OrderKind, RunRecord, Stamp};
 
@@ -1797,9 +1824,10 @@ mod tests {
             .foreign;
         read.sort();
         assert_eq!(read, wanted, "the read");
-        let listed: bd_wire::IssueWithCounts =
-            serde_json::from_value(row(metadata)).expect("a listing row decodes");
-        let mut listed = summary_of(listed).expect("a row naming an id").foreign;
+        let mut listed = summary_from(&row(metadata))
+            .expect("a listing row reads")
+            .expect("a row naming an id")
+            .foreign;
         listed.sort();
         assert_eq!(listed, wanted, "the listing's row");
 
@@ -1813,5 +1841,48 @@ mod tests {
         }
         let bare = serde_json::json!({ "id": "fx-1", "title": "an item" });
         assert!(item_from("fx-1", &bare).expect("reads").foreign.is_empty());
+    }
+
+    /// A listing's row reads its holder and its run's record as the item's
+    /// own read does: a seat and a record at v 1 are the row's, and a person
+    /// holding it or a record this fleet does not read refuses the listing in
+    /// `item_from`'s words — never a row held by nobody or carrying no run.
+    #[test]
+    fn a_listing_row_reads_its_holder_and_run_as_the_item_does() {
+        let record = serde_json::json!({ "fleet.run": {
+            "v": 1, "hash": "h1", "workflow": "greet", "pack": "ts",
+            "entry": "greet.ts", "started_at": AT,
+        }});
+        let mut held = row(record);
+        held["assignee"] = serde_json::json!(SEAT);
+        let summary = summary_from(&held)
+            .expect("a seat's row reads")
+            .expect("a row naming its id");
+        let item = item_from("fx-1", &held).expect("the item reads");
+        assert_eq!(summary.assignee, item.assignee);
+        assert!(summary.assignee.is_some());
+        assert_eq!(summary.run, item.run);
+        assert!(summary.run.is_some());
+
+        let plain = summary_from(&row(serde_json::json!({})))
+            .expect("reads")
+            .expect("a row");
+        assert_eq!((plain.assignee, plain.run), (None, None));
+
+        let mut person = row(serde_json::json!({}));
+        person["assignee"] = serde_json::json!("alice");
+        assert_eq!(
+            summary_from(&person).expect_err("a person holds it"),
+            item_from("fx-1", &person).expect_err("a person holds it"),
+        );
+
+        let unread = row(serde_json::json!({ "fleet.run": { "v": 2, "hash": "h1" } }));
+        assert_eq!(
+            summary_from(&unread).expect_err("the record is not read"),
+            item_from("fx-1", &unread).expect_err("the record is not read"),
+        );
+
+        let no_id = serde_json::json!({ "title": "a row naming no id" });
+        assert_eq!(summary_from(&no_id), Ok(None));
     }
 }

@@ -405,7 +405,8 @@ pub struct Item {
 }
 
 /// One item as a listing answers it: enough to choose from without reading
-/// each one.
+/// each one, its holder and its run's record among it — so a listing is one
+/// call, and never one more per row.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemSummary {
     pub id: ItemId,
@@ -415,8 +416,17 @@ pub struct ItemSummary {
     pub item_type: String,
     #[serde(default)]
     pub labels: Vec<String>,
+    /// The seat holding the item, or `None` where nobody does, read as
+    /// [`Item::assignee`] is: a row a person holds refuses the listing, which
+    /// never answers it as held by nobody.
+    #[serde(default)]
+    pub assignee: Option<SeatId>,
     #[serde(default)]
     pub order: OrderState,
+    /// A run's record, read as [`Item::run`] is: a record this fleet does not
+    /// read refuses the listing, which never answers it as carrying none.
+    #[serde(default)]
+    pub run: Option<RunRecord>,
     /// The store's keys on the item that are not fleet's, as [`Item`] names
     /// them.
     #[serde(default)]
@@ -1294,6 +1304,29 @@ mod tests {
         );
     }
 
+    /// A row with no `assignee` and no `run` — the row an adapter writes
+    /// that answers neither — reads as held by nobody and carrying no record,
+    /// and a row carrying both reads them.
+    #[test]
+    fn a_summary_read_without_its_holder_or_run_takes_their_defaults() {
+        let bare = r#"{"id":"fx-c3d4","title":"t","status":"open","type":"task","labels":[],"order":{"state":"none"}}"#;
+        let read: ItemSummary = serde_json::from_str(bare).unwrap();
+        assert_eq!(read.assignee, None);
+        assert_eq!(read.run, None);
+
+        let held = bare.replacen(
+            r#""order""#,
+            &format!(
+                r#""assignee":"{SEAT}","run":{},"order""#,
+                r#"{"hash":"h1","workflow":"build","pack":"ts","entry":"build.ts","started_at":"2026-09-23T10:00:00Z"}"#
+            ),
+            1,
+        );
+        let read: ItemSummary = serde_json::from_str(&held).unwrap();
+        assert_eq!(read.assignee, Some(seat(SEAT)));
+        assert_eq!(read.run.map(|run| run.hash), Some(String::from("h1")));
+    }
+
     #[test]
     fn a_run_record_round_trips_and_refuses_a_key_it_does_not_have() {
         let record = RunRecord {
@@ -1484,7 +1517,9 @@ mod tests {
             status: Status::Open,
             item_type: String::from("task"),
             labels: vec![String::from("fleet")],
+            assignee: None,
             order: OrderState::None,
+            run: None,
             foreign: vec![String::from("sprint")],
         };
         let new_item = NewItem {

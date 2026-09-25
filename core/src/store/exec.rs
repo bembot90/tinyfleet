@@ -1113,4 +1113,38 @@ esac"#,
             "{why}"
         );
     }
+
+    /// A listing is one `list` process, and its rows read the holder and the
+    /// run's record where the adapter answers them — and nobody and no record
+    /// where it leaves the keys out, as an adapter answering no more than a
+    /// row's id, title, status, type, labels and order does.
+    #[test]
+    fn a_listing_row_reads_its_holder_and_run_and_their_absence_as_none() {
+        let stub = Stub::new(
+            "list-held",
+            &answers(
+                &format!(
+                    r#"{{"schema_version":1,"items":[{{"id":"fx-a1b2","title":"t","status":"in_progress","type":"task","labels":[],"assignee":"{SEAT}","order":{{"state":"none"}},"run":{{"hash":"h1","workflow":"build","pack":"ts","entry":"workflows/build.ts","started_at":"2026-09-23T10:00:00Z"}}}},{{"id":"fx-c3d4","title":"t","status":"open","type":"task","labels":["fleet"],"order":{{"state":"none"}}}}]}}"#
+                ),
+                0,
+            ),
+        );
+        let rows = stub
+            .exec()
+            .list(&Filter::Ready)
+            .expect("the stub answered a listing");
+        assert_eq!(stub.verbs(), ["list"], "one call, and no show after it");
+        assert_eq!(stub.request()["filter"], "ready");
+
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(
+            rows[0].assignee.map(|seat| seat.to_string()).as_deref(),
+            Some(SEAT)
+        );
+        assert_eq!(
+            rows[0].run.as_ref().map(|run| run.hash.as_str()),
+            Some("h1")
+        );
+        assert_eq!((rows[1].assignee, rows[1].run.clone()), (None, None));
+    }
 }

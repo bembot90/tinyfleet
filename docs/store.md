@@ -234,15 +234,21 @@ reads as having no description, no labels, nobody assigned,
 
 ### Item summary
 
-One item as a listing answers it:
+One item as a listing answers it: here, a ready item nobody holds, carrying
+one key of another tool's.
 
 ```json
-{"id":"fx-c3d4","title":"Name the stamp's fields","status":"open","type":"task","labels":["fleet"],"order":{"state":"none"},"foreign":["sprint"]}
+{"id":"fx-c3d4","title":"Name the stamp's fields","status":"open","type":"task","labels":["fleet"],"assignee":null,"order":{"state":"none"},"run":null,"foreign":["sprint"]}
 ```
 
-`foreign` is the item's, as `show` answers it. A summary that leaves out
-`labels`, `order` or `foreign` reads as having no labels, `{"state":"none"}`
-and no foreign keys. `fleet item list --json` prints each row's `foreign`.
+The fields mean what they mean on an item: `assignee` is the seat that holds
+the item, or `null`, `run` is a run record, or `null`, and `foreign` is the
+item's, as `show` answers it. `id`, `title`, `status` and `type` are always
+there; a summary that leaves out `labels`, `assignee`, `order`, `run` or
+`foreign` reads as having no labels, nobody assigned, `{"state":"none"}`, no
+run record and no foreign keys. fleet reads each row's holder and run record
+off the listing itself and asks `show` for neither. `fleet item list --json`
+prints each row's `foreign`.
 
 ### Entry
 

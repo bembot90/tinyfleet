@@ -15,8 +15,9 @@
 //! naming none, or naming a seat by anything but its full id, is usage, 2,
 //! said before the store is opened.
 
-use fleet_core::item::list::{self, Filter, Row};
+use fleet_core::item::list::{self, Filter};
 use fleet_core::item::{show, Stop};
+use fleet_core::store::ItemSummary;
 
 use crate::envelope;
 use crate::exit::Exit;
@@ -44,15 +45,16 @@ intersected, in the first one's order.
 
 The store answers no listing of every item, so the filters are the three it
 does answer: the ready set, the open items under a label and the items held
-against a seat. Each row is then read for its assignee and its run's record,
-which a listing's row does not carry.
+against a seat. Each listing is one call to the store, and its rows carry the
+assignee and the run's record, so no row is read again.
 
 --json prints {\"items\": [...]}, each row item show's fields without the
 timeline, plus the run's record where the item carries one and, under
 foreign, the names of the keys the store holds on the item that are not
 fleet's. It writes nothing. Exit 2 when no listing is named or --assignee is
-not a seat's full id, 3 when the store does not answer or an item carries a
-run record this fleet does not read.")]
+not a seat's full id, 3 when the store does not answer, an item carries a run
+record this fleet does not read, or an item is held by a holder that is not
+a seat.")]
     List {
         /// the store's ready set: open and unblocked
         #[arg(long)]
@@ -118,9 +120,9 @@ fn refused(verb: &str, stop: &Stop, json: bool) -> Exit {
 }
 
 /// The filter checked before anything is resolved — a list naming no read is
-/// the call's own fault wherever it is typed — then the items, each row read for
-/// its assignee and its run's record.
-fn listed(filter: &Filter) -> Result<Vec<Row>, Stop> {
+/// the call's own fault wherever it is typed — then the items, one listing
+/// per filter named.
+fn listed(filter: &Filter) -> Result<Vec<ItemSummary>, Stop> {
     filter.named()?;
     let here = resolve_at(None)?;
     let store = open_store(&here)?;

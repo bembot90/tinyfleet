@@ -115,9 +115,16 @@ pub trait Store {
     /// it; a seat's is the items held against its full id, which a caller
     /// reads the status of off each row.
     ///
+    /// A row carries the item's holder and its run's record, read as [`show`]
+    /// reads them: a row a person holds, or one carrying a record this fleet
+    /// does not read, refuses the listing Unreadable in `show`'s words, and is
+    /// never a row held by nobody or carrying no run.
+    ///
     /// A LISTING IS NEVER CAPPED. A store whose listing answers its first rows
     /// by default is asked for all of them, because a truncated list reads
     /// exactly like a whole one.
+    ///
+    /// [`show`]: Store::show
     fn list(&self, filter: &Filter) -> Result<Vec<ItemSummary>, StoreError>;
 
     /// One item filed, answered as the id the store gave it.
