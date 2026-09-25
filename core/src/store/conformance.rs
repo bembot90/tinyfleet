@@ -433,13 +433,12 @@ fn missing_is_refused(ctx: &Ctx) -> Answer {
 /// it could mean.
 ///
 /// THE FRAGMENT IS A COMMON PREFIX of two filed items' hashes, longest first,
-/// and equal to neither. A prefix is what every partial-id rule reads as a
-/// match: the built-in store at its pinned release resolves a fragment by the
-/// hash's prefix alone — measured on a scratch board, `yc` answered not found
-/// beside `fx-0yc` and `fx-cyc` while `0` answered both of `fx-0li` and
-/// `fx-0yc` — and a store reading a fragment anywhere in the hash reads a
-/// prefix too. A fragment some other item's hash IS resolves to that item,
-/// which is no ambiguity: the next is tried.
+/// and equal to neither. A prefix is what the contract's partial-id rule reads
+/// as a match, and the built-in store at its pinned release reads the same —
+/// measured on a scratch board, `yc` answered not found beside `fx-0yc` and
+/// `fx-cyc` while `0` answered both of `fx-0li` and `fx-0yc`. A fragment some
+/// other item's hash IS resolves to that item, which is no ambiguity: the next
+/// is tried.
 fn ambiguous_is_refused(ctx: &Ctx) -> Answer {
     let mut mine: Vec<ItemId> = Vec::new();
     let mut tried: BTreeSet<String> = BTreeSet::new();

@@ -355,7 +355,7 @@ Answers, one per shape beyond those above:
 1. the whole id;
 2. else the one id whose part after its prefix is the text: `a1b2` for
    `fx-a1b2`;
-3. else the ids whose part after the prefix contains the text.
+3. else the ids whose part after the prefix starts with the text.
 
 More than one match at the first rule that matches anything is `ambiguous`,
 and no match at all is `missing`. An adapter whose ids carry no prefix treats

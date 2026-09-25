@@ -591,10 +591,11 @@ fn row_of(
 /// The ids a `show` argument names, by the rule bd 1.3.0 resolves one with —
 /// measured on a scratch board. A whole id names itself. Else a whole HASH, the
 /// part after the prefix, names its item (`7cx` is `fx-7cx`, even with a child
-/// `fx-7cx.1` beside it). Else every id whose hash HOLDS the argument is named,
-/// with a leading prefix taken off the argument first (`fx-7c` names what `7c`
-/// does, and `x-7c` names nothing). One id is the item, more than one an
-/// ambiguity, none a missing id.
+/// `fx-7cx.1` beside it). Else every id whose hash OPENS WITH the argument is
+/// named, with a leading prefix taken off the argument first (`fx-7c` names
+/// what `7c` does, and `x-7c` names nothing), so `35` names nothing beside
+/// `fx-h35`, which holds it but does not open with it. One id is the item,
+/// more than one an ambiguity, none a missing id.
 fn named<'a>(ids: impl Iterator<Item = &'a String> + Clone, given: &str) -> Vec<String> {
     let parts = |id: &'a str| id.split_once('-').unwrap_or(("", id));
     let needle = |prefix: &str| {
@@ -619,7 +620,7 @@ fn named<'a>(ids: impl Iterator<Item = &'a String> + Clone, given: &str) -> Vec<
     }
     ids.filter(|id| {
         let (prefix, hash) = parts(id);
-        hash.contains(needle(prefix))
+        hash.starts_with(needle(prefix))
     })
     .cloned()
     .collect()

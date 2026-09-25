@@ -357,6 +357,43 @@ fn the_board_held_in_memory_declares_a_scratch_and_answers_the_directory() {
     assert_eq!(store.scratch(&dir.0), Ok(dir.0.clone()));
 }
 
+/// The board held in memory names the ids whose hash OPENS WITH a fragment, as
+/// the contract reads one and bd 1.3.0 answered on a scratch board that minted
+/// these ids: `3` is `fx-37v` alone though `fx-h35` and `fx-pz3` hold a 3,
+/// `35` inside `fx-h35` and `z` inside `fx-6az` and `fx-pz3` open no hash and
+/// name nothing, and `0` opens two.
+#[test]
+fn the_board_held_in_memory_names_the_ids_whose_hash_opens_with_a_fragment() {
+    let board = Board::new("contract-fragment-prefix");
+    let minted = ["fx-37v", "fx-h35", "fx-pz3", "fx-6az", "fx-01o", "fx-0wf"];
+    *board
+        .store
+        .creates
+        .lock()
+        .expect("the queue is not poisoned") = minted.iter().map(|id| id.to_string()).collect();
+    for id in minted {
+        assert_eq!(board.item(&format!("the item minted as {id}")), id);
+    }
+
+    assert_eq!(board.store.resolve("3"), Ok(ItemId::from("fx-37v")));
+    for inside in ["35", "z"] {
+        match board.store.resolve(inside) {
+            Err(StoreError::Refused(why)) => assert!(
+                !why.contains("more than one item"),
+                "`{inside}` opens no hash and is missing, not ambiguous: {why}"
+            ),
+            answer => panic!("`{inside}` opens no hash and is Refused, not {answer:?}"),
+        }
+    }
+    match board.store.resolve("0") {
+        Err(StoreError::Refused(why)) => assert!(
+            why.contains("fx-01o") && why.contains("fx-0wf"),
+            "`0` opens both and the refusal names them: {why}"
+        ),
+        answer => panic!("`0` opens two hashes and is Refused, not {answer:?}"),
+    }
+}
+
 /// A store that declares no scratch is asked for one anyway: the trait's own
 /// answer, Unreadable, with nothing made.
 #[test]

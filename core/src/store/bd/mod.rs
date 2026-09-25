@@ -523,7 +523,7 @@ fn blockers_of(entries: &[bd_wire::IssueWithDependencyMetadata]) -> Vec<ItemId> 
 
 impl Store for Bd {
     /// bd resolves a partial id itself — measured on 1.3.0, a whole id, then a
-    /// whole hash, then a substring of one — and the answer's `id` is the full
+    /// whole hash, then a prefix of one — and the answer's `id` is the full
     /// one.
     fn show(&self, item: &str) -> Result<Item, StoreError> {
         item_from(item, &self.shown_row(item)?)
