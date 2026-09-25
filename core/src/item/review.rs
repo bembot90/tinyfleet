@@ -28,7 +28,7 @@ use std::path::Path;
 use crate::entry::{self, Body, Delivered, Finding, Reviewed, Ruling, RulingKind, Size, Timeline};
 use crate::input::{self, FindingsInput, FINDINGS_SCHEMA};
 use crate::item::brief::Packs;
-use crate::item::deliver::{named, reviewer_of};
+use crate::item::deliver::reviewer_of;
 use crate::item::land::run_record;
 use crate::item::show::entry_lines;
 use crate::item::{
@@ -36,7 +36,7 @@ use crate::item::{
     Unrecorded, ITEM_ENTRY,
 };
 use crate::seat::actor::{Actor, ActorKind};
-use crate::seat::identity::Directory;
+use crate::seat::identity::{Directory, SeatId};
 use crate::store::{Item, Order, OrderState, Store};
 
 /// What the ring carries on a return.
@@ -161,13 +161,13 @@ pub fn review(
 /// other kind writes a verdict.
 fn holds(item: &Item, by: &Actor, wiring: &Wiring) -> Result<(), Stop> {
     let id = &item.id;
-    let assignee = item.assignee.as_deref().unwrap_or("nobody");
+    let assignee = item
+        .assignee
+        .map_or_else(|| String::from("nobody"), |held| held.to_string());
     match by.kind {
         ActorKind::Seat => {
-            if let (Some(seat), Some(holder)) = (by.seat_id(), item.assignee.as_deref()) {
-                if seat.to_string() == holder {
-                    return Ok(());
-                }
+            if by.seat_id().is_some_and(|seat| item.assignee == Some(seat)) {
+                return Ok(());
             }
             Err(Stop::refused(format!(
                 "{id} is held by {assignee} and not by {by} — a verdict is the holder's, and a \
@@ -176,8 +176,8 @@ fn holds(item: &Item, by: &Actor, wiring: &Wiring) -> Result<(), Stop> {
         }
         ActorKind::Run => {
             let record = run_record(wiring.store, by)?;
-            let reviewer = reviewer_of(wiring.project, wiring.seats)?.id.to_string();
-            if item.assignee.as_deref() == Some(reviewer.as_str()) {
+            let reviewer = reviewer_of(wiring.project, wiring.seats)?.id;
+            if item.assignee == Some(reviewer) {
                 return Ok(());
             }
             Err(Stop::refused(format!(
@@ -368,7 +368,7 @@ fn retur(
     let builder = match &item.order {
         OrderState::Ordered(Order {
             seat: Some(seat), ..
-        }) => seat.to_string(),
+        }) => *seat,
         OrderState::Unreadable => {
             return Err(Stop::refused(format!(
                 "{}'s order index is not one this fleet can read — a return goes to the seat the \
@@ -400,11 +400,14 @@ fn retur(
     // leaves it through delivery.
     wiring.store.hand_over(
         &item.id,
-        item.assignee.as_deref().unwrap_or_default(),
-        &builder,
+        &item
+            .assignee
+            .map(|held| held.to_string())
+            .unwrap_or_default(),
+        &builder.to_string(),
         &verdict.by.to_string(),
     )?;
-    let id = write_verdict(&item.id, &reviewed, Some(&builder), verdict, wiring)?;
+    let id = write_verdict(&item.id, &reviewed, Some(builder), verdict, wiring)?;
     announce(&item.id, &id, verdict, wiring)?;
 
     let text = render(
@@ -412,14 +415,14 @@ fn retur(
         &[("item", &item.id), ("findings", &count.to_string())],
     )
     .unwrap_or_else(|_| format!("{} is returned", item.id));
-    match wiring.ring.ring(&builder, &text) {
+    match wiring.ring.ring(&builder.to_string(), &text) {
         RingOutcome::Delivered => {}
         RingOutcome::Absent => {
             let _ = writeln!(
                 out,
                 "{STANDS}: no live session for {}; the return stands and their successor reads \
                  it at wake",
-                named(&builder, wiring.seats)
+                wiring.seats.label(&builder)
             );
         }
         RingOutcome::Failed(cause) => {
@@ -436,7 +439,7 @@ fn retur(
 fn write_verdict(
     item: &str,
     reviewed: &Body,
-    assignee: Option<&str>,
+    assignee: Option<SeatId>,
     verdict: &Verdict,
     wiring: &Wiring,
 ) -> Result<String, Stop> {
@@ -451,11 +454,12 @@ fn write_verdict(
         )?;
     if let Some(wanted) = assignee {
         let read = read(wiring.store, item)?;
-        if read.assignee.as_deref() != Some(wanted) {
+        if read.assignee != Some(wanted) {
             return Err(Stop::could_not_tell(format!(
                 "{item} read back with assignee ==\n{}\n  wanted:\n{wanted}\n  READ: fleet item \
                  show {item}",
-                read.assignee.as_deref().unwrap_or("(absent)")
+                read.assignee
+                    .map_or_else(|| String::from("(absent)"), |held| held.to_string())
             )));
         }
         let control = control_token();

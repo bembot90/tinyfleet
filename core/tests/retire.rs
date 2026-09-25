@@ -68,7 +68,7 @@ fn item(id: &str, status: &str, assignee: &str, ordered: bool) -> Item {
         id: id.into(),
         title: format!("{id} · an item"),
         status: Status::from(status),
-        assignee: Some(assignee.to_string()),
+        assignee: Some(SeatId::parse(assignee).expect("the holder's id parses")),
         order: if ordered {
             an_order()
         } else {
@@ -92,7 +92,7 @@ fn board() -> FakeStore {
     store.seed(item(HELD, "open", SEAT, true));
     store.seed(item(UNORDERED, "open", SEAT, false));
     store.seed(item(CLOSED, "closed", SEAT, true));
-    store.seed(item(ANOTHER, "open", "agent-9d2b4f60", true));
+    store.seed(item(ANOTHER, "open", TAKER, true));
     store
 }
 
@@ -141,7 +141,7 @@ fn a_retire_withdraws_every_open_ordered_item_the_seat_still_holds() {
         after.proof.as_str()
     );
     assert!(
-        after.assignee.as_deref().unwrap_or("").trim().is_empty(),
+        after.assignee.is_none(),
         "the item reads unassigned: {:?}",
         after.assignee
     );
@@ -179,7 +179,7 @@ fn a_retire_reopens_an_item_the_seat_marked_in_progress() {
     let after = read(&store, HELD);
     assert_eq!(after.status, "open", "the claimed item reads open");
     assert!(
-        after.assignee.as_deref().unwrap_or("").trim().is_empty() && !ordered(&after),
+        after.assignee.is_none() && !ordered(&after),
         "and unassigned and unordered: {}",
         after.proof.as_str()
     );
@@ -222,7 +222,7 @@ fn a_retire_whose_item_was_closed_after_the_listing_is_refused_and_reopens_nothi
     let after = read(&store, HELD);
     assert_eq!(after.status, "closed", "the item stays closed");
     assert!(
-        ordered(&after) && after.assignee.as_deref() == Some(SEAT),
+        ordered(&after) && after.assignee == Some(seat()),
         "nothing was written: {}",
         after.proof.as_str()
     );
@@ -270,12 +270,8 @@ fn a_retire_leaves_what_the_seat_does_not_hold_under_an_open_order() {
     for untouched in [UNORDERED, CLOSED, ANOTHER] {
         let after = read(&store, untouched);
         assert_eq!(
-            after.assignee.as_deref(),
-            Some(if untouched == ANOTHER {
-                "agent-9d2b4f60"
-            } else {
-                SEAT
-            }),
+            after.assignee.map(|held| held.to_string()).as_deref(),
+            Some(if untouched == ANOTHER { TAKER } else { SEAT }),
             "{untouched} keeps its assignee"
         );
         assert!(
@@ -315,11 +311,7 @@ fn a_retire_leaves_another_writers_orders_key_untouched() {
     retire::withdraw(&store, &held, &seat(), LABEL, &by()).expect("the withdrawal lands");
 
     let theirs = read(&store, THEIRS);
-    assert_eq!(
-        theirs.assignee.as_deref(),
-        Some(SEAT),
-        "{THEIRS} keeps its assignee"
-    );
+    assert_eq!(theirs.assignee, Some(seat()), "{THEIRS} keeps its assignee");
     assert!(timeline(&store, THEIRS).is_empty(), "and carries no entry");
     assert!(
         !ordered(&read(&store, HELD)),
@@ -359,7 +351,7 @@ fn a_retire_withdraws_an_ordered_epic_the_seat_still_names() {
 
     let after = read(&store, EPIC);
     assert!(
-        !ordered(&after) && after.assignee.as_deref().unwrap_or("").trim().is_empty(),
+        !ordered(&after) && after.assignee.is_none(),
         "the epic reads unordered and unassigned: {}",
         after.proof.as_str()
     );
@@ -441,7 +433,7 @@ fn a_retire_whose_withdrawal_does_not_land_refuses_and_names_the_item() {
     );
     let after = read(&store, HELD);
     assert!(
-        ordered(&after) && after.assignee.as_deref() == Some(SEAT),
+        ordered(&after) && after.assignee == Some(seat()),
         "the item is as it was, so the seat's row must not be dropped: {}",
         after.proof.as_str()
     );
@@ -484,7 +476,7 @@ fn a_retire_whose_item_moved_to_another_seat_is_refused_and_writes_nothing() {
     );
     let after = read(&store, HELD);
     assert!(
-        ordered(&after) && after.assignee.as_deref() == Some(TAKER),
+        ordered(&after) && after.assignee == SeatId::parse(TAKER).ok(),
         "nothing was written: {}",
         after.proof.as_str()
     );

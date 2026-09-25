@@ -347,7 +347,7 @@ mod tests {
             id: PARKED.into(),
             title: String::from("an item a seat was dispatched and parked"),
             status: Status::Open,
-            assignee: Some(SEAT.to_string()),
+            assignee: Some(seat()),
             order: OrderState::Ordered(Order {
                 kind: OrderKind::Dispatch,
                 by: Actor {
@@ -372,7 +372,7 @@ mod tests {
 
         let after = store.show(PARKED).expect("the store answers");
         assert!(
-            after.assignee.as_deref().unwrap_or("").trim().is_empty(),
+            after.assignee.is_none(),
             "the item reads unassigned: {:?}",
             after.assignee
         );

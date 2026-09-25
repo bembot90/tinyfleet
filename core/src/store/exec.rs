@@ -230,17 +230,8 @@ impl Store for Exec {
     fn show(&self, item: &str) -> Result<Item, StoreError> {
         let (Shown { item: read }, raw) = self.call("show", fields(json!({ "id": item })))?;
         Ok(Item {
-            id: read.id,
-            title: read.title,
-            description: String::new(),
-            status: read.status,
-            assignee: read.assignee.map(|seat| seat.to_string()),
-            order: read.order,
-            blockers: read.blockers,
-            item_type: read.item_type,
-            labels: read.labels,
-            run: read.run,
             proof: ReadProof::of(raw),
+            ..read
         })
     }
 
@@ -582,7 +573,10 @@ mod tests {
         assert_eq!(item.status, "in_progress");
         assert_eq!(item.item_type, "task");
         assert_eq!(item.labels, ["fleet"]);
-        assert_eq!(item.assignee.as_deref(), Some(SEAT));
+        assert_eq!(
+            item.assignee.map(|seat| seat.to_string()).as_deref(),
+            Some(SEAT)
+        );
         assert!(matches!(item.order, types::OrderState::Ordered(_)));
         assert_eq!(item.blockers, [ItemId::from("fx-c3d4")]);
         assert_eq!(item.run, None);

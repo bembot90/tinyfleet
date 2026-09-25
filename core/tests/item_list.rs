@@ -8,6 +8,7 @@
 
 use fleet_core::item::list::{document, ids, list, render, Filter};
 use fleet_core::item::{COULD_NOT_TELL, USAGE};
+use fleet_core::seat::identity::SeatId;
 use fleet_core::store::{Item, Status};
 use fleet_core::test_support::FakeStore;
 
@@ -33,7 +34,7 @@ fn a_store() -> FakeStore {
     store.seed(item("fx-3", "open", &["fleet:run"]));
     store.seed(item("fx-4", "open", &[]));
     let mut held = item("fx-5", "in_progress", &[]);
-    held.assignee = Some(String::from(HOLDER));
+    held.assignee = Some(SeatId::parse(HOLDER).expect("the holder's id parses"));
     store.seed(held);
 
     let mut metadata = store.metadata.lock().expect("the metadata is not poisoned");

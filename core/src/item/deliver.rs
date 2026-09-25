@@ -194,7 +194,7 @@ pub fn deliver(
             )),
         }
     })?;
-    read_back(&item, &reviewer, wiring)?;
+    read_back(&item, reviewer_id, wiring)?;
     announce(&item, &entry, &commit, delivery, wiring)?;
 
     if as_is {
@@ -349,14 +349,14 @@ fn holds_named(item: &Item, by: &Actor) -> Result<(), Stop> {
             by.kind.as_str()
         )));
     };
-    let assignee = item.assignee.as_deref();
     let ordered = !matches!(item.order, OrderState::None);
-    if assignee == Some(seat.to_string().as_str()) && ordered && item.item_type != EPIC {
+    if item.assignee == Some(seat) && ordered && item.item_type != EPIC {
         return Ok(());
     }
     Err(Stop::refused(format!(
         "{id} is held by {} and not by {by} — --item names an item the acting seat holds",
-        assignee.unwrap_or("nobody")
+        item.assignee
+            .map_or_else(|| String::from("nobody"), |held| held.to_string())
     )))
 }
 
@@ -502,14 +502,14 @@ fn porcelain_path(line: &str) -> String {
 /// One read, asserting the assignee against the ARGUMENT — plus a token
 /// nothing wrote. The delivered entry is not asked again here: [`recorded`]
 /// read it back off the timeline before this runs.
-fn read_back(item: &str, reviewer: &str, wiring: &Wiring) -> Result<(), Stop> {
+fn read_back(item: &str, reviewer: SeatId, wiring: &Wiring) -> Result<(), Stop> {
     let read = read(wiring.store, item)?;
-    if read.assignee.as_deref() != Some(reviewer) {
+    if read.assignee != Some(reviewer) {
         return Err(disagrees(
             item,
             "assignee",
-            reviewer,
-            read.assignee.as_deref(),
+            &reviewer.to_string(),
+            read.assignee.map(|held| held.to_string()).as_deref(),
         ));
     }
     let control = control_token();

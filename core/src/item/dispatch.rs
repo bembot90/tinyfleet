@@ -322,7 +322,7 @@ fn to_named_seat(
         )
         .map_err(|e| wrote_nothing(order.item, "the assignee", &e))?;
     let entry = write_order(order, wiring, Some(&named.id), true)?;
-    read_back(order, wiring, Some(seat), Some(&named.id))?;
+    read_back(order, wiring, Some(&named.id), Some(&named.id))?;
     announce(order, wiring, &entry)?;
 
     let brief_path = match order.brief {
@@ -437,7 +437,8 @@ fn to_a_transient_seat(
                 })?;
             let entry =
                 write_order(order, wiring, Some(&spawned.id), false).map_err(Refused::stopped)?;
-            read_back(order, wiring, Some(&seat), Some(&spawned.id)).map_err(Refused::stopped)?;
+            read_back(order, wiring, Some(&spawned.id), Some(&spawned.id))
+                .map_err(Refused::stopped)?;
             announce(order, wiring, &entry).map_err(Refused::stopped)?;
             // The item's own rendering moved under the brief: the assignment
             // and the seat in the index are both in it. Rendered again over the
@@ -644,7 +645,7 @@ fn stamp(order: &Order) -> Result<Stamp, Stop> {
 fn read_back(
     order: &Order,
     wiring: &Wiring,
-    assignee: Option<&str>,
+    assignee: Option<&SeatId>,
     seat: Option<&SeatId>,
 ) -> Result<(), Stop> {
     let item = read(wiring.store, order.item)?;
@@ -652,12 +653,12 @@ fn read_back(
     let given = the_order(order, seat.copied())?;
 
     if let Some(wanted) = assignee {
-        if item.assignee.as_deref() != Some(wanted) {
+        if item.assignee.as_ref() != Some(wanted) {
             return Err(disagrees(
                 order.item,
                 "assignee",
-                wanted,
-                item.assignee.as_deref(),
+                &wanted.to_string(),
+                item.assignee.map(|held| held.to_string()).as_deref(),
             ));
         }
     }

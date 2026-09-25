@@ -643,7 +643,7 @@ fn update(ctx: &Ctx) -> Answer {
     let seat = SeatId::mint();
     assign(ctx, &id, seat)?;
     let now = read(ctx, &id)?;
-    same("the assignee set", &now.assignee, &Some(seat.to_string()))?;
+    same("the assignee set", &now.assignee, &Some(seat))?;
     same(
         "an assignee alone leaves the title",
         &now.title.as_str(),
@@ -671,7 +671,7 @@ fn update(ctx: &Ctx) -> Answer {
     same(
         "the assignee the same update moved",
         &now.assignee,
-        &Some(another.to_string()),
+        &Some(another),
     )?;
 
     answered(
@@ -1047,7 +1047,7 @@ fn update_naming_nothing(ctx: &Ctx) -> Answer {
     same(
         "the assignee after an update naming nothing",
         &now.assignee,
-        &Some(seat.to_string()),
+        &Some(seat),
     )?;
     Ok(Passed::Pass)
 }
@@ -1068,7 +1068,7 @@ fn fenced_writes(ctx: &Ctx) -> Answer {
         same(
             &format!("{after}: the holder, as nothing was written"),
             &now.assignee,
-            &Some(holder.clone()),
+            &Some(seat),
         )?;
         ensure(now.order != OrderState::None, || {
             format!("{after}: the order is gone, and nothing was to be written")
@@ -1134,7 +1134,8 @@ fn fenced_writes(ctx: &Ctx) -> Answer {
     )?;
 
     let builder = SeatId::mint().to_string();
-    let reviewer = SeatId::mint().to_string();
+    let reviewer_id = SeatId::mint();
+    let reviewer = reviewer_id.to_string();
     moved(
         "a hand-over from a seat that no longer holds the item",
         ctx.store.hand_over(&id, &holder, &builder, &writer),
@@ -1151,7 +1152,7 @@ fn fenced_writes(ctx: &Ctx) -> Answer {
     same(
         "the holder after two hand-overs",
         &read(ctx, &id)?.assignee,
-        &Some(reviewer),
+        &Some(reviewer_id),
     )?;
     Ok(Passed::Pass)
 }

@@ -62,6 +62,7 @@ mod tests {
         bd_wire, first_value, item_from, opened, shown, ItemId, OrderState, Status, StoreError,
         PINNED_BD,
     };
+    use crate::seat::identity::SeatId;
 
     const GENERATED: &str = include_str!("bd_wire.rs");
     const FRAGMENT: &[u8] = include_bytes!("bd_wire.schema.json");
@@ -73,6 +74,10 @@ mod tests {
     const LIST_ASSIGNED: &str = include_str!("fixtures/list_assigned.json");
     const READY: &str = include_str!("fixtures/ready.json");
     const GATE_LIST: &str = include_str!("fixtures/gate_list.json");
+
+    /// A seat's full id, put on the recorded row in place of `seat-1`, the holder
+    /// bd 1.3.0 recorded, which is no seat's id.
+    const SEAT: &str = "01a0d1f1-0aec-765f-9abe-0000000005e1";
 
     /// One `key: value` line off the generated file's header.
     fn stamped(key: &str) -> Option<&'static str> {
@@ -173,12 +178,14 @@ mod tests {
     /// `blocks` is the one blocker, the closed one and the `discovered-from`
     /// are not.
     ///
-    /// THE RECORDING PREDATES THE TYPED RECORD AND THE TYPED ORDER. Its
-    /// `fleet.run` is no run's record — `{"v":1,"ok":true,"steps":[1,2]}` — so
-    /// the row as recorded refuses the read, naming the key and its version;
+    /// THE RECORDING PREDATES THE TYPED RECORD, THE TYPED ORDER AND THE TYPED
+    /// HOLDER. Its `fleet.run` is no run's record —
+    /// `{"v":1,"ok":true,"steps":[1,2]}` — so the row as recorded refuses the
+    /// read, naming the key and its version; with the run taken off, its
+    /// assignee `seat-1` is no seat id, so the read refuses naming the holder;
     /// and its order index names `alberto`, who is no typed actor, and a kind
-    /// fleet gives no order of, so with the run taken off the row the index
-    /// reads as present and unreadable.
+    /// fleet gives no order of, so with a seat's id put in as the holder the
+    /// index reads as present and unreadable.
     #[test]
     fn a_recorded_show_reads_into_the_item_a_verb_asserts_on() {
         let row = shown("fx", answer(SHOW), "").expect("the item is there");
@@ -197,12 +204,26 @@ mod tests {
             .as_object_mut()
             .expect("the recorded show holds metadata")
             .remove("fleet.run");
+        let refusal = item_from("fx", &row).expect_err("the recorded holder is no seat");
+        assert!(
+            matches!(
+                &refusal,
+                StoreError::Unreadable(why)
+                    if why.ends_with(
+                        " is held by seat-1, which is not a seat of this fleet — a person holds \
+                         it, and fleet reads only seat holders"
+                    )
+            ),
+            "{refusal:?}"
+        );
+
+        row["assignee"] = serde_json::json!(SEAT);
         let item = item_from("fx", &row).expect("the rest of the recorded show decodes");
 
         assert_eq!(item.title, "downstream");
         assert_eq!(item.status, Status::Open);
         assert_eq!(item.item_type, "task");
-        assert_eq!(item.assignee.as_deref(), Some("seat-1"));
+        assert_eq!(item.assignee, SeatId::parse(SEAT).ok());
         assert_eq!(item.labels, vec!["fleet", "fleet:run"]);
         assert_eq!(
             item.blockers,
@@ -224,10 +245,12 @@ mod tests {
     /// The three states of the order index, off bd 1.3.0's answers where it
     /// has them: a key holding no object, and no fleet key at all — which is
     /// what a row holding only another writer's bare `orders` and `run`
-    /// answers.
+    /// answers. The recorded holder, `seat-1`, is no seat's id, so a seat's is
+    /// put in its place.
     #[test]
     fn an_orders_key_holding_no_object_is_present_and_unreadable() {
-        let row = shown("fx", answer(SHOW_UNREADABLE_ORDERS), "").expect("the item is there");
+        let mut row = shown("fx", answer(SHOW_UNREADABLE_ORDERS), "").expect("the item is there");
+        row["assignee"] = serde_json::json!(SEAT);
         let item = item_from("fx", &row).expect("the recorded show decodes");
         assert_eq!(item.order, OrderState::Unreadable);
 

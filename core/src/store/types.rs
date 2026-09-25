@@ -349,25 +349,50 @@ impl ReadProof {
 
 // ---- items ----------------------------------------------------------------------
 
-/// One item as a read answers it: its id, title, status and type, its own
-/// labels, who holds it, its order, what blocks it and a run's record.
+/// One item as a read answers it: its id, title, description, status and
+/// type, its own labels, who holds it, its order, what blocks it and a run's
+/// record.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Item {
     pub id: ItemId,
+    /// What a person calls this item. `land` writes it into the commit subject,
+    /// so a trunk's log reads as a list of what was done and not of ids.
     pub title: String,
+    /// What the item says: `""` where it says nothing, which an answer spells
+    /// by omitting the key. `item show` renders it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
     pub status: Status,
+    /// The type, as the store spells it: a rule matches on this value.
     #[serde(rename = "type")]
     pub item_type: String,
+    /// The item's OWN labels and no parent's, which is what the store answers.
     #[serde(default)]
     pub labels: Vec<String>,
+    /// The seat holding the item, or `None` where nobody does: the store OMITS
+    /// a key it has no value for, and an absent field must not read as a
+    /// disagreement.
+    ///
+    /// A SEAT AND NEVER A PERSON. A board a project brought may name a person
+    /// here, and that read refuses, naming the item and its holder: an item a
+    /// person holds that read as `None` would be dispatched as held by nobody.
     #[serde(default)]
     pub assignee: Option<SeatId>,
+    /// The order index: none, one the store holds and this fleet cannot read,
+    /// or the order — one value, so an order that is there and unread cannot
+    /// be built as absent.
     #[serde(default)]
     pub order: OrderState,
+    /// The open items that block this one by a type the store's ready set
+    /// honours.
     #[serde(default)]
     pub blockers: Vec<ItemId>,
+    /// A run's record, on the item that records it. One the store holds at a
+    /// shape this fleet does not read is no item at all: the read refuses.
     #[serde(default)]
     pub run: Option<RunRecord>,
+    /// The whole text the read answered. The negative control asks it, so the
+    /// control asks the SAME answer for a token nothing wrote.
     #[serde(skip)]
     pub proof: ReadProof,
 }

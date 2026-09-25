@@ -65,7 +65,7 @@ fn an_item() -> Item {
         status: Status::InProgress,
         item_type: words("task"),
         labels: vec![words("fleet"), words("core")],
-        assignee: Some(words(SEAT)),
+        assignee: Some(seat()),
         order: an_order(Some(seat())),
         blockers: vec!["fx-2".into(), "fx-3".into()],
         ..Item::default()

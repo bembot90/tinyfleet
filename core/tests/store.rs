@@ -400,7 +400,7 @@ fn every_read_opens_the_envelope() {
     .file(
         "answers/show-fx-held.json",
         "{\"data\": [{\"id\": \"fx-held\", \"title\": \"a held item\", \"status\": \"open\", \
-         \"assignee\": \"a-seat\", \"metadata\": {\"fleet.orders\": {\"v\": 1, \"by\": \"run:an-architect\", \
+         \"assignee\": \"01a0d1f1-0aec-765f-9abe-000000a5ea70\", \"metadata\": {\"fleet.orders\": {\"v\": 1, \"by\": \"run:an-architect\", \
          \"kind\": \"dispatch\", \"at\": \"2026-09-23T23:30:39Z\"}}}], \
          \"schema_version\": 1}\nTip: a line after the answer\n",
     )
@@ -434,7 +434,10 @@ fn every_read_opens_the_envelope() {
     let held = store.show("fx-held").expect("the show answer decodes");
     assert_eq!(held.id, "fx-held");
     assert_eq!(held.title, "a held item");
-    assert_eq!(held.assignee.as_deref(), Some("a-seat"));
+    assert_eq!(
+        held.assignee.map(|seat| seat.to_string()).as_deref(),
+        Some("01a0d1f1-0aec-765f-9abe-000000a5ea70")
+    );
     assert!(
         matches!(&held.order, OrderState::Ordered(order) if order.by.to_string() == "run:an-architect"),
         "{:?}",

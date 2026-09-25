@@ -24,9 +24,9 @@ use serde::Deserialize;
 
 use super::types::{Capabilities, ExportSpec};
 use super::{
-    already_cleared, already_closed, first_value, holder_named, tail, unchanged, validated, Filter,
-    HoldId, Item, ItemId, ItemSummary, NewItem, Order, OrderState, ReadProof, RunRecord, Status,
-    Store, StoreError, Update, Version, STORE_TIMEOUT,
+    already_cleared, already_closed, first_value, holder_named, not_a_seat, tail, unchanged,
+    validated, Filter, HoldId, Item, ItemId, ItemSummary, NewItem, Order, OrderState, ReadProof,
+    RunRecord, Status, Store, StoreError, Update, Version, STORE_TIMEOUT,
 };
 use crate::entry::{self, Body, Entry};
 use crate::process::{deadline_cause, run_bounded};
@@ -1088,6 +1088,7 @@ pub fn item_from(id: &str, row: &serde_json::Value) -> Result<Item, StoreError> 
     let metadata = wire.metadata.as_ref();
     Ok(Item {
         run: run_of(&id, metadata)?,
+        assignee: holder_of(&id, wire.assignee.as_deref())?,
         order: order_of(metadata),
         item_type: wire.issue_type.unwrap_or_default(),
         // The item's own labels, absent when the key is absent — which the
@@ -1096,11 +1097,22 @@ pub fn item_from(id: &str, row: &serde_json::Value) -> Result<Item, StoreError> 
         title: wire.title.unwrap_or_default(),
         description: wire.description.unwrap_or_default(),
         status: Status::from(wire.status.unwrap_or_default()),
-        assignee: wire.assignee,
         blockers: blockers_of(wire.dependencies.as_deref().unwrap_or_default()),
         proof: ReadProof::of(row.to_string()),
         id: ItemId::from(id),
     })
+}
+
+/// The row's holder as a seat: none where the key is absent or empty — `""`
+/// is what `--assignee` is handed to clear one — and a seat's full id where it
+/// is one. Anything else is a person, and the read refuses naming them.
+fn holder_of(id: &str, held: Option<&str>) -> Result<Option<SeatId>, StoreError> {
+    match held {
+        None | Some("") => Ok(None),
+        Some(held) => SeatId::parse(held)
+            .map(Some)
+            .map_err(|_| not_a_seat(id, held)),
+    }
 }
 
 /// One listing row as the summary a listing answers, through the readers
@@ -1456,7 +1468,8 @@ mod opening_tests {
     }
 }
 
-/// The mapping [`item_from`] makes of fleet's two keys, one arm per answer.
+/// The mapping [`item_from`] makes of fleet's two keys and of the holder, one arm
+/// per answer.
 #[cfg(test)]
 mod tests {
     use super::{item_from, item_prefix_in, OrderState, StoreError};
@@ -1598,6 +1611,42 @@ mod tests {
             let read = item_from("fx-1", &row(metadata.clone())).expect("reads");
             assert_eq!(read.run, None, "{metadata}");
         }
+    }
+
+    /// An assignee that is no seat id is a person holding the item, and the
+    /// read refuses, naming the item and the holder as the store spells it: a
+    /// person-held item never reads as held by nobody.
+    #[test]
+    fn an_assignee_that_is_no_seat_id_refuses_the_read() {
+        for held in ["alice", "seat-1", "00000005ea71"] {
+            let mut read = row(serde_json::json!({}));
+            read["assignee"] = serde_json::json!(held);
+            let refusal = item_from("fx", &read).expect_err("a person holds it");
+            assert_eq!(
+                refusal,
+                StoreError::Unreadable(format!(
+                    "fx-1 is held by {held}, which is not a seat of this fleet — a person holds \
+                     it, and fleet reads only seat holders"
+                )),
+                "{held}"
+            );
+        }
+    }
+
+    /// A seat's full id is the seat, and an absent assignee — or the empty one
+    /// `--assignee` is handed to clear it — is nobody.
+    #[test]
+    fn an_assignee_that_is_a_seat_id_reads_as_the_seat_and_none_as_nobody() {
+        let mut read = row(serde_json::json!({}));
+        read["assignee"] = serde_json::json!(SEAT);
+        assert_eq!(
+            item_from("fx-1", &read).expect("a seat holds it").assignee,
+            Some(crate::seat::identity::SeatId::parse(SEAT).expect("a seat id"))
+        );
+        read["assignee"] = serde_json::json!("");
+        assert_eq!(item_from("fx-1", &read).expect("reads").assignee, None);
+        let absent = item_from("fx-1", &row(serde_json::json!({}))).expect("reads");
+        assert_eq!(absent.assignee, None);
     }
 
     /// A record at another version, at none, not an object, or at v 1 and not

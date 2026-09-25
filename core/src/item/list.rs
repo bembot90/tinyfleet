@@ -141,7 +141,7 @@ pub fn ids(store: &dyn Store, filter: &Filter) -> Result<Vec<String>, Stop> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub summary: ItemSummary,
-    pub assignee: Option<String>,
+    pub assignee: Option<SeatId>,
     pub run: Option<RunRecord>,
 }
 
@@ -211,7 +211,7 @@ pub fn render(rows: &[Row]) -> String {
                 summary.status,
                 summary.item_type,
                 labels,
-                row.assignee.as_deref().unwrap_or("none")
+                show::holder_or_none(row.assignee)
             )
         })
         .collect::<Vec<_>>()

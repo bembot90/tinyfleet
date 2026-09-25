@@ -223,7 +223,7 @@ impl Ring for StubRing {
 /// in the read's proof where one is named.
 struct Doctored<'a> {
     inner: &'a dyn Store,
-    assignee: Option<String>,
+    assignee: Option<fleet_core::seat::identity::SeatId>,
     plant: Option<&'static str>,
     assigned: std::sync::atomic::AtomicBool,
 }
@@ -251,8 +251,8 @@ impl Store for Doctored<'_> {
     fn show(&self, item: &str) -> Result<Item, StoreError> {
         let mut read = self.inner.show(item)?;
         if self.assigned.load(std::sync::atomic::Ordering::SeqCst) {
-            if let Some(assignee) = &self.assignee {
-                read.assignee = Some(assignee.clone());
+            if let Some(assignee) = self.assignee {
+                read.assignee = Some(assignee);
             }
             if let Some(token) = self.plant {
                 read.proof = ReadProof::of(format!("{}{token}", read.proof.as_str()));
@@ -899,8 +899,8 @@ fn a_return_appends_the_findings_and_hands_the_item_back() {
     assert_eq!(said.entry.as_deref(), Some(last.id.as_str()));
 
     assert_eq!(
-        bd.show(&item).expect("the item reads").assignee.as_deref(),
-        Some(full(builder).as_str()),
+        bd.show(&item).expect("the item reads").assignee,
+        Some(seat_id(builder)),
         "the item goes back to the seat the order named, by its id"
     );
     let rung = ring.calls();
@@ -939,13 +939,8 @@ fn a_return_reassigns_to_the_orders_seat_id_and_an_absent_builder_is_named_by_la
     );
     assert_eq!(code, 0, "{}{}", said.err, said.stop);
     assert_eq!(
-        scratch
-            .store
-            .show(&item)
-            .expect("the item reads")
-            .assignee
-            .as_deref(),
-        Some(full(builder).as_str()),
+        scratch.store.show(&item).expect("the item reads").assignee,
+        Some(seat_id(builder)),
         "the return reassigns to the order's seat id"
     );
     let rung = ring.calls();
@@ -997,9 +992,8 @@ fn another_writers_orders_key_and_run_label_ride_through_a_review() {
             .store
             .show(&returned)
             .expect("the item reads")
-            .assignee
-            .as_deref(),
-        Some(full(builder).as_str()),
+            .assignee,
+        Some(seat_id(builder)),
         "the return goes to the seat fleet's index names"
     );
     assert_eq!(ring.calls()[0].0, full(builder), "and that seat is rung");
@@ -1038,7 +1032,7 @@ fn a_return_whose_assignee_reads_back_as_somebody_else_could_not_tell_and_rings_
     let findings = findings(scratch, "bent", &["the one finding."]);
     let bent = Doctored {
         inner: &scratch.store,
-        assignee: Some("somebody-else".to_string()),
+        assignee: Some(seat_id("somebody-else")),
         plant: None,
         assigned: std::sync::atomic::AtomicBool::new(false),
     };
@@ -1062,7 +1056,7 @@ fn a_return_whose_assignee_reads_back_as_somebody_else_could_not_tell_and_rings_
         "the event follows the read-back, so a disagreement announces nothing"
     );
     assert!(
-        said.stop.contains("somebody-else") && said.stop.contains(&full(builder)),
+        said.stop.contains(&full("somebody-else")) && said.stop.contains(&full(builder)),
         "the value read and the value wanted: {}",
         said.stop
     );
@@ -1413,13 +1407,8 @@ fn a_seat_that_does_not_hold_the_item_writes_no_verdict() {
         "the timeline is unchanged"
     );
     assert_eq!(
-        scratch
-            .store
-            .show(&item)
-            .expect("the item reads")
-            .assignee
-            .as_deref(),
-        Some(full(REVIEWER).as_str()),
+        scratch.store.show(&item).expect("the item reads").assignee,
+        Some(seat_id(REVIEWER)),
         "the item is still the reviewer's"
     );
 

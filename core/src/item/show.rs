@@ -23,6 +23,7 @@ use crate::entry::{
     Reviewed, RulingKind, SuiteRun, Verdict,
 };
 use crate::item::{land, TRUNK};
+use crate::seat::identity::SeatId;
 use crate::store::{Item, OrderState};
 
 /// How far an entry's detail lines sit under its summary.
@@ -42,7 +43,7 @@ pub fn render(item: &Item, timeline: &[Entry]) -> String {
             "type {} · labels {} · assignee {}",
             item.item_type,
             joined_or_none(&item.labels),
-            item.assignee.as_deref().unwrap_or("none")
+            holder_or_none(item.assignee)
         ),
         order_line(item),
     ];
@@ -142,6 +143,11 @@ pub fn order_json(order: &OrderState) -> Value {
             "at": order.at,
         }),
     }
+}
+
+/// The seat holding an item, by its full id, or `none`.
+pub(crate) fn holder_or_none(assignee: Option<SeatId>) -> String {
+    assignee.map_or_else(|| String::from("none"), |seat| seat.to_string())
 }
 
 fn joined_or_none(list: &[String]) -> String {

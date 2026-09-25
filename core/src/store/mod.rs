@@ -25,50 +25,9 @@ pub mod exec;
 pub mod types;
 
 pub use types::{
-    Filter, HoldId, ItemId, ItemSummary, NewItem, Order, OrderKind, OrderState, ReadProof,
+    Filter, HoldId, Item, ItemId, ItemSummary, NewItem, Order, OrderKind, OrderState, ReadProof,
     RunRecord, Stamp, Status, Update, Version,
 };
-
-/// One item as a read answers it, in the contract's own types field by field:
-/// [`types::Item`]'s fields and the description beside them.
-///
-/// NOT YET [`types::Item`] ITSELF. The assignee is still the text the store
-/// holds, because a board a project brought may name a person there, and
-/// what a holder that is not a seat id reads as is not ruled yet; the
-/// description is `item show`'s, which the contract's item does not carry.
-///
-/// An assignee is `Option` because the store OMITS a key it has no value for:
-/// an item nobody has assigned carries no `assignee` at all, and an absent
-/// field is a third answer that must not read as a disagreement.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Item {
-    pub id: ItemId,
-    /// What a person calls this item. `land` writes it into the commit subject,
-    /// so a trunk's log reads as a list of what was done and not of ids.
-    pub title: String,
-    /// What the item says, as the store keeps it: `""` where it says nothing,
-    /// which the store spells by omitting the key. `item show` renders it.
-    pub description: String,
-    pub status: Status,
-    pub assignee: Option<String>,
-    /// The order index: none, one the store holds and this fleet cannot read,
-    /// or the order — one value, so an order that is there and unread cannot
-    /// be built as absent.
-    pub order: OrderState,
-    /// The open items that block this one by a type the store's ready set
-    /// honours.
-    pub blockers: Vec<ItemId>,
-    /// The type, as the store spells it: a rule matches on this value.
-    pub item_type: String,
-    /// The item's OWN labels and no parent's, which is what the store answers.
-    pub labels: Vec<String>,
-    /// A run's record, on the item that records it. One the store holds at a
-    /// shape this fleet does not read is no item at all: the read refuses.
-    pub run: Option<RunRecord>,
-    /// The whole text the read answered. The negative control asks it, so the
-    /// control asks the SAME answer for a token nothing wrote.
-    pub proof: ReadProof,
-}
 
 /// The ways a store call ends badly, which are different exits: an act the
 /// record refuses, or an item not held by whom the write required, is the
@@ -209,7 +168,7 @@ pub trait Store {
                 )))
             }
         };
-        let held = self.show(item)?.assignee.unwrap_or_default();
+        let held = held_text(self.show(item)?.assignee);
         if held != from {
             return Err(moved(item, from, &held));
         }
@@ -263,10 +222,8 @@ pub trait Store {
         by: &Actor,
     ) -> Result<(), StoreError> {
         let read = self.show(id)?;
-        let held = read.assignee.unwrap_or_default();
-        let seat = seat.to_string();
-        if held != seat {
-            return Err(moved(id, &seat, &held));
+        if read.assignee != Some(*seat) {
+            return Err(moved(id, &seat.to_string(), &held_text(read.assignee)));
         }
         if read.status != *status {
             return Err(restatused(id, status.as_str(), read.status.as_str()));
@@ -525,6 +482,22 @@ pub(crate) fn already_closed(id: &ItemId) -> StoreError {
 /// The refusal a clear of a hold already cleared answers.
 pub(crate) fn already_cleared(hold: &HoldId) -> StoreError {
     StoreError::Refused(format!("{hold} is already cleared"))
+}
+
+/// The refusal a read answers for an item whose holder is no seat id: a
+/// person holds it, and it is never read as held by nobody. `held` is the
+/// holder as the store spells it.
+pub(crate) fn not_a_seat(item: &str, held: &str) -> StoreError {
+    StoreError::Unreadable(format!(
+        "{item} is held by {held}, which is not a seat of this fleet — a person holds it, and \
+         fleet reads only seat holders"
+    ))
+}
+
+/// The holder a fence compares as text, where a fenced write names its holder
+/// as text: the seat's id, or `""` for nobody.
+fn held_text(held: Option<SeatId>) -> String {
+    held.map(|seat| seat.to_string()).unwrap_or_default()
 }
 
 /// A holder as a refusal names one: the seat, or nobody for `""`.

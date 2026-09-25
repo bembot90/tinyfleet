@@ -15,7 +15,7 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use common::{fleet_of, full, keys_agree, seat_actor, signal, Graph, Rooted, StubEvents};
+use common::{fleet_of, full, keys_agree, seat_actor, seat_id, signal, Graph, Rooted, StubEvents};
 use fleet_core::entry::{Body, Entry, Timeline};
 use fleet_core::input::{DeliveryInput, DELIVERY_SCHEMA};
 use fleet_core::item::brief::Packs;
@@ -144,7 +144,7 @@ impl Ring for StubRing {
 /// the write a real store will not refuse on demand.
 struct Doctored<'a> {
     inner: &'a dyn Store,
-    assignee: Option<String>,
+    assignee: Option<fleet_core::seat::identity::SeatId>,
     append: Option<String>,
     /// Answered by `append` instead of the write.
     unwritable: Option<String>,
@@ -172,8 +172,8 @@ impl Store for Doctored<'_> {
 
     fn show(&self, item: &str) -> Result<Item, StoreError> {
         let mut read = self.inner.show(item)?;
-        if let Some(assignee) = &self.assignee {
-            read.assignee = Some(assignee.clone());
+        if let Some(assignee) = self.assignee {
+            read.assignee = Some(assignee);
         }
         if let Some(extra) = &self.append {
             // THE FAKE PLANTS THE TOKEN IN ITS PROOF: the read's own text,
@@ -482,7 +482,7 @@ fn a_clean_delivery_commits_reassigns_and_writes_the_delivered_entry() {
     assert_eq!(delivered.entry, last.id, "and answered by its id");
 
     let read = read(scratch, &item);
-    assert_eq!(read.assignee.as_deref(), Some(full(REVIEWER).as_str()));
+    assert_eq!(read.assignee, Some(seat_id(REVIEWER)));
 
     assert!(
         git.calls()
@@ -569,18 +569,15 @@ fn another_writers_orders_key_and_run_label_ride_through_a_delivery() {
     .expect("the delivery is made");
 
     assert_eq!(delivered.item, item, "the seat's one ordered item");
-    assert_eq!(
-        read(scratch, &item).assignee.as_deref(),
-        Some(full(REVIEWER).as_str())
-    );
+    assert_eq!(read(scratch, &item).assignee, Some(seat_id(REVIEWER)));
     assert_eq!(
         common::foreign_of(scratch.store(), &item),
         before,
         "the other writer's key and label are byte-identical"
     );
     assert_eq!(
-        read(scratch, &theirs).assignee.as_deref(),
-        Some(full(seat).as_str()),
+        read(scratch, &theirs).assignee,
+        Some(seat_id(seat)),
         "the item only another tool ordered is left where it was"
     );
 }
@@ -752,8 +749,8 @@ fn a_clean_tree_ahead_of_the_base_delivers_head_and_commits_nothing() {
     assert_eq!(entry.id, delivered.entry, "and it is the entry answered");
     let read = read(scratch, &item);
     assert_eq!(
-        read.assignee.as_deref(),
-        Some(full(REVIEWER).as_str()),
+        read.assignee,
+        Some(seat_id(REVIEWER)),
         "the handoff is recorded"
     );
     let (_, payload) = events.one(ITEM_ENTRY);
@@ -1111,8 +1108,8 @@ fn a_delivery_that_does_not_read_is_refused_at_two_before_anything_is_written() 
         );
         assert_eq!(events.count(), 0, "{label}: nothing was announced");
         assert_eq!(
-            read(scratch, &item).assignee.as_deref(),
-            Some(full(&seat).as_str()),
+            read(scratch, &item).assignee,
+            Some(seat_id(&seat)),
             "{label}: the item is still the seat's"
         );
     }
@@ -1265,8 +1262,8 @@ fn a_reviewer_named_by_name_is_assigned_by_its_full_id_and_a_stranger_is_refused
         git.calls()
     );
     assert_eq!(
-        read(scratch, &item).assignee.as_deref(),
-        Some(full(seat).as_str()),
+        read(scratch, &item).assignee,
+        Some(seat_id(seat)),
         "the refusal wrote nothing"
     );
 
@@ -1279,8 +1276,8 @@ fn a_reviewer_named_by_name_is_assigned_by_its_full_id_and_a_stranger_is_refused
         "the reviewer is Kite's id"
     );
     assert_eq!(
-        read(scratch, &item).assignee.as_deref(),
-        Some(full("Kite").as_str()),
+        read(scratch, &item).assignee,
+        Some(seat_id("Kite")),
         "the item is assigned to Kite's full id and never to the word the policy wrote"
     );
     let rung = ring.calls();
@@ -1297,7 +1294,7 @@ fn a_read_back_that_disagrees_exits_three_and_prints_both_values() {
 
     let doctored = Doctored {
         inner: scratch.store(),
-        assignee: Some("somebody-else".to_string()),
+        assignee: Some(seat_id("somebody-else")),
         append: None,
         unwritable: None,
     };
@@ -1324,7 +1321,7 @@ fn a_read_back_that_disagrees_exits_three_and_prints_both_values() {
 
     assert_eq!(stop.code, 3, "{}", stop.message);
     assert!(
-        stop.message.contains("somebody-else") && stop.message.contains(&full(REVIEWER)),
+        stop.message.contains(&full("somebody-else")) && stop.message.contains(&full(REVIEWER)),
         "both values: {}",
         stop.message
     );
@@ -1442,8 +1439,8 @@ fn a_run_is_no_seat_and_delivers_only_the_item_it_names() {
     let scratch = &store();
     let item = an_ordered_item(scratch, "an item Orla holds", "Orla");
     assert_eq!(
-        read(scratch, &item).assignee.as_deref(),
-        Some(full("Orla").as_str()),
+        read(scratch, &item).assignee,
+        Some(seat_id("Orla")),
         "the premise: the item is assigned to her id"
     );
     let delivery = a_delivery(scratch, "by-kind", &whole());
@@ -1485,8 +1482,8 @@ fn a_run_is_no_seat_and_delivers_only_the_item_it_names() {
         git.calls()
     );
     assert_eq!(
-        read(scratch, &item).assignee.as_deref(),
-        Some(full("Orla").as_str()),
+        read(scratch, &item).assignee,
+        Some(seat_id("Orla")),
         "the refusal wrote nothing"
     );
     // The same by kind, and never by the id: a routine or the controller
@@ -1505,10 +1502,7 @@ fn a_run_is_no_seat_and_delivers_only_the_item_it_names() {
     // THE CONTROL: Orla's own typed actor finds the item assigned to her id.
     let delivered = run(&seat_actor("Orla"), None, &StubGit::clean()).expect("Orla finds her item");
     assert_eq!(delivered.item, item, "the item assigned to Orla's id");
-    assert_eq!(
-        read(scratch, &item).assignee.as_deref(),
-        Some(full(REVIEWER).as_str())
-    );
+    assert_eq!(read(scratch, &item).assignee, Some(seat_id(REVIEWER)));
 
     // WITH --item, A RUN STILL HOLDS NO SEAT'S ITEM (fleet-pl6 (a)): naming an
     // item Orla holds is refused by the run's kind, before the commit.
@@ -1526,8 +1520,8 @@ fn a_run_is_no_seat_and_delivers_only_the_item_it_names() {
         git.calls()
     );
     assert_eq!(
-        read(scratch, &second).assignee.as_deref(),
-        Some(full("Orla").as_str()),
+        read(scratch, &second).assignee,
+        Some(seat_id("Orla")),
         "the refusal wrote nothing"
     );
 
@@ -1602,8 +1596,8 @@ fn an_item_named_by_a_seat_that_does_not_hold_it_is_refused_naming_both() {
     // BRAM NAMING AOIFE'S ITEM: exit 1 naming both, and the item stays hers.
     refused(&seat_actor("Bram"), &item, &full("Aoife"));
     assert_eq!(
-        read(scratch, &item).assignee.as_deref(),
-        Some(full("Aoife").as_str()),
+        read(scratch, &item).assignee,
+        Some(seat_id("Aoife")),
         "the refusal wrote nothing"
     );
 
@@ -1768,8 +1762,8 @@ fn an_absent_reviewer_and_a_failed_ring_both_leave_the_delivery_standing() {
             );
         }
         assert_eq!(
-            read(scratch, &item).assignee.as_deref(),
-            Some(full(REVIEWER).as_str()),
+            read(scratch, &item).assignee,
+            Some(seat_id(REVIEWER)),
             "{label}: the handoff is recorded whatever the doorbell did"
         );
     }

@@ -112,12 +112,7 @@ pub fn withdraw(
         if !matches!(read.order, OrderState::None) {
             return Err(halfway(item, "it still carries its order index"));
         }
-        if let Some(assignee) = read
-            .assignee
-            .as_deref()
-            .map(str::trim)
-            .filter(|a| !a.is_empty())
-        {
+        if let Some(assignee) = read.assignee {
             return Err(halfway(item, &format!("it reads assigned to `{assignee}`")));
         }
         if read.status != Status::Open {

@@ -44,7 +44,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::entry::{self, Body, CheckRow, Clearance, Entry, SuiteRun, Timeline, Verdict};
-use crate::item::deliver::{named, reviewer_of};
+use crate::item::deliver::reviewer_of;
 use crate::item::lane;
 use crate::item::run;
 use crate::item::{
@@ -569,14 +569,14 @@ fn run(
     let closer_id = closer.to_string();
     let acting = Actor::seat(closer);
     let closer_named = wiring.seats.label(&closer);
-    match item.assignee.as_deref() {
-        Some(seat) if seat == closer_id => {}
+    match item.assignee {
+        Some(seat) if seat == closer => {}
         Some(seat) => {
             return Err(Stop::refused(format!(
                 "{} is held by `{}` and not by `{closer_named}` — whoever closes an item lands \
                  its work",
                 item.id,
-                named(seat, wiring.seats)
+                wiring.seats.label(&seat)
             )))
         }
         None => {

@@ -256,9 +256,12 @@ impl FakeStore {
         let held = items
             .get(item)
             .ok_or_else(|| StoreError::Refused(format!("{item} is not here")))?;
-        let now = held.assignee.as_deref().unwrap_or_default();
+        let now = held
+            .assignee
+            .map(|seat| seat.to_string())
+            .unwrap_or_default();
         if now != holder {
-            return Err(crate::store::moved(item, holder, now));
+            return Err(crate::store::moved(item, holder, &now));
         }
         Ok(())
     }
@@ -421,15 +424,19 @@ impl FakeStore {
 
     /// The seeded rows for the seat, plus every item this store holds assigned
     /// to it, under the seat's full id.
-    fn assigned(&self, seat: &str) -> Vec<ItemSummary> {
-        let mut rows = self.held.get(seat).cloned().unwrap_or_default();
+    fn assigned(&self, seat: &SeatId) -> Vec<ItemSummary> {
+        let mut rows = self
+            .held
+            .get(&seat.to_string())
+            .cloned()
+            .unwrap_or_default();
         for item in self
             .items
             .lock()
             .expect("the items are not poisoned")
             .values()
         {
-            let mine = item.assignee.as_deref() == Some(seat);
+            let mine = item.assignee == Some(*seat);
             if mine && !rows.iter().any(|row| row.id == item.id) {
                 rows.push(self.summary(item));
             }
@@ -552,7 +559,7 @@ fn row_of(
     row.insert(String::from("status"), item.status.as_str().into());
     row.insert(String::from("issue_type"), item.item_type.clone().into());
     if let Some(assignee) = &item.assignee {
-        row.insert(String::from("assignee"), assignee.clone().into());
+        row.insert(String::from("assignee"), assignee.to_string().into());
     }
     if let Some(reason) = close_reason {
         row.insert(String::from("close_reason"), reason.into());
@@ -629,7 +636,7 @@ impl Store for FakeStore {
         Ok(match filter {
             Filter::Ready => self.summaries(self.ready_ids()),
             Filter::Label(label) => self.summaries(self.labelled_ids(label)),
-            Filter::Assignee(seat) => self.assigned(&seat.to_string()),
+            Filter::Assignee(seat) => self.assigned(seat),
         })
     }
 
@@ -711,7 +718,7 @@ impl Store for FakeStore {
                 held.title = title.clone();
             }
             if let Some(assignee) = &change.assignee {
-                held.assignee = assignee.map(|seat| seat.to_string());
+                held.assignee = *assignee;
             }
         })
     }
@@ -728,8 +735,16 @@ impl Store for FakeStore {
     /// One log line, and the assignment only while `from` holds the item.
     fn hand_over(&self, item: &str, from: &str, to: &str, by: &str) -> Result<(), StoreError> {
         self.log(format!("hand_over {item} {from} {to} {by}"))?;
+        let to = match to {
+            "" => None,
+            seat => Some(SeatId::parse(seat).map_err(|why| {
+                StoreError::Unreadable(format!(
+                    "{item} is not handed over: {why} — nothing was written"
+                ))
+            })?),
+        };
         self.held_by(item, from)?;
-        self.moving(item, |held| held.assignee = Some(to.to_string()))
+        self.moving(item, |held| held.assignee = to)
     }
 
     /// The order written as the bd adapter writes it — the same object, built

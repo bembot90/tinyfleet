@@ -110,7 +110,7 @@ impl Spawner for StubSpawner {
 /// the read-back exists to catch.
 struct Doctored<'a> {
     inner: &'a dyn Store,
-    assignee: Option<String>,
+    assignee: Option<SeatId>,
     /// The seat the order index reads back naming.
     seat: Option<SeatId>,
     append: Option<String>,
@@ -141,8 +141,8 @@ impl Store for Doctored<'_> {
 
     fn show(&self, item: &str) -> Result<Item, StoreError> {
         let mut read = self.inner.show(item)?;
-        if let Some(assignee) = &self.assignee {
-            read.assignee = Some(assignee.clone());
+        if let Some(assignee) = self.assignee {
+            read.assignee = Some(assignee);
         }
         if let (Some(seat), OrderState::Ordered(index)) = (self.seat, &mut read.order) {
             index.seat = Some(seat);
@@ -540,7 +540,7 @@ fn a_named_dispatch_writes_the_assignee_the_ordered_entry_and_the_index() {
     );
 
     let read = rig.graph.store().show(&item).expect("the item reads back");
-    assert_eq!(read.assignee.as_deref(), Some(seat.as_str()));
+    assert_eq!(read.assignee, Some(seat_id("Orla")));
     assert_eq!(ordered_index(read), wanted_index(Some("Orla")));
 
     // The one event: the ordered entry's signal, by the dispatcher, naming the
@@ -1118,7 +1118,7 @@ fn a_seat_assigned_only_unordered_work_and_an_epic_is_dispatched() {
 
     assert_eq!(answer.code, None, "{}", answer.why);
     let read = rig.graph.store().show(&item).expect("the item reads back");
-    assert_eq!(read.assignee.as_deref(), Some(full(&seat).as_str()));
+    assert_eq!(read.assignee, Some(seat_id(&seat)));
     assert!(
         matches!(read.order, OrderState::Ordered(_)),
         "the order is written"
@@ -1135,7 +1135,7 @@ fn a_read_back_that_disagrees_exits_three_with_both_values() {
     let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
     let bent = Doctored {
         inner: rig.graph.store(),
-        assignee: Some(String::from("somebody-else")),
+        assignee: Some(seat_id("somebody-else")),
         seat: None,
         append: None,
         refuse_order: false,
@@ -1151,7 +1151,7 @@ fn a_read_back_that_disagrees_exits_three_with_both_values() {
     );
     assert_eq!(answer.code, Some(3), "{}", answer.why);
     assert!(
-        answer.why.contains("somebody-else"),
+        answer.why.contains(&full("somebody-else")),
         "the value read: {}",
         answer.why
     );
@@ -1365,7 +1365,7 @@ fn a_ring_that_finds_no_live_session_leaves_the_order_standing() {
     );
 
     let read = rig.graph.store().show(&item).expect("the item reads back");
-    assert_eq!(read.assignee.as_deref(), Some(full(&seat).as_str()));
+    assert_eq!(read.assignee, Some(seat_id(&seat)));
     assert!(
         matches!(read.order, OrderState::Ordered(_)),
         "the three writes stand"
@@ -1403,7 +1403,7 @@ fn a_suffix_is_dispatched_under_the_full_id_it_resolves_to() {
     assert_eq!(answer.code, None, "{}", answer.why);
 
     let read = rig.graph.store().show(&item).expect("the item reads back");
-    assert_eq!(read.assignee.as_deref(), Some(full(&seat).as_str()));
+    assert_eq!(read.assignee, Some(seat_id(&seat)));
     assert_eq!(
         timeline_of(&rig, &item)
             .iter()
@@ -1661,7 +1661,7 @@ mod transient {
         );
 
         let read = rig.graph.store().show(&item).expect("the item reads back");
-        assert_eq!(read.assignee.as_deref(), Some(full("t1").as_str()));
+        assert_eq!(read.assignee, Some(seat_id("t1")));
         assert_eq!(
             index_of(&rig, &item),
             wanted_index(Some("t1")),

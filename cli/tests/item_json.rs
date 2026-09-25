@@ -956,6 +956,87 @@ fn item_show_prints_the_item_and_its_entries_and_refuses_what_it_cannot_read() {
         "{}",
         stderr(&out)
     );
+
+    // An item a person holds: `show` and a listing that reaches it are both
+    // could-not-tell, naming the holder, and never an item held by nobody.
+    let person = rig.a_person_held_item("alice", PERSON_HELD);
+    let refused = format!(
+        "{person} is held by alice, which is not a seat of this fleet — a person holds it, and \
+         fleet reads only seat holders"
+    );
+    let out = rig.item_show(&[&person, "--json"]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    let refusal = refusal_of(&out, "item show");
+    assert_eq!(refusal["code"], serde_json::json!("could_not_tell"));
+    assert!(
+        refusal["why"]
+            .as_str()
+            .is_some_and(|why| why.contains(&refused)),
+        "{refusal}"
+    );
+    let out = rig.item_list(&["--label", PERSON_HELD]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert!(out.stdout.is_empty(), "{}", stdout(&out));
+    assert!(
+        stderr(&out).starts_with("fleet item list: ") && stderr(&out).contains(&refused),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// The label the person-held item carries: a listing of this arm's own.
+const PERSON_HELD: &str = "ij-person-held";
+
+impl Rig {
+    /// An open item a person holds, under `label` and out of the ready set:
+    /// the rigs share one board, and an item a person holds in its ready set
+    /// would refuse every other arm's `item list --ready`. The blocker is
+    /// filed second, as the item it blocks — bd 1.3.0's `--deps
+    /// blocks:<id>` blocks `<id>` by the item being filed.
+    fn a_person_held_item(&self, person: &str, label: &str) -> String {
+        let filed = |args: &[&str]| {
+            let out = self.bd(args);
+            assert!(out.status.success(), "bd create: {}", stderr(&out));
+            let value: serde_json::Value =
+                serde_json::from_str(stdout(&out).trim()).expect("bd create answers JSON");
+            value["id"].as_str().expect("an id").to_string()
+        };
+        let item = filed(&[
+            "create",
+            "--title",
+            "an item a person holds",
+            "--type",
+            "task",
+            "--assignee",
+            person,
+            "--labels",
+            label,
+            "--json",
+        ]);
+        let blocks = format!("blocks:{item}");
+        filed(&[
+            "create",
+            "--title",
+            "what the person's item waits on",
+            "--type",
+            "task",
+            "--deps",
+            &blocks,
+            "--json",
+        ]);
+        item
+    }
+
+    /// `fleet item list`, which takes no `--packs-dir` either.
+    fn item_list(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_fleet"))
+            .args(["item", "list"])
+            .args(args)
+            .current_dir(&self.project)
+            .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub))
+            .output()
+            .expect("the built binary runs")
+    }
 }
 
 // ---- the store a project names: `[store] adapter` in its own file ----------
