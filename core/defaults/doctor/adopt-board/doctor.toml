@@ -1,0 +1,17 @@
+description = "What a board carried before fleet was added to it: fleet's own names off fleet's schema, and the board's own conventions to map onto fleet's."
+run = "run.sh"
+
+# No name key: the directory is the name, which is the shape the reference's
+# packs use.
+#
+# A BOARD IS SHARED, and a project that adds fleet to one already has a way of
+# its own to say who holds an item, what is ordered and which items are runs.
+# Fleet reads only its own namespaced keys and label, so none of that is an
+# error — it is invisible, which is worse: a person flies an item they think is
+# ordered and fleet reads it as unordered. This entry is where the board says
+# so, before the first flight, with the items to look at by id. The `adopt`
+# skill walks its report, and every write that maps a convention onto fleet's
+# is confirmed by the person and read back.
+#
+# It READS THROUGH FLEET, never through the store's own binary: `fleet item
+# list --json` is the one read it makes, and it writes nothing.

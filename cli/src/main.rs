@@ -128,7 +128,7 @@ woke, rest, handed-off and exited are said under `fleet event`.")]
         verb: routines::Verb,
     },
 
-    /// read one item: its fields and its timeline
+    /// read items: one with its fields and its timeline, or a list of them
     Item {
         #[command(subcommand)]
         verb: item_show::Verb,

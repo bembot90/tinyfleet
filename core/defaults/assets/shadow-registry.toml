@@ -58,6 +58,14 @@ path = "doctor/claude-code-version/run.sh"
 purpose = "how Claude Code is asked for its version against the release the binary's controller adapter was measured on, and the line a mismatch names to install it"
 
 [[shadow]]
+path = "doctor/adopt-board/doctor.toml"
+purpose = "the board-adoption check's own name and description"
+
+[[shadow]]
+path = "doctor/adopt-board/run.sh"
+purpose = "what the board-adoption check reads through fleet, which keys and labels it counts as a board's own conventions, and which status the report gives"
+
+[[shadow]]
 path = "assets/brief.md"
 purpose = "the first turn a dispatched seat reads, and the contract it works under"
 

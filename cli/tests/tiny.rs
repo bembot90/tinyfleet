@@ -620,8 +620,8 @@ fn stale_branches_reports_a_closed_items_branch_and_leaves_the_branch_where_it_i
 
 /// The rituals the pack ships, each with the line budget its spec set, and
 /// `None` where the spec set none: the two carried from elsewhere whose length
-/// is the house style's, and the two flight skills.
-const RITUALS: [(&str, Option<usize>); 11] = [
+/// is the house style's, the two flight skills, and the board-adoption walk.
+const RITUALS: [(&str, Option<usize>); 12] = [
     ("wake", Some(150)),
     ("handoff", Some(130)),
     ("rest", Some(40)),
@@ -633,6 +633,7 @@ const RITUALS: [(&str, Option<usize>); 11] = [
     ("runbook", None),
     ("preboard", None),
     ("takeoff", None),
+    ("adopt", None),
 ];
 
 /// Every `SKILL.md` under the pack, by the directory that holds it. The walk is

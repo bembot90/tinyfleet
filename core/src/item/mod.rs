@@ -16,6 +16,7 @@ pub mod doctor;
 pub mod hold;
 pub mod land;
 pub mod lane;
+pub mod list;
 pub mod pins;
 pub mod review;
 pub mod rules;

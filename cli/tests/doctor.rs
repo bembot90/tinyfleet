@@ -7,8 +7,10 @@
 //! `fleet doctor` prints. Every tool those checks ask is a stub this rig puts
 //! first on `PATH`: the agent binary answers its version at the supported pin
 //! and the isolation pair by whether the credential knob is set, bd answers
-//! its version at the pin, and the pinned runtime prints one line. Nothing
-//! here reads a board, starts a session or asks a real tool anything.
+//! its version at the pin and an empty list to every read the adopt-board
+//! check's `fleet item list` makes, and the pinned runtime prints one line.
+//! Nothing here reads a board, starts a session or asks a real tool anything;
+//! the adopt-board check over a real board is `adopt.rs`'s.
 //!
 //! THE PINS ARE READ FROM CORE and not spelled here, so a supported-version
 //! move leaves this suite green and the doctor's own copies are core's suite
@@ -34,7 +36,8 @@ const CONFIGURED: &str = "[project]\nitem_prefix = \"fx\"\n";
 const UNCONFIGURED: &str = "[project]\n";
 
 /// Every check the binary's defaults carry, in the order the verb runs them.
-const DEFAULTS: [&str; 5] = [
+const DEFAULTS: [&str; 6] = [
+    "adopt-board",
     "bd-version",
     "claude-code-version",
     "guards-installed",
@@ -111,10 +114,16 @@ impl Rig {
                 fleet_core::supported::PINNED_CLAUDE_CODE
             ),
         );
+        // bd: its version at the pin, and an empty board to any other call —
+        // `-C <root> ready …` and `-C <root> list …` are the adopt-board
+        // check's two reads, through `fleet item list`.
         rig.stub(
             "bd",
             &format!(
-                "echo \"bd version {} (stub)\"",
+                "case \"${{1:-}}\" in\n\
+                 version) echo \"bd version {} (stub)\" ;;\n\
+                 *) echo '[]' ;;\n\
+                 esac",
                 fleet_core::store::PINNED_BD
             ),
         );
@@ -203,8 +212,10 @@ impl Rig {
             )
             .env("NO_COLOR", "1")
             .env_remove("CLAUDE_SECURESTORAGE_CONFIG_DIR")
-            // bd-version asks the binary this names before any bd on PATH.
-            .env_remove("FLEET_BD_BIN")
+            // bd-version asks the binary this names before any bd on PATH, and
+            // the store `fleet item list` opens asks nothing else: the stub,
+            // so neither reaches a real bd.
+            .env("FLEET_BD_BIN", self.stubs.join("bd"))
             .env("PATH", path)
             .output()
             .expect("the built binary runs")
@@ -294,8 +305,12 @@ fn the_defaults_pass_on_a_configured_project() {
     );
     assert_eq!(row(&said, "runtime-version (defaults)"), NOTHING_PINNED);
     assert_eq!(
+        row(&said, "adopt-board (defaults)"),
+        "pass adopt-board (defaults) — adopt-board: nothing to adopt — no items read"
+    );
+    assert_eq!(
         last_line(&said),
-        "doctor 5 checks — 5 pass, 0 finding, 0 could not tell"
+        "doctor 6 checks — 6 pass, 0 finding, 0 could not tell"
     );
     assert!(
         !said.lines().any(|line| line.starts_with("  ")),
@@ -333,7 +348,7 @@ fn an_unconfigured_guard_is_a_finding_with_its_lines_below_the_row() {
     }
     assert_eq!(
         last_line(&said),
-        "doctor 5 checks — 4 pass, 1 finding, 0 could not tell"
+        "doctor 6 checks — 5 pass, 1 finding, 0 could not tell"
     );
 }
 
@@ -368,7 +383,7 @@ fn a_check_that_could_not_tell_wins_over_a_finding() {
     );
     assert_eq!(
         last_line(&said),
-        "doctor 8 checks — 5 pass, 1 finding, 2 could not tell"
+        "doctor 9 checks — 6 pass, 1 finding, 2 could not tell"
     );
 
     rig.uncheck("scratch", "fx-unread");
@@ -563,7 +578,7 @@ fn json_carries_every_row_and_the_exit_carries_the_aggregate() {
     assert_eq!(document["data"]["verdict"], "finding");
     assert_eq!(
         document["data"]["counts"],
-        serde_json::json!({ "pass": 4, "finding": 1, "could_not_tell": 0 })
+        serde_json::json!({ "pass": 5, "finding": 1, "could_not_tell": 0 })
     );
     let checks = document["data"]["checks"]
         .as_array()
