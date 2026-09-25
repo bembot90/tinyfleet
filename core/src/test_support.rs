@@ -14,7 +14,18 @@ use std::sync::Mutex;
 
 use crate::entry::{self, Body, Entry};
 use crate::seat::actor::Actor;
+use crate::store::bd::{item_from, opened, shown, SCHEMA_VERSION};
+use crate::store::types::{Capabilities, ExportSpec};
 use crate::store::{keys, AssignedItem, Item, NewItem, Orders, Store, StoreError};
+
+/// Where the fake's export goes, relative to the root it is handed: a file of
+/// its own and under a directory of its own, so an arm on the fake that passes
+/// passes on what the store declared and never on a path a verb spelled.
+pub const EXPORT_FILE: &str = ".store/export.jsonl";
+
+/// The directory [`EXPORT_FILE`] sits in, which the fake declares as the
+/// store's own.
+pub const EXPORT_DIR: &str = ".store/";
 
 /// Names one board's directory apart from the next in the same process.
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -31,7 +42,7 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 /// disagrees with the write beside it — is [`FakeStore::ignore_writes`], off
 /// until an arm asks for it.
 ///
-/// Every read is decoded by [`crate::store::item_from`], the same function
+/// Every read is decoded by [`crate::store::bd::item_from`], the same function
 /// the real store's reads go through: a row is built in `bd`'s own JSON shape
 /// and handed to it, so the fake cannot decode a field the real store decodes
 /// differently.
@@ -72,6 +83,9 @@ pub struct FakeStore {
     /// Where `export` writes. A store with no root logs the export and writes
     /// nothing: only a rig that gave it a root has a directory to write into.
     pub root: Option<PathBuf>,
+    /// Whether this store declares no export at all: its capabilities answer
+    /// none, and an export asked of it anyway is refused. Off by default.
+    pub no_export: bool,
     /// While set, a write is recorded and NOT applied — the disagreement a real
     /// store will not produce on demand. Off until an arm asks for it, through
     /// [`FakeStore::ignore_writes`] and never by hand.
@@ -593,11 +607,11 @@ impl Store for FakeStore {
             ),
         };
         let answer = serde_json::json!({
-            "schema_version": crate::store::SCHEMA_VERSION,
+            "schema_version": SCHEMA_VERSION,
             "data": data,
         });
-        let opened = crate::store::opened(answer, || String::from("the board held in memory"));
-        crate::store::item_from(item, &crate::store::shown(item, opened, &said)?)
+        let answer = opened(answer, || String::from("the board held in memory"));
+        item_from(item, &shown(item, answer, &said)?)
     }
 
     fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
@@ -800,20 +814,40 @@ impl Store for FakeStore {
         Ok(entries)
     }
 
-    /// One JSON object per line, under the root the CALLER names. A store that
-    /// was given no root of its own logs the word and writes nothing: a fake
-    /// nobody rooted is one whose arms are about the board and not the file.
+    /// [`EXPORT_FILE`] in [`EXPORT_DIR`], or no export at all where
+    /// [`FakeStore::no_export`] is set.
+    fn capabilities(&self) -> Result<Capabilities, StoreError> {
+        Ok(Capabilities {
+            export: (!self.no_export).then(|| ExportSpec {
+                file: EXPORT_FILE.to_string(),
+                dir: EXPORT_DIR.to_string(),
+            }),
+            scratch: false,
+            item_prefix: None,
+        })
+    }
+
+    /// One JSON object per line, at [`EXPORT_FILE`] under the root the CALLER
+    /// names, answered as that path. A store that was given no root of its own
+    /// logs the word and writes nothing: a fake nobody rooted is one whose arms
+    /// are about the board and not the file. A store that declares no export
+    /// refuses it, and writes nothing.
     ///
     /// An item's line carries its comments, which is where its entries live —
     /// measured on bd 1.3.0, whose export writes them under `comments` with the
     /// fields a comment read answers — so an append moves the export's bytes as
     /// it moves the real one's.
-    fn export(&self, into: &Path) -> Result<(), StoreError> {
-        self.log(String::from("export"))?;
-        if self.root.is_none() {
-            return Ok(());
+    fn export(&self, into: &Path) -> Result<PathBuf, StoreError> {
+        if self.no_export {
+            return Err(StoreError::Unreadable(String::from(
+                "this store declares no export",
+            )));
         }
-        let into = into.join(crate::store::EXPORT);
+        self.log(String::from("export"))?;
+        let into = into.join(EXPORT_FILE);
+        if self.root.is_none() {
+            return Ok(into);
+        }
         if let Some(dir) = into.parent() {
             std::fs::create_dir_all(dir).map_err(|e| {
                 StoreError::Unreadable(format!(
@@ -852,7 +886,8 @@ impl Store for FakeStore {
                 "the export {} was not written: {e}",
                 into.display()
             ))
-        })
+        })?;
+        Ok(into)
     }
 }
 
@@ -942,7 +977,10 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     fn timeline(&self, item: &str) -> Result<Vec<Entry>, StoreError> {
         (**self).timeline(item)
     }
-    fn export(&self, into: &Path) -> Result<(), StoreError> {
+    fn capabilities(&self) -> Result<Capabilities, StoreError> {
+        (**self).capabilities()
+    }
+    fn export(&self, into: &Path) -> Result<PathBuf, StoreError> {
         (**self).export(into)
     }
 }

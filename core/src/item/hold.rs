@@ -43,7 +43,8 @@ use crate::item::{
     recorded, signal, Events, Git, Project, Stop, Unrecorded, ITEM_ENTRY, TRUNK_BRANCH,
 };
 use crate::seat::actor::Actor;
-use crate::store::{Item, Store, BD};
+use crate::store::bd::BD;
+use crate::store::{Item, Store};
 
 /// What a run's park answers as its branch, where a seat's answers its work
 /// branch: a run's record has no branch at all, and a caller printing the park

@@ -124,7 +124,7 @@ impl Rig {
                  version) echo \"bd version {} (stub)\" ;;\n\
                  *) echo '[]' ;;\n\
                  esac",
-                fleet_core::store::PINNED_BD
+                fleet_core::store::bd::PINNED_BD
             ),
         );
         rig.stub(RUNTIME, &format!("echo \"{RUNTIME} {VERSION}\""));

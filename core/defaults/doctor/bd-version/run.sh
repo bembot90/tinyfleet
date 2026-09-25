@@ -12,7 +12,7 @@
 #           verbs still run, on answers nobody measured. Both exit 1, and both
 #           point at beads' own installation docs, naming the pin to install.
 #
-# PINNED IS A COPY of `fleet_core::store::PINNED_BD`, because a script cannot
+# PINNED IS A COPY of `fleet_core::store::bd::PINNED_BD`, because a script cannot
 # read a Rust constant. The core suite reads this line and fails until the two
 # agree, so a pin move that forgets it is refused at the suite.
 #

@@ -40,8 +40,9 @@ use fleet_core::item::{
 };
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
-use fleet_core::store::{AssignedItem, Bd, Item, Store, StoreError};
-use fleet_core::test_support::Board;
+use fleet_core::store::bd::Bd;
+use fleet_core::store::{AssignedItem, Item, Store, StoreError};
+use fleet_core::test_support::{Board, EXPORT_DIR, EXPORT_FILE};
 
 const REVIEWER: &str = "a-reviewer";
 const BUILDER: &str = "a-builder";
@@ -125,15 +126,22 @@ struct StubGit {
 
 impl StubGit {
     /// A linked worktree with a clean tree, the delivered file staged beside the
-    /// store's export, a squash that applies and a push that landed.
+    /// store's export, a squash that applies and a push that landed — over the
+    /// board held in memory, whose export is [`EXPORT_FILE`].
     fn clean() -> StubGit {
+        StubGit::exporting(EXPORT_FILE)
+    }
+
+    /// The same clean tree over a store whose export is `file`: the real
+    /// store's, for the one arm that lands through it.
+    fn exporting(file: &str) -> StubGit {
         StubGit {
             linked: true,
             // The tree gate sees a clean tree; the read after the export sees
             // the one file the export rewrote, in a project that versions it.
-            statuses: Mutex::new([Vec::new(), vec![" M .beads/issues.jsonl".to_string()]].into()),
+            statuses: Mutex::new([Vec::new(), vec![format!(" M {file}")]].into()),
             status: Vec::new(),
-            staged: vec![".beads/issues.jsonl".to_string(), FILE.to_string()],
+            staged: vec![file.to_string(), FILE.to_string()],
             delivered: vec![FILE.to_string()],
             squash: Mutex::new(Some(Squashed::Done)),
             behind: 0,
@@ -512,7 +520,11 @@ impl Store for Doctored<'_> {
         Ok(entries)
     }
 
-    fn export(&self, into: &std::path::Path) -> Result<(), StoreError> {
+    fn capabilities(&self) -> Result<fleet_core::store::types::Capabilities, StoreError> {
+        self.inner.capabilities()
+    }
+
+    fn export(&self, into: &std::path::Path) -> Result<std::path::PathBuf, StoreError> {
         self.inner.export(into)
     }
 }
@@ -996,7 +1008,7 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_landed_entry_and_close
     let scratch = ring();
     let bd = &Bd::at(&scratch.root);
     let item = an_item(bd, "an item to land", Some(("ACCEPTED", SHA)));
-    let git = StubGit::clean();
+    let git = StubGit::exporting(fleet_core::store::bd::EXPORT);
 
     let events = StubEvents::default();
     let ran = run_watched(scratch, bd, &git, &item, SHA, &[], None, &events);
@@ -1054,7 +1066,7 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_landed_entry_and_close
         "fetch origin".to_string(),
         format!("branch_at land/{item}"),
         format!("squash_merge {SHA}"),
-        format!("add {}", fleet_core::store::EXPORT),
+        format!("add {}", fleet_core::store::bd::EXPORT),
         "staged".to_string(),
         "commit_message_file".to_string(),
         "fetch origin".to_string(),
@@ -1626,7 +1638,7 @@ fn also_widens_the_delivered_set_and_reason_rides_the_close() {
     let bd = &scratch.store;
     let mut git = StubGit::clean();
     git.staged = vec![
-        ".beads/issues.jsonl".to_string(),
+        ".store/export.jsonl".to_string(),
         FILE.to_string(),
         "the-log.md".to_string(),
     ];
@@ -1685,7 +1697,7 @@ fn a_project_whose_store_git_ignores_stages_none_of_it() {
     assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
     let calls = git.calls();
     assert!(
-        !calls.iter().any(|call| call.starts_with("add .beads")),
+        !calls.iter().any(|call| call.starts_with("add .store")),
         "no store path was staged: {calls:?}"
     );
     // The control for the arm above: the clean rig, whose porcelain DOES name
@@ -1703,7 +1715,7 @@ fn a_project_whose_store_git_ignores_stages_none_of_it() {
         versioned
             .calls()
             .iter()
-            .any(|call| call.starts_with("add .beads")),
+            .any(|call| call.starts_with("add .store")),
         "the versioned store IS staged: {:?}",
         versioned.calls()
     );
@@ -1727,8 +1739,8 @@ fn a_dirty_board_does_not_wedge_the_gate_or_the_re_run() {
     // The export is already modified when the landing starts, which is what a
     // re-run after any refusal at (e) or later looks like.
     *git.statuses.lock().expect("not poisoned") = [
-        vec![" M .beads/issues.jsonl".to_string()],
-        vec![" M .beads/issues.jsonl".to_string()],
+        vec![" M .store/export.jsonl".to_string()],
+        vec![" M .store/export.jsonl".to_string()],
     ]
     .into();
 
@@ -1754,7 +1766,7 @@ fn a_dirty_board_does_not_wedge_the_gate_or_the_re_run() {
 ///
 /// TOO WIDE is the bug: a refusal from (e) on hard-resets the tree, so every
 /// store path this gate waves past is a store path the reset discards without
-/// a word — a tracked `.beads/hooks/*` edit included. TOO NARROW loses the
+/// a word — a tracked hook under it included. TOO NARROW loses the
 /// re-run: the export is rewritten by (e) in this same root, so a gate that
 /// refused on it would refuse every re-run after its own first refusal.
 #[test]
@@ -1763,7 +1775,7 @@ fn the_tree_gate_exempts_the_export_alone_and_refuses_the_rest_of_the_store() {
     let bd = &scratch.store;
 
     // TOO WIDE, refused: a tracked file under the store that is not the export.
-    let hook = scratch.root().join(".beads/hooks/x");
+    let hook = scratch.root().join(".store/hooks/x");
     std::fs::create_dir_all(hook.parent().expect("it has a parent"))
         .expect("the hooks directory is made");
     std::fs::write(&hook, "a seat's own uncommitted edit\n").expect("the hook is written");
@@ -1773,12 +1785,12 @@ fn the_tree_gate_exempts_the_export_alone_and_refuses_the_rest_of_the_store() {
         Some(("ACCEPTED", SHA)),
     );
     let git = StubGit::clean();
-    *git.statuses.lock().expect("not poisoned") = [vec![" M .beads/hooks/x".to_string()]].into();
+    *git.statuses.lock().expect("not poisoned") = [vec![" M .store/hooks/x".to_string()]].into();
 
     let ran = run(scratch, bd, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}\n{}", ran.why(), ran.out);
     assert!(
-        ran.why().contains(".beads/hooks/x"),
+        ran.why().contains(".store/hooks/x"),
         "the refusal names the path it refused on: {}",
         ran.why()
     );
@@ -1801,7 +1813,7 @@ fn the_tree_gate_exempts_the_export_alone_and_refuses_the_rest_of_the_store() {
     // TOO NARROW, admitted: the export in both spellings the porcelain uses —
     // by name where the store is tracked, and as the whole directory where it
     // is untracked but unignored.
-    for spelling in [" M .beads/issues.jsonl", "?? .beads/"] {
+    for spelling in [" M .store/export.jsonl", "?? .store/"] {
         let item = an_item(
             bd,
             &format!("an item landed over `{spelling}`"),
@@ -1810,7 +1822,7 @@ fn the_tree_gate_exempts_the_export_alone_and_refuses_the_rest_of_the_store() {
         let git = StubGit::clean();
         *git.statuses.lock().expect("not poisoned") = [
             vec![spelling.to_string()],
-            vec![" M .beads/issues.jsonl".to_string()],
+            vec![" M .store/export.jsonl".to_string()],
         ]
         .into();
         let ran = run(scratch, bd, &git, &item, SHA);
@@ -1821,6 +1833,104 @@ fn the_tree_gate_exempts_the_export_alone_and_refuses_the_rest_of_the_store() {
             ran.out
         );
     }
+}
+
+/// The store's directory a landing exempts is the one the ADAPTER names, and
+/// no other: on the board held in memory, whose store keeps its export under
+/// `.store/`, a `.beads/` path is a seat's change like any other.
+///
+/// Three spellings of it, one per place a directory constant decides: a
+/// tracked `.beads/x` at the tree gate, the untracked `.beads/` directory the
+/// porcelain names whole at the same gate, and a `.beads/x` in the index at the
+/// staged-set check — each refused. The control is the adapter's own export,
+/// regenerated, which passes.
+#[test]
+fn the_store_directory_the_adapter_names_is_the_one_the_gates_exempt() {
+    let scratch = &store();
+    let bd = &scratch.store;
+
+    // A TRACKED `.beads/x`, refused at (b) by name.
+    let item = an_item(
+        bd,
+        "an item landed over a dirty .beads/x",
+        Some(("ACCEPTED", SHA)),
+    );
+    let git = StubGit::clean();
+    *git.statuses.lock().expect("not poisoned") = [vec![" M .beads/x".to_string()]].into();
+    let ran = run(scratch, bd, &git, &item, SHA);
+    assert_eq!(ran.code(), Some(1), "{}\n{}", ran.why(), ran.out);
+    assert!(
+        ran.why()
+            .contains("`.beads/x` is changed in the working tree"),
+        "the refusal names the path: {}",
+        ran.why()
+    );
+
+    // THE UNTRACKED DIRECTORY, which the porcelain names whole: refused at (b)
+    // too, because the directory the gate exempts is the adapter's and this
+    // is not it.
+    let item = an_item(
+        bd,
+        "an item landed over an untracked .beads/",
+        Some(("ACCEPTED", SHA)),
+    );
+    let git = StubGit::clean();
+    *git.statuses.lock().expect("not poisoned") = [vec!["?? .beads/".to_string()]].into();
+    let ran = run(scratch, bd, &git, &item, SHA);
+    assert_eq!(ran.code(), Some(1), "{}\n{}", ran.why(), ran.out);
+    assert!(
+        ran.why()
+            .contains("`.beads/` is changed in the working tree"),
+        "the refusal names the directory: {}",
+        ran.why()
+    );
+
+    // IN THE INDEX, beside the delivery: the staged-set check counts it, so the
+    // staged set is not the delivered one.
+    let item = an_item(
+        bd,
+        "an item landed with .beads/x staged",
+        Some(("ACCEPTED", SHA)),
+    );
+    let mut git = StubGit::clean();
+    git.staged = vec![
+        EXPORT_FILE.to_string(),
+        FILE.to_string(),
+        ".beads/x".to_string(),
+    ];
+    let ran = run(scratch, bd, &git, &item, SHA);
+    assert_eq!(ran.code(), Some(1), "{}\n{}", ran.why(), ran.out);
+    assert!(
+        ran.out
+            .contains("STAGED (outside .store/):\n  .beads/x\n  a/file.rs\n"),
+        "the staged set names `.beads/x` beside the delivery:\n{}",
+        ran.out
+    );
+
+    // The control: the adapter's own export, regenerated, passes both gates.
+    let item = an_item(
+        bd,
+        "an item landed over a regenerated .store/export.jsonl",
+        Some(("ACCEPTED", SHA)),
+    );
+    let git = StubGit::clean();
+    *git.statuses.lock().expect("not poisoned") = [
+        vec![format!(" M {EXPORT_FILE}")],
+        vec![format!(" M {EXPORT_FILE}")],
+    ]
+    .into();
+    let ran = run(scratch, bd, &git, &item, SHA);
+    assert!(
+        ran.landed.is_ok(),
+        "the adapter's own export is the landing's bookkeeping: {}\n{}",
+        ran.why(),
+        ran.out
+    );
+    assert!(
+        git.calls().contains(&format!("add {EXPORT_FILE}")),
+        "and it is the file staged: {:?}",
+        git.calls()
+    );
 }
 
 /// A path git printed QUOTED reads back to the name a reviewer types, octal and
@@ -1858,13 +1968,13 @@ fn a_quoted_octal_path_decodes_to_the_name_also_admits() {
         .expect("the admitted path is written");
     let mut git = StubGit::clean();
     git.staged = vec![
-        ".beads/issues.jsonl".to_string(),
+        ".store/export.jsonl".to_string(),
         FILE.to_string(),
         plain.to_string(),
     ];
     *git.statuses.lock().expect("not poisoned") = [
         vec![quoted.to_string()],
-        vec![" M .beads/issues.jsonl".to_string()],
+        vec![" M .store/export.jsonl".to_string()],
     ]
     .into();
     let ran = run_with(scratch, bd, &git, &item, SHA, &[plain.to_string()], None);
@@ -1943,7 +2053,7 @@ fn a_refusal_after_the_squash_resets_before_it_detaches() {
     let bd = &scratch.store;
     let mut git = StubGit::clean();
     git.staged = vec![
-        ".beads/issues.jsonl".to_string(),
+        ".store/export.jsonl".to_string(),
         FILE.to_string(),
         "a/leftover.rs".to_string(),
     ];
@@ -1980,7 +2090,7 @@ fn an_also_path_does_not_make_every_landing_carry() {
     let bd = &scratch.store;
     let mut git = StubGit::clean();
     git.staged = vec![
-        ".beads/issues.jsonl".to_string(),
+        ".store/export.jsonl".to_string(),
         FILE.to_string(),
         "the-log.md".to_string(),
     ];
@@ -2071,7 +2181,7 @@ fn an_untracked_store_stages_its_export_and_not_the_database() {
     // An untracked store answers with the DIRECTORY, which is the shape that
     // would have swept the database in.
     *git.statuses.lock().expect("not poisoned") =
-        [Vec::new(), vec!["?? .beads/".to_string()]].into();
+        [Vec::new(), vec!["?? .store/".to_string()]].into();
 
     let ran = run(scratch, bd, &git, &item, SHA);
     assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
@@ -2081,14 +2191,82 @@ fn an_untracked_store_stages_its_export_and_not_the_database() {
         .filter(|call| call.starts_with("add "))
         .collect();
     assert!(
-        adds.contains(&format!("add {}", fleet_core::store::EXPORT)),
+        adds.contains(&format!("add {EXPORT_FILE}")),
         "the export is staged by name: {adds:?}"
     );
     assert!(
-        !adds.iter().any(|add| add == "add .beads"
-            || add.starts_with("add .beads ")
+        !adds.iter().any(|add| add == "add .store"
+            || add.starts_with("add .store ")
             || add.contains("exclude")),
         "and the directory never is: {adds:?}"
+    );
+}
+
+/// A STORE THAT DECLARES NO EXPORT lands with no export step, and the
+/// landing's own staged-set row says so.
+///
+/// Nothing is regenerated, so nothing is fingerprinted, nothing of the store's
+/// is staged, and the commit carries the delivery alone. A landing that asked
+/// the store for an export anyway would be refused by it.
+#[test]
+fn a_store_that_declares_no_export_lands_without_one_and_says_so() {
+    let mut board = store();
+    board.store.no_export = true;
+    let scratch = &board;
+    let bd = &scratch.store;
+    let item = an_item(
+        bd,
+        "an item landed on a store that declares no export",
+        Some(("ACCEPTED", SHA)),
+    );
+    let mut git = StubGit::clean();
+    // The index holds the delivery and nothing else, and the porcelain names
+    // no path of the store's at any read.
+    *git.statuses.lock().expect("not poisoned") = [Vec::new()].into();
+    git.staged = vec![FILE.to_string()];
+
+    let ran = run(scratch, bd, &git, &item, SHA);
+    let landed = ran
+        .landed
+        .as_ref()
+        .unwrap_or_else(|stop| panic!("the landing was refused: {}\n{}", stop.message, ran.out));
+    assert_eq!(ran.code(), None, "the landing exits 0");
+    assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
+
+    // THE ROW SAYS SO, on the page and on the landed entry alike.
+    let row = "1 path(s), equal to the delivery's own set; the store declares no export, so the \
+               landing carries no board file";
+    assert!(
+        ran.out.contains("the store declares no export") && ran.out.contains(row),
+        "the staged-set row says the store declares no export:\n{}",
+        ran.out
+    );
+    let shown = shown(bd, &item);
+    assert!(
+        shown.contains("the store declares no export"),
+        "and the landed entry carries the same row:\n{shown}"
+    );
+
+    // NOTHING OF THE STORE'S ON DISK: no export was written, so the directory
+    // the store would have declared is not there.
+    assert!(
+        !scratch.root.join(EXPORT_DIR).exists(),
+        "no path under {EXPORT_DIR} exists"
+    );
+
+    // THE COMMIT IS THE DELIVERY. Nothing was added to the index — no export
+    // by name and no directory — so what the commit carried is what the index
+    // answered, and that is the delivered path alone.
+    let calls = git.calls();
+    assert!(
+        !calls.iter().any(|call| call.starts_with("add ")),
+        "nothing was staged by the landing: {calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.starts_with("commit_message_file")),
+        "and the commit was made: {calls:?}"
     );
 }
 
@@ -2192,11 +2370,11 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
     // regenerated in the primary would be staged from a tree that holds a
     // commit behind.
     assert!(
-        worktree.join(fleet_core::store::EXPORT).is_file(),
+        worktree.join(EXPORT_FILE).is_file(),
         "the export was written into the tree the landing committed from"
     );
     assert!(
-        !scratch.root().join(fleet_core::store::EXPORT).exists(),
+        !scratch.root().join(EXPORT_FILE).exists(),
         "and the primary's board was not touched"
     );
 
@@ -2898,7 +3076,7 @@ fn a_staged_set_beyond_the_delivery_prints_both_sets() {
     let bd = &scratch.store;
     let mut git = StubGit::clean();
     git.staged = vec![
-        ".beads/issues.jsonl".to_string(),
+        ".store/export.jsonl".to_string(),
         FILE.to_string(),
         "a/leftover.rs".to_string(),
     ];
@@ -2906,8 +3084,8 @@ fn a_staged_set_beyond_the_delivery_prints_both_sets() {
     let ran = run(scratch, bd, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert!(
-        ran.out.contains("STAGED (outside .beads/):")
-            && ran.out.contains("DELIVERED (outside .beads/):")
+        ran.out.contains("STAGED (outside .store/):")
+            && ran.out.contains("DELIVERED (outside .store/):")
             && ran.out.contains("a/leftover.rs"),
         "both sets and the extra path:\n{}",
         ran.out
@@ -4490,7 +4668,7 @@ fn a_trunk_that_moved_prints_the_rebase_needed_line_at_column_zero() {
 
 /// THE WHOLE LANDING RUNS WITH NO `bd` ON THE `PATH`, export gate and all.
 ///
-/// `store::BD` is a bare name resolved on the process's own `PATH` — the seam
+/// `store::bd::BD` is a bare name resolved on the process's own `PATH` — the seam
 /// the store suite's shim enters through — so a `PATH` holding one directory
 /// that is not the store's resolves nothing, and a landing that still lands is
 /// one that made no `bd` subprocess. That is what puts the arms of this file in
@@ -4526,7 +4704,7 @@ fn a_landing_on_the_board_held_in_memory_runs_with_no_bd_on_the_path() {
 
     // The export gate is the one the recording fake could not pass at all: it
     // fingerprints a file, so it passes only because the store wrote one.
-    let export = scratch.root.join(fleet_core::store::EXPORT);
+    let export = scratch.root.join(EXPORT_FILE);
     let written = std::fs::read_to_string(&export).expect("the store's export is a file");
     assert!(
         written.contains(&item),

@@ -1740,7 +1740,7 @@ fn a_rerun_reads_the_settings_the_run_was_opened_with_and_not_the_edited_file() 
         &policy_setting("[packs.scratch]\ngreeting.word = \"avast\"\n"),
     );
 
-    let store = fleet_core::store::Bd::at(&rig.project);
+    let store = fleet_core::store::bd::Bd::at(&rig.project);
     let packs = fleet_core::item::brief::Packs::under(
         &rig.machine.join("packs"),
         &rig.machine.join(fleet_core::defaults::DIR),
@@ -1801,7 +1801,7 @@ fn rerun_in_this_process(
     rig: &Rig,
     id: &str,
 ) -> Result<workflow_run::Ended, fleet_core::item::Stop> {
-    let store = fleet_core::store::Bd::at(&rig.project);
+    let store = fleet_core::store::bd::Bd::at(&rig.project);
     let packs = fleet_core::item::brief::Packs::under(
         &rig.machine.join("packs"),
         &rig.machine.join(fleet_core::defaults::DIR),
@@ -1840,7 +1840,7 @@ fn rerun_in_this_process(
 /// The ids of every hold the store still lists open.
 fn open_holds(rig: &Rig) -> Vec<String> {
     use fleet_core::store::Store;
-    fleet_core::store::Bd::at(&rig.project)
+    fleet_core::store::bd::Bd::at(&rig.project)
         .open_holds()
         .expect("the store lists its holds")
 }
@@ -1921,7 +1921,7 @@ fn a_run_object_at_an_unknown_version_is_could_not_tell_and_never_executed() {
     let out = rig.run(&["run", &rig.workflow(ONE), "--by", BY]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let (id, _) = started_line(&out);
-    let store = fleet_core::store::Bd::at(&rig.project);
+    let store = fleet_core::store::bd::Bd::at(&rig.project);
     let pinned = rig.document(&id)["metadata"]["fleet.run"].clone();
 
     for (found, object) in [("v 2", Some(2)), ("no v", None)] {
@@ -1965,7 +1965,7 @@ fn a_run_held_at_the_cap(rig: &Rig, entered: bool) -> (String, String) {
     let out = rig.run(&["run", &rig.workflow(ONE), "--by", BY]);
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     let (id, _) = started_line(&out);
-    let store = fleet_core::store::Bd::at(&rig.project);
+    let store = fleet_core::store::bd::Bd::at(&rig.project);
     let hold = if entered {
         fleet_core::item::hold::park_at_the_cap(
             &fleet_core::item::hold::Capped {
@@ -2007,7 +2007,7 @@ fn a_run_held_at_the_crash_cap_clears_through_fleet_clear() {
     // The record: one held entry at the cap, by the controller, and the
     // person's clearance of it — which the stream's one signal names.
     use fleet_core::store::Store;
-    let entries = fleet_core::store::Bd::at(&rig.project)
+    let entries = fleet_core::store::bd::Bd::at(&rig.project)
         .timeline(&id)
         .expect("the record's timeline reads");
     assert_eq!(entries.len(), 2, "{entries:?}");
@@ -2075,7 +2075,7 @@ fn a_cancel_clears_the_hold_on_a_held_runs_record_and_closes_it() {
     // RED-PROOF: before the cleared entry, the only record of this was the
     // stream's line, its letter null.
     use fleet_core::store::Store;
-    let entries = fleet_core::store::Bd::at(&rig.project)
+    let entries = fleet_core::store::bd::Bd::at(&rig.project)
         .timeline(&id)
         .expect("the closed record's timeline reads");
     let clearances: Vec<_> = entries

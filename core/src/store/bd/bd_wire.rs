@@ -3,7 +3,7 @@
 //! pin, rerun the script, and read its diff as the wire change.
 //!
 //! The input is the fragment beside this file, and the pin-stamp test holds
-//! the two lines below to it and to `store::PINNED_BD`.
+//! the two lines below to it and to `store::bd::PINNED_BD`.
 //!
 //! bd-tag: v1.3.0
 //! fragment-sha256: 9074c546b4a277354bd7825406802e97fac3c760a43bf846fa8ddd06dec62bef

@@ -29,7 +29,8 @@ use std::path::Path;
 use common::{a_delivery, seat_actor, shared_store, A_COMMIT};
 use fleet_core::entry::{Body, OrderKind, Ordered};
 use fleet_core::item::dispatch;
-use fleet_core::store::{keys, Bd, NewItem, Store, StoreError};
+use fleet_core::store::bd::Bd;
+use fleet_core::store::{keys, NewItem, Store, StoreError};
 use fleet_core::test_support::Board;
 
 const BY: &str = "the-contract";
@@ -459,11 +460,22 @@ fn close(store: &dyn Store, _: &Path, which: &str) {
     );
 }
 
+/// The export lands at the file the store's own capabilities declare, under
+/// the root the caller named, and the store answers that path.
 fn export(store: &dyn Store, root: &Path, which: &str) {
     let item = filed(store, "an item the export carries");
-    store.export(root).expect("the export runs");
+    let declared = store
+        .capabilities()
+        .expect("the capabilities read")
+        .export
+        .unwrap_or_else(|| panic!("{which}: this store declares an export"));
+    let into = root.join(&declared.file);
+    assert_eq!(
+        store.export(root).expect("the export runs"),
+        into,
+        "{which}: the store answers the path it wrote, the declared file under the root"
+    );
 
-    let into = root.join(fleet_core::store::EXPORT);
     let before = std::fs::read(&into)
         .unwrap_or_else(|e| panic!("{which}: the export left a file at {}: {e}", into.display()));
     assert!(!before.is_empty(), "{which}: and the file is not empty");
@@ -482,7 +494,11 @@ fn export(store: &dyn Store, root: &Path, which: &str) {
             &seat_actor("the-contract-seat"),
         )
         .expect("the entry the second export has to carry lands");
-    store.export(root).expect("the second export runs");
+    assert_eq!(
+        store.export(root).expect("the second export runs"),
+        into,
+        "{which}: and the same path the second time"
+    );
     let after = std::fs::read(&into).expect("the export is still there");
     assert_ne!(
         before, after,
@@ -619,6 +635,15 @@ fn the_timeline_of_an_item_nobody_filed_is_missing() {
 fn every_check_holds_against_bd_too() {
     let scratch = shared_store("contract");
     let bd = Bd::at(&scratch.root);
+    // The file the export check reads is the one bd declares, and bd declares
+    // its own.
+    let declared = bd
+        .capabilities()
+        .expect("bd's capabilities read")
+        .export
+        .expect("bd declares an export");
+    assert_eq!(declared.file, ".beads/issues.jsonl");
+    assert_eq!(declared.file, fleet_core::store::bd::EXPORT);
     for (name, check) in CHECKS {
         check(&bd, &scratch.root, &format!("bd — {name}"));
     }
@@ -634,7 +659,7 @@ fn answered(out: &std::process::Output, what: &str) -> serde_json::Value {
     );
     let answer = fleet_core::store::first_value(&String::from_utf8_lossy(&out.stdout))
         .unwrap_or_else(|| panic!("{what} answers JSON"));
-    fleet_core::store::opened(answer, String::new)
+    fleet_core::store::bd::opened(answer, String::new)
 }
 
 /// A COMMENT A PERSON WROTE ON THE BOARD IS NOT AN ENTRY, and one carrying

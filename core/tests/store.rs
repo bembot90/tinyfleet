@@ -7,7 +7,7 @@
 //! loss. The proof has to be the argv; the count is what cannot be measured.
 //! One arm per such read, and an arm is what says the argument is still there.
 //!
-//! The row-cap arms open the store with `Bd::at`, which runs `store::BD`, a
+//! The row-cap arms open the store with `Bd::at`, which runs `store::bd::BD`, a
 //! bare name resolved on the process's own `PATH`, so a directory prepended to
 //! `PATH` is the seam their shim enters through — and `PATH` is process-wide.
 //! The other arms name their stub by absolute path through `Bd::at_bin`, which
@@ -38,7 +38,8 @@ use common::{a_delivery, seat_actor, Fixture, A_COMMIT};
 use fleet_core::entry::{Body, OrderKind, Ordered};
 use fleet_core::item::{recorded, Stop, Unrecorded, COULD_NOT_TELL, REFUSED};
 use fleet_core::process::DRAIN_GRACE;
-use fleet_core::store::{item_from, Bd, NewItem, Store, StoreError};
+use fleet_core::store::bd::{item_from, Bd};
+use fleet_core::store::{NewItem, Store, StoreError};
 
 /// Serialises every arm in this binary, because the seam they share is the
 /// process's `PATH` and there is one of those.

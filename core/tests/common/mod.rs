@@ -879,7 +879,7 @@ pub enum Graph {
     /// Boxed because a board carries a whole store, and an enum is as big as
     /// its widest variant wherever it is held.
     Memory(Box<Board>),
-    Real(&'static Scratch, fleet_core::store::Bd),
+    Real(&'static Scratch, fleet_core::store::bd::Bd),
 }
 
 impl Graph {
@@ -890,7 +890,7 @@ impl Graph {
     /// The one `bd` board this binary drives, taken by its ring arm.
     pub fn real(label: &'static str) -> Graph {
         let scratch = shared_store(label);
-        Graph::Real(scratch, fleet_core::store::Bd::at(&scratch.root))
+        Graph::Real(scratch, fleet_core::store::bd::Bd::at(&scratch.root))
     }
 
     pub fn store(&self) -> &dyn Store {

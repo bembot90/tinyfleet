@@ -234,7 +234,11 @@ impl Store for Doctored<'_> {
         self.inner.timeline(item)
     }
 
-    fn export(&self, into: &std::path::Path) -> Result<(), StoreError> {
+    fn capabilities(&self) -> Result<fleet_core::store::types::Capabilities, StoreError> {
+        self.inner.capabilities()
+    }
+
+    fn export(&self, into: &std::path::Path) -> Result<std::path::PathBuf, StoreError> {
         self.inner.export(into)
     }
 }

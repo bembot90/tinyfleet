@@ -1,68 +1,25 @@
-//! The work graph, reached through the `bd` binary and no other way.
+//! The work graph, reached only through [`Store`], whose implementations are
+//! adapters: each speaks one store's own tongue behind the trait, and nothing
+//! outside an adapter's own module knows which store is answering.
 //!
 //! The trait is what the verbs are written against, so a suite can force a
 //! read-back that disagrees with the write beside it — the one failure a real
 //! store will not produce on demand and the one the verbs must survive.
 //!
-//! Every read decodes the FIRST JSON value of the answer and ignores what
-//! trails it: `bd show --json` answers one top-level value and closes with a
-//! newline, and a decoder that demands the whole text be one value refuses a
-//! well-formed answer over its last byte.
-//!
-//! Every `bd` call carries `BD_JSON_ENVELOPE=1`, so a JSON answer comes as
-//! `{"schema_version": N, "data": …}` — the shape bd v2.0 makes the default —
-//! and that first value is opened in ONE place, [`opened`], before anything
-//! reads it. A bd that predates the envelope answers the bare value, and that
-//! reads the same.
+//! What an adapter keeps beside the graph it declares through
+//! [`Store::capabilities`]: the export a landing commits and the directory it
+//! sits in are read from there, and never spelled by a verb.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use serde::Deserialize;
-
-use crate::entry::{self, Body, Entry};
-use crate::process::{deadline_cause, run_bounded};
+use crate::entry::{Body, Entry};
 use crate::seat::actor::Actor;
+use types::Capabilities;
 
-mod bd_cli;
-mod bd_wire;
+pub mod bd;
 pub mod keys;
 pub mod types;
-
-/// The binary every write and read goes through when the caller names no
-/// other, resolved on the process's own `PATH`.
-pub const BD: &str = "bd";
-
-/// The bd release this fleet is measured against: every "measured on" claim in
-/// this file was taken on it, and the defaults' `bd-version` doctor check and
-/// `fleet prime`'s second line compare `bd version` with it. A bd at another
-/// version is named, pointed at beads' installation page for this one, and
-/// the verbs still run on it.
-///
-/// A pin move is THIS LINE PLUS THE RE-MEASURE: every claim here re-run on the
-/// new release and restated, or its code changed where the behaviour moved.
-/// The doctor check carries its own copy, because a shell script cannot read
-/// this, and a suite arm fails until the two agree.
-pub const PINNED_BD: &str = "1.3.0";
-
-/// Where the store's export goes, relative to the project root. It is a passive
-/// file the work graph regenerates, never a second copy anything reads back.
-pub const EXPORT: &str = ".beads/issues.jsonl";
-
-/// The newest `schema_version` this binary reads — the one bd 1.3.0 answers on
-/// every JSON call, enveloped or not. A higher one is warned about once and
-/// read anyway, which is beads' own advice to a consumer.
-pub const SCHEMA_VERSION: u64 = 1;
-
-/// The variable that opts a `bd` call into the envelope before v2.0 makes it
-/// the default.
-const ENVELOPE: &str = "BD_JSON_ENVELOPE";
-
-/// Whether this process has already said the store answers a newer schema, so
-/// a verb that makes a hundred reads says it once.
-static WARNED: AtomicBool = AtomicBool::new(false);
 
 /// One item as a read answers it.
 ///
@@ -88,8 +45,8 @@ pub struct Item {
     /// [`keys::VERSION`] is present and unreadable, and a withdrawal has to
     /// tell that from absent.
     pub has_orders_key: bool,
-    /// The open items that block this one by a type bd's ready set honours —
-    /// one of `BLOCKING` — by id.
+    /// The open items that block this one by a type the store's ready set
+    /// honours, by id.
     pub blockers: Vec<String>,
     /// The type, as the store spells it: the JSON key is `issue_type` and a
     /// rule matches on this value.
@@ -99,7 +56,8 @@ pub struct Item {
     /// `metadata["fleet.run"]` ([`keys::RUN`]), as free JSON and as the store
     /// holds it, for a run's record item — its version is the reader's to
     /// check, through [`keys::versioned`]. A top-level key of its own, which is
-    /// what lets bd's top-level merge leave the item's other keys standing.
+    /// what lets the store's top-level merge leave the item's other keys
+    /// standing.
     pub run: Option<serde_json::Value>,
     /// The decoded document, as text. The negative control reads this, so the
     /// control asks the SAME answer for a token nothing wrote.
@@ -176,10 +134,9 @@ pub trait Store {
     /// store's own order.
     fn ready(&self) -> Result<Vec<String>, StoreError>;
 
-    /// One item, which the argument may name by PART of its id: bd resolves a
-    /// partial id itself — measured on 1.3.0, a whole id, then a whole hash,
-    /// then a substring of one — and the answer's `id` is the full one. So a
-    /// verb taking an item resolves it here once, at its entry, and acts on
+    /// One item, which the argument may name by PART of its id: the store
+    /// resolves a partial id itself, and the answer's `id` is the full one. So
+    /// a verb taking an item resolves it here once, at its entry, and acts on
     /// [`Item::id`] from then on and never on the typed text.
     fn show(&self, item: &str) -> Result<Item, StoreError>;
 
@@ -205,12 +162,8 @@ pub trait Store {
     /// it — `""` for an item nobody holds. Anyone else holding it is
     /// [`StoreError::Moved`], and nothing is written.
     ///
-    /// For a write whose actor is NOT the holder. bd 1.3.0 refuses a plain
-    /// `--assignee` from anyone but the holder on an `in_progress` item —
-    /// measured: `cannot reassign X: held by "s1" (in_progress)` — and takes the
-    /// same write when it names the holder with `--if-assignee`, which also
-    /// writes nothing and exits 13 where the holder moved. The DEFAULT reads the
-    /// holder and then assigns, for a store with no fence of its own.
+    /// For a write whose actor is NOT the holder. The DEFAULT reads the holder
+    /// and then assigns, for a store with no fence of its own.
     fn hand_over(&self, item: &str, from: &str, to: &str, by: &str) -> Result<(), StoreError> {
         let held = self.show(item)?.assignee.unwrap_or_default();
         if held != from {
@@ -227,9 +180,8 @@ pub trait Store {
     /// top-level key that is not `fleet.orders`.
     ///
     /// It is the SIBLING of that method and not a generalisation of it: the
-    /// write MERGES at the top level — measured on bd 1.3.0, where a second
-    /// write of a different key kept the first — so a run's object never
-    /// erases the order index beside it, and the two keys keep one writer each.
+    /// write MERGES at the top level, so a run's object never erases the order
+    /// index beside it, and the two keys keep one writer each.
     fn set_metadata(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError>;
 
     fn unset_orders(&self, item: &str, by: &str) -> Result<(), StoreError>;
@@ -249,9 +201,9 @@ pub trait Store {
     /// ready set, and no dispatch reaches it until somebody reopens it by hand.
     ///
     /// The three are what a withdrawal always writes together, and a retire
-    /// pays them on every seat it ends — so the store that talks to `bd` sends
-    /// one `update` rather than three, which is a call the verb does not make
-    /// while another suite is queueing behind it. The DEFAULT is the writes in
+    /// pays them on every seat it ends — so a store that takes all three in one
+    /// call is sent one rather than three, which is a call the verb does not
+    /// make while another suite is queueing behind it. The DEFAULT is the writes in
     /// order behind one read of the fence, the reopen FIRST: a default cut
     /// short after it leaves an item still held and ordered, which a second
     /// retire lists and finishes. What no form may do is leave the assignee
@@ -278,19 +230,18 @@ pub trait Store {
 
     /// A hold raised on this item, answered as the hold's own id.
     ///
-    /// The store's own object and not a question item this fleet owns: bd files
-    /// it as a gate of type human, the held item leaves the ready set the moment
-    /// it is created, and it comes back when somebody clears the hold. So a park
-    /// needs nothing of fleet's beside the event.
+    /// The store's own object and not a question item this fleet owns: the held
+    /// item leaves the ready set the moment the hold is raised, and it comes back
+    /// when somebody clears the hold. So a park needs nothing of fleet's beside
+    /// the event.
     fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError>;
 
     /// Every hold the store still calls open, by id.
     ///
-    /// IDS AND NOT DOCUMENTS, and no item on them: the listing answers which
-    /// hold this is and never which item it blocks — measured on bd 1.3.0,
-    /// where the blocked item appears only inside the description's prose — so
-    /// a caller that wants one item's hold reads that hold's id off the item's
-    /// own park and asks this list whether it is still here.
+    /// IDS AND NOT DOCUMENTS, and no item on them: a listing need not say which
+    /// item a hold blocks, so a caller that wants one item's hold reads that
+    /// hold's id off the item's own park and asks this list whether it is still
+    /// here.
     fn open_holds(&self) -> Result<Vec<String>, StoreError>;
 
     /// One hold cleared, which puts the item it blocked back in the ready set.
@@ -304,66 +255,34 @@ pub trait Store {
     /// The body is VALIDATED FIRST, and one that breaks its kind's rules is
     /// Unreadable with nothing written: a store never keeps an entry its own
     /// reader would refuse.
-    ///
-    /// On bd each entry is ONE COMMENT whose text is [`entry::encode`]'s.
-    /// Measured on bd 1.3.0, on a scratch board:
-    /// - `bd comments add <id> <text> --actor A --json` answers the envelope
-    ///   with data `{id, issue_id, author: A, text, created_at}`, and the id is
-    ///   what this answers.
-    /// - That id is CONTENT-DERIVED (`e9f93b1f-8828-563c-…`, version nibble 5;
-    ///   beads v1.3.0 `internal/storage/issueops/derivedid.go`,
-    ///   `InsertDerivedComment`). It is not time-ordered, so nothing sorts by it.
-    /// - There is no edit or delete subcommand: an entry is kept as written.
-    /// - A closed item takes comments.
-    /// - `bd export` writes each issue's comments into the committed
-    ///   `.beads/issues.jsonl`, so the timeline travels with the board.
     fn append(&self, item: &str, body: &Body, by: &Actor) -> Result<String, StoreError>;
 
     /// The item's entries, in the store's order. A comment that does not carry
-    /// [`entry::KEY`] is a person's and is left out; one that carries it and
+    /// [`crate::entry::KEY`] is a person's and is left out; one that carries it and
     /// does not read — or whose author is not a typed actor — is Unreadable
     /// and refuses the whole read, naming the comment, because a timeline with
     /// a hole in it answers every question wrong. An item the store does not
     /// hold is Missing.
-    ///
-    /// Measured on bd 1.3.0, on a scratch board:
-    /// - `bd comments <id> --json` lists by `created_at` ASC, then id ASC
-    ///   (`issueops/comments.go:28`). A live add truncates its time to the
-    ///   second and advances it past the item's newest comment
-    ///   (`derivedid.go:190-205`), so the listing is append order.
-    /// - An item with no comments answers `data []`. A missing item exits 1
-    ///   with data `{"error":"resolving <id>: no issue found matching
-    ///   \"<id>\""}`, which carries no code.
-    /// - The listing takes no row cap: the verb has no `-n`.
-    /// - `bd show --json` answers `comment_count` and `"comments_omitted":
-    ///   true`, and `bd list --json` answers `comment_count` only, so neither
-    ///   is a way to read the entries.
     fn timeline(&self, item: &str) -> Result<Vec<Entry>, StoreError>;
 
-    /// The store's own export, written at [`EXPORT`] under the root the CALLER
-    /// names.
+    /// What the store keeps beside the graph, answered without a call to the
+    /// store: the export a landing commits and the directory it sits in —
+    /// `None` for a store that keeps none, which a landing lands without —
+    /// whether it is a scratch board, and the prefix its ids carry.
+    fn capabilities(&self) -> Result<Capabilities, StoreError>;
+
+    /// The store's own export, written under the root the CALLER names at the
+    /// file [`capabilities`](Store::capabilities) declares, and answered as
+    /// the absolute path it wrote. A store that declares no export refuses it.
     ///
     /// THE DESTINATION IS THE CALLER'S AND NOT THE STORE'S. One board is read
     /// from the checkout it was resolved in and committed from whichever tree
     /// the act runs in, and a landing resolves that tree for itself — so where
     /// the export has to land is a fact of the act and not of the store.
     ///
-    /// It regenerates that one file and touches nothing else — measured on bd
-    /// 1.3.0, where two exports left every other file under `.beads` as it was
-    /// in bytes, and in mtime bar the embedded engine's journal, which a bare
-    /// read touches the same way — so nothing is carried forward here to keep
-    /// the export's polarity right.
-    fn export(&self, into: &Path) -> Result<(), StoreError>;
-}
-
-/// The store as `bd` on this box, scoped to one project.
-///
-/// `-C <root>` on every call, so the store a verb writes to is the project's
-/// whatever directory the call was made from.
-pub struct Bd {
-    root: PathBuf,
-    bin: PathBuf,
-    timeout: Duration,
+    /// It regenerates that one file and touches nothing else, so nothing is
+    /// carried forward here to keep the export's polarity right.
+    fn export(&self, into: &Path) -> Result<PathBuf, StoreError>;
 }
 
 /// The bound on one store call, fixed and not policy.
@@ -372,182 +291,7 @@ pub struct Bd {
 /// of one project's store. A call that outruns it is a store that is not
 /// answering, and it is killed and read as Unreadable rather than left to hang
 /// the verb. A landing's suite is not a store call and is not bounded here.
-const STORE_TIMEOUT: Duration = Duration::from_secs(60);
-
-impl Bd {
-    pub fn at(root: &Path) -> Bd {
-        Bd::at_bin(root, Path::new(BD))
-    }
-
-    /// The same store over a binary the CALLER resolved, run by that path and
-    /// never searched for again.
-    ///
-    /// A process whose own `PATH` is not the one a person's shell has — a
-    /// launchd service carries neither a package manager's prefix nor the
-    /// user's local bin — can reach `bd` no other way.
-    pub fn at_bin(root: &Path, bin: &Path) -> Bd {
-        Bd {
-            root: root.to_path_buf(),
-            bin: bin.to_path_buf(),
-            timeout: STORE_TIMEOUT,
-        }
-    }
-
-    /// The same store under a shorter bound, for a caller that cannot wait the
-    /// whole of `STORE_TIMEOUT` — a session-start hook is one.
-    pub fn with_timeout(self, timeout: Duration) -> Bd {
-        Bd { timeout, ..self }
-    }
-
-    /// One call, with its status read from the command itself, bounded by
-    /// this store's timeout.
-    ///
-    /// The envelope is asked for on EVERY call and not only on the JSON reads:
-    /// bd applies it to a `--json` answer alone — measured on 1.3.0, where the
-    /// rendering, the export and a write's own line were byte-identical with
-    /// it and without — so one setting here cannot leave a read out.
-    ///
-    /// A call that outruns the bound is killed with its whole process group.
-    /// On a WRITE — told by its `--actor`, which every call that changes an
-    /// item carries and no read does — the refusal also says what a kill
-    /// cannot: whether the write landed before it.
-    fn run(&self, args: &[&str]) -> Result<Output, StoreError> {
-        let mut cmd = Command::new(&self.bin);
-        cmd.env(ENVELOPE, "1").arg("-C").arg(&self.root).args(args);
-        run_bounded(cmd, self.timeout).map_err(|why| {
-            if why != deadline_cause(self.timeout) {
-                return StoreError::Unreadable(format!(
-                    "`{}` could not be run ({why}) — nothing was written",
-                    self.bin.display()
-                ));
-            }
-            let mut refusal = format!("{} {why}", self.named(args));
-            if args.contains(&"--actor") {
-                refusal.push_str(
-                    " — the write's effect cannot be told, so the item must be read \
-                     before anything is written to it again",
-                );
-            }
-            StoreError::Unreadable(refusal)
-        })
-    }
-
-    /// The call as a message names it: the binary this store runs and the argv
-    /// it ran, so a refusal never names a binary or a flag the call did not.
-    fn named(&self, args: &[&str]) -> String {
-        let args: Vec<&str> = args
-            .iter()
-            .map(|arg| if arg.is_empty() { "''" } else { arg })
-            .collect();
-        format!("`{} {}`", self.bin.display(), args.join(" "))
-    }
-
-    fn refused(&self, args: &[&str], out: &Output) -> StoreError {
-        StoreError::Unreadable(format!(
-            "{} {}: {}",
-            self.named(args),
-            out.status,
-            tail(out)
-        ))
-    }
-
-    /// The JSON a call answered, opened out of its envelope.
-    fn json(&self, args: &[&str], out: &Output) -> Option<serde_json::Value> {
-        first_value(&String::from_utf8_lossy(&out.stdout))
-            .map(|value| opened(value, || self.named(args)))
-    }
-
-    /// One call that has to succeed, its answer handed back whole.
-    fn answered(&self, args: &[&str]) -> Result<Output, StoreError> {
-        let out = self.run(args)?;
-        if !out.status.success() {
-            return Err(self.refused(args, &out));
-        }
-        Ok(out)
-    }
-
-    /// One listing, as its rows, each decoded into the wire type bd's spec
-    /// names for that answer. A row that does not decode is a store that did
-    /// not answer something readable.
-    ///
-    /// AN EMPTY LISTING MAY ANSWER `null` AND NOT `[]` — measured on bd 1.3.0
-    /// for `gate list` — or nothing at all, and both read as no rows: a decoder
-    /// demanding an array would read "nothing here" as a store that would not
-    /// answer, and refuse every answer on a fleet with nothing held.
-    fn listed<Row: serde::de::DeserializeOwned>(
-        &self,
-        args: &[&str],
-    ) -> Result<Vec<Row>, StoreError> {
-        let out = self.answered(args)?;
-        let rows = match self.json(args, &out) {
-            Some(serde_json::Value::Array(rows)) => rows,
-            Some(serde_json::Value::Null) => return Ok(Vec::new()),
-            None if String::from_utf8_lossy(&out.stdout).trim().is_empty() => return Ok(Vec::new()),
-            _ => {
-                return Err(StoreError::Unreadable(format!(
-                    "{} did not answer a list: {}",
-                    self.named(args),
-                    tail(&out)
-                )))
-            }
-        };
-        rows.iter()
-            .enumerate()
-            .map(|(at, row)| {
-                decoded(row).map_err(|why| {
-                    StoreError::Unreadable(format!(
-                        "{} answered a row bd's wire types do not read, row {at}: {why}",
-                        self.named(args)
-                    ))
-                })
-            })
-            .collect()
-    }
-
-    /// The id off a write's OWN answer. A second read for the newest item would
-    /// name whatever else landed in the store between the two calls.
-    fn created_id(&self, args: &[&str]) -> Result<String, StoreError> {
-        let out = self.answered(args)?;
-        self.json(args, &out)
-            .as_ref()
-            .and_then(|value| value.get("id"))
-            .and_then(|id| id.as_str())
-            .map(str::to_string)
-            .ok_or_else(|| {
-                StoreError::Unreadable(format!(
-                    "{} answered no id: {}",
-                    self.named(args),
-                    tail(&out)
-                ))
-            })
-    }
-
-    fn wrote(&self, args: &[&str]) -> Result<(), StoreError> {
-        self.answered(args).map(|_| ())
-    }
-
-    /// A write carrying `--if-assignee <holder>`, and `--if-status` beside it
-    /// where `fence` names a status too, whose exit 13 is bd's word that the
-    /// item moved and nothing was written — measured on 1.3.0: `assignee
-    /// mismatch: X is held by "s2", expected "s1"` and `status mismatch: X has
-    /// status "closed", expected "in_progress"`, both exit 13.
-    fn fenced(&self, args: &[&str], item: &str, fence: &str) -> Result<(), StoreError> {
-        let out = self.run(args)?;
-        if out.status.code() == Some(FENCE_MISMATCH) {
-            return Err(StoreError::Moved(format!(
-                "{item} is not {fence} — nothing was written ({})",
-                tail(&out)
-            )));
-        }
-        if !out.status.success() {
-            return Err(self.refused(args, &out));
-        }
-        Ok(())
-    }
-}
-
-/// The exit bd gives a write whose `--if-assignee` no longer holds.
-const FENCE_MISMATCH: i32 = 13;
+pub const STORE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The refusal a fenced hand-over answers when the item's holder is not the
 /// one the write named.
@@ -587,551 +331,11 @@ fn holder_named(seat: &str) -> String {
     }
 }
 
-/// What a call said last: the last line of its stderr that is not blank, else
-/// of its stdout, cut to 160 characters.
-fn tail(out: &Output) -> String {
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let body = if stderr.trim().is_empty() {
-        String::from_utf8_lossy(&out.stdout)
-    } else {
-        stderr
-    };
-    body.lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("no output")
-        .chars()
-        .take(160)
-        .collect()
-}
-
 /// The first JSON value of an answer, with whatever trails it discarded.
+///
+/// Beside the trait and not inside an adapter: the contract's own envelope
+/// ([`types::answer`]) reads an answer through it as an adapter's reads do.
 pub fn first_value(text: &str) -> Option<serde_json::Value> {
     let mut stream = serde_json::Deserializer::from_str(text).into_iter::<serde_json::Value>();
     stream.next().and_then(Result::ok)
-}
-
-/// The answer inside bd's JSON envelope, or the value itself where it carries
-/// none.
-///
-/// A `schema_version` above [`SCHEMA_VERSION`] is WARNED ABOUT AND READ: a
-/// newer bd adds keys far more often than it moves one, and a store that
-/// refused every answer from it would stop the fleet over a field nothing here
-/// reads. `from` names the call for that warning, and is asked only when one
-/// is due.
-pub fn opened(value: serde_json::Value, from: impl FnOnce() -> String) -> serde_json::Value {
-    let serde_json::Value::Object(mut answer) = value else {
-        return value;
-    };
-    let newer = answer
-        .get("schema_version")
-        .and_then(|v| v.as_u64())
-        .filter(|version| *version > SCHEMA_VERSION);
-    if let Some(version) = newer {
-        if !WARNED.swap(true, Ordering::Relaxed) {
-            eprintln!(
-                "fleet: {} answered schema_version {version}, newer than the \
-                 {SCHEMA_VERSION} this binary knows — reading it anyway",
-                from()
-            );
-        }
-    }
-    // BOTH KEYS make an envelope. A bare error carries `schema_version` beside
-    // `error` and no `data` — measured on 1.3.0 with the envelope off — and is
-    // handed back whole for `show` to read.
-    if answer.contains_key("schema_version") && answer.contains_key("data") {
-        return answer.remove("data").unwrap_or_default();
-    }
-    serde_json::Value::Object(answer)
-}
-
-/// The row an opened `show` answer holds, or the store's word that there is
-/// none. The one reading of that answer, which the fake store's `show` makes
-/// too. `said` is what the call wrote on stderr.
-///
-/// An error CARRYING A CODE is classified by it: `not_found` is the record's
-/// answer, and any other code is a store that did not answer. An error with NO
-/// code is read by its key alone, as an item that is not there — measured on
-/// bd 1.3.0, whose missing id answers an error, a hint and no code.
-///
-/// AN ARGUMENT NAMING MORE THAN ONE ITEM is the record's answer too, and is
-/// told from one naming none by stderr alone: bd 1.3.0 answers both with the
-/// same JSON error, and only its stderr says `ambiguous issue ID: … matches N
-/// issues: [...]`. So the refusal names the matches bd listed, and a verb that
-/// acts on one item never guesses which.
-pub fn shown(
-    item: &str,
-    value: serde_json::Value,
-    said: &str,
-) -> Result<serde_json::Value, StoreError> {
-    let Some(row) = sole(value) else {
-        return Err(StoreError::Missing(format!("{item} is not in the store")));
-    };
-    if let Ok(bd_cli::CliError { error, code }) = bd_cli::CliError::deserialize(&row) {
-        return match code.as_deref() {
-            None | Some("not_found") => Err(StoreError::Missing(match ambiguous(said) {
-                Some(matches) => format!(
-                    "`{item}` matches more than one item — {matches} — and more of the id says \
-                     which one this is"
-                ),
-                None => format!("{item}: {error}"),
-            })),
-            Some(code) => Err(StoreError::Unreadable(format!(
-                "{item} could not be read ({code}): {error}"
-            ))),
-        };
-    }
-    Ok(row)
-}
-
-/// The words a stderr line names an ambiguity with: bd 1.3.0's, measured, and
-/// bd 1.2.2's, which 1.3.0 moved — kept, so a bd off the pin still refuses an
-/// ambiguous id by its matches rather than as an id that is not there.
-const AMBIGUOUS: [&str; 2] = ["ambiguous issue ID", "ambiguous ID"];
-
-/// The items bd named for an ambiguous id, off its stderr line — `Error
-/// fetching a: ambiguous issue ID: "a" matches 7 issues: [fx-a64 fx-a82 …]`,
-/// measured on 1.3.0 — joined for a refusal, or that whole line where it names
-/// none in brackets. `None` where stderr says nothing of an ambiguity.
-fn ambiguous(said: &str) -> Option<String> {
-    let line = said
-        .lines()
-        .find(|line| AMBIGUOUS.iter().any(|words| line.contains(words)))?;
-    let listed = line
-        .split_once('[')
-        .and_then(|(_, rest)| rest.split_once(']'))
-        .map(|(ids, _)| ids.split_whitespace().collect::<Vec<_>>().join(", "))
-        .filter(|ids| !ids.is_empty());
-    Some(listed.unwrap_or_else(|| line.trim().to_string()))
-}
-
-/// The one element a `show` answers about. The answer is an array of one; an
-/// object is the shape an error takes, and is handed back as it is so the
-/// caller can read the error key out of it.
-fn sole(value: serde_json::Value) -> Option<serde_json::Value> {
-    match value {
-        serde_json::Value::Array(mut rows) => {
-            if rows.is_empty() {
-                None
-            } else {
-                Some(rows.remove(0))
-            }
-        }
-        other => Some(other),
-    }
-}
-
-/// The order index off a document's metadata, and whether the key was there at
-/// all. The metadata is bd's raw JSON and not a typed map, so a `fleet.orders`
-/// holding something that is not an object — or an object at a version this
-/// binary does not know — still reads as present, and never as an order.
-///
-/// ONLY FLEET'S KEY. A bare `orders` is some other writer's, whatever shape it
-/// holds, and an item carrying one and no `fleet.orders` reads as unordered.
-fn orders_of(metadata: Option<&serde_json::Value>) -> (Option<Orders>, bool) {
-    let Some(held) = metadata.and_then(|m| m.get(keys::ORDERS)) else {
-        return (None, false);
-    };
-    if held.is_null() {
-        return (None, false);
-    }
-    let Ok(table) = keys::versioned(keys::ORDERS, held) else {
-        return (None, true);
-    };
-    let read = |key: &str| table.get(key).and_then(|v| v.as_str()).map(str::to_string);
-    (
-        Some(Orders {
-            by: read("by"),
-            kind: read("kind"),
-            seat: read("seat"),
-            at: read("at"),
-        }),
-        true,
-    )
-}
-
-/// The dependency types bd's ready set honours as blocking, MEASURED on bd
-/// 1.3.0 in a scratch board: one item per type, each depending on one open
-/// item, then `bd ready --json -n 0`. These three took their item out of the
-/// ready set, and a hold raised by `bd gate create --blocks` is a `blocks`
-/// edge. `parent-child`, `related`, `discovered-from`, `replies-to`,
-/// `relates-to`, `duplicates`, `supersedes`, `authored-by`, `assigned-to`,
-/// `approved-by`, `attests`, `tracks`, `until`, `caused-by`, `validates` and
-/// `delegated-from` left it ready, and `bd dep add` refuses a type it does not
-/// know — a `parent-child` edge passes on a blocked parent's blockers, and is
-/// not one itself.
-const BLOCKING: [&str; 3] = ["blocks", "conditional-blocks", "waits-for"];
-
-/// The dependencies that still stand between this item and a start: an entry
-/// the store reports closed has been answered, and one of a type bd's ready set
-/// does not honour never stood, so neither is a blocker.
-fn blockers_of(entries: &[bd_wire::IssueWithDependencyMetadata]) -> Vec<String> {
-    entries
-        .iter()
-        .filter(|entry| entry.status.as_deref() != Some("closed"))
-        // An entry that names no type is kept, the same cautious reading as a
-        // missing status.
-        .filter(|entry| {
-            entry
-                .dependency_type
-                .as_deref()
-                .map(|kind| BLOCKING.contains(&kind))
-                .unwrap_or(true)
-        })
-        .filter_map(|entry| entry.id.clone())
-        .collect()
-}
-
-impl Store for Bd {
-    fn ready(&self) -> Result<Vec<String>, StoreError> {
-        // `-n 0` lifts the read's row cap. The verb answers its first 100 rows
-        // by default, piped or not — measured on 1.3.0, 100 of 112 — and a
-        // truncated list reads exactly like a whole one, so past a hundred
-        // ready rows a ready item would be refused as not ready.
-        Ok(self
-            .listed::<bd_wire::IssueWithCounts>(&["ready", "--json", "-n", "0"])?
-            .into_iter()
-            .filter_map(|row| row.id)
-            .collect())
-    }
-
-    fn show(&self, item: &str) -> Result<Item, StoreError> {
-        // THE JSON IS READ BEFORE THE STATUS, and this read stays off
-        // `answered`: bd exits non-zero on an item it does not hold and prints
-        // the error object, which is the record's answer and not a refusal.
-        let args = ["show", item, "--json"];
-        let out = self.run(&args)?;
-        let Some(value) = self.json(&args, &out) else {
-            return Err(StoreError::Unreadable(format!(
-                "{} answered no JSON: {}",
-                self.named(&args),
-                tail(&out)
-            )));
-        };
-        let row = shown(item, value, &String::from_utf8_lossy(&out.stderr))?;
-        if !out.status.success() {
-            return Err(self.refused(&args, &out));
-        }
-        item_from(item, &row)
-    }
-
-    /// `-n 0` for the same reason the ready read carries it: this answer takes
-    /// a cap — measured on 1.3.0, none by default on a piped call (110 of 110)
-    /// and 50 on a terminal (20 in bd's agent mode), but a board's `list.limit`
-    /// binds a piped one too (5 of 110 with it set) — and a truncated list
-    /// reads exactly like a whole one, so past the cap a run would be started
-    /// past the `[core.run] max_open` cap it is measured against.
-    fn open_labelled(&self, label: &str) -> Result<Vec<String>, StoreError> {
-        Ok(self
-            .listed::<bd_wire::IssueWithCounts>(&[
-                "list", "--label", label, "--status", "open", "--json", "-n", "0",
-            ])?
-            .into_iter()
-            .filter_map(|row| row.id)
-            .collect())
-    }
-
-    fn create(&self, item: &NewItem, by: &str) -> Result<String, StoreError> {
-        let labels = item.labels.join(",");
-        let mut args = vec![
-            "create",
-            "--title",
-            item.title,
-            "--description",
-            item.description,
-            "--type",
-            item.item_type,
-        ];
-        if !labels.is_empty() {
-            args.extend(["--labels", labels.as_str()]);
-        }
-        args.extend(["--actor", by, "--json"]);
-        self.created_id(&args)
-    }
-
-    fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&["update", item, "--title", title, "--actor", by])
-    }
-
-    /// `-n 0` for the same reason the reads above carry it: this answer takes
-    /// the same cap as `open_labelled`'s, and a truncated list reads exactly
-    /// like a whole one, so past the cap a retire misses the orders beyond it
-    /// and the next seat of that name inherits them.
-    fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
-        Ok(self
-            .listed::<bd_wire::IssueWithCounts>(&["list", "-a", seat, "--json", "-n", "0"])?
-            .into_iter()
-            .filter_map(|row| {
-                Some(AssignedItem {
-                    has_orders_key: orders_of(row.metadata.as_ref()).1,
-                    id: row.id?,
-                    title: row.title.unwrap_or_default(),
-                    status: row.status.unwrap_or_default(),
-                    item_type: row.issue_type.unwrap_or_default(),
-                })
-            })
-            .collect())
-    }
-
-    fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&["update", item, "--assignee", seat, "--actor", by])
-    }
-
-    fn hand_over(&self, item: &str, from: &str, to: &str, by: &str) -> Result<(), StoreError> {
-        self.fenced(
-            &[
-                "update",
-                item,
-                "--if-assignee",
-                from,
-                "--assignee",
-                to,
-                "--actor",
-                by,
-            ],
-            item,
-            &format!("held by {}", holder_named(from)),
-        )
-    }
-
-    fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&["update", item, "--metadata", payload, "--actor", by])
-    }
-
-    /// The same argv `set_orders` uses: bd names one flag for a metadata write
-    /// and the polarity above is what makes one flag safe for two keys.
-    fn set_metadata(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&["update", item, "--metadata", payload, "--actor", by])
-    }
-
-    fn unset_orders(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&[
-            "update",
-            item,
-            "--unset-metadata",
-            keys::ORDERS,
-            "--actor",
-            by,
-        ])
-    }
-
-    /// Taken from a writer who is not the holder on an `in_progress` item —
-    /// measured on 1.3.0, where it is the assignee and not the status that bd
-    /// keeps for the holder alone.
-    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&["update", item, "--status", "open", "--actor", by])
-    }
-
-    /// Every flag on one `update`, which bd takes: the empty assignee is what
-    /// clears the field, measured on 1.3.0 — the one call left no `assignee`
-    /// and no `fleet.orders`, the `fleet.run` key beside it standing, and an
-    /// item its seat had marked `in_progress` open and in `bd ready` again.
-    /// `--if-assignee` names the retiring seat, which is what bd 1.3.0 takes
-    /// from a retirer on an item that seat marked `in_progress` — measured,
-    /// where the same call without it is refused. `--if-status` is what keeps
-    /// the reopen off a CLOSED item: measured, the call without it reopened an
-    /// item its holder had closed, and with it wrote nothing and exited 13.
-    fn withdraw_order(
-        &self,
-        item: &str,
-        seat: &str,
-        status: &str,
-        by: &str,
-    ) -> Result<(), StoreError> {
-        self.fenced(
-            &[
-                "update",
-                item,
-                "--if-assignee",
-                seat,
-                "--if-status",
-                status,
-                "--assignee",
-                "",
-                "--unset-metadata",
-                keys::ORDERS,
-                "--status",
-                "open",
-                "--actor",
-                by,
-            ],
-            item,
-            &format!("held by {} as {status}", holder_named(seat)),
-        )
-    }
-
-    /// `--type` is not passed: human is the type `bd gate create` takes with no
-    /// flag, measured on 1.3.0, and a verb that spelled the default would be a
-    /// second copy of it.
-    ///
-    /// THE ID COMES OFF THE STRUCTURED ANSWER and never off the printed line.
-    /// `--actor` and `--json` are global flags here, so both are available on
-    /// this subcommand; a parse of the prose is the form that goes quiet the
-    /// day the prose changes.
-    fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
-        self.created_id(&[
-            "gate", "create", "--blocks", item, "--reason", reason, "--actor", by, "--json",
-        ])
-    }
-
-    /// `-n 0` for the same reason the three reads above carry it: this verb
-    /// answers its first 50 rows by default, piped or not — measured on 1.3.0,
-    /// 50 of 53 — and a truncated list reads exactly like a whole one, so past
-    /// fifty open holds a hold the board keeps open is absent from the listing
-    /// — and `clear` refuses a hold it does not find there as one somebody has
-    /// already cleared.
-    fn open_holds(&self) -> Result<Vec<String>, StoreError> {
-        Ok(self
-            .listed::<bd_wire::Issue>(&["gate", "list", "--json", "-n", "0"])?
-            .into_iter()
-            .filter_map(|row| row.id)
-            .collect())
-    }
-
-    fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&["gate", "resolve", hold, "--actor", by])
-    }
-
-    fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&["close", item, "--reason", reason, "--actor", by])
-    }
-
-    /// The id comes off the write's own answer, as `create`'s does. The
-    /// `--actor` is what marks this call a write for `Bd::run`'s timeout
-    /// message, as it does every other.
-    fn append(&self, item: &str, body: &Body, by: &Actor) -> Result<String, StoreError> {
-        validated(item, body)?;
-        let by = by.to_string();
-        self.created_id(&[
-            "comments",
-            "add",
-            item,
-            &entry::encode(body),
-            "--actor",
-            &by,
-            "--json",
-        ])
-    }
-
-    /// THE JSON IS READ BEFORE THE STATUS, for the reason `show`'s is: a missing
-    /// item exits non-zero with the error object, which is the record's answer
-    /// and not a refusal. So this stays off `answered` and off `listed`.
-    fn timeline(&self, item: &str) -> Result<Vec<Entry>, StoreError> {
-        let args = ["comments", item, "--json"];
-        let out = self.run(&args)?;
-        let rows = match self.json(&args, &out) {
-            Some(serde_json::Value::Object(answer)) if answer.contains_key("error") => {
-                let error = &answer["error"];
-                let error = error
-                    .as_str()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| error.to_string());
-                return Err(StoreError::Missing(format!("{item}: {error}")));
-            }
-            _ if !out.status.success() => return Err(self.refused(&args, &out)),
-            Some(serde_json::Value::Array(rows)) => rows,
-            Some(serde_json::Value::Null) => return Ok(Vec::new()),
-            None if String::from_utf8_lossy(&out.stdout).trim().is_empty() => return Ok(Vec::new()),
-            _ => {
-                return Err(StoreError::Unreadable(format!(
-                    "{} did not answer a list: {}",
-                    self.named(&args),
-                    tail(&out)
-                )))
-            }
-        };
-        let mut entries = Vec::new();
-        for (at, row) in rows.iter().enumerate() {
-            let comment: bd_wire::Comment = decoded(row).map_err(|why| {
-                StoreError::Unreadable(format!(
-                    "{} answered a row bd's wire types do not read, row {at}: {why}",
-                    self.named(&args)
-                ))
-            })?;
-            let field = |held: &Option<String>| held.clone().unwrap_or_default();
-            let read = entry::read_row(
-                item,
-                &field(&comment.id),
-                &field(&comment.author),
-                &field(&comment.text),
-                &field(&comment.created_at),
-            )
-            .map_err(StoreError::Unreadable)?;
-            entries.extend(read);
-        }
-        Ok(entries)
-    }
-
-    /// `-o` is resolved against the CALLER's directory and not against `-C`:
-    /// measured on 1.3.0, `bd -C <root> export -o .beads/issues.jsonl` run
-    /// from elsewhere wrote `.beads/issues.jsonl` under the caller and left the
-    /// root's `.beads` without one. So the path handed over is absolute.
-    fn export(&self, into: &Path) -> Result<(), StoreError> {
-        let into = into.join(EXPORT);
-        // THE DIRECTORY IS MADE FIRST. `bd` writes the export through a temp
-        // file beside it and makes no directory of its own, and a root whose
-        // project keeps its store out of git has none until something does —
-        // which is every fresh worktree, the landing lane among them.
-        if let Some(dir) = into.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| {
-                StoreError::Unreadable(format!(
-                    "the store's own directory {} could not be made: {e}",
-                    dir.display()
-                ))
-            })?;
-        }
-        let into = into.to_string_lossy().into_owned();
-        self.wrote(&["export", "-o", &into])
-    }
-}
-
-/// One row decoded into a wire type, or where it would not decode: the key's
-/// path and the row's id beside serde's reason, which alone — "invalid type:
-/// integer `3`, expected a string" — names neither the item nor the key, and a
-/// read refused over one field on one row leaves nothing else to find it by.
-fn decoded<'de, Row: Deserialize<'de>>(row: &'de serde_json::Value) -> Result<Row, String> {
-    serde_path_to_error::deserialize(row).map_err(|why| {
-        let id = row
-            .get("id")
-            .and_then(|id| id.as_str())
-            .unwrap_or("a row naming no id");
-        format!("`{}` of {id}: {}", why.path(), why.inner())
-    })
-}
-
-/// One document, read into the fields a verb asserts on, through bd's own wire
-/// type. A row that does not decode into it is a store that did not answer
-/// something readable.
-pub fn item_from(id: &str, row: &serde_json::Value) -> Result<Item, StoreError> {
-    let wire: bd_wire::IssueDetails = decoded(row).map_err(|why| {
-        StoreError::Unreadable(format!(
-            "{id} answered a row bd's wire types do not read: {why}"
-        ))
-    })?;
-    let (orders, has_orders_key) = orders_of(wire.metadata.as_ref());
-    Ok(Item {
-        item_type: wire.issue_type.unwrap_or_default(),
-        // The item's own labels, absent when the key is absent — which the
-        // store spells as `null` and not as an empty array.
-        labels: wire.labels.unwrap_or_default(),
-        // The same read `orders_of` makes, one key over: absent when the key
-        // is absent, so a run that wrote nothing is told from one that wrote
-        // an empty object. A bare `run` is some other writer's and reads as
-        // no run at all.
-        run: wire
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get(keys::RUN))
-            .filter(|held| !held.is_null())
-            .cloned(),
-        id: wire.id.unwrap_or_else(|| id.to_string()),
-        title: wire.title.unwrap_or_default(),
-        description: wire.description.unwrap_or_default(),
-        status: wire.status.unwrap_or_default(),
-        assignee: wire.assignee,
-        orders,
-        has_orders_key,
-        blockers: blockers_of(wire.dependencies.as_deref().unwrap_or_default()),
-        document: row.to_string(),
-    })
 }

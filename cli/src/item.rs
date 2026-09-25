@@ -28,7 +28,7 @@ use fleet_core::item::{
 };
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::{identity_or_mint, roster, Directory, IDENTITY};
-use fleet_core::store::Bd;
+use fleet_core::store::bd::Bd;
 
 use crate::envelope;
 use crate::exit::Exit;
@@ -952,7 +952,7 @@ pub fn derived_worktrees_dir(root: &Path) -> PathBuf {
 /// it always has rather than in some new way, and its refusal names the bare
 /// `bd` it tried, so a fallback that did not run is said.
 pub(crate) fn bd_bin() -> PathBuf {
-    crate::prime::resolve_bd().unwrap_or_else(|_| PathBuf::from(fleet_core::store::BD))
+    crate::prime::resolve_bd().unwrap_or_else(|_| PathBuf::from(fleet_core::store::bd::BD))
 }
 
 /// The project's store, over [`bd_bin`]: the one way a verb opens it.

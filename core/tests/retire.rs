@@ -16,7 +16,8 @@ use fleet_core::item::{COULD_NOT_TELL, REFUSED};
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
 use fleet_core::seat::retire;
-use fleet_core::store::{AssignedItem, Bd, Item, Orders, Store};
+use fleet_core::store::bd::Bd;
+use fleet_core::store::{AssignedItem, Item, Orders, Store};
 use fleet_core::test_support::FakeStore;
 
 /// A transient seat's full id, which is what an order assigns to: the incident

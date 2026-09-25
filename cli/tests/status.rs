@@ -1142,7 +1142,7 @@ impl Rig {
                 directory: &self.machine.join("runs").join(run),
                 by: &controller,
             },
-            &fleet_core::store::Bd::at(&self.project),
+            &fleet_core::store::bd::Bd::at(&self.project),
         )
         .unwrap_or_else(|stop| panic!("the park is made: {}", stop.message));
         hold

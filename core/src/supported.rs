@@ -2,7 +2,7 @@
 //! place: what each was measured against, and so what the defaults' doctor
 //! checks and the controller compare the installed one with.
 //!
-//! TWO ARE THE BINARY'S, and both are here. bd's is the store's own constant,
+//! TWO ARE THE BINARY'S, and both are here. bd's is the bd adapter's constant,
 //! named again below rather than copied, because every "measured on" claim it
 //! rests on sits in that file beside it. Claude Code's is declared here. The
 //! workflow runtime is NOT the binary's: a pack pins it in its own `[runtime]`
@@ -16,8 +16,8 @@
 
 /// The bd release the store adapter was measured against, and the one the
 /// defaults' `bd-version` doctor check and `fleet prime`'s second line compare
-/// `bd version` with. Declared in the store, whose claims it dates.
-pub use crate::store::PINNED_BD;
+/// `bd version` with. Declared in the bd adapter, whose claims it dates.
+pub use crate::store::bd::PINNED_BD;
 
 /// The Claude Code release fleet supports: the one the defaults'
 /// `claude-code-version` doctor check compares `claude --version` with, and

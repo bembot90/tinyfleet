@@ -54,7 +54,8 @@ use crate::item::{
 use crate::policy;
 use crate::seat::actor::{Actor, ActorKind};
 use crate::seat::identity::{Directory, SeatId};
-use crate::store::{Item, Store, StoreError, EXPORT};
+use crate::store::types::ExportSpec;
+use crate::store::{Item, Store, StoreError};
 
 /// The criteria a landing reads, in the order the checks are READ — which is
 /// the order they are printed in, so the page a person watches and the landed
@@ -109,10 +110,6 @@ pub const UNTESTED: &str =
 /// nothing is wrong with. A person's `fleet land` reads the refusal under it and
 /// runs again.
 pub const REBASE_NEEDED: &str = "REBASE NEEDED";
-
-/// The store's own directory, whose paths the staged-set check does not judge:
-/// they are this verb's own bookkeeping and not the delivery's.
-const STORE_DIR: &str = ".beads/";
 
 /// The prefix every land branch this verb cuts is named under. A delivery that
 /// names one names a landing's branch and not a builder's.
@@ -512,6 +509,10 @@ fn run(
              and a landing runs from the reviewer's own",
         ));
     }
+    // THE STORE'S OWN PATHS ARE THE ONES IT DECLARES: its export file and the
+    // directory that holds it, and none at all for a store that declares no
+    // export. Nothing here spells either.
+    let export = wiring.store.capabilities()?.export;
     let status = wiring.git.status().map_err(Stop::could_not_tell)?;
     // THE EXPORT IS EXEMPT HERE AND NOTHING ELSE UNDER THE STORE IS. (e)
     // regenerates the export in this same root, so a check that refused on a
@@ -520,7 +521,7 @@ fn run(
     // lets past is a store path that check's reset discards. The two spellings
     // are the export by name and the whole directory, which is what an
     // untracked-but-unignored store answers the porcelain with.
-    if let Some(loose) = outside_also(&status, landing.also) {
+    if let Some(loose) = outside_also(&status, landing.also, export.as_ref()) {
         return Err(Stop::refused(format!(
             "`{loose}` is changed in the working tree — a landing squashes the reviewed commit and \
              nothing else, and `--also <path>` is how a path of the reviewer's own is admitted"
@@ -663,48 +664,58 @@ fn run(
         }
     }
 
-    // (e) THE EXPORT, then the staged set and the check on it.
-    let export = wiring.project.root.join(EXPORT);
-    let before = fingerprint(&export);
-    wiring.store.export(&wiring.project.root)?;
-    let after = fingerprint(&export);
-    if after.is_none() {
-        return Err(Stop::could_not_tell(format!(
-            "the store's export left nothing at {} — the landing would carry no board at all",
-            export.display()
-        )));
-    }
-    // THREE READINGS AND NOT ONE. An mtime alone says nothing on a filesystem
-    // whose stamps are coarser than the act, so only a file whose time, length
-    // AND content all agree with what stood there before is one nothing wrote.
-    if after == before {
-        return Err(Stop::could_not_tell(format!(
-            "the store's export did not move {} — same mtime, same length and same bytes, so \
-             nothing was written and the landing would carry a stale board",
-            export.display()
-        )));
-    }
-    // WHETHER THE STORE IS VERSIONED HERE IS READ, NOT ASSUMED. `bd init`
-    // writes the ignore that hides its own directory, so in a project that
-    // keeps the work graph out of git there is nothing under `.beads/` for git
-    // to take — and `git add .beads` over a directory it has been told to
-    // ignore exits 128 rather than staging nothing. The porcelain says which
-    // project this is.
-    let touched = wiring.git.status().map_err(Stop::could_not_tell)?;
-    let store_paths: Vec<String> = touched
-        .iter()
-        .map(|line| porcelain_path(line))
-        .filter(|path| path.starts_with(STORE_DIR))
-        .collect();
-    // THE EXPORT BY NAME, and never the directory: an untracked-but-unignored
-    // store answers the porcelain with `.beads/` whole, and a directory handed
-    // to `git add` there stages the database beside the export.
-    if !store_paths.is_empty() {
-        wiring
-            .git
-            .add(&[EXPORT.to_string()])
-            .map_err(Stop::could_not_tell)?;
-    }
+    // (e) THE EXPORT, then the staged set and the check on it. A store that
+    // declares no export has none to take: no export and no fingerprint, and
+    // no path of the store's own in the porcelain.
+    let root = &wiring.project.root;
+    let store_paths: Vec<String> = match &export {
+        Some(spec) => {
+            let file = root.join(&spec.file);
+            let before = fingerprint(&file);
+            wiring.store.export(root)?;
+            let after = fingerprint(&file);
+            if after.is_none() {
+                return Err(Stop::could_not_tell(format!(
+                    "the store's export left nothing at {} — the landing would carry no board at \
+                     all",
+                    file.display()
+                )));
+            }
+            // THREE READINGS AND NOT ONE. An mtime alone says nothing on a
+            // filesystem whose stamps are coarser than the act, so only a file
+            // whose time, length AND content all agree with what stood there
+            // before is one nothing wrote.
+            if after == before {
+                return Err(Stop::could_not_tell(format!(
+                    "the store's export did not move {} — same mtime, same length and same \
+                     bytes, so nothing was written and the landing would carry a stale board",
+                    file.display()
+                )));
+            }
+            // WHETHER THE STORE IS VERSIONED HERE IS READ, NOT ASSUMED. A
+            // project may keep its store's directory out of git, and git add
+            // over an ignored path exits 128 rather than staging nothing. The
+            // porcelain says which project this is.
+            let touched = wiring.git.status().map_err(Stop::could_not_tell)?;
+            let store_paths: Vec<String> = touched
+                .iter()
+                .map(|line| porcelain_path(line))
+                .filter(|path| path.starts_with(&spec.dir))
+                .collect();
+            // THE EXPORT BY NAME, and never the directory: an
+            // untracked-but-unignored store answers the porcelain with its
+            // directory whole, and a directory handed to `git add` there stages
+            // the database beside the export.
+            if !store_paths.is_empty() {
+                wiring
+                    .git
+                    .add(std::slice::from_ref(&spec.file))
+                    .map_err(Stop::could_not_tell)?;
+            }
+            store_paths
+        }
+        None => Vec::new(),
+    };
     if !landing.also.is_empty() {
         wiring.git.add(landing.also).map_err(Stop::could_not_tell)?;
     }
@@ -714,15 +725,20 @@ fn run(
     // index, or the landing would carry a board that is a commit behind.
     // An untracked store answers the porcelain with its directory and not with
     // the file inside it, so both spellings say the export changed.
-    if store_paths.iter().any(|path| is_store_export(path))
-        && !all_staged.iter().any(|path| path == EXPORT)
-    {
-        return Err(Stop::refused(format!(
-            "{EXPORT} is versioned here and did not reach the index — the landing would carry a \
-             board older than the item it closes"
-        )));
+    if let Some(spec) = &export {
+        if store_paths
+            .iter()
+            .any(|path| is_store_export(path, Some(spec)))
+            && !all_staged.contains(&spec.file)
+        {
+            return Err(Stop::refused(format!(
+                "{} is versioned here and did not reach the index — the landing would carry a \
+                 board older than the item it closes",
+                spec.file
+            )));
+        }
     }
-    let staged = outside_store(&all_staged);
+    let staged = outside_store(&all_staged, export.as_ref());
     // THE DELIVERY'S OWN PATHS, kept apart from the set the check compares
     // against: the classification below asks whether what landed matches what
     // was reviewed, and an `--also` path is in neither commit's diff by
@@ -732,6 +748,7 @@ fn run(
             .git
             .changed_since_merge_base(TRUNK, commit)
             .map_err(Stop::could_not_tell)?,
+        export.as_ref(),
     );
     let delivered = outside_store(
         &delivery_paths
@@ -739,13 +756,21 @@ fn run(
             .cloned()
             .chain(landing.also.iter().cloned())
             .collect::<Vec<String>>(),
+        export.as_ref(),
     );
     if staged != delivered {
-        let _ = writeln!(out, "STAGED (outside .beads/):");
+        let (staged_heading, delivered_heading) = match &export {
+            Some(spec) => (
+                format!("STAGED (outside {}):", spec.dir),
+                format!("DELIVERED (outside {}):", spec.dir),
+            ),
+            None => (String::from("STAGED:"), String::from("DELIVERED:")),
+        };
+        let _ = writeln!(out, "{staged_heading}");
         for path in &staged {
             let _ = writeln!(out, "  {path}");
         }
-        let _ = writeln!(out, "DELIVERED (outside .beads/):");
+        let _ = writeln!(out, "{delivered_heading}");
         for path in &delivered {
             let _ = writeln!(out, "  {path}");
         }
@@ -766,11 +791,20 @@ fn run(
         out,
         wiring,
         "PASS",
-        format!(
-            "{} path(s) outside .beads/, {set_description}; {EXPORT} regenerated by the store's \
-             own export",
-            staged.len()
-        ),
+        match &export {
+            Some(spec) => format!(
+                "{} path(s) outside {}, {set_description}; {} regenerated by the store's own \
+                 export",
+                staged.len(),
+                spec.dir,
+                spec.file
+            ),
+            None => format!(
+                "{} path(s), {set_description}; the store declares no export, so the landing \
+                 carries no board file",
+                staged.len()
+            ),
+        },
     );
 
     // (f) THE MARKER, read through the census reader.
@@ -1031,10 +1065,10 @@ fn run(
         _ => landed,
     };
     // THE CLOSE IS MADE UNDER THE HOLDER'S OWN ASSIGNEE STRING, the closer's
-    // bare id, and not its typed form: bd 1.3.0 closes an assigned item only
-    // for an actor equal to its assignee — measured, `cannot close X: assignee
-    // is "<id>", actor is "seat:<id>"` — and the holder check above has
-    // already said the closer is that seat.
+    // bare id, and not its typed form: a store may close an assigned item only
+    // for an actor equal to its assignee — the adapter's `close` says where
+    // that was measured — and the holder check above has already said the
+    // closer is that seat.
     wiring
         .store
         .close(&item.id, &reason, &closer_id)
@@ -1854,8 +1888,8 @@ fn message(item: &Item, marker: &str, closer: &str, builder: &str) -> String {
 
 fn rerun(item: &str, sha: &str, why: &str) -> Stop {
     Stop::could_not_tell(format!(
-        "{item} did not close: {why}\n  the landing {sha} STANDS on {TRUNK_BRANCH}\n  RERUN: bd \
-         close {item} --reason \"landed {sha}\""
+        "{item} did not close: {why}\n  the landing {sha} STANDS on {TRUNK_BRANCH}\n  RERUN: close \
+         {item} in the store with the reason \"landed {sha}\""
     ))
 }
 
@@ -2045,20 +2079,21 @@ fn is_hex(text: &str) -> bool {
 ///
 /// THE EXPORT AND NOT THE DIRECTORY: a refusal from (e) on hard-resets the
 /// tree, so a path this check lets past is a path that reset discards without a
-/// word. A tracked `.beads/hooks/*` or `.beads/config.json` edit is a seat's
-/// work and refuses here like any other.
-fn outside_also(status: &[String], also: &[String]) -> Option<String> {
+/// word. A tracked edit to any other file under the store's directory — a hook,
+/// its config — is a seat's work and refuses here like any other.
+fn outside_also(status: &[String], also: &[String], export: Option<&ExportSpec>) -> Option<String> {
     status
         .iter()
         .map(|line| porcelain_path(line))
-        .find(|path| !also.contains(path) && !is_store_export(path))
+        .find(|path| !also.contains(path) && !is_store_export(path, export))
 }
 
 /// The store paths a landing rewrites itself, in both spellings the porcelain
 /// uses for them: the export by name, and the store's whole directory, which is
-/// what an untracked-but-unignored store answers with.
-fn is_store_export(path: &str) -> bool {
-    path == EXPORT || path == STORE_DIR
+/// what an untracked-but-unignored store answers with. A store that declares no
+/// export has neither.
+fn is_store_export(path: &str, export: Option<&ExportSpec>) -> bool {
+    export.is_some_and(|e| path == e.file || path == e.dir)
 }
 
 /// The path a porcelain line names. A rename prints `old -> new`, and a path
@@ -2140,11 +2175,12 @@ fn octal(digits: &[u8]) -> Option<u8> {
 }
 
 /// A path set with the store's own directory taken out, sorted and deduplicated
-/// so the two sides of the staged-set check are compared as sets.
-fn outside_store(paths: &[String]) -> Vec<String> {
+/// so the two sides of the staged-set check are compared as sets. A store that
+/// declares no export has no directory to take out.
+fn outside_store(paths: &[String], export: Option<&ExportSpec>) -> Vec<String> {
     let mut kept: Vec<String> = paths
         .iter()
-        .filter(|path| !path.starts_with(STORE_DIR))
+        .filter(|path| export.is_none_or(|e| !path.starts_with(&e.dir)))
         .cloned()
         .collect();
     kept.sort();

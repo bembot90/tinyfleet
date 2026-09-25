@@ -1340,7 +1340,7 @@ fn a_listing_that_never_answers_is_its_own_answer_inside_the_bound() {
         "bd",
         &format!(
             "#!/bin/sh\n[ \"$1\" = version ] && {{ echo 'bd version {}'; exit 0; }}\nsleep 30\n",
-            fleet_core::store::PINNED_BD
+            fleet_core::store::bd::PINNED_BD
         ),
     );
 
@@ -1389,21 +1389,21 @@ fn tracker_rig(label: &str, version: &str) -> (Scratch, PathBuf, PathBuf, PathBu
 /// page at the pin's tag, naming the pinned version. The doctor check points
 /// at the same page.
 fn install_pointer() -> String {
-    let pin = fleet_core::store::PINNED_BD;
+    let pin = fleet_core::store::bd::PINNED_BD;
     format!(
         "install the pinned bd {pin} by beads' own instructions: \
          https://github.com/gastownhall/beads/blob/v{pin}/docs/getting-started/installation.md"
     )
 }
 
-/// fleet-reb: line 2 is the tracker's version against `store::PINNED_BD`. The
+/// fleet-reb: line 2 is the tracker's version against `store::bd::PINNED_BD`. The
 /// pin reads as itself; another version is NAMED with where to install the
 /// pin, and the item line still prints beneath it, because the verbs still
 /// run on it. The mismatch arm is what makes the match arm worth anything: a
 /// line that called any answer the pin would pass the first alone.
 #[test]
 fn line_two_names_the_tracker_s_version_against_the_pin() {
-    let pin = fleet_core::store::PINNED_BD;
+    let pin = fleet_core::store::bd::PINNED_BD;
     for (label, version, line) in [
         (
             "bd-pinned",

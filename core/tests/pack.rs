@@ -659,7 +659,7 @@ fn the_runtime_doctor_shape_reads_the_pinned_version_against_the_binary_on_path(
 
 /// fleet-reb — the bd pin's doctor check the defaults ship, run as a real
 /// script against stub trackers, and its copy of the pin held to
-/// `store::PINNED_BD`: the script cannot read the constant, so this arm is what
+/// `store::bd::PINNED_BD`: the script cannot read the constant, so this arm is what
 /// refuses a pin move that left the script behind.
 ///
 /// The mismatch arm is a bd answering 1.2.2, the release before the pin, and
@@ -669,7 +669,7 @@ fn the_runtime_doctor_shape_reads_the_pinned_version_against_the_binary_on_path(
 /// names the binary over PATH.
 #[test]
 fn the_bd_doctor_check_reads_bd_version_against_the_pin() {
-    let pin = fleet_core::store::PINNED_BD;
+    let pin = fleet_core::store::bd::PINNED_BD;
     let install = format!(
         "Install the pinned bd {pin} by beads' own instructions: \
          https://github.com/gastownhall/beads/blob/v{pin}/docs/getting-started/installation.md"
@@ -684,7 +684,7 @@ fn the_bd_doctor_check_reads_bd_version_against_the_pin() {
             .filter(|line| line.starts_with("PINNED="))
             .collect::<Vec<_>>(),
         vec![format!("PINNED={pin}").as_str()],
-        "the check's one copy of the pin is store::PINNED_BD"
+        "the check's one copy of the pin is store::bd::PINNED_BD"
     );
 
     let fixture = Fixture::new("bd-doctor-stubs");

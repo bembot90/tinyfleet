@@ -27,7 +27,8 @@ use fleet_core::item::review::{self, Mode, Verdict, Wiring};
 use fleet_core::item::show::entry_lines;
 use fleet_core::item::{Change, Git, Project, Ring, RingOutcome, ITEM_ENTRY};
 use fleet_core::seat::actor::{Actor, ActorKind};
-use fleet_core::store::{AssignedItem, Bd, Item, Store, StoreError};
+use fleet_core::store::bd::Bd;
+use fleet_core::store::{AssignedItem, Item, Store, StoreError};
 use fleet_core::test_support::Board;
 
 const AT: &str = "2026-09-09T04:05:06Z";
@@ -304,7 +305,11 @@ impl Store for Doctored<'_> {
         self.inner.timeline(item)
     }
 
-    fn export(&self, into: &std::path::Path) -> Result<(), StoreError> {
+    fn capabilities(&self) -> Result<fleet_core::store::types::Capabilities, StoreError> {
+        self.inner.capabilities()
+    }
+
+    fn export(&self, into: &std::path::Path) -> Result<std::path::PathBuf, StoreError> {
         self.inner.export(into)
     }
 }

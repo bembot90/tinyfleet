@@ -24,7 +24,8 @@ use fleet_core::item::hold::{self, Clearance, Question, Wiring};
 use fleet_core::item::run;
 use fleet_core::item::{Change, Git, Project, Stop, ITEM_ENTRY};
 use fleet_core::seat::actor::{Actor, ActorKind};
-use fleet_core::store::{AssignedItem, Bd, Item, NewItem, Store, StoreError};
+use fleet_core::store::bd::Bd;
+use fleet_core::store::{AssignedItem, Item, NewItem, Store, StoreError};
 use fleet_core::test_support::Board;
 
 const AT: &str = "2026-09-13T04:05:06Z";
@@ -216,7 +217,11 @@ impl Store for Swallowing<'_> {
         self.inner.timeline(item)
     }
 
-    fn export(&self, into: &std::path::Path) -> Result<(), StoreError> {
+    fn capabilities(&self) -> Result<fleet_core::store::types::Capabilities, StoreError> {
+        self.inner.capabilities()
+    }
+
+    fn export(&self, into: &std::path::Path) -> Result<std::path::PathBuf, StoreError> {
         self.inner.export(into)
     }
 }

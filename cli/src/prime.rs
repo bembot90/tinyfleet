@@ -7,7 +7,7 @@
 //! in their own words and the next part still prints.
 //!
 //! Line 2 is the tracker's version against the one the store was measured on
-//! (`store::PINNED_BD`). Another version is NAMED AND NOT REFUSED: the verbs
+//! (`store::bd::PINNED_BD`). Another version is NAMED AND NOT REFUSED: the verbs
 //! still run on it, and the line says so beside where beads says to install
 //! the pin.
 
@@ -18,7 +18,8 @@ use fleet_core::guard;
 use fleet_core::lock;
 use fleet_core::process::run_bounded;
 use fleet_core::resolve::{self, Layer};
-use fleet_core::store::{Bd, Store, PINNED_BD};
+use fleet_core::store::bd::{Bd, PINNED_BD};
+use fleet_core::store::Store;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;

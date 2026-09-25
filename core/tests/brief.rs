@@ -17,7 +17,8 @@ use fleet_core::item::{show, table_at, Project, Ring, RingOutcome, Spawn, SpawnO
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
 use fleet_core::seat::retire;
-use fleet_core::store::{AssignedItem, Bd, Item, Orders, Store};
+use fleet_core::store::bd::Bd;
+use fleet_core::store::{AssignedItem, Item, Orders, Store};
 use fleet_core::test_support::FakeStore;
 
 /// A policy file with one guard opted out, so the on/off line is read rather
