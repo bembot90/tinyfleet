@@ -143,20 +143,12 @@ impl Store for Doctored<'_> {
         Ok(read)
     }
 
-    fn show_text(&self, item: &str) -> Result<String, StoreError> {
-        self.inner.show_text(item)
-    }
-
     fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
         self.inner.assigned_to(seat)
     }
 
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
         self.inner.assign(item, seat, by)
-    }
-
-    fn note(&self, item: &str, text: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.note(item, text, by)
     }
 
     fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
@@ -478,7 +470,6 @@ fn a_named_dispatch_writes_the_assignee_the_ordered_entry_and_the_index() {
 
     let read = rig.graph.store().show(&item).expect("the item reads back");
     assert_eq!(read.assignee.as_deref(), Some(seat.as_str()));
-    assert_eq!(read.notes, None, "no verb here writes a note");
     let index = read.orders.expect("the index is an object");
     assert_eq!(index.by.as_deref(), Some(BY));
     assert_eq!(index.kind.as_deref(), Some("dispatch"));
@@ -1609,7 +1600,6 @@ mod transient {
             read.orders
         );
         assert_eq!(read.assignee, None, "nobody was ever assigned");
-        assert_eq!(read.notes, None, "and nothing was noted");
         // The order stays as history, and the withdrawal after it says why.
         let entries = timeline_of(&rig, &item);
         assert_eq!(
@@ -1692,7 +1682,6 @@ mod transient {
 
         let read = rig.graph.store().show(&item).expect("the item reads back");
         assert!(read.has_orders_key, "the order stands: {:?}", read.orders);
-        assert_eq!(read.notes, None, "nothing was noted");
         // THE ORDER AND NOTHING AFTER IT: no withdrawal, and no entry for what
         // could not be observed — the cause is the exit's message.
         assert_eq!(

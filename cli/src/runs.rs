@@ -365,7 +365,6 @@ mod tests {
             after.document
         );
         assert_eq!(after.status, "open", "the work itself is still to be done");
-        assert_eq!(after.notes, None, "nothing is noted");
         let entries = store
             .timeline(PARKED)
             .expect("the store answers the timeline");

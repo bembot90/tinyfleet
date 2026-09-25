@@ -419,7 +419,11 @@ fn check_reports_each_check_and_exits_on_whether_every_target_is_configured() {
         text.contains("record bare-id: not configured — [project] item_prefix"),
         "the line names the key — {text}"
     );
-    assert_eq!(text.lines().count(), 3, "one line per check — {text}");
+    assert!(
+        text.contains("record entry-forge: configured"),
+        "the check with no target is always configured — {text}"
+    );
+    assert_eq!(text.lines().count(), 4, "one line per check — {text}");
 
     scratch.write(
         "fleet.toml",

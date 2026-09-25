@@ -163,20 +163,12 @@ impl Store for Swallowing<'_> {
         self.inner.show(item)
     }
 
-    fn show_text(&self, item: &str) -> Result<String, StoreError> {
-        self.inner.show_text(item)
-    }
-
     fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
         self.inner.assigned_to(seat)
     }
 
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
         self.inner.assign(item, seat, by)
-    }
-
-    fn note(&self, item: &str, text: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.note(item, text, by)
     }
 
     fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
@@ -301,14 +293,6 @@ fn a_question(scratch: &dyn Rooted, label: &str, body: &str) -> PathBuf {
 /// The question a file holds, read as the verb reads it.
 fn asked(body: &str) -> QuestionInput {
     serde_json::from_str(body).expect("the question is JSON of its shape")
-}
-
-fn read(store: &dyn Store, item: &str) -> Item {
-    store.show(item).expect("the item reads")
-}
-
-fn notes_of(store: &dyn Store, item: &str) -> String {
-    read(store, item).notes.unwrap_or_default()
 }
 
 fn timeline_of(store: &dyn Store, item: &str) -> Vec<Entry> {
@@ -490,7 +474,7 @@ fn a_clean_hold_commits_the_whole_tree_raises_the_hold_and_parks() {
 
     // (c) THE HELD ENTRY, by the seat, on bd's own comments: the hold, the
     // question and its options, and the branch and the whole commit it stopped
-    // on — and no note beside it.
+    // on.
     let entry = entry_of(bd, &item, &held.entry);
     assert_eq!(entry.by, seat_actor(seat), "by the seat that asked");
     assert_eq!(
@@ -506,11 +490,6 @@ fn a_clean_hold_commits_the_whole_tree_raises_the_hold_and_parks() {
             run_hash: None,
             about: None,
         })
-    );
-    assert!(
-        !notes_of(bd, &item).contains("PARKED"),
-        "no park note is written: {}",
-        notes_of(bd, &item)
     );
 
     // (d) THE ONE EVENT: the held entry's signal, by the seat that asked,
@@ -1441,10 +1420,6 @@ fn a_clearance_writes_the_cleared_entry_clears_the_hold_and_announces_it() {
         Timeline(&entries).open_hold().is_none(),
         "the timeline carries no open hold: {entries:?}"
     );
-    assert!(
-        !notes_of(&scratch.store, &item).contains("ANSWERED"),
-        "no answer note is written"
-    );
 
     // The hold is off the open list and the item is ready again.
     assert!(
@@ -1579,9 +1554,9 @@ fn an_unnamed_letter_is_accepted_with_text_and_refused_without_it() {
 }
 
 /// The two refusals before anything is written: an item whose timeline
-/// carries no open hold — one nobody held, and one whose hold only a note
-/// names — and an open held entry whose hold the store no longer lists open,
-/// cleared by hand.
+/// carries no open hold — one nobody held, and one whose hold only a person's
+/// comment names — and an open held entry whose hold the store no longer lists
+/// open, cleared by hand.
 #[test]
 fn no_open_hold_and_a_hold_cleared_by_hand_are_both_refused() {
     let scratch = &store();
@@ -1589,18 +1564,18 @@ fn no_open_hold_and_a_hold_cleared_by_hand_are_both_refused() {
     let project = project(scratch);
     let events = StubEvents::default();
 
-    // An item nobody held, and one carrying only a park NOTE — a person's
-    // prose to the timeline, and no question it can clear.
+    // An item nobody held, and one carrying only a park in prose, as a
+    // person's comment — no entry, and no question it can clear.
     let unheld = scratch.item("an item nobody held");
-    let noted = scratch.item("an item a note alone parks");
+    let noted = scratch.item("an item prose alone parks");
     let hold = scratch
         .store
-        .hold(&noted, "a hold only a note names", "a-flight")
+        .hold(&noted, "a hold only prose names", "a-flight")
         .expect("the hold is raised");
-    scratch.note(
+    scratch.store.comment(
         &noted,
-        &format!("PARKED {noted} — ask\nbranch:  b\ncommit:  {SHA}\nhold:    {hold}"),
         "a-flight",
+        &format!("PARKED {noted} — ask\nbranch:  b\ncommit:  {SHA}\nhold:    {hold}"),
     );
     for item in [&unheld, &noted] {
         let before = scratch.json(item);
@@ -1722,8 +1697,8 @@ fn a_runs_record(scratch: &Board, title: &str) -> String {
 /// A run held at `[core.run] max_crashes` is CLEARABLE: the park is exactly
 /// one `held` entry on the record — reason `max_crashes`, standing on the hash
 /// its open pinned, under the hold the store raised, with a question and its
-/// lettered options — and no note, so the clearance clears the hold the cap
-/// raised and the record is no longer blocked by it.
+/// lettered options — so the clearance clears the hold the cap raised and the
+/// record is no longer blocked by it.
 ///
 /// ONE ENTRY WHERE THERE WERE TWO DISAGREEING RECORDS: the park note said
 /// `max_crashes` where the controller's line said the pass's reason, and the
@@ -1749,7 +1724,7 @@ fn a_run_held_at_the_crash_cap_is_cleared_like_any_other_park() {
         hold::park_at_the_cap(&capped, &scratch.store).expect("the park is made");
 
     // (a) THE ONE HELD ENTRY, by the controller, under the id the park
-    // answered, and no note.
+    // answered.
     let cap = hold::cap_question(&capped);
     let entries = timeline_of(&scratch.store, &run);
     assert_eq!(entries.len(), 1, "exactly one entry: {entries:?}");
@@ -1768,11 +1743,6 @@ fn a_run_held_at_the_crash_cap_is_cleared_like_any_other_park() {
             run_hash: Some(RUN_HASH.to_string()),
             about: None,
         })
-    );
-    assert_eq!(
-        notes_of(&scratch.store, &run),
-        "",
-        "no note is written beside it"
     );
 
     // (b) THE ANSWER, which is what a person meets first.

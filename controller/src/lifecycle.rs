@@ -462,9 +462,7 @@ pub fn first_run(run: &FirstRun) -> Result<FirstRunReport, String> {
         if wrote { "written" } else { "already" },
         run.service.file().display()
     ));
-    for note in run.service.notes() {
-        lines.push(note);
-    }
+    lines.extend(run.service.after_write());
     // The one line that is a promise rather than a report: this function loads
     // nothing, and the arm named for it counts the manager's calls.
     lines.push(format!(

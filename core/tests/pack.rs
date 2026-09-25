@@ -75,6 +75,58 @@ fn the_defaults_carry_the_three_input_schemas_and_the_registry_lists_them() {
     }
 }
 
+/// Fleet writes no notes, so no note has a template left: the seven the verbs
+/// once rendered are in no directory of the embedded tree, and the shadow
+/// registry lists none of them for a pack to replace.
+#[test]
+fn the_defaults_carry_no_note_template_and_the_registry_lists_none() {
+    use fleet_core::registry;
+
+    const NOTES: [&str; 7] = [
+        "dispatch-note.md",
+        "delivery-note.md",
+        "verdict.md",
+        "landing-note.md",
+        "park-note.md",
+        "question-note.md",
+        "answer-note.md",
+    ];
+    let named = |path: &str| NOTES.contains(&path.rsplit('/').next().unwrap_or(path));
+
+    let embedded: Vec<&str> = fleet_core::embedded::paths().collect();
+    let held: Vec<&&str> = embedded.iter().filter(|path| named(path)).collect();
+    assert!(
+        held.is_empty(),
+        "the embedded tree holds a note template: {held:?}"
+    );
+
+    let registry = registry::parse(
+        std::str::from_utf8(
+            fleet_core::embedded::bytes(registry::REGISTRY).expect("the set carries the registry"),
+        )
+        .expect("the registry is UTF-8"),
+    )
+    .expect("the registry parses");
+    let listed: Vec<&str> = registry
+        .shadows
+        .iter()
+        .map(|shadow| shadow.path.as_str())
+        .filter(|path| named(path))
+        .collect();
+    assert!(
+        listed.is_empty(),
+        "the registry lists a note template: {listed:?}"
+    );
+
+    // THE CONTROL: the same reading finds the templates that stay, so an empty
+    // answer above is the tree's and not the reading's.
+    assert!(
+        embedded.contains(&"assets/brief.md") && registry.lists("assets/brief.md"),
+        "the brief is embedded and listed: {:?}",
+        registry.shadows
+    );
+}
+
 #[test]
 fn the_doctrine_pack_is_valid_under_the_same_check() {
     let report = pack::check(&bundled_tiny());

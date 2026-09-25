@@ -181,7 +181,6 @@ mod tests {
         assert_eq!(item.status, "open");
         assert_eq!(item.item_type, "task");
         assert_eq!(item.assignee.as_deref(), Some("seat-1"));
-        assert_eq!(item.notes.as_deref(), Some("a note on downstream"));
         assert_eq!(item.labels, vec!["fleet", "fleet:run"]);
         assert_eq!(item.blockers, vec![dependency_titled("upstream open")]);
         assert!(item.has_orders_key);

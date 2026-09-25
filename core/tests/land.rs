@@ -36,8 +36,7 @@ use fleet_core::item::land::{
 use fleet_core::item::lane;
 use fleet_core::item::show::entry_lines;
 use fleet_core::item::{
-    control_token, last_delivery, Change, Git, Project, Stop, CHECK_READ, DELIVERY_MARKERS,
-    ITEM_ENTRY, LANDING_MARKERS, TRUNK, TRUNK_BRANCH, VERDICT_MARKERS,
+    control_token, Change, Git, Project, Stop, CHECK_READ, ITEM_ENTRY, TRUNK, TRUNK_BRANCH,
 };
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
@@ -453,20 +452,12 @@ impl Store for Doctored<'_> {
         self.inner.show(item)
     }
 
-    fn show_text(&self, item: &str) -> Result<String, StoreError> {
-        self.inner.show_text(item)
-    }
-
     fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
         self.inner.assigned_to(seat)
     }
 
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
         self.inner.assign(item, seat, by)
-    }
-
-    fn note(&self, item: &str, text: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.note(item, text, by)
     }
 
     fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
@@ -1161,14 +1152,6 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_landed_entry_and_close
         record.contains(&format!("landed {LANDED}")),
         "the close reason names the landed sha: {record}"
     );
-    assert!(
-        !read
-            .notes
-            .as_deref()
-            .unwrap_or_default()
-            .contains(&format!("LANDED {LANDED}")),
-        "and no landing note is on the item: {record}"
-    );
 
     // Every row the entry carries reached stdout as it was read, in the same
     // order, and the bar took one step per row.
@@ -1272,10 +1255,11 @@ fn the_delivered_entrys_author_and_branch_are_the_builder_and_the_work_branch() 
 }
 
 /// THE CLEAN BREAK, on the landing side: an accepted item whose only delivery
-/// is a prose note carries no delivery, and is refused before the trunk is
-/// touched.
+/// is prose — the text `fleet deliver` once wrote as a note, here a comment on
+/// the timeline that is no entry — carries no delivery, and is refused before
+/// the trunk is touched.
 #[test]
-fn an_accepted_item_delivered_only_as_a_prose_note_is_refused() {
+fn an_accepted_item_delivered_only_as_prose_is_refused() {
     let scratch = &store();
     let item = scratch
         .store
@@ -1294,14 +1278,10 @@ fn an_accepted_item_delivered_only_as_a_prose_note_is_refused() {
         .assign(&item, REVIEWER_ID, REVIEWER)
         .expect("the reviewer holds it");
     let prose = format!(
-        "{} {SHA} — {}\ncommit:  {SHA}\nbranch:  {WORK}\nbase:    {TRUNK} at {OLD}",
-        DELIVERY_MARKERS[0],
+        "DELIVERED {SHA} — {}\ncommit:  {SHA}\nbranch:  {WORK}\nbase:    {TRUNK} at {OLD}",
         seat_actor(BUILDER)
     );
-    scratch
-        .store
-        .note(&item, &prose, BUILDER)
-        .expect("the prose delivery is on it");
+    scratch.store.comment(&item, BUILDER, &prose);
     scratch
         .store
         .append(&item, &a_review(Verdict::Accepted, SHA), &as_reviewer())
@@ -3662,86 +3642,7 @@ fn a_delivery_naming_another_landings_branch_is_never_deleted() {
     );
 }
 
-// ---- the template and its marker ---------------------------------------------
-
-/// The landing marker is distinct from every delivery and verdict marker: one
-/// of each in one note, and the delivery reader finds only its own.
-#[test]
-fn the_delivery_reader_finds_only_its_own_region() {
-    // No verb writes a delivery, a verdict or a landing note any more, so all
-    // three regions are ones a person's older record still carries, each
-    // opened on the marker the region readers anchor on.
-    let delivery = format!(
-        "{} {SHA} — {}\ncommit:  {SHA}\nbranch:  a-builder/feat/the-work",
-        DELIVERY_MARKERS[0],
-        seat_actor(BUILDER)
-    );
-    let verdict = format!(
-        "{} {SHA} — {REVIEWER}\nitem:    fx-1\ndecisions: 0 accepted, 0 overruled",
-        VERDICT_MARKERS[0]
-    );
-    let landing = format!(
-        "{} {LANDED} on {TRUNK_BRANCH} by {REVIEWER} (range {OLD}..{LANDED}; squash of {SHA}) — \
-         suite: exit 0, rc 0\n1. reviewed commit PASS  read here",
-        LANDING_MARKERS[0]
-    );
-    let notes = format!("{delivery}\n{verdict}\n{landing}");
-
-    assert_eq!(
-        last_delivery(&notes).as_deref(),
-        Some(delivery.as_str()),
-        "the delivery region stops at the verdict"
-    );
-    // The control: with the verdict taken away the delivery stops at the
-    // landing instead, so each boundary is its own marker's doing and not an
-    // artefact.
-    let without = format!("{delivery}\n{landing}");
-    assert_eq!(last_delivery(&without).as_deref(), Some(delivery.as_str()));
-}
-
-/// A REGION IS ENDED BY WHAT FOLLOWS IT, NEVER BY ITS OWN KIND.
-///
-/// A reader may not stop at a marker of the kind it is reading, and must stop
-/// at every other: bounding at every marker cut a note off inside itself, and
-/// bounding at none let a landing extend one. The delivery reader is the one
-/// left whose kind has two markers, so it is the one this arm reads.
-#[test]
-fn a_region_is_ended_by_what_follows_it_and_never_by_its_own_kind() {
-    let delivered = format!(
-        "{} {SHA} — {BUILDER}\ncommit:  {SHA}\nbranch:  {WORK}",
-        DELIVERY_MARKERS[0]
-    );
-    let verdict = format!("{} {SHA} — {REVIEWER}", VERDICT_MARKERS[1]);
-    let landed = format!(
-        "{} {LANDED} on {TRUNK_BRANCH} by {REVIEWER} — NOT TESTED: no test command was handed \
-         to this landing",
-        LANDING_MARKERS[0]
-    );
-
-    assert_eq!(
-        last_delivery(&delivered).as_deref(),
-        Some(delivered.as_str()),
-        "a delivery alone is the whole delivery"
-    );
-    assert_eq!(
-        last_delivery(&format!("{delivered}\n{verdict}")).as_deref(),
-        Some(delivered.as_str()),
-        "a verdict after it ends it"
-    );
-    assert_eq!(
-        last_delivery(&format!("{delivered}\n{landed}")).as_deref(),
-        Some(delivered.as_str()),
-        "and so does a landing"
-    );
-    // The half a naive bound gets wrong: a SECOND delivery does not end the
-    // first — it is the one read, and it runs to the end.
-    let redelivered = format!("{} {SHA} — {BUILDER}\nbase:    {OLD}", DELIVERY_MARKERS[1]);
-    assert_eq!(
-        last_delivery(&format!("{delivered}\n{redelivered}")).as_deref(),
-        Some(redelivered.as_str()),
-        "the LAST delivery is the one read, and it runs to the end"
-    );
-}
+// ---- the template ------------------------------------------------------------
 
 /// The landing grammar is gone from the defaults and the registry: a landing
 /// is an entry, and no verb renders a note for it.

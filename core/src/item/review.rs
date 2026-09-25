@@ -19,8 +19,8 @@
 //!
 //! THE DELIVERY IS THE TIMELINE'S LAST DELIVERED ENTRY, and nothing else. Its
 //! commit is what is reviewed, its base is where the size is measured from,
-//! and its decisions are what the walk rules on. A prose delivery note on the
-//! item is not one: the record has no delivery grammar left to read it by.
+//! and its decisions are what the walk rules on. Prose on the item is not one,
+//! whatever it says: fleet has no grammar to read a delivery out of text.
 
 use std::io::Write;
 use std::path::Path;

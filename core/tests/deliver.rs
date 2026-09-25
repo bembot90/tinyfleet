@@ -178,20 +178,12 @@ impl Store for Doctored<'_> {
         Ok(read)
     }
 
-    fn show_text(&self, item: &str) -> Result<String, StoreError> {
-        self.inner.show_text(item)
-    }
-
     fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
         self.inner.assigned_to(seat)
     }
 
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
         self.inner.assign(item, seat, by)
-    }
-
-    fn note(&self, item: &str, text: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.note(item, text, by)
     }
 
     fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
@@ -449,10 +441,6 @@ fn a_clean_delivery_commits_reassigns_and_writes_the_delivered_entry() {
 
     let read = read(scratch, &item);
     assert_eq!(read.assignee.as_deref(), Some(full(REVIEWER).as_str()));
-    assert!(
-        !read.notes.unwrap_or_default().contains("DELIVERED"),
-        "the delivery is the entry, and no note carries one"
-    );
 
     assert!(
         git.calls()
@@ -902,10 +890,6 @@ fn a_delivery_appends_one_delivered_entry_and_writes_no_note() {
         ],
         "the reassignment and the entry, and nothing else"
     );
-    assert!(
-        !wrote.iter().any(|line| line.starts_with("note ")),
-        "no note: {wrote:?}"
-    );
     let entries = timeline(scratch, &item);
     let last = entries.last().expect("the timeline carries an entry");
     assert_eq!(last.body, expected(&whole(), SHA));
@@ -1010,7 +994,7 @@ fn a_delivered_entry_the_store_refuses_exits_three_and_the_commit_stands() {
 /// A FILE THAT DOES NOT READ IS REFUSED BEFORE ANY WRITE. Each of the four is
 /// exit 2 naming the schema, and in every one the commit was never asked for
 /// and the store was never written: the read sits before the commit, the
-/// reassignment and the note.
+/// reassignment and the entry.
 #[test]
 fn a_delivery_that_does_not_read_is_refused_at_two_before_anything_is_written() {
     let mut unknown = whole();
@@ -1398,7 +1382,7 @@ fn a_seat_holding_no_ordered_item_is_refused_and_two_are_named() {
 /// typed actor finds the item assigned to its id; a run holds nothing, so a
 /// run's delivery without `--item` is refused naming the flag — before the
 /// commit and before any write — and the same run naming the item delivers it
-/// as it always did, signing the note with its own string form.
+/// as it always did, signing the entry with its own string form.
 #[test]
 fn a_run_is_no_seat_and_delivers_only_the_item_it_names() {
     let scratch = &store();

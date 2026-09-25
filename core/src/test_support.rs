@@ -53,13 +53,12 @@ pub struct FakeStore {
     /// which is the polarity measured on bd 1.3.0 and pinned by an arm of the
     /// plan suite.
     pub metadata: Mutex<BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
-    pub text: Mutex<BTreeMap<String, String>>,
     /// Rows answered for a seat on top of the items assigned to it here.
     pub held: BTreeMap<String, Vec<AssignedItem>>,
     pub writes: Mutex<Vec<String>>,
     /// The holds raised, in the order they were raised: the item and the
-    /// question. The nth hold's id is `hold-<n>`, so a note naming one and the
-    /// call that raised it can be compared.
+    /// question. The nth hold's id is `hold-<n>`, so an entry naming one and
+    /// the call that raised it can be compared.
     pub holds: Mutex<Vec<(String, String)>>,
     /// The holds a `clear_hold` has closed, by id, so the open listing below
     /// answers what this store has actually been told.
@@ -124,14 +123,6 @@ impl FakeStore {
             .lock()
             .expect("the items are not poisoned")
             .insert(item.id.clone(), item);
-    }
-
-    /// What `show_text` answers for this item.
-    pub fn set_text(&self, item: &str, text: &str) {
-        self.text
-            .lock()
-            .expect("the text is not poisoned")
-            .insert(item.to_string(), text.to_string());
     }
 
     /// One stored item moved without a write, for a field the trait carries no
@@ -384,9 +375,6 @@ fn row_of(
     if let Some(assignee) = &item.assignee {
         row.insert(String::from("assignee"), assignee.clone().into());
     }
-    if let Some(notes) = &item.notes {
-        row.insert(String::from("notes"), notes.clone().into());
-    }
     if let Some(reason) = close_reason {
         row.insert(String::from("close_reason"), reason.into());
     }
@@ -612,16 +600,6 @@ impl Store for FakeStore {
         crate::store::item_from(item, &crate::store::shown(item, opened, &said)?)
     }
 
-    fn show_text(&self, item: &str) -> Result<String, StoreError> {
-        Ok(self
-            .text
-            .lock()
-            .expect("the text is not poisoned")
-            .get(item)
-            .cloned()
-            .unwrap_or_default())
-    }
-
     fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
         if let Some(refused) = self.refuse() {
             return refused;
@@ -663,18 +641,6 @@ impl Store for FakeStore {
         self.log(format!("hand_over {item} {from} {to} {by}"))?;
         self.held_by(item, from)?;
         self.moving(item, |held| held.assignee = Some(to.to_string()))
-    }
-
-    /// Appended with a newline between notes and no header, which is how the
-    /// real store answers two notes on one item.
-    fn note(&self, item: &str, text: &str, by: &str) -> Result<(), StoreError> {
-        self.log(format!("note {item} {text} {by}"))?;
-        self.moving(item, |held| {
-            held.notes = Some(match held.notes.take() {
-                Some(already) if !already.is_empty() => format!("{already}\n{text}"),
-                _ => text.to_string(),
-            });
-        })
     }
 
     fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
@@ -761,8 +727,8 @@ impl Store for FakeStore {
         Ok(())
     }
 
-    /// The reason goes to the log and not to the notes: the real store holds it
-    /// in a field of its own that no read here answers.
+    /// The reason goes to the log and not onto the item: the real store holds
+    /// it in a field of its own that no read here decodes.
     fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
         self.log(format!("close {item} {reason} {by}"))?;
         self.moving(item, |held| held.status = String::from("closed"))?;
@@ -837,6 +803,11 @@ impl Store for FakeStore {
     /// One JSON object per line, under the root the CALLER names. A store that
     /// was given no root of its own logs the word and writes nothing: a fake
     /// nobody rooted is one whose arms are about the board and not the file.
+    ///
+    /// An item's line carries its comments, which is where its entries live —
+    /// measured on bd 1.3.0, whose export writes them under `comments` with the
+    /// fields a comment read answers — so an append moves the export's bytes as
+    /// it moves the real one's.
     fn export(&self, into: &Path) -> Result<(), StoreError> {
         self.log(String::from("export"))?;
         if self.root.is_none() {
@@ -851,8 +822,28 @@ impl Store for FakeStore {
                 ))
             })?;
         }
+        let comments = self
+            .comments
+            .lock()
+            .expect("the comments are not poisoned")
+            .clone();
         let mut body = String::new();
-        for row in self.rows() {
+        for mut row in self.rows() {
+            let id = row["id"].as_str().unwrap_or_default().to_string();
+            if let Some(held) = comments.get(&id).filter(|held| !held.is_empty()) {
+                row["comments"] = held
+                    .iter()
+                    .map(|comment| {
+                        serde_json::json!({
+                            "id": comment.id,
+                            "issue_id": id,
+                            "author": comment.author,
+                            "text": comment.text,
+                            "created_at": comment.at,
+                        })
+                    })
+                    .collect();
+            }
             body.push_str(&row.to_string());
             body.push('\n');
         }
@@ -903,17 +894,11 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError> {
         (**self).set_title(item, title, by)
     }
-    fn show_text(&self, item: &str) -> Result<String, StoreError> {
-        (**self).show_text(item)
-    }
     fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
         (**self).assigned_to(seat)
     }
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
         (**self).assign(item, seat, by)
-    }
-    fn note(&self, item: &str, text: &str, by: &str) -> Result<(), StoreError> {
-        (**self).note(item, text, by)
     }
     fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
         (**self).set_orders(item, payload, by)
@@ -1012,8 +997,7 @@ impl Board {
 
     /// One item, by title, answered as its id.
     pub fn item(&self, title: &str) -> String {
-        let id = self
-            .store
+        self.store
             .create(
                 &NewItem {
                     title,
@@ -1023,9 +1007,7 @@ impl Board {
                 },
                 "the-test",
             )
-            .expect("the item is filed");
-        self.store.set_text(&id, &format!("{id} · {title}\nOPEN\n"));
-        id
+            .expect("the item is filed")
     }
 
     /// The whole document, as text: what an arm compares before and after.
@@ -1042,12 +1024,6 @@ impl Board {
         self.store
             .assign(item, seat, "the-test")
             .unwrap_or_else(|e| panic!("assign {item}: {e}"));
-    }
-
-    pub fn note(&self, item: &str, text: &str, by: &str) {
-        self.store
-            .note(item, text, by)
-            .unwrap_or_else(|e| panic!("note {item}: {e}"));
     }
 
     pub fn set_metadata(&self, item: &str, payload: &str) {

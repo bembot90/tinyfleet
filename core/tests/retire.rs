@@ -123,7 +123,6 @@ fn a_retire_withdraws_every_open_ordered_item_the_seat_still_holds() {
         after.assignee
     );
     assert_eq!(after.status, "open", "the item stays open");
-    assert_eq!(after.notes, None, "and nothing is noted");
     let entries = timeline(&store, HELD);
     assert_eq!(
         entries.iter().map(|entry| &entry.body).collect::<Vec<_>>(),

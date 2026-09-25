@@ -430,7 +430,7 @@ impl Service {
 
     /// What this platform read about the file it was just handed, in words a
     /// caller prints without knowing which platform wrote them.
-    pub fn notes(&self) -> Vec<String> {
+    pub fn after_write(&self) -> Vec<String> {
         sys::after_write(&self.child_path, &self.label, &self.file.path)
     }
 

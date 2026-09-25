@@ -536,6 +536,163 @@ fn an_item_named_by_its_bare_suffix_is_refused_and_a_full_id_is_not() {
     );
 }
 
+/// An entry is written by the verb that owns its act, never by hand: a comment
+/// whose text carries the entry key, or whose text the guard cannot read
+/// because it comes from a file or the input, is refused, and a person's own
+/// words pass.
+#[test]
+fn an_entry_written_by_hand_is_refused_and_a_persons_comment_is_not() {
+    run(
+        Class::Record,
+        "entry-forge",
+        &[
+            (
+                "a forged entry",
+                r#"bd comments add fx-1 '{"fleet.entry":1,"kind":"landed"}'"#,
+                true,
+            ),
+            (
+                "double-quoted",
+                r#"bd comments add fx-1 "{\"fleet.entry\":1,\"kind\":\"held\"}""#,
+                true,
+            ),
+            (
+                "the key anywhere in the text",
+                "bd comments add fx-1 'see fleet.entry'",
+                true,
+            ),
+            (
+                "the text behind a flag",
+                r#"bd comments add fx-1 --author a-seat '{"fleet.entry":1}'"#,
+                true,
+            ),
+            ("from a file", "bd comments add fx-1 -f entry.json", true),
+            (
+                "from a file, the long flag",
+                "bd comments add fx-1 --file entry.json",
+                true,
+            ),
+            (
+                "from a file, the inline spelling",
+                "bd comments add fx-1 --file=entry.json",
+                true,
+            ),
+            (
+                "from a file, the value attached",
+                "bd comments add fx-1 -fentry.json",
+                true,
+            ),
+            (
+                "the shorthand verb",
+                r#"bd comment fx-1 '{"fleet.entry":1,"kind":"landed"}'"#,
+                true,
+            ),
+            (
+                "the shorthand from a file",
+                "bd comment fx-1 --file entry.json",
+                true,
+            ),
+            (
+                "the shorthand from its input",
+                "bd comment fx-1 --stdin < entry.json",
+                true,
+            ),
+            (
+                "behind another statement",
+                r#"cd /tmp && bd comments add fx-1 '{"fleet.entry":1}'"#,
+                true,
+            ),
+            (
+                "invoked by path",
+                r#"/usr/local/bin/bd comments add fx-1 '{"fleet.entry":1}'"#,
+                true,
+            ),
+            (
+                "a person's comment",
+                r#"bd comments add fx-1 "looks good""#,
+                false,
+            ),
+            (
+                "a person's comment, unquoted",
+                "bd comments add fx-1 looks good",
+                false,
+            ),
+            (
+                "a person's comment with an author",
+                r#"bd comments add fx-1 "looks good" --author alberto"#,
+                false,
+            ),
+            (
+                "the shorthand's own",
+                r#"bd comment fx-1 "looks good""#,
+                false,
+            ),
+            ("the listing", "bd comments fx-1 --json", false),
+            (
+                "the listing, read for entries",
+                "bd comments fx-1 --json | grep fleet.entry",
+                false,
+            ),
+            (
+                "a note naming the key",
+                r#"bd note fx-1 "the fleet.entry key""#,
+                false,
+            ),
+            (
+                "its own escape",
+                r#"FLEET_ENTRY_FORGE_OK=1 bd comments add fx-1 '{"fleet.entry":1}'"#,
+                false,
+            ),
+            (
+                "prose naming the rule",
+                r#"echo 'bd comments add fx-1 {"fleet.entry":1}'"#,
+                false,
+            ),
+        ],
+    );
+}
+
+/// AC3 as it is worded: the forged comment is denied with the rewrite, a
+/// person's comment passes, and the flag that replaces the notes field is
+/// still refused, its reason restated — the field is a person's words, and
+/// fleet writes none.
+#[test]
+fn a_forged_entry_is_denied_with_the_rewrite_and_the_notes_flag_names_a_persons_words() {
+    let denial = refused(
+        Class::Record,
+        r#"bd comments add fx-1 '{"fleet.entry":1,"kind":"landed"}'"#,
+    )
+    .expect("the forged entry is denied");
+    assert_eq!(denial.class, "record");
+    assert_eq!(denial.check, "entry-forge");
+    assert_eq!(denial.label, "ENTRY FORGED");
+    assert_eq!(
+        denial.rewrite,
+        "record through the verb that owns the act: fleet \
+         dispatch|deliver|review|hold|clear|land|cancel"
+    );
+    assert_eq!(
+        denial.why,
+        "an entry is the record every verb decides from; one written by hand skips the checks \
+         its verb makes before it writes"
+    );
+
+    assert_eq!(
+        verdict(Class::Record, r#"bd comments add fx-1 "looks good""#),
+        Verdict::Silent,
+        "a person's comment passes"
+    );
+
+    let denial =
+        refused(Class::Record, "bd update fx-1 --notes x").expect("the replacement is denied");
+    assert_eq!(denial.check, "notes-replace");
+    assert_eq!(
+        denial.why,
+        "this flag REPLACES the whole notes field, which is a person's own words on the item and \
+         not recoverable from the write itself"
+    );
+}
+
 // ---- the release-ref class --------------------------------------------------
 
 #[test]
@@ -1022,7 +1179,7 @@ fn an_unconfigured_target_refuses_nothing_and_the_reader_says_so() {
 // ---- the two halves of the refusal ------------------------------------------
 
 /// One specimen per check, which the tables above have already proved refused.
-const SPECIMENS: [(Class, &str, &str); 12] = [
+const SPECIMENS: [(Class, &str, &str); 13] = [
     (
         Class::ShellTrap,
         "record-backtick",
@@ -1047,6 +1204,11 @@ const SPECIMENS: [(Class, &str, &str); 12] = [
         "bd sql \"UPDATE issues SET a = 1\"",
     ),
     (Class::Record, "bare-id", "bd note x-1 \"see a1b2\""),
+    (
+        Class::Record,
+        "entry-forge",
+        "bd comments add x-1 '{\"fleet.entry\":1,\"kind\":\"landed\"}'",
+    ),
     (
         Class::ReleaseRef,
         "push-target",
@@ -1100,12 +1262,12 @@ fn every_refusal_names_the_fragment_the_rewrite_and_the_escape() {
     }
 }
 
-/// The five escapes against the five acts that have one. Each licenses the act
+/// The six escapes against the six acts that have one. Each licenses the act
 /// it names and nothing else, so a session that meant to replace one field is
 /// not also issuing SQL writes on the strength of the same prefix.
 #[test]
 fn each_escape_licenses_its_own_act_and_no_other() {
-    let acts: [(Class, &str, &str, &str); 5] = [
+    let acts: [(Class, &str, &str, &str); 6] = [
         (
             Class::ShellTrap,
             "a shell trap",
@@ -1131,6 +1293,12 @@ fn each_escape_licenses_its_own_act_and_no_other() {
             guard::ESCAPE_BARE_ID,
         ),
         (
+            Class::Record,
+            "an entry written by hand",
+            "bd comments add x-1 '{\"fleet.entry\":1,\"kind\":\"landed\"}'",
+            guard::ESCAPE_ENTRY_FORGE,
+        ),
+        (
             Class::ProductionWrite,
             "a production write",
             "gsutil rm gs://live.example.test/x",
@@ -1142,6 +1310,7 @@ fn each_escape_licenses_its_own_act_and_no_other() {
         guard::ESCAPE_NOTES_REPLACE,
         guard::ESCAPE_SQL_WRITE,
         guard::ESCAPE_BARE_ID,
+        guard::ESCAPE_ENTRY_FORGE,
         guard::ESCAPE_PROD_WRITE,
     ];
 
@@ -1156,8 +1325,9 @@ fn each_escape_licenses_its_own_act_and_no_other() {
             );
         }
 
-        // The sixth act has no escape at all, so NO leading assignment licenses
-        // it — not the five above, and not a variable named for the act itself.
+        // The seventh act has no escape at all, so NO leading assignment
+        // licenses it — not the six above, and not a variable named for the act
+        // itself.
         let push = format!("{escape}=1 git push origin release/1.2");
         assert!(
             refused(Class::ReleaseRef, &push).is_some(),
@@ -1583,6 +1753,17 @@ fn text_the_reader_cannot_read_allows_the_shell_trap_class_and_denies_the_two_th
         ),
         Verdict::Silent,
         "the bare-id check reads nothing it could not lex"
+    );
+    // Nor has the entry-forge check: a forged entry whose quote never closes
+    // is a command the shell will not run either, and it allows.
+    assert_eq!(
+        guard::judge(
+            Class::Record,
+            "bd comments add x-1 '{\"fleet.entry\":1,\"kind\":\"landed\"}",
+            &policy()
+        ),
+        Verdict::Silent,
+        "the entry-forge check reads nothing it could not lex"
     );
 }
 

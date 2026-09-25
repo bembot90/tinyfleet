@@ -251,6 +251,58 @@ fn no_source_spells_a_retired_item_kind() {
     assert!(found.is_empty(), "retired kinds spelled: {found:#?}");
 }
 
+/// Fleet reads and writes no notes: the marker grammar, the store's note write
+/// and its text rendering, and the item's notes field are spelled nowhere in
+/// core, the binary or the controller. The notes field is a person's.
+///
+/// `\b` is not a word boundary to every `git grep -E` — the one on macOS reads
+/// it as a literal `b` and answers nothing — so the boundary after `.notes` is
+/// spelled as the character class it stands for.
+#[test]
+fn no_source_reads_or_writes_a_note() {
+    const RETIRED: &str = "last_region|opens_with|marker_block|label_value|show_text|\
+                           fn note\\(|\\.notes([^A-Za-z0-9_]|$)";
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the cli crate sits inside the workspace");
+    let grep = |pattern: &str, paths: &[&str]| -> Vec<String> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["grep", "-n", "-E", "-e", pattern, "--"])
+            .args(paths)
+            .output()
+            .expect("git grep runs");
+        // 0 is found and 1 is found nothing; anything else is git failing,
+        // which would read as a clean tree.
+        assert!(
+            matches!(out.status.code(), Some(0 | 1)),
+            "git grep answers: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect()
+    };
+    let rust = ["core/src", "cli/src", "controller/src"];
+
+    // THE CONTROL: the same search over this file finds the field's spelling
+    // in the doc comment above — the line a `\b` read as a literal misses — so
+    // an empty answer below is the tree's and not the search's.
+    let here = ["cli/tests/workspace.rs"];
+    assert!(
+        grep(RETIRED, &here)
+            .iter()
+            .any(|line| line.contains("so the boundary after")),
+        "the search finds `.notes` followed by a boundary: {:#?}",
+        grep(RETIRED, &here)
+    );
+
+    let found = grep(RETIRED, &rust);
+    assert!(found.is_empty(), "the note plumbing is spelled: {found:#?}");
+}
+
 /// And the run's crash cap has one default, for the same reason: the controller
 /// reads `[core.run] max_crashes` off the policy in force and core's own reader
 /// answers the same key.

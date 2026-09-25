@@ -1,21 +1,27 @@
-//! The record class: three checks over one command's text.
+//! The record class: four checks over one command's text.
 //!
 //! The record is the work item, so what this class refuses is a write that
-//! destroys one, reaches one with no audit row, or leaves one a later reader
-//! cannot resolve. Two of the three FAIL CLOSED — a command the reader cannot
-//! read still reaches an invocation-shaped text match, and it denies — because
-//! a destroyed field is unrecoverable and a direct SQL write leaves nothing
-//! behind to find it by. The third has no fallback: it is a legibility layer
-//! over the record rather than its survival, and over-refusing there would
-//! block every note in the fleet.
+//! destroys one, reaches one with no audit row, puts an entry on one that no
+//! verb wrote, or leaves one a later reader cannot resolve. Two of the four
+//! FAIL CLOSED — a command the reader cannot read still reaches an
+//! invocation-shaped text match, and it denies — because a destroyed field is
+//! unrecoverable and a direct SQL write leaves nothing behind to find it by.
+//! The other two have no fallback. The entry check reads the text of a
+//! comment, and a command whose quoting the reader cannot close is one the
+//! shell will not run either. The bare-id check is a legibility layer over the
+//! record rather than its survival, and over-refusing there would block every
+//! note in the fleet.
 
 use super::lex::{basename, command_words, is_assignment, lex, statements, unquote, Token};
 use super::{
     leading_escape, subcommand_of, text_arguments, Denial, Policy, ESCAPE_BARE_ID,
-    ESCAPE_NOTES_REPLACE, ESCAPE_SQL_WRITE, WORK_GRAPH,
+    ESCAPE_ENTRY_FORGE, ESCAPE_NOTES_REPLACE, ESCAPE_SQL_WRITE, WORK_GRAPH,
 };
+use crate::entry;
 
-pub const CHECKS: [&str; 3] = ["notes-replace", "sql-write", "bare-id"];
+/// In the order the class runs them. The one legibility check is last, so an
+/// entry written by hand is refused as that before any id in it is read.
+pub const CHECKS: [&str; 4] = ["notes-replace", "sql-write", "entry-forge", "bare-id"];
 
 /// The statement's first keyword decides, so a mention of one inside a literal,
 /// a backtick identifier or a comment is not a write. A denylist: a statement
@@ -53,6 +59,16 @@ pub fn judge(command: &str, policy: &Policy) -> Option<Denial> {
                 if raw_invocation(command, "sql", &SQL_WRITE_KEYWORDS) {
                     return Some(sql_denial("a write keyword".to_string(), true));
                 }
+            }
+        }
+    }
+
+    // No fallback of its own either: a command the reader cannot read passes
+    // this check.
+    if !leading_escape(command, ESCAPE_ENTRY_FORGE) {
+        if let Ok(tokens) = &tokens {
+            if let Some(fragment) = entry_forge(tokens) {
+                return Some(forge_denial(fragment));
             }
         }
     }
@@ -102,9 +118,8 @@ fn notes_denial(flag: String, unreadable: bool) -> Denial {
              --append-notes <text>`"
         ),
         escape: Some(ESCAPE_NOTES_REPLACE),
-        why: "this flag REPLACES the whole notes field, and a record's notes are the trail every \
-              later reader works from — what it overwrites is not recoverable from the write \
-              itself",
+        why: "this flag REPLACES the whole notes field, which is a person's own words on the \
+              item and not recoverable from the write itself",
     }
 }
 
@@ -221,7 +236,78 @@ fn sql_denial(keyword: String, unreadable: bool) -> Denial {
     }
 }
 
-// ---- 3. the item named by a bare suffix -------------------------------------
+// ---- 3. an entry written by hand --------------------------------------------
+
+/// The word that makes a statement an entry written by hand, or `None` where
+/// no statement writes a comment or each one written is a person's own words.
+///
+/// A comment is where every entry lives, so the comment verbs are the one
+/// route by which an entry can reach the record without the verb that owns its
+/// act: `comments add`, and `comment`, which bd names its shorthand. The text
+/// is refused where it carries the entry key anywhere in it, and so is a text
+/// the reader cannot see — one read from a file, or from the input.
+fn entry_forge(tokens: &[Token]) -> Option<String> {
+    for (words, _) in statements(tokens) {
+        let current = command_words(&words);
+        let Some(arguments) = comment_arguments(&current) else {
+            continue;
+        };
+        for word in arguments {
+            let text = word.text.as_str();
+            if text.starts_with('-') {
+                let unseen = (text.starts_with("-f") && !text.starts_with("--"))
+                    || text == "--file"
+                    || text.starts_with("--file=")
+                    || text == "--stdin";
+                if unseen {
+                    return Some(word.text.clone());
+                }
+                continue;
+            }
+            if word.value().contains(entry::KEY) {
+                return Some(word.text.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Every word after the comment verb's own path, or `None` where the statement
+/// is not a comment being written. `comments` with no `add` after it is the
+/// listing, which writes nothing.
+fn comment_arguments<'t>(current: &[&'t Token]) -> Option<Vec<&'t Token>> {
+    let verb = subcommand_of(current)?;
+    let at = current[1..].iter().position(|w| !w.text.starts_with('-'))? + 1;
+    match verb.as_str() {
+        "comment" => Some(current[at + 1..].to_vec()),
+        "comments" => {
+            let add = current[at + 1..]
+                .iter()
+                .position(|w| !w.text.starts_with('-'))
+                .map(|p| at + 1 + p)?;
+            (current[add].text == "add").then(|| current[add + 1..].to_vec())
+        }
+        _ => None,
+    }
+}
+
+fn forge_denial(fragment: String) -> Denial {
+    Denial {
+        class: "record",
+        check: "entry-forge",
+        label: "ENTRY FORGED",
+        fragment,
+        rewrite: String::from(
+            "record through the verb that owns the act: fleet \
+             dispatch|deliver|review|hold|clear|land|cancel",
+        ),
+        escape: Some(ESCAPE_ENTRY_FORGE),
+        why: "an entry is the record every verb decides from; one written by hand skips the \
+              checks its verb makes before it writes",
+    }
+}
+
+// ---- 4. the item named by a bare suffix -------------------------------------
 
 fn bare_ids(tokens: &[Token]) -> Option<Vec<String>> {
     let mut found: Vec<String> = Vec::new();

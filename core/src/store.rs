@@ -80,7 +80,6 @@ pub struct Item {
     pub description: String,
     pub status: String,
     pub assignee: Option<String>,
-    pub notes: Option<String>,
     /// `metadata["fleet.orders"]` ([`keys::ORDERS`]), as the store holds it.
     pub orders: Option<Orders>,
     /// Whether `metadata` carried a `fleet.orders` key at all, which `orders`
@@ -196,15 +195,6 @@ pub trait Store {
 
     fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError>;
 
-    /// The item as the store itself renders it for a person.
-    ///
-    /// NOTHING CALLS THIS. The brief carries `fleet item show`'s rendering
-    /// (`item::show::render`) since bd's own text — measured on 1.3.0 — prints
-    /// every comment under a `COMMENTS` header, which would put each entry's
-    /// stored JSON in a seat's first turn. The slot stays until the store's
-    /// contract is cut (fleet-zlk split 6).
-    fn show_text(&self, item: &str) -> Result<String, StoreError>;
-
     /// Every item the store holds against this seat.
     fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError>;
 
@@ -227,8 +217,6 @@ pub trait Store {
         }
         self.assign(item, to, by)
     }
-
-    fn note(&self, item: &str, text: &str, by: &str) -> Result<(), StoreError>;
 
     /// `metadata["fleet.orders"]`, written as one object that replaces the key
     /// whole.
@@ -826,16 +814,6 @@ impl Store for Bd {
         item_from(item, &row)
     }
 
-    /// `-q`, which the JSON reads do not need and this one does: the human
-    /// rendering carries a one-off tip on a store's FIRST read — measured on
-    /// 1.3.0, present on call one and absent on every call after — and that
-    /// line both names a provider and makes the same item render two different
-    /// ways. Quiet drops it and leaves the body byte-identical.
-    fn show_text(&self, item: &str) -> Result<String, StoreError> {
-        let out = self.answered(&["-q", "show", item])?;
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    }
-
     /// `-n 0` for the same reason the ready read carries it: this answer takes
     /// a cap — measured on 1.3.0, none by default on a piped call (110 of 110)
     /// and 50 on a terminal (20 in bd's agent mode), but a board's `list.limit`
@@ -913,10 +891,6 @@ impl Store for Bd {
             item,
             &format!("held by {}", holder_named(from)),
         )
-    }
-
-    fn note(&self, item: &str, text: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&["note", item, text, "--actor", by])
     }
 
     fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
@@ -1154,7 +1128,6 @@ pub fn item_from(id: &str, row: &serde_json::Value) -> Result<Item, StoreError> 
         description: wire.description.unwrap_or_default(),
         status: wire.status.unwrap_or_default(),
         assignee: wire.assignee,
-        notes: wire.notes,
         orders,
         has_orders_key,
         blockers: blockers_of(wire.dependencies.as_deref().unwrap_or_default()),

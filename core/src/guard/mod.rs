@@ -48,6 +48,7 @@ pub const ESCAPE_TRAP: &str = "FLEET_TRAP_OK";
 pub const ESCAPE_NOTES_REPLACE: &str = "FLEET_NOTES_REPLACE_OK";
 pub const ESCAPE_SQL_WRITE: &str = "FLEET_SQL_WRITE_OK";
 pub const ESCAPE_BARE_ID: &str = "FLEET_BARE_ID_OK";
+pub const ESCAPE_ENTRY_FORGE: &str = "FLEET_ENTRY_FORGE_OK";
 pub const ESCAPE_PROD_WRITE: &str = "FLEET_PROD_WRITE_OK";
 
 /// The release-ref class has no constant above and cannot have one: there is no

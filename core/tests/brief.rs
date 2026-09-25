@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::{shared_store, Fixture, Scratch, StubEvents};
+use common::{shared_store, Fixture, StubEvents};
 use fleet_core::entry::{Body, Timeline, Withdrawal};
 use fleet_core::input::{DELIVERY_SCHEMA, QUESTION_SCHEMA};
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
@@ -144,14 +144,13 @@ struct Rendered {
     err: String,
 }
 
-/// A store holding one item, with the notes an arm wants it to carry.
-fn store_with(notes: Option<&str>) -> FakeStore {
+/// A store holding one item.
+fn one_item() -> FakeStore {
     let store = FakeStore::default();
     store.seed(Item {
         id: ITEM.to_string(),
         title: String::from("a ready item"),
         status: String::from("open"),
-        notes: notes.map(str::to_string),
         ..Item::default()
     });
     store
@@ -160,7 +159,7 @@ fn store_with(notes: Option<&str>) -> FakeStore {
 /// A store holding the item as a dispatch by `run:lead-1` leaves its index,
 /// which is what the brief is gated on and what its order is rendered from.
 fn ordered() -> FakeStore {
-    let store = store_with(None);
+    let store = one_item();
     store.amend(ITEM, |item| {
         item.orders = Some(Orders {
             by: Some(BY.to_string()),
@@ -507,7 +506,7 @@ fn a_missing_rules_file_exits_three_and_writes_nothing() {
 #[test]
 fn an_item_with_no_order_index_is_refused_and_writes_nothing() {
     let rig = Rig::new("unordered");
-    let rendered = rig.render(&store_with(None), SEAT);
+    let rendered = rig.render(&one_item(), SEAT);
     assert_eq!(rendered.code, Some(1), "{}", rendered.why);
     assert!(rendered.why.contains("no order index"), "{}", rendered.why);
     assert_eq!(rendered.body.len(), 0, "nothing reaches stdout");
@@ -675,7 +674,7 @@ fn a_withdrawn_order_is_refused_and_writes_nothing() {
     let rig = Rig::new("withdrawn");
 
     // The retire's: dispatched to a named seat, then released by `retire`.
-    let retired = store_with(None);
+    let retired = one_item();
     rig.dispatch(
         &retired,
         Some("orla"),
@@ -691,7 +690,7 @@ fn a_withdrawn_order_is_refused_and_writes_nothing() {
     retire::withdraw(&retired, &[row], &orla, SEAT, &by()).expect("the retire withdraws");
 
     // The refused spawn's: dispatched to no seat, withdrawn in the same act.
-    let refused = store_with(None);
+    let refused = one_item();
     let why = rig
         .dispatch(
             &refused,
@@ -750,14 +749,17 @@ fn a_withdrawn_order_is_refused_and_writes_nothing() {
     }
 }
 
-/// A person's note that happens to carry the mark is not an order: an item
-/// with no index is refused whatever its notes say.
+/// A person's comment that happens to carry the mark is not an order: an item
+/// with no index is refused whatever its comments say.
 #[test]
-fn a_note_saying_orders_given_on_an_unindexed_item_is_refused() {
+fn a_comment_saying_orders_given_on_an_unindexed_item_is_refused() {
     let rig = Rig::new("human-note");
-    let store = store_with(Some(
+    let store = one_item();
+    store.comment(
+        ITEM,
+        "a-person",
         "asked on the call whether the orders given last week still stand",
-    ));
+    );
     let rendered = rig.render(&store, SEAT);
     assert_eq!(rendered.code, Some(1), "{}", rendered.why);
     assert!(rendered.why.contains("no order index"), "{}", rendered.why);
@@ -773,7 +775,7 @@ fn a_note_saying_orders_given_on_an_unindexed_item_is_refused() {
 #[test]
 fn a_dispatched_item_still_gets_its_brief() {
     let rig = Rig::new("dispatched");
-    let store = store_with(None);
+    let store = one_item();
     rig.dispatch(
         &store,
         Some("orla"),
@@ -1124,52 +1126,6 @@ fn an_item_carrying_an_entry_is_briefed_through_fleets_rendering() {
         "the item block is show::render:\n{block}\n--- in ---\n{body}"
     );
     assert!(block.contains(&format!("delivered {}", common::A_COMMIT)));
-}
-
-/// The store's human rendering sometimes carries a tip line that NAMES A
-/// PROVIDER, which a pack template may not do — and which would make one item
-/// render two ways depending on whether anybody had looked at it before.
-///
-/// The tip is not asserted here, in either direction. Its budget is not the
-/// store's: three fresh stores measured on this box tipped on the second and
-/// third and not the first, and a run under a private HOME did not tip at all.
-/// An arm that demanded it would be red on somebody else's morning. What IS
-/// deterministic is measured instead — the quiet read is stable, and the brief
-/// no longer carries the store's rendering at all: `{item}` is fleet's own
-/// (`show::render`), so a tip in bd's text cannot reach a seat.
-#[test]
-fn the_stores_own_rendering_is_stable_and_never_reaches_the_seat() {
-    let scratch = Scratch::new("tip");
-    let item = scratch.item("a ready item");
-    let store = Bd::at(&scratch.root);
-
-    let first = store.show_text(&item).expect("bd renders the item");
-    assert!(!first.contains("Tip:"), "the quiet read is clean:\n{first}");
-    for _ in 0..3 {
-        assert_eq!(
-            store.show_text(&item).expect("a further read"),
-            first,
-            "the rendering is stable across reads, which is what a brief needs"
-        );
-    }
-
-    // A store whose own rendering DOES carry the tip leaves the seat's first
-    // turn clean, because the brief never reads that rendering. Before
-    // fleet-zlk.4 `{item}` was the store's text verbatim, and this arm was the
-    // control that watched the tip arrive.
-    let tipped = ordered();
-    tipped.set_text(
-        ITEM,
-        &format!("{first}\n💡 Tip: run 'bd setup claude' for CLI-only mode\n"),
-    );
-    let rig = Rig::new("tip-render");
-    let rendered = rig.render(&tipped, SEAT);
-    assert_eq!(rendered.code, None, "{}", rendered.why);
-    assert!(
-        !rendered.body.contains("bd setup claude"),
-        "the store's rendering stays out of the brief:\n{}",
-        rendered.body
-    );
 }
 
 /// The gas-city lesson this slice owes by name: the first turn's size is a

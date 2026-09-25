@@ -992,13 +992,10 @@ fn a_green_landing_moves_the_bare_and_closes_the_item() {
         Some(7),
         "one row per check read: {entry}"
     );
-    let notes = rig.item_json()["notes"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
     assert!(
-        !notes.contains("LANDED "),
-        "and no landing note is on the item:\n{notes}"
+        rig.item_json().get("notes").is_none(),
+        "and the item carries no notes: fleet writes none:\n{}",
+        rig.item_json()
     );
     assert_eq!(rig.item_json()["status"], serde_json::json!("closed"));
     assert_eq!(

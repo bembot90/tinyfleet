@@ -82,7 +82,7 @@ fn a_delivery() -> Delivered {
     }
 }
 
-/// The same delivery as the prose note `fleet deliver` wrote before the
+/// The same delivery as the prose `fleet deliver` wrote as a note before the
 /// delivered entry: a record carrying only this carries no delivery.
 fn a_prose_delivery() -> String {
     format!(
@@ -249,10 +249,6 @@ impl Store for Doctored<'_> {
         Ok(read)
     }
 
-    fn show_text(&self, item: &str) -> Result<String, StoreError> {
-        self.inner.show_text(item)
-    }
-
     fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
         self.inner.assigned_to(seat)
     }
@@ -261,10 +257,6 @@ impl Store for Doctored<'_> {
         self.assigned
             .store(true, std::sync::atomic::Ordering::SeqCst);
         self.inner.assign(item, seat, by)
-    }
-
-    fn note(&self, item: &str, text: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.note(item, text, by)
     }
 
     fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
@@ -547,28 +539,15 @@ fn a_diffs_size() -> Size {
     }
 }
 
-fn notes(store: &dyn Store, item: &str) -> String {
-    store
-        .show(item)
-        .expect("the item reads")
-        .notes
-        .unwrap_or_default()
-}
-
 // ---- the arms ----------------------------------------------------------------
 
-/// `--show` over a delivered entry and no note: the size line measured from the
+/// `--show` over a delivered entry: the size line measured from the
 /// entry's base to its commit, a blank line, then the entry as `fleet item
 /// show` renders it — its decisions among it. Nothing is written.
 #[test]
 fn show_prints_the_size_line_then_the_delivered_entry_and_writes_nothing() {
     let scratch = &store();
     let item = a_delivered_item(&scratch.store, "an item to look at", "s-show");
-    assert_eq!(
-        notes(&scratch.store, &item),
-        "",
-        "the premise: the delivery is an entry and there is no note"
-    );
     let before = scratch.json(&item);
     let git = StubGit::answering(a_diff());
 
@@ -602,18 +581,17 @@ fn show_prints_the_size_line_then_the_delivered_entry_and_writes_nothing() {
     assert_eq!(before, scratch.json(&item), "--show writes nothing");
 }
 
-/// THE CLEAN BREAK: a record whose notes carry the prose delivery `fleet
-/// deliver` wrote before the entry, and no delivered entry, carries no
-/// delivery. There is no migration.
+/// THE CLEAN BREAK: a record carrying the prose delivery `fleet deliver` wrote
+/// as a note before the entry — here a comment on the timeline that is no
+/// entry — and no delivered entry, carries no delivery. There is no migration.
 #[test]
-fn a_prose_delivery_note_with_no_delivered_entry_carries_no_delivery() {
+fn a_prose_delivery_with_no_delivered_entry_carries_no_delivery() {
     let scratch = &store();
     let item = an_item(&scratch.store, "an item delivered as prose");
     scratch.assign(&item, &full(REVIEWER));
     scratch
         .store
-        .note(&item, &a_prose_delivery(), &full("s-prose"))
-        .expect("the prose note lands");
+        .comment(&item, &full("s-prose"), &a_prose_delivery());
     let git = StubGit::answering(a_diff());
 
     for mode in [Mode::Show, Mode::Land] {
@@ -635,16 +613,16 @@ fn a_prose_delivery_note_with_no_delivered_entry_carries_no_delivery() {
         "no verdict is written"
     );
     assert_eq!(
-        notes(&scratch.store, &item),
-        a_prose_delivery(),
-        "and the notes are the prose alone"
+        scratch.store.timeline(&item).expect("the timeline reads"),
+        Vec::new(),
+        "and the prose is no entry"
     );
 }
 
 /// `--land` leaves the timeline ending in the accept: this commit whole, the
 /// size measured from the delivery's base, and every call the delivery listed
 /// ruled accepted by its number — appended by the reviewer, answered as the id
-/// the timeline holds it under, and with no note beside it.
+/// the timeline holds it under.
 #[test]
 fn land_appends_the_accept_walking_every_call_the_delivery_numbered() {
     let scratch = &store();
@@ -683,7 +661,6 @@ fn land_appends_the_accept_walking_every_call_the_delivery_numbered() {
         Some(last.id.as_str()),
         "the id answered is the entry's"
     );
-    assert_eq!(notes(&scratch.store, &item), "", "and no note is written");
     assert_eq!(
         git.calls(),
         vec![format!("numstat {BASE} {SHA}")],
@@ -773,7 +750,6 @@ fn a_finding_quoting_a_marker_is_carried_whole() {
         }],
         "the finding is the reviewer's text, byte for byte"
     );
-    assert_eq!(notes(&scratch.store, &item), "", "and no note is written");
     assert_eq!(
         delivered_entry(&scratch.store, &item).body,
         Body::Delivered(a_delivery()),
@@ -847,7 +823,6 @@ fn a_return_appends_the_findings_and_hands_the_item_back() {
     );
     assert_eq!(last.by, seat_actor(REVIEWER), "appended by the reviewer");
     assert_eq!(said.entry.as_deref(), Some(last.id.as_str()));
-    assert_eq!(notes(bd, &item), "", "and no note is written");
 
     assert_eq!(
         bd.show(&item).expect("the item reads").assignee.as_deref(),
@@ -1036,7 +1011,7 @@ fn a_return_whose_assignee_reads_back_as_somebody_else_could_not_tell_and_rings_
 }
 
 /// A findings file `--return` does not read is a usage stop, and it stops
-/// before the hand-over: the item is still the reviewer's, no note is written,
+/// before the hand-over: the item is still the reviewer's, nothing is written,
 /// nothing reaches the stream and nobody is rung.
 ///
 /// Each file is one way a return is not one — a list that numbers nothing, a
@@ -1323,7 +1298,6 @@ fn a_seat_that_does_not_hold_the_item_writes_no_verdict() {
         before,
         "the timeline is unchanged"
     );
-    assert_eq!(notes(&scratch.store, &item), "", "and no note is written");
     assert_eq!(
         scratch
             .store

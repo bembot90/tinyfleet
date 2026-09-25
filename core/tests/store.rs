@@ -678,15 +678,15 @@ fn a_write_that_does_not_answer_says_its_effect_cannot_be_told() {
 
     let answer = Bd::at_bin(&root, &bin)
         .with_timeout(Duration::from_millis(200))
-        .note("fx-1", "a note", "the-test");
+        .assign("fx-1", "a-seat", "the-test");
 
     let Err(StoreError::Unreadable(why)) = answer else {
         panic!("a write that never answers is Unreadable: {answer:?}");
     };
     assert!(
         why.starts_with(&format!(
-            "`{} note fx-1 a note --actor the-test` did not answer within 200ms — the write's \
-             effect cannot be told",
+            "`{} update fx-1 --assignee a-seat --actor the-test` did not answer within 200ms — \
+             the write's effect cannot be told",
             bin.display()
         )),
         "{why}"

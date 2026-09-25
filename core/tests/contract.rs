@@ -47,7 +47,6 @@ const CHECKS: &[(&str, Check)] = &[
     ("show by hash", show_by_hash),
     ("show of an absent item", show_of_an_absent_item),
     ("assign", assign),
-    ("note", note),
     ("set_title", set_title),
     ("set_orders then unset_orders", orders),
     ("hand_over and withdraw_order's fences", fenced),
@@ -100,7 +99,6 @@ fn create_then_show(store: &dyn Store, _: &Path, which: &str) {
         read.assignee, None,
         "{which}: an item nobody has assigned carries no assignee at all"
     );
-    assert_eq!(read.notes, None, "{which}: and no notes");
 }
 
 /// An item named by its hash alone — the part after the prefix, which is what
@@ -150,39 +148,6 @@ fn assign(store: &dyn Store, _: &Path, which: &str) {
             .as_deref(),
         Some("another-seat"),
         "{which}: the last write is what the read answers"
-    );
-}
-
-fn note(store: &dyn Store, _: &Path, which: &str) {
-    let item = filed(store, "an item to write up");
-    store
-        .note(&item, "the first note\nover two lines", BY)
-        .expect("the note lands");
-    let notes = store
-        .show(&item)
-        .expect("the item reads")
-        .notes
-        .unwrap_or_default();
-    assert!(
-        notes.contains("the first note") && notes.contains("over two lines"),
-        "{which}: the note is readable whole: {notes:?}"
-    );
-
-    store
-        .note(&item, "the second note", BY)
-        .expect("the second note lands");
-    let notes = store
-        .show(&item)
-        .expect("the item reads")
-        .notes
-        .unwrap_or_default();
-    assert!(
-        notes.contains("the first note") && notes.contains("the second note"),
-        "{which}: a note is appended and never a replacement: {notes:?}"
-    );
-    assert!(
-        notes.find("the first note") < notes.find("the second note"),
-        "{which}: in the order they were written: {notes:?}"
     );
 }
 
@@ -508,8 +473,15 @@ fn export(store: &dyn Store, root: &Path, which: &str) {
     );
 
     store
-        .note(&item, "a note the second export has to carry", BY)
-        .expect("the note lands");
+        .append(
+            &item,
+            &Body::Ordered(Ordered {
+                order: OrderKind::Dispatch,
+                seat: None,
+            }),
+            &seat_actor("the-contract-seat"),
+        )
+        .expect("the entry the second export has to carry lands");
     store.export(root).expect("the second export runs");
     let after = std::fs::read(&into).expect("the export is still there");
     assert_ne!(
@@ -585,11 +557,6 @@ fn a_read_of_an_item_nobody_filed_is_missing_and_not_unreadable() {
 #[test]
 fn an_assign_moves_the_assignee_the_next_read_answers() {
     in_memory("contract-assign", assign);
-}
-
-#[test]
-fn a_note_is_readable_whole_and_a_second_note_keeps_the_first() {
-    in_memory("contract-note", note);
 }
 
 #[test]
