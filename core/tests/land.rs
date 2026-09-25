@@ -462,6 +462,19 @@ impl Store for Doctored<'_> {
         self.inner.close(item, reason, by)
     }
 
+    fn append(
+        &self,
+        item: &str,
+        body: &fleet_core::entry::Body,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<String, StoreError> {
+        self.inner.append(item, body, by)
+    }
+
+    fn timeline(&self, item: &str) -> Result<Vec<fleet_core::entry::Entry>, StoreError> {
+        self.inner.timeline(item)
+    }
+
     fn export(&self, into: &std::path::Path) -> Result<(), StoreError> {
         self.inner.export(into)
     }

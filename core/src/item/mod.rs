@@ -23,7 +23,9 @@ pub mod run;
 
 use std::path::{Path, PathBuf};
 
-use crate::store::StoreError;
+use crate::entry::{to_json, Body, Entry, Timeline};
+use crate::seat::actor::Actor;
+use crate::store::{Store, StoreError};
 
 /// The exits, one vocabulary shared by every verb. A verb answers with one of
 /// these and the cli does nothing but return it.
@@ -717,4 +719,66 @@ pub fn control_token() -> &'static str {
             .unwrap_or(0);
         format!("fleet-control-{}-{nanos}", std::process::id())
     })
+}
+
+/// Why an entry a verb wrote is not on the record: the store refused the write,
+/// or took it and the read after it does not show it. Two halves because they
+/// are two sentences — "nothing was written" and "the write's effect cannot be
+/// told" — and each verb says its own STANDS line for each.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unrecorded {
+    NotWritten(StoreError),
+    Unconfirmed(String),
+}
+
+/// One entry appended to `item`'s timeline and READ BACK, answered as the id
+/// the store gave it.
+///
+/// The read-back asks four things of the timeline: that it holds the id the
+/// append answered, that the entry under it carries the body and the actor
+/// written, and — the control — that it carries no entry under
+/// [`control_token`], which nothing writes. A read that answered yes to
+/// everything would pass the first three.
+///
+/// No verb calls this yet; each maps [`Unrecorded`] to its own wording.
+pub fn recorded(
+    store: &dyn Store,
+    item: &str,
+    body: &Body,
+    by: &Actor,
+) -> Result<String, Unrecorded> {
+    let id = store
+        .append(item, body, by)
+        .map_err(Unrecorded::NotWritten)?;
+    let entries = store
+        .timeline(item)
+        .map_err(|e| Unrecorded::Unconfirmed(e.to_string()))?;
+    let timeline = Timeline(&entries);
+    let kind = body.kind();
+    let Some(read) = timeline.entry(&id) else {
+        return Err(Unrecorded::Unconfirmed(format!(
+            "{item}'s timeline does not hold the {kind} entry {id} the store answered for it"
+        )));
+    };
+    if read.body != *body || read.by != *by {
+        let written = Entry {
+            id: id.clone(),
+            at: read.at.clone(),
+            by: by.clone(),
+            body: body.clone(),
+        };
+        return Err(Unrecorded::Unconfirmed(format!(
+            "{item}'s {kind} entry {id} read back as {} and {} was written",
+            to_json(read),
+            to_json(&written)
+        )));
+    }
+    let token = control_token();
+    if timeline.entry(token).is_some() {
+        return Err(Unrecorded::Unconfirmed(format!(
+            "the read-back of {item}'s timeline carries {token}, which nothing wrote — the read \
+             is not reading this item"
+        )));
+    }
+    Ok(id)
 }

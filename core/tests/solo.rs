@@ -11,8 +11,10 @@
 //!
 //! 1. THE SET READS are the `Store` trait's methods that answer a `Result<Vec>`
 //!    — a set the whole board contributes to, as against `show`, which answers
-//!    one item the caller named. A fifth such method added to the trait is
-//!    picked up here without an edit.
+//!    one item the caller named. A list scoped to one named item — its
+//!    `timeline`, whose first argument is `item` — is `show`'s kind and not a
+//!    set read: no neighbour's rows reach an item the rig filed itself. A
+//!    fifth such method added to the trait is picked up here without an edit.
 //! 2. THE BOARD-TAKING CONSTRUCTORS are the functions in a crate's test
 //!    `common` module that reach `run_board`, to a fixpoint, so a helper added
 //!    in front of it is followed. A crate whose `common` reaches `run_board`
@@ -90,7 +92,7 @@ fn every_rig_that_asserts_on_the_whole_board_is_in_the_solo_table() {
         "the set reads are parsed off the trait: {reads:?}"
     );
     assert!(
-        !reads.contains("show") && !reads.contains("create"),
+        !reads.contains("show") && !reads.contains("create") && !reads.contains("timeline"),
         "and an item-scoped read is not one of them: {reads:?}"
     );
 
@@ -214,7 +216,8 @@ fn rig_files(rigs: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// The `Store` trait's methods that answer a set: a `Result<Vec<..>>` return.
+/// The `Store` trait's methods that answer a set: a `Result<Vec<..>>` return,
+/// from a method whose first argument is not the one `item` it is scoped to.
 fn set_reads(store: &str) -> BTreeSet<String> {
     let code = code_only(store);
     let Some(open) = code.find("pub trait Store {") else {
@@ -227,7 +230,8 @@ fn set_reads(store: &str) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for piece in body[..end].split("    fn ").skip(1) {
         let head = piece.split(';').next().unwrap_or(piece);
-        if head.contains("-> Result<Vec<") {
+        let item_scoped = head.contains("(&self, item: &str");
+        if head.contains("-> Result<Vec<") && !item_scoped {
             names.insert(head[..head.find('(').unwrap_or(0)].to_string());
         }
     }

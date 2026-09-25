@@ -26,7 +26,8 @@ mod common;
 
 use std::path::Path;
 
-use common::shared_store;
+use common::{a_delivery, seat_actor, shared_store, A_COMMIT};
+use fleet_core::entry::{Body, OrderKind, Ordered};
 use fleet_core::item::dispatch;
 use fleet_core::store::{keys, Bd, NewItem, Store, StoreError};
 use fleet_core::test_support::Board;
@@ -55,6 +56,8 @@ const CHECKS: &[(&str, Check)] = &[
     ("hold, open_holds, clear_hold", holds),
     ("close", close),
     ("export", export),
+    ("append then timeline", append_then_timeline),
+    ("timeline of an absent item", timeline_of_an_absent_item),
 ];
 
 /// One check against the board held in memory, under a root of its own.
@@ -515,6 +518,53 @@ fn export(store: &dyn Store, root: &Path, which: &str) {
     );
 }
 
+/// An entry appended is on the item's timeline, in the order it was appended,
+/// with the body that was written and the actor who wrote it — and an item
+/// nothing has appended to answers an empty timeline, not a refusal.
+fn append_then_timeline(store: &dyn Store, _: &Path, which: &str) {
+    let item = filed(store, "an item with a timeline");
+    assert_eq!(
+        store.timeline(&item).expect("the timeline reads"),
+        Vec::new(),
+        "{which}: a filed item's timeline is empty"
+    );
+
+    let by = seat_actor("the-contract-seat");
+    let ordered = Body::Ordered(Ordered {
+        order: OrderKind::Dispatch,
+        seat: None,
+    });
+    let delivered = a_delivery(A_COMMIT);
+    let first = store
+        .append(&item, &ordered, &by)
+        .expect("the order entry lands");
+    let second = store
+        .append(&item, &delivered, &by)
+        .expect("the delivery entry lands");
+    assert_ne!(first, second, "{which}: each entry has an id of its own");
+
+    let timeline = store.timeline(&item).expect("the timeline reads");
+    let ids: Vec<&str> = timeline.iter().map(|entry| entry.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [first.as_str(), second.as_str()],
+        "{which}: the two entries, in the order they were appended"
+    );
+    assert_eq!(timeline[0].body, ordered, "{which}");
+    assert_eq!(timeline[1].body, delivered, "{which}");
+    for entry in &timeline {
+        assert_eq!(entry.by, by, "{which}: the actor who appended it");
+        assert!(!entry.at.is_empty(), "{which}: and the store's time");
+    }
+}
+
+fn timeline_of_an_absent_item(store: &dyn Store, _: &Path, which: &str) {
+    match store.timeline("fx-nobody-filed-this") {
+        Err(StoreError::Missing(_)) => {}
+        other => panic!("{which}: an absent item's timeline is Missing, and answered {other:?}"),
+    }
+}
+
 // ---- the arms ----------------------------------------------------------------
 
 #[test]
@@ -582,6 +632,16 @@ fn an_export_writes_the_file_and_its_bytes_move_when_an_item_does() {
     in_memory("contract-export", export);
 }
 
+#[test]
+fn an_entry_appended_is_on_the_timeline_in_the_order_it_was_appended() {
+    in_memory("contract-timeline", append_then_timeline);
+}
+
+#[test]
+fn the_timeline_of_an_item_nobody_filed_is_missing() {
+    in_memory("contract-timeline-absent", timeline_of_an_absent_item);
+}
+
 /// THE OTHER HALF: every check above, against the store `bd` answers.
 ///
 /// One arm and one board for all of them, because a nextest arm is its own
@@ -595,6 +655,81 @@ fn every_check_holds_against_bd_too() {
     for (name, check) in CHECKS {
         check(&bd, &scratch.root, &format!("bd — {name}"));
     }
+}
+
+/// The JSON a call to the binary answered, opened out of its envelope where it
+/// carries one.
+fn answered(out: &std::process::Output, what: &str) -> serde_json::Value {
+    assert!(
+        out.status.success(),
+        "{what}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let answer = fleet_core::store::first_value(&String::from_utf8_lossy(&out.stdout))
+        .unwrap_or_else(|| panic!("{what} answers JSON"));
+    fleet_core::store::opened(answer, String::new)
+}
+
+/// A COMMENT A PERSON WROTE ON THE BOARD IS NOT AN ENTRY, and one carrying
+/// fleet's key that does not read is never skipped. Both are planted through
+/// the binary, because the author is bd's own field: `--actor` with no
+/// `<kind>:` is what a person's own `bd comments add` writes.
+#[test]
+fn a_persons_comment_is_left_out_and_a_malformed_entry_refuses_the_read() {
+    let scratch = shared_store("contract");
+    let bd = Bd::at(&scratch.root);
+    let item = scratch.item("an item a person commented on");
+
+    answered(
+        &scratch.bd(&["comments", "add", &item, "a person's words", "--json"]),
+        "bd comments add",
+    );
+    assert_eq!(
+        bd.timeline(&item).expect("the timeline reads"),
+        Vec::new(),
+        "a person's comment is not an entry"
+    );
+
+    let planted = answered(
+        &scratch.bd(&[
+            "comments",
+            "add",
+            &item,
+            r#"{"fleet.entry":1,"kind":"ordered","order":"dispatch"}"#,
+            "--actor",
+            "Alberto Vildosola",
+            "--json",
+        ]),
+        "bd comments add",
+    );
+    let comment = planted["id"].as_str().expect("the comment has an id");
+    match bd.timeline(&item) {
+        Err(StoreError::Unreadable(why)) => assert!(
+            why.contains(comment) && why.contains("Alberto Vildosola"),
+            "the refusal names the comment and its author: {why}"
+        ),
+        other => panic!("an entry whose author is no actor refuses the read: {other:?}"),
+    }
+}
+
+/// An entry that breaks its kind's rules is refused BEFORE the binary is asked,
+/// so nothing is written and the item's comments are what they were.
+#[test]
+fn an_entry_that_does_not_validate_is_refused_and_nothing_is_written() {
+    let scratch = shared_store("contract");
+    let bd = Bd::at(&scratch.root);
+    let item = scratch.item("an item a short sha is appended to");
+    let comments = || answered(&scratch.bd(&["comments", &item, "--json"]), "bd comments");
+    let before = comments();
+
+    match bd.append(&item, &a_delivery("1111111"), &seat_actor("a-short-seat")) {
+        Err(StoreError::Unreadable(why)) => assert!(
+            why.contains(&item) && why.contains("nothing was written"),
+            "the refusal names the item and says nothing was written: {why}"
+        ),
+        other => panic!("a delivery naming a 7-character commit is refused: {other:?}"),
+    }
+    assert_eq!(comments(), before, "and bd lists nothing new");
 }
 
 /// The table the real half walks names every check this file holds, so a check

@@ -19,8 +19,12 @@
 //! the shape v2.0 makes the default, copied from bd 1.3.0's own answers: each
 //! read decodes through it, and the shim records that every call asked for it.
 //!
-//! The DECODE arms at the end hand `item_from` a row in the shape bd answers
-//! and run no binary, so they take no lock.
+//! The DECODE arms hand `item_from` a row in the shape bd answers and run no
+//! binary, so they take no lock.
+//!
+//! The TIMELINE arms at the end are the board held in memory's own: what its
+//! comments answer, planted as bd's would be, and the append-and-read-back
+//! helper over a store that drops its writes. They run no binary either.
 
 mod common;
 
@@ -30,8 +34,9 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use common::capped::{calls, capped_bd, Held};
-use common::Fixture;
-use fleet_core::item::{Stop, COULD_NOT_TELL, REFUSED};
+use common::{a_delivery, seat_actor, Fixture, A_COMMIT};
+use fleet_core::entry::{Body, OrderKind, Ordered};
+use fleet_core::item::{recorded, Stop, Unrecorded, COULD_NOT_TELL, REFUSED};
 use fleet_core::process::DRAIN_GRACE;
 use fleet_core::store::{item_from, Bd, NewItem, Store, StoreError};
 
@@ -735,4 +740,152 @@ fn an_open_blocks_dependency_is_a_blocker() {
 fn a_dependency_of_no_stated_type_is_a_blocker() {
     let item = item_from("fx-down", &depending_on(None)).expect("the row decodes");
     assert_eq!(item.blockers, vec![String::from("fx-up")]);
+}
+
+// ---- the timeline on the board held in memory -------------------------------
+
+fn an_order() -> Body {
+    Body::Ordered(Ordered {
+        order: OrderKind::Dispatch,
+        seat: None,
+    })
+}
+
+/// The contract suite's bd-only plants, made on the fake: its comments are
+/// read by the same `read_row` bd's are, so a person's text is left out and an
+/// entry whose author is no actor refuses the whole read, naming the comment.
+#[test]
+fn the_fake_leaves_a_persons_comment_out_and_refuses_a_malformed_entry() {
+    let board = fleet_core::test_support::Board::new("store-fake-plants");
+    let item = board.item("an item a person commented on");
+
+    board
+        .store
+        .comment(&item, "Alberto Vildosola", "a person's words");
+    assert_eq!(
+        board.store.timeline(&item).expect("the timeline reads"),
+        Vec::new(),
+        "a person's comment is not an entry"
+    );
+
+    let comment = board.store.comment(
+        &item,
+        "Alberto Vildosola",
+        r#"{"fleet.entry":1,"kind":"ordered","order":"dispatch"}"#,
+    );
+    match board.store.timeline(&item) {
+        Err(StoreError::Unreadable(why)) => assert!(
+            why.contains(&comment) && why.contains("Alberto Vildosola"),
+            "the refusal names the comment and its author: {why}"
+        ),
+        other => panic!("an entry whose author is no actor refuses the read: {other:?}"),
+    }
+}
+
+/// The fake keeps bd's refusal word for word: a body that breaks its kind's
+/// rules is never written, and an item it does not hold is Missing.
+#[test]
+fn the_fake_refuses_an_entry_that_does_not_validate_and_an_item_it_does_not_hold() {
+    let board = fleet_core::test_support::Board::new("store-fake-refusals");
+    let item = board.item("an item a short sha is appended to");
+    let by = seat_actor("a-short-seat");
+
+    match board.store.append(&item, &a_delivery("1111111"), &by) {
+        Err(StoreError::Unreadable(why)) => assert!(
+            why.starts_with(&format!(
+                "the delivered entry for {item} does not validate: `commit`"
+            )) && why.ends_with(" — nothing was written"),
+            "{why}"
+        ),
+        other => panic!("a delivery naming a 7-character commit is refused: {other:?}"),
+    }
+    assert_eq!(
+        board.store.timeline(&item).expect("the timeline reads"),
+        Vec::new(),
+        "and nothing was written"
+    );
+
+    match board.store.append("fx-nobody-filed-this", &an_order(), &by) {
+        Err(StoreError::Missing(_)) => {}
+        other => panic!("an append to an item nobody filed is Missing: {other:?}"),
+    }
+}
+
+/// A store that drops its writes still answers an id, which is exactly why a
+/// verb reads the timeline back rather than trusting it.
+#[test]
+fn a_deaf_store_answers_an_id_and_keeps_no_entry() {
+    let board = fleet_core::test_support::Board::new("store-fake-deaf");
+    let item = board.item("an item whose entry is dropped");
+    board.store.ignore_writes();
+
+    let id = board
+        .store
+        .append(&item, &an_order(), &seat_actor("a-deaf-seat"))
+        .expect("the append answers");
+    assert!(!id.is_empty(), "the store names what it was handed");
+    assert_eq!(
+        board.store.timeline(&item).expect("the timeline reads"),
+        Vec::new(),
+        "and the timeline holds nothing"
+    );
+}
+
+#[test]
+fn recorded_on_a_deaf_store_is_unconfirmed() {
+    let board = fleet_core::test_support::Board::new("store-fake-recorded-deaf");
+    let item = board.item("an item whose entry is dropped");
+    board.store.ignore_writes();
+
+    match recorded(
+        &board.store,
+        &item,
+        &a_delivery(A_COMMIT),
+        &seat_actor("a-deaf-seat"),
+    ) {
+        Err(Unrecorded::Unconfirmed(why)) => assert!(
+            why.contains(&item) && why.contains("does not hold") && why.contains("delivered"),
+            "the refusal names the item, the kind and what the timeline lacks: {why}"
+        ),
+        other => panic!("a write the store dropped is unconfirmed: {other:?}"),
+    }
+}
+
+/// The helper's one success: the id the store answered, read back with the
+/// body and the actor written, and the one log line the fake keeps per append.
+#[test]
+fn recorded_answers_the_id_it_read_back() {
+    let board = fleet_core::test_support::Board::new("store-fake-recorded");
+    let item = board.item("an item an entry is recorded on");
+    let by = seat_actor("a-recording-seat");
+    board.forget_writes();
+
+    let id = recorded(&board.store, &item, &an_order(), &by).expect("the entry is recorded");
+    let timeline = board.store.timeline(&item).expect("the timeline reads");
+    let read = fleet_core::entry::Timeline(&timeline)
+        .entry(&id)
+        .expect("the entry is on the timeline");
+    assert_eq!(read.body, an_order());
+    assert_eq!(read.by, by);
+    assert_eq!(board.store.wrote(), [format!("append {item} ordered {by}")]);
+}
+
+/// A write refused before it reached the store is not written, which is a
+/// different sentence from a write the store took and the read did not show.
+#[test]
+fn recorded_of_an_entry_that_does_not_validate_is_not_written() {
+    let board = fleet_core::test_support::Board::new("store-fake-recorded-invalid");
+    let item = board.item("an item a short sha is recorded on");
+
+    match recorded(
+        &board.store,
+        &item,
+        &a_delivery("1111111"),
+        &seat_actor("a-short-seat"),
+    ) {
+        Err(Unrecorded::NotWritten(StoreError::Unreadable(why))) => {
+            assert!(why.contains("nothing was written"), "{why}")
+        }
+        other => panic!("a body that does not validate is not written: {other:?}"),
+    }
 }

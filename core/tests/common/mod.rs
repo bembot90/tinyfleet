@@ -819,6 +819,35 @@ pub fn fleet_of(names: &[&str]) -> fleet_core::seat::identity::Directory {
     }
 }
 
+// ---- entries ------------------------------------------------------------------
+
+/// A delivery that keeps every rule its kind has, at `commit`: the one sample
+/// the store suites append, and a short `commit` is the one that does not.
+pub fn a_delivery(commit: &str) -> fleet_core::entry::Body {
+    use fleet_core::entry::{Body, Delivered, NotProven, Ran, SuiteRun};
+    Body::Delivered(Delivered {
+        commit: commit.to_string(),
+        branch: String::from("work/a-seat"),
+        base: String::from("0123456789abcdef0123456789abcdef01234567"),
+        files: vec![String::from("core/src/store.rs")],
+        checks: Vec::new(),
+        suite: SuiteRun::Ran(Ran {
+            command: String::from("cargo nextest run -p fleet-core"),
+            rc: 0,
+        }),
+        spec_corrections: Vec::new(),
+        not_proven: vec![NotProven {
+            surface: String::from("a store under load"),
+            command: String::from("fleet item show fx-1"),
+        }],
+        decisions: Vec::new(),
+        covers: Vec::new(),
+    })
+}
+
+/// A whole sha, for [`a_delivery`] to name.
+pub const A_COMMIT: &str = "1111111111111111111111111111111111111111";
+
 /// The work graph a rig runs against: held in memory, or `bd` on a scratch
 /// board.
 ///

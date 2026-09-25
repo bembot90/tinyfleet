@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
+use crate::entry::{self, Body, Entry};
+use crate::seat::actor::Actor;
 use crate::store::{keys, AssignedItem, Item, NewItem, Orders, Store, StoreError};
 
 /// Names one board's directory apart from the next in the same process.
@@ -78,6 +80,22 @@ pub struct FakeStore {
     /// How many items this store has filed, which names the ones it filed
     /// itself and stamps them in filing order.
     pub filed: AtomicUsize,
+    /// Each item's comments, in the order they were added: the entries an
+    /// append writes and the raw text [`FakeStore::comment`] plants, kept the
+    /// way bd keeps them and read through the same `read_row`.
+    pub comments: Mutex<BTreeMap<String, Vec<Comment>>>,
+    /// How many comments this store has taken, which names the next one and
+    /// stamps it a second after the last.
+    pub comment_ids: AtomicUsize,
+}
+
+/// One comment as the store keeps it: bd's four fields, the text as written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Comment {
+    pub id: String,
+    pub author: String,
+    pub text: String,
+    pub at: String,
 }
 
 impl FakeStore {
@@ -141,6 +159,32 @@ impl FakeStore {
     /// and the one a real store will not produce on demand.
     pub fn ignore_writes(&self) {
         *self.deaf.lock().expect("the knob is not poisoned") = true;
+    }
+
+    /// One raw comment planted on an item, answered as its id: a person's text,
+    /// or an entry an append would refuse to write. No write is logged and the
+    /// knob is not asked, because this is a rig putting the board in a state.
+    pub fn comment(&self, item: &str, author: &str, text: &str) -> String {
+        let comment = self.minted(author, text);
+        let id = comment.id.clone();
+        self.comments
+            .lock()
+            .expect("the comments are not poisoned")
+            .entry(item.to_string())
+            .or_default()
+            .push(comment);
+        id
+    }
+
+    /// The next comment's id, `c-<n>`, and its time, a second after the last.
+    fn minted(&self, author: &str, text: &str) -> Comment {
+        let n = self.comment_ids.fetch_add(1, Ordering::SeqCst) + 1;
+        Comment {
+            id: format!("c-{n}"),
+            author: author.to_string(),
+            text: text.to_string(),
+            at: format!("2026-01-01T00:{:02}:{:02}Z", n / 60, n % 60),
+        }
     }
 
     /// Writes land again.
@@ -727,6 +771,65 @@ impl Store for FakeStore {
         Ok(())
     }
 
+    /// Held to the rules bd's append holds it to, with the same refusal, and
+    /// kept as one comment whose text is the entry's encoding. A deaf store
+    /// answers the id it minted and keeps nothing, which is the disagreement
+    /// the read-back is there to catch.
+    fn append(&self, item: &str, body: &Body, by: &Actor) -> Result<String, StoreError> {
+        self.log(format!("append {item} {} {by}", body.kind()))?;
+        crate::store::validated(item, body)?;
+        if !self
+            .items
+            .lock()
+            .expect("the items are not poisoned")
+            .contains_key(item)
+        {
+            return Err(StoreError::Missing(format!("{item} is not here")));
+        }
+        let comment = self.minted(&by.to_string(), &entry::encode(body));
+        let id = comment.id.clone();
+        if self.deaf() {
+            return Ok(id);
+        }
+        self.comments
+            .lock()
+            .expect("the comments are not poisoned")
+            .entry(item.to_string())
+            .or_default()
+            .push(comment);
+        Ok(id)
+    }
+
+    /// Every comment read through [`entry::read_row`], the function bd's
+    /// timeline reads its rows with, in the order they were added.
+    fn timeline(&self, item: &str) -> Result<Vec<Entry>, StoreError> {
+        if let Some(refused) = self.refuse() {
+            return refused;
+        }
+        if !self
+            .items
+            .lock()
+            .expect("the items are not poisoned")
+            .contains_key(item)
+        {
+            return Err(StoreError::Missing(format!("{item} is not here")));
+        }
+        let comments = self.comments.lock().expect("the comments are not poisoned");
+        let mut entries = Vec::new();
+        for comment in comments.get(item).into_iter().flatten() {
+            let read = entry::read_row(
+                item,
+                &comment.id,
+                &comment.author,
+                &comment.text,
+                &comment.at,
+            )
+            .map_err(StoreError::Unreadable)?;
+            entries.extend(read);
+        }
+        Ok(entries)
+    }
+
     /// One JSON object per line, under the root the CALLER names. A store that
     /// was given no root of its own logs the word and writes nothing: a fake
     /// nobody rooted is one whose arms are about the board and not the file.
@@ -843,6 +946,12 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     }
     fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
         (**self).close(item, reason, by)
+    }
+    fn append(&self, item: &str, body: &Body, by: &Actor) -> Result<String, StoreError> {
+        (**self).append(item, body, by)
+    }
+    fn timeline(&self, item: &str) -> Result<Vec<Entry>, StoreError> {
+        (**self).timeline(item)
     }
     fn export(&self, into: &Path) -> Result<(), StoreError> {
         (**self).export(into)

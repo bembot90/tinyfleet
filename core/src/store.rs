@@ -22,7 +22,9 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use crate::entry::{self, Body, Entry};
 use crate::process::{deadline_cause, run_bounded};
+use crate::seat::actor::Actor;
 
 mod bd_cli;
 mod bd_wire;
@@ -300,6 +302,47 @@ pub trait Store {
     /// The item closed, with the reason a reader gets instead of the act.
     fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError>;
 
+    /// One entry appended to the item's timeline, answered as the entry's id.
+    ///
+    /// The body is VALIDATED FIRST, and one that breaks its kind's rules is
+    /// Unreadable with nothing written: a store never keeps an entry its own
+    /// reader would refuse.
+    ///
+    /// On bd each entry is ONE COMMENT whose text is [`entry::encode`]'s.
+    /// Measured on bd 1.3.0, on a scratch board:
+    /// - `bd comments add <id> <text> --actor A --json` answers the envelope
+    ///   with data `{id, issue_id, author: A, text, created_at}`, and the id is
+    ///   what this answers.
+    /// - That id is CONTENT-DERIVED (`e9f93b1f-8828-563c-…`, version nibble 5;
+    ///   beads v1.3.0 `internal/storage/issueops/derivedid.go`,
+    ///   `InsertDerivedComment`). It is not time-ordered, so nothing sorts by it.
+    /// - There is no edit or delete subcommand: an entry is kept as written.
+    /// - A closed item takes comments.
+    /// - `bd export` writes each issue's comments into the committed
+    ///   `.beads/issues.jsonl`, so the timeline travels with the board.
+    fn append(&self, item: &str, body: &Body, by: &Actor) -> Result<String, StoreError>;
+
+    /// The item's entries, in the store's order. A comment that does not carry
+    /// [`entry::KEY`] is a person's and is left out; one that carries it and
+    /// does not read — or whose author is not a typed actor — is Unreadable
+    /// and refuses the whole read, naming the comment, because a timeline with
+    /// a hole in it answers every question wrong. An item the store does not
+    /// hold is Missing.
+    ///
+    /// Measured on bd 1.3.0, on a scratch board:
+    /// - `bd comments <id> --json` lists by `created_at` ASC, then id ASC
+    ///   (`issueops/comments.go:28`). A live add truncates its time to the
+    ///   second and advances it past the item's newest comment
+    ///   (`derivedid.go:190-205`), so the listing is append order.
+    /// - An item with no comments answers `data []`. A missing item exits 1
+    ///   with data `{"error":"resolving <id>: no issue found matching
+    ///   \"<id>\""}`, which carries no code.
+    /// - The listing takes no row cap: the verb has no `-n`.
+    /// - `bd show --json` answers `comment_count` and `"comments_omitted":
+    ///   true`, and `bd list --json` answers `comment_count` only, so neither
+    ///   is a way to read the entries.
+    fn timeline(&self, item: &str) -> Result<Vec<Entry>, StoreError>;
+
     /// The store's own export, written at [`EXPORT`] under the root the CALLER
     /// names.
     ///
@@ -525,6 +568,17 @@ pub(crate) fn restatused(item: &str, expected: &str, now: &str) -> StoreError {
     StoreError::Moved(format!(
         "{item} reads {now} and not {expected} — nothing was written"
     ))
+}
+
+/// The body an append is handed, held to its kind's rules before anything is
+/// written — the one refusal both stores answer, word for word.
+pub(crate) fn validated(item: &str, body: &Body) -> Result<(), StoreError> {
+    body.validate().map_err(|why| {
+        StoreError::Unreadable(format!(
+            "the {} entry for {item} does not validate: {why} — nothing was written",
+            body.kind()
+        ))
+    })
 }
 
 /// A holder as a refusal names one: the seat, or nobody for `""`.
@@ -957,6 +1011,72 @@ impl Store for Bd {
 
     fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
         self.wrote(&["close", item, "--reason", reason, "--actor", by])
+    }
+
+    /// The id comes off the write's own answer, as `create`'s does. The
+    /// `--actor` is what marks this call a write for `Bd::run`'s timeout
+    /// message, as it does every other.
+    fn append(&self, item: &str, body: &Body, by: &Actor) -> Result<String, StoreError> {
+        validated(item, body)?;
+        let by = by.to_string();
+        self.created_id(&[
+            "comments",
+            "add",
+            item,
+            &entry::encode(body),
+            "--actor",
+            &by,
+            "--json",
+        ])
+    }
+
+    /// THE JSON IS READ BEFORE THE STATUS, for the reason `show`'s is: a missing
+    /// item exits non-zero with the error object, which is the record's answer
+    /// and not a refusal. So this stays off `answered` and off `listed`.
+    fn timeline(&self, item: &str) -> Result<Vec<Entry>, StoreError> {
+        let args = ["comments", item, "--json"];
+        let out = self.run(&args)?;
+        let rows = match self.json(&args, &out) {
+            Some(serde_json::Value::Object(answer)) if answer.contains_key("error") => {
+                let error = &answer["error"];
+                let error = error
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| error.to_string());
+                return Err(StoreError::Missing(format!("{item}: {error}")));
+            }
+            _ if !out.status.success() => return Err(self.refused(&args, &out)),
+            Some(serde_json::Value::Array(rows)) => rows,
+            Some(serde_json::Value::Null) => return Ok(Vec::new()),
+            None if String::from_utf8_lossy(&out.stdout).trim().is_empty() => return Ok(Vec::new()),
+            _ => {
+                return Err(StoreError::Unreadable(format!(
+                    "{} did not answer a list: {}",
+                    self.named(&args),
+                    tail(&out)
+                )))
+            }
+        };
+        let mut entries = Vec::new();
+        for (at, row) in rows.iter().enumerate() {
+            let comment: bd_wire::Comment = decoded(row).map_err(|why| {
+                StoreError::Unreadable(format!(
+                    "{} answered a row bd's wire types do not read, row {at}: {why}",
+                    self.named(&args)
+                ))
+            })?;
+            let field = |held: &Option<String>| held.clone().unwrap_or_default();
+            let read = entry::read_row(
+                item,
+                &field(&comment.id),
+                &field(&comment.author),
+                &field(&comment.text),
+                &field(&comment.created_at),
+            )
+            .map_err(StoreError::Unreadable)?;
+            entries.extend(read);
+        }
+        Ok(entries)
     }
 
     /// `-o` is resolved against the CALLER's directory and not against `-C`:
