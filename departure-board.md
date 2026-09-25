@@ -15,7 +15,7 @@ written by hand; the item's own dependencies are the real blockers.
 
 | Landed | Bead | What | Blocked by |
 | --- | --- | --- | --- |
-| ☐ | fleet-run | A non-seat-id assignee reads Unreadable at exit 3, and store::Item.assignee becomes Option<SeatId> | — (first: every seam sits on it) |
+| ☑ | fleet-run | A non-seat-id assignee reads Unreadable at exit 3, and store::Item.assignee becomes Option<SeatId> | — (first: every seam sits on it) |
 | ☐ | fleet-wpf0.1 | The contract's fences: update takes if_assignee and status open, order.withdraw takes if_assignee, if_status and reopen, moved joins the refusals, show carries description (folds fleet-j7q) | fleet-run |
 | ☐ | fleet-pjl | The contract's actor is one string everywhere: the timeline entry's wire shape is pinned, and close takes an actor | — |
 | ☐ | fleet-b47 | Adapter and doc agree on missing writes, the empty update and NewItem::validate | — |
@@ -23,7 +23,7 @@ written by hand; the item's own dependencies are the real blockers.
 | ☐ | fleet-2tp | ItemSummary carries the assignee and the run record, so a listing needs no show per row | fleet-run |
 | ☐ | fleet-xpc | Capabilities declares the CLI the guard polices and the item vocabulary routines check | — |
 | ☐ | fleet-z5m | The store contract's fragment rule is a prefix rule, as bd 1.3.0 resolves | — |
-| ☐ | fleet-vqre | Two OrderKind types exist: entry.rs's {Dispatch} and the contract's {Dispatch, Review} | — |
+| ☑ | fleet-vqre | Two OrderKind types exist: entry.rs's {Dispatch} and the contract's {Dispatch, Review} | — |
 | ☐ | fleet-4qpq | fleet store check names [store] adapter for a bad --adapter and prints nothing for ~50 s | — |
 | ☐ | fleet-wpf0.4 | The trait slims onto the fences: hand_over, reopen and order_withdraw_from go, order_withdraw takes a WithdrawFence | fleet-wpf0.1 |
 | ☐ | fleet-wpf0.5 | fleet store schema prints the contract as JSON Schema generated from the Rust types, committed with a drift test | fleet-wpf0.1, fleet-pjl |
@@ -31,8 +31,8 @@ written by hand; the item's own dependencies are the real blockers.
 | ☐ | fleet-wpf0.7 | fleet-store-stub: a test-only adapter executable answering the contract from the fake, its state in a file | fleet-wpf0.4, fleet-wpf0.6 |
 | ☐ | fleet-wpf0.8 | core's verb suites run on the stub through Exec | fleet-wpf0.7 |
 | ☐ | fleet-wpf0.9 | cli's suites run on the stub through Exec; store_check keeps one bd arm | fleet-wpf0.7 |
-| ☐ | fleet-wpf0.2 | adapters is the eighth pack slot, and a bare name in [store] adapter resolves through the installed packs | — |
-| ☐ | fleet-wpf0.3 | fleet prime's second line reads the store's version verb through the opener | — |
+| ☑ | fleet-wpf0.2 | adapters is the eighth pack slot, and a bare name in [store] adapter resolves through the installed packs | — |
+| ☑ | fleet-wpf0.3 | fleet prime's second line reads the store's version verb through the opener | — |
 
 ## Flight 9 — the bd store adapter as a TypeScript pack in fleet-packs (`fleet-rsia`)
 
