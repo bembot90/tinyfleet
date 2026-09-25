@@ -1331,6 +1331,7 @@ fn opened(
         search_path: "",
         strict: false,
         timeout,
+        packs: None,
     })
 }
 
@@ -1472,25 +1473,250 @@ fn an_adapter_that_is_no_executable_or_neither_form_is_could_not_tell() {
             Ok(_) => panic!("{} opened as an adapter", path.display()),
         }
     }
-    for (value, named) in [
-        ("\"sqlite\"", "sqlite"),
-        ("\"bin/adapter\"", "bin/adapter"),
-        ("\"\"", ""),
-        ("3", "3"),
-    ] {
+    for (value, named) in [("\"bin/adapter\"", "bin/adapter"), ("\"\"", ""), ("3", "3")] {
         let policy = policy_of(&format!("[store]\nadapter = {value}\n"));
         match opened(&dir.root, &policy, store::STORE_TIMEOUT) {
             Err(StoreError::Unreadable(why)) => assert_eq!(
                 why,
                 format!(
-                    "[store] adapter is `{named}` — it is \"bd\" or an absolute path to an \
-                     adapter executable"
+                    "[store] adapter is `{named}` — it is \"bd\", the name of a store adapter \
+                     an installed pack carries, or an absolute path to an adapter executable"
                 )
             ),
             Err(other) => panic!("wanted Unreadable, got {other:?}"),
             Ok(_) => panic!("{value} opened a store"),
         }
     }
+}
+
+// ---- a bare name, resolved through the installed packs ----------------------
+
+/// A machine directory's packs and the binary's defaults beneath them, as
+/// `fleet start` leaves them, with a pack per call of [`Machine::pack`].
+struct Machine {
+    dir: Fixture,
+    packs_dir: PathBuf,
+    defaults_dir: PathBuf,
+}
+
+impl Machine {
+    fn new(label: &str) -> Machine {
+        let dir = Fixture::new(label);
+        let defaults_dir = dir.materialize_defaults();
+        let packs_dir = dir.path("packs");
+        std::fs::create_dir_all(&packs_dir).expect("the packs dir is created");
+        Machine {
+            dir,
+            packs_dir,
+            defaults_dir,
+        }
+    }
+
+    fn packs(&self) -> store::PackDirs<'_> {
+        store::PackDirs {
+            packs_dir: &self.packs_dir,
+            defaults_dir: &self.defaults_dir,
+        }
+    }
+
+    /// A pack named `name` installed here, its manifest carrying `more` after
+    /// the `[pack]` table.
+    fn pack(&self, name: &str, more: &str) -> PathBuf {
+        self.dir.file(
+            &format!("packs/{name}/pack.toml"),
+            &format!("[pack]\nname = \"{name}\"\nversion = \"0.1.0\"\nschema = 3\n{more}"),
+        );
+        self.dir.path(&format!("packs/{name}"))
+    }
+
+    /// The store adapter `name` in the pack at `pack`: its `adapter.toml`, and
+    /// a `main` that records its request beside itself and answers a show
+    /// of an item titled `title`.
+    fn adapter(&self, pack: &Path, name: &str, title: &str) -> PathBuf {
+        let dir = pack.join(format!("adapters/store/{name}"));
+        std::fs::create_dir_all(&dir).expect("the adapter's directory is created");
+        std::fs::write(
+            dir.join("adapter.toml"),
+            format!(
+                "[adapter]\nname = \"{name}\"\nkind = \"store\"\nversion = \"0.1.0\"\n\
+                 entry = \"main\"\n"
+            ),
+        )
+        .expect("the adapter's manifest is written");
+        let entry = dir.join("main");
+        std::fs::write(
+            &entry,
+            format!(
+                "#!/bin/sh\ncat > '{request}'\nprintf '%s\\n' \
+                 '{{\"schema_version\":1,\"item\":{{\"id\":\"fx-c3d4\",\"title\":\"{title}\",\
+                 \"status\":\"open\",\"type\":\"task\",\"labels\":[],\"order\":{{\"state\":\"none\"}}}}}}'\n",
+                request = dir.join("request.json").display(),
+            ),
+        )
+        .expect("the adapter's entry is written");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o755))
+            .expect("the entry is executable");
+        dir
+    }
+}
+
+/// The opener over `policy` with `packs` to resolve a name through.
+fn opened_over(
+    root: &Path,
+    policy: &toml::Table,
+    packs: Option<store::PackDirs>,
+) -> Result<Box<dyn Store>, StoreError> {
+    store::open(&store::Opening {
+        root,
+        policy,
+        search_path: "",
+        strict: false,
+        timeout: store::STORE_TIMEOUT,
+        packs,
+    })
+}
+
+fn named(name: &str) -> toml::Table {
+    policy_of(&format!("[store]\nadapter = {name:?}\n"))
+}
+
+/// A bare name is the store adapter an installed pack carries under
+/// `adapters/store/<name>/`: its entry is the store opened, called with the
+/// project's root, and the item is the one it answered.
+///
+/// RED-PROOF: on the base the name is neither form, and the open refuses.
+#[test]
+fn a_bare_name_opens_the_store_adapter_an_installed_pack_carries() {
+    let machine = Machine::new("store-open-named");
+    let pack = machine.pack("tracker", "");
+    let adapter = machine.adapter(&pack, "x", "an item the adapter in the pack holds");
+    let root = machine.dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+
+    let store = opened_over(&root, &named("x"), Some(machine.packs()))
+        .expect("the name resolves to the pack's adapter");
+    let item = store.show("c3d4").expect("the adapter answered an item");
+
+    assert_eq!(item.title, "an item the adapter in the pack holds");
+    let request: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(adapter.join("request.json")).expect("the entry was called"),
+    )
+    .expect("the request is one JSON value");
+    assert_eq!(
+        request["root"],
+        serde_json::json!(root.display().to_string()),
+        "{request}"
+    );
+}
+
+/// Two packs carrying one adapter name: the higher layer's is the store
+/// opened, and the lower one's is reached only once the higher carries none.
+#[test]
+fn a_higher_layer_carrying_the_name_shadows_a_lower_one() {
+    let machine = Machine::new("store-open-shadowed");
+    // `top` imports `base`, which puts it above whatever the names sort to.
+    let base = machine.pack("base", "");
+    let top = machine.pack(
+        "top",
+        "\n[imports.base]\nsource = \"../base\"\nversion = \"0.1.0\"\n",
+    );
+    machine.adapter(&base, "x", "the lower layer");
+    let over = machine.adapter(&top, "x", "the higher layer");
+
+    let title = || {
+        opened_over(&machine.dir.root, &named("x"), Some(machine.packs()))
+            .expect("the name resolves")
+            .show("c3d4")
+            .expect("the adapter answered")
+            .title
+    };
+    assert_eq!(title(), "the higher layer");
+
+    // The control: the lower layer's adapter is one the opener reaches, so
+    // the answer above is precedence and not the only adapter there.
+    std::fs::remove_dir_all(&over).expect("the higher adapter is taken out");
+    assert_eq!(title(), "the lower layer");
+}
+
+/// A name no installed pack carries is could not tell, naming the install
+/// that would carry it; a caller with no packs behind it resolves no name at
+/// all; and a layering that does not resolve says why.
+#[test]
+fn a_name_resolved_nowhere_is_could_not_tell_naming_how_to_install_one() {
+    let machine = Machine::new("store-open-nowhere");
+    let pack = machine.pack("tracker", "");
+    machine.adapter(&pack, "x", "not this one");
+
+    let refusal = |packs| match opened_over(&machine.dir.root, &named("y"), packs) {
+        Err(StoreError::Unreadable(why)) => why,
+        Err(other) => panic!("wanted Unreadable, got {other:?}"),
+        Ok(_) => panic!("`y` opened a store"),
+    };
+    assert_eq!(
+        refusal(Some(machine.packs())),
+        "no store adapter named `y` in the installed packs — `fleet pack add \
+         <repo>//adapters/store/y --version <version>` installs one"
+    );
+    assert_eq!(
+        refusal(None),
+        "no store adapter named `y` resolves: no packs are installed here to carry one"
+    );
+    let absent = machine.dir.path("absent-defaults");
+    let why = refusal(Some(store::PackDirs {
+        packs_dir: &machine.packs_dir,
+        defaults_dir: &absent,
+    }));
+    assert!(
+        why.starts_with("no store adapter named `y` resolves: the pack layers do not resolve: ")
+            && why.contains("`fleet start` writes them"),
+        "{why}"
+    );
+}
+
+/// An adapter the format refuses is never run: an entry that lost its
+/// executable bit is could not tell with the fix, and so is a manifest filed
+/// under a kind it does not name.
+#[test]
+fn an_adapter_the_format_refuses_is_could_not_tell_and_never_run() {
+    let machine = Machine::new("store-open-defective");
+    let pack = machine.pack("tracker", "");
+    let adapter = machine.adapter(&pack, "x", "never read");
+    let entry = adapter.join("main");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o644))
+        .expect("the entry loses its executable bit");
+
+    let refusal = || match opened_over(&machine.dir.root, &named("x"), Some(machine.packs())) {
+        Err(StoreError::Unreadable(why)) => why,
+        Err(other) => panic!("wanted Unreadable, got {other:?}"),
+        Ok(_) => panic!("a defective adapter opened"),
+    };
+    assert_eq!(
+        refusal(),
+        format!(
+            "the store adapter `x` cannot be opened: the adapter entry `{e}` is not \
+             executable — `chmod +x {e}` makes it one",
+            e = entry.display()
+        )
+    );
+
+    std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o755))
+        .expect("the bit is put back");
+    std::fs::write(
+        adapter.join("adapter.toml"),
+        "[adapter]\nname = \"x\"\nkind = \"agent\"\nversion = \"0.1.0\"\nentry = \"main\"\n",
+    )
+    .expect("the manifest is rewritten");
+    assert_eq!(
+        refusal(),
+        "the store adapter `x` cannot be opened: `adapters/store/x/adapter.toml` says kind \
+         `agent`, and it is filed under `adapters/store`"
+    );
+    assert!(
+        !adapter.join("request.json").exists(),
+        "the entry was never run"
+    );
 }
 
 /// The project's own file: a declared project's `.fleet/project.toml` first,

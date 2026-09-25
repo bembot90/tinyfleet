@@ -353,11 +353,27 @@ pub struct Opening<'a> {
     /// The bound on each call of the store opened: [`STORE_TIMEOUT`], or less
     /// for a caller that cannot wait that long.
     pub timeout: Duration,
+    /// Where an adapter's bare name is resolved, or `None` for a caller with
+    /// no machine's packs behind it, where a name resolves nowhere.
+    pub packs: Option<PackDirs<'a>>,
+}
+
+/// The installed packs and the binary's defaults beneath them, as
+/// [`Packs::under`](crate::item::brief::Packs::under) reads them.
+///
+/// DIRECTORIES AND NOT A RESOLUTION: the layers are resolved only when the
+/// setting is a name, so the built-in store and an adapter's path open
+/// whatever the packs hold, a layering that refuses included.
+#[derive(Debug, Clone, Copy)]
+pub struct PackDirs<'a> {
+    pub packs_dir: &'a Path,
+    pub defaults_dir: &'a Path,
 }
 
 /// The project's store, as `[store] adapter` in its own file names it: the
 /// built-in store's name, or no key at all, is that store; an absolute path to
-/// an executable file is an adapter that answers the contract at that path.
+/// an executable file is an adapter that answers the contract at that path;
+/// any other name is the store adapter the installed packs carry under it.
 /// Anything else is could not tell, naming what the file said, and nothing is
 /// run.
 ///
@@ -372,16 +388,17 @@ pub fn open(at: &Opening) -> Result<Box<dyn Store>, StoreError> {
         Some(toml::Value::String(path)) if path.starts_with('/') => {
             let adapter = Path::new(path);
             if !executable_file(adapter) {
-                return Err(StoreError::Unreadable(format!(
-                    "[store] adapter names `{path}`, which is not an executable file"
-                )));
+                return Err(unopened(Unopened::NotExecutable(path)));
             }
             Ok(Box::new(
                 exec::Exec::at(adapter, at.root).with_timeout(at.timeout),
             ))
         }
-        Some(toml::Value::String(other)) => Err(neither_form(other)),
-        Some(other) => Err(neither_form(&other.to_string())),
+        Some(toml::Value::String(name)) if !name.is_empty() && !name.contains('/') => {
+            by_name(at, name)
+        }
+        Some(toml::Value::String(other)) => Err(unopened(Unopened::NeitherForm(other.clone()))),
+        Some(other) => Err(unopened(Unopened::NeitherForm(other.to_string()))),
     }
 }
 
@@ -401,11 +418,73 @@ pub fn adapter_name(policy: &toml::Table) -> String {
     }
 }
 
-/// The refusal a `[store] adapter` answers that is neither form.
-fn neither_form(said: &str) -> StoreError {
-    StoreError::Unreadable(format!(
-        "[store] adapter is `{said}` — it is \"bd\" or an absolute path to an adapter executable"
+/// The store adapter the installed packs carry under `name`: the highest
+/// layer holding `adapters/store/<name>/adapter.toml` carries the adapter
+/// WHOLE, so its entry is the file beside that one and never another layer's.
+fn by_name(at: &Opening, name: &str) -> Result<Box<dyn Store>, StoreError> {
+    let Some(installed) = at.packs else {
+        return Err(unopened(Unopened::NoPacks(name)));
+    };
+    let packs = crate::item::brief::Packs::under(installed.packs_dir, installed.defaults_dir)
+        .map_err(|stop| unopened(Unopened::Layers(name, stop.message)))?;
+    let declared = format!(
+        "{}/{}/{name}/{}",
+        crate::pack::ADAPTERS,
+        crate::pack::AdapterKind::Store.as_str(),
+        crate::pack::ADAPTER_MANIFEST
+    );
+    let Some(dir) = crate::resolve::slot_path(&packs.resolution, &packs.layers, &declared)
+        .and_then(|file| file.parent().map(Path::to_path_buf))
+    else {
+        return Err(unopened(Unopened::Nowhere(name)));
+    };
+    // The manifest is held to the format here, its entry's executable bit
+    // included, so an adapter `fleet pack check` refuses is never run.
+    let manifest = crate::pack::adapter_manifest(&dir)
+        .map_err(|defect| unopened(Unopened::Defect(name, defect)))?;
+    let entry = dir.join(&manifest.entry);
+    Ok(Box::new(
+        exec::Exec::at(&entry, at.root).with_timeout(at.timeout),
     ))
+}
+
+/// Why the adapter `[store] adapter` names is not opened.
+enum Unopened<'s> {
+    NotExecutable(&'s str),
+    NeitherForm(String),
+    NoPacks(&'s str),
+    Layers(&'s str, String),
+    Nowhere(&'s str),
+    Defect(&'s str, crate::pack::Defect),
+}
+
+/// EVERY REFUSAL OF THE SETTING IS WORDED HERE, and nowhere else, so what a
+/// refusal says about where the setting came from is said once.
+fn unopened(why: Unopened) -> StoreError {
+    StoreError::Unreadable(match why {
+        Unopened::NotExecutable(path) => {
+            format!("[store] adapter names `{path}`, which is not an executable file")
+        }
+        Unopened::NeitherForm(said) => format!(
+            "[store] adapter is `{said}` — it is \"bd\", the name of a store adapter an \
+             installed pack carries, or an absolute path to an adapter executable"
+        ),
+        Unopened::NoPacks(name) => format!(
+            "no store adapter named `{name}` resolves: no packs are installed here to carry one"
+        ),
+        Unopened::Layers(name, why) => {
+            format!("no store adapter named `{name}` resolves: {why}")
+        }
+        Unopened::Nowhere(name) => format!(
+            "no store adapter named `{name}` in the installed packs — `fleet pack add \
+             <repo>//{}/{}/{name} --version <version>` installs one",
+            crate::pack::ADAPTERS,
+            crate::pack::AdapterKind::Store.as_str()
+        ),
+        Unopened::Defect(name, defect) => {
+            format!("the store adapter `{name}` cannot be opened: {defect}")
+        }
+    })
 }
 
 /// The project's own file as a table, for a caller that has resolved no

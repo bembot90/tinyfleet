@@ -775,10 +775,16 @@ fn an_unopened_store_or_a_refused_item_files_nothing() {
     let routine = an_item_routine(&project, "");
     let done = action::run(&routine, &an_item_machine(&root, &policy));
     assert_eq!(done.outcome, Outcome::CouldNotTell, "{}", done.detail);
+    // The name is resolved through the machine's own packs, and this machine
+    // has not had its defaults written.
     assert_eq!(
         done.detail,
-        "the store could not be opened: [store] adapter is `sqlite` — it is \"bd\" or an \
-         absolute path to an adapter executable"
+        format!(
+            "the store could not be opened: no store adapter named `sqlite` resolves: the pack \
+             layers do not resolve: the defaults this binary carries are not at {} — `fleet \
+             start` writes them, and every template resolves through them",
+            root.join(fleet_core::defaults::DIR).display()
+        )
     );
     assert!(requests(&root).is_empty(), "nothing was asked");
     let _ = std::fs::remove_dir_all(&root);

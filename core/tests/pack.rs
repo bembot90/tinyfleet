@@ -445,6 +445,210 @@ fn every_further_defect_is_reported_and_not_only_the_first() {
     assert!(found.contains(&Defect::SkillWithoutSkillMd("skills/brief".into())));
 }
 
+// ---- the adapters slot --------------------------------------------------------
+
+/// An `adapter.toml` for `adapters/<kind>/<name>/` whose keys agree with where
+/// it sits, its entry `main.sh`.
+fn adapter_toml(kind: &str, name: &str) -> String {
+    format!(
+        "[adapter]\nname = \"{name}\"\nkind = \"{kind}\"\nversion = \"0.1.0\"\n\
+         description = \"an adapter\"\nentry = \"main.sh\"\n"
+    )
+}
+
+/// `adapters/<kind>/<name>/` in the fixture, its manifest `toml` and its entry
+/// `main.sh` executable, answered as the directory.
+fn an_adapter(fixture: &Fixture, kind: &str, name: &str, toml: &str) -> std::path::PathBuf {
+    let dir = format!("adapters/{kind}/{name}");
+    fixture
+        .file(&format!("{dir}/adapter.toml"), toml)
+        .file(&format!("{dir}/main.sh"), "#!/bin/sh\nexit 0\n");
+    executable(&fixture.path(&format!("{dir}/main.sh")), true);
+    fixture.path(&dir)
+}
+
+fn executable(file: &std::path::Path, on: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(
+        file,
+        std::fs::Permissions::from_mode(if on { 0o755 } else { 0o644 }),
+    )
+    .expect("the mode is set");
+}
+
+/// A store adapter and an agent adapter, each where its manifest says: no
+/// defect, one `adapters` line counting the two, and the manifest as read.
+///
+/// RED-PROOF: on the base `adapters` is a ninth top-level name, a defect.
+#[test]
+fn adapters_under_both_kinds_are_the_eighth_slot_and_counted() {
+    let fixture = Fixture::new("adapters");
+    fixture.manifest("adapters");
+    let store = an_adapter(&fixture, "store", "x", &adapter_toml("store", "x"));
+    an_adapter(&fixture, "agent", "y", &adapter_toml("agent", "y"));
+
+    let report = pack::check(&fixture.root);
+    assert!(report.is_valid(), "unexpected: {:?}", report.defects);
+    assert_eq!(
+        report.slots,
+        vec![pack::Slot {
+            name: "adapters",
+            entries: 2
+        }],
+        "an entry is `adapters/<kind>/<name>/`, one kind directory down"
+    );
+    assert_eq!(
+        pack::adapter_manifest(&store),
+        Ok(pack::AdapterManifest {
+            name: "x".into(),
+            kind: pack::AdapterKind::Store,
+            version: "0.1.0".into(),
+            description: Some("an adapter".into()),
+            entry: "main.sh".into(),
+        })
+    );
+}
+
+/// A kind directory that names no kind, and a manifest whose `kind` is not the
+/// directory it is filed under, are each one defect naming the path.
+#[test]
+fn an_unknown_kind_directory_or_a_kind_key_that_disagrees_is_a_defect() {
+    let fixture = Fixture::new("adapter-kind");
+    fixture.manifest("adapter-kind");
+    an_adapter(&fixture, "db", "x", &adapter_toml("db", "x"));
+    an_adapter(&fixture, "store", "y", &adapter_toml("agent", "y"));
+
+    let found = defects(&fixture.root);
+    assert_eq!(
+        found,
+        vec![
+            Defect::AdapterKind("adapters/db".into(), None),
+            Defect::AdapterKind("adapters/store/y".into(), Some("agent".into())),
+        ]
+    );
+    assert_eq!(
+        found[0].to_string(),
+        "`adapters/db` is no adapter kind — an adapter is filed under adapters/store/ or \
+         adapters/agent/"
+    );
+    assert_eq!(
+        found[1].to_string(),
+        "`adapters/store/y/adapter.toml` says kind `agent`, and it is filed under \
+         `adapters/store`"
+    );
+}
+
+/// An adapter directory holding no manifest, and one whose manifest names
+/// another adapter than its directory, are each a defect.
+#[test]
+fn an_adapter_without_its_manifest_or_under_another_name_is_a_defect() {
+    let fixture = Fixture::new("adapter-name");
+    fixture
+        .manifest("adapter-name")
+        .file("adapters/store/bare/main.sh", "#!/bin/sh\n");
+    an_adapter(&fixture, "store", "x", &adapter_toml("store", "other"));
+
+    let found = defects(&fixture.root);
+    assert_eq!(
+        found,
+        vec![
+            Defect::AdapterWithoutManifest("adapters/store/bare".into()),
+            Defect::AdapterNameMismatch {
+                path: "adapters/store/x".into(),
+                name: "other".into()
+            },
+        ]
+    );
+    assert_eq!(
+        found[1].to_string(),
+        "`adapters/store/x/adapter.toml` names the adapter `other`, and its directory is `x`"
+    );
+}
+
+/// An entry that is not in the directory is a defect, and one that is there
+/// but lost its executable bit — as a checkout that drops modes leaves it —
+/// is a defect whose line is the fix.
+#[test]
+fn an_adapter_entry_missing_or_not_executable_is_a_defect_naming_the_fix() {
+    let fixture = Fixture::new("adapter-entry");
+    fixture.manifest("adapter-entry");
+    let dir = an_adapter(&fixture, "store", "x", &adapter_toml("store", "x"));
+    std::fs::remove_file(dir.join("main.sh")).expect("the entry is removed");
+    assert_eq!(
+        defects(&fixture.root),
+        vec![Defect::AdapterEntryMissing {
+            path: "adapters/store/x".into(),
+            entry: "main.sh".into()
+        }]
+    );
+
+    fixture.file("adapters/store/x/main.sh", "#!/bin/sh\n");
+    let entry = dir.join("main.sh");
+    executable(&entry, false);
+    let found = defects(&fixture.root);
+    assert_eq!(
+        found,
+        vec![Defect::AdapterEntryNotExecutable(
+            entry.display().to_string()
+        )]
+    );
+    assert_eq!(
+        found[0].to_string(),
+        format!(
+            "the adapter entry `{e}` is not executable — `chmod +x {e}` makes it one",
+            e = entry.display()
+        )
+    );
+
+    // The control: the line's own fix clears the defect.
+    executable(&entry, true);
+    assert_eq!(defects(&fixture.root), Vec::<Defect>::new());
+}
+
+/// Each of the manifest's keys is held to its shape: the four it requires,
+/// strings all, no key beyond the five, and an entry inside the directory.
+#[test]
+fn an_adapter_manifest_key_out_of_shape_is_a_defect_naming_the_key() {
+    let cases = [
+        (
+            "[adapter]\nname = \"x\"\nkind = \"store\"\nentry = \"main.sh\"\n",
+            "version",
+            "is missing",
+        ),
+        (
+            "[adapter]\nname = \"x\"\nkind = \"store\"\nversion = 1\nentry = \"main.sh\"\n",
+            "version",
+            "is not a string",
+        ),
+        (
+            "[adapter]\nname = \"x\"\nkind = \"store\"\nversion = \"1\"\nentry = \"main.sh\"\n\
+             runtime = \"deno\"\n",
+            "runtime",
+            "is not a key [adapter] holds — it holds name, kind, version, description and entry",
+        ),
+        (
+            "[adapter]\nname = \"x\"\nkind = \"store\"\nversion = \"1\"\n\
+             entry = \"../main.sh\"\n",
+            "entry",
+            "is not a path inside the adapter's directory",
+        ),
+    ];
+    for (toml, key, why) in cases {
+        let fixture = Fixture::new("adapter-key");
+        fixture.manifest("adapter-key");
+        an_adapter(&fixture, "store", "x", toml);
+        assert_eq!(
+            defects(&fixture.root),
+            vec![Defect::AdapterKey(
+                "adapters/store/x".into(),
+                key.into(),
+                why
+            )],
+            "{toml}"
+        );
+    }
+}
+
 // ---- the runtime table ------------------------------------------------------
 
 /// The example the workflows page carries, verbatim down to the flag order, so
@@ -1145,12 +1349,13 @@ mod lessons {
     use super::*;
     use fleet_core::pack::Manifest;
 
-    /// gas-city G24 — the format is the reference's verbatim, plus the one slot
-    /// it does not carry: nine names at a pack's top level and no tenth, either
-    /// agent form, and `scope` optional on an always-on agent, because the
-    /// reference's own fleet manifest omits it where its imported pack carries
-    /// it. `workflows` is this format's own, and is what `fleet run` resolves a
-    /// name through.
+    /// gas-city G24 — the format is the reference's verbatim, plus the two
+    /// slots it does not carry: nine names at a pack's top level and no tenth,
+    /// either agent form, and `scope` optional on an always-on agent, because
+    /// the reference's own fleet manifest omits it where its imported pack
+    /// carries it. `workflows` and `adapters` are this format's own: what
+    /// `fleet run` resolves a workflow's name through, and the store's opener
+    /// an adapter's.
     ///
     /// The schema number is the one place this format now stands AHEAD of the
     /// reference's: G24 measures theirs at 2, and the runtime table is a table
@@ -1164,6 +1369,7 @@ mod lessons {
         assert_eq!(
             names,
             vec![
+                "adapters",
                 "agents",
                 "assets",
                 "doctor",

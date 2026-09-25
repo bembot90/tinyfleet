@@ -1389,6 +1389,7 @@ mod opening_tests {
                 search_path,
                 strict: true,
                 timeout: STORE_TIMEOUT,
+                packs: None,
             })
             .map(|store| store.list(&Filter::Ready))
         };

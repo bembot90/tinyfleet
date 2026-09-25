@@ -1,7 +1,7 @@
 # Packs
 
-A pack is a folder of agents, skills, routines, workflows, health checks and
-templates that a fleet runs with. You install packs on a machine with
+A pack is a folder of agents, skills, routines, workflows, health checks,
+adapters and templates that a fleet runs with. You install packs on a machine with
 `fleet pack add`, and fleet reads its templates, its rules file and its
 workflows through the installed packs, laid over the defaults the `fleet`
 binary carries. This page covers installing, listing and removing packs, how
@@ -334,7 +334,8 @@ resolved 42 paths and 2 agents across 2 layers, 0 shadowed
 
 It prints the pack's name, version and schema, a `runtime` line when the pack
 declares one, and one line per slot it carries with the count of entries
-directly under it. It exits 0 for a valid pack. For a pack with defects it
+directly under it; for `adapters`, the count of `adapters/<kind>/<name>/`
+directories. It exits 0 for a valid pack. For a pack with defects it
 prints each one on standard error, prefixed with the pack's name, and exits 1:
 
 ```text
@@ -353,11 +354,11 @@ a layer.
 
 ### The format
 
-A pack's top level holds `pack.toml` and any of seven slot directories:
-`agents`, `skills`, `orders`, `doctor`, `overlay`, `assets` and `workflows`.
-Any other name at the top level is a defect, and so is a slot that is a file.
-The file browser's own files — `.DS_Store`, `Thumbs.db` and `desktop.ini` —
-are read past everywhere.
+A pack's top level holds `pack.toml` and any of eight slot directories:
+`agents`, `skills`, `orders`, `doctor`, `overlay`, `assets`, `workflows` and
+`adapters`. Any other name at the top level is a defect, and so is a slot that
+is a file. The file browser's own files — `.DS_Store`, `Thumbs.db` and
+`desktop.ini` — are read past everywhere.
 
 Each slot's entries:
 
@@ -365,7 +366,31 @@ Each slot's entries:
 - `skills/<name>/` holds `SKILL.md`.
 - `doctor/<name>/` holds `doctor.toml`.
 - every file directly under `orders/` parses as TOML.
+- `adapters/<kind>/<name>/` holds `adapter.toml`, where `<kind>` is `store` or
+  `agent`. Any other name directly under `adapters/` is a defect.
 - `overlay/`, `assets/` and `workflows/` hold whatever the pack puts there.
+
+`adapter.toml` holds one table:
+
+```toml
+[adapter]
+name = "x"                  # required; the adapter's directory name
+kind = "store"              # required; the kind directory it sits in
+version = "0.1.0"           # required
+description = "..."         # optional
+entry = "main.sh"           # required; an executable file in the directory
+```
+
+Every value is a string, and any other key or table is a defect. An entry
+that is in the directory but not executable is a defect whose line is the
+fix:
+
+```text
+p: the adapter entry `p/adapters/store/x/main.sh` is not executable — `chmod +x p/adapters/store/x/main.sh` makes it one
+```
+
+A store adapter a pack carries is one a project can name in `[store]
+adapter`; see [The store contract](store.md).
 
 `pack.toml` holds up to five tables, and any other top-level table is a defect:
 

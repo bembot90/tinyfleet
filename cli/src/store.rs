@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use fleet_controller::platform;
 use fleet_core::policy::{self, Value};
 use fleet_core::store::conformance::{self, Ctx, Passed};
-use fleet_core::store::{self, Opening, STORE_TIMEOUT};
+use fleet_core::store::{self, Opening, PackDirs, STORE_TIMEOUT};
 
 use crate::exit::Exit;
 use crate::item;
@@ -88,12 +88,20 @@ fn check(adapter: Option<&Path>) -> Exit {
     // The policy the store is opened with: `[store] adapter` naming the path
     // handed in; else the project's own file, where one resolves; else
     // nothing, which is the built-in bd.
-    let mut policy = match adapter {
-        Some(_) => Default::default(),
-        None => item::resolve_at(None)
-            .map(|here| here.project.policy)
-            .unwrap_or_default(),
+    let here = match adapter {
+        Some(_) => None,
+        None => item::resolve_at(None).ok(),
     };
+    let mut policy = here
+        .as_ref()
+        .map(|here| here.project.policy.clone())
+        .unwrap_or_default();
+    // A name resolves through the packs the project's machine installs, and a
+    // path handed in names no packs at all.
+    let packs = here.as_ref().map(|here| PackDirs {
+        packs_dir: &here.packs_dir,
+        defaults_dir: &here.defaults_dir,
+    });
     if let Some(path) = adapter {
         let named = Value::from(path.display().to_string());
         let table = Value::from(BTreeMap::from([("adapter", named)]));
@@ -129,6 +137,7 @@ fn check(adapter: Option<&Path>) -> Exit {
             search_path: &search_path,
             strict: true,
             timeout: STORE_TIMEOUT,
+            packs,
         })
     };
     let adapter = match open(&scratch.0) {

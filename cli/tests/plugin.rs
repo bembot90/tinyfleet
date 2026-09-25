@@ -1494,10 +1494,20 @@ fn a_store_that_cannot_be_read_is_line_two_s_own_answer() {
         ),
         (
             "neither-form",
+            String::from("tools/sqlite"),
+            String::from(
+                "store: could not be read — [store] adapter is `tools/sqlite` — it is \"bd\", \
+                 the name of a store adapter an installed pack carries, or an absolute path to \
+                 an adapter executable",
+            ),
+        ),
+        (
+            "no-pack-carries-it",
             String::from("sqlite"),
             String::from(
-                "store: could not be read — [store] adapter is `sqlite` — it is \"bd\" or an \
-                 absolute path to an adapter executable",
+                "store: could not be read — no store adapter named `sqlite` in the installed \
+                 packs — `fleet pack add <repo>//adapters/store/sqlite --version <version>` \
+                 installs one",
             ),
         ),
         (

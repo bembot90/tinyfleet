@@ -20,7 +20,7 @@ use fleet_core::lock;
 use fleet_core::resolve::{self, Layer};
 use fleet_core::seat::identity::SeatId;
 use fleet_core::store::types::Version;
-use fleet_core::store::{self, Filter, Opening, Status};
+use fleet_core::store::{self, Filter, Opening, PackDirs, Status};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -241,12 +241,17 @@ fn store_line(project_root: Option<&Path>) -> String {
 /// name's refusal is the line's answer.
 fn store_version(root: &Path) -> Result<(Version, String), String> {
     let policy = store::project_policy(root).map_err(|why| why.to_string())?;
+    let machine_dir = platform::machine_dir();
     let store = store::open(&Opening {
         root,
         policy: &policy,
         search_path: &platform::child_path(&platform::home_dir()),
         strict: false,
         timeout: VERSION_TIMEOUT,
+        packs: Some(PackDirs {
+            packs_dir: &machine_dir.join("packs"),
+            defaults_dir: &machine_dir.join(defaults::DIR),
+        }),
     })
     .map_err(|why| why.to_string())?;
     let version = store.version().map_err(|why| why.to_string())?;
@@ -305,12 +310,17 @@ fn print_items(project_root: &Path, seat: &SeatId) {
 /// third answer.
 fn items(project_root: &Path, seat: &SeatId) -> Result<Vec<(String, String)>, String> {
     let policy = store::project_policy(project_root).map_err(|why| why.to_string())?;
+    let machine_dir = platform::machine_dir();
     let store = store::open(&Opening {
         root: project_root,
         policy: &policy,
         search_path: &platform::child_path(&platform::home_dir()),
         strict: true,
         timeout: ITEMS_TIMEOUT,
+        packs: Some(PackDirs {
+            packs_dir: &machine_dir.join("packs"),
+            defaults_dir: &machine_dir.join(defaults::DIR),
+        }),
     })
     .map_err(|why| why.to_string())?;
     Ok(store

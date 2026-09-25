@@ -14,11 +14,12 @@ use crate::registry;
 /// name at a pack's top level is a defect: the schema is the reference's, and a
 /// name they did not define is a typo.
 ///
-/// `workflows` is the one slot this format carries that the reference does not,
-/// and it is the slot `fleet run` resolves a name through — which is why it is
-/// here rather than beside the manifest's own keys.
+/// `workflows` and `adapters` are the two slots this format carries that the
+/// reference does not, and each is a slot a name resolves through — `fleet run`
+/// a workflow's, the store's opener an adapter's — which is why they are here
+/// rather than beside the manifest's own keys.
 pub const MANIFEST: &str = "pack.toml";
-pub const SLOTS: [&str; 7] = [
+pub const SLOTS: [&str; 8] = [
     "agents",
     "skills",
     "orders",
@@ -26,7 +27,57 @@ pub const SLOTS: [&str; 7] = [
     "overlay",
     "assets",
     "workflows",
+    ADAPTERS,
 ];
+
+/// The slot adapters sit under: one directory per kind, and one per adapter
+/// beneath it, `adapters/<kind>/<name>/`.
+pub const ADAPTERS: &str = "adapters";
+
+/// The file an adapter's directory is declared by.
+pub const ADAPTER_MANIFEST: &str = "adapter.toml";
+
+const ADAPTER_KEYS: [&str; 5] = ["name", "kind", "version", "description", "entry"];
+
+/// What an adapter answers for, which is the directory it is filed under. A
+/// kind directory naming neither is a defect: nothing opens an adapter of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdapterKind {
+    Store,
+    Agent,
+}
+
+impl AdapterKind {
+    pub const ALL: [AdapterKind; 2] = [AdapterKind::Store, AdapterKind::Agent];
+
+    /// The kind directory's name, which is the `kind` key's value too.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AdapterKind::Store => "store",
+            AdapterKind::Agent => "agent",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<AdapterKind> {
+        AdapterKind::ALL
+            .into_iter()
+            .find(|kind| kind.as_str() == text)
+    }
+}
+
+/// One adapter's `adapter.toml`, read and held to the directory it sits in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdapterManifest {
+    /// The adapter directory's own name, which the file repeats.
+    pub name: String,
+    /// The kind directory's, which the file repeats.
+    pub kind: AdapterKind,
+    pub version: String,
+    pub description: Option<String>,
+    /// The executable that answers for the adapter, as a path inside its
+    /// directory.
+    pub entry: String,
+}
 
 /// A manifest declaring any other number is refused rather than read: the keys
 /// beneath it are not this parser's. There is no dual read — a pack that has not
@@ -131,6 +182,13 @@ pub struct Manifest {
 
 /// One thing wrong with a pack. Every variant prints as one line, because the
 /// check names the first defect and every further one on its own line.
+///
+/// The adapter defects name an adapter by `adapters/<kind>/<name>`.
+/// `AdapterKind` carries `None` for a kind directory naming no kind, else the
+/// `kind` an `adapter.toml` says against the directory it is filed under;
+/// `AdapterKey` the key and what is wrong with it; and
+/// `AdapterEntryNotExecutable` the entry by the path the check was handed, so
+/// the `chmod` its line prints runs from where the check ran.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Defect {
     Unreadable(String),
@@ -158,6 +216,12 @@ pub enum Defect {
     SettingType { key: String, kind: String },
     SettingDefault { key: String, kind: String },
     SettingOverlap { key: String, other: String },
+    AdapterWithoutManifest(String),
+    AdapterKind(String, Option<String>),
+    AdapterKey(String, String, &'static str),
+    AdapterNameMismatch { path: String, name: String },
+    AdapterEntryMissing { path: String, entry: String },
+    AdapterEntryNotExecutable(String),
 }
 
 impl fmt::Display for Defect {
@@ -245,6 +309,36 @@ impl fmt::Display for Defect {
                 "[config.{key}] and [config.{other}] overlap — one setting's name is never the \
                  start of another's, or a `fleet.toml` value could be read as either"
             ),
+            Defect::AdapterWithoutManifest(p) => write!(f, "`{p}` holds no {ADAPTER_MANIFEST}"),
+            Defect::AdapterKind(path, None) => write!(
+                f,
+                "`{path}` is no adapter kind — an adapter is filed under {}",
+                AdapterKind::ALL
+                    .map(|kind| format!("{ADAPTERS}/{}/", kind.as_str()))
+                    .join(" or ")
+            ),
+            Defect::AdapterKind(path, Some(kind)) => write!(
+                f,
+                "`{path}/{ADAPTER_MANIFEST}` says kind `{kind}`, and it is filed under `{}`",
+                path.rsplit_once('/')
+                    .map_or(path.as_str(), |(filed, _)| filed)
+            ),
+            Defect::AdapterKey(path, key, why) => {
+                write!(f, "`{path}/{ADAPTER_MANIFEST}`'s `{key}` {why}")
+            }
+            Defect::AdapterNameMismatch { path, name } => write!(
+                f,
+                "`{path}/{ADAPTER_MANIFEST}` names the adapter `{name}`, and its directory is `{}`",
+                path.rsplit('/').next().unwrap_or(path)
+            ),
+            Defect::AdapterEntryMissing { path, entry } => write!(
+                f,
+                "`{path}`'s entry `{entry}` is not a file in its directory"
+            ),
+            Defect::AdapterEntryNotExecutable(file) => write!(
+                f,
+                "the adapter entry `{file}` is not executable — `chmod +x {file}` makes it one"
+            ),
         }
     }
 }
@@ -295,7 +389,7 @@ pub fn check(root: &Path) -> Report {
             if root.join(name).is_dir() {
                 slots.push(Slot {
                     name: slot,
-                    entries: dir_names(&root.join(name)).map(|e| e.len()).unwrap_or(0),
+                    entries: entries(&root.join(name), slot),
                 });
             } else {
                 defects.push(Defect::SlotNotADirectory(name.clone()));
@@ -748,8 +842,111 @@ fn string_key(
     }
 }
 
-/// The four slots whose entries carry a shape. `overlay` and `assets` hold
-/// whatever the pack drops there, so neither has a rule to break.
+/// How many entries a slot holds: the names directly under it, except under
+/// `adapters`, whose entries sit one kind directory down.
+fn entries(dir: &Path, slot: &str) -> usize {
+    let names = dir_names(dir).unwrap_or_default();
+    if slot != ADAPTERS {
+        return names.len();
+    }
+    names
+        .iter()
+        .filter(|kind| dir.join(kind).is_dir())
+        .map(|kind| dir_names(&dir.join(kind)).map_or(0, |e| e.len()))
+        .sum()
+}
+
+/// One adapter directory's `adapter.toml`, read and held to where it sits:
+/// its `name` is the directory's, its `kind` the kind directory's, and its
+/// `entry` an executable file inside it. The first defect is the answer.
+///
+/// `dir` is `…/adapters/<kind>/<name>`, and every defect names it by those
+/// three parts — except an entry that is not executable, which is named by
+/// the path handed in, so the `chmod` its line prints runs from here.
+pub fn adapter_manifest(dir: &Path) -> Result<AdapterManifest, Defect> {
+    let part = |path: Option<&Path>| {
+        path.and_then(Path::file_name)
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let named = part(Some(dir));
+    let filed = part(dir.parent());
+    let path = format!("{ADAPTERS}/{filed}/{named}");
+    let Some(kind) = AdapterKind::parse(&filed) else {
+        return Err(Defect::AdapterKind(format!("{ADAPTERS}/{filed}"), None));
+    };
+    let file = dir.join(ADAPTER_MANIFEST);
+    if !file.is_file() {
+        return Err(Defect::AdapterWithoutManifest(path));
+    }
+    let text = fs::read_to_string(&file).map_err(|e| Defect::Unreadable(e.to_string()))?;
+    let doc: toml::Table = text.parse().map_err(|e: toml::de::Error| Defect::NotToml {
+        path: format!("{path}/{ADAPTER_MANIFEST}"),
+        error: e.to_string(),
+    })?;
+
+    let key = |key: &str, why: &'static str| Defect::AdapterKey(path.clone(), key.to_string(), why);
+    if let Some(table) = doc.keys().find(|table| *table != "adapter") {
+        return Err(key(table, "is not a table it holds — it holds [adapter]"));
+    }
+    let Some(table) = doc.get("adapter").and_then(toml::Value::as_table) else {
+        return Err(key("[adapter]", "is missing"));
+    };
+    if let Some(unknown) = table
+        .keys()
+        .find(|field| !ADAPTER_KEYS.contains(&field.as_str()))
+    {
+        return Err(key(
+            unknown,
+            "is not a key [adapter] holds — it holds name, kind, version, description and entry",
+        ));
+    }
+    let text_of = |field: &str| match table.get(field) {
+        None => Ok(None),
+        Some(toml::Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(key(field, "is not a string")),
+    };
+    let required = |field: &str| text_of(field)?.ok_or_else(|| key(field, "is missing"));
+
+    let name = required("name")?;
+    if name != named {
+        return Err(Defect::AdapterNameMismatch { path, name });
+    }
+    let said = required("kind")?;
+    if AdapterKind::parse(&said) != Some(kind) {
+        return Err(Defect::AdapterKind(path, Some(said)));
+    }
+    let version = required("version")?;
+    let description = text_of("description")?;
+    let entry = required("entry")?;
+    let inside = !entry.is_empty()
+        && Path::new(&entry)
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)));
+    if !inside {
+        return Err(key("entry", "is not a path inside the adapter's directory"));
+    }
+    let program = dir.join(&entry);
+    if !program.is_file() {
+        return Err(Defect::AdapterEntryMissing { path, entry });
+    }
+    if !crate::store::executable_file(&program) {
+        return Err(Defect::AdapterEntryNotExecutable(
+            program.display().to_string(),
+        ));
+    }
+    Ok(AdapterManifest {
+        name,
+        kind,
+        version,
+        description,
+        entry,
+    })
+}
+
+/// The five slots whose entries carry a shape. `overlay`, `assets` and
+/// `workflows` hold whatever the pack drops there, so none has a rule to
+/// break.
 fn check_slots(root: &Path) -> Vec<Defect> {
     let mut defects = Vec::new();
 
@@ -775,6 +972,24 @@ fn check_slots(root: &Path) -> Vec<Defect> {
             .is_file()
         {
             defects.push(Defect::DoctorWithoutDoctorToml(format!("doctor/{name}")));
+        }
+    }
+
+    let adapters = root.join(ADAPTERS);
+    for filed in dir_names(&adapters).unwrap_or_default() {
+        let kind = adapters.join(&filed);
+        if AdapterKind::parse(&filed).is_none() {
+            defects.push(Defect::AdapterKind(format!("{ADAPTERS}/{filed}"), None));
+            continue;
+        }
+        if !kind.is_dir() {
+            defects.push(Defect::SlotNotADirectory(format!("{ADAPTERS}/{filed}")));
+            continue;
+        }
+        for name in dir_names(&kind).unwrap_or_default() {
+            if let Err(defect) = adapter_manifest(&kind.join(name)) {
+                defects.push(defect);
+            }
         }
     }
 

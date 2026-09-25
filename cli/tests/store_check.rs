@@ -334,3 +334,56 @@ fn an_adapter_nothing_is_at_is_could_not_tell_naming_the_path() {
         rig.left()
     );
 }
+
+/// Arm 6. A project naming a store adapter by name is checked on the adapter
+/// the machine's installed packs carry under it: the pack's entry is the one
+/// asked, and its answer is the row — here, a scratch it does not declare.
+///
+/// RED-PROOF: on the base the name is neither form, and the check exits 3
+/// without asking anything.
+#[test]
+fn a_project_naming_an_adapter_is_checked_on_the_one_its_packs_carry() {
+    let rig = Rig::new("named");
+    let machine = rig.root.join("machine");
+    let defaults = machine.join(fleet_core::defaults::DIR);
+    std::fs::create_dir_all(&defaults).expect("the defaults dir is made");
+    fleet_core::embedded::write_all(&defaults).expect("the embedded defaults are written");
+    let pack = machine.join("packs/tracker");
+    let adapter = pack.join("adapters/store/x");
+    std::fs::create_dir_all(&adapter).expect("the adapter's directory is made");
+    std::fs::write(
+        pack.join("pack.toml"),
+        "[pack]\nname = \"tracker\"\nversion = \"0.1.0\"\nschema = 3\n",
+    )
+    .expect("the pack's manifest is written");
+    std::fs::write(
+        adapter.join("adapter.toml"),
+        "[adapter]\nname = \"x\"\nkind = \"store\"\nversion = \"0.1.0\"\nentry = \"main.sh\"\n",
+    )
+    .expect("the adapter's manifest is written");
+    let stub = rig.stub(
+        "version) echo '{\"schema_version\":1,\"name\":\"x\",\"version\":\"0.1.0\"}' ;;\n\
+         capabilities) echo '{\"schema_version\":1,\"scratch\":false}' ;;\n\
+         *) echo '{\"schema_version\":1}' ;;",
+    );
+    std::fs::rename(&stub, adapter.join("main.sh")).expect("the stub is the adapter's entry");
+    std::fs::write(
+        rig.project().join("fleet.toml"),
+        "[store]\nadapter = \"x\"\n",
+    )
+    .expect("the project's file names the adapter");
+
+    let out = rig.check(&[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        "fleet store check: x declares no scratch capability, and the check runs only on a \
+         store it makes for the purpose — nothing was run\n"
+    );
+    assert_eq!(rig.argv(), ["capabilities"], "the pack's entry was asked");
+    assert!(
+        rig.left().is_empty(),
+        "the temp dir is gone: {:?}",
+        rig.left()
+    );
+}

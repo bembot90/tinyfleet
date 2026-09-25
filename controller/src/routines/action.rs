@@ -14,7 +14,7 @@ use crate::observe::RosterState;
 use crate::platform;
 use crate::policy::Policy;
 use fleet_core::seat::actor::{Actor, ActorKind};
-use fleet_core::store::{self, Filter, NewItem, Opening, Update};
+use fleet_core::store::{self, Filter, NewItem, Opening, PackDirs, Update};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -335,6 +335,10 @@ fn file_item(routine: &Routine, item: &Item, machine: &Machine) -> Done {
         search_path: &path_for_children(machine.child_path),
         strict: true,
         timeout: Duration::from_secs(routine.timeout),
+        packs: Some(PackDirs {
+            packs_dir: &machine.machine_dir.join("packs"),
+            defaults_dir: &machine.machine_dir.join(fleet_core::defaults::DIR),
+        }),
     });
     let store = match opened {
         Ok(store) => store,

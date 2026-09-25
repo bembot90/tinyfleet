@@ -159,6 +159,47 @@ fn an_agent_directory_holding_neither_form_exits_one_and_names_it() {
     );
 }
 
+/// An adapter filed where its manifest says is one `adapters` line; an
+/// unknown kind directory, and a manifest naming another kind than its
+/// directory, each exit 1 with the defect line.
+///
+/// RED-PROOF: on the base `adapters` is an unknown top-level name.
+#[test]
+fn the_adapters_slot_is_counted_and_a_kind_out_of_place_exits_one() {
+    let copy = Copy::of_shipped("adapters");
+    let toml = |kind: &str| {
+        format!(
+            "[adapter]\nname = \"x\"\nkind = \"{kind}\"\nversion = \"0.1.0\"\n\
+             entry = \"main.sh\"\n"
+        )
+    };
+    copy.write("adapters/store/x/adapter.toml", &toml("store"))
+        .write("adapters/store/x/main.sh", "#!/bin/sh\n");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(
+        copy.root.join("adapters/store/x/main.sh"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .expect("the entry is executable");
+    let out = run(&["pack", "check", copy.arg()]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("slot adapters: 1 entry"), "{stdout}");
+
+    copy.write("adapters/db/y/adapter.toml", &toml("db"))
+        .write("adapters/store/x/adapter.toml", &toml("agent"));
+    let out = run(&["pack", "check", copy.arg()]);
+    assert_eq!(out.status.code(), Some(1));
+    for line in [
+        "`adapters/db` is no adapter kind — an adapter is filed under adapters/store/ or \
+         adapters/agent/",
+        "`adapters/store/x/adapter.toml` says kind `agent`, and it is filed under \
+         `adapters/store`",
+    ] {
+        assert!(stderr(&out).contains(line), "{line}\n{}", stderr(&out));
+    }
+}
+
 #[test]
 fn a_manifest_at_the_previous_schema_exits_one_and_names_the_number() {
     let copy = Copy::of_shipped("schema");

@@ -25,15 +25,30 @@ adapter = "bd"
 ```
 
 `"bd"` is the default, and a project whose file has no `adapter` key uses bd.
-The other form is the absolute path to an executable:
+The key takes two other forms. A name with no `/` in it is the store adapter
+an installed pack carries under `adapters/store/<name>/`:
+
+```toml
+[store]
+adapter = "tracker"
+```
+
+fleet reads the installed packs over the defaults, and the highest layer
+carrying `adapters/store/<name>/adapter.toml` is the adapter: fleet runs the
+`entry` that file names, from the same directory. An adapter whose
+`adapter.toml` fails the pack format is not run. How a pack carries an
+adapter is on [Packs](packs.md).
+
+The last form is the absolute path to an executable:
 
 ```toml
 [store]
 adapter = "/opt/tracker/bin/fleet-store"
 ```
 
-The key lives in the project's own file: `fleet.toml` for an embedded fleet,
-`.fleet/project.toml` for a standalone project.
+Any other value is refused. The key lives in the project's own file:
+`fleet.toml` for an embedded fleet, `.fleet/project.toml` for a standalone
+project.
 
 ## The call
 
@@ -427,6 +442,9 @@ an item.
 | the adapter declares no `scratch` | 1 | `fleet store check: <adapter> declares no scratch capability, and the check runs only on a store it makes for the purpose — nothing was run` |
 | `--adapter` names a relative path | 2 | `fleet store check: --adapter takes an absolute path to an executable, and <path> is not one` |
 | nothing executable is at the path | 3 | ``fleet store check: [store] adapter names `<path>`, which is not an executable file`` |
+| no installed pack carries the name | 3 | ``fleet store check: no store adapter named `<name>` in the installed packs — `fleet pack add <repo>//adapters/store/<name> --version <version>` installs one`` |
+| the installed packs do not resolve | 3 | ``fleet store check: no store adapter named `<name>` resolves:`` and the reason |
+| the pack's adapter fails the format | 3 | ``fleet store check: the store adapter `<name>` cannot be opened:`` and the defect |
 | the adapter cannot be run, or does not answer `capabilities` or `scratch` | 3 | `fleet store check:` and the reason |
 
 Only a failed check prints check lines; every other refusal comes before

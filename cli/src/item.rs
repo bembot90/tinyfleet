@@ -28,7 +28,7 @@ use fleet_core::item::{
 };
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::{identity_or_mint, roster, Directory, IDENTITY};
-use fleet_core::store::{self, Opening, Store, STORE_TIMEOUT};
+use fleet_core::store::{self, Opening, PackDirs, Store, STORE_TIMEOUT};
 
 use crate::envelope;
 use crate::exit::Exit;
@@ -957,6 +957,10 @@ pub(crate) fn open_store(here: &Here) -> Result<Box<dyn Store>, Stop> {
         search_path: &platform::child_path(&platform::home_dir()),
         strict: false,
         timeout: STORE_TIMEOUT,
+        packs: Some(PackDirs {
+            packs_dir: &here.packs_dir,
+            defaults_dir: &here.defaults_dir,
+        }),
     })?)
 }
 

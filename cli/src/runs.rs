@@ -23,11 +23,10 @@ use fleet_core::entry::{Body, HoldReason};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::hold;
 use fleet_core::item::run as workflow_run;
-use fleet_core::item::Project;
 use fleet_core::seat;
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::{identity_or_mint, SeatId};
-use fleet_core::store::{self, ItemId, Opening, Store, StoreError, STORE_TIMEOUT};
+use fleet_core::store::{self, ItemId, Opening, PackDirs, Store, StoreError, STORE_TIMEOUT};
 
 use crate::item::{resolve_from, Here, StreamEvents, EVENTS};
 use crate::transient::{as_refusal, effect_agent, machine_of, policy_of, Where};
@@ -38,7 +37,7 @@ use crate::transient::{as_refusal, effect_agent, machine_of, policy_of, Where};
 /// one per run: a machine whose runs belong to two projects needs a store per
 /// project, and a single handle could not serve both.
 pub trait Stores {
-    fn open(&self, project: &Project) -> Result<Box<dyn Store>, StoreError>;
+    fn open(&self, here: &Here) -> Result<Box<dyn Store>, StoreError>;
 }
 
 /// The opener the binary runs on: the store `[store] adapter` names in each
@@ -64,13 +63,17 @@ impl ProjectStores {
 }
 
 impl Stores for ProjectStores {
-    fn open(&self, project: &Project) -> Result<Box<dyn Store>, StoreError> {
+    fn open(&self, here: &Here) -> Result<Box<dyn Store>, StoreError> {
         store::open(&Opening {
-            root: &project.root,
-            policy: &project.policy,
+            root: &here.project.root,
+            policy: &here.project.policy,
             search_path: &self.search_path,
             strict: false,
             timeout: STORE_TIMEOUT,
+            packs: Some(PackDirs {
+                packs_dir: &here.packs_dir,
+                defaults_dir: &here.defaults_dir,
+            }),
         })
     }
 }
@@ -121,10 +124,7 @@ impl Engine {
             let Ok(here) = resolve_from(&root, self.machine_dir.clone(), None) else {
                 continue;
             };
-            let holding = self
-                .stores
-                .open(&here.project)
-                .and_then(|store| store.show(run));
+            let holding = self.stores.open(&here).and_then(|store| store.show(run));
             if holding.is_ok() {
                 return Ok(here);
             }
@@ -166,7 +166,7 @@ impl Runs for Engine {
     fn rerun(&self, run: &str) -> Result<(), String> {
         let here = self.project_holding(run)?;
         let by = self.controller()?;
-        let store = self.stores.open(&here.project).map_err(|e| e.to_string())?;
+        let store = self.stores.open(&here).map_err(|e| e.to_string())?;
         let packs =
             Packs::under(&here.packs_dir, &here.defaults_dir).map_err(|stop| stop.message)?;
         let events = StreamEvents::at(self.machine_dir.join(EVENTS));
@@ -206,7 +206,7 @@ impl Runs for Engine {
     fn hold(&self, run: &str, reason: &str) -> Result<(String, String), String> {
         let here = self.project_holding(run)?;
         let by = self.controller()?;
-        let store = self.stores.open(&here.project).map_err(|e| e.to_string())?;
+        let store = self.stores.open(&here).map_err(|e| e.to_string())?;
         let directory = self.machine_dir.join(workflow_run::RUNS).join(run);
         hold::park_at_the_cap(
             &hold::Capped {
@@ -227,7 +227,7 @@ impl Runs for Engine {
         let here = self.project_holding(run)?;
         let store = self
             .stores
-            .open(&here.project)
+            .open(&here)
             .map_err(|e| format!("{run}'s store could not be opened: {e}"))?;
         let entries = store
             .timeline(&ItemId::from(run))
@@ -258,7 +258,7 @@ impl Runs for Engine {
         // for itself. A cleanup retires seats whose items were delivered and
         // seats whose items are still open — a park leaves the order standing —
         // and the name this frees is the one the next spawn takes.
-        let store = self.stores.open(&here.project).map_err(|e| e.to_string())?;
+        let store = self.stores.open(&here).map_err(|e| e.to_string())?;
         // The retire hands its withdrawal the machine name of the row it
         // resolved; the order was assigned to that row's ID, so the name is
         // resolved back to it here, exactly, through the short id it carries.

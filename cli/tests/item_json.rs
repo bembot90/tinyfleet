@@ -1171,23 +1171,43 @@ fn a_project_naming_an_adapter_executable_is_read_through_it() {
     assert_eq!(request["id"], "c3d4", "and the id as typed: {request}");
 }
 
-/// `[store] adapter` naming neither the built-in store nor a path is a store
-/// fleet cannot open: the item verb exits 3, could not tell, naming the value
-/// and the two forms the key takes.
+/// `[store] adapter` naming neither the built-in store, a name nor a path is a
+/// store fleet cannot open: the item verb exits 3, could not tell, naming the
+/// value and the three forms the key takes.
 #[test]
-fn an_adapter_that_is_neither_bd_nor_a_path_is_could_not_tell() {
+fn an_adapter_that_is_neither_bd_a_name_nor_a_path_is_could_not_tell() {
     let named = Named::new("sqlite");
-    let out = named.naming("sqlite").item_show(&["fx-c3d4", "--json"]);
+    let out = named
+        .naming("tools/sqlite")
+        .item_show(&["fx-c3d4", "--json"]);
 
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     let refusal = refusal_of(&out, "item show");
     assert_eq!(refusal["code"], serde_json::json!("could_not_tell"));
-    let said = "[store] adapter is `sqlite` — it is \"bd\" or an absolute path to an adapter \
-                executable";
+    let said = "[store] adapter is `tools/sqlite` — it is \"bd\", the name of a store adapter \
+                an installed pack carries, or an absolute path to an adapter executable";
     assert_eq!(refusal["why"], said, "{refusal}");
     assert!(
         stderr(&out).contains(&format!("fleet item show: {said}")),
         "{}",
         stderr(&out)
+    );
+}
+
+/// A bare name no installed pack carries is a store fleet cannot open: the
+/// item verb exits 3, could not tell, naming the install that would carry it.
+#[test]
+fn a_name_no_installed_pack_carries_is_could_not_tell_naming_the_install() {
+    let named = Named::new("unpacked");
+    let out = named.naming("sqlite").item_show(&["fx-c3d4", "--json"]);
+
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    let refusal = refusal_of(&out, "item show");
+    assert_eq!(refusal["code"], serde_json::json!("could_not_tell"));
+    assert_eq!(
+        refusal["why"],
+        "no store adapter named `sqlite` in the installed packs — `fleet pack add \
+         <repo>//adapters/store/sqlite --version <version>` installs one",
+        "{refusal}"
     );
 }
