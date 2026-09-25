@@ -287,7 +287,7 @@ pub fn fire(
     pass.append(events::ROUTINE_FIRED, &routine.name, opening);
 
     let started = std::time::Instant::now();
-    let done = action::run(routine, &pass.machine, &stamp);
+    let done = action::run(routine, &pass.machine);
     let duration_ms = started.elapsed().as_millis() as u64;
 
     let mut entry = pass.state.entry(&routine.name);

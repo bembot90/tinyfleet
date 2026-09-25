@@ -17,6 +17,7 @@ use fleet_controller::{config, events, platform, policy as controller};
 use fleet_core::defaults;
 use fleet_core::item::Stop;
 use fleet_core::seat::identity;
+use fleet_core::store::{self, Opening, STORE_TIMEOUT};
 
 use crate::exit::Exit;
 use crate::item::{derived_worktrees_dir, resolve_at, resolve_from};
@@ -171,9 +172,20 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
         }
         Mode::Standalone => {
             let name = basename(&root);
-            let prefix = std::fs::read_to_string(root.join(lifecycle::STORE_CONFIG))
-                .ok()
-                .and_then(|body| lifecycle::item_prefix_in(&body));
+            // The prefix is the store's to say: the project's store opened as
+            // every verb opens it, and asked. A store that cannot be opened or
+            // does not answer names no prefix, and the line is left for the
+            // person rather than guessed.
+            let prefix = store::open(&Opening {
+                root: &root,
+                policy: &store::project_policy(&root)?,
+                search_path: &platform::child_path(&platform::home_dir()),
+                strict: false,
+                timeout: STORE_TIMEOUT,
+            })
+            .ok()
+            .and_then(|opened| opened.capabilities().ok())
+            .and_then(|capabilities| capabilities.item_prefix);
             write_new(
                 &declared,
                 &lifecycle::project_text(

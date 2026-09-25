@@ -92,8 +92,8 @@ pub const CENSUS: [(&str, &str); 19] = [
     // the file names neither.
     ("project", "primary"),
     ("project", "worktrees"),
-    // Which store this project's work graph lives in: "bd" (built in) or an
-    // absolute path to an adapter executable (docs/store.md).
+    // Which store this project's work graph lives in: the built-in one, by its
+    // name, or an absolute path to an adapter executable (docs/store.md).
     ("store", "adapter"),
 ];
 

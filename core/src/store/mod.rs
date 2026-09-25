@@ -398,10 +398,11 @@ pub struct Opening<'a> {
     pub timeout: Duration,
 }
 
-/// The project's store, as `[store] adapter` in its own file names it: `"bd"`,
-/// or no key at all, is the built-in store; an absolute path to an executable
-/// file is an adapter that answers the contract at that path. Anything else is
-/// could not tell, naming what the file said, and nothing is run.
+/// The project's store, as `[store] adapter` in its own file names it: the
+/// built-in store's name, or no key at all, is that store; an absolute path to
+/// an executable file is an adapter that answers the contract at that path.
+/// Anything else is could not tell, naming what the file said, and nothing is
+/// run.
 ///
 /// ONE OPENER FOR EVERY CALLER — the verbs, the run pass and `fleet prime` —
 /// so the store a verb writes to and the one the pass reads are one store.
@@ -454,8 +455,8 @@ pub fn project_policy(root: &Path) -> Result<toml::Table, StoreError> {
 }
 
 /// A file that is there and executable. Beside the opener and not inside an
-/// adapter: the opener asks it of an adapter's path, and the bd adapter of a
-/// binary it resolves.
+/// adapter: the opener asks it of an adapter's path, and the built-in adapter
+/// of a binary it resolves.
 pub(crate) fn executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path)
@@ -522,8 +523,8 @@ fn holder_named(seat: &str) -> String {
 /// What a call said last: the last line of its stderr that is not blank, else
 /// of its stdout, cut to 160 characters.
 ///
-/// Beside the trait and not inside an adapter: bd and an adapter executable
-/// both carry it into their refusals.
+/// Beside the trait and not inside an adapter: the built-in store and an
+/// adapter executable both carry it into their refusals.
 pub(crate) fn tail(out: &Output) -> String {
     let stderr = String::from_utf8_lossy(&out.stderr);
     let body = if stderr.trim().is_empty() {

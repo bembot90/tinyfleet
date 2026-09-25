@@ -62,6 +62,10 @@ pub const EXPORT: &str = ".beads/issues.jsonl";
 /// delivery's, and a landing's staged-set check does not judge it.
 pub const DIR: &str = ".beads/";
 
+/// The store's own config, relative to the project root: where the prefix its
+/// ids carry is named, when a project names one.
+pub const CONFIG: &str = ".beads/config.yaml";
+
 /// The newest `schema_version` this binary reads — the one bd 1.3.0 answers on
 /// every JSON call, enveloped or not. A higher one is warned about once and
 /// read anyway, which is beads' own advice to a consumer.
@@ -946,6 +950,12 @@ impl Store for Bd {
     /// of git there is nothing under `.beads/` for git to take — and `git add
     /// .beads` over a directory it has been told to ignore exits 128 rather
     /// than staging nothing. The porcelain says which project this is.
+    ///
+    /// The item prefix is [`CONFIG`]'s `issue-prefix:`, read off the file and
+    /// not asked of bd: a config that is not there, will not read or names
+    /// none is `None`, which is a prefix nobody named and never one guessed.
+    /// `bd init --prefix` leaves that key commented — measured on 1.3.0 — so a
+    /// board a person made without naming it again answers `None`.
     fn capabilities(&self) -> Result<Capabilities, StoreError> {
         Ok(Capabilities {
             export: Some(ExportSpec {
@@ -953,7 +963,9 @@ impl Store for Bd {
                 dir: DIR.to_string(),
             }),
             scratch: true,
-            item_prefix: None,
+            item_prefix: std::fs::read_to_string(self.root.join(CONFIG))
+                .ok()
+                .and_then(|config| item_prefix_in(&config)),
         })
     }
 
@@ -1239,6 +1251,21 @@ fn install_pointer() -> String {
 
 /// The resolution and the opener over it. `FLEET_BD_BIN` is process-wide and
 /// these arms move it, so they hold one lock and put it back on a panic too.
+/// The item prefix [`CONFIG`] carries, where it carries one.
+///
+/// A two-line reader rather than a YAML dependency: the one key wanted is at
+/// the top level and is written as `issue-prefix: <value>`, and a file that
+/// says it some other way answers `None`, which is the same as saying nothing.
+pub fn item_prefix_in(config: &str) -> Option<String> {
+    config
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+        .find_map(|line| line.strip_prefix("issue-prefix:"))
+        .map(|value| value.trim().trim_matches(['"', '\'']).to_string())
+        .filter(|value| !value.is_empty())
+}
+
 #[cfg(test)]
 mod opening_tests {
     use super::{open, resolve, Filter, StoreError, BD, STORE_TIMEOUT};
@@ -1422,9 +1449,30 @@ mod opening_tests {
 /// The mapping [`item_from`] makes of fleet's two keys, one arm per answer.
 #[cfg(test)]
 mod tests {
-    use super::{item_from, OrderState, StoreError};
+    use super::{item_from, item_prefix_in, OrderState, StoreError};
     use crate::seat::actor::Actor;
     use crate::store::{Order, OrderKind, RunRecord, Stamp};
+
+    /// The config's one key, read four ways: set, quoted, commented, and a
+    /// file that names it not at all.
+    #[test]
+    fn the_item_prefix_is_read_from_the_store_config_or_is_absent() {
+        assert_eq!(
+            item_prefix_in("# a comment\nissue-prefix: ap\n"),
+            Some("ap".to_string())
+        );
+        assert_eq!(
+            item_prefix_in("issue-prefix: \"ap\"\n"),
+            Some("ap".to_string())
+        );
+        assert_eq!(
+            item_prefix_in("# issue-prefix: \"\"\n"),
+            None,
+            "a commented line is not a value"
+        );
+        assert_eq!(item_prefix_in("issue-prefix:\n"), None);
+        assert_eq!(item_prefix_in("database: dolt\n"), None);
+    }
 
     const BY: &str = "seat:01a0d1f1-0aec-765f-9abe-0000001ead01";
     const SEAT: &str = "01a0d1f1-0aec-765f-9abe-00000005ea71";

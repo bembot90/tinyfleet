@@ -25,8 +25,6 @@ pub const FLEET_TOML: &str = "fleet.toml";
 pub const PROJECT_TOML: &str = ".fleet/project.toml";
 /// The machine's register of standalone projects.
 pub const PROJECTS: &str = "projects.toml";
-/// The store config a project's item prefix is read out of, where it has one.
-pub const STORE_CONFIG: &str = ".beads/config.yaml";
 
 /// How long a load or an unload is given to show up on the stream.
 ///
@@ -184,21 +182,6 @@ pub fn basic(value: &str) -> String {
         }
     }
     out
-}
-
-/// The item prefix this project's own store config carries, where it has one.
-///
-/// A two-line reader rather than a YAML dependency: the one key wanted is at the
-/// top level and is written as `issue-prefix: <value>`, and a file that says it
-/// some other way answers `None`, which is the same as saying nothing.
-pub fn item_prefix_in(store_config: &str) -> Option<String> {
-    store_config
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.starts_with('#'))
-        .find_map(|line| line.strip_prefix("issue-prefix:"))
-        .map(|value| value.trim().trim_matches(['"', '\'']).to_string())
-        .filter(|value| !value.is_empty())
 }
 
 /// A declaration somebody already wrote, read for the keys a registration needs.
@@ -922,27 +905,6 @@ mod tests {
             table["landing"].as_table().expect("a table").is_empty(),
             "the marker is commented: {text}"
         );
-    }
-
-    /// The store config's one key, read four ways: set, quoted, commented, and
-    /// a file that names it not at all.
-    #[test]
-    fn the_item_prefix_is_read_from_the_store_config_or_is_absent() {
-        assert_eq!(
-            item_prefix_in("# a comment\nissue-prefix: ap\n"),
-            Some("ap".to_string())
-        );
-        assert_eq!(
-            item_prefix_in("issue-prefix: \"ap\"\n"),
-            Some("ap".to_string())
-        );
-        assert_eq!(
-            item_prefix_in("# issue-prefix: \"\"\n"),
-            None,
-            "a commented line is not a value"
-        );
-        assert_eq!(item_prefix_in("issue-prefix:\n"), None);
-        assert_eq!(item_prefix_in("database: dolt\n"), None);
     }
 
     /// A root is registered once. A second registration of the same project is

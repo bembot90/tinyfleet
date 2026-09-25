@@ -1116,7 +1116,9 @@ fn create_standalone_declares_the_project_registers_it_and_says_so_on_the_stream
     // shares the machine.
     let second = host.root.join("b-project");
     std::fs::create_dir_all(second.join(".beads")).unwrap();
-    write(&second.join(".beads/config.yaml"), "issue-prefix: bp\n");
+    // The store's own config names the prefix, and the declaration carries
+    // what the store's capabilities answer from it.
+    write(&second.join(".beads/config.yaml"), "issue-prefix: zz\n");
     let out = host
         .command(&["create", "--standalone", "--agent", AGENT])
         .current_dir(&second)
@@ -1132,7 +1134,7 @@ fn create_standalone_declares_the_project_registers_it_and_says_so_on_the_stream
         written,
         standalone_text(
             "b-project",
-            Some("bp"),
+            Some("zz"),
             &second,
             &host.root.join("b-project-worktrees")
         ),
@@ -1252,6 +1254,27 @@ fn create_standalone_declares_the_project_registers_it_and_says_so_on_the_stream
         .expect("the built binary runs");
     assert_eq!(code(&out), 1, "{}", stderr(&out));
     assert!(stderr(&out).contains("[project] name"), "{}", stderr(&out));
+
+    // A project whose store names no prefix — no store config at all — is
+    // declared with the commented line, and never with a prefix guessed.
+    let bare = host.root.join("e-project");
+    std::fs::create_dir_all(&bare).unwrap();
+    let out = host
+        .command(&["create", "--standalone", "--agent", AGENT])
+        .current_dir(&bare)
+        .output()
+        .expect("the built binary runs");
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(
+        std::fs::read_to_string(bare.join(".fleet/project.toml")).unwrap(),
+        standalone_text(
+            "e-project",
+            None,
+            &bare,
+            &host.root.join("e-project-worktrees")
+        ),
+        "the declaration is not the expected text"
+    );
 }
 
 /// A DECLARED PROJECT WINS AT ITS OWN LEVEL: `--standalone` registers the

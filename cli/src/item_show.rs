@@ -1,8 +1,8 @@
 //! `fleet item show <id> [--json]` — one item and its timeline, read — and
 //! `fleet item list`, the items the store's listings answer.
 //!
-//! The SDK's reads of the store: a workflow asks these verbs and never `bd`,
-//! so the store stays the adapter's. Neither writes anything.
+//! The SDK's reads of the store: a workflow asks these verbs and never the
+//! store's own binary, so the store stays the adapter's. Neither writes anything.
 //!
 //! The rendering and the document are core's (`fleet_core::item::show`); this
 //! module resolves the project, opens its store, reads the item and its

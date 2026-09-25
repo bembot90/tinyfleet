@@ -445,7 +445,7 @@ fn a_nudge_to_a_seat_by_its_name_fires_at_that_seats_row() {
         effects_off: None,
     };
 
-    let done = action::run(&routine, &machine, "2026-09-18T00:00:00Z");
+    let done = action::run(&routine, &machine);
     assert_eq!(done.outcome, Outcome::Delivered, "{}", done.detail);
     assert!(done.detail.contains("/wt/orla"), "{}", done.detail);
     let rung: Vec<String> = agent
@@ -462,15 +462,12 @@ fn a_nudge_to_a_seat_by_its_name_fires_at_that_seats_row() {
 }
 
 /// [ASSUMES D14] An item's assignee is RESOLVED AT LOAD among every seat the
-/// fleet lists and every seat this machine runs, and the item is filed to the
-/// FULL ID it found: `Orla` files to Orla's id, a person the fleet lists is a
-/// seat an item may go to, and a name nobody holds refuses the file with the
-/// resolver's own reason.
+/// fleet lists and every seat this machine runs, to the FULL ID the item is
+/// handed to: `Orla` resolves to Orla's id, a person the fleet lists is a seat
+/// an item may go to, and a name nobody holds refuses the file with the
+/// resolver's own reason. The id reaching the store is the filing arm's below.
 #[test]
-fn an_item_assignee_is_filed_with_the_full_id_it_resolves_to() {
-    use fleet_controller::policy;
-    use fleet_controller::routines::{action, action::Machine};
-
+fn an_item_assignee_resolves_at_load_to_the_full_id() {
     let head = "[order]\ndescription = \"d\"\ntrigger = \"cron\"\nschedule = \"* * * * *\"\n\
                 [action.item]\ntitle = \"t\"\n";
     let why = refusal(&format!("{head}assignee = \"nobody\"\n"));
@@ -481,16 +478,6 @@ fn an_item_assignee_is_filed_with_the_full_id_it_resolves_to() {
         "{why}"
     );
 
-    let policy = policy::parse("").expect("the empty policy is the defaults");
-    let root = scratch("item-assignee");
-    let machine = Machine {
-        machine_dir: &root,
-        child_path: "/usr/bin:/bin",
-        policy: &policy,
-        seats: &[],
-        agent: None,
-        effects_off: None,
-    };
     for (named, id) in [
         ("Orla", ORLA),
         ("orla-93b9739a", ORLA),
@@ -504,90 +491,314 @@ fn an_item_assignee_is_filed_with_the_full_id_it_resolves_to() {
             Some(id),
             "{named} resolves"
         );
-        let argv = action::argv_of(&routine, &machine);
-        let at = argv
-            .iter()
-            .position(|arg| arg == "--assignee")
-            .unwrap_or_else(|| panic!("{named}: the create names an assignee: {argv:?}"));
-        assert_eq!(
-            argv[at + 1],
-            id,
-            "{named}: filed with the full id: {argv:?}"
-        );
     }
-    let _ = std::fs::remove_dir_all(&root);
 }
 
-/// A ROUTINE FILES AS ITSELF. The create and the note that says the item was
-/// filed by a routine both carry `--actor routine:<name>` — the typed actor
-/// the store's audit trail records, and never one word every routine on the
-/// machine shares.
-#[test]
-fn a_routine_files_its_item_and_its_note_as_routine_colon_its_name() {
-    use fleet_controller::policy;
-    use fleet_controller::routines::{action, action::Machine, Outcome};
+/// What the recording store answers a create: the id it filed.
+const FILED_FX_9: &str = r#"echo '{"schema_version":1,"id":"fx-9"}'"#;
+/// What it answers a write that landed.
+const ANSWERED: &str = r#"echo '{"schema_version":1}'"#;
 
-    let root = scratch("item-actor");
-    let stubs = root.join("stubs");
-    std::fs::create_dir_all(&stubs).unwrap();
-    // A `bd` that records each call's argv, one call after each `---`, and
-    // answers a create with the id it filed.
-    let log = root.join("bd-argv.txt");
-    let bd = stubs.join("bd");
+/// An adapter executable that records what it is asked, named by `[store]
+/// adapter` in the own `fleet.toml` of a project at `<root>/project`, which is
+/// answered. Each call goes on `<root>/requests` as a `--- <verb>` line and the
+/// request on the next; each verb runs the shell `answers` gives it, and a verb
+/// it names nothing for exits 2.
+fn a_store_that_records(root: &Path, answers: &[(&str, &str)]) -> PathBuf {
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let adapter = root.join("adapter");
+    let cases: String = answers
+        .iter()
+        .map(|(verb, answer)| format!("{verb}) {answer} ;;\n"))
+        .collect();
     std::fs::write(
-        &bd,
+        &adapter,
         format!(
             "#!/bin/sh\n\
-             {{ echo ---; printf '%s\\n' \"$@\"; }} >> '{log}'\n\
-             case \" $* \" in *' create '*) echo '{{\"id\":\"fx-9\"}}' ;; esac\n",
-            log = log.display()
+             {{ printf -- '--- %s\\n' \"$1\"; cat; printf '\\n'; }} >> '{log}'\n\
+             case \"$1\" in\n{cases}*) exit 2 ;;\nesac\n",
+            log = root.join("requests").display()
         ),
     )
     .unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bd, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let child_path = format!("{}:/usr/bin:/bin", stubs.display());
-    let policy = policy::parse("").expect("the empty policy is the defaults");
-    let machine = Machine {
-        machine_dir: &root,
-        child_path: &child_path,
-        policy: &policy,
+    std::fs::write(
+        project.join("fleet.toml"),
+        format!("[store]\nadapter = \"{}\"\n", adapter.display()),
+    )
+    .unwrap();
+    project
+}
+
+/// Every call the recording store was handed, in order, as its verb and its
+/// request.
+fn requests(root: &Path) -> Vec<(String, serde_json::Value)> {
+    let text = std::fs::read_to_string(root.join("requests")).unwrap_or_default();
+    let mut calls = Vec::new();
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        if let Some(verb) = line.strip_prefix("--- ") {
+            let request = lines.next().unwrap_or_default();
+            let read = serde_json::from_str(request)
+                .unwrap_or_else(|e| panic!("the {verb} request is JSON: {e}: {request}"));
+            calls.push((verb.to_string(), read));
+        }
+    }
+    calls
+}
+
+fn verbs(calls: &[(String, serde_json::Value)]) -> Vec<&str> {
+    calls.iter().map(|(verb, _)| verb.as_str()).collect()
+}
+
+/// A routine filing one item, the `[action.item]` lines after its title as
+/// given, against the project at `project`.
+fn an_item_routine(project: &Path, lines: &str) -> Routine {
+    let mut routine = routine_of(&format!(
+        "[order]\ndescription = \"d\"\ntrigger = \"cron\"\nschedule = \"* * * * *\"\n\
+         [action.item]\ntitle = \"t\"\n{lines}"
+    ));
+    routine.project_root = project.to_path_buf();
+    routine
+}
+
+/// The machine an item action runs on here: a child path that holds no store
+/// binary, so the one store asked is the project's own adapter.
+fn an_item_machine<'a>(
+    root: &'a Path,
+    policy: &'a fleet_controller::policy::Policy,
+) -> fleet_controller::routines::action::Machine<'a> {
+    fleet_controller::routines::action::Machine {
+        machine_dir: root,
+        child_path: "/usr/bin:/bin",
+        policy,
         seats: &[],
         agent: None,
         effects_off: None,
-    };
-    let routine = routine_of(
-        "[order]\ndescription = \"d\"\ntrigger = \"cron\"\nschedule = \"* * * * *\"\n\
-         [action.item]\ntitle = \"t\"\n",
-    );
-
-    let done = action::run(&routine, &machine, "2026-09-18T00:00:00Z");
-    assert_eq!(done.outcome, Outcome::Filed, "{}", done.detail);
-    let recorded = std::fs::read_to_string(&log).unwrap();
-    let calls: Vec<Vec<&str>> = recorded
-        .split("---\n")
-        .filter(|call| !call.is_empty())
-        .map(|call| call.lines().collect())
-        .collect();
-    let of = |verb: &str| {
-        calls
-            .iter()
-            .find(|argv| argv.get(2) == Some(&verb))
-            .unwrap_or_else(|| panic!("a `{verb}` call was made: {calls:?}"))
-    };
-    for verb in ["create", "note"] {
-        assert!(
-            of(verb)
-                .windows(2)
-                .any(|pair| pair == ["--actor", "routine:a-routine"]),
-            "the {verb} carries the routine's typed actor: {:?}",
-            of(verb)
-        );
     }
-    assert_eq!(calls.len(), 2, "the create and the note, and nothing else");
+}
+
+/// A ROUTINE FILES THROUGH THE STORE, AS ITSELF. The project's own store is
+/// opened and handed a create, then an update carrying the assignee's full
+/// id, both `by` the routine's typed actor — which is the item's author on
+/// the record, so no note says it again [ASSUMES D9]. The create names the
+/// type an item that names none is filed as, and the routine's own label
+/// beside the file's.
+#[test]
+fn a_routine_files_its_item_through_the_store_as_routine_colon_its_name() {
+    use fleet_controller::policy;
+    use fleet_controller::routines::{action, Outcome};
+
+    let root = scratch("item-store");
+    let project = a_store_that_records(&root, &[("create", FILED_FX_9), ("update", ANSWERED)]);
+    let routine = an_item_routine(&project, "labels = [\"lane\"]\nassignee = \"Orla\"\n");
+    let policy = policy::parse("").expect("the empty policy is the defaults");
+
+    let done = action::run(&routine, &an_item_machine(&root, &policy));
+    assert_eq!(done.outcome, Outcome::Filed, "{}", done.detail);
+    assert_eq!(done.detail, "filed fx-9");
+    assert_eq!(done.extra, vec![("item".to_string(), "fx-9".into())]);
+
+    let calls = requests(&root);
+    assert_eq!(
+        verbs(&calls),
+        vec!["create", "update"],
+        "the create, then the assignee, and no note: {calls:?}"
+    );
+    let (create, update) = (&calls[0].1, &calls[1].1);
+    assert_eq!(create["by"], "routine:a-routine");
+    assert_eq!(create["root"], project.display().to_string());
+    assert_eq!(
+        create["item"],
+        serde_json::json!({
+            "title": "t",
+            "description": "",
+            "type": "task",
+            "labels": ["lane", "routine:a-routine"],
+        })
+    );
+    assert_eq!(update["id"], "fx-9");
+    assert_eq!(update["assignee"], ORLA, "the full id the load resolved");
+    assert_eq!(update["by"], "routine:a-routine");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// An assignee that resolved to no seat leaves the item filed and unassigned,
+/// and the routine failed, naming both — the item is on the record either way,
+/// so the line says which one it is.
+#[test]
+fn an_assignee_naming_no_seat_is_failed_and_the_item_stands_unassigned() {
+    use fleet_controller::policy;
+    use fleet_controller::routines::{action, Outcome};
+
+    let root = scratch("item-no-seat");
+    let project = a_store_that_records(&root, &[("create", FILED_FX_9), ("update", ANSWERED)]);
+    let mut routine = an_item_routine(&project, "");
+    let item = routine.action.item.as_mut().expect("the item reads");
+    item.assignee = Some("nobody".to_string());
+    item.assignee_id = None;
+    let policy = policy::parse("").expect("the empty policy is the defaults");
+
+    let done = action::run(&routine, &an_item_machine(&root, &policy));
+    assert_eq!(done.outcome, Outcome::Failed, "{}", done.detail);
+    assert_eq!(
+        done.detail,
+        "the routine's assignee nobody names no seat of this fleet — fx-9 was filed unassigned"
+    );
+    assert_eq!(done.extra, vec![("item".to_string(), "fx-9".into())]);
+    assert_eq!(verbs(&requests(&root)), vec!["create"], "nothing assigned");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// An assignee the store does not take is failed, naming the item filed.
+#[test]
+fn an_assignee_the_store_does_not_take_is_failed_naming_the_item_filed() {
+    use fleet_controller::policy;
+    use fleet_controller::routines::{action, Outcome};
+
+    let root = scratch("item-assign-refused");
+    let project = a_store_that_records(
+        &root,
+        &[
+            ("create", FILED_FX_9),
+            (
+                "update",
+                r#"echo '{"schema_version":1,"error":"the seat table is gone"}'; exit 3"#,
+            ),
+        ],
+    );
+    let routine = an_item_routine(&project, "assignee = \"Orla\"\n");
+    let policy = policy::parse("").expect("the empty policy is the defaults");
+
+    let done = action::run(&routine, &an_item_machine(&root, &policy));
+    assert_eq!(done.outcome, Outcome::Failed, "{}", done.detail);
+    assert!(
+        done.detail
+            .starts_with("fx-9 was filed, and its assignee did not land: "),
+        "{}",
+        done.detail
+    );
+    assert!(
+        done.detail.contains("the seat table is gone"),
+        "{}",
+        done.detail
+    );
+    assert_eq!(done.extra, vec![("item".to_string(), "fx-9".into())]);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `dedupe = "open"` is the store's label listing: an open item carrying the
+/// routine's label is Deduped, naming it, and nothing is filed; a listing
+/// that does not answer is could-not-tell, and nothing is filed either.
+#[test]
+fn a_dedupe_asks_the_stores_label_listing() {
+    use fleet_controller::policy;
+    use fleet_controller::routines::{action, Outcome};
+
+    let policy = policy::parse("").expect("the empty policy is the defaults");
+    let root = scratch("item-dedupe");
+    let project = a_store_that_records(
+        &root,
+        &[
+            (
+                "list",
+                r#"echo '{"schema_version":1,"items":[{"id":"fx-1","title":"x","status":"open","type":"task","labels":["routine:a-routine"]}]}'"#,
+            ),
+            ("create", FILED_FX_9),
+        ],
+    );
+    let routine = an_item_routine(&project, "dedupe = \"open\"\n");
+    let done = action::run(&routine, &an_item_machine(&root, &policy));
+    assert_eq!(done.outcome, Outcome::Deduped, "{}", done.detail);
+    assert_eq!(
+        done.detail,
+        "an open item already carries routine:a-routine: fx-1"
+    );
+    assert_eq!(
+        done.extra,
+        vec![("existing".to_string(), serde_json::json!(["fx-1"]))]
+    );
+    let calls = requests(&root);
+    assert_eq!(verbs(&calls), vec!["list"], "nothing filed: {calls:?}");
+    assert_eq!(
+        calls[0].1["filter"],
+        serde_json::json!({ "label": "routine:a-routine" })
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    let root = scratch("item-dedupe-unread");
+    let project = a_store_that_records(
+        &root,
+        &[
+            ("list", "echo 'the index is locked' >&2; exit 3"),
+            ("create", FILED_FX_9),
+        ],
+    );
+    let routine = an_item_routine(&project, "dedupe = \"open\"\n");
+    let done = action::run(&routine, &an_item_machine(&root, &policy));
+    assert_eq!(done.outcome, Outcome::CouldNotTell, "{}", done.detail);
+    assert!(
+        done.detail
+            .starts_with("the dedupe query could not be read: "),
+        "{}",
+        done.detail
+    );
+    assert!(
+        done.detail.contains("the index is locked"),
+        "{}",
+        done.detail
+    );
+    assert_eq!(verbs(&requests(&root)), vec!["list"], "nothing filed");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A store that cannot be opened is could-not-tell, and an item the contract
+/// refuses is failed before anything is sent: neither files anything.
+#[test]
+fn an_unopened_store_or_a_refused_item_files_nothing() {
+    use fleet_controller::policy;
+    use fleet_controller::routines::{action, Outcome};
+
+    let policy = policy::parse("").expect("the empty policy is the defaults");
+    let root = scratch("item-unopened");
+    let project = a_store_that_records(&root, &[("create", FILED_FX_9)]);
+    std::fs::write(
+        project.join("fleet.toml"),
+        "[store]\nadapter = \"sqlite\"\n",
+    )
+    .unwrap();
+    let routine = an_item_routine(&project, "");
+    let done = action::run(&routine, &an_item_machine(&root, &policy));
+    assert_eq!(done.outcome, Outcome::CouldNotTell, "{}", done.detail);
+    assert_eq!(
+        done.detail,
+        "the store could not be opened: [store] adapter is `sqlite` — it is \"bd\" or an \
+         absolute path to an adapter executable"
+    );
+    assert!(requests(&root).is_empty(), "nothing was asked");
+    let _ = std::fs::remove_dir_all(&root);
+
+    let root = scratch("item-refused");
+    let project = a_store_that_records(&root, &[("create", FILED_FX_9)]);
+    let mut routine = an_item_routine(&project, "");
+    routine
+        .action
+        .item
+        .as_mut()
+        .expect("the item reads")
+        .priority = Some(7);
+    let done = action::run(&routine, &an_item_machine(&root, &policy));
+    assert_eq!(done.outcome, Outcome::Failed, "{}", done.detail);
+    assert_eq!(
+        done.detail,
+        "the item was not filed: priority is 7; the range is 0 to 4"
+    );
+    assert!(requests(&root).is_empty(), "nothing was sent");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -1501,7 +1712,7 @@ fn a_run_action_with_no_fleet_on_the_child_path_is_could_not_tell() {
         agent: None,
         effects_off: None,
     };
-    let done = action::run(&routine, &machine, "2026-09-18T00:00:00Z");
+    let done = action::run(&routine, &machine);
     assert_eq!(done.outcome, Outcome::CouldNotTell);
     assert!(
         done.detail
@@ -1516,5 +1727,44 @@ fn a_run_action_with_no_fleet_on_the_child_path_is_could_not_tell() {
         argv,
         vec!["fleet", "run", "takeoff", "--by", "routine:a-routine"]
     );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// An item's dry run prints the store request the filing sends — the create,
+/// as one line of the contract's JSON without the root — and never a store
+/// binary's argv.
+#[test]
+fn an_item_actions_dry_run_is_the_store_create_request() {
+    use fleet_controller::policy;
+    use fleet_controller::routines::action;
+
+    let root = scratch("item-dry-run");
+    let routine = routine_of(
+        "[order]\ndescription = \"d\"\ntrigger = \"cron\"\nschedule = \"* * * * *\"\n\
+         [action.item]\ntitle = \"t\"\ndescription = \"what it is\"\nlabels = [\"lane\"]\n\
+         type = \"bug\"\npriority = 1\nassignee = \"Orla\"\n",
+    );
+    let policy = policy::parse("").expect("the empty policy is the defaults");
+    let argv = action::argv_of(&routine, &an_item_machine(&root, &policy));
+    let request = serde_json::json!({
+        "schema_version": 1,
+        "item": {
+            "title": "t",
+            "description": "what it is",
+            "type": "bug",
+            "labels": ["lane", "routine:a-routine"],
+            "priority": 1,
+        },
+        "by": "routine:a-routine",
+    });
+    assert_eq!(
+        argv,
+        vec![
+            "store".to_string(),
+            "create".to_string(),
+            request.to_string()
+        ]
+    );
+    assert!(!argv[2].contains('\n'), "one line: {}", argv[2]);
     let _ = std::fs::remove_dir_all(&root);
 }

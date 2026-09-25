@@ -1407,6 +1407,32 @@ fn the_built_in_store_is_opened_where_the_file_names_it_or_names_nothing() {
     }
 }
 
+/// The built-in store's item prefix is its own config's `issue-prefix:`,
+/// answered without a call — and `None` where the config names none, or where
+/// there is no config to read, which is never a prefix guessed.
+#[test]
+fn the_built_in_stores_item_prefix_is_its_own_configs() {
+    let dir = Fixture::new("store-item-prefix");
+    let prefix = || {
+        opened(&dir.root, &policy_of(""), store::STORE_TIMEOUT)
+            .expect("the built-in store opens")
+            .capabilities()
+            .expect("the built-in store answers without a call")
+            .item_prefix
+    };
+    assert_eq!(prefix(), None, "no config at all");
+    dir.file(
+        ".beads/config.yaml",
+        "# issue-prefix: \"\"\ndatabase: dolt\n",
+    );
+    assert_eq!(prefix(), None, "a config naming none");
+    dir.file(
+        ".beads/config.yaml",
+        "# the store's own\nissue-prefix: \"zz\"\n",
+    );
+    assert_eq!(prefix().as_deref(), Some("zz"));
+}
+
 /// A path that is no executable file, and a value that is neither form, are
 /// could not tell before anything is run, each naming what the file said.
 #[test]

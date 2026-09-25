@@ -247,29 +247,36 @@ mod routines {
             .to_string();
 
         // The item carries the routine's own label, which is what makes "did this
-        // routine already file one" answerable from outside this process.
-        let listed = Command::new(&bd)
+        // routine already file one" answerable from outside this process — read
+        // through fleet's own listing, which is the store's.
+        let listed = fleet_json(&rig, &["item", "list", "--label", "routine:leave-it"]);
+        let rows = listed["items"].as_array().expect("a list of rows");
+        let ids: Vec<&str> = rows.iter().filter_map(|row| row["id"].as_str()).collect();
+        assert_eq!(ids, vec![item.as_str()], "one item, carrying the label");
+        assert_eq!(rows[0]["type"], "task");
+        assert_eq!(
+            rows[0]["labels"],
+            serde_json::json!(["lane", "routine:leave-it"])
+        );
+
+        // THE REAL STORE'S OWN WITNESS, once: the routine is the item's author
+        // on the record and wrote no note about it [ASSUMES D9], and the
+        // priority the file named is the one filed.
+        let shown = Command::new(&bd)
             .args([
                 "-C",
                 &rig.root.display().to_string(),
-                "list",
-                "--label",
-                "routine:leave-it",
-                "--status",
-                "open",
+                "show",
+                &item,
                 "--json",
             ])
             .output()
             .expect("bd runs");
-        let rows: serde_json::Value =
-            serde_json::from_slice(&listed.stdout).expect("the listing is JSON");
-        let ids: Vec<&str> = rows
-            .as_array()
-            .expect("a list")
-            .iter()
-            .filter_map(|row| row["id"].as_str())
-            .collect();
-        assert_eq!(ids, vec![item.as_str()], "one item, carrying the label");
+        let shown: serde_json::Value =
+            serde_json::from_slice(&shown.stdout).expect("the show is JSON");
+        assert_eq!(shown[0]["created_by"], "routine:leave-it", "{shown}");
+        assert_eq!(shown[0]["comment_count"], 0, "no note: {shown}");
+        assert_eq!(shown[0]["priority"], 3, "{shown}");
 
         // The ring with nowhere to leave it: absent, and nothing filed.
         let bare: Vec<serde_json::Value> = rig
@@ -300,6 +307,151 @@ mod routines {
                 .is_some_and(|ids| ids.iter().any(|id| id == &serde_json::json!(item))),
             "the dedupe names the item it found: {:#?}",
             again[3]
+        );
+    }
+
+    /// One fleet verb's `--json` answer, run in the rig's own project: the
+    /// envelope's `data`.
+    fn fleet_json(rig: &Rig, args: &[&str]) -> serde_json::Value {
+        let out = rig
+            .binary()
+            .args(args)
+            .arg("--json")
+            .current_dir(&rig.root)
+            .output()
+            .expect("the built binary runs");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "fleet {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let answer: serde_json::Value = serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|e| panic!("fleet {args:?} answered JSON: {e}"));
+        answer["data"].clone()
+    }
+
+    /// A routine's assignee is the seat's FULL ID on the record: one naming
+    /// the rig's seat files an item that reads back, through fleet, as held
+    /// by that seat's id. A name no seat answers to refuses the file at load
+    /// ([ASSUMES D14]), so nothing fires and nothing carries its label; the
+    /// filing's own words for an assignee that resolved to nothing are
+    /// `controller/tests/routines.rs`'s.
+    ///
+    /// A BOARD OF ITS OWN: the item is handed to the rig's seat, and a seat's
+    /// held items are a board-wide reading another rig's dispatch asks.
+    #[test]
+    fn a_routine_files_its_item_to_the_seat_it_names() {
+        if bd_on_path().is_none() {
+            panic!("this box carries no `bd`, so the item action has no store to file into");
+        }
+        let rig = Rig::new("routines-assignee");
+        rig.write_roster("[]");
+        let an_item_for = |seat: &str| {
+            format!(
+                "[order]\ndescription = \"hand it on\"\ntrigger = \"cooldown\"\n\
+                 interval = \"1m\"\n[action.item]\ntitle = \"for {seat}\"\n\
+                 assignee = \"{seat}\"\n"
+            )
+        };
+        rig.write_routine("to-orla", &an_item_for("Orla"));
+        rig.write_routine("to-nobody", &an_item_for("nobody"));
+        common::take_a_board_alone(&rig.root, "routines-assignee");
+
+        rig.set_clock(BASE);
+        assert_eq!(rig.observe().status.code(), Some(0));
+
+        let events = rig.routine_events();
+        let filed: Vec<&serde_json::Value> = events
+            .iter()
+            .filter(|e| e["payload"]["order"] == "to-orla")
+            .collect();
+        assert_eq!(filed.len(), 2, "{events:#?}");
+        assert_eq!(filed[1]["payload"]["outcome"], "filed", "{:#?}", filed[1]);
+        let item = filed[1]["payload"]["item"]
+            .as_str()
+            .expect("the completed event names the item");
+        let shown = fleet_json(&rig, &["item", "show", item]);
+        assert_eq!(shown["assignee"], SEAT_ID, "{shown}");
+
+        assert!(
+            !events.iter().any(|e| e["payload"]["order"] == "to-nobody"),
+            "a file the load refused never fires: {events:#?}"
+        );
+        let listed = fleet_json(&rig, &["item", "list", "--label", "routine:to-nobody"]);
+        assert_eq!(listed["items"], serde_json::json!([]), "nothing filed");
+    }
+
+    /// A DEDUPE PAST FIFTY OPEN ITEMS STILL DEDUPES, naming every one: the
+    /// store's label listing is asked for all of its rows. The board caps a
+    /// piped listing at 50 through its own `list.limit` — measured on bd
+    /// 1.3.0, where the key binds a piped `list` that names no `-n` — and the
+    /// cap is read here first, so the 51st row is one a capped read drops.
+    #[test]
+    fn a_dedupe_past_fifty_open_items_names_all_of_them() {
+        let Some(bd) = bd_on_path() else {
+            panic!("this box carries no `bd`, so the item action has no store to file into");
+        };
+        let rig = Rig::new("routines-dedupe-51");
+        rig.write_roster("[]");
+        rig.write_routine(
+            "sweep",
+            "[order]\ndescription = \"one open at a time\"\ntrigger = \"cooldown\"\n\
+             interval = \"1m\"\n[action.item]\ntitle = \"sweep\"\ndedupe = \"open\"\n",
+        );
+        common::take_a_board_alone(&rig.root, "routines-dedupe-51");
+
+        // Fifty-one open items under the routine's label, in one call.
+        let seed = rig.root.join("seed.md");
+        let rows: Vec<String> = (1..=51)
+            .map(|n| format!("## row {n}\n\n### Labels\nroutine:sweep\n"))
+            .collect();
+        write(&seed, &rows.join("\n"));
+        let at = rig.root.display().to_string();
+        let bd_ran = |args: &[&str]| {
+            let out = Command::new(&bd)
+                .args(["-C", at.as_str()])
+                .args(args)
+                .output()
+                .expect("bd runs");
+            assert!(
+                out.status.success(),
+                "bd {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            out.stdout
+        };
+        bd_ran(&["create", "-f", &seed.display().to_string(), "--json"]);
+        bd_ran(&["config", "set", "list.limit", "50"]);
+        let capped: serde_json::Value = serde_json::from_slice(&bd_ran(&[
+            "list",
+            "--label",
+            "routine:sweep",
+            "--status",
+            "open",
+            "--json",
+        ]))
+        .expect("the listing is JSON");
+        assert_eq!(
+            capped.as_array().map(Vec::len),
+            Some(50),
+            "the board caps a listing that names no -n"
+        );
+
+        rig.set_clock(BASE);
+        assert_eq!(rig.observe().status.code(), Some(0));
+        let events = rig.routine_events();
+        assert_eq!(events.len(), 2, "{events:#?}");
+        assert_eq!(
+            events[1]["payload"]["outcome"], "deduped",
+            "{:#?}",
+            events[1]
+        );
+        assert_eq!(
+            events[1]["payload"]["existing"].as_array().map(Vec::len),
+            Some(51),
+            "every open item under the label, the 51st included: {:#?}",
+            events[1]
         );
     }
 

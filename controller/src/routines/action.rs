@@ -13,6 +13,8 @@ use crate::adapter::Agent;
 use crate::observe::RosterState;
 use crate::platform;
 use crate::policy::Policy;
+use fleet_core::seat::actor::{Actor, ActorKind};
+use fleet_core::store::{self, Filter, NewItem, Opening, Update};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -57,11 +59,19 @@ pub fn routine_label(name: &str) -> String {
 }
 
 /// Who a routine acts as: `routine:<name>`, the typed actor its every write to
-/// the work graph carries — the `--by` of the verbs it runs, and the
-/// `--actor` of the items it files and the notes it leaves on them.
-pub fn routine_actor(name: &str) -> String {
-    format!("routine:{name}")
+/// the work graph carries — the `--by` of the verbs it runs, and the `by` of
+/// the items it files, which the store records as their author.
+pub fn routine_actor(name: &str) -> Actor {
+    Actor {
+        kind: ActorKind::Routine,
+        id: name.to_string(),
+    }
 }
+
+/// The type an item that names none is filed as: the built-in store's own
+/// default — measured on its pinned release, 1.3.0 — made explicit, so every
+/// store files the same item the same way.
+pub const DEFAULT_ITEM_TYPE: &str = "task";
 
 /// The environment every child of an action carries.
 pub fn child_command(program: &str, machine: &Machine) -> Command {
@@ -108,7 +118,7 @@ pub fn path_for_children(child_path: &str) -> String {
 }
 
 /// Carry one routine's action out.
-pub fn run(routine: &Routine, machine: &Machine, now_stamp: &str) -> Done {
+pub fn run(routine: &Routine, machine: &Machine) -> Done {
     let action = &routine.action;
     if let Some(exec) = &action.exec {
         return run_exec(routine, &exec.command, machine);
@@ -126,7 +136,7 @@ pub fn run(routine: &Routine, machine: &Machine, now_stamp: &str) -> Done {
                 .as_ref()
                 .filter(|item| item.when == When::Absent)
             {
-                let mut filed = file_item(routine, item, machine, now_stamp);
+                let mut filed = file_item(routine, item, machine);
                 filed
                     .extra
                     .push(("fallback_from".to_string(), "nudge".into()));
@@ -136,7 +146,7 @@ pub fn run(routine: &Routine, machine: &Machine, now_stamp: &str) -> Done {
         return rung;
     }
     match &action.item {
-        Some(item) => file_item(routine, item, machine, now_stamp),
+        Some(item) => file_item(routine, item, machine),
         None => Done::plain(
             Outcome::Failed,
             "the routine carries no action to run".to_string(),
@@ -144,7 +154,8 @@ pub fn run(routine: &Routine, machine: &Machine, now_stamp: &str) -> Done {
     }
 }
 
-/// The argv a dry run prints, without running anything.
+/// The argv a dry run prints, without running anything. An item's is the
+/// store request its filing sends: `store`, `create` and the request.
 pub fn argv_of(routine: &Routine, machine: &Machine) -> Vec<String> {
     let action = &routine.action;
     if let Some(exec) = &action.exec {
@@ -170,7 +181,14 @@ pub fn argv_of(routine: &Routine, machine: &Machine) -> Vec<String> {
         ];
     }
     match &action.item {
-        Some(item) => item_argv("bd", routine, item),
+        Some(item) => vec![
+            "store".to_string(),
+            "create".to_string(),
+            match new_item(routine, item) {
+                Ok(filed) => create_request(routine, &filed),
+                Err(why) => format!("(not sent: {why})"),
+            },
+        ],
         None => Vec::new(),
     }
 }
@@ -250,100 +268,96 @@ fn run_nudge(nudge: &super::file::Nudge, machine: &Machine) -> Done {
     }
 }
 
-/// The item's own argv, with the routine's label always appended.
-fn item_argv(binary: &str, routine: &Routine, item: &Item) -> Vec<String> {
-    let mut argv = vec![
-        binary.to_string(),
-        "-C".to_string(),
-        routine.project_root.display().to_string(),
-        "create".to_string(),
-        item.title.clone(),
-        "--json".to_string(),
-        "--actor".to_string(),
-        routine_actor(&routine.name),
-    ];
-    if let Some(text) = &item.description {
-        argv.push("--description".to_string());
-        argv.push(text.clone());
-    }
-    if let Some(kind) = &item.kind {
-        argv.push("--type".to_string());
-        argv.push(kind.clone());
-    }
-    // THE FULL ID the file's assignee resolved to at load, never the name as
-    // the file wrote it: work is keyed by the seat, and a name moves.
-    if let Some(assignee) = &item.assignee_id {
-        argv.push("--assignee".to_string());
-        argv.push(assignee.to_string());
-    }
-    if let Some(priority) = item.priority {
-        argv.push("--priority".to_string());
-        argv.push(priority.to_string());
-    }
+/// The item the routine files, as the store contract takes one: the file's
+/// fields, the default type where it names none, and the routine's own label
+/// always among the labels. HELD TO THE CONTRACT here, before anything is
+/// sent, so an item a store must not file never reaches one — the refusal is
+/// the reason why.
+fn new_item(routine: &Routine, item: &Item) -> Result<NewItem, String> {
     let mut labels = item.labels.clone();
     let label = routine_label(&routine.name);
     if !labels.contains(&label) {
         labels.push(label);
     }
-    argv.push("--labels".to_string());
-    argv.push(labels.join(","));
-    argv
+    let priority = item
+        .priority
+        .map(|n| u8::try_from(n).map_err(|_| format!("priority is {n}; the range is 0 to 4")))
+        .transpose()?;
+    let filed = NewItem {
+        title: item.title.clone(),
+        description: item.description.clone().unwrap_or_default(),
+        item_type: item
+            .kind
+            .clone()
+            .unwrap_or_else(|| DEFAULT_ITEM_TYPE.to_string()),
+        labels,
+        priority,
+    };
+    filed.validate()?;
+    Ok(filed)
 }
 
-fn file_item(routine: &Routine, item: &Item, machine: &Machine, now_stamp: &str) -> Done {
-    let Some(binary) = platform::resolve_on_path(&path_for_children(machine.child_path), "bd")
-    else {
-        return Done::plain(
-            Outcome::CouldNotTell,
-            "no `bd` on the constructed child PATH, so nothing can be filed".to_string(),
-        );
+/// The create's request as one line of the contract's JSON, without the root,
+/// which is the machine's and not the routine's.
+fn create_request(routine: &Routine, filed: &NewItem) -> String {
+    let fields = serde_json::json!({ "item": filed, "by": routine_actor(&routine.name) });
+    let serde_json::Value::Object(fields) = fields else {
+        return fields.to_string();
     };
-    let binary = binary.display().to_string();
-    let bound = Duration::from_secs(routine.timeout);
+    let mut request = store::types::request(fields, &routine.project_root);
+    if let Some(fields) = request.as_object_mut() {
+        fields.remove("root");
+    }
+    request.to_string()
+}
+
+/// File the routine's item through the project's own store, as the routine.
+///
+/// The item is held to the contract first, so one a store must not file is
+/// failed before the store is asked anything. The store is then OPENED AS
+/// EVERY VERB OPENS IT, out of the project's own file, strictly on the
+/// constructed child path and under the routine's own bound. The dedupe is
+/// the store's label listing, every row of it; the item is created, then
+/// handed to the seat the load resolved its assignee to. The routine's actor
+/// is the item's author on the record, so no note says so again [ASSUMES D9].
+fn file_item(routine: &Routine, item: &Item, machine: &Machine) -> Done {
+    let filed = match new_item(routine, item) {
+        Ok(filed) => filed,
+        Err(why) => return Done::plain(Outcome::Failed, format!("the item was not filed: {why}")),
+    };
+    let policy = match store::project_policy(&routine.project_root) {
+        Ok(policy) => policy,
+        Err(why) => return Done::plain(Outcome::CouldNotTell, why.to_string()),
+    };
+    let opened = store::open(&Opening {
+        root: &routine.project_root,
+        policy: &policy,
+        search_path: &path_for_children(machine.child_path),
+        strict: true,
+        timeout: Duration::from_secs(routine.timeout),
+    });
+    let store = match opened {
+        Ok(store) => store,
+        Err(why) => {
+            return Done::plain(
+                Outcome::CouldNotTell,
+                format!("the store could not be opened: {why}"),
+            )
+        }
+    };
+    let by = routine_actor(&routine.name);
     let label = routine_label(&routine.name);
 
     if item.dedupe.as_deref() == Some("open") {
-        let mut cmd = child_command(&binary, machine);
-        cmd.args([
-            "-C",
-            &routine.project_root.display().to_string(),
-            "list",
-            "--label",
-            &label,
-            "--status",
-            "open",
-            "--json",
-        ]);
-        let run = match platform::run_bounded(cmd, bound) {
-            Ok(run) => run,
+        match store.list(&Filter::Label(label.clone())) {
             Err(why) => {
                 return Done::plain(
                     Outcome::CouldNotTell,
-                    format!("the dedupe query could not be run: {why}"),
+                    format!("the dedupe query could not be read: {why}"),
                 )
             }
-        };
-        if !run.status.success() {
-            return Done::plain(
-                Outcome::CouldNotTell,
-                format!(
-                    "the dedupe query exited {}: {}",
-                    run.status
-                        .code()
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|| "on a signal".to_string()),
-                    String::from_utf8_lossy(&run.stderr).trim()
-                ),
-            );
-        }
-        match open_ids(&String::from_utf8_lossy(&run.stdout)) {
-            None => {
-                return Done::plain(
-                    Outcome::CouldNotTell,
-                    "the dedupe query answered nothing this run can read as a list".to_string(),
-                )
-            }
-            Some(existing) if !existing.is_empty() => {
+            Ok(rows) if !rows.is_empty() => {
+                let existing: Vec<String> = rows.iter().map(|row| row.id.to_string()).collect();
                 return Done {
                     outcome: Outcome::Deduped,
                     detail: format!(
@@ -351,102 +365,44 @@ fn file_item(routine: &Routine, item: &Item, machine: &Machine, now_stamp: &str)
                         existing.join(", ")
                     ),
                     extra: vec![("existing".to_string(), existing.into())],
-                }
+                };
             }
-            Some(_) => {}
+            Ok(_) => {}
         }
     }
 
-    let argv = item_argv(&binary, routine, item);
-    let mut cmd = child_command(&argv[0], machine);
-    cmd.args(&argv[1..]);
-    let run = match platform::run_bounded(cmd, bound) {
-        Ok(run) => run,
-        Err(why) => return Done::plain(Outcome::Failed, format!("the create did not run: {why}")),
+    let id = match store.create(&filed, &by) {
+        Ok(id) => id,
+        Err(why) => return Done::plain(Outcome::Failed, format!("the create did not land: {why}")),
     };
-    if !run.status.success() {
-        return Done::plain(
-            Outcome::Failed,
-            format!(
-                "the create exited {}: {}",
-                run.status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "on a signal".to_string()),
-                String::from_utf8_lossy(&run.stderr).trim()
-            ),
-        );
+    // Every answer from here on names the item: it is on the record whatever
+    // becomes of its assignee.
+    let named = |outcome: Outcome, detail: String| Done {
+        outcome,
+        detail,
+        extra: vec![("item".to_string(), id.to_string().into())],
+    };
+    match (&item.assignee, item.assignee_id) {
+        (_, Some(seat)) => {
+            if let Err(why) = store.update(&id, &Update::assignee(seat), &by) {
+                return named(
+                    Outcome::Failed,
+                    format!("{id} was filed, and its assignee did not land: {why}"),
+                );
+            }
+        }
+        (Some(said), None) => {
+            return named(
+                Outcome::Failed,
+                format!(
+                    "the routine's assignee {said} names no seat of this fleet — {id} was \
+                     filed unassigned"
+                ),
+            )
+        }
+        (None, None) => {}
     }
-    let Some(created) = created_id(&String::from_utf8_lossy(&run.stdout)) else {
-        return Done::plain(
-            Outcome::Failed,
-            "the create exited 0 and named no id this run can read".to_string(),
-        );
-    };
-
-    // The note is the record that this item was filed BY a routine. It is
-    // best-effort on purpose: a note that did not land is reported and never
-    // unfiles the item.
-    let mut note = child_command(&binary, machine);
-    note.args([
-        "-C",
-        &routine.project_root.display().to_string(),
-        "note",
-        &created,
-        &format!("filed by routine {} at {now_stamp}", routine.name),
-        "--actor",
-        &routine_actor(&routine.name),
-    ]);
-    let noted = platform::run_bounded(note, bound);
-    let trail = match noted {
-        Ok(run) if run.status.success() => String::new(),
-        _ => format!(" (the note could not be appended to {created})"),
-    };
-    Done {
-        outcome: Outcome::Filed,
-        detail: format!("filed {created}{trail}"),
-        extra: vec![("item".to_string(), created.into())],
-    }
-}
-
-/// The ids an open-item query answered, or `None` when the answer is not a list
-/// this run can read — which is a third answer and never an empty one.
-fn open_ids(stdout: &str) -> Option<Vec<String>> {
-    if stdout.trim().is_empty() {
-        return Some(Vec::new());
-    }
-    let first = first_json(stdout)?;
-    let rows = first.as_array()?;
-    Some(
-        rows.iter()
-            .filter_map(|row| row.get("id")?.as_str().map(str::to_string))
-            .collect(),
-    )
-}
-
-/// The id a create printed, read from the create's own output.
-///
-/// The output may be a top-level array and may trail bytes this reader has no
-/// contract for, so the FIRST JSON value is decoded and the rest ignored. A
-/// guessed id would put a wrong number on the record.
-fn created_id(stdout: &str) -> Option<String> {
-    let first = first_json(stdout)?;
-    let object = match &first {
-        serde_json::Value::Array(rows) => rows.first()?,
-        other => other,
-    };
-    object
-        .get("id")?
-        .as_str()
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
-}
-
-fn first_json(text: &str) -> Option<serde_json::Value> {
-    serde_json::Deserializer::from_str(text)
-        .into_iter::<serde_json::Value>()
-        .next()?
-        .ok()
+    named(Outcome::Filed, format!("filed {id}"))
 }
 
 fn run_exec(routine: &Routine, command: &str, machine: &Machine) -> Done {
@@ -504,7 +460,7 @@ fn run_argv(binary: &str, routine: &Routine, workflow: &Run) -> Vec<String> {
         argv.push(format!("{key}={value}"));
     }
     argv.push("--by".to_string());
-    argv.push(routine_actor(&routine.name));
+    argv.push(routine_actor(&routine.name).to_string());
     argv
 }
 

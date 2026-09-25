@@ -56,7 +56,8 @@ const WRITES: [&str; 9] = [
 ];
 
 /// What a write that outran its bound adds to its refusal: the kill cannot
-/// say whether the write landed before it. The words are the bd adapter's.
+/// say whether the write landed before it. The words are the built-in
+/// adapter's.
 const UNTOLD: &str = " — the write's effect cannot be told, so the item must be read before \
                       anything is written to it again";
 
@@ -344,9 +345,9 @@ impl Store for Exec {
     /// Each entry as `fleet item show --json` prints one ([`entry::to_json`]):
     /// the body's fields and `kind` beside the store's `id` and `at` and the
     /// actor. The actor is read as that `{"kind", "id"}` object or as the
-    /// contract's `<kind>:<id>` text, and the body through the same reader bd's
-    /// comments go through, so an entry that does not read refuses the whole
-    /// timeline, naming it.
+    /// contract's `<kind>:<id>` text, and the body through the same reader the
+    /// built-in adapter's comments go through, so an entry that does not read
+    /// refuses the whole timeline, naming it.
     fn timeline(&self, item: &ItemId) -> Result<Vec<Entry>, StoreError> {
         let (Entries { entries }, _) = self.call("timeline", fields(json!({ "id": item })))?;
         entries

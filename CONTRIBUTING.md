@@ -49,7 +49,7 @@ place, `core/src/supported.rs`:
 
 | Tool | Constant | Where it is declared | Checked by |
 | --- | --- | --- | --- |
-| bd | `PINNED_BD` | `core/src/store/bd/mod.rs`, named again in `supported.rs` | `doctor/bd-version`, `fleet prime`'s second line |
+| bd | `PINNED_BD` | `core/src/store/bd/mod.rs`, the built-in store's adapter, and re-exported by `supported.rs` as `supported::PINNED_BD` beside `tracker_line` | `doctor/bd-version`, `fleet prime`'s second line |
 | Claude Code | `PINNED_CLAUDE_CODE` | `core/src/supported.rs` | `doctor/claude-code-version`, the controller's `substrate.moved` when a fleet pins none |
 
 Deno is a pack's, not the binary's: `packs/ts/pack.toml`'s `[runtime]` table,

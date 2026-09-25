@@ -298,9 +298,9 @@ fn string_of(value: Option<&core_policy::Value>) -> Option<String> {
 /// could not be asked leaves the section not all read.
 ///
 /// THE HOLDS ARE THE STORES' AND NOT THE STREAM'S. A hold raised or cleared on
-/// another machine, or by hand with `bd`, writes no line here, and a fold of
-/// the park and clearance lines counts it wrong; the store is where a hold is
-/// open or is not.
+/// another machine, or by hand, outside fleet, wrote no line here, and the
+/// store's own open-hold listing is the one that sees those; a fold of the
+/// park and clearance lines counts them wrong.
 struct RunsRead {
     readings: Vec<Reading>,
     /// Why a run at could-not-tell could not be asked whether it is parked.
