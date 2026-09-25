@@ -156,13 +156,17 @@ render the first turn a dispatched seat reads, whole or not at all, from the
 resolved pack layers.")]
     Brief(item::BriefArgs),
 
-    /// hand the work over: commit, note, reassign, ring
+    /// hand the work over: commit, delivery, reassign, ring
     #[command(long_about = "\
 hand the work over from inside a seat's worktree: the staged set committed on
-the work branch, the delivery note written with the commit, the branch and the
-base filled in, the item reassigned to the reviewer policy names, and the ring.
-It refuses the trunk, a file left outside the staged set and an empty one, and
-it refuses them all before anything is committed.")]
+the work branch, the delivery --delivery names written on the item with the
+commit, the branch and the base filled in, the item reassigned to the reviewer
+policy names, and the ring.
+
+The delivery is a JSON file of the shape assets/delivery.schema.json, which
+the brief shows. It refuses the trunk, a file left outside the staged set and
+an empty one, a delivery that does not match its shape, and an --item the
+acting seat does not hold, all before anything is committed.")]
     Deliver(item::DeliverArgs),
 
     /// raise a hold: ask a person a question, and hold the item on it

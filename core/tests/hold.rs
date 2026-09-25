@@ -644,19 +644,26 @@ fn the_trunk_is_refused_and_the_item_is_untouched() {
 
 /// THE PAIR THE DISCRIMINATOR HAS TO SEPARATE, and the reason the arm below it
 /// is written at all: the two items are filed the same way, named the same way
-/// and asked from the same worktree on the trunk. The run label is the only
-/// difference between them, so a `hold` that does not read it answers both the
-/// same and one of the two arms reds.
+/// and asked from the same worktree on the trunk. The run label is what
+/// separates them, so a `hold` that does not read it answers both the same and
+/// one of the two arms reds.
+///
+/// The record is asked about BY ITS OWN RUN, the SDK's `hold --item <run>`
+/// (fleet-pl6 (a)): a run's record is the one item a run holds, and the holder
+/// check on `--item` passes it.
 #[test]
 fn a_runs_record_parks_off_the_trunk_and_performs_no_git_act() {
     let scratch = &store();
-    let seat = "g-run";
     let item = an_item(&scratch.store, "a run being asked about");
     scratch.label(&item, run::LABEL);
     scratch.set_metadata(
         &item,
         &format!(r#"{{"fleet.run": {{"v": 1, "hash": "{RUN_HASH}", "workflow": "takeoff"}}}}"#),
     );
+    let its_run = Actor {
+        kind: ActorKind::Run,
+        id: item.clone(),
+    };
     let note = a_note(scratch, "run", QUESTION);
     let git = StubGit {
         branch: "main".to_string(),
@@ -664,15 +671,19 @@ fn a_runs_record_parks_off_the_trunk_and_performs_no_git_act() {
     };
     let events = StubEvents::default();
 
-    let held = hold_with(
-        Some(&item),
-        &note,
-        seat,
-        &Seams {
+    let held = hold::hold(
+        &mut Vec::new(),
+        &Question {
+            item: Some(&item),
+            by: &its_run,
+            note: &note,
+            at: AT,
+        },
+        &Wiring {
             store: &scratch.store,
             git: &git,
-            project: &project(scratch),
             packs: &packs(scratch),
+            project: &project(scratch),
             events: &events,
         },
     )
@@ -703,22 +714,49 @@ fn a_runs_record_parks_off_the_trunk_and_performs_no_git_act() {
     // seat's does.
     assert_eq!(events.count(), 1, "exactly one event");
     let (actor, payload) = events.one(ITEM_HELD);
-    assert_eq!(actor, seat_actor(seat).to_string());
+    assert_eq!(actor, its_run.to_string());
     keys_agree(ITEM_HELD, &payload, &[]);
     assert_eq!(payload["item"], serde_json::json!(item));
     assert_eq!(payload["reason"], serde_json::json!("ask"));
     assert_eq!(payload["branch"], serde_json::json!(hold::RUN_BRANCH));
     assert_eq!(payload["commit"], serde_json::json!(RUN_HASH));
     assert_eq!(payload["hold"], serde_json::json!(held.hold));
+
+    // A SEAT naming the same record is refused before anything: the record is
+    // its own run's to hold (fleet-pl6 (a)).
+    let git = StubGit::holding_work();
+    let stop = hold_with(
+        Some(&item),
+        &note,
+        "g-run",
+        &Seams {
+            store: &scratch.store,
+            git: &git,
+            project: &project(scratch),
+            packs: &packs(scratch),
+            events: &StubEvents::default(),
+        },
+    )
+    .expect_err("a seat does not hold a run's record");
+    assert_eq!(stop.code, 1, "{}", stop.message);
+    assert!(
+        stop.message.starts_with(&format!(
+            "{item} is run {item}'s record, and {} is not that run",
+            seat_actor("g-run")
+        )),
+        "{}",
+        stop.message
+    );
+    assert!(git.calls().is_empty(), "git was never asked");
 }
 
 /// The control for the arm above: the same item, named the same way, from the
-/// same worktree on the trunk, without the run label.
+/// same worktree on the trunk, without the run label — held by the seat asking.
 #[test]
 fn an_item_that_is_not_a_runs_record_is_refused_the_park_on_the_trunk() {
     let scratch = &store();
     let seat = "g-not-a-run";
-    let item = an_item(&scratch.store, "an item that is not a run's record");
+    let item = an_ordered_item(&scratch.store, "an item that is not a run's record", seat);
     scratch.set_metadata(
         &item,
         &format!(r#"{{"fleet.run": {{"v": 1, "hash": "{RUN_HASH}", "workflow": "takeoff"}}}}"#),
@@ -935,8 +973,10 @@ fn a_read_back_that_disagrees_is_could_not_tell() {
     assert_eq!(before, scratch.json(&item), "the item is byte-identical");
 }
 
-/// An epic is refused by its type before any git act: no seat is ever given
-/// one, and a park on one is a hold the store cannot tie to it.
+/// An epic is refused before any git act: no seat is ever given one, and a
+/// park on one is a hold the store cannot tie to it. A seat naming one is
+/// refused by the holder check `--item` carries (fleet-pl6 (a)) — an epic is
+/// never an item a seat holds — before the type check behind it is reached.
 #[test]
 fn an_epic_is_refused_before_the_commit_and_nothing_is_written() {
     let scratch = &store();
@@ -975,13 +1015,14 @@ fn an_epic_is_refused_before_the_commit_and_nothing_is_written() {
     .expect_err("an epic is refused");
 
     assert_eq!(stop.code, 1, "{}", stop.message);
-    assert!(
-        stop.message.contains(&item)
-            && stop
-                .message
-                .contains("an epic is never dispatched — its children are"),
-        "the refusal names the epic and why: {}",
-        stop.message
+    assert_eq!(
+        stop.message,
+        format!(
+            "{item} is held by {} and not by {} — --item names an item the acting seat holds",
+            full(seat),
+            seat_actor(seat)
+        ),
+        "the refusal names the epic and why"
     );
     assert!(
         git.calls().is_empty(),

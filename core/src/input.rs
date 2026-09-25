@@ -126,8 +126,8 @@ impl FindingsInput {
 // ---- the rules beyond the shape -------------------------------------------------
 
 /// The rules an input keeps beyond what serde reads. The answer is the rest of
-/// a sentence that opens on "the <what> at <path>", and the first rule broken
-/// is the one it gives.
+/// a sentence that opens on "the <what> at <path> (read against <schema>)", and
+/// the first rule broken is the one it gives.
 ///
 /// Whatever passes here, the entry its constructor makes passes
 /// [`crate::entry::Body::validate`], given the verb's own facts are whole: a
@@ -276,7 +276,9 @@ impl Checked for FindingsInput {
 /// the schema the seat's brief showed it.
 ///
 /// A shape serde refuses names the key it refused at, because a seat fixing
-/// its file by hand needs the place and not only the type serde expected.
+/// its file by hand needs the place and not only the type serde expected. Every
+/// refusal of a file that was read names `schema`, the page the seat fixes it
+/// against.
 pub fn read<T: DeserializeOwned + Checked>(
     path: &Path,
     what: &str,
@@ -295,7 +297,7 @@ pub fn read<T: DeserializeOwned + Checked>(
     reader.end().map_err(|e| not_the_shape(&e))?;
     input
         .check()
-        .map_err(|why| Stop::usage(format!("the {what} at {at} {why}")))?;
+        .map_err(|why| Stop::usage(format!("the {what} at {at} (read against {schema}) {why}")))?;
     Ok(input)
 }
 

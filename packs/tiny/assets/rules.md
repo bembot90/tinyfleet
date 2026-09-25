@@ -31,7 +31,7 @@ What each verb writes, so you know what to look for afterwards:
 | --- | --- |
 | `dispatch` | the ordered entry on the item, its fleet.orders index, and the assignee |
 | `brief` | nothing — it renders and prints |
-| `deliver` | the commit on the work branch, and the delivery note on the item |
+| `deliver` | the commit on the work branch, and the delivery note on the item, rendered from the JSON file `--delivery` names |
 | `review` | the verdict note: accepted, or returned with numbered findings |
 | `land` | the squashed commit on the trunk, the landing note, and the closed item |
 | `hold` | everything the tree holds, committed on the work branch; the hold; the park on the item |

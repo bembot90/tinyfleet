@@ -10,6 +10,7 @@ mod common;
 
 use common::{shared_store, Fixture, Scratch, StubEvents};
 use fleet_core::entry::{Body, Timeline, Withdrawal};
+use fleet_core::input::DELIVERY_SCHEMA;
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
 use fleet_core::item::dispatch::{self, Order, Wiring};
 use fleet_core::item::{show, table_at, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner};
@@ -266,9 +267,9 @@ fn every_placeholder_of_the_template_resolves() {
         "- record: off",
         "- release-ref: on",
         "- production-write: on",
-        // one line out of rules.md, and one out of delivery-note.md
+        // one line out of rules.md, and one out of delivery.schema.json
         "The commit, never the branch.",
-        "spec corrections:",
+        "\"spec_corrections\"",
     ] {
         assert!(
             body.contains(wanted),
@@ -897,6 +898,73 @@ fn a_pack_on_top_shadows_the_brief_whole() {
         rendered.body
     );
     assert_eq!(rendered.size, Some(rendered.body.len()));
+}
+
+/// THE BRIEF SHOWS THE SCHEMA A DELIVERY IS READ AGAINST, and no note grammar:
+/// the seat hands in JSON, so the page carries the resolved schema's text
+/// whole, in a `json` block, and never the prose note's marker line.
+#[test]
+fn the_brief_shows_the_delivery_schema_and_no_note_grammar() {
+    let rig = Rig::new("schema");
+    let rendered = rig.render(&ordered(), SEAT);
+    assert_eq!(rendered.code, None, "{}", rendered.why);
+    let body = &rendered.body;
+
+    let schema = shipped(DELIVERY_SCHEMA);
+    assert!(
+        body.contains("## The delivery you will hand in\n\n`fleet deliver --delivery <file>`"),
+        "the section names the verb and its flag:\n{body}"
+    );
+    assert!(
+        body.contains(&format!("```json\n{}\n```", schema.trim_end())),
+        "the schema's text, whole, in a json block:\n{body}"
+    );
+    assert!(
+        !body.contains("DELIVERED <sha>"),
+        "no delivery-note grammar line:\n{body}"
+    );
+}
+
+/// A SCHEMA THAT DOES NOT SAY WHAT THE VERB READS IS NO BRIEF. A pack layer
+/// shadowing the delivery schema with a property taken out would teach a seat
+/// a delivery `fleet deliver` refuses, so the brief is exit 3 naming the path
+/// and the disagreement, with nothing on stdout.
+#[test]
+fn a_layer_shadowing_the_schema_with_a_property_removed_is_no_brief() {
+    let mut schema: serde_json::Value =
+        serde_json::from_str(&shipped(DELIVERY_SCHEMA)).expect("the schema is JSON");
+    schema["properties"]
+        .as_object_mut()
+        .expect("properties")
+        .remove("covers");
+    let rig = Rig::new("schema-shadow");
+    rig.fixture
+        .file(
+            "packs/top/pack.toml",
+            "[pack]\nname = \"top\"\nversion = \"1\"\nschema = 3\n",
+        )
+        .file(
+            &format!("packs/top/{DELIVERY_SCHEMA}"),
+            &serde_json::to_string_pretty(&schema).expect("it writes"),
+        );
+    let rig = Rig::over(rig.fixture);
+
+    let rendered = rig.render(&ordered(), SEAT);
+    assert_eq!(rendered.code, Some(3), "{}", rendered.why);
+    assert!(
+        rendered.why.starts_with(&format!(
+            "{DELIVERY_SCHEMA} as the layers resolve it does not describe what fleet deliver \
+             reads: "
+        )),
+        "{}",
+        rendered.why
+    );
+    assert!(rendered.why.contains("covers"), "{}", rendered.why);
+    assert!(rendered.body.is_empty(), "nothing on stdout");
+
+    // The control: the shipped schema, through the same layers, renders.
+    let whole = Rig::new("schema-whole").render(&ordered(), SEAT);
+    assert_eq!(whole.code, None, "{}", whole.why);
 }
 
 /// The fidelity control on every arm above: the readings the fake answers are

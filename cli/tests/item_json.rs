@@ -46,21 +46,18 @@ const POLICY: &str = "[core]\nreviewer = \"ij-a-reviewer\"\n\n\
                       [controller]\nnudge_model = \"a-cheap-model\"\n\
                       nudge_timeout_seconds = 20\n";
 
-/// The note a delivery hands in, in the delivery-note grammar.
-const NOTE: &str = "\
-DELIVERED <sha> — <seat>
-commit:  <pending>
-branch:  <pending>
-base:    <pending>
-files:   the-work.txt
-checks:  AC1 green, each rc read from its own command
-suite:   the workspace suite, rc 0
-spec corrections: none
-not proven: what this arm did not run
-decisions: 1
-  D1 the note is the seat's; not taken: composing it here; because the words are the seat's
-covers: none
-";
+/// The delivery a seat hands in, as the JSON its brief's schema shows.
+const DELIVERY: &str = r#"{
+  "files": ["the-work.txt"],
+  "checks": [{"check": "AC1", "result": "green, each rc read from its own command"}],
+  "suite": {"command": "the workspace suite", "rc": 0},
+  "spec_corrections": [],
+  "not_proven": [{"surface": "what this arm did not run", "command": "cargo nextest run"}],
+  "decisions": [
+    {"call": "the delivery is the seat's", "not_taken": "composing it here", "because": "the words are the seat's"}
+  ],
+  "covers": []
+}"#;
 
 /// The question a hold hands in, in the question grammar.
 const QUESTION: &str = "\
@@ -134,7 +131,7 @@ struct Rig {
     other_worktree: PathBuf,
     stub: PathBuf,
     roster: PathBuf,
-    note: PathBuf,
+    delivery: PathBuf,
     question: PathBuf,
     /// The seat that delivers and asks. One per arm: the store is the run's
     /// shared board and "which item does this seat hold" reads all of it.
@@ -173,7 +170,7 @@ impl Rig {
         let rig = Rig {
             stub: root.join("agent.sh"),
             roster: root.join("roster.json"),
-            note: root.join("note.md"),
+            delivery: root.join("delivery.json"),
             question: root.join("question.md"),
             seat: format!("ij-a-builder-{label}"),
             target: format!("ij-a-target-{label}"),
@@ -198,7 +195,7 @@ impl Rig {
         )
         .expect("the policy is written");
         common::take_a_board(&rig.project, "item-json");
-        std::fs::write(&rig.note, NOTE).expect("the delivery note is written");
+        std::fs::write(&rig.delivery, DELIVERY).expect("the delivery is written");
         std::fs::write(&rig.question, QUESTION).expect("the question is written");
         std::fs::write(
             rig.machine.join("config.json"),
@@ -497,8 +494,8 @@ fn deliver_prints_the_commit_it_made_and_review_the_state_its_verdict_moved_the_
 
     let out = rig.run(&[
         "deliver",
-        "--note",
-        &rig.note.display().to_string(),
+        "--delivery",
+        &rig.delivery.display().to_string(),
         "--json",
     ]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -595,7 +592,7 @@ fn a_refused_verb_prints_the_refusal_shape_and_the_exit_code_it_always_had() {
     // below stops on its own first gate.
     let item = rig.a_ready_item();
     let question = rig.question.display().to_string();
-    let note = rig.note.display().to_string();
+    let delivery = rig.delivery.display().to_string();
 
     let calls: [(&str, Vec<&str>); 5] = [
         (
@@ -609,7 +606,7 @@ fn a_refused_verb_prints_the_refusal_shape_and_the_exit_code_it_always_had() {
                 BY,
             ],
         ),
-        ("deliver", vec!["deliver", "--note", &note]),
+        ("deliver", vec!["deliver", "--delivery", &delivery]),
         ("review", vec!["review", &item, "--by", REVIEWER]),
         ("hold", vec!["hold", "--note", &question]),
         ("clear", vec!["clear", &item, "A", "--by", PERSON]),
@@ -663,10 +660,10 @@ fn an_empty_by_is_the_usage_row_before_the_verb_writes_anything() {
     let rig = Rig::new("usage");
     let item = rig.a_ready_item();
     let question = rig.question.display().to_string();
-    let note = rig.note.display().to_string();
+    let delivery = rig.delivery.display().to_string();
     let calls: [(&str, Vec<&str>); 5] = [
         ("dispatch", vec!["dispatch", &item, "--to", &rig.target]),
-        ("deliver", vec!["deliver", "--note", &note]),
+        ("deliver", vec!["deliver", "--delivery", &delivery]),
         ("review", vec!["review", &item]),
         ("hold", vec!["hold", "--note", &question]),
         ("clear", vec!["clear", &item, "A"]),

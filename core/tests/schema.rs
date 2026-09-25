@@ -309,6 +309,10 @@ fn a_delivery_naming_no_file_is_refused() {
     });
     let message = refused::<DeliveryInput>("no-files", "delivery", DELIVERY_SCHEMA, &text);
     assert!(message.ends_with(" names no file"), "{message}");
+    assert!(
+        message.contains(&format!(" (read against {DELIVERY_SCHEMA}) ")),
+        "a rule's refusal names the schema too: {message}"
+    );
 }
 
 #[test]

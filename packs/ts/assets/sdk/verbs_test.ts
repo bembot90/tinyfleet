@@ -272,23 +272,23 @@ Deno.test("until delivered — each item's latest delivery that no return follow
   assertEquals((got!["it-1"] as { commit: string }).commit, "aaa1111");
 });
 
-Deno.test("AC1 deliver — fleet deliver --item <item> --note <file> --by <run> --json, the commit in the step's result", async () => {
+Deno.test("AC1 deliver — fleet deliver --item <item> --delivery <file> --by <run> --json, the commit in the step's result", async () => {
   const s = await scratch();
   const data = { item: "it-1", state: "delivered", commit: "0123abc" };
   await can(s, "deliver", { stdout: envelope("deliver", data) });
-  const note = `${s.env.runDir}/note.md`;
+  const delivery = `${s.env.runDir}/delivery.json`;
   const seen = await oneStep(
     s,
     "deliver it-1",
     data,
-    (run) => run.deliver("it-1", note),
+    (run) => run.deliver("it-1", delivery),
   );
   assertEquals(seen, [[
     "deliver",
     "--item",
     "it-1",
-    "--note",
-    note,
+    "--delivery",
+    delivery,
     "--by",
     `run:${s.env.runId}`,
     "--json",

@@ -1,12 +1,13 @@
 //! `fleet deliver` — the seat's own handoff, and the only writer of a delivery.
 //!
 //! THE REFUSALS COME BEFORE THE COMMIT. Every question this verb can answer
-//! from the record and the working tree — the branch, the unstaged file, the
-//! empty index, the missing reviewer, a note the grammar cannot anchor on — is
-//! asked while nothing has been written, so a refusal leaves a seat exactly
-//! where it stood. The one check that cannot is the commit line's, which has no
-//! subject until the commit exists. The tree's three questions come FIRST,
-//! before the store is called at all.
+//! from the record, the working tree and the file handed in — the branch, the
+//! unstaged file, the empty index, a delivery that does not read, an item the
+//! actor does not hold, the missing reviewer — is asked while nothing has been
+//! written, so a refusal leaves a seat exactly where it stood. The one check
+//! that cannot is the commit line's, which has no subject until the commit
+//! exists. The tree's three questions come FIRST, before the store is called
+//! at all.
 //!
 //! A CLEAN TREE AHEAD OF THE BASE IS ITSELF THE DELIVERY. Nothing staged and
 //! HEAD ahead of the trunk ref is a seat resuming after `fleet hold`: the
@@ -14,27 +15,36 @@
 //! Nothing staged and HEAD AT the trunk ref is a seat that built nothing, and
 //! is refused.
 //!
-//! THE NOTE IS THE SEAT'S, THE MACHINE LINES ARE THIS VERB'S. A builder writes
-//! the note in the pack's delivery-note grammar and hands it in; deliver fills
-//! the three lines only a process knows — the commit, the branch, the base —
-//! and the marker line, and touches nothing else. What the note says about the
-//! work is the seat's word and is carried through verbatim.
+//! THE DELIVERY IS THE SEAT'S JSON, THE MACHINE LINES ARE THIS VERB'S. A
+//! builder hands in a file of the shape `assets/delivery.schema.json` gives,
+//! read against the binary's own type ([`DeliveryInput`]) before anything is
+//! written: a file that does not read is exit 2 and the tree, the store and
+//! the stream are as they were. The note this verb writes is RENDERED from it
+//! ([`transitional_note`]) with the three lines only a process knows — the
+//! commit, the branch, the base — and the marker line. The seat writes no
+//! prose, so no line of what it says can open a marker at column zero: every
+//! newline inside a value renders two spaces in.
+//!
+//! THE NOTE IS TRANSITIONAL. It is the text the note readers — review and
+//! land — still parse, until the delivered entry replaces it (fleet-zlk.7).
 
 use std::io::Write;
 use std::path::Path;
 
-use crate::item::brief::{Packs, DELIVERY_NOTE};
+use crate::entry::SuiteRun;
+use crate::input::{self, DeliveryInput, DELIVERY_SCHEMA};
+use crate::item::brief::Packs;
 use crate::item::dispatch::EPIC;
 use crate::item::{
-    control_token, label_value, last_delivery, opens_with, Events, Git, Project, Ring, RingOutcome,
-    Stop, DELIVERY_MARKERS, ITEM_DELIVERED, TRUNK, TRUNK_BRANCH,
+    control_token, label_value, last_delivery, run, Events, Git, Project, Ring, RingOutcome, Stop,
+    DELIVERY_MARKERS, ITEM_DELIVERED, TRUNK, TRUNK_BRANCH,
 };
 use crate::policy;
-use crate::seat::actor::Actor;
+use crate::seat::actor::{Actor, ActorKind};
 use crate::seat::identity::{Directory, SeatRef};
 use crate::store::{AssignedItem, Item, Store};
 
-/// The three lines the verb fills. Everything else in the grammar is the
+/// The three lines the verb fills. Everything else the note says is the
 /// seat's.
 pub const COMMIT: &str = "commit";
 pub const BRANCH: &str = "branch";
@@ -60,10 +70,12 @@ pub const AS_IS: &str = "DELIVERED AS-IS";
 pub struct Delivery<'a> {
     /// The item, where the seat holds more than one and named it.
     pub item: Option<&'a str>,
-    /// Who is delivering: a seat, or a run acting on the item it names.
+    /// Who is delivering: a seat, or a run acting on its own record, which
+    /// `item` names.
     pub by: &'a Actor,
-    /// The note the seat wrote, in the pack's delivery-note grammar.
-    pub note: &'a Path,
+    /// The delivery the seat handed in: a JSON file of the shape
+    /// [`DELIVERY_SCHEMA`] gives.
+    pub delivery: &'a Path,
     /// The clock, taken by the caller: core reads none.
     pub at: &'a str,
 }
@@ -139,8 +151,9 @@ pub fn deliver(
         None
     };
 
-    let written = read_note(delivery.note)?;
-    grammar_holds(&wiring.packs.read(DELIVERY_NOTE)?, &written)?;
+    // THE FILE IS READ BEFORE THE STORE, and before the commit: a delivery
+    // that does not read is the seat's to fix, and nothing is written for it.
+    let input = input::read::<DeliveryInput>(delivery.delivery, "delivery", DELIVERY_SCHEMA)?;
 
     let item = held_item(wiring.store, delivery.by, delivery.item)?;
     let reviewer = reviewer_of(wiring.project, wiring.seats)?;
@@ -157,9 +170,9 @@ pub fn deliver(
             .map_err(step)?,
     };
 
-    let note = fill(&written, &commit, &branch, &base, delivery)?;
-    // The post-condition of the fill, asked of the text that will be written
-    // rather than of the values it was built from.
+    let note = transitional_note(&input, &commit, &branch, &base, delivery.by, delivery.at);
+    // The post-condition of the render, asked of the text that will be
+    // written rather than of the values it was built from.
     if label_value(&note, COMMIT).as_deref() != Some(commit.as_str()) {
         return Err(Stop::could_not_tell(format!(
             "the rendered note's `{COMMIT}:` line reads {} and the commit is {commit}",
@@ -278,11 +291,15 @@ fn ring(
 /// run, a routine or the controller holds nothing, and is refused rather than
 /// read as a seat nobody gave anything — the refusal names the flag that says
 /// which item instead.
+///
+/// `--item` NAMES AN ITEM THE ACTOR HOLDS, and is checked as one
+/// ([`holds_named`]): the flag says which of the actor's items, never whose.
 pub fn held_item(store: &dyn Store, by: &Actor, named: Option<&str>) -> Result<String, Stop> {
     if let Some(named) = named {
         // Resolved once, here: the caller acts on the store's full id and
         // never on the part of it that was typed.
         let item = read(store, named)?;
+        holds_named(&item, by)?;
         return Ok(item.id);
     }
     let Some(seat) = by.seat_id() else {
@@ -315,6 +332,46 @@ pub fn held_item(store: &dyn Store, by: &Actor, named: Option<&str>) -> Result<S
             held.join(", ")
         ))),
     }
+}
+
+/// Whether `by` holds the item `--item` named (fleet-pl6 (a)).
+///
+/// (i) A RUN'S RECORD IS ITS OWN RUN'S: the run whose id is the record's holds
+/// it, and no other actor of any kind does. (ii) Any other item is a seat's,
+/// so every other kind is refused by its kind. (iii) The seat holds it the way
+/// [`holds`] reads a holding without the flag — assigned to the seat's id,
+/// carrying an order index, and no epic — so naming an item never reaches
+/// work the listing would not have found.
+fn holds_named(item: &Item, by: &Actor) -> Result<(), Stop> {
+    let id = &item.id;
+    if item.labels.iter().any(|label| label == run::LABEL) {
+        let its_run = Actor {
+            kind: ActorKind::Run,
+            id: id.clone(),
+        };
+        if *by == its_run {
+            return Ok(());
+        }
+        return Err(Stop::refused(format!(
+            "{id} is run {id}'s record, and {by} is not that run — a run's record is its own \
+             run's to hold"
+        )));
+    }
+    let Some(seat) = by.seat_id() else {
+        return Err(Stop::refused(format!(
+            "a {} holds no item — --item names an item the acting seat holds",
+            by.kind.as_str()
+        )));
+    };
+    let assignee = item.assignee.as_deref();
+    if assignee == Some(seat.to_string().as_str()) && item.has_orders_key && item.item_type != EPIC
+    {
+        return Ok(());
+    }
+    Err(Stop::refused(format!(
+        "{id} is held by {} and not by {by} — --item names an item the acting seat holds",
+        assignee.unwrap_or("nobody")
+    )))
 }
 
 /// What a seat is carrying, off ONE listing and no per-row read.
@@ -456,114 +513,118 @@ fn porcelain_path(line: &str) -> String {
 
 // ---- the note ----------------------------------------------------------------
 
-fn read_note(path: &Path) -> Result<String, Stop> {
-    std::fs::read_to_string(path).map_err(|e| {
-        Stop::usage(format!(
-            "the note at {} could not be read: {e} — `--note <file>` names the note the seat wrote",
-            path.display()
-        ))
-    })
-}
-
-/// Every label the pack's grammar names, at column zero, in its order.
+/// The delivery note, rendered from the seat's delivery and the verb's own
+/// facts in the grammar the note readers anchor on: the marker line, the three
+/// machine lines, then one line per field the seat filled, and each numbered
+/// call two spaces in under `decisions:`.
 ///
-/// The grammar is the template's FIRST block: what follows the blank line is
-/// the prose that teaches a seat to write one, and a note is not made of prose.
-pub fn grammar_labels(template: &str) -> Vec<String> {
-    template
-        .lines()
-        .take_while(|line| !line.trim().is_empty())
-        .filter(|line| !line.starts_with(char::is_whitespace))
-        .filter_map(|line| line.split_once(':').map(|(label, _)| label.to_string()))
-        .collect()
-}
-
-/// The note the seat handed in, against the pack's grammar: the marker it opens
-/// on and every label the grammar names.
-fn grammar_holds(template: &str, written: &str) -> Result<(), Stop> {
-    let Some(first) = written.lines().find(|line| !line.trim().is_empty()) else {
-        return Err(Stop::usage(
-            "the note is empty — a delivery is the note a reviewer reads".to_string(),
-        ));
-    };
-    if !opens_with(first, &DELIVERY_MARKERS) {
-        return Err(Stop::usage(format!(
-            "the note opens on `{first}` — it opens on `{}` at column zero, or no reader can \
-             anchor on it",
-            DELIVERY_MARKERS[0]
-        )));
-    }
-    for label in grammar_labels(template) {
-        if label_value(written, &label).is_none() {
-            return Err(Stop::usage(format!(
-                "the note carries no `{label}:` line, which `{DELIVERY_NOTE}` names — a field the \
-                 grammar names and the note drops is a field nobody wrote"
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// The seat's note with the three machine lines and the marker filled in.
-fn fill(
-    written: &str,
+/// EVERY NEWLINE INSIDE A VALUE RENDERS AS "\n  ", so a value quoting a marker
+/// never opens one at column zero and never ends the region it sits in
+/// (fleet-4rl). A list with nothing in it renders `none`.
+///
+/// TRANSITIONAL: review's decisions walk and land's label reads parse this text
+/// until deliver writes the delivered entry, which deletes this and its
+/// callers (fleet-zlk.7).
+pub fn transitional_note(
+    input: &DeliveryInput,
     commit: &str,
     branch: &str,
     base: &str,
-    delivery: &Delivery,
-) -> Result<String, Stop> {
-    let marker = written
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .and_then(|line| {
-            DELIVERY_MARKERS
-                .iter()
-                .find(|marker| opens_with(line, &[**marker]))
-        })
-        .copied()
-        .unwrap_or(DELIVERY_MARKERS[0]);
-
-    let mut note = set_first_line(written, &format!("{marker} {commit} — {}", delivery.by));
-    for (label, value) in [
-        (COMMIT, commit.to_string()),
-        (BRANCH, branch.to_string()),
-        (BASE, format!("{TRUNK} at {base}, read at {}", delivery.at)),
-    ] {
-        note = set_label(&note, label, &value).ok_or_else(|| {
-            Stop::usage(format!(
-                "the note carries no `{label}:` line — deliver fills it and cannot write a line \
-                 that is not there"
-            ))
-        })?;
-    }
-    Ok(note.trim_end().to_string())
-}
-
-fn set_first_line(text: &str, line: &str) -> String {
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    if let Some(at) = lines.iter().position(|line| !line.trim().is_empty()) {
-        lines[at] = line.to_string();
-    }
-    lines.join("\n")
-}
-
-/// The label's value replaced and its own spacing kept: the column a note lines
-/// its values up in is the pack's and not this verb's.
-fn set_label(text: &str, label: &str, value: &str) -> Option<String> {
-    let head = format!("{label}:");
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let at = lines.iter().position(|line| line.starts_with(&head))?;
-    let spacing: String = lines[at][head.len()..]
-        .chars()
-        .take_while(|c| *c == ' ')
-        .collect();
-    let spacing = if spacing.is_empty() {
-        " ".to_string()
-    } else {
-        spacing
+    by: &Actor,
+    at: &str,
+) -> String {
+    let listed = |values: Vec<String>, between: &str| {
+        if values.is_empty() {
+            String::from("none")
+        } else {
+            values.join(between)
+        }
     };
-    lines[at] = format!("{head}{spacing}{value}");
-    Some(lines.join("\n"))
+    let suite = match &input.suite {
+        SuiteRun::Ran(ran) => format!("{}, rc {}", off(&ran.command), ran.rc),
+        SuiteRun::NotTested(not) => format!("NOT TESTED — {}", off(&not.not_tested)),
+    };
+    let corrections = match input.spec_corrections.len() {
+        0 => String::from("none"),
+        n => format!(
+            "{n} — {}",
+            input
+                .spec_corrections
+                .iter()
+                .map(|c| format!("{} — refuted by {}", off(&c.premise), off(&c.refuted_by)))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ),
+    };
+
+    let mut lines = vec![
+        format!(
+            "{} {} — {}",
+            DELIVERY_MARKERS[0],
+            off(commit),
+            off(&by.to_string())
+        ),
+        format!("{COMMIT}:  {}", off(commit)),
+        format!("{BRANCH}:  {}", off(branch)),
+        format!("{BASE}:    {TRUNK} at {}, read at {}", off(base), off(at)),
+        format!(
+            "files:   {}",
+            listed(input.files.iter().map(|file| off(file)).collect(), ", ")
+        ),
+        format!(
+            "checks:  {}",
+            listed(
+                input
+                    .checks
+                    .iter()
+                    .map(|row| format!("{}: {}", off(&row.check), off(&row.result)))
+                    .collect(),
+                "; "
+            )
+        ),
+        format!("suite:   {suite}"),
+        format!("spec corrections: {corrections}"),
+        format!(
+            "not proven: {}",
+            listed(
+                input
+                    .not_proven
+                    .iter()
+                    .map(|gap| format!("{} — {}", off(&gap.surface), off(&gap.command)))
+                    .collect(),
+                "; "
+            )
+        ),
+        match input.decisions.len() {
+            0 => String::from("decisions: none"),
+            n => format!("decisions: {n}"),
+        },
+    ];
+    // Numbered by position: the first is D1, which is the name the reviewer
+    // rules on.
+    for (k, decision) in input.decisions.iter().enumerate() {
+        lines.push(format!(
+            "  D{} {}; not taken: {}; because {}",
+            k + 1,
+            off(&decision.call),
+            off(&decision.not_taken),
+            off(&decision.because)
+        ));
+    }
+    lines.push(format!(
+        "covers: {}",
+        listed(
+            input.covers.iter().map(|covered| off(covered)).collect(),
+            ", "
+        )
+    ));
+    lines.join("\n").trim_end().to_string()
+}
+
+/// A value with every line after its first two spaces in, so no line of it
+/// sits at column zero.
+fn off(value: &str) -> String {
+    value.replace('\n', "\n  ")
 }
 
 // ---- the read-back -----------------------------------------------------------

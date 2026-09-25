@@ -62,10 +62,6 @@ path = "assets/brief.md"
 purpose = "the first turn a dispatched seat reads, and the contract it works under"
 
 [[shadow]]
-path = "assets/delivery-note.md"
-purpose = "the note a delivery renders, with the machine-read lines a reviewer parses"
-
-[[shadow]]
 path = "assets/delivery.schema.json"
 purpose = "the JSON shape a seat's delivery file takes, shown in its brief; fleet deliver reads the file against the binary's own type"
 

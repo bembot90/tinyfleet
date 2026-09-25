@@ -16,13 +16,15 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use common::{fleet_of, full, keys_agree, seat_actor, Graph, Rooted, StubEvents};
+use fleet_core::input::{DeliveryInput, DELIVERY_SCHEMA};
 use fleet_core::item::brief::Packs;
-use fleet_core::item::deliver::{self, Delivered, Delivery, Wiring};
+use fleet_core::item::deliver::{self, transitional_note, Delivered, Delivery, Wiring};
+use fleet_core::item::review::{self, Mode, Verdict};
 use fleet_core::item::{
-    control_token, label_value, last_delivery, Change, Git, Project, Ring, RingOutcome, Stop,
+    control_token, label_value, last_delivery, run, Change, Git, Project, Ring, RingOutcome, Stop,
     ITEM_DELIVERED, TRUNK,
 };
-use fleet_core::seat::actor::Actor;
+use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::store::{AssignedItem, Item, Store, StoreError};
 
 const REVIEWER: &str = "a-reviewer";
@@ -284,29 +286,49 @@ fn an_ordered_item(graph: &Graph, title: &str, seat: &str) -> String {
     item
 }
 
-/// The note a seat wrote, in the shipped grammar, with the three lines deliver
-/// fills left as the seat left them.
-fn a_note(scratch: &dyn Rooted, label: &str, body: &str) -> PathBuf {
-    let path = scratch.root().join(format!("note-{label}.md"));
-    std::fs::write(&path, body).expect("the note is written");
+/// The delivery a seat hands in, as the file the brief's schema shows it.
+fn a_delivery(scratch: &dyn Rooted, label: &str, body: &serde_json::Value) -> PathBuf {
+    a_file(scratch, label, &body.to_string())
+}
+
+/// A file handed in as the delivery, whatever it holds: the arms whose subject
+/// is a file that does not read write their own text.
+fn a_file(scratch: &dyn Rooted, label: &str, text: &str) -> PathBuf {
+    let path = scratch.root().join(format!("delivery-{label}.json"));
+    std::fs::write(&path, text).expect("the delivery is written");
     path
 }
 
-const WHOLE: &str = "\
-DELIVERED <sha> — <seat>
-commit:  <pending>
-branch:  <pending>
-base:    <pending>
-files:   a/file.rs
-checks:  AC1 green, read from the arm's own status
-suite:   the workspace suite, rc 0
-spec corrections: none
-not proven: nothing this arm did not run
-decisions: 2
-  D1 the seat's note is carried through; not taken: composing it here; because the words are the seat's
-  D2 the machine lines are filled; not taken: trusting the seat's; because only a process knows them
-covers: R6
-";
+/// A whole delivery: every field the seat fills, two numbered calls for a
+/// review to walk, and none of the commit, the branch, the base or the time,
+/// which are the verb's.
+fn whole() -> serde_json::Value {
+    serde_json::json!({
+        "files": ["a/file.rs"],
+        "checks": [{"check": "AC1", "result": "green, read from the arm's own status"}],
+        "suite": {"command": "the workspace suite", "rc": 0},
+        "spec_corrections": [],
+        "not_proven": [{"surface": "nothing this arm did not run", "command": "cargo nextest run"}],
+        "decisions": [
+            {
+                "call": "the seat's delivery is carried through",
+                "not_taken": "composing it here",
+                "because": "the words are the seat's"
+            },
+            {
+                "call": "the machine lines are filled",
+                "not_taken": "trusting the seat's",
+                "because": "only a process knows them"
+            }
+        ],
+        "covers": ["R6"]
+    })
+}
+
+/// A delivery as the verb reads it, for the note an arm expects rendered.
+fn input_of(body: &serde_json::Value) -> DeliveryInput {
+    serde_json::from_value(body.clone()).expect("the delivery reads as the type")
+}
 
 /// What an arm varies, gathered so the call below reads as the arm and not as
 /// the wiring.
@@ -321,7 +343,7 @@ struct Seams<'a> {
 
 fn deliver_with(
     item: Option<&str>,
-    note: &PathBuf,
+    delivery: &PathBuf,
     by: &str,
     seams: &Seams,
 ) -> Result<Delivered, Stop> {
@@ -332,7 +354,7 @@ fn deliver_with(
             item,
             // The arm's own seat, by the name its id is derived from.
             by: &seat_actor(by),
-            note,
+            delivery,
             at: AT,
         },
         &Wiring {
@@ -368,14 +390,14 @@ fn a_clean_delivery_commits_reassigns_and_writes_the_note_it_rendered() {
     let scratch = &ring();
     let seat = "s-clean";
     let item = an_ordered_item(scratch, "an item to deliver", seat);
-    let note = a_note(scratch, "clean", WHOLE);
+    let delivery = a_delivery(scratch, "clean", &whole());
     let git = StubGit::clean();
     let ring = StubRing::answering(RingOutcome::Delivered);
     let events = StubEvents::default();
 
     let delivered = deliver_with(
         None,
-        &note,
+        &delivery,
         seat,
         &Seams {
             store: scratch.store(),
@@ -396,21 +418,39 @@ fn a_clean_delivery_commits_reassigns_and_writes_the_note_it_rendered() {
         "the seat the reviewer policy names, by its id"
     );
 
-    let expected = WHOLE
-        .trim_end()
-        .replace(
-            "DELIVERED <sha> — <seat>",
-            &format!("DELIVERED {SHA} — {}", seat_actor(seat)),
-        )
-        .replace("commit:  <pending>", &format!("commit:  {SHA}"))
-        .replace("branch:  <pending>", &format!("branch:  {BRANCH}"))
-        .replace(
-            "base:    <pending>",
-            &format!("base:    {TRUNK} at {TRUNK_SHA}, read at {AT}"),
-        );
+    // The note is RENDERED from the delivery, line for line as the grammar the
+    // readers anchor on has it: the three machine lines from the verb's own
+    // values, and every other line from the seat's JSON.
+    let expected = format!(
+        "DELIVERED {SHA} — {by}\n\
+         commit:  {SHA}\n\
+         branch:  {BRANCH}\n\
+         base:    {TRUNK} at {TRUNK_SHA}, read at {AT}\n\
+         files:   a/file.rs\n\
+         checks:  AC1: green, read from the arm's own status\n\
+         suite:   the workspace suite, rc 0\n\
+         spec corrections: none\n\
+         not proven: nothing this arm did not run — cargo nextest run\n\
+         decisions: 2\n\
+         \x20 D1 the seat's delivery is carried through; not taken: composing it here; because \
+         the words are the seat's\n\
+         \x20 D2 the machine lines are filled; not taken: trusting the seat's; because only a \
+         process knows them\n\
+         covers: R6",
+        by = seat_actor(seat)
+    );
+    assert_eq!(delivered.note, expected, "the note, rendered whole");
     assert_eq!(
-        delivered.note, expected,
-        "the three lines, and nothing else"
+        transitional_note(
+            &input_of(&whole()),
+            SHA,
+            BRANCH,
+            TRUNK_SHA,
+            &seat_actor(seat),
+            AT
+        ),
+        expected,
+        "and it is the renderer's own output"
     );
 
     let read = read(scratch, &item);
@@ -471,14 +511,14 @@ fn another_writers_orders_key_and_run_label_ride_through_a_delivery() {
         scratch.label(held, common::FOREIGN_LABEL);
     }
     let before = common::foreign_of(scratch.store(), &item);
-    let note = a_note(scratch, "foreign", WHOLE);
+    let delivery = a_delivery(scratch, "foreign", &whole());
     let git = StubGit::clean();
     let ring = StubRing::answering(RingOutcome::Delivered);
     let events = StubEvents::default();
 
     let delivered = deliver_with(
         None,
-        &note,
+        &delivery,
         seat,
         &Seams {
             store: scratch.store(),
@@ -513,7 +553,7 @@ fn the_trunk_is_refused_and_nothing_is_committed() {
     let scratch = &store();
     let seat = "s-trunk";
     let item = an_ordered_item(scratch, "an item on the trunk", seat);
-    let note = a_note(scratch, "trunk", WHOLE);
+    let delivery = a_delivery(scratch, "trunk", &whole());
     let before = scratch.json(&item);
     let git = StubGit {
         branch: "main".to_string(),
@@ -522,7 +562,7 @@ fn the_trunk_is_refused_and_nothing_is_committed() {
 
     let stop = deliver_with(
         None,
-        &note,
+        &delivery,
         seat,
         &Seams {
             store: scratch.store(),
@@ -550,7 +590,7 @@ fn a_file_outside_the_staged_set_is_refused_by_name() {
     let scratch = &store();
     let seat = "s-loose";
     let item = an_ordered_item(scratch, "an item beside a loose file", seat);
-    let note = a_note(scratch, "loose", WHOLE);
+    let delivery = a_delivery(scratch, "loose", &whole());
     let before = scratch.json(&item);
     let git = StubGit {
         status: vec![
@@ -563,7 +603,7 @@ fn a_file_outside_the_staged_set_is_refused_by_name() {
 
     let stop = deliver_with(
         None,
-        &note,
+        &delivery,
         seat,
         &Seams {
             store: scratch.store(),
@@ -619,7 +659,7 @@ fn a_clean_tree_ahead_of_the_base_delivers_head_and_commits_nothing() {
     let scratch = &store();
     let seat = "s-ahead";
     let item = an_ordered_item(scratch, "an item held at its finished commit", seat);
-    let note = a_note(scratch, "ahead", WHOLE);
+    let delivery = a_delivery(scratch, "ahead", &whole());
     let git = StubGit {
         staged: Vec::new(),
         status: Vec::new(),
@@ -643,7 +683,7 @@ fn a_clean_tree_ahead_of_the_base_delivers_head_and_commits_nothing() {
         &Delivery {
             item: Some(&item),
             by: &seat_actor(seat),
-            note: &note,
+            delivery: &delivery,
             at: AT,
         },
         &Wiring {
@@ -701,7 +741,7 @@ fn a_clean_tree_at_the_base_is_refused_and_the_refusal_names_the_way_out() {
     let scratch = &store();
     let seat = "s-empty";
     let item = an_ordered_item(scratch, "an item with nothing staged", seat);
-    let note = a_note(scratch, "empty", WHOLE);
+    let delivery = a_delivery(scratch, "empty", &whole());
     let before = scratch.json(&item);
     let git = StubGit {
         staged: Vec::new(),
@@ -717,7 +757,7 @@ fn a_clean_tree_at_the_base_is_refused_and_the_refusal_names_the_way_out() {
 
     let stop = deliver_with(
         None,
-        &note,
+        &delivery,
         seat,
         &Seams {
             store: scratch.store(),
@@ -746,54 +786,226 @@ fn a_clean_tree_at_the_base_is_refused_and_the_refusal_names_the_way_out() {
     assert_eq!(before, scratch.json(&item), "the item is untouched");
 }
 
+/// `review --show` over the item, as the reviewer runs it: what it read.
+fn review_shown(scratch: &Graph, item: &str) -> (review::Read, String) {
+    let mut out = Vec::new();
+    let read = review::review(
+        &mut out,
+        &mut Vec::new(),
+        &Verdict {
+            item,
+            by: &seat_actor(REVIEWER),
+            mode: Mode::Show,
+        },
+        &review::Wiring {
+            store: scratch.store(),
+            git: &StubGit::clean(),
+            packs: &packs(scratch),
+            project: &project(scratch),
+            ring: &StubRing::answering(RingOutcome::Delivered),
+            events: &StubEvents::default(),
+            seats: &fleet_of(&[REVIEWER]),
+        },
+    )
+    .expect("the review reads the delivery");
+    (read, String::from_utf8(out).expect("the page is utf-8"))
+}
+
+/// A DELIVERY IS JSON, AND THE NOTE IS RENDERED FROM IT. The file reads as the
+/// binary's own type, the note written is the renderer's output whole, and the
+/// reader that has not moved yet — `review --show` — reads its commit and both
+/// numbered calls off it.
 #[test]
-fn a_note_with_no_marker_and_a_note_with_no_commit_line_are_usage_errors() {
+fn a_delivery_file_is_delivered_and_review_reads_the_note_rendered_from_it() {
     let scratch = &store();
-    let seat = "s-note";
-    let item = an_ordered_item(scratch, "an item whose note is malformed", seat);
-    let before = scratch.json(&item);
+    let seat = "s-json";
+    let item = an_ordered_item(scratch, "an item delivered as JSON", seat);
+    let delivery = a_delivery(scratch, "json", &whole());
 
-    let unmarked = a_note(
-        scratch,
-        "unmarked",
-        &WHOLE.replace("DELIVERED <sha> — <seat>", "delivered, I think"),
+    let delivered = deliver_with(
+        None,
+        &delivery,
+        seat,
+        &Seams {
+            store: scratch.store(),
+            git: &StubGit::clean(),
+            ring: &StubRing::answering(RingOutcome::Delivered),
+            project: &project(scratch),
+            packs: &packs(scratch),
+            events: &StubEvents::default(),
+        },
+    )
+    .expect("the delivery is made");
+
+    let rendered = transitional_note(
+        &input_of(&whole()),
+        SHA,
+        BRANCH,
+        TRUNK_SHA,
+        &seat_actor(seat),
+        AT,
     );
-    let uncommitted = a_note(
-        scratch,
-        "uncommitted",
-        &WHOLE.replace("commit:  <pending>\n", ""),
+    assert_eq!(
+        delivered.note, rendered,
+        "the note is the renderer's output"
+    );
+    assert_eq!(
+        last_delivery(read(scratch, &item).notes.as_deref().unwrap_or_default()).as_deref(),
+        Some(rendered.as_str()),
+        "and it is what the store holds"
     );
 
-    for (note, absent) in [(&unmarked, "DELIVERED"), (&uncommitted, "commit:")] {
+    let (shown, page) = review_shown(scratch, &item);
+    assert_eq!(shown.commit, SHA, "the review reads the delivered commit");
+    assert_eq!(
+        review::decisions(&rendered),
+        vec!["D1".to_string(), "D2".to_string()],
+        "and both numbered calls"
+    );
+    for call in ["  D1 the seat's delivery", "  D2 the machine lines"] {
+        assert!(page.contains(call), "the page shows `{call}`:\n{page}");
+    }
+}
+
+/// A FILE THAT DOES NOT READ IS REFUSED BEFORE ANY WRITE. Each of the four is
+/// exit 2 naming the schema, and in every one the commit was never asked for
+/// and the store was never written: the read sits before the commit, the
+/// reassignment and the note.
+#[test]
+fn a_delivery_that_does_not_read_is_refused_at_two_before_anything_is_written() {
+    let mut unknown = whole();
+    unknown["colour"] = serde_json::json!("blue");
+    let mut unproven = whole();
+    unproven
+        .as_object_mut()
+        .expect("an object")
+        .remove("not_proven");
+    let mut fileless = whole();
+    fileless["files"] = serde_json::json!([]);
+    // The prose note a seat handed in before this verb read JSON.
+    let prose = "DELIVERED <sha> — <seat>\ncommit:  <pending>\nfiles:   a/file.rs\n";
+
+    for (label, text, named) in [
+        ("colour", unknown.to_string(), "colour"),
+        ("unproven", unproven.to_string(), "not_proven"),
+        ("fileless", fileless.to_string(), "names no file"),
+        ("prose", prose.to_string(), "expected value"),
+    ] {
+        let scratch = &store();
+        let seat = format!("s-unread-{label}");
+        let item = an_ordered_item(
+            scratch,
+            &format!("an item whose delivery is {label}"),
+            &seat,
+        );
+        let delivery = a_file(scratch, label, &text);
+        let Graph::Memory(board) = scratch else {
+            unreachable!("the rig is in memory");
+        };
+        board.forget_writes();
         let git = StubGit::clean();
+        let events = StubEvents::default();
+
         let stop = deliver_with(
-            Some(&item),
-            note,
-            seat,
+            None,
+            &delivery,
+            &seat,
             &Seams {
                 store: scratch.store(),
                 git: &git,
                 ring: &StubRing::answering(RingOutcome::Delivered),
                 project: &project(scratch),
                 packs: &packs(scratch),
-                events: &StubEvents::default(),
+                events: &events,
             },
         )
-        .expect_err("the note is refused");
+        .expect_err("the delivery does not read");
 
-        assert_eq!(stop.code, 2, "{}", stop.message);
+        assert_eq!(stop.code, 2, "{label}: {}", stop.message);
         assert!(
-            stop.message.contains(absent),
-            "it names what is absent: {}",
+            stop.message.contains(DELIVERY_SCHEMA),
+            "{label}: the refusal names the schema: {}",
+            stop.message
+        );
+        assert!(
+            stop.message.contains(named),
+            "{label}: and what is wrong, `{named}`: {}",
             stop.message
         );
         assert!(
             !git.calls().iter().any(|call| call.starts_with("commit ")),
-            "nothing was committed: {:?}",
+            "{label}: nothing was committed: {:?}",
             git.calls()
         );
+        assert_eq!(
+            board.store.wrote(),
+            Vec::<String>::new(),
+            "{label}: nothing was written"
+        );
+        assert_eq!(events.count(), 0, "{label}: nothing was announced");
+        assert_eq!(
+            read(scratch, &item).assignee.as_deref(),
+            Some(full(&seat).as_str()),
+            "{label}: the item is still the seat's"
+        );
     }
-    assert_eq!(before, scratch.json(&item), "the item is untouched");
+}
+
+/// FLEET-4RL: a value that carries a marker cannot end the region it sits in.
+/// The seat writes no prose, and every newline in a value renders two spaces
+/// in, so a `because` naming a delivery and a verdict and a check result
+/// naming a return all stay inside the one delivery: the read-back passes,
+/// the last delivery is the note whole, and a review reads its commit.
+#[test]
+fn a_marker_inside_a_value_stays_inside_the_delivery() {
+    let scratch = &store();
+    let seat = "s-4rl";
+    let item = an_ordered_item(scratch, "an item whose delivery quotes markers", seat);
+    let mut body = whole();
+    body["decisions"][0]["because"] =
+        serde_json::json!("fine\nDELIVERED deadbeef — x\nACCEPTED deadbeef — y");
+    body["checks"][0]["result"] = serde_json::json!("RETURNED WITH FINDINGS a — b");
+    let delivery = a_delivery(scratch, "4rl", &body);
+
+    let delivered = deliver_with(
+        None,
+        &delivery,
+        seat,
+        &Seams {
+            store: scratch.store(),
+            git: &StubGit::clean(),
+            ring: &StubRing::answering(RingOutcome::Delivered),
+            project: &project(scratch),
+            packs: &packs(scratch),
+            events: &StubEvents::default(),
+        },
+    )
+    .expect("the delivery is made, and its read-back passes");
+
+    assert!(
+        delivered
+            .note
+            .contains("because fine\n  DELIVERED deadbeef — x\n  ACCEPTED deadbeef — y"),
+        "each line of the value is two spaces in:\n{}",
+        delivered.note
+    );
+    assert_eq!(
+        delivered
+            .note
+            .lines()
+            .filter(|line| line.starts_with("DELIVERED"))
+            .count(),
+        1,
+        "one marker at column zero:\n{}",
+        delivered.note
+    );
+    assert_eq!(
+        last_delivery(read(scratch, &item).notes.as_deref().unwrap_or_default()).as_deref(),
+        Some(delivered.note.as_str()),
+        "the last delivery is the note whole"
+    );
+    let (shown, _) = review_shown(scratch, &item);
+    assert_eq!(shown.commit, SHA, "and a review reads the delivered commit");
 }
 
 #[test]
@@ -802,7 +1014,7 @@ fn a_fleet_naming_no_reviewer_refuses_before_the_commit() {
     let scratch = &store();
     let seat = "s-nobody";
     let item = an_ordered_item(scratch, "an item with nowhere to go", seat);
-    let note = a_note(scratch, "nobody", WHOLE);
+    let delivery = a_delivery(scratch, "nobody", &whole());
     let mut nameless = project(scratch);
     nameless.guards = "[landing]\nci_marker = \"printf '[skip ci]'\"\n"
         .parse()
@@ -811,7 +1023,7 @@ fn a_fleet_naming_no_reviewer_refuses_before_the_commit() {
 
     let stop = deliver_with(
         Some(&item),
-        &note,
+        &delivery,
         seat,
         &Seams {
             store: scratch.store(),
@@ -843,7 +1055,7 @@ fn a_reviewer_named_by_name_is_assigned_by_its_full_id_and_a_stranger_is_refused
     let scratch = &store();
     let seat = "s-to-kite";
     let item = an_ordered_item(scratch, "an item Kite reviews", seat);
-    let note = a_note(scratch, "to-kite", WHOLE);
+    let delivery = a_delivery(scratch, "to-kite", &whole());
     let policy = |reviewer: &str| {
         let mut named = project(scratch);
         named.guards = format!("[core]\nreviewer = \"{reviewer}\"\n")
@@ -859,7 +1071,7 @@ fn a_reviewer_named_by_name_is_assigned_by_its_full_id_and_a_stranger_is_refused
             &Delivery {
                 item: Some(&item),
                 by: &seat_actor(seat),
-                note: &note,
+                delivery: &delivery,
                 at: AT,
             },
             &Wiring {
@@ -874,24 +1086,8 @@ fn a_reviewer_named_by_name_is_assigned_by_its_full_id_and_a_stranger_is_refused
         )
     };
 
-    // KITE, BY NAME, is assigned and rung by her full id.
-    let ring = StubRing::answering(RingOutcome::Delivered);
-    let delivered = run(&policy("Kite"), &StubGit::clean(), &ring).expect("Kite reviews it");
-    assert_eq!(
-        delivered.reviewer,
-        full("Kite"),
-        "the reviewer is Kite's id"
-    );
-    assert_eq!(
-        read(scratch, &item).assignee.as_deref(),
-        Some(full("Kite").as_str()),
-        "the item is assigned to Kite's full id and never to the word the policy wrote"
-    );
-    let rung = ring.calls();
-    assert_eq!(rung.len(), 1, "{rung:?}");
-    assert_eq!(rung[0].0, full("Kite"), "the ring addresses her id");
-
     // A VALUE NAMING NO LISTED SEAT is exit 1 naming the key, before the commit.
+    // Asked first, while the seat still holds the item `--item` names.
     let git = StubGit::clean();
     let stop = run(
         &policy("nobody"),
@@ -913,17 +1109,34 @@ fn a_reviewer_named_by_name_is_assigned_by_its_full_id_and_a_stranger_is_refused
     );
     assert_eq!(
         read(scratch, &item).assignee.as_deref(),
-        Some(full("Kite").as_str()),
+        Some(full(seat).as_str()),
         "the refusal wrote nothing"
     );
+
+    // KITE, BY NAME, is assigned and rung by her full id.
+    let ring = StubRing::answering(RingOutcome::Delivered);
+    let delivered = run(&policy("Kite"), &StubGit::clean(), &ring).expect("Kite reviews it");
+    assert_eq!(
+        delivered.reviewer,
+        full("Kite"),
+        "the reviewer is Kite's id"
+    );
+    assert_eq!(
+        read(scratch, &item).assignee.as_deref(),
+        Some(full("Kite").as_str()),
+        "the item is assigned to Kite's full id and never to the word the policy wrote"
+    );
+    let rung = ring.calls();
+    assert_eq!(rung.len(), 1, "{rung:?}");
+    assert_eq!(rung[0].0, full("Kite"), "the ring addresses her id");
 }
 
 #[test]
 fn a_read_back_that_disagrees_exits_three_and_prints_both_values() {
     let scratch = &store();
     let seat = "s-doctored";
-    let item = an_ordered_item(scratch, "an item whose read-back is bent", seat);
-    let note = a_note(scratch, "doctored", WHOLE);
+    an_ordered_item(scratch, "an item whose read-back is bent", seat);
+    let delivery = a_delivery(scratch, "doctored", &whole());
 
     let doctored = Doctored {
         inner: scratch.store(),
@@ -931,10 +1144,14 @@ fn a_read_back_that_disagrees_exits_three_and_prints_both_values() {
         append: None,
     };
 
+    // No `--item`: the bent reading is `show`'s, which the holder check on a
+    // named item asks too, and the listing the seat's holding is read off is
+    // not bent — so the disagreement is met where it is planted, at the
+    // read-back.
     let events = StubEvents::default();
     let stop = deliver_with(
-        Some(&item),
-        &note,
+        None,
+        &delivery,
         seat,
         &Seams {
             store: &doctored,
@@ -965,7 +1182,7 @@ fn the_negative_control_catches_a_planted_token() {
     let scratch = &store();
     let seat = "s-control";
     let item = an_ordered_item(scratch, "an item whose read is not its own", seat);
-    let note = a_note(scratch, "control", WHOLE);
+    let delivery = a_delivery(scratch, "control", &whole());
 
     let planted = Doctored {
         inner: scratch.store(),
@@ -975,7 +1192,7 @@ fn the_negative_control_catches_a_planted_token() {
 
     let stop = deliver_with(
         Some(&item),
-        &note,
+        &delivery,
         seat,
         &Seams {
             store: &planted,
@@ -996,13 +1213,13 @@ fn the_negative_control_catches_a_planted_token() {
 fn a_seat_holding_no_ordered_item_is_refused_and_two_are_named() {
     let scratch = &store();
     let seat = "s-count";
-    let note = a_note(scratch, "count", WHOLE);
+    let delivery = a_delivery(scratch, "count", &whole());
     let unordered = scratch.item("an item with no order on it");
     scratch.assign(&unordered, &full(seat));
 
     let stop = deliver_with(
         None,
-        &note,
+        &delivery,
         seat,
         &Seams {
             store: scratch.store(),
@@ -1025,7 +1242,7 @@ fn a_seat_holding_no_ordered_item_is_refused_and_two_are_named() {
     let second = an_ordered_item(scratch, "the second ordered item", seat);
     let stop = deliver_with(
         None,
-        &note,
+        &delivery,
         seat,
         &Seams {
             store: scratch.store(),
@@ -1059,7 +1276,7 @@ fn a_run_is_no_seat_and_delivers_only_the_item_it_names() {
         Some(full("Orla").as_str()),
         "the premise: the item is assigned to her id"
     );
-    let note = a_note(scratch, "by-kind", WHOLE);
+    let delivery = a_delivery(scratch, "by-kind", &whole());
     let fleet = fleet_of(&["Orla", REVIEWER]);
     let run = |by: &Actor, item: Option<&str>, git: &StubGit| {
         deliver::deliver(
@@ -1068,7 +1285,7 @@ fn a_run_is_no_seat_and_delivers_only_the_item_it_names() {
             &Delivery {
                 item,
                 by,
-                note: &note,
+                delivery: &delivery,
                 at: AT,
             },
             &Wiring {
@@ -1123,22 +1340,137 @@ fn a_run_is_no_seat_and_delivers_only_the_item_it_names() {
         Some(full(REVIEWER).as_str())
     );
 
-    // WITH --item, A RUN DELIVERS as it did: the note is signed with its
-    // string form.
-    let second = an_ordered_item(scratch, "an item a run delivers", "Orla");
-    let delivered = run(&a_run, Some(&second), &StubGit::clean()).expect("the run names it");
-    assert_eq!(delivered.item, second);
+    // WITH --item, A RUN STILL HOLDS NO SEAT'S ITEM (fleet-pl6 (a)): naming an
+    // item Orla holds is refused by the run's kind, before the commit.
+    let second = an_ordered_item(scratch, "an item no run holds", "Orla");
+    let git = StubGit::clean();
+    let stop = run(&a_run, Some(&second), &git).expect_err("a run holds no item");
+    assert_eq!(stop.code, 1, "{}", stop.message);
+    assert_eq!(
+        stop.message,
+        "a run holds no item — --item names an item the acting seat holds"
+    );
     assert!(
-        delivered
-            .note
-            .starts_with(&format!("DELIVERED {SHA} — run:r1")),
-        "{}",
-        delivered.note
+        !git.calls().iter().any(|call| call.starts_with("commit ")),
+        "nothing was committed: {:?}",
+        git.calls()
     );
     assert_eq!(
         read(scratch, &second).assignee.as_deref(),
-        Some(full(REVIEWER).as_str())
+        Some(full("Orla").as_str()),
+        "the refusal wrote nothing"
     );
+
+    // A RUN'S OWN RECORD is the one item it holds: the run named by the
+    // record's id delivers it, signing the note with its string form.
+    let record = scratch.item("a run's record");
+    scratch.label(&record, run::LABEL);
+    let its_run = Actor {
+        kind: ActorKind::Run,
+        id: record.clone(),
+    };
+    let delivered = run(&its_run, Some(&record), &StubGit::clean()).expect("its own record");
+    assert_eq!(delivered.item, record);
+    assert!(
+        delivered
+            .note
+            .starts_with(&format!("DELIVERED {SHA} — run:{record}")),
+        "{}",
+        delivered.note
+    );
+}
+
+/// `--item` NAMES AN ITEM THE ACTING SEAT HOLDS (fleet-pl6 (a)), read the way
+/// the listing without `--item` reads a holding: the seat's id is the
+/// assignee, the order index stands, and the item is no epic. Anything else is
+/// exit 1 naming the holder and the actor, before the commit — and a run's
+/// record is its own run's, whoever else names it.
+#[test]
+fn an_item_named_by_a_seat_that_does_not_hold_it_is_refused_naming_both() {
+    let scratch = &store();
+    let item = an_ordered_item(scratch, "an item Aoife holds", "Aoife");
+    let delivery = a_delivery(scratch, "holder", &whole());
+    let fleet = fleet_of(&["Aoife", "Bram", REVIEWER]);
+    let run = |by: &Actor, item: &str, git: &StubGit| {
+        deliver::deliver(
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &Delivery {
+                item: Some(item),
+                by,
+                delivery: &delivery,
+                at: AT,
+            },
+            &Wiring {
+                store: scratch.store(),
+                git,
+                packs: &packs(scratch),
+                project: &project(scratch),
+                ring: &StubRing::answering(RingOutcome::Delivered),
+                events: &StubEvents::default(),
+                seats: &fleet,
+            },
+        )
+    };
+    let refused = |by: &Actor, item: &str, holder: &str| {
+        let git = StubGit::clean();
+        let stop = run(by, item, &git).expect_err("not the holder");
+        assert_eq!(stop.code, 1, "{}", stop.message);
+        assert_eq!(
+            stop.message,
+            format!(
+                "{item} is held by {holder} and not by {by} — --item names an item the acting \
+                 seat holds"
+            )
+        );
+        assert!(
+            !git.calls().iter().any(|call| call.starts_with("commit ")),
+            "nothing was committed: {:?}",
+            git.calls()
+        );
+    };
+
+    // BRAM NAMING AOIFE'S ITEM: exit 1 naming both, and the item stays hers.
+    refused(&seat_actor("Bram"), &item, &full("Aoife"));
+    assert_eq!(
+        read(scratch, &item).assignee.as_deref(),
+        Some(full("Aoife").as_str()),
+        "the refusal wrote nothing"
+    );
+
+    // Assigned to Bram and never ordered: assigned is not held.
+    let unordered = scratch.item("an item assigned to Bram and never ordered");
+    scratch.assign(&unordered, &full("Bram"));
+    refused(&seat_actor("Bram"), &unordered, &full("Bram"));
+
+    // An ordered epic assigned to Bram: an epic is never work a seat holds.
+    let epic = an_ordered_item(scratch, "an epic ordered to Bram", "Bram");
+    scratch.item_type(&epic, "epic");
+    refused(&seat_actor("Bram"), &epic, &full("Bram"));
+
+    // Assigned to nobody.
+    let nobody = scratch.item("an item nobody holds");
+    refused(&seat_actor("Bram"), &nobody, "nobody");
+
+    // A SEAT NAMING A RUN'S RECORD: the record is its own run's to hold.
+    let record = scratch.item("a run's record a seat names");
+    scratch.label(&record, run::LABEL);
+    let git = StubGit::clean();
+    let stop = run(&seat_actor("Bram"), &record, &git).expect_err("not that run");
+    assert_eq!(stop.code, 1, "{}", stop.message);
+    assert_eq!(
+        stop.message,
+        format!(
+            "{record} is run {record}'s record, and {} is not that run — a run's record is its \
+             own run's to hold",
+            seat_actor("Bram")
+        )
+    );
+    assert!(!git.calls().iter().any(|call| call.starts_with("commit ")));
+
+    // THE CONTROL: Aoife naming her own item delivers it.
+    let delivered = run(&seat_actor("Aoife"), &item, &StubGit::clean()).expect("hers");
+    assert_eq!(delivered.item, item);
 }
 
 /// `--item` naming its item by a suffix delivers under the full id: the verb
@@ -1154,14 +1486,14 @@ fn an_item_named_by_its_suffix_is_delivered_under_its_full_id() {
         unreachable!("the rig is in memory");
     };
     board.forget_writes();
-    let note = a_note(scratch, "suffix", WHOLE);
+    let delivery = a_delivery(scratch, "suffix", &whole());
     let git = StubGit::clean();
     let ring = StubRing::answering(RingOutcome::Delivered);
     let events = StubEvents::default();
 
     let delivered = deliver_with(
         Some(suffix),
-        &note,
+        &delivery,
         seat,
         &Seams {
             store: scratch.store(),
@@ -1221,7 +1553,7 @@ fn an_absent_reviewer_and_a_failed_ring_both_leave_the_delivery_standing() {
     ] {
         let seat = format!("s-ring-{label}");
         let item = an_ordered_item(scratch, &format!("an item rung {label}"), &seat);
-        let note = a_note(scratch, label, WHOLE);
+        let delivery = a_delivery(scratch, label, &whole());
         let mut out = Vec::new();
         let mut err = Vec::new();
         let ring = StubRing::answering(outcome);
@@ -1233,7 +1565,7 @@ fn an_absent_reviewer_and_a_failed_ring_both_leave_the_delivery_standing() {
             &Delivery {
                 item: Some(&item),
                 by: &seat_actor(&seat),
-                note: &note,
+                delivery: &delivery,
                 at: AT,
             },
             &Wiring {

@@ -11,7 +11,7 @@
 //! order in the same act, so no refusal leaves an ordered item nobody holds.
 //!
 //! `brief` renders the first thing a dispatched seat reads: the item, its order
-//! note, the delivery-note template it will fill, the guards in force, the
+//! note, the schema of the delivery it will hand in, the guards in force, the
 //! builder's checks its dispatch was handed and the every-turn rules. Whole or not at all — every value
 //! is resolved into memory before a byte reaches stdout, because a seat that
 //! read half a contract cannot tell it read half.

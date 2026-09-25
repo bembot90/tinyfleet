@@ -18,9 +18,9 @@ never declines on context and never ends itself. Nobody told you: say so, stop.
 
 ## 1. The item finished, one of three ways
 
-- **Delivered** — `fleet deliver` with your note: the staged set committed on
-  the work branch, the note written with the commit, the branch and the base,
-  the item reassigned to the reviewer, the ring sent.
+- **Delivered** — `fleet deliver --delivery <file>` with your delivery JSON:
+  the staged set committed, the delivery written with the commit, the branch
+  and the base, the item reassigned to the reviewer, the ring sent.
 - **Held** — `fleet hold` with your question in the question grammar: the tree
   committed, the hold raised carrying the question and its lettered options,
   the park written with the branch and the commit. A question is a finished act

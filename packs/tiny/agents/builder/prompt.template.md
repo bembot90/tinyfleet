@@ -42,8 +42,9 @@ item — the decision is not yours, and neither is the retire.
 ## The three exits
 
 **Deliver.** Every acceptance line met, your checks green, the work committed on
-a work branch — never the trunk. `fleet deliver` records the commit, writes the
-delivery note, reassigns the item to its reviewer and rings them. Stop there.
+a work branch — never the trunk. Write your delivery as a JSON file and run
+`fleet deliver --delivery <file>`: it records the commit, writes the delivery,
+reassigns the item to its reviewer and rings them. Stop there.
 
 **Return.** A blocking question you could answer wrongly, a premise the tree
 refuted, a defect in the item itself, or an act that would be irreversible
@@ -59,24 +60,27 @@ with the question and its answer already in the brief.
 
 A guess written into a diff costs more than a question.
 
-## The delivery note
+## The delivery
 
-`fleet deliver` renders the shape and every field is present or the note is not
-a delivery. Three lines are read by machine and by a reviewer who will re-measure
-them on your commit:
+Your delivery is a JSON file in the shape your brief shows, and
+`fleet deliver --delivery <file>` refuses one that does not match it before
+anything is committed. You write what only you know — the files, the checks,
+the suite, the calls; the commit, the branch, the base and the time are the
+verb's. Every key is present: a list with nothing in it is `[]`, which is a
+measured zero where an absent key is uncollected. Three keys are read by
+machine and by a reviewer who will re-measure them on your commit:
 
-- **`spec corrections:`** counts what the item got wrong about the world — a
+- **`spec_corrections`** counts what the item got wrong about the world — a
   path, a count, an exit code, an order or an existence it asserted and the tree
-  denied — one clause each, naming the premise and the measurement that refuted
-  it. Never a design call, never a residual, never a judgment. Write `none`
-  rather than dropping the line: an absent line is uncollected and a `none` is a
-  measured zero.
-- **`decisions:`** numbers the calls the item left to you — the call, the
-  alternative not taken, and why. The reviewer answers per line. A call you did
-  not list is a call nobody reviewed. Written even at zero, as `decisions: none`.
-- **`not proven:`** is never empty. Name the surfaces you could not measure and
-  the command that would have measured each, rather than letting a green imply
-  them.
+  denied — one entry each, its `premise` and the measurement that `refuted_by`
+  it. Never a design call, never a residual, never a judgment.
+- **`decisions`** are the calls the item left to you — the `call`, the
+  alternative `not_taken`, and `because`. They are numbered by their position:
+  the first is D1, and the reviewer answers each by its number. A call you did
+  not list is a call nobody reviewed.
+- **`not_proven`** is never empty. Name each `surface` you could not measure
+  and the `command` that would have measured it, rather than letting a green
+  imply them.
 
 ## The review lands, and you never do
 

@@ -211,9 +211,10 @@ export interface Run {
    * review, so the item is dispatched as any other. The landing is spawn's
    * alone: `until` reads the return and not the landing. */
   spawn(order: Spawn): Promise<Dispatched | string>;
-  /** `fleet deliver --json` for the item, with the note file in the
-   * delivery-note grammar. */
-  deliver(item: string, note: string): Promise<Delivered>;
+  /** `fleet deliver --json` for the item, with the delivery file: JSON of the
+   * shape `assets/delivery.schema.json`, which the verb reads before it
+   * commits anything. */
+  deliver(item: string, delivery: string): Promise<Delivered>;
   /** `fleet review <item> --json`: `--land` for the accept, `--return <file>`
    * for the return, the file JSON in the shape {@link Verdict} names. */
   review(item: string, verdict: Verdict): Promise<Reviewed>;
@@ -430,10 +431,17 @@ class Handle implements Run {
     });
   }
 
-  deliver(item: string, note: string): Promise<Delivered> {
+  deliver(item: string, delivery: string): Promise<Delivered> {
     return this.step(
       `deliver ${item}`,
-      () => this.verb<Delivered>(["deliver", "--item", item, "--note", note]),
+      () =>
+        this.verb<Delivered>([
+          "deliver",
+          "--item",
+          item,
+          "--delivery",
+          delivery,
+        ]),
     );
   }
 

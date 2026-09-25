@@ -16,6 +16,7 @@ use std::time::Duration;
 use fleet_controller::adapter::claude_code::ClaudeCode;
 use fleet_controller::adapter::{Agent, RosterRead};
 use fleet_controller::{clock, config, effect, platform, policy as controller, sessions};
+use fleet_core::input::DELIVERY_SCHEMA;
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
 use fleet_core::item::dispatch::{self, Order, Wiring};
 use fleet_core::item::hold;
@@ -86,9 +87,20 @@ pub struct BriefArgs {
 /// delivering, and `--item` is for the case a seat legitimately holds two.
 #[derive(clap::Args)]
 pub struct DeliverArgs {
-    /// the note the seat wrote, in the delivery-note grammar
-    #[arg(long, value_name = "FILE")]
-    pub note: PathBuf,
+    // The help is one sentence broken in two, because the page is measured
+    // under eighty columns and the flag column eats a third of it.
+    #[arg(
+        long,
+        value_name = "FILE",
+        required_unless_present = "note",
+        help = "the delivery, a JSON file of the shape\nassets/delivery.schema.json"
+    )]
+    pub delivery: Option<PathBuf>,
+    /// The flag a prose note went in under, kept only to be refused naming
+    /// `--delivery`: a seat still typing it reads the rewrite, not clap's
+    /// sentence about an unknown argument.
+    #[arg(long, value_name = "FILE", hide = true)]
+    pub note: Option<PathBuf>,
     /// the item, where the seat holds more than one
     #[arg(long, value_name = "ID")]
     pub item: Option<String>,
@@ -543,6 +555,14 @@ fn run_deliver(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<deliver::Delivered, Stop> {
+    // THE OLD FLAG FIRST, before the project is read: whatever the file holds
+    // and wherever this runs, the rewrite is the answer.
+    let (None, Some(delivery)) = (&parsed.note, &parsed.delivery) else {
+        return Err(Stop::usage(format!(
+            "--note is gone: a delivery is a JSON file — fleet deliver --delivery <file>; its \
+             shape is {DELIVERY_SCHEMA}, which the brief shows"
+        )));
+    };
     let here = resolve_at(parsed.packs_dir.clone())?;
     let by = acting("deliver", parsed.by.as_deref(), &here)?;
     let store = open_store(&here.project.root);
@@ -565,7 +585,7 @@ fn run_deliver(
         &deliver::Delivery {
             item: parsed.item.as_deref(),
             by: &by,
-            note: &parsed.note,
+            delivery,
             at: &stamp,
         },
         &deliver::Wiring {

@@ -158,6 +158,35 @@ fn every_verb_the_pack_invokes_is_one_this_binary_has() {
     );
 }
 
+/// THE PACK TEACHES THE DELIVERY AS A JSON FILE: the builder's prompt names the
+/// flag and the three fields whose meaning it carries beyond their shape, and
+/// no document hands a seat the note flag `fleet deliver` refuses.
+#[test]
+fn the_pack_teaches_the_delivery_file_and_never_the_note_flag() {
+    let files = pack_files();
+    let (_, prompt) = files
+        .iter()
+        .find(|(path, _)| path == "agents/builder/prompt.template.md")
+        .expect("the pack ships the builder's prompt");
+    for wanted in [
+        "`fleet deliver --delivery <file>`",
+        "`spec_corrections`",
+        "`decisions`",
+        "`not_proven`",
+    ] {
+        assert!(
+            prompt.contains(wanted),
+            "the builder's prompt teaches {wanted}"
+        );
+    }
+    for (path, text) in &files {
+        assert!(
+            !text.contains("deliver --note"),
+            "{path} hands a seat `fleet deliver --note`, which is gone"
+        );
+    }
+}
+
 // ---- the slots the pack fills -----------------------------------------------
 
 /// The pack's own directory, checked by the verb that validates one.

@@ -8,8 +8,9 @@ given. Read it once, in full, before your first act.
 Build what the item says, and nothing beside it. When the work is done:
 
 1. Commit it on a **work branch** — never on the trunk.
-2. Run `fleet deliver`. It records the commit on the item, writes the delivery
-   note below, reassigns the item to its reviewer and rings them.
+2. Write your delivery as a JSON file of the shape below and run
+   `fleet deliver --delivery <file>`. It records the commit on the item,
+   writes the delivery, reassigns the item to its reviewer and rings them.
 3. Stop there. **You never land your own work.** The reviewer reads the commit
    you recorded, runs the suite, and lands it.
 
@@ -59,11 +60,12 @@ act on it rather than around it.
 
 {rules}
 
-## The delivery note you will write
+## The delivery you will hand in
 
-`fleet deliver` renders this. Every field is present or the note is not a
-delivery.
+`fleet deliver --delivery <file>` reads a JSON file of this shape and refuses
+one that does not match it before anything is committed. The commit, the
+branch, the base and the time are the verb's to fill.
 
-```
-{delivery_note}
+```json
+{delivery_schema}
 ```

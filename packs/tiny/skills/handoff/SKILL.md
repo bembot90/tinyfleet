@@ -43,10 +43,10 @@ this point. The step exists so that "I kept going" is visible.
 
 ### 2. Nothing in flight
 
-Every item this seat holds is either **delivered** — `fleet deliver`, which
-commits the staged set on the work branch, writes the delivery note with the
-commit, the branch and the base filled in, reassigns the item to the reviewer
-and rings them — or **handed back**, reassigned with the reason written on the
+Every item this seat holds is either **delivered** — your delivery JSON handed
+to `fleet deliver --delivery <file>`, which commits the staged set, writes the
+delivery with the commit, the branch and the base, reassigns the item to the
+reviewer and rings them — or **handed back**, reassigned with the reason on the
 item. **Never left half-done in silence**: an item nobody was told about is
 one the next flight cannot plan around. Run the suites your changes touched
 and say plainly if one is red and you are not fixing it. Then file items for

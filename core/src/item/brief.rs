@@ -12,13 +12,13 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::guard;
+use crate::input::{self, DeliveryInput};
 use crate::item::{render, show, Project, Stop};
 use crate::resolve::{self, Layer, Resolution};
 use crate::store::{Orders, Store};
 
 /// The four files this verb reads, all of them shadowable.
 pub const BRIEF: &str = "assets/brief.md";
-pub const DELIVERY_NOTE: &str = "assets/delivery-note.md";
 pub const RULES: &str = "assets/rules.md";
 
 /// What `{seat}` reads as before a seat exists to name.
@@ -142,7 +142,15 @@ pub fn text(packs: &Packs, project: &Project, subject: &Subject) -> Result<Strin
     project.refuse_moved()?;
     let template = packs.read(BRIEF)?;
     let rules = packs.read(RULES)?;
-    let delivery_note = packs.read(DELIVERY_NOTE)?;
+    let delivery_schema = packs.read(input::DELIVERY_SCHEMA)?;
+    // The schema a seat is shown is the one `fleet deliver` reads it against,
+    // or the brief would teach a delivery the verb refuses.
+    input::agrees::<DeliveryInput>(&delivery_schema).map_err(|why| {
+        Stop::could_not_tell(format!(
+            "{} as the layers resolve it does not describe what fleet deliver reads: {why}",
+            input::DELIVERY_SCHEMA
+        ))
+    })?;
     let touched = command_or(subject.touched, DERIVE_TOUCHED);
     let guards = guards_of(project);
 
@@ -157,7 +165,7 @@ pub fn text(packs: &Packs, project: &Project, subject: &Subject) -> Result<Strin
             ("touched", touched),
             ("guards", &guards),
             ("rules", &rules),
-            ("delivery_note", &delivery_note),
+            ("delivery_schema", delivery_schema.trim_end()),
         ],
     )
     .map_err(|name| {

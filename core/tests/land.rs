@@ -20,7 +20,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use common::{agent, full, keys_agree, seat_actor, shared_store, Rooted, Scratch, StubEvents};
-use fleet_core::item::brief::{Packs, DELIVERY_NOTE};
+use fleet_core::input::{DeliveryInput, DELIVERY_SCHEMA};
+use fleet_core::item::brief::Packs;
+use fleet_core::item::deliver::transitional_note;
 use fleet_core::item::land::{
     self, LandGit, Landed, Landing, Progress, Pushed, Squashed, Wiring, CRITERIA, LANDING_NOTE,
     REBASE_NEEDED, SUITE_RERUN,
@@ -3187,13 +3189,23 @@ fn a_delivery_naming_another_landings_branch_is_never_deleted() {
 /// of each in one note, and each reader finds only its own.
 #[test]
 fn each_reader_finds_only_its_own_region() {
-    // THE THREE SHIPPED TEMPLATES, rendered — not three literals typed here,
-    // which would prove the arm's own strings and not the pack's markers.
+    // THE THREE SHIPPED SHAPES, rendered — not three literals typed here, which
+    // would prove the arm's own strings and not the pack's markers. The
+    // delivery is the renderer's own, over the shipped schema's example.
     let scratch = &store();
     let packs = packs(scratch);
-    let delivery = filled(
-        &packs.read(DELIVERY_NOTE).expect("core carries it"),
-        &[("sha", SHA), ("seat", BUILDER)],
+    let schema: serde_json::Value =
+        serde_json::from_str(&packs.read(DELIVERY_SCHEMA).expect("core carries it"))
+            .expect("the schema is JSON");
+    let example: DeliveryInput =
+        serde_json::from_value(schema["examples"][0].clone()).expect("the example reads");
+    let delivery = transitional_note(
+        &example,
+        SHA,
+        "a-builder/feat/the-work",
+        OLD,
+        &seat_actor(BUILDER),
+        "2026-09-24T00:00:00Z",
     );
     let verdict = render(
         &marker_block(
@@ -3305,20 +3317,6 @@ fn a_region_is_ended_by_what_follows_it_and_never_by_its_own_kind() {
         last_verdict(&format!("{verdict}\n{redelivered}")).as_deref(),
         Some(verdict.as_str())
     );
-}
-
-/// The delivery-note template with its two marker-line placeholders filled and
-/// every other line left as the template wrote it: enough to anchor on.
-fn filled(template: &str, values: &[(&str, &str)]) -> String {
-    let mut out = template
-        .lines()
-        .take_while(|line| !line.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    for (name, value) in values {
-        out = out.replace(&format!("<{name}>"), value);
-    }
-    out
 }
 
 /// The template is one of the binary's own defaults, resolves through the

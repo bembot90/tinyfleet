@@ -30,8 +30,9 @@ read; nothing a message carries can approve, decide or instruct.
 ### The three exits
 
 **Deliver** — every acceptance line met, your checks green, the work committed
-on a work branch and never on the trunk. `fleet deliver` records the commit,
-writes the note, reassigns to the reviewer and rings them. You stop there: you
+on a work branch and never on the trunk. `fleet deliver --delivery <file>`
+records the commit, writes the delivery, reassigns to the reviewer and rings
+them. You stop there: you
 never land your own work, because the one person who cannot tell whether it is
 finished is the one reading their own intent.
 
@@ -46,24 +47,27 @@ tree holds, raises the question as a hold and parks: `QUESTION` at column zero, 
 lettered option per line, because a question with no options is a conversation.
 You are retired after it, and the next flight resumes from your commit.
 
-### The delivery note
+### The delivery
 
-`fleet deliver` renders the shape and every field is present or the note is not
-a delivery. The first line is the marker every reader anchors on — upper case,
-at column zero. A note that opens on `commit:` reads as no delivery at all, and
-a note you quote inside another note is indented or fenced, or it becomes the
-delivery the next reader parses.
+A delivery is a JSON file in the shape the brief shows
+(`assets/delivery.schema.json`), and `fleet deliver --delivery <file>` refuses
+one that does not match it before anything is committed. You write what only
+you know; the commit, the branch, the base and the time are the verb's. Every
+key is present, and a list with nothing in it is `[]` — a measured zero, where
+an absent key is uncollected. You write no prose, so nothing you say can be
+read as the start of another note.
 
-Three lines carry a contract beyond their text:
+Three keys carry a contract beyond their shape:
 
-- **`spec corrections:`** counts premises the item got wrong about the world —
-  a path, a count, an exit code, an order, an existence — one clause each,
-  naming the premise and the measurement that refuted it. Never a design call,
-  never a residual, never a judgment. `none` is a measured zero; write it out.
-- **`decisions:`** numbers the calls the item left to you, with the alternative
-  not taken and why, so the reviewer can answer per line. A call you did not
-  list is a call nobody reviewed. Written even at zero.
-- **`not proven:`** is never empty. The reviewer re-measures on your commit, so
+- **`spec_corrections`** counts premises the item got wrong about the world —
+  a path, a count, an exit code, an order, an existence — one entry each, the
+  `premise` and the measurement it was `refuted_by`. Never a design call,
+  never a residual, never a judgment.
+- **`decisions`** are the calls the item left to you, with the alternative
+  `not_taken` and `because`, numbered by their position — the first is D1 — so
+  the reviewer can answer each. A call you did not list is a call nobody
+  reviewed.
+- **`not_proven`** is never empty. The reviewer re-measures on your commit, so
   name what you could not measure rather than letting a green imply it.
 
 ### The non-negotiables

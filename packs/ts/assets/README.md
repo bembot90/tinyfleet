@@ -66,12 +66,17 @@ binary on `FLEET_BIN` that answers `event …` with the real one.
   const { seat } = await run.spawn({ role: "builder", item: "item-12" });
   ```
 
-- `deliver(item, note)` — `fleet deliver --item <item> --note <file> --json`;
-  the note is a file in the delivery-note grammar, written under the run
-  directory, which is the one place a workflow may write.
+- `deliver(item, delivery)` — `fleet deliver --item <item> --delivery <file>
+  --json`; the delivery is a JSON file of the shape
+  `assets/delivery.schema.json`, written under the run directory, which is the
+  one place a workflow may write. The verb refuses one that does not match the
+  shape before it commits anything.
 
   ```ts
-  const { commit } = await run.deliver("item-12", `${run.env.runDir}/note.md`);
+  const { commit } = await run.deliver(
+    "item-12",
+    `${run.env.runDir}/delivery.json`,
+  );
   ```
 
 - `review(item, verdict)` — `fleet review <item> --json` with `--land` for
