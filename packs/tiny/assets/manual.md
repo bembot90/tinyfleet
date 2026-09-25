@@ -42,10 +42,13 @@ you measured and what you expect to fail if you are overruled, and hand the
 item back. A return is delivery-class: it goes out in the same turn, not only
 onto the item.
 
-**Hold** — a question nobody here can answer. `fleet hold` commits what your
-tree holds, raises the question as a hold and parks: `QUESTION` at column zero, one
-lettered option per line, because a question with no options is a conversation.
-You are retired after it, and the next flight resumes from your commit.
+**Hold** — a question nobody here can answer. Write it as a JSON file in the
+shape the brief shows (`assets/question.schema.json`) and run
+`fleet hold --question <file>`: it commits what your tree holds, raises the
+question as a hold and parks, and the item is held until a person clears it.
+One line of question, the rest in `context`, and each option under its own
+capital letter, because a question with no options is a conversation. You are
+retired after it, and the next flight resumes from your commit.
 
 ### The delivery
 

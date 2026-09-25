@@ -17,7 +17,6 @@ import {
   FINDINGS_DIR,
   itemsOf,
   NOT_TESTED,
-  OPTIONS,
   policyOf,
   REPORT,
   takeoff,
@@ -33,6 +32,17 @@ import {
 import { append } from "./testdata/stream.ts";
 
 const here = import.meta.dirname!;
+
+/** The question file a review=hold flight writes for it-1 at aaa1111: the
+ * JSON `fleet hold --question` reads, each of the flight's OPTIONS taken
+ * apart into its letter and its text. */
+const ACCEPT_IT_1 = JSON.stringify({
+  question: "Accept it-1 at aaa1111?",
+  options: [
+    { letter: "A", text: "accept and land" },
+    { letter: "B", text: "return to the builder" },
+  ],
+});
 
 interface Faked extends Scratch {
   fake: string;
@@ -270,8 +280,8 @@ Deno.test("AC1 hold — under review=hold every verdict is a hold: the flight wa
     waiting: "hold-1",
   });
   assertEquals(
-    await Deno.readTextFile(`${s.env.runDir}/holds/1.md`),
-    `QUESTION Accept it-1 at aaa1111?\n${OPTIONS.join("\n")}\n`,
+    await Deno.readTextFile(`${s.env.runDir}/holds/1.json`),
+    ACCEPT_IT_1,
   );
   assertEquals(await replay(takeoff, s.env, stdin), {
     code: 2,
@@ -296,8 +306,8 @@ Deno.test("AC1 hold — under review=hold every verdict is a hold: the flight wa
       "hold",
       "--item",
       runId,
-      "--note",
-      `${s.env.runDir}/holds/1.md`,
+      "--question",
+      `${s.env.runDir}/holds/1.json`,
       "--by",
       `run:${runId}`,
       "--json",
@@ -413,8 +423,8 @@ Deno.test("AC1 an item taken back — its delivery sits at or below the seq the 
     "the spawn step closes on the delivery it found",
   );
   assertEquals(
-    await Deno.readTextFile(`${env.runDir}/holds/1.md`),
-    `QUESTION Accept it-1 at aaa1111?\n${OPTIONS.join("\n")}\n`,
+    await Deno.readTextFile(`${env.runDir}/holds/1.json`),
+    ACCEPT_IT_1,
     "the hold carries the delivery's own commit",
   );
 
@@ -641,8 +651,8 @@ Deno.test("AC1 the bundle — takeoff bundled by the pack's bundle line and run 
     `the bundled workflow ended ${ran.code} on \`${last}\`\n${stderr}`,
   );
   assertEquals(
-    await Deno.readTextFile(`${s.env.runDir}/holds/1.md`),
-    `QUESTION Accept it-1 at aaa1111?\n${OPTIONS.join("\n")}\n`,
+    await Deno.readTextFile(`${s.env.runDir}/holds/1.json`),
+    ACCEPT_IT_1,
     "the note the person reads, written by the bundle and not by an import",
   );
   assertEquals(

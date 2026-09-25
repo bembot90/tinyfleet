@@ -10,7 +10,7 @@ mod common;
 
 use common::{shared_store, Fixture, Scratch, StubEvents};
 use fleet_core::entry::{Body, Timeline, Withdrawal};
-use fleet_core::input::DELIVERY_SCHEMA;
+use fleet_core::input::{DELIVERY_SCHEMA, QUESTION_SCHEMA};
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
 use fleet_core::item::dispatch::{self, Order, Wiring};
 use fleet_core::item::{show, table_at, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner};
@@ -267,9 +267,10 @@ fn every_placeholder_of_the_template_resolves() {
         "- record: off",
         "- release-ref: on",
         "- production-write: on",
-        // one line out of rules.md, and one out of delivery.schema.json
+        // one line out of rules.md, and one out of each schema
         "The commit, never the branch.",
         "\"spec_corrections\"",
+        "\"licenses\"",
     ] {
         assert!(
             body.contains(wanted),
@@ -965,6 +966,77 @@ fn a_layer_shadowing_the_schema_with_a_property_removed_is_no_brief() {
     // The control: the shipped schema, through the same layers, renders.
     let whole = Rig::new("schema-whole").render(&ordered(), SEAT);
     assert_eq!(whole.code, None, "{}", whole.why);
+}
+
+/// THE BRIEF SHOWS THE SCHEMA A QUESTION IS READ AGAINST, under its own
+/// section: the verb and its flag, what a hold commits, that the item is held
+/// until a person clears it, and the resolved schema's text whole in a `json`
+/// block.
+#[test]
+fn the_brief_shows_the_question_schema_under_its_own_section() {
+    let rig = Rig::new("question-schema");
+    let rendered = rig.render(&ordered(), SEAT);
+    assert_eq!(rendered.code, None, "{}", rendered.why);
+    let body = &rendered.body;
+
+    let section = body
+        .split_once("## If a question blocks you\n")
+        .map(|(_, rest)| rest)
+        .unwrap_or_else(|| panic!("the brief carries the question's section:\n{body}"));
+    // The words, whatever the wrapping.
+    let said = section.split_whitespace().collect::<Vec<_>>().join(" ");
+    for wanted in [
+        "`fleet hold --question <file>`",
+        "everything your tree holds is committed on the work branch",
+        "The item is held until a person clears it",
+        "A guess written into a diff costs more than a question.",
+    ] {
+        assert!(
+            said.contains(wanted),
+            "the section says `{wanted}`:\n{section}"
+        );
+    }
+    let schema = shipped(QUESTION_SCHEMA);
+    assert!(
+        section.contains(&format!("```json\n{}\n```", schema.trim_end())),
+        "the schema's text, whole, in a json block:\n{section}"
+    );
+}
+
+/// The question's schema is checked against the type `fleet hold` reads, as
+/// the delivery's is: a layer shadowing it with a property taken out is exit 3
+/// naming the path and the disagreement, with nothing on stdout.
+#[test]
+fn a_layer_shadowing_the_question_schema_with_a_property_removed_is_no_brief() {
+    let mut schema: serde_json::Value =
+        serde_json::from_str(&shipped(QUESTION_SCHEMA)).expect("the schema is JSON");
+    schema["properties"]
+        .as_object_mut()
+        .expect("properties")
+        .remove("context");
+    let rig = Rig::new("question-shadow");
+    rig.fixture
+        .file(
+            "packs/top/pack.toml",
+            "[pack]\nname = \"top\"\nversion = \"1\"\nschema = 3\n",
+        )
+        .file(
+            &format!("packs/top/{QUESTION_SCHEMA}"),
+            &serde_json::to_string_pretty(&schema).expect("it writes"),
+        );
+    let rig = Rig::over(rig.fixture);
+
+    let rendered = rig.render(&ordered(), SEAT);
+    assert_eq!(rendered.code, Some(3), "{}", rendered.why);
+    assert!(
+        rendered.why.starts_with(&format!(
+            "{QUESTION_SCHEMA} as the layers resolve it does not describe what fleet hold reads: "
+        )),
+        "{}",
+        rendered.why
+    );
+    assert!(rendered.why.contains("context"), "{}", rendered.why);
+    assert!(rendered.body.is_empty(), "nothing on stdout");
 }
 
 /// The fidelity control on every arm above: the readings the fake answers are

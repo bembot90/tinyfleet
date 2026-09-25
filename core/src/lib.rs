@@ -31,14 +31,14 @@
 //! and the hold, and `item.held` on the stream. It commits EVERYTHING, staged
 //! or not, tracked or not, because a question asked mid-work must lose nothing
 //! and the seat is about to be retired; a tree with nothing to commit parks on
-//! HEAD. It refuses the trunk, a worktree holding no ordered item and a note
-//! the question grammar does not read, all three before the commit. `clear` is
-//! a person's clearance and the one act that empties the store's hold list: the
-//! answer written on the item, the hold cleared and `hold.cleared` written,
-//! each read back. A letter the options do not name is still an answer with
-//! `--text`, because the person deciding may see a third way the seat did not.
-//! Neither verb rings anybody and neither dispatches: what resumes a held
-//! item is whatever dispatches it next.
+//! HEAD. It refuses the trunk, a worktree holding no ordered item and a
+//! question file that does not read as its schema, all three before the
+//! commit. `clear` is a person's clearance and the one act that empties the
+//! store's hold list: the answer written on the item, the hold cleared and
+//! `hold.cleared` written, each read back. A letter the options do not name is
+//! still an answer with `--text`, because the person deciding may see a third
+//! way the seat did not. Neither verb rings anybody and neither dispatches:
+//! what resumes a held item is whatever dispatches it next.
 //!
 //! `review` is the reviewer's read and the verdict it writes. It prints a size
 //! line that is a measurement and carries no tier — core is one reviewer's read

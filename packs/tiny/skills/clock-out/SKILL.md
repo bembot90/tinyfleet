@@ -21,7 +21,7 @@ never declines on context and never ends itself. Nobody told you: say so, stop.
 - **Delivered** — `fleet deliver --delivery <file>` with your delivery JSON:
   the staged set committed, the delivery written with the commit, the branch
   and the base, the item reassigned to the reviewer, the ring sent.
-- **Held** — `fleet hold` with your question in the question grammar: the tree
+- **Held** — `fleet hold --question <file>` with your question JSON: the tree
   committed, the hold raised carrying the question and its lettered options,
   the park written with the branch and the commit. A question is a finished act
   and not an unfinished item.

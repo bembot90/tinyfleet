@@ -51,9 +51,12 @@ refuted, a defect in the item itself, or an act that would be irreversible
 outside your own worktree. Write what you measured and what you expect to fail
 if you are overruled, then hand the item back. A return is work, not a failure.
 
-**Hold.** A question nobody here can answer stops you with a hold: `fleet hold`
-commits everything your tree holds, raises the question on the item and parks.
-Write `QUESTION` at column zero and one lettered option per line — a question
+**Hold.** A question nobody here can answer stops you with a hold: write it as
+a JSON file in the shape your brief shows and run
+`fleet hold --question <file>`. It commits everything your tree holds, raises
+the question on the item and parks, and the item is held until a person clears
+it. The `question` is one line and `context` carries the rest; each of the
+`options` is a capital `letter` and its `text`, no letter twice — a question
 with no options is a conversation, and the person answering may be on a phone.
 You are retired after it; the next flight cuts a fresh seat from your commit
 with the question and its answer already in the brief.

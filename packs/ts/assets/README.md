@@ -107,12 +107,16 @@ binary on `FLEET_BIN` that answers `event …` with the real one.
   const { sha } = await run.land("item-12", "0123abc", { test: "make check" });
   ```
 
-- `hold(question, options)` — a question for a person on the run's own record
-  item: the note `holds/<k>.md` in the question grammar (`QUESTION <text>`,
-  then the lettered options one per line), `fleet hold --item <run> --note
-  <file> --json`, then Waiting with the hold id as the condition. Once
-  `hold.cleared` for that hold is on the stream the re-run closes the step
-  with the clearance's letter.
+- `hold(question, options, about?)` — a question for a person on the run's
+  own record item: the file `holds/<k>.json`, JSON of the shape core's
+  `assets/question.schema.json` gives, each option `<letter>. <text>` taken
+  apart into its `letter` and its `text` (an option of any other shape throws
+  before anything is written), then `fleet hold --item <run> --question <file>
+  --json`, then Waiting with the hold id as the condition. Once `hold.cleared`
+  for that hold is on the stream the re-run closes the step with the
+  clearance's letter. `about` — `{ items, commit?, licenses }` — names the
+  items the answer licenses and the letter that licenses them, and rides in
+  the file as the schema's `about`.
 
   ```ts
   const letter = await run.hold("Ship the report?", ["A. yes", "B. not yet"]);

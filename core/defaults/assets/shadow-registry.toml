@@ -82,10 +82,6 @@ path = "assets/park-note.md"
 purpose = "the note a park renders, carrying the question, the branch, the commit and the hold the clearance clears"
 
 [[shadow]]
-path = "assets/question-note.md"
-purpose = "the grammar a seat's blocking question is written in: the marker, the question and one lettered option per line"
-
-[[shadow]]
 path = "assets/question.schema.json"
 purpose = "the JSON shape a seat's question takes, shown in its brief; fleet hold reads it against the binary's own type"
 

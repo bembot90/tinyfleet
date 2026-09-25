@@ -187,6 +187,41 @@ fn the_pack_teaches_the_delivery_file_and_never_the_note_flag() {
     }
 }
 
+/// THE PACK TEACHES THE QUESTION AS A JSON FILE: the builder's prompt names the
+/// flag and the keys a seat writes, and no document hands a seat the note
+/// flag `fleet hold` refuses or the `QUESTION` marker line that went with it.
+#[test]
+fn the_pack_teaches_the_question_file_and_never_the_note_flag() {
+    let files = pack_files();
+    let (_, prompt) = files
+        .iter()
+        .find(|(path, _)| path == "agents/builder/prompt.template.md")
+        .expect("the pack ships the builder's prompt");
+    for wanted in [
+        "`fleet hold --question <file>`",
+        "`question`",
+        "`context`",
+        "`options`",
+        "`letter`",
+    ] {
+        assert!(
+            prompt.contains(wanted),
+            "the builder's prompt teaches {wanted}"
+        );
+    }
+    for (path, text) in &files {
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            !flat.contains("hold --note"),
+            "{path} hands a seat `fleet hold --note`, which is gone"
+        );
+        assert!(
+            !text.contains("`QUESTION`"),
+            "{path} teaches the `QUESTION` marker, and a question is JSON"
+        );
+    }
+}
+
 // ---- the slots the pack fills -----------------------------------------------
 
 /// The pack's own directory, checked by the verb that validates one.

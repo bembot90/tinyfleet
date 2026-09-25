@@ -14,10 +14,9 @@ Build what the item says, and nothing beside it. When the work is done:
 3. Stop there. **You never land your own work.** The reviewer reads the commit
    you recorded, runs the suite, and lands it.
 
-If the item's premise turns out to be false, or a question blocks you that
-nobody here can answer, say so **on the item** and reassign it. A return is
-work, not a failure — and a guess written into a diff costs more than a
-question.
+If the item's premise turns out to be false, say so **on the item** and
+reassign it: a return is work, not a failure. If a question blocks you that
+nobody here can answer, hold the item on it, as the last section says.
 
 The item is the record. The block under "The item" is fleet's rendering of
 it — what `fleet item show {item_id}` prints — and where this page and the item
@@ -68,4 +67,20 @@ branch, the base and the time are the verb's to fill.
 
 ```json
 {delivery_schema}
+```
+
+## If a question blocks you
+
+Write the question as a JSON file of this shape and run
+`fleet hold --question <file>`. It refuses a file that does not match the
+shape before anything is committed. Then everything your tree holds is
+committed on the work branch, staged or not, and the question is raised as a
+hold on the item. The item is held until a person clears it, and the next seat
+on it starts from your commit with the question and its answer on the item.
+The hold, the branch, the commit and the time are the verb's to fill.
+
+A guess written into a diff costs more than a question.
+
+```json
+{question_schema}
 ```

@@ -171,19 +171,22 @@ acting seat does not hold, all before anything is committed.")]
 
     /// raise a hold: ask a person a question, and hold the item on it
     #[command(long_about = "\
-raise a hold from inside a seat's worktree, asking a person a question:
-everything the tree holds is committed on the work branch, the store's own hold
-is raised carrying the question and its lettered options, the park is written
-on the item with the branch, the commit and the hold, and `item.held` reaches
-the stream.
+raise a hold from inside a seat's worktree, asking a person the question
+--question names: everything the tree holds is committed on the work branch,
+the store's own hold is raised carrying the question and its lettered options,
+the park is written on the item with the branch, the commit and the hold, and
+`item.held` reaches the stream.
+
+The question is a JSON file of the shape assets/question.schema.json, which
+the brief shows.
 
 It rings nobody and dispatches nothing. The flight retires the seat, the item
 leaves the ready set until the hold is cleared, and the next flight that lists
 it cuts a fresh seat from the held commit with the question and the answer in
 its brief.
 
-It refuses the trunk, a worktree holding no ordered item, and a note the
-question grammar does not read — all three before anything is committed.")]
+It refuses the trunk, a worktree holding no ordered item, and a question that
+does not match its shape — all three before anything is committed.")]
     Hold(item::HoldArgs),
 
     /// give a hold its clearance: answer the question an item is held on
@@ -639,7 +642,7 @@ fn dispatch() -> Result<Exit> {
         Family::Ask(_) => Ok(old_verb(
             "ask",
             "a question is a hold now",
-            "fleet hold --note <file>",
+            "fleet hold --question <file>",
         )),
         Family::Answer(_) => Ok(old_verb(
             "answer",

@@ -59,12 +59,15 @@ const DELIVERY: &str = r#"{
   "covers": []
 }"#;
 
-/// The question a hold hands in, in the question grammar.
-const QUESTION: &str = "\
-QUESTION the value the spec names is not on the record — where does it come from?
-A. read it off the item, as the spec assumes
-B. take it from the pack instead
-";
+/// The question a hold hands in, a JSON file of the shape
+/// `assets/question.schema.json` gives.
+const QUESTION: &str = r#"{
+  "question": "the value the spec names is not on the record — where does it come from?",
+  "options": [
+    {"letter": "A", "text": "read it off the item, as the spec assumes"},
+    {"letter": "B", "text": "take it from the pack instead"}
+  ]
+}"#;
 
 /// The id the rig's first dispatch target is keyed by.
 const TARGET_ID: &str = "01a0d1f1-0aec-765f-9abe-5c21e8a04b17";
@@ -171,7 +174,7 @@ impl Rig {
             stub: root.join("agent.sh"),
             roster: root.join("roster.json"),
             delivery: root.join("delivery.json"),
-            question: root.join("question.md"),
+            question: root.join("question.json"),
             seat: format!("ij-a-builder-{label}"),
             target: format!("ij-a-target-{label}"),
             other_target: format!("ij-another-target-{label}"),
@@ -548,7 +551,7 @@ fn hold_and_clear_print_the_hold_one_raised_and_the_other_cleared() {
 
     let out = rig.run(&[
         "hold",
-        "--note",
+        "--question",
         &rig.question.display().to_string(),
         "--json",
     ]);
@@ -608,7 +611,7 @@ fn a_refused_verb_prints_the_refusal_shape_and_the_exit_code_it_always_had() {
         ),
         ("deliver", vec!["deliver", "--delivery", &delivery]),
         ("review", vec!["review", &item, "--by", REVIEWER]),
-        ("hold", vec!["hold", "--note", &question]),
+        ("hold", vec!["hold", "--question", &question]),
         ("clear", vec!["clear", &item, "A", "--by", PERSON]),
     ];
 
@@ -665,7 +668,7 @@ fn an_empty_by_is_the_usage_row_before_the_verb_writes_anything() {
         ("dispatch", vec!["dispatch", &item, "--to", &rig.target]),
         ("deliver", vec!["deliver", "--delivery", &delivery]),
         ("review", vec!["review", &item]),
-        ("hold", vec!["hold", "--note", &question]),
+        ("hold", vec!["hold", "--question", &question]),
         ("clear", vec!["clear", &item, "A"]),
     ];
 
@@ -703,7 +706,7 @@ fn an_empty_by_is_the_usage_row_before_the_verb_writes_anything() {
 /// rewrite and never a sentence about a flag.
 #[test]
 fn the_old_spellings_ask_and_answer_are_usage_naming_hold_and_clear() {
-    let hold = "say fleet hold --note <file>";
+    let hold = "say fleet hold --question <file>";
     let clear = "say fleet clear <item> <letter> [--text <text>]";
     for (args, rewrite) in [
         (vec!["ask"], hold),
@@ -732,6 +735,39 @@ fn the_old_spellings_ask_and_answer_are_usage_naming_hold_and_clear() {
             "{args:?} prints no document: {}",
             String::from_utf8_lossy(&out.stdout)
         );
+    }
+}
+
+/// The flag a prose question went in under is gone, and says where the
+/// question goes now: `hold --note` is the usage row naming `--question` and
+/// the schema, before the project is read, so it needs no rig — and under
+/// `--json` the same sentence is the refusal's `why`.
+#[test]
+fn the_old_note_flag_of_hold_is_usage_naming_the_question_flag() {
+    let rewrite = "--note is gone: a question is a JSON file — fleet hold --question <file>; its \
+                   shape is assets/question.schema.json, which the brief shows";
+    for json in [false, true] {
+        let mut args = vec!["hold", "--note", "no-such-question.md"];
+        if json {
+            args.push("--json");
+        }
+        let out = Command::new(env!("CARGO_BIN_EXE_fleet"))
+            .args(&args)
+            .current_dir(std::env::temp_dir())
+            .hermetic_nowhere()
+            .output()
+            .expect("the built binary runs");
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains(rewrite),
+            "{args:?} names the rewrite: {}",
+            stderr(&out)
+        );
+        if json {
+            let refusal = refusal_of(&out, "hold");
+            assert_eq!(refusal["code"], serde_json::json!("usage"), "{refusal}");
+            assert_eq!(refusal["why"], serde_json::json!(rewrite), "{refusal}");
+        }
     }
 }
 

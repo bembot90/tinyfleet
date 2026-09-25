@@ -7,10 +7,10 @@
 //! seat about to be retired, and `clear` dispatches nothing.
 //!
 //! THE REFUSALS COME BEFORE THE COMMIT, as they do in `deliver`. Everything
-//! `hold` can answer from the record and the note — the item the seat holds, an
-//! epic, the trunk, a note the grammar does not read — is asked while nothing
-//! has been written, so a refusal leaves the seat's worktree exactly where it
-//! stood.
+//! `hold` can answer from the record and the question file — the item the seat
+//! holds, an epic, the trunk, a file that does not read as a [`QuestionInput`]
+//! — is asked while nothing has been written, so a refusal leaves the seat's
+//! worktree exactly where it stood.
 //!
 //! WHAT `hold` COMMITS IS EVERYTHING (decision D1). A question asked mid-work
 //! must lose nothing and the seat is retired the moment the flight reads the
@@ -24,7 +24,8 @@
 //! stages nothing and commits nothing, and its park names [`RUN_BRANCH`] where
 //! a seat's names its branch. Everything after the commit is the same act.
 //!
-//! THE QUESTION IS CARRIED TWICE AND WRITTEN ONCE. Its whole text is the hold's
+//! THE QUESTION IS CARRIED TWICE AND WRITTEN ONCE. The seat hands it in as
+//! JSON and [`question_text`] renders it whole: that text is the hold's
 //! reason, which is what a person meets on the store's hold list, and the same
 //! text sits under the park note's four lines MOVED OFF COLUMN ZERO — so no
 //! line a seat wrote inside its question can end the region it is written in.
@@ -32,13 +33,15 @@
 use std::io::Write;
 use std::path::Path;
 
+use crate::entry::Choice;
+use crate::input::{self, QuestionInput, QUESTION_SCHEMA};
 use crate::item::brief::Packs;
 use crate::item::deliver::held_item;
 use crate::item::dispatch::refuse_an_epic;
 use crate::item::run;
 use crate::item::{
-    control_token, label_value, last_answer, last_park, marker_block, opens_with, render, Events,
-    Git, Project, Stop, ANSWER_MARKERS, HOLD_CLEARED, ITEM_HELD, PARK_MARKERS, TRUNK_BRANCH,
+    control_token, label_value, last_answer, last_park, marker_block, render, Events, Git, Project,
+    Stop, ANSWER_MARKERS, HOLD_CLEARED, ITEM_HELD, PARK_MARKERS, TRUNK_BRANCH,
 };
 use crate::seat::actor::Actor;
 use crate::store::{Item, Store, BD};
@@ -61,13 +64,8 @@ pub const RUN_BRANCH: &str = "(run)";
 /// by [`run::run`] at the open.
 const HASH: &str = "hash";
 
-/// The two grammars this pair reads, both of them slots in the pack.
-pub const QUESTION_NOTE: &str = "assets/question-note.md";
+/// The grammar a clearance is written in, a slot in the pack.
 pub const ANSWER_NOTE: &str = "assets/answer-note.md";
-
-/// The one a question opens on. It is the SEAT's marker and not a note's: the
-/// text lives inside a park region rather than opening one of its own.
-pub const QUESTION_MARKERS: [&str; 1] = ["QUESTION"];
 
 /// What the park note's reason reads as for each of the parks raised here: a
 /// seat's own question, and a run the controller stopped executing at
@@ -86,8 +84,9 @@ pub struct Question<'a> {
     pub item: Option<&'a str>,
     /// Who is asking: a seat, or a run parking its own record.
     pub by: &'a Actor,
-    /// The note the seat wrote, in the pack's question grammar.
-    pub note: &'a Path,
+    /// The question the seat wrote, a JSON file of the shape
+    /// [`QUESTION_SCHEMA`] gives.
+    pub question: &'a Path,
     /// The clock, taken by the caller: core reads none.
     pub at: &'a str,
 }
@@ -138,8 +137,10 @@ pub fn hold(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result
         branch
     };
 
-    let written = read_note(question.note)?;
-    grammar_holds(&wiring.packs.read(QUESTION_NOTE)?, &written)?;
+    // THE FILE, read before anything is written: a question that does not
+    // read is a usage stop naming its schema, with the tree where it stood.
+    let asked: QuestionInput = input::read(question.question, "question", QUESTION_SCHEMA)?;
+    let written = question_text(&asked);
 
     // (a) THE COMMIT, AND EVERYTHING IN IT. `add_all` first, then the index:
     // a tree that answers nothing staged after it is a tree with nothing to
@@ -247,47 +248,27 @@ fn run_hash(record: &Item) -> String {
         .to_string()
 }
 
-fn read_note(path: &Path) -> Result<String, Stop> {
-    std::fs::read_to_string(path).map_err(|e| {
-        Stop::usage(format!(
-            "the note at {} could not be read: {e} — `--note <file>` names the question the seat \
-             wrote",
-            path.display()
-        ))
-    })
-}
-
-/// The note the seat handed in, against the pack's grammar: the marker it opens
-/// on, and at least one lettered option.
-fn grammar_holds(template: &str, written: &str) -> Result<Vec<(char, String)>, Stop> {
-    let Some(first) = written.lines().find(|line| !line.trim().is_empty()) else {
-        return Err(Stop::usage(
-            "the note is empty — a question is the one thing a person is being asked".to_string(),
-        ));
-    };
-    if !opens_with(first, &QUESTION_MARKERS) {
-        return Err(Stop::usage(format!(
-            "the note opens on `{first}` — it opens on `{}` at column zero, which \
-             `{QUESTION_NOTE}` names, or no reader can anchor on it",
-            QUESTION_MARKERS[0]
-        )));
-    }
-    let options = options_in(written);
-    if options.is_empty() {
-        return Err(Stop::usage(format!(
-            "the note names no lettered option — `{QUESTION_NOTE}` names one per line as a \
-             capital letter, a period and the text, and a question with none is a conversation:\n{}",
-            marker_block(template, QUESTION_MARKERS[0]).unwrap_or_default()
-        )));
-    }
-    Ok(options)
+/// A question as a person reads it: the question, its context on the next line
+/// where it carries one, and one `<letter>. <text>` line per option.
+///
+/// It is the store hold's reason, so the store's own hold list shows the whole
+/// question, and the park note's body, which [`clear`] reads the options off.
+pub fn question_text(question: &QuestionInput) -> String {
+    let mut lines = vec![question.question.clone()];
+    lines.extend(question.context.clone());
+    lines.extend(
+        question
+            .options
+            .iter()
+            .map(|choice| format!("{}. {}", choice.letter, choice.text)),
+    );
+    lines.join("\n")
 }
 
 /// Every lettered option a text names, in its order.
 ///
-/// The lines are TRIMMED before they are read, because the same function reads
-/// a question as the seat wrote it and the same question moved off column zero
-/// inside a park region.
+/// The lines are TRIMMED before they are read, because the text read is a park
+/// region, where [`question_text`] sits moved off column zero.
 pub fn options_in(text: &str) -> Vec<(char, String)> {
     text.lines()
         .filter_map(|line| {
@@ -409,7 +390,7 @@ pub struct Capped<'a> {
 /// hold this park exists not to leave.
 pub fn park_at_the_cap(capped: &Capped, store: &dyn Store, packs: &Packs) -> Result<String, Stop> {
     let record = store.show(capped.run)?;
-    let question = cap_question(capped);
+    let question = question_text(&cap_question(capped));
     let by = capped.by.to_string();
     let hold = store.hold(capped.run, &question, &by).map_err(|e| {
         Stop::could_not_tell(format!(
@@ -448,26 +429,43 @@ pub fn park_at_the_cap(capped: &Capped, store: &dyn Store, packs: &Packs) -> Res
     })
 }
 
-/// The question a crash-cap park asks, in the question grammar: the pass's own
-/// reading on the marker line, where the logs are, and one lettered option per
-/// thing a person can do about it.
+/// The question a crash-cap park asks, as the input a seat's question is: the
+/// pass's own reading as the question, where the logs are as its context, and
+/// one lettered option per thing a person can do about it.
 ///
 /// THE OPTIONS SAY WHAT EACH ONE DOES. A clearance clears the hold and does
 /// nothing else — nothing executes a held run again — so the letter records
 /// the decision and the cancel verb is what acts on the first of them.
-fn cap_question(capped: &Capped) -> String {
+pub fn cap_question(capped: &Capped) -> QuestionInput {
     let run = capped.run;
-    format!(
-        "{} {} — nothing executes it again.\n\
-         Its stdout.log and stderr.log are in {}.\n\
-         A. cancel it: `fleet cancel {run}` closes its record and clears this hold, with or \
-         without a clearance\n\
-         B. keep it for now: this clearance clears the hold, and the record stays open, holding \
-         a `[core.run] max_open` slot, until it is cancelled\n",
-        QUESTION_MARKERS[0],
-        capped.reason,
-        capped.directory.display()
-    )
+    let choice = |letter: &str, text: String| Choice {
+        letter: letter.to_string(),
+        text,
+    };
+    QuestionInput {
+        question: format!("{} — nothing executes it again.", capped.reason),
+        context: Some(format!(
+            "Its stdout.log and stderr.log are in {}.",
+            capped.directory.display()
+        )),
+        options: vec![
+            choice(
+                "A",
+                format!(
+                    "cancel it: fleet cancel {run} closes its record and clears this hold, with \
+                     or without an answer"
+                ),
+            ),
+            choice(
+                "B",
+                String::from(
+                    "keep it for now: this answer clears the hold, and the record stays open, \
+                     holding a [core.run] max_open slot, until it is cancelled",
+                ),
+            ),
+        ],
+        about: None,
+    }
 }
 
 // ---- the clearance -----------------------------------------------------------

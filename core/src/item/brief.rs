@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::guard;
-use crate::input::{self, DeliveryInput};
+use crate::input::{self, DeliveryInput, QuestionInput};
 use crate::item::{render, show, Project, Stop};
 use crate::resolve::{self, Layer, Resolution};
 use crate::store::{Orders, Store};
@@ -151,6 +151,15 @@ pub fn text(packs: &Packs, project: &Project, subject: &Subject) -> Result<Strin
             input::DELIVERY_SCHEMA
         ))
     })?;
+    // And the question's, for the same reason: `fleet hold` reads the file
+    // against the type, and a layer's rewording must still say what it takes.
+    let question_schema = packs.read(input::QUESTION_SCHEMA)?;
+    input::agrees::<QuestionInput>(&question_schema).map_err(|why| {
+        Stop::could_not_tell(format!(
+            "{} as the layers resolve it does not describe what fleet hold reads: {why}",
+            input::QUESTION_SCHEMA
+        ))
+    })?;
     let touched = command_or(subject.touched, DERIVE_TOUCHED);
     let guards = guards_of(project);
 
@@ -166,6 +175,7 @@ pub fn text(packs: &Packs, project: &Project, subject: &Subject) -> Result<Strin
             ("guards", &guards),
             ("rules", &rules),
             ("delivery_schema", delivery_schema.trim_end()),
+            ("question_schema", question_schema.trim_end()),
         ],
     )
     .map_err(|name| {

@@ -355,7 +355,7 @@ Deno.test("AC1 land — fleet land <item> <sha> --by <run> --json, the landed sh
   ]]);
 });
 
-Deno.test("AC2 hold — the question note, fleet hold on the run's record item, exit 2 with the hold id, one hold across the re-runs, then the letter", async () => {
+Deno.test("AC2 hold — the question file as JSON, fleet hold --question on the run's record item, exit 2 with the hold id, one hold across the re-runs, then the letter", async () => {
   const s = await scratch();
   const runId = s.env.runId;
   await can(s, "hold", {
@@ -374,22 +374,22 @@ Deno.test("AC2 hold — the question note, fleet hold on the run's record item, 
   const letters: string[] = [];
   const fn = async (run: Run) => {
     await run.step("count", () => 1);
-    letters.push(await run.hold("Ship the report?", ["A. yes", "B. not yet"]));
+    letters.push(await run.hold("Ship the report?", ["A. yes", "B. hold"]));
   };
 
   assertEquals(await replay(fn, s.env, "{}"), { code: 2, waiting: "hold-7" });
-  const note = `${s.env.runDir}/${HOLDS_DIR}/1.md`;
+  const file = `${s.env.runDir}/${HOLDS_DIR}/1.json`;
   assertEquals(
-    await Deno.readTextFile(note),
-    "QUESTION Ship the report?\nA. yes\nB. not yet\n",
-    "the note is in the question grammar",
+    await Deno.readTextFile(file),
+    '{"question":"Ship the report?","options":[{"letter":"A","text":"yes"},{"letter":"B","text":"hold"}]}',
+    "the question file is JSON of the shape assets/question.schema.json",
   );
   assertEquals(await calls(s), [[
     "hold",
     "--item",
     runId,
-    "--note",
-    note,
+    "--question",
+    file,
     "--by",
     `run:${runId}`,
     "--json",
@@ -423,6 +423,54 @@ Deno.test("AC2 hold — the question note, fleet hold on the run's record item, 
   assertEquals(await replay(fn, s.env, "{}"), { code: 0 });
   assertEquals(letters, ["B", "B"], "and replays it");
   assertEquals(closes(await lines(s)).length, 2);
+});
+
+Deno.test("AC2 hold — the about licence rides in the question file, and an option with no letter throws before the binary is asked", async () => {
+  const s = await scratch();
+  const runId = s.env.runId;
+  await can(s, "hold", {
+    stdout: envelope("hold", { item: runId, state: "held", hold: "hold-8" }),
+  });
+  const about = {
+    items: ["it-1"],
+    commit: "0123456789abcdef0123456789abcdef01234567",
+    licenses: "A",
+  };
+  assertEquals(
+    await replay(
+      (run) => run.hold("Land it-1?", ["A. land it", "B. not yet"], about),
+      s.env,
+      "{}",
+    ),
+    { code: 2, waiting: "hold-8" },
+  );
+  assertEquals(
+    JSON.parse(await Deno.readTextFile(`${s.env.runDir}/${HOLDS_DIR}/1.json`)),
+    {
+      question: "Land it-1?",
+      options: [
+        { letter: "A", text: "land it" },
+        { letter: "B", text: "not yet" },
+      ],
+      about,
+    },
+  );
+
+  const t = await scratch();
+  await can(t, "hold", {
+    stdout: envelope("hold", { item: t.env.runId, state: "held", hold: "x" }),
+  });
+  const unlettered = await replay(
+    (run) => run.hold("Ship the report?", ["yes", "B. hold"]),
+    t.env,
+    "{}",
+  );
+  assertEquals(unlettered.code, 1);
+  assertMatch(
+    String((unlettered as { reason: unknown }).reason),
+    /hold: the option yes is not <letter>\. <text>/,
+  );
+  assertEquals(await calls(t), [], "the binary was never asked");
 });
 
 Deno.test("AC3 until — Waiting names exactly the outstanding items, in the order given, and closes when the last event lands", async () => {

@@ -171,6 +171,14 @@ interface Held {
   hold: string;
 }
 
+/** What a hold's answer licenses: the items, the commit where one is named,
+ * and the letter of the option that licenses them. */
+export interface About {
+  items: string[];
+  commit?: string;
+  licenses: string;
+}
+
 /** The handle a workflow runs against. */
 export interface Run {
   readonly id: string;
@@ -220,10 +228,13 @@ export interface Run {
   review(item: string, verdict: Verdict): Promise<Reviewed>;
   /** `fleet land <item> <sha> [--test <command>] --json`. */
   land(item: string, sha: string, options?: LandOptions): Promise<Landed>;
-  /** A question for a person, held on the run's own record item: `fleet hold
-   * --json` with the lettered options, then Waiting on the hold id; the
-   * clearance's letter once `hold.cleared` is on the stream. */
-  hold(question: string, options: string[]): Promise<string>;
+  /** A question for a person, held on the run's own record item: the
+   * question file, JSON of the shape `assets/question.schema.json`, each
+   * option `<letter>. <text>` taken apart into its letter and its text, then
+   * `fleet hold --question <file> --json`, then Waiting on the hold id; the
+   * clearance's letter once `hold.cleared` is on the stream. `about` names the
+   * items the answer licenses and the letter that licenses them. */
+  hold(question: string, options: string[], about?: About): Promise<string>;
   /** Waiting until every item's `item.<state>` is on the stream, naming the
    * outstanding ones; then each item's event payload. For `delivered` that is
    * the item's latest delivery no later `item.returned` follows: an item whose
@@ -253,7 +264,7 @@ const RUN_CLOSED = "run.closed";
 const RUN_FAILED = "run.failed";
 const RUN_CANCELLED = "run.cancelled";
 
-/** Where a hold's question note goes under the run directory. */
+/** Where a hold's question file goes under the run directory. */
 export const HOLDS_DIR = "holds";
 
 /** What a spawn step closes on where the item was already delivered before
@@ -467,29 +478,42 @@ class Handle implements Run {
     );
   }
 
-  hold(question: string, options: string[]): Promise<string> {
+  hold(question: string, options: string[], about?: About): Promise<string> {
     const k = ++this.holds;
     return this.step(`hold ${question}`, async () => {
+      // Taken apart before anything is read or written: an option the verb
+      // could not letter is the workflow's mistake, not the person's.
+      const choices = options.map((o) => {
+        const lettered = /^([A-Z])\. (.+)$/.exec(o);
+        if (lettered === null) {
+          throw new Error(`hold: the option ${o} is not <letter>. <text>`);
+        }
+        return { letter: lettered[1], text: lettered[2] };
+      });
       const parks = (await this.tail({ type: ITEM_HELD, actor: this.actor }))
         .filter((r) => r.payload.item === this.id);
       let hold: string;
       if (parks.length >= k) {
         hold = String(parks[k - 1].payload.hold);
       } else {
-        const note = `${this.env.runDir}/${HOLDS_DIR}/${k}.md`;
+        const file = `${this.env.runDir}/${HOLDS_DIR}/${k}.json`;
         await Deno.mkdir(`${this.env.runDir}/${HOLDS_DIR}`, {
           recursive: true,
         });
         await Deno.writeTextFile(
-          note,
-          `QUESTION ${question}\n${options.join("\n")}\n`,
+          file,
+          JSON.stringify({
+            question,
+            options: choices,
+            ...(about ? { about } : {}),
+          }),
         );
         const held = await this.verb<Held>([
           "hold",
           "--item",
           this.id,
-          "--note",
-          note,
+          "--question",
+          file,
         ]);
         hold = held.hold;
       }

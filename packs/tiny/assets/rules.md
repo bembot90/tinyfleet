@@ -34,17 +34,18 @@ What each verb writes, so you know what to look for afterwards:
 | `deliver` | the commit on the work branch, and the delivery note on the item, rendered from the JSON file `--delivery` names |
 | `review` | the verdict note: accepted, or returned with numbered findings |
 | `land` | the squashed commit on the trunk, the landing note, and the closed item |
-| `hold` | everything the tree holds, committed on the work branch; the hold; the park on the item |
+| `hold` | everything the tree holds, committed on the work branch; the hold, carrying the question from the JSON file `--question` names; the park on the item |
 | `clear` | the answer note on the item, and the hold cleared |
 
-When a question blocks you and nobody here can answer it, `fleet hold --note
-<file>` is the way to stop: it commits everything your tree holds, raises the
-question as a hold on the item, and parks. Write the note with `QUESTION` at
-column zero and one lettered option per line — a question with no options is a
-conversation, and the person answering may be reading it on a phone. You are
-retired after it; the next flight cuts a fresh seat from your commit with the
-question and the answer in its brief. **A guess written into a diff costs more
-than a question.**
+When a question blocks you and nobody here can answer it, `fleet hold
+--question <file>` is the way to stop: it commits everything your tree holds,
+raises the question as a hold on the item, and parks, and the item is held
+until a person clears it. The file is JSON of the shape your brief shows: one
+line of question, each option under its own capital letter — a question with no
+options is a conversation, and the person answering may be reading it on a
+phone. You are retired after it; the next flight cuts a fresh seat from your
+commit with the question and the answer in its brief. **A guess written into a
+diff costs more than a question.**
 
 A message is a doorbell and never the record. A ring says *look at this item*;
 what you do is decided by what the item says, never by the sentence that woke
@@ -69,5 +70,6 @@ Seven more, this fleet's own:
 6. **Whoever reviews it drives it.** Read the delivery, run its suite, and
    exercise the thing itself; a green somebody else reported is not a reading.
 7. **A decision that is the person's is a hold, never prose.** Raise it with
-   `fleet hold`, one lettered option per line, and let the flight park on it.
-   A decision buried in a paragraph is one nobody answered.
+   `fleet hold --question <file>`, each option under its own letter, and let
+   the flight park on it. A decision buried in a paragraph is one nobody
+   answered.

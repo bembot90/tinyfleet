@@ -18,6 +18,7 @@ use std::sync::Mutex;
 
 use common::holding::{holding_bd, standing, LEFT_BEHIND};
 use common::{full, keys_agree, seat_actor, shared_store, Rooted, Scratch, StubEvents};
+use fleet_core::input::{Checked, QuestionInput, QUESTION_SCHEMA};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::hold::{self, Clearance, Question, Wiring};
 use fleet_core::item::run;
@@ -38,12 +39,15 @@ const BRANCH: &str = "a-seat/feat/the-work";
 const RUN_HASH: &str = "5555555555555555555555555555555555555555";
 const POLICY: &str = "[core]\nreviewer = \"a-reviewer\"\n";
 
-/// The question a seat hands in, in the shipped grammar.
-const QUESTION: &str = "\
-QUESTION the table the spec names is not there — what replaces it?
-A. build the table, as the spec assumes
-B. read the value off the item instead
-";
+/// The question a seat hands in, a JSON file of the shape
+/// `assets/question.schema.json` gives.
+const QUESTION: &str = r#"{
+  "question": "the table the spec names is not there — what replaces it?",
+  "options": [
+    {"letter": "A", "text": "build the table, as the spec assumes"},
+    {"letter": "B", "text": "read the value off the item instead"}
+  ]
+}"#;
 
 // ---- the seams ---------------------------------------------------------------
 
@@ -291,10 +295,15 @@ fn an_item(store: &dyn Store, title: &str) -> String {
         .expect("the item is filed")
 }
 
-fn a_note(scratch: &dyn Rooted, label: &str, body: &str) -> PathBuf {
-    let path = scratch.root().join(format!("question-{label}.md"));
-    std::fs::write(&path, body).expect("the note is written");
+fn a_question(scratch: &dyn Rooted, label: &str, body: &str) -> PathBuf {
+    let path = scratch.root().join(format!("question-{label}.json"));
+    std::fs::write(&path, body).expect("the question is written");
     path
+}
+
+/// The question a file holds, read as the verb reads it.
+fn asked(body: &str) -> QuestionInput {
+    serde_json::from_str(body).expect("the question is JSON of its shape")
 }
 
 fn read(store: &dyn Store, item: &str) -> Item {
@@ -317,7 +326,7 @@ struct Seams<'a> {
 
 fn hold_with(
     item: Option<&str>,
-    note: &PathBuf,
+    question: &PathBuf,
     by: &str,
     seams: &Seams,
 ) -> Result<hold::Held, Stop> {
@@ -327,7 +336,7 @@ fn hold_with(
             item,
             // The arm's own seat, by the name its id is derived from.
             by: &seat_actor(by),
-            note,
+            question,
             at: AT,
         },
         &Wiring {
@@ -369,10 +378,10 @@ fn clear_with(
 /// arm above it measures.
 fn a_held_item(scratch: &Board, label: &str, seat: &str) -> (String, String) {
     let item = an_ordered_item(&scratch.store, &format!("an item held for {label}"), seat);
-    let note = a_note(scratch, label, QUESTION);
+    let question = a_question(scratch, label, QUESTION);
     let held = hold_with(
         None,
-        &note,
+        &question,
         seat,
         &Seams {
             store: &scratch.store,
@@ -398,7 +407,7 @@ fn a_clean_hold_commits_the_whole_tree_raises_the_hold_and_parks() {
     let bd = &Bd::at(&scratch.root);
     let seat = "g-clean";
     let item = an_ordered_item(bd, "an item with a question on it", seat);
-    let note = a_note(scratch, "clean", QUESTION);
+    let question = a_question(scratch, "clean", QUESTION);
     let git = StubGit::holding_work();
     let events = StubEvents::default();
 
@@ -408,7 +417,7 @@ fn a_clean_hold_commits_the_whole_tree_raises_the_hold_and_parks() {
         &Question {
             item: None,
             by: &seat_actor(seat),
-            note: &note,
+            question: &question,
             at: AT,
         },
         &Wiring {
@@ -446,8 +455,8 @@ fn a_clean_hold_commits_the_whole_tree_raises_the_hold_and_parks() {
         "the commit subject names the item by its full id and the park: {calls:?}"
     );
 
-    // (b) THE HOLD, carrying the note's whole text, and the item off the ready
-    // set behind it.
+    // (b) THE HOLD, carrying the question's whole text, and the item off the
+    // ready set behind it.
     // `-n 0` for the reason the store's own read carries it: this board is the
     // run's, every ring arm on it contributes holds, and a capped listing drops
     // rows without saying so.
@@ -457,9 +466,11 @@ fn a_clean_hold_commits_the_whole_tree_raises_the_hold_and_parks() {
         holds.contains(&held.hold),
         "the store lists the hold open: {holds}"
     );
+    // The text as the listing's JSON spells it, its newlines escaped.
+    let spelled = serde_json::to_string(&hold::question_text(&asked(QUESTION))).expect("it writes");
     assert!(
-        holds.contains("the table the spec names is not there"),
-        "and carries the question as its reason: {holds}"
+        holds.contains(spelled.trim_matches('"')),
+        "and carries the question's whole text as its reason, options and all: {holds}"
     );
     let ready = bd.ready().expect("the ready read answers");
     assert!(
@@ -490,13 +501,14 @@ fn a_clean_hold_commits_the_whole_tree_raises_the_hold_and_parks() {
             && park.contains("B. read the value"),
         "and the question with both options beneath them:\n{park}"
     );
-    assert!(
-        !park
-            .lines()
-            .skip(1)
-            .any(|line| line.starts_with("QUESTION")),
-        "the question is moved OFF column zero, so no line of it can end the region:\n{park}"
-    );
+    let text = hold::question_text(&asked(QUESTION));
+    for line in text.lines() {
+        assert!(
+            park.lines().any(|parked| parked == format!("  {line}")),
+            "the question's `{line}` is moved OFF column zero, so no line of it can end the \
+             region:\n{park}"
+        );
+    }
 
     // (d) THE ONE EVENT, with the five keys the table names.
     assert_eq!(events.count(), 1, "exactly one event");
@@ -524,13 +536,13 @@ fn an_item_named_by_its_suffix_is_held_under_its_full_id() {
     let item = an_ordered_item(&scratch.store, "an item named by its suffix", seat);
     let suffix = item.strip_prefix("fx-").expect("the board files under fx-");
     scratch.forget_writes();
-    let note = a_note(scratch, "suffix", QUESTION);
+    let question = a_question(scratch, "suffix", QUESTION);
     let git = StubGit::holding_work();
     let events = StubEvents::default();
 
     let held = hold_with(
         Some(suffix),
-        &note,
+        &question,
         seat,
         &Seams {
             store: &scratch.store,
@@ -579,12 +591,12 @@ fn a_tree_with_nothing_to_commit_parks_on_head() {
     let scratch = &store();
     let seat = "g-empty";
     let item = an_ordered_item(&scratch.store, "an item asked about before any work", seat);
-    let note = a_note(scratch, "empty", QUESTION);
+    let question = a_question(scratch, "empty", QUESTION);
     let git = StubGit::clean();
 
     let held = hold_with(
         None,
-        &note,
+        &question,
         seat,
         &Seams {
             store: &scratch.store,
@@ -611,7 +623,7 @@ fn the_trunk_is_refused_and_the_item_is_untouched() {
     let scratch = &store();
     let seat = "g-trunk";
     let item = an_ordered_item(&scratch.store, "an item asked about on the trunk", seat);
-    let note = a_note(scratch, "trunk", QUESTION);
+    let question = a_question(scratch, "trunk", QUESTION);
     let before = scratch.json(&item);
     let git = StubGit {
         branch: "main".to_string(),
@@ -620,7 +632,7 @@ fn the_trunk_is_refused_and_the_item_is_untouched() {
 
     let stop = hold_with(
         None,
-        &note,
+        &question,
         seat,
         &Seams {
             store: &scratch.store,
@@ -664,7 +676,7 @@ fn a_runs_record_parks_off_the_trunk_and_performs_no_git_act() {
         kind: ActorKind::Run,
         id: item.clone(),
     };
-    let note = a_note(scratch, "run", QUESTION);
+    let question = a_question(scratch, "run", QUESTION);
     let git = StubGit {
         branch: "main".to_string(),
         ..StubGit::holding_work()
@@ -676,7 +688,7 @@ fn a_runs_record_parks_off_the_trunk_and_performs_no_git_act() {
         &Question {
             item: Some(&item),
             by: &its_run,
-            note: &note,
+            question: &question,
             at: AT,
         },
         &Wiring {
@@ -727,7 +739,7 @@ fn a_runs_record_parks_off_the_trunk_and_performs_no_git_act() {
     let git = StubGit::holding_work();
     let stop = hold_with(
         Some(&item),
-        &note,
+        &question,
         "g-run",
         &Seams {
             store: &scratch.store,
@@ -761,7 +773,7 @@ fn an_item_that_is_not_a_runs_record_is_refused_the_park_on_the_trunk() {
         &item,
         &format!(r#"{{"fleet.run": {{"v": 1, "hash": "{RUN_HASH}", "workflow": "takeoff"}}}}"#),
     );
-    let note = a_note(scratch, "not-a-run", QUESTION);
+    let question = a_question(scratch, "not-a-run", QUESTION);
     let before = scratch.json(&item);
     let git = StubGit {
         branch: "main".to_string(),
@@ -770,7 +782,7 @@ fn an_item_that_is_not_a_runs_record_is_refused_the_park_on_the_trunk() {
 
     let stop = hold_with(
         Some(&item),
-        &note,
+        &question,
         seat,
         &Seams {
             store: &scratch.store,
@@ -806,12 +818,12 @@ fn an_item_labelled_bare_run_is_held_and_commits_like_any_seats_item() {
         &item,
         &format!(r#"{{"run": {{"hash": "{RUN_HASH}", "workflow": "theirs"}}}}"#),
     );
-    let note = a_note(scratch, "bare-run", QUESTION);
+    let question = a_question(scratch, "bare-run", QUESTION);
     let git = StubGit::holding_work();
 
     let held = hold_with(
         None,
-        &note,
+        &question,
         seat,
         &Seams {
             store: &scratch.store,
@@ -843,13 +855,13 @@ fn a_seat_holding_no_ordered_item_is_refused() {
     // Assigned and NOT ordered: the row is held and the order index is absent.
     let item = an_item(&scratch.store, "an item nobody ordered");
     scratch.assign(&item, &full(seat));
-    let note = a_note(scratch, "unordered", QUESTION);
+    let question = a_question(scratch, "unordered", QUESTION);
     let before = scratch.json(&item);
     let git = StubGit::holding_work();
 
     let stop = hold_with(
         None,
-        &note,
+        &question,
         seat,
         &Seams {
             store: &scratch.store,
@@ -875,22 +887,29 @@ fn a_seat_holding_no_ordered_item_is_refused() {
     assert_eq!(before, scratch.json(&item), "the item is byte-identical");
 }
 
+/// A JSON QUESTION IS A HOLD, AND ONE A PERSON CLEARS. The store's hold
+/// carries [`hold::question_text`] as its reason — the question, its context
+/// on the next line, one `<letter>. <text>` line per option — and the park
+/// carries the same text, which `fleet clear` reads the letter off.
 #[test]
-fn a_note_with_no_lettered_option_is_usage_and_names_the_grammar() {
+fn a_json_question_is_held_under_its_text_and_cleared_by_its_letter() {
     let scratch = &store();
-    let seat = "g-options";
-    let item = an_ordered_item(&scratch.store, "an item asked about with no options", seat);
-    let note = a_note(
-        scratch,
-        "options",
-        "QUESTION the table is not there — what now?\nI think we should talk about it.\n",
-    );
-    let before = scratch.json(&item);
+    let seat = "g-json";
+    let item = an_ordered_item(&scratch.store, "an item asked about in JSON", seat);
+    let body = r#"{
+  "question": "Which table does the value come from?",
+  "context": "The spec names one the tree does not have.",
+  "options": [
+    {"letter": "A", "text": "build the table"},
+    {"letter": "B", "text": "read the value off the item"}
+  ]
+}"#;
+    let question = a_question(scratch, "json", body);
     let git = StubGit::holding_work();
 
-    let stop = hold_with(
+    let held = hold_with(
         None,
-        &note,
+        &question,
         seat,
         &Seams {
             store: &scratch.store,
@@ -900,42 +919,145 @@ fn a_note_with_no_lettered_option_is_usage_and_names_the_grammar() {
             events: &StubEvents::default(),
         },
     )
-    .expect_err("a question with no options is refused");
+    .unwrap_or_else(|stop| panic!("a JSON question is held: {}", stop.message));
+    assert_eq!(held.item, item);
 
-    assert_eq!(stop.code, 2, "{}", stop.message);
-    assert!(
-        stop.message.contains(hold::QUESTION_NOTE),
-        "the refusal names the grammar: {}",
-        stop.message
+    let text = hold::question_text(&asked(body));
+    assert_eq!(
+        text,
+        "Which table does the value come from?\n\
+         The spec names one the tree does not have.\n\
+         A. build the table\n\
+         B. read the value off the item"
     );
-    assert!(
-        !git.calls().iter().any(|call| call == "add_all"),
-        "nothing was staged: {:?}",
-        git.calls()
+    let raised = scratch.store.raised();
+    assert_eq!(raised.len(), 1, "one hold: {raised:?}");
+    assert_eq!(
+        raised[0],
+        (item.clone(), text),
+        "the store hold's reason is the question's text"
     );
-    assert_eq!(before, scratch.json(&item), "the item is byte-identical");
 
-    // And a note that does not open on the marker is the same exit.
-    let unmarked = a_note(scratch, "unmarked", "What should we do?\nA. one\nB. two\n");
-    let stop = hold_with(
+    // THE PARK IS STILL WHAT A CLEARANCE READS.
+    let cleared = clear_with(
+        &item,
+        "B",
         None,
-        &unmarked,
-        seat,
+        "a-person",
         &Seams {
             store: &scratch.store,
-            git: &StubGit::holding_work(),
+            git: &git,
             project: &project(scratch),
             packs: &packs(scratch),
             events: &StubEvents::default(),
         },
     )
-    .expect_err("a note with no marker is refused");
-    assert_eq!(stop.code, 2, "{}", stop.message);
+    .unwrap_or_else(|stop| panic!("the park is answerable: {}", stop.message));
+    assert_eq!(cleared.hold, held.hold);
+    assert_eq!(cleared.letter, "B");
     assert!(
-        stop.message.contains(hold::QUESTION_MARKERS[0]),
-        "{}",
-        stop.message
+        !scratch
+            .store
+            .open_holds()
+            .expect("the open list answers")
+            .contains(&held.hold),
+        "the hold is cleared"
     );
+}
+
+/// A FILE THAT DOES NOT READ IS USAGE, BEFORE ANYTHING IS WRITTEN. Each file
+/// here breaks one rule of `assets/question.schema.json`, and each is exit 2
+/// naming the schema with nothing staged, no hold raised, nothing on the
+/// stream and the item byte for byte where it stood.
+///
+/// RED-PROOF, the duplicate: the question grammar this replaces read its
+/// options with `options_in`, which keeps both of two options under one
+/// letter, so a question naming A twice was a tree committed and a hold raised.
+#[test]
+fn a_question_that_does_not_read_is_usage_naming_the_schema_and_nothing_is_written() {
+    let scratch = &store();
+    let seat = "g-unread";
+    let item = an_ordered_item(&scratch.store, "an item asked about badly", seat);
+    let before = scratch.json(&item);
+    let wrote = scratch.store.wrote();
+
+    for (label, body, why) in [
+        (
+            "no-options",
+            r#"{"question": "Which one?", "options": []}"#,
+            "names no option",
+        ),
+        (
+            "lower",
+            r#"{"question": "Which one?", "options": [{"letter": "a", "text": "one"}]}"#,
+            "`options[0].letter` a, which is not one capital letter",
+        ),
+        (
+            "twice",
+            r#"{"question": "Which one?", "options": [
+                {"letter": "A", "text": "one"}, {"letter": "A", "text": "two"}
+            ]}"#,
+            "names option A twice",
+        ),
+        (
+            "two-lines",
+            r#"{"question": "Which one?\nAnd why?", "options": [{"letter": "A", "text": "one"}]}"#,
+            "asks its question over more than one line",
+        ),
+        (
+            "unknown-key",
+            r#"{"question": "Which one?", "options": [{"letter": "A", "text": "one"}],
+                "urgency": "high"}"#,
+            "unknown field `urgency`",
+        ),
+    ] {
+        let question = a_question(scratch, label, body);
+        let git = StubGit::holding_work();
+        let events = StubEvents::default();
+
+        let stop = hold_with(
+            None,
+            &question,
+            seat,
+            &Seams {
+                store: &scratch.store,
+                git: &git,
+                project: &project(scratch),
+                packs: &packs(scratch),
+                events: &events,
+            },
+        )
+        .expect_err("a question that does not read is refused");
+
+        assert_eq!(stop.code, 2, "{label}: {}", stop.message);
+        assert!(
+            stop.message.contains(QUESTION_SCHEMA),
+            "{label}: the refusal names the schema: {}",
+            stop.message
+        );
+        assert!(
+            stop.message.contains(why),
+            "{label}: the refusal says `{why}`: {}",
+            stop.message
+        );
+        assert!(
+            !git.calls().iter().any(|call| call == "add_all"),
+            "{label}: nothing was staged: {:?}",
+            git.calls()
+        );
+        assert!(
+            scratch.store.raised().is_empty(),
+            "{label}: no hold was raised: {:?}",
+            scratch.store.raised()
+        );
+        assert_eq!(events.count(), 0, "{label}: nothing reached the stream");
+    }
+    assert_eq!(
+        scratch.store.wrote(),
+        wrote,
+        "the store was written nothing"
+    );
+    assert_eq!(before, scratch.json(&item), "the item is byte-identical");
 }
 
 #[test]
@@ -943,13 +1065,13 @@ fn a_read_back_that_disagrees_is_could_not_tell() {
     let scratch = &store();
     let seat = "g-readback";
     let item = an_ordered_item(&scratch.store, "an item whose park does not land", seat);
-    let note = a_note(scratch, "readback", QUESTION);
+    let question = a_question(scratch, "readback", QUESTION);
     let before = scratch.json(&item);
     let events = StubEvents::default();
 
     let stop = hold_with(
         None,
-        &note,
+        &question,
         seat,
         &Seams {
             store: &Swallowing {
@@ -994,7 +1116,7 @@ fn an_epic_is_refused_before_the_commit_and_nothing_is_written() {
         )
         .expect("the epic is filed");
     scratch.assign(&item, &full(seat));
-    let note = a_note(scratch, "epic", QUESTION);
+    let question = a_question(scratch, "epic", QUESTION);
     let before = scratch.json(&item);
     let wrote = scratch.store.wrote();
     let git = StubGit::holding_work();
@@ -1002,7 +1124,7 @@ fn an_epic_is_refused_before_the_commit_and_nothing_is_written() {
 
     let stop = hold_with(
         Some(&item),
-        &note,
+        &question,
         seat,
         &Seams {
             store: &scratch.store,
@@ -1071,12 +1193,12 @@ fn a_hold_left_behind_by_a_failed_create_is_cleared_and_named() {
     let log = dir.path("argv");
     let bin = holding_bd(&dir, &a_held_row(item, seat), &["g-before"], true, &log);
     let bd = Bd::at_bin(scratch.root(), &bin);
-    let note = a_note(scratch, "left", QUESTION);
+    let question = a_question(scratch, "left", QUESTION);
     let events = StubEvents::default();
 
     let stop = hold_with(
         Some(item),
-        &note,
+        &question,
         seat,
         &Seams {
             store: &bd,
@@ -1154,11 +1276,11 @@ fn a_hold_left_behind_that_cannot_be_cleared_is_named_with_its_command() {
     let log = dir.path("argv");
     let bin = holding_bd(&dir, &a_held_row(item, seat), &[], false, &log);
     let bd = Bd::at_bin(scratch.root(), &bin);
-    let note = a_note(scratch, "left-stands", QUESTION);
+    let question = a_question(scratch, "left-stands", QUESTION);
 
     let stop = hold_with(
         Some(item),
-        &note,
+        &question,
         seat,
         &Seams {
             store: &bd,
@@ -1436,20 +1558,18 @@ fn a_run_held_at_the_crash_cap_is_cleared_like_any_other_park() {
     let run = a_runs_record(scratch, "a run nothing could classify");
     let directory = scratch.root.join("runs").join(&run);
 
-    let hold_id = hold::park_at_the_cap(
-        &hold::Capped {
-            run: &run,
-            reason: CAPPED_REASON,
-            directory: &directory,
-            by: &Actor {
-                kind: ActorKind::Controller,
-                id: full("this-machine"),
-            },
-        },
-        &scratch.store,
-        &packs(scratch),
-    )
-    .expect("the park is made");
+    let controller = Actor {
+        kind: ActorKind::Controller,
+        id: full("this-machine"),
+    };
+    let capped = hold::Capped {
+        run: &run,
+        reason: CAPPED_REASON,
+        directory: &directory,
+        by: &controller,
+    };
+    let hold_id =
+        hold::park_at_the_cap(&capped, &scratch.store, &packs(scratch)).expect("the park is made");
 
     // (a) THE ANSWER, which is what a person meets first.
     let events = StubEvents::default();
@@ -1501,11 +1621,35 @@ fn a_run_held_at_the_crash_cap_is_cleared_like_any_other_park() {
         "and says where the logs are:\n{park}"
     );
     assert!(
-        park.contains(&format!("`fleet cancel {run}`")),
+        park.contains(&format!(
+            "A. cancel it: fleet cancel {run} closes its record"
+        )),
         "and names the verb that ends the run:\n{park}"
     );
+
+    // (c) THE QUESTION IS A QUESTION INPUT, read by the rules a seat's is held
+    // to, and the hold's reason is its whole text, options and all.
+    let cap = hold::cap_question(&capped);
+    cap.check()
+        .unwrap_or_else(|why| panic!("the cap's question reads as a seat's would: {why}"));
+    assert_eq!(
+        cap.question,
+        format!("{CAPPED_REASON} — nothing executes it again.")
+    );
+    assert_eq!(
+        cap.context.as_deref(),
+        Some(
+            format!(
+                "Its stdout.log and stderr.log are in {}.",
+                directory.display()
+            )
+            .as_str()
+        )
+    );
+    assert_eq!(cap.about, None);
     let raised = scratch.store.raised();
     assert_eq!(raised.len(), 1, "one hold: {raised:?}");
+    assert_eq!(raised[0].1, hold::question_text(&cap));
     let letters: Vec<char> = hold::options_in(&raised[0].1)
         .into_iter()
         .map(|(letter, _)| letter)
@@ -1520,27 +1664,34 @@ fn a_run_held_at_the_crash_cap_is_cleared_like_any_other_park() {
 
 // ---- AC5: the defaults -------------------------------------------------------
 
+/// The answer's grammar is in the defaults and the registry; the question's
+/// grammar is gone from both, and its schema is what the registry names.
 #[test]
-fn the_defaults_carry_both_templates_and_the_registry_names_them() {
+fn the_defaults_carry_the_answer_template_and_the_question_schema() {
     let scratch = Board::new("hold-pack");
     let installed = scratch.defaults_dir.clone();
-    for (slot, marker) in [
-        (hold::QUESTION_NOTE, hold::QUESTION_MARKERS[0]),
-        (hold::ANSWER_NOTE, ANSWER_MARKERS[0]),
-    ] {
-        let body = std::fs::read_to_string(installed.join(slot)).expect("the template is readable");
-        assert!(
-            body.starts_with(marker),
-            "`{slot}` opens on its own marker:\n{body}"
-        );
-    }
+    let body = std::fs::read_to_string(installed.join(hold::ANSWER_NOTE))
+        .expect("the template is readable");
+    assert!(
+        body.starts_with(ANSWER_MARKERS[0]),
+        "`{}` opens on its own marker:\n{body}",
+        hold::ANSWER_NOTE
+    );
+    assert!(
+        !installed.join("assets/question-note.md").exists(),
+        "the question grammar is gone: a question is JSON"
+    );
 
     let registry = std::fs::read_to_string(installed.join("assets/shadow-registry.toml"))
         .expect("the registry is readable");
-    for slot in [hold::QUESTION_NOTE, hold::ANSWER_NOTE] {
+    for slot in [hold::ANSWER_NOTE, QUESTION_SCHEMA] {
         assert!(
-            registry.contains(slot),
-            "and the registry names `{slot}`:\n{registry}"
+            registry.contains(&format!("path = \"{slot}\"")),
+            "the registry names `{slot}`:\n{registry}"
         );
     }
+    assert!(
+        !registry.contains("assets/question-note.md"),
+        "and names no question grammar:\n{registry}"
+    );
 }
