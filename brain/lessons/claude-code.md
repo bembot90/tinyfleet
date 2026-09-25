@@ -579,6 +579,47 @@ the requirement owed it.
   it.
 - **Test:** `lessons::a_live_session_is_reached_without_a_resume`
 
+### B10. An interactive session is listed without an address, and its blocked cause is typed
+
+- **Fact:** An interactive `claude` started inside a tmux session fleet
+  controls is a row in the same listing as the background sessions, with
+  `kind: interactive`, and the listing read in 100–160 ms across 40 reads.
+  The row carries `cwd`, `kind`, `name`, `pid`, `sessionId`, `startedAt` and
+  `status`, and **never `id` and never `state`**: the short-id address and the
+  five-word state vocabulary of A3 are background-only. `status` is the whole
+  reading, and it is three words — `idle` at the prompt, `busy` mid-turn, and
+  `waiting` while the session is stopped in front of a human — where B8's
+  background reading knew two. The `waitingFor` field of B8 holds on the
+  interactive row exactly as keyed there: absent while idle and busy, present
+  as `permission prompt` the second the Bash approval dialog came up, gone on
+  the next read after the dialog was answered (busy, then idle three seconds
+  later). The row is **absent while the workspace-trust question is up** (A15
+  interactively: the dialog waits rather than exiting, and the row appears
+  only once it is answered), and the agent renamed the session on its own
+  within ten seconds of arrival, which is B3 measured again. A session under a
+  scoped configuration directory is listed by that directory's daemon and by
+  no other, so A11 holds for interactive rows too. **On the session's end the
+  row is gone by the next read, within one second, whether the end was a typed
+  `/exit` or the tmux session killed under it, and no pid-less row remains:**
+  the ended-but-listed reading A3 and the stopped-row window of `observe` are
+  background-only, so an interactive session's end has no stamp on the listing
+  and its transcript's last write is the only one there is (the transcript
+  outlived the process, as C4 says, under the default projects directory; the
+  scoped session took no turn and left none to find, so where a scoped
+  interactive transcript lands is unmeasured).
+- **Version:** Claude Code 2.1.282, on a binary that had moved past the
+  2.1.280 pin by itself (A1); tmux 3.7b.
+- **Date:** 2026-09-24.
+- **Implies:** the adapters-and-sessions design (fleet-notes, 2026-09-24):
+  fleet owning the session under tmux keeps the listing as a read — presence,
+  pid, busy or idle, and the typed blocked cause — so a screen rule is a
+  second source for an agent whose listing carries less, never the first for
+  this one. The address is gone with `--bg`, so stop and revive are tmux's
+  and the flagless full-id resume's (A9). A stopped interactive session
+  cannot be aged off the listing: recency for such a seat reads the
+  transcript's mtime alone.
+- **Test:** `lessons::an_interactive_row_is_listed_without_an_address`
+
 ---
 
 ## C. The transcript on disk
@@ -840,6 +881,40 @@ the requirement owed it.
   recorded address and R32's verification from outside; it names no behaviour
   of its own to exercise.`
 
+### D8. An interactive start under tmux meets onboarding, waits at the trust question, and a burst Enter does not submit
+
+- **Fact:** Three things a `--bg` start never shows. **Onboarding.** An
+  interactive start under an EMPTY scoped configuration directory — the
+  directory a spawn makes today, whose whole content is its emptiness — stops
+  at the theme picker and then at the login-method menu before any session
+  exists, while a background start under the same emptiness comes up. A
+  `.claude.json` seeded in that directory with `hasCompletedOnboarding`,
+  `lastOnboardingVersion`, `theme` and `oauthAccount` copied from the default
+  one skipped both, and with the credential knob defined-but-empty (A11) the
+  session came up logged in under the same subscription. **The trust
+  question.** A15's dialog waits interactively instead of exiting, its default
+  is "No, exit", and Down then Enter accepts it; the session is not listed
+  until then (B10). **The submit.** Text and Enter sent to the pane in one
+  `send-keys` burst left the text in the input box unsubmitted; a lone Enter
+  sent a minute later did not submit it either; a `C-m` sent 66 s after that
+  did, and the row read `busy` within a second and `waiting` at the approval
+  dialog two seconds after. Whether the first two were swallowed by timing or
+  by the keysym is not separated by this measurement; herdr, which types into
+  the same agent, sends the text and the Enter 300 ms apart as one ordered
+  submission and then requires `working` or `blocked` within five seconds
+  before it believes the turn was taken. The typed `/exit` ended the session
+  and so did killing the tmux session under it, each with the row gone within
+  a second.
+- **Version:** Claude Code 2.1.282; tmux 3.7b.
+- **Date:** 2026-09-24.
+- **Implies:** the adapters-and-sessions design: a spawn that starts a seat
+  interactively owes the configuration directory an onboarding stamp it does
+  not write today, and the first-run gate of A15 stays an install step. A
+  nudge or a feed typed into the pane is two acts, the text and the submit,
+  and it is verified by the listing's `status` turning `busy`, never by the
+  send returning — the same activity gate herdr keeps.
+- **Test:** `lessons::an_interactive_start_under_tmux`
+
 ---
 
 ## Test inventory
@@ -874,6 +949,7 @@ name.
 | `lessons::a_truncated_listing_is_not_absence` | B7 |
 | `lessons::waiting_for_names_the_block` | B8 |
 | `lessons::a_live_session_is_reached_without_a_resume` | B9 |
+| `lessons::an_interactive_row_is_listed_without_an_address` | B10 |
 | `lessons::the_transcript_path_encoding` | C1 |
 | `lessons::the_transcript_entry_shape` | C2 |
 | `lessons::sidechains_carry_another_window` | C3 |
@@ -885,3 +961,4 @@ name.
 | `lessons::a_blocked_grant_read_is_pending` | D4 |
 | `lessons::the_plugin_root_addresses_the_hook` | D5 |
 | `lessons::the_plugin_loader_follows_a_skill_link` | D6 |
+| `lessons::an_interactive_start_under_tmux` | D8 |
