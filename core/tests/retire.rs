@@ -9,9 +9,10 @@
 
 mod common;
 
+use common::adapter::Adapter;
 use common::capped::{calls, capped_bd, Held};
 use common::Fixture;
-use fleet_core::entry::{Body, Entry, OrderWithdrawn, Withdrawal};
+use fleet_core::entry::{self, Body, Entry, OrderWithdrawn, Withdrawal};
 use fleet_core::item::{COULD_NOT_TELL, REFUSED};
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
@@ -400,9 +401,11 @@ fn a_retire_withdrawing_one_item_makes_one_update_and_one_append() {
         2,
         "two writes and no more for one withdrawn item: {wrote:?}"
     );
-    assert!(
-        wrote[0].starts_with(&format!("order_withdraw_from {HELD}")),
-        "the assignee and the index move together: {wrote:?}"
+    assert_eq!(
+        wrote[0],
+        format!("order_withdraw {HELD} if_assignee {SEAT} if_status open reopen {BY}"),
+        "the assignee, the index and the status move together, fenced on the seat and the \
+         status it was listed in: {wrote:?}"
     );
     assert!(
         wrote[1].starts_with(&format!("append {HELD} order_withdrawn")),
@@ -583,4 +586,106 @@ fn a_retire_withdraws_an_ordered_item_past_the_fiftieth_row() {
         vec![String::from("fx-row-51")],
         "one withdrawal, of the item at row 51"
     );
+}
+
+// ---- over an adapter ---------------------------------------------------------
+
+/// The row the listing answered for the held item, `in_progress` as its seat
+/// left it.
+fn an_in_progress_row() -> ItemSummary {
+    ItemSummary {
+        id: HELD.into(),
+        title: format!("{HELD} · an item"),
+        status: Status::InProgress,
+        item_type: String::from("task"),
+        order: an_order(),
+        ..ItemSummary::default()
+    }
+}
+
+/// OVER AN ADAPTER THE RETIRE IS ONE `order.withdraw` PER ITEM, carrying its
+/// fences and the reopen as the verb's own fields: the seat it retires, the
+/// status the listing read, and `reopen: true`. No read of the holder comes
+/// before it, and nothing is written after it but the entry.
+///
+/// RED-PROOF: with the retire on a withdrawal that reads the holder, reopens
+/// and then withdraws unfenced, the first call is a `show` and the item the
+/// adapter answers held by nobody is refused as moved.
+#[test]
+fn a_retire_over_an_adapter_sends_one_fenced_withdrawal_that_reopens() {
+    let adapter = Adapter::new("retire-exec");
+    let entry = Entry {
+        id: String::from("e-1"),
+        at: String::from("2026-09-25T10:00:00Z"),
+        by: by(),
+        body: withdrawn_at_retire(),
+    };
+    let after = Item {
+        id: HELD.into(),
+        title: format!("{HELD} · an item"),
+        status: Status::Open,
+        item_type: String::from("task"),
+        ..Item::default()
+    };
+    let timeline = serde_json::json!({ "schema_version": 1, "entries": [entry::to_json(&entry)] });
+    let shown = serde_json::json!({ "schema_version": 1, "item": after });
+    adapter
+        .answers("order.withdraw", &[(r#"{"schema_version":1}"#, 0)])
+        .answers("append", &[(r#"{"schema_version":1,"entry":"e-1"}"#, 0)])
+        .answers("timeline", &[(&timeline.to_string(), 0)])
+        .answers("show", &[(&shown.to_string(), 0)]);
+
+    retire::withdraw(
+        &adapter.exec(),
+        &[an_in_progress_row()],
+        &seat(),
+        LABEL,
+        &by(),
+    )
+    .expect("the withdrawal lands");
+
+    assert_eq!(
+        adapter.verbs(),
+        ["order.withdraw", "append", "timeline", "show"],
+        "one write of the item, then its entry and the two read-backs"
+    );
+    let request = adapter.request("order.withdraw", 1);
+    assert_eq!(request["id"], HELD);
+    assert_eq!(request["by"], BY);
+    assert_eq!(request["if_assignee"], SEAT, "{request}");
+    assert_eq!(request["if_status"], "in_progress", "{request}");
+    assert_eq!(request["reopen"], true, "{request}");
+}
+
+/// An item that moved between the listing and the write is the adapter's
+/// `moved` refusal, which the retire reads as the record's answer: refused,
+/// naming the item and carrying the adapter's words, and nothing after it is
+/// sent.
+#[test]
+fn a_retire_over_an_adapter_whose_row_moved_is_refused_and_sends_nothing_more() {
+    let adapter = Adapter::new("retire-exec-moved");
+    let refused = serde_json::json!({
+        "schema_version": 1,
+        "refused": { "reason": "moved", "message": format!("{HELD} is held by {TAKER}") },
+    });
+    adapter.answers("order.withdraw", &[(&refused.to_string(), 1)]);
+
+    let stop = retire::withdraw(
+        &adapter.exec(),
+        &[an_in_progress_row()],
+        &seat(),
+        LABEL,
+        &by(),
+    )
+    .expect_err("the row moved");
+
+    assert_eq!(stop.code, REFUSED, "{}", stop.message);
+    assert!(
+        stop.message.starts_with(&format!(
+            "the order on {HELD} was not withdrawn: `{LABEL}` no longer holds it as it was listed"
+        )) && stop.message.contains(&format!("{HELD} is held by {TAKER}")),
+        "{}",
+        stop.message
+    );
+    assert_eq!(adapter.verbs(), ["order.withdraw"], "nothing else was sent");
 }

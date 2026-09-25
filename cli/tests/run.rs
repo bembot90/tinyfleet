@@ -1837,10 +1837,6 @@ impl fleet_core::store::Store for Planted {
         self.0.update(id, change, by)
     }
 
-    fn hand_over(&self, item: &str, from: &str, to: &str, by: &str) -> Result<(), StoreError> {
-        self.0.hand_over(item, from, to, by)
-    }
-
     fn order_set(
         &self,
         id: &fleet_core::store::ItemId,
@@ -1866,20 +1862,6 @@ impl fleet_core::store::Store for Planted {
         by: &fleet_core::seat::actor::Actor,
     ) -> Result<(), StoreError> {
         self.0.run_set(id, run, by)
-    }
-
-    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.0.reopen(item, by)
-    }
-
-    fn order_withdraw_from(
-        &self,
-        id: &fleet_core::store::ItemId,
-        seat: &fleet_core::seat::identity::SeatId,
-        status: &fleet_core::store::Status,
-        by: &fleet_core::seat::actor::Actor,
-    ) -> Result<(), StoreError> {
-        self.0.order_withdraw_from(id, seat, status, by)
     }
 
     fn hold_raise(

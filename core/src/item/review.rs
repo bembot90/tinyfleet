@@ -37,7 +37,7 @@ use crate::item::{
 };
 use crate::seat::actor::{Actor, ActorKind};
 use crate::seat::identity::{Directory, SeatId};
-use crate::store::{Item, Order, OrderState, Store};
+use crate::store::{Item, Order, OrderState, Store, Update};
 
 /// What the ring carries on a return.
 pub const RING: &str = "{item} is returned with {findings} finding(s) and is yours again. \
@@ -393,20 +393,14 @@ fn retur(
         findings,
     });
 
-    // HANDED OVER FROM THE HOLDER THIS REVIEW READ, and only while it still
+    // HANDED BACK FROM THE HOLDER THIS REVIEW READ, and only while it still
     // holds the item: under a run the holder is the `[core] reviewer` and not
     // the `--by` of the call, and a store may refuse a plain reassignment of an
     // `in_progress` item by anyone but its holder — which the builder's claim
     // leaves it through delivery.
-    wiring.store.hand_over(
-        &item.id,
-        &item
-            .assignee
-            .map(|held| held.to_string())
-            .unwrap_or_default(),
-        &builder.to_string(),
-        &verdict.by.to_string(),
-    )?;
+    wiring
+        .store
+        .update(&item.id, &handed_back(item.assignee, builder), verdict.by)?;
     let id = write_verdict(&item.id, &reviewed, Some(builder), verdict, wiring)?;
     announce(&item.id, &id, verdict, wiring)?;
 
@@ -430,6 +424,17 @@ fn retur(
         }
     }
     Ok(id)
+}
+
+/// The return's one write: the item assigned to `builder`, fenced on `holder`
+/// — the holder this review read, `None` for nobody — so a holder that moved
+/// since the read is Moved with nothing written, and never a read of the
+/// holder and a write after it.
+fn handed_back(holder: Option<SeatId>, builder: SeatId) -> Update {
+    Update {
+        assignee: Some(Some(builder)),
+        ..Update::fenced(holder)
+    }
 }
 
 /// The verdict appended and read back, answered as the entry's id: the entry

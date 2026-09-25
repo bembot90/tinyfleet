@@ -87,19 +87,14 @@ impl std::fmt::Display for StoreError {
 /// | `export` | [`export`](Store::export) |
 /// | `scratch` | [`scratch`](Store::scratch) |
 ///
-/// BESIDE THE TABLE are three writes the contract's own fences express, whose
-/// defaults are written in its verbs: [`hand_over`], an update fenced on
-/// `if_assignee`; [`reopen`], an update of `status`; and
-/// [`order_withdraw_from`], the withdrawal a retire makes, fenced on the
-/// retiring seat and the status it listed and reopening the item. A store
-/// with a fence of its own takes each in one call.
+/// NOTHING BESIDE THE TABLE: a write a verb makes under a fence — a hand-over
+/// fenced on its holder, a reopen, a retire's withdrawal fenced on the seat and
+/// the status it listed — is one of these verbs carrying the fence as its own
+/// fields, so every store answers it, an adapter out of process included, and
+/// takes it in one call.
 ///
 /// No storage shape crosses this trait: an order and a run's record go in as
 /// the contract's own types, and where a store keeps them is its adapter's.
-///
-/// [`hand_over`]: Store::hand_over
-/// [`reopen`]: Store::reopen
-/// [`order_withdraw_from`]: Store::order_withdraw_from
 pub trait Store {
     /// One item, which the argument may name by PART of its id: the store
     /// resolves a partial id itself, and the answer's `id` is the full one. So
@@ -150,46 +145,6 @@ pub trait Store {
     /// write that quietly did something else.
     fn update(&self, id: &ItemId, change: &Update, by: &Actor) -> Result<(), StoreError>;
 
-    /// The item handed from `from` to `to`, and only while `from` still holds
-    /// it — `""` for an item nobody holds. Anyone else holding it is
-    /// [`StoreError::Moved`], and nothing is written.
-    ///
-    /// For a write whose actor is NOT the holder. The DEFAULT reads the holder
-    /// and then updates the assignee, for a store with no fence of its own.
-    ///
-    /// The seat and the actor are text here, and an update takes both typed:
-    /// a `to` that is no seat id, or a `by` that is no typed actor, is
-    /// Unreadable with nothing written, and never a reading guessed at.
-    fn hand_over(&self, item: &str, from: &str, to: &str, by: &str) -> Result<(), StoreError> {
-        let change = match to {
-            "" => Update::unassigned(),
-            seat => Update::assignee(SeatId::parse(seat).map_err(|why| {
-                StoreError::Unreadable(format!(
-                    "{item} is not handed over: {why} — nothing was written"
-                ))
-            })?),
-        };
-        let actor = match Actor::typed(by) {
-            Some(Ok(actor)) => actor,
-            Some(Err(why)) => {
-                return Err(StoreError::Unreadable(format!(
-                    "{why} — nothing was written"
-                )))
-            }
-            None => {
-                return Err(StoreError::Unreadable(format!(
-                    "`{by}` is not a typed actor, and a hand-over of {item} is written under one \
-                     — nothing was written"
-                )))
-            }
-        };
-        let held = held_text(self.show(item)?.assignee);
-        if held != from {
-            return Err(moved(item, from, &held));
-        }
-        self.update(&ItemId::from(item), &change, &actor)
-    }
-
     /// The item's order replaced whole. The assignee and the run's record are
     /// left as they were: a store keeping the two beside each other writes
     /// the order without touching the record.
@@ -203,6 +158,8 @@ pub trait Store {
     /// A fence the item does not meet — another holder than `if_assignee`,
     /// another status than `if_status` — is [`StoreError::Moved`], with
     /// nothing written. [`WithdrawFence::default`] is the plain withdrawal.
+    /// One that reopens names the status its caller read as well as the
+    /// holder, so an item closed since that read is Moved and never reopened.
     ///
     /// NO DEFAULT BODY: two writes in a row are exactly the half-withdrawal
     /// the one act exists to rule out, so every store says how it takes all
@@ -217,45 +174,6 @@ pub trait Store {
     /// The run's record on the item that records it, replaced whole. The
     /// order beside it is left as it was.
     fn run_set(&self, id: &ItemId, run: &RunRecord, by: &Actor) -> Result<(), StoreError>;
-
-    /// The item's status set back to `open`, which is all this writes.
-    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError>;
-
-    /// The item reopened and its order withdrawn — the assignee cleared and
-    /// the order taken away — in ONE call, and only while `seat` still holds
-    /// the item under `status`: [`hand_over`](Store::hand_over)'s fence,
-    /// because a retire's actor is never the seat it retires, and the status
-    /// beside it, because an item closed since the caller read it is never
-    /// reopened.
-    ///
-    /// `status` is the one the caller read the item under, and a withdrawal
-    /// reads only `open` or `in_progress`. The reopen is the point of the
-    /// second: an item left `in_progress` with nobody holding it is out of the
-    /// ready set, and no dispatch reaches it until somebody reopens it by hand.
-    ///
-    /// A retire pays this on every seat it ends — so a store that takes all of
-    /// it in one call is sent one, which is a call the verb does not make while
-    /// another suite is queueing behind it. The DEFAULT is one read of the
-    /// fence, the reopen, then [`order_withdraw`](Store::order_withdraw): a
-    /// default cut short after the reopen leaves an item still held and
-    /// ordered, which a second retire lists and finishes.
-    fn order_withdraw_from(
-        &self,
-        id: &ItemId,
-        seat: &SeatId,
-        status: &Status,
-        by: &Actor,
-    ) -> Result<(), StoreError> {
-        let read = self.show(id)?;
-        if read.assignee != Some(*seat) {
-            return Err(moved(id, &seat.to_string(), &held_text(read.assignee)));
-        }
-        if read.status != *status {
-            return Err(restatused(id, status.as_str(), read.status.as_str()));
-        }
-        self.reopen(id, &by.to_string())?;
-        self.order_withdraw(id, &WithdrawFence::default(), by)
-    }
 
     /// A hold raised on this item, answered as the hold's own id.
     ///
@@ -571,24 +489,6 @@ pub(crate) fn executable_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// The refusal a fenced hand-over answers when the item's holder is not the
-/// one the write named.
-pub(crate) fn moved(item: &str, expected: &str, held: &str) -> StoreError {
-    StoreError::Moved(format!(
-        "{item} is held by {} and not by {} — nothing was written",
-        holder_named(held),
-        holder_named(expected)
-    ))
-}
-
-/// The refusal a fenced withdrawal answers when the item's status is not the
-/// one the write named.
-pub(crate) fn restatused(item: &str, expected: &str, now: &str) -> StoreError {
-    StoreError::Moved(format!(
-        "{item} reads {now} and not {expected} — nothing was written"
-    ))
-}
-
 /// The body an append is handed, held to its kind's rules before anything is
 /// written — the one refusal both stores answer, word for word.
 pub(crate) fn validated(item: &str, body: &Body) -> Result<(), StoreError> {
@@ -656,7 +556,7 @@ fn held_text(held: Option<SeatId>) -> String {
 }
 
 /// A holder as a refusal names one: the seat, or nobody for `""`.
-fn holder_named(seat: &str) -> String {
+pub(crate) fn holder_named(seat: &str) -> String {
     if seat.is_empty() {
         String::from("nobody")
     } else {

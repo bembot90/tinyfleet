@@ -724,9 +724,17 @@ impl Store for Bd {
     /// item — measured on 1.3.0: it took the write on an item never assigned
     /// and on one whose assignee `--assignee ""` had cleared, and on an item a
     /// seat held it wrote nothing, exited 13 and named the holder on stderr.
+    /// The fence is also what a writer who is not the holder names to move the
+    /// assignee of an `in_progress` item: bd 1.3.0 refuses the plain
+    /// `--assignee` from anyone but the holder — measured: `cannot reassign X:
+    /// held by "s1" (in_progress)` — and takes it with `--if-assignee` naming
+    /// the holder.
+    ///
     /// `--status open` rides the same call, and with the holder's fence it is
     /// taken from a writer who is not the holder — measured, on an item its
-    /// holder had closed.
+    /// holder had closed. Unfenced it is taken too: it is the assignee and not
+    /// the status that bd 1.3.0 keeps for the holder alone, measured on an
+    /// `in_progress` item.
     fn update(&self, id: &ItemId, change: &Update, by: &Actor) -> Result<(), StoreError> {
         writable(change)?;
         let assignee = change.assignee.as_ref().map(|seat| held_text(*seat));
@@ -750,28 +758,6 @@ impl Store for Bd {
             Some(holder) => self.fenced(&args, id, &format!("held by {}", holder_named(holder))),
             None => self.wrote(&args),
         }
-    }
-
-    /// bd 1.3.0 refuses a plain `--assignee` from anyone but the holder on an
-    /// `in_progress` item — measured: `cannot reassign X: held by "s1"
-    /// (in_progress)` — and takes the same write when it names the holder with
-    /// `--if-assignee`, which also writes nothing and exits 13 where the holder
-    /// moved.
-    fn hand_over(&self, item: &str, from: &str, to: &str, by: &str) -> Result<(), StoreError> {
-        self.fenced(
-            &[
-                "update",
-                item,
-                "--if-assignee",
-                from,
-                "--assignee",
-                to,
-                "--actor",
-                by,
-            ],
-            item,
-            &format!("held by {}", holder_named(from)),
-        )
     }
 
     /// `{"fleet.orders": {…, "v": 1}}` in one `--metadata` write, which
@@ -853,32 +839,6 @@ impl Store for Bd {
             "--actor",
             &by,
         ])
-    }
-
-    /// Taken from a writer who is not the holder on an `in_progress` item —
-    /// measured on 1.3.0, where it is the assignee and not the status that bd
-    /// keeps for the holder alone.
-    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&["update", item, "--status", "open", "--actor", by])
-    }
-
-    /// ONE `update` rather than three: [`order_withdraw`] fenced on the seat
-    /// and the status, reopening the item.
-    ///
-    /// [`order_withdraw`]: Store::order_withdraw
-    fn order_withdraw_from(
-        &self,
-        id: &ItemId,
-        seat: &SeatId,
-        status: &Status,
-        by: &Actor,
-    ) -> Result<(), StoreError> {
-        let fence = WithdrawFence {
-            if_assignee: Some(Some(*seat)),
-            if_status: Some(status.clone()),
-            reopen: true,
-        };
-        self.order_withdraw(id, &fence, by)
     }
 
     /// bd files a hold as a gate of type human, and the held item leaves the

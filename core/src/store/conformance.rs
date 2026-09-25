@@ -105,7 +105,7 @@ pub const CHECKS: &[(&str, Check)] = &[
     ("update naming nothing", update_naming_nothing),
     ("fenced writes", fenced_writes),
     ("fenced update refuses moved", fenced_update),
-    ("reopen through update", reopen_through_update),
+    ("reopen through update", update_to_open),
     ("fenced withdraw with reopen", fenced_withdraw),
     ("another writer's keys", another_writers_keys),
     (
@@ -1086,12 +1086,12 @@ fn update_naming_nothing(ctx: &Ctx) -> Answer {
 /// A fenced write lands only while the holder it names still holds the item,
 /// and is Moved with NOTHING written where somebody else does. A withdrawal is
 /// fenced on the status it names too, so a closed item is never reopened by
-/// one, and the one that lands leaves the item open, unheld and unordered.
+/// one, and the one that lands leaves the item open, unheld and unordered. A
+/// retire's withdrawal and a return's hand-over are these writes, each one
+/// call.
 fn fenced_writes(ctx: &Ctx) -> Answer {
     let id = filed(ctx, "an item a fenced write reaches", &[])?;
     let seat = SeatId::mint();
-    let holder = seat.to_string();
-    let writer = by().to_string();
     assign(ctx, &id, seat)?;
     ordered(ctx, &id, &an_order(Some(seat))?)?;
     let untouched = |status: Status, after: &str| -> Result<(), String> {
@@ -1107,12 +1107,19 @@ fn fenced_writes(ctx: &Ctx) -> Answer {
         same(&format!("{after}: the status"), &now.status, &status)
     };
 
+    // A retire's withdrawal: fenced on the seat it retires and the status it
+    // listed, reopening the item.
+    let retired = |holder: SeatId, status: Status| WithdrawFence {
+        if_assignee: Some(Some(holder)),
+        if_status: Some(status),
+        reopen: true,
+    };
     let another = SeatId::mint();
     let other = another.to_string();
     moved(
         "a withdrawal naming a seat that does not hold the item",
         ctx.store
-            .order_withdraw_from(&id, &another, &Status::Open, &by()),
+            .order_withdraw(&id, &retired(another, Status::Open), &by()),
         &[id.as_str(), &other],
     )?;
     untouched(Status::Open, "a withdrawal naming another seat")?;
@@ -1120,7 +1127,7 @@ fn fenced_writes(ctx: &Ctx) -> Answer {
     moved(
         "a withdrawal naming a status the item is not in",
         ctx.store
-            .order_withdraw_from(&id, &seat, &Status::InProgress, &by()),
+            .order_withdraw(&id, &retired(seat, Status::InProgress), &by()),
         &[id.as_str(), "in_progress"],
     )?;
     untouched(Status::Open, "a withdrawal naming another status")?;
@@ -1129,18 +1136,25 @@ fn fenced_writes(ctx: &Ctx) -> Answer {
     moved(
         "a withdrawal of an item closed since it was read",
         ctx.store
-            .order_withdraw_from(&id, &seat, &Status::Open, &by()),
+            .order_withdraw(&id, &retired(seat, Status::Open), &by()),
         &[id.as_str(), "closed"],
     )?;
     untouched(Status::Closed, "a withdrawal of a closed item")?;
 
-    answered(&format!("reopen {id}"), ctx.store.reopen(&id, &writer))?;
+    let reopened = Update {
+        status: Some(Status::Open),
+        ..Update::default()
+    };
+    answered(
+        &format!("a reopen of {id}"),
+        ctx.store.update(&id, &reopened, &by()),
+    )?;
     untouched(Status::Open, "a reopen")?;
 
     answered(
         &format!("the holder's withdrawal of {id}"),
         ctx.store
-            .order_withdraw_from(&id, &seat, &Status::Open, &by()),
+            .order_withdraw(&id, &retired(seat, Status::Open), &by()),
     )?;
     let now = read(ctx, &id)?;
     same("the assignee after the withdrawal", &now.assignee, &None)?;
@@ -1155,26 +1169,37 @@ fn fenced_writes(ctx: &Ctx) -> Answer {
         &Status::Open,
     )?;
 
-    let builder = SeatId::mint().to_string();
-    let reviewer_id = SeatId::mint();
-    let reviewer = reviewer_id.to_string();
+    // A return's hand-over: the assignee moved, fenced on the holder the
+    // caller read.
+    let handed = |from: Option<SeatId>, to: SeatId| Update {
+        assignee: Some(Some(to)),
+        ..Update::fenced(from)
+    };
+    let builder = SeatId::mint();
+    let reviewer = SeatId::mint();
     moved(
         "a hand-over from a seat that no longer holds the item",
-        ctx.store.hand_over(&id, &holder, &builder, &writer),
+        ctx.store.update(&id, &handed(Some(seat), builder), &by()),
         &[id.as_str()],
+    )?;
+    same(
+        "the holder after a hand-over that was Moved",
+        &read(ctx, &id)?.assignee,
+        &None,
     )?;
     answered(
         &format!("a hand-over of {id}, which nobody holds, from nobody"),
-        ctx.store.hand_over(&id, "", &builder, &writer),
+        ctx.store.update(&id, &handed(None, builder), &by()),
     )?;
     answered(
         &format!("a hand-over of {id} from its holder"),
-        ctx.store.hand_over(&id, &builder, &reviewer, &writer),
+        ctx.store
+            .update(&id, &handed(Some(builder), reviewer), &by()),
     )?;
     same(
         "the holder after two hand-overs",
         &read(ctx, &id)?.assignee,
-        &Some(reviewer_id),
+        &Some(reviewer),
     )?;
     Ok(Passed::Pass)
 }
@@ -1295,7 +1320,7 @@ fn fenced_update(ctx: &Ctx) -> Answer {
 /// brings it back to the ready set; fenced on nobody while a seat holds it, it
 /// is Moved with nothing written; and a status other than `open` is Usage,
 /// with nothing written.
-fn reopen_through_update(ctx: &Ctx) -> Answer {
+fn update_to_open(ctx: &Ctx) -> Answer {
     let id = filed(ctx, "an item an update reopens", &[])?;
     let seat = SeatId::mint();
     let holder = seat.to_string();

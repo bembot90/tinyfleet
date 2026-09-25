@@ -1066,13 +1066,16 @@ fn a_withdrawal_is_one_update_clearing_the_assignee_and_the_order() {
         )
         .expect("the withdrawal fenced on a status lands");
     store
-        .order_withdraw_from(
+        .order_withdraw(
             &id,
-            &seat,
-            &fleet_core::store::Status::InProgress,
+            &WithdrawFence {
+                if_assignee: Some(Some(seat)),
+                if_status: Some(Status::InProgress),
+                reopen: true,
+            },
             &the_test(),
         )
-        .expect("the fenced withdrawal lands");
+        .expect("the retire's withdrawal lands");
     assert_eq!(
         argvs(&log, &root),
         [
@@ -1314,20 +1317,35 @@ fn a_write_on_an_item_bd_does_not_hold_is_refused() {
                 bd.order_withdraw(&id, &fence, &the_test())
             }),
         ),
-        ("reopen", Box::new(|bd| bd.reopen(gone, "run:the-test"))),
         (
-            "hand_over",
-            Box::new(|bd| bd.hand_over(gone, SEAT, "", "run:the-test")),
+            "a reopen",
+            Box::new(|bd| {
+                let reopened = Update {
+                    status: Some(Status::Open),
+                    ..Update::default()
+                };
+                bd.update(&id, &reopened, &the_test())
+            }),
         ),
         (
-            "order_withdraw_from",
+            "a hand-over fenced on its holder",
             Box::new(|bd| {
-                bd.order_withdraw_from(
-                    &id,
-                    &seat,
-                    &fleet_core::store::Status::InProgress,
-                    &the_test(),
-                )
+                let handed = Update {
+                    assignee: Some(None),
+                    ..Update::fenced(Some(seat))
+                };
+                bd.update(&id, &handed, &the_test())
+            }),
+        ),
+        (
+            "a retire's withdrawal",
+            Box::new(|bd| {
+                let fence = WithdrawFence {
+                    if_assignee: Some(Some(seat)),
+                    if_status: Some(Status::InProgress),
+                    reopen: true,
+                };
+                bd.order_withdraw(&id, &fence, &the_test())
             }),
         ),
     ];

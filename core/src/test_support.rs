@@ -21,9 +21,9 @@ use crate::store::bd::{
 };
 use crate::store::types::{Capabilities, ExportSpec, Vocabulary};
 use crate::store::{
-    already_cleared, already_closed, validated_new, writable, Filter, HoldId, Item, ItemId,
-    ItemSummary, NewItem, Order, OrderState, RunRecord, Status, Store, StoreError, Update, Version,
-    WithdrawFence,
+    already_cleared, already_closed, holder_named, validated_new, writable, Filter, HoldId, Item,
+    ItemId, ItemSummary, NewItem, Order, OrderState, RunRecord, Status, Store, StoreError, Update,
+    Version, WithdrawFence,
 };
 
 /// Where the fake's export goes, relative to the root it is handed: a file of
@@ -253,10 +253,9 @@ impl FakeStore {
         Ok(())
     }
 
-    /// The fence a hand-over, a fenced update and a fenced withdrawal write
-    /// behind: the item held by `holder` (`""` for nobody), or
-    /// [`StoreError::Moved`] and nothing written — the rule bd's
-    /// `--if-assignee` keeps.
+    /// The fence a fenced update and a fenced withdrawal write behind: the
+    /// item held by `holder` (`""` for nobody), or [`StoreError::Moved`] and
+    /// nothing written — the rule bd's `--if-assignee` keeps.
     fn held_by(&self, item: &str, holder: &str) -> Result<(), StoreError> {
         let items = self.items.lock().expect("the items are not poisoned");
         let held = items
@@ -267,7 +266,7 @@ impl FakeStore {
             .map(|seat| seat.to_string())
             .unwrap_or_default();
         if now != holder {
-            return Err(crate::store::moved(item, holder, &now));
+            return Err(moved(item, holder, &now));
         }
         Ok(())
     }
@@ -281,7 +280,7 @@ impl FakeStore {
             .get(item)
             .ok_or_else(|| StoreError::Refused(format!("{item} is not here")))?;
         if held.status != status {
-            return Err(crate::store::restatused(item, status, held.status.as_str()));
+            return Err(restatused(item, status, held.status.as_str()));
         }
         Ok(())
     }
@@ -767,21 +766,6 @@ impl Store for FakeStore {
         item_from(item, &self.shown_row(item)?)
     }
 
-    /// One log line, and the assignment only while `from` holds the item.
-    fn hand_over(&self, item: &str, from: &str, to: &str, by: &str) -> Result<(), StoreError> {
-        self.log(format!("hand_over {item} {from} {to} {by}"))?;
-        let to = match to {
-            "" => None,
-            seat => Some(SeatId::parse(seat).map_err(|why| {
-                StoreError::Unreadable(format!(
-                    "{item} is not handed over: {why} — nothing was written"
-                ))
-            })?),
-        };
-        self.held_by(item, from)?;
-        self.moving(item, |held| held.assignee = to)
-    }
-
     /// The order written as the bd adapter writes it — the same object, built
     /// by the same function — and merged at the top level, so the run's record
     /// beside it stands.
@@ -834,35 +818,6 @@ impl Store for FakeStore {
         let metadata = run_metadata(run);
         self.log(format!("run_set {id} {metadata} {by}"))?;
         self.merged(id, metadata)
-    }
-
-    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.log(format!("reopen {item} {by}"))?;
-        self.moving(item, |held| held.status = Status::Open)
-    }
-
-    /// One log line and every move, which is what the real store's one call
-    /// leaves: an arm counting the calls a retire makes counts this as one.
-    /// No move is made while another seat holds the item, or while it reads a
-    /// status other than the one the caller named — bd's `--if-status`, which
-    /// is what keeps a closed item closed.
-    fn order_withdraw_from(
-        &self,
-        id: &ItemId,
-        seat: &SeatId,
-        status: &Status,
-        by: &Actor,
-    ) -> Result<(), StoreError> {
-        self.log(format!("order_withdraw_from {id} {seat} {status} {by}"))?;
-        self.held_by(id, &seat.to_string())?;
-        self.status_is(id, status.as_str())?;
-        self.moving(id, |held| {
-            held.assignee = None;
-            held.status = Status::Open;
-        })?;
-        self.metadata_write(id, |object| {
-            object.remove(keys::ORDERS);
-        })
     }
 
     /// The hold recorded and answered as an id derived from the call's own
@@ -1106,6 +1061,25 @@ impl FakeStore {
     }
 }
 
+/// The refusal the fake answers where a write fenced on its holder finds
+/// another holding the item. The fake's words and no store's: bd's are its
+/// adapter's, and an adapter's are its own.
+fn moved(item: &str, expected: &str, held: &str) -> StoreError {
+    StoreError::Moved(format!(
+        "{item} is held by {} and not by {} — nothing was written",
+        holder_named(held),
+        holder_named(expected)
+    ))
+}
+
+/// The refusal the fake answers where a fenced withdrawal finds the item in
+/// another status than the one it named.
+fn restatused(item: &str, expected: &str, now: &str) -> StoreError {
+    StoreError::Moved(format!(
+        "{item} reads {now} and not {expected} — nothing was written"
+    ))
+}
+
 /// A store REACHED THROUGH A HANDLE, so a caller that hands the store away
 /// still reads what the verbs wrote to it.
 ///
@@ -1140,21 +1114,6 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     }
     fn run_set(&self, id: &ItemId, run: &RunRecord, by: &Actor) -> Result<(), StoreError> {
         (**self).run_set(id, run, by)
-    }
-    fn hand_over(&self, item: &str, from: &str, to: &str, by: &str) -> Result<(), StoreError> {
-        (**self).hand_over(item, from, to, by)
-    }
-    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        (**self).reopen(item, by)
-    }
-    fn order_withdraw_from(
-        &self,
-        id: &ItemId,
-        seat: &SeatId,
-        status: &Status,
-        by: &Actor,
-    ) -> Result<(), StoreError> {
-        (**self).order_withdraw_from(id, seat, status, by)
     }
     fn hold_raise(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<HoldId, StoreError> {
         (**self).hold_raise(id, reason, by)

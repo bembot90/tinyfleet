@@ -506,9 +506,6 @@ impl Store for NoScratch {
     fn run_set(&self, id: &ItemId, run: &RunRecord, by: &Actor) -> Result<(), StoreError> {
         self.0.run_set(id, run, by)
     }
-    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.0.reopen(item, by)
-    }
     fn hold_raise(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<HoldId, StoreError> {
         self.0.hold_raise(id, reason, by)
     }

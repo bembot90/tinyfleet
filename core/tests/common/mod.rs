@@ -4,6 +4,7 @@
 //! A pack is a folder, so every rule about one is asserted against a real
 //! folder rather than against a model of it.
 
+pub mod adapter;
 pub mod board;
 pub mod capped;
 pub mod holding;

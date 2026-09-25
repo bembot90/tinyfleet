@@ -196,10 +196,6 @@ impl Store for Doctored<'_> {
         self.inner.run_set(id, run, by)
     }
 
-    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.reopen(item, by)
-    }
-
     fn hold_raise(
         &self,
         id: &fleet_core::store::ItemId,

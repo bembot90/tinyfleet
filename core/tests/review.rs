@@ -14,6 +14,7 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use common::adapter::Adapter;
 use common::{
     agent, fleet_of, full, keys_agree, seat_actor, seat_id, shared_store, signal, Rooted, Scratch,
     StubEvents,
@@ -299,10 +300,6 @@ impl Store for Doctored<'_> {
         by: &fleet_core::seat::actor::Actor,
     ) -> Result<(), StoreError> {
         self.inner.run_set(id, run, by)
-    }
-
-    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.reopen(item, by)
     }
 
     fn hold_raise(
@@ -1549,4 +1546,193 @@ fn a_routine_or_the_controller_writes_no_verdict() {
         assert_eq!(said.stop, format!("a {word} writes no verdict"));
     }
     assert_eq!(timeline(&scratch.store, &item), before);
+}
+
+// ---- over an adapter ---------------------------------------------------------
+
+/// OVER AN ADAPTER A RETURN IS ONE `update`: the assignee handed to the seat
+/// the order named, fenced on the holder the review read — the reviewer, whose
+/// `in_progress` claim a store may keep from every other writer. No read of the
+/// holder stands between the review's first read and the write.
+///
+/// RED-PROOF: with the return on a hand-over that reads the holder and then
+/// updates the assignee unfenced, a second `show` comes before the `update`,
+/// and the `update` carries no `if_assignee`.
+#[test]
+fn a_return_over_an_adapter_is_one_update_fenced_on_the_holder_it_read() {
+    let scratch = &store();
+    let builder = "s-return";
+    let id = "fx-ret";
+    let delivered = Entry {
+        id: String::from("e-1"),
+        at: AT.to_string(),
+        by: seat_actor(builder),
+        body: Body::Delivered(a_delivery()),
+    };
+    let returned = Entry {
+        id: String::from("e-2"),
+        at: AT.to_string(),
+        by: seat_actor(REVIEWER),
+        body: Body::Reviewed(Reviewed {
+            verdict: fleet_core::entry::Verdict::Returned,
+            commit: SHA.to_string(),
+            size: a_diffs_size(),
+            walk: Vec::new(),
+            findings: vec![Finding {
+                text: "the one finding.".to_string(),
+            }],
+        }),
+    };
+    let held_by = |seat: &str| Item {
+        id: ItemId::from(id),
+        title: String::from("an item returned over an adapter"),
+        status: fleet_core::store::Status::InProgress,
+        item_type: String::from("task"),
+        assignee: Some(seat_id(seat)),
+        order: OrderState::Ordered(common::a_dispatch(
+            "run:an-architect",
+            Some(&full(builder)),
+            AT,
+        )),
+        ..Item::default()
+    };
+    let shown = |seat: &str| serde_json::json!({ "schema_version": 1, "item": held_by(seat) });
+    let entries = |entries: &[&Entry]| {
+        let rows: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|entry| fleet_core::entry::to_json(entry))
+            .collect();
+        serde_json::json!({ "schema_version": 1, "entries": rows })
+    };
+    let adapter = Adapter::new("review-exec");
+    adapter
+        .answers(
+            "show",
+            &[
+                (&shown(REVIEWER).to_string(), 0),
+                (&shown(builder).to_string(), 0),
+            ],
+        )
+        .answers(
+            "timeline",
+            &[
+                (&entries(&[&delivered]).to_string(), 0),
+                (&entries(&[&delivered, &returned]).to_string(), 0),
+            ],
+        )
+        .answers("update", &[(r#"{"schema_version":1}"#, 0)])
+        .answers("append", &[(r#"{"schema_version":1,"entry":"e-2"}"#, 0)]);
+    let findings = findings(scratch, "exec", &["the one finding."]);
+    let ring = StubRing::new();
+
+    let (said, code) = run_through(
+        &adapter.exec(),
+        scratch,
+        id,
+        Mode::Return(&findings),
+        &StubGit::answering(a_diff()),
+        &ring,
+        &StubEvents::default(),
+    );
+
+    assert_eq!(code, 0, "{}{}{}", said.out, said.err, said.stop);
+    assert_eq!(
+        adapter.verbs(),
+        ["show", "timeline", "update", "append", "timeline", "show"],
+        "one read of the holder, one write of it, and the verdict's append and read-backs"
+    );
+    let request = adapter.request("update", 1);
+    assert_eq!(request["id"], id);
+    assert_eq!(request["by"], seat_actor(REVIEWER).to_string());
+    assert_eq!(request["assignee"], full(builder), "{request}");
+    assert_eq!(request["if_assignee"], full(REVIEWER), "{request}");
+    assert!(
+        request.get("status").is_none() && request.get("title").is_none(),
+        "the return moves the assignee alone: {request}"
+    );
+    assert_eq!(ring.calls().len(), 1, "the builder is rung");
+}
+
+/// A holder that moved between the review's read and the return is the
+/// adapter's `moved` refusal: exit 1, and no verdict is appended.
+#[test]
+fn a_return_over_an_adapter_whose_holder_moved_writes_no_verdict() {
+    let scratch = &store();
+    let builder = "s-return";
+    let id = "fx-ret";
+    let delivered = Entry {
+        id: String::from("e-1"),
+        at: AT.to_string(),
+        by: seat_actor(builder),
+        body: Body::Delivered(a_delivery()),
+    };
+    let item = Item {
+        id: ItemId::from(id),
+        title: String::from("an item whose holder moved"),
+        status: fleet_core::store::Status::InProgress,
+        item_type: String::from("task"),
+        assignee: Some(seat_id(REVIEWER)),
+        order: OrderState::Ordered(common::a_dispatch(
+            "run:an-architect",
+            Some(&full(builder)),
+            AT,
+        )),
+        ..Item::default()
+    };
+    let refused = serde_json::json!({
+        "schema_version": 1,
+        "refused": {
+            "reason": "moved",
+            "message": format!("{id} is held by {}", full(CAROL)),
+        },
+    });
+    let adapter = Adapter::new("review-exec-moved");
+    adapter
+        .answers(
+            "show",
+            &[(
+                &serde_json::json!({ "schema_version": 1, "item": item }).to_string(),
+                0,
+            )],
+        )
+        .answers(
+            "timeline",
+            &[(
+                &serde_json::json!({
+                    "schema_version": 1,
+                    "entries": [fleet_core::entry::to_json(&delivered)],
+                })
+                .to_string(),
+                0,
+            )],
+        )
+        .answers("update", &[(&refused.to_string(), 1)]);
+    let findings = findings(scratch, "exec-moved", &["the one finding."]);
+    let ring = StubRing::new();
+    let events = StubEvents::default();
+
+    let (said, code) = run_through(
+        &adapter.exec(),
+        scratch,
+        id,
+        Mode::Return(&findings),
+        &StubGit::answering(a_diff()),
+        &ring,
+        &events,
+    );
+
+    assert_eq!(code, 1, "{}{}{}", said.out, said.err, said.stop);
+    assert!(
+        said.stop
+            .contains(&format!("{id} is held by {}", full(CAROL))),
+        "{}",
+        said.stop
+    );
+    assert_eq!(
+        adapter.verbs(),
+        ["show", "timeline", "update"],
+        "nothing is appended after the refusal"
+    );
+    assert_eq!(events.count(), 0, "nothing reached the stream");
+    assert!(ring.calls().is_empty(), "rung: {:?}", ring.calls());
 }

@@ -289,31 +289,6 @@ impl Store for Exec {
             .map(|_| ())
     }
 
-    /// The contract's reopen is an `update` whose status is `open`, under the
-    /// actor the text types as: text that is no typed actor is Unreadable,
-    /// with nothing asked.
-    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        let actor = match Actor::typed(by) {
-            Some(Ok(actor)) => actor,
-            Some(Err(why)) => {
-                return Err(StoreError::Unreadable(format!(
-                    "{why} — nothing was written"
-                )))
-            }
-            None => {
-                return Err(StoreError::Unreadable(format!(
-                    "`{by}` is not a typed actor, and a reopen of {item} is written under one \
-                     — nothing was written"
-                )))
-            }
-        };
-        let reopened = Update {
-            status: Some(super::Status::Open),
-            ..Update::default()
-        };
-        self.update(&ItemId::from(item), &reopened, &actor)
-    }
-
     fn hold_raise(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<HoldId, StoreError> {
         let (Raised { hold }, _) = self.call(
             "hold.raise",
@@ -947,19 +922,6 @@ mod tests {
             answer,
             Err(StoreError::Moved(format!("fx-a1b2 is held by {SEAT}")))
         );
-    }
-
-    /// The reopen is the contract's `update` with status `open`.
-    #[test]
-    fn a_reopen_is_an_update_to_open() {
-        let stub = Stub::new("reopen", &answers(r#"{"schema_version":1}"#, 0));
-        stub.exec()
-            .reopen("fx-a1b2", "routine:nightly")
-            .expect("the reopen was taken");
-        assert_eq!(stub.verbs(), ["update"]);
-        let request = stub.request();
-        assert_eq!(request["status"], "open");
-        assert_eq!(request["by"], "routine:nightly");
     }
 
     /// The description an adapter answers is the item's.

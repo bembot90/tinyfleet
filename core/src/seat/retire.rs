@@ -14,7 +14,7 @@
 //!
 //! IT IS COUNTED IN STORE CALLS, because every retire pays it and a fleet
 //! retires a seat per dispatched item: ONE call to read the board, then one
-//! `update` carrying every write, one `order_withdrawn` entry with its
+//! `order_withdraw` carrying every write, one `order_withdrawn` entry with its
 //! timeline read-back, and one read-back of the item PER ITEM WITHDRAWN. A
 //! seat holding nothing ordered — which is most of them — makes the one read
 //! and stops.
@@ -24,7 +24,7 @@ use crate::item::deliver::holds;
 use crate::item::{recorded, Stop, Unrecorded};
 use crate::seat::actor::Actor;
 use crate::seat::identity::SeatId;
-use crate::store::{ItemSummary, OrderState, Status, Store, StoreError};
+use crate::store::{ItemSummary, OrderState, Status, Store, StoreError, WithdrawFence};
 
 /// The words a retire says on stderr for each item it withdrew. The record's
 /// own half is the `order_withdrawn` entry, so an item whose seat was retired
@@ -95,8 +95,13 @@ pub fn withdraw(
                 ),
             ));
         }
+        let fence = WithdrawFence {
+            if_assignee: Some(Some(*seat)),
+            if_status: Some(row.status.clone()),
+            reopen: true,
+        };
         store
-            .order_withdraw_from(&row.id, seat, &row.status, by)
+            .order_withdraw(&row.id, &fence, by)
             .map_err(|e| match e {
                 StoreError::Moved(why) => moved_on(item, label, &why),
                 other => nothing_written(item, &other.to_string()),
