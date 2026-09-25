@@ -97,7 +97,7 @@ dependencies are the real blockers.
 | --- | --- | --- | --- |
 | fleet-0q4.1 | Store contract types in core: ids, Status, Order, OrderState, Item, ItemSummary, Filter, Update, Capabilities and the… | fleet-iex.1, fleet-zlk.1 | ☑ |
 | fleet-0q4.2 | docs/store.md: the store contract an adapter implements | fleet-0q4.1 | ☑ |
-| fleet-0q4.3 | The bd adapter becomes its own module, and land reads the export file and the store's directory from the adapter | fleet-0q4.1 | ☐ |
+| fleet-0q4.3 | The bd adapter becomes its own module, and land reads the export file and the store's directory from the adapter | fleet-0q4.1 | ☑ |
 | fleet-0q4.4 | Item speaks the contract's domain types: Status, OrderState, ItemId, RunRecord and a read proof in place of document | fleet-0q4.3, fleet-iex.12, fleet-zlk.17 | ☐ |
 | fleet-0q4.5 | The store's reads become resolve and list(filter); ready, open_labelled and assigned_to go | fleet-0q4.4 | ☐ |
 | fleet-0q4.6 | The store's plain writes become create(NewItem), update(Update), close and version, and StoreError::Missing becomes R… | fleet-0q4.5, fleet-iex.9 | ☐ |
