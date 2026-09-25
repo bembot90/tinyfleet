@@ -1239,7 +1239,7 @@ fn the_item_lines_are_this_seat_s_open_work() {
     assert_eq!(
         asked.trim(),
         format!(
-            "-C {} list -a 01a0d1f1-0aec-765f-9abe-5c21e8a04b17 --json -n 0",
+            "-C {} list -a 01a0d1f1-0aec-765f-9abe-5c21e8a04b17 --all --json -n 0",
             text_of(&cwd)
         ),
         "the listing is asked of the row's own project root, for the row's full id"
@@ -1308,7 +1308,7 @@ fn a_listing_that_cannot_be_read_is_its_own_answer() {
     let text = utf8(out.stdout);
     assert!(
         text.contains(&format!(
-            "item: could not be read — `{} list -a 01a0d1f1-0aec-765f-9abe-5c21e8a04b17 --json -n 0` exit status: 4: the store \
+            "item: could not be read — `{} list -a 01a0d1f1-0aec-765f-9abe-5c21e8a04b17 --all --json -n 0` exit status: 4: the store \
              is locked",
             text_of(&stub)
         )),
@@ -1351,7 +1351,7 @@ fn a_listing_that_never_answers_is_its_own_answer_inside_the_bound() {
     let text = utf8(out.stdout);
     assert!(
         text.contains(&format!(
-            "item: could not be read — `{} list -a 01a0d1f1-0aec-765f-9abe-5c21e8a04b17 --json -n 0` did not answer within 5s",
+            "item: could not be read — `{} list -a 01a0d1f1-0aec-765f-9abe-5c21e8a04b17 --all --json -n 0` did not answer within 5s",
             text_of(&stub)
         )),
         "the third answer names the bound the listing outran: {text}"
@@ -1691,7 +1691,7 @@ fn a_session_under_a_seat_s_worktree_gets_no_item_line() {
     assert_eq!(
         asked.trim(),
         format!(
-            "-C {} list -a 01a0d1f1-0aec-765f-9abe-5c21e8a04b17 --json -n 0",
+            "-C {} list -a 01a0d1f1-0aec-765f-9abe-5c21e8a04b17 --all --json -n 0",
             text_of(&root)
         ),
         "and it is asked of the row's own root, never of the subdirectory"

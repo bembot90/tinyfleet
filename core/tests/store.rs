@@ -333,6 +333,7 @@ fn a_seat_listing_lifts_the_row_cap() {
             String::from("list"),
             String::from("-a"),
             String::from(SEAT),
+            String::from("--all"),
             String::from("--json"),
             String::from("-n"),
             String::from("0"),

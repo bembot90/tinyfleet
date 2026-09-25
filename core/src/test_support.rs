@@ -926,9 +926,15 @@ impl Store for FakeStore {
                 file: EXPORT_FILE.to_string(),
                 dir: EXPORT_DIR.to_string(),
             }),
-            scratch: false,
+            scratch: true,
             item_prefix: None,
         })
+    }
+
+    /// `into` itself, with nothing made: a store held in memory is a scratch
+    /// store already, and one over the answered root is a fresh [`FakeStore`].
+    fn scratch(&self, into: &Path) -> Result<PathBuf, StoreError> {
+        Ok(into.to_path_buf())
     }
 
     fn version(&self) -> Result<Version, StoreError> {
@@ -1090,6 +1096,9 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     }
     fn export(&self, into: &Path) -> Result<PathBuf, StoreError> {
         (**self).export(into)
+    }
+    fn scratch(&self, into: &Path) -> Result<PathBuf, StoreError> {
+        (**self).scratch(into)
     }
 }
 

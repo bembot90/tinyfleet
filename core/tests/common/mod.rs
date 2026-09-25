@@ -4,7 +4,7 @@
 //! A pack is a folder, so every rule about one is asserted against a real
 //! folder rather than against a model of it.
 
-mod board;
+pub mod board;
 pub mod capped;
 pub mod holding;
 
@@ -508,20 +508,29 @@ impl Scratch {
         std::fs::create_dir_all(&root).expect("the scratch root is created");
         match board::run_board(label) {
             Some(made) => copy_tree(&made, &root),
-            None => {
-                let out = std::process::Command::new("bd")
-                    .args(["init", "--prefix", "fx", "--quiet"])
-                    .args(bd_init_server_args(label))
-                    .current_dir(&root)
-                    .output()
-                    .expect("bd is on the process PATH");
-                assert!(
-                    out.status.success(),
-                    "bd init: {}",
-                    String::from_utf8_lossy(&out.stderr)
-                );
-            }
+            None => bd_init(&root, label),
         }
+        Scratch::around(root)
+    }
+
+    /// A board of its own and never the run's shared one: a `bd init` here,
+    /// on the run's server where there is one.
+    ///
+    /// For the reading only an EMPTY store answers — the contract's first
+    /// check lists a store nothing has written to — which a copy of the run's
+    /// shared board, holding every other rig's rows, cannot give.
+    pub fn fresh(label: &str) -> Scratch {
+        let n = NEXT.fetch_add(1, Ordering::SeqCst);
+        let root =
+            std::env::temp_dir().join(format!("fleet-store-{label}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("the scratch root is created");
+        bd_init(&root, label);
+        Scratch::around(root)
+    }
+
+    /// The packs and defaults directories beside an initialised store.
+    fn around(root: PathBuf) -> Scratch {
         let packs_dir = root.join("packs");
         std::fs::create_dir_all(&packs_dir).expect("the packs dir is created");
         let defaults_dir = materialize(&root);
@@ -598,6 +607,21 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+/// One `bd init` in `root`, on the run's server where there is one.
+fn bd_init(root: &Path, label: &str) {
+    let out = std::process::Command::new("bd")
+        .args(["init", "--prefix", "fx", "--quiet"])
+        .args(bd_init_server_args(label))
+        .current_dir(root)
+        .output()
+        .expect("bd is on the process PATH");
+    assert!(
+        out.status.success(),
+        "bd init: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// The one store a whole test binary shares.

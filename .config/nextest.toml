@@ -30,6 +30,15 @@ slow-timeout = { period = "80s", terminate-after = 2, grace-period = "5s" }
 leak-timeout = "1s"
 default-filter = 'not binary(/^ring_/)'
 
+# The contract suite's two real arms each ask every conformance check of a bd
+# store, and they take their turns: MEASURED on 2026-09-25, 64.8 s and 66.7 s
+# one after the other, and 125.4 s and 128.5 s side by side at -j 2 — each
+# doubles the other, and side by side under the rest of the suite both met the
+# 160 s kill. One at a time keeps each arm's own seconds.
+[[profile.default.overrides]]
+filter = 'binary_id(fleet-core::contract) & (test(=every_check_holds_against_bd_too) | test(=the_bd_adapter_makes_a_scratch_store_every_check_holds_on))'
+test-group = 'contract-bd'
+
 # The junit report is the instrument: tools/suite-profile reads every arm's
 # seconds and the run's test-phase time from it. Written under this profile's
 # store directory, target/nextest/default/, gitignored.
@@ -76,3 +85,7 @@ path = "junit.xml"
 [profile.leak5]
 leak-timeout = "5s"
 default-filter = 'all()'
+
+# The group the contract suite's two real arms take their turns in.
+[test-groups]
+contract-bd = { max-threads = 1 }

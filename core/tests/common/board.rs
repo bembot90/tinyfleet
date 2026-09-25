@@ -85,7 +85,11 @@ pub fn bd_init_server_args(label: &str) -> Vec<String> {
 }
 
 /// One line for one `bd init`. Silent where no run is counting.
-fn note_bd_init(label: &str) {
+///
+/// Public for the one init these suites do not run themselves: the bd
+/// adapter's own `scratch`, which inits on bd's embedded engine and so takes
+/// no server arguments, and is counted here all the same.
+pub fn note_bd_init(label: &str) {
     use std::io::Write;
     let Ok(path) = std::env::var(INIT_LOG_VAR) else {
         return;

@@ -20,6 +20,7 @@ use crate::seat::identity::SeatId;
 use types::Capabilities;
 
 pub mod bd;
+pub mod conformance;
 pub mod exec;
 pub mod types;
 
@@ -119,8 +120,7 @@ impl std::fmt::Display for StoreError {
 /// | `holds.open` | [`holds_open`](Store::holds_open) |
 /// | `close` | [`close`](Store::close) |
 /// | `export` | [`export`](Store::export) |
-///
-/// `scratch`, a verb a store declares beside `export`, has no method yet.
+/// | `scratch` | [`scratch`](Store::scratch) |
 ///
 /// BESIDE THE TABLE are the fenced writes, which the contract does not name
 /// yet and whose defaults are written in its verbs: [`hand_over`], an update
@@ -346,6 +346,22 @@ pub trait Store {
     /// It regenerates that one file and touches nothing else, so nothing is
     /// carried forward here to keep the export's polarity right.
     fn export(&self, into: &Path) -> Result<PathBuf, StoreError>;
+
+    /// A new, empty store of this adapter's own kind made in the directory
+    /// `into`, answered as the root a store over it is addressed at: what
+    /// [`conformance`]'s checks are run against, since a check writes, and
+    /// never to a project's own store.
+    ///
+    /// A store DECLARES it, as `scratch` in [`capabilities`], and the DEFAULT
+    /// is the answer of a store that does not: Unreadable, with nothing made.
+    ///
+    /// [`capabilities`]: Store::capabilities
+    fn scratch(&self, into: &Path) -> Result<PathBuf, StoreError> {
+        let _ = into;
+        Err(StoreError::Unreadable(String::from(
+            "this store declares no scratch",
+        )))
+    }
 }
 
 /// The bound on one store call, fixed and not policy.

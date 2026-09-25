@@ -1,1003 +1,304 @@
-//! The contract both stores answer, asserted against each of them.
+//! The contract both stores answer, asked of each of them.
 //!
 //! The arms of every other suite here run against the board held in memory, so
 //! what that board answers has to be what `bd` answers — and the only way to
 //! say that is to ask the same question of both and compare the answers to the
-//! same expectation. Every check below is one function; each has an arm of its
-//! own against [`common::Board`]'s store, and [`every_check_holds_against_bd_too`]
-//! runs the whole table against `bd`.
+//! same expectation. The questions are the library's own checks,
+//! [`fleet_core::store::conformance`], which `fleet store check` asks of an
+//! adapter; this file is only their runner. Each check has an arm of its own
+//! against [`Board`]'s store, and two arms ask the whole table of `bd`: once on
+//! a board a rig made, and once on the scratch store the adapter makes itself.
 //!
-//! WHY THE REAL HALF IS ONE ARM AND NOT TEN. A nextest arm is its own process,
-//! so a shared store is shared only with itself and every arm that wants `bd`
-//! pays a `bd init` — 3.5 s on an idle box, three times that under the run's
-//! own parallelism. Ten arms would buy ten inits and the same ten readings.
-//!
-//! WHAT IS ASSERTED IS THE CONTRACT AND NOT THE ROW. The real store writes
-//! fields no trait method answers — a close reason, an updated stamp — and two
-//! stores agreeing byte for byte on a document is not what the verbs need. What
-//! they need is that a write moves what the read beside it answers, in the same
-//! direction, and that is what each check names.
-//!
-//! The real half runs every check against ONE board, so a check reads the item
-//! it filed and never the whole store: a listing asserted whole here would be
-//! asserting what the check before it left behind.
+//! WHY THE REAL HALF IS ONE ARM AND NOT TWENTY. A nextest arm is its own
+//! process, so a shared store is shared only with itself and every arm that
+//! wants `bd` pays a `bd init` — 3.5 s on an idle box, three times that under
+//! the run's own parallelism. Twenty arms would buy twenty inits and the same
+//! twenty readings.
 
 mod common;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use common::{a_delivery, seat_actor, shared_store, Scratch, A_COMMIT};
-use fleet_core::entry::{Body, OrderKind, Ordered};
+use common::board::note_bd_init;
+use common::{a_delivery, seat_actor, shared_store, Scratch};
+use fleet_core::entry::{Body, Entry};
 use fleet_core::seat::actor::Actor;
-use fleet_core::seat::identity::SeatId;
 use fleet_core::store::bd::Bd;
+use fleet_core::store::conformance::{self, AnotherWriter, Ctx, Passed, CHECKS};
+use fleet_core::store::types::Capabilities;
 use fleet_core::store::{
-    Filter, ItemId, NewItem, Order, OrderState, RunRecord, Stamp, Status, Store, StoreError, Update,
+    Filter, HoldId, Item, ItemId, ItemSummary, NewItem, Order, RunRecord, Store, StoreError,
+    Update, Version,
 };
-use fleet_core::test_support::Board;
+use fleet_core::test_support::{Board, FakeStore};
 
-/// Who the writes still taking text are made by.
-const BY: &str = "the-contract";
-
-/// Who the typed writes are made by: the same writer, as the actor it is.
-fn by() -> Actor {
-    Actor::typed("run:the-contract")
-        .expect("typed")
-        .expect("a run")
-}
-
-/// Who an order index here names as its dispatcher, the seat it names — the
-/// full id, a string the store carries and never reads — and when.
-const ORDERED_BY: &str = "run:an-architect";
-const SEAT: &str = "01a0d1f1-0aec-765f-9abe-00000000a5ea";
-
-/// A second seat, which an update hands an item on to.
-const ANOTHER_SEAT: &str = "01a0d1f1-0aec-765f-9abe-00000000a5eb";
-const AT: &str = "2026-09-13T00:00:00Z";
-
-/// The order a dispatch gives over those three.
-fn the_order() -> Order {
-    Order {
-        kind: fleet_core::store::OrderKind::Dispatch,
-        by: Actor::typed(ORDERED_BY).expect("typed").expect("a run"),
-        seat: Some(SeatId::parse(SEAT).expect("a seat id")),
-        at: Stamp::parse(AT).expect("a stamp"),
-    }
-}
-
-/// A second order, which replaces the first: a review, for the other seat,
-/// later.
-fn another_order() -> Order {
-    Order {
-        kind: fleet_core::store::OrderKind::Review,
-        by: Actor::typed(ORDERED_BY).expect("typed").expect("a run"),
-        seat: Some(SeatId::parse(ANOTHER_SEAT).expect("a seat id")),
-        at: Stamp::parse("2026-09-13T01:00:00Z").expect("a stamp"),
-    }
-}
-
-/// A run's record, as the run's own writer stamps it, pinned to `hash`.
-fn a_record(hash: &str) -> RunRecord {
-    RunRecord {
-        hash: hash.to_string(),
-        workflow: String::from("greet"),
-        pack: String::from("ts"),
-        entry: String::from("greet.ts"),
-        started_at: Stamp::parse(AT).expect("a stamp"),
-    }
-}
-
-/// One check: the store, the root it writes under — the export is a file and
-/// the two stores keep theirs in two places — the name of the half it is
-/// running against, so a red says which store disagreed, and another writer.
-type Check = fn(&dyn Store, &Path, &str, &Foreign);
-
-/// ANOTHER TOOL'S METADATA WRITE onto an item: a JSON object merged at the top
-/// level, the way a project's own tooling writes beside fleet's keys. The
-/// trait writes only the contract's types, so each half plants it its own way —
-/// the board held in memory through its rig, bd through the binary.
-type Foreign<'a> = dyn Fn(&str, &str) + 'a;
-
-/// Every check in this file, by name. The real half walks this table, so a
-/// check that is added below and left out here is a check `bd` never answers —
-/// which [`the_table_names_every_check`] is what refuses.
-const CHECKS: &[(&str, Check)] = &[
-    ("create then show", create_then_show),
-    ("show by hash", show_by_hash),
-    ("resolve", resolve),
-    ("list", list),
-    ("show of an absent item", show_of_an_absent_item),
-    ("update's title and assignee", update),
-    ("update's cleared assignee", cleared),
-    ("update naming nothing", unchanged),
-    ("order_set", orders),
-    ("order_set over an order and a run", order_replaced),
-    ("run_set over a run and an order", run_replaced),
-    ("order_withdraw", withdrawn),
-    ("hand_over and order_withdraw_from's fences", fenced),
-    ("another writer's keys beside fleet's", fleet_keys),
-    ("hold_raise, holds_open, hold_clear", holds),
-    ("hold_clear of a cleared hold", clear_of_cleared),
-    ("close", close),
-    ("close of a closed item", close_of_closed),
-    ("version", version),
-    ("export", export),
-    ("append then timeline", append_then_timeline),
-    ("timeline of an absent item", timeline_of_an_absent_item),
+/// The ids bd 1.3.0 minted on a scratch board, in the order it minted them,
+/// which the board held in memory files under in place of its own `fx-<n>`.
+///
+/// ITS OWN CANNOT BE MADE AMBIGUOUS. Every prefix of a number is another
+/// number the board already holds — `1` is `fx-1` wherever `fx-10` and
+/// `fx-11` are — so a fragment two of its items open with always resolves to
+/// a third, and the ambiguity check has nothing to ask.
+const MINTED: [&str; 30] = [
+    "fx-bvx", "fx-0li", "fx-byb", "fx-17w", "fx-oby", "fx-dup", "fx-am9", "fx-m97", "fx-avr",
+    "fx-1jw", "fx-9va", "fx-5du", "fx-ws8", "fx-vjo", "fx-tnc", "fx-2e0", "fx-0yc", "fx-bzs",
+    "fx-mn4", "fx-l21", "fx-8en", "fx-9vb", "fx-1ve", "fx-vs4", "fx-ttz", "fx-cyc", "fx-2am",
+    "fx-sm2", "fx-5pq", "fx-zui",
 ];
 
-/// One check against the board held in memory, under a root of its own.
-fn in_memory(label: &str, check: Check) {
-    let board = Board::new(label);
-    let foreign = |item: &str, payload: &str| board.set_metadata(item, payload);
-    check(
-        &board.store,
-        &board.root,
-        "the board held in memory",
-        &foreign,
+/// One check against a fresh board held in memory, which files under
+/// [`MINTED`]; the store that is not there is one whose every read answers
+/// Unreadable, and another writer's keys are planted through the board's rig.
+///
+/// A skip is a red here: every check is asked of this board.
+fn in_memory(name: &str) {
+    let check = CHECKS
+        .iter()
+        .find(|(named, _)| *named == name)
+        .map(|(_, check)| *check)
+        .unwrap_or_else(|| panic!("`{name}` is a check on the table"));
+    let label: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let board = Board::new(&format!("contract-{label}"));
+    *board
+        .store
+        .creates
+        .lock()
+        .expect("the queue is not poisoned") = MINTED.iter().map(|id| id.to_string()).collect();
+    let absent = FakeStore {
+        unreadable: Some(String::from("the board held in memory is not there")),
+        ..FakeStore::default()
+    };
+    let plant = |item: &str, payload: &str| {
+        board.set_metadata(item, payload);
+        Ok(())
+    };
+    let ctx = Ctx {
+        store: &board.store,
+        root: &board.root,
+        absent: &absent,
+        another_writer: Some(&plant),
+    };
+    match check(&ctx) {
+        Ok(Passed::Pass) => {}
+        Ok(Passed::Skip(why)) => {
+            panic!("{name} — the board held in memory: skipped, and it is asked every check: {why}")
+        }
+        Err(why) => panic!("{name} — the board held in memory: {why}"),
+    }
+}
+
+/// Every check against one `bd` store, in the table's order, and one red naming
+/// each check that did not hold — a skip among them, as every check is asked
+/// of `bd`.
+fn every_check_holds(store: &Bd, root: &Path, which: &str, plant: &AnotherWriter) {
+    let nowhere = Gone::empty("contract-absent");
+    let absent = Bd::at(&nowhere.0);
+    let ctx = Ctx {
+        store,
+        root,
+        absent: &absent,
+        another_writer: Some(plant),
+    };
+    let failed: Vec<String> = conformance::run(&ctx)
+        .into_iter()
+        .filter_map(|(name, answer)| match answer {
+            Ok(Passed::Pass) => None,
+            Ok(Passed::Skip(why)) => Some(format!("{name}: skipped — {why}")),
+            Err(why) => Some(format!("{name}: {why}")),
+        })
+        .collect();
+    assert!(
+        failed.is_empty(),
+        "{which} — {} of the {} checks did not hold:\n{}",
+        failed.len(),
+        CHECKS.len(),
+        failed.join("\n")
     );
 }
 
-/// Another writer's metadata onto an item on the real board, through the
-/// binary, under an actor that is no fleet actor.
-fn planted_on(scratch: &Scratch) -> impl Fn(&str, &str) + '_ {
+/// Another writer's metadata onto an item on a real board, through the binary,
+/// under an actor that is no fleet actor.
+fn planted_on(root: &Path) -> impl Fn(&str, &str) -> Result<(), String> + '_ {
     move |item: &str, payload: &str| {
-        let out = scratch.bd(&[
-            "update",
-            item,
-            "--metadata",
-            payload,
-            "--actor",
-            "another-tool",
-        ]);
-        assert!(
-            out.status.success(),
-            "another writer's metadata on {item}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-}
-
-fn filed(store: &dyn Store, title: &str) -> String {
-    store
-        .create(
-            &NewItem {
-                title: title.to_string(),
-                description: String::from("an item the contract suite filed"),
-                item_type: String::from("task"),
-                labels: vec![String::from("a-label")],
-                priority: None,
-            },
-            &by(),
-        )
-        .expect("the item is filed")
-        .to_string()
-}
-
-/// The item handed to `seat`, which is a seat's full id.
-fn hand_to(store: &dyn Store, item: &str, seat: &str) {
-    store
-        .update(
-            &ItemId::from(item),
-            &Update::assignee(SeatId::parse(seat).expect("a seat id")),
-            &by(),
-        )
-        .expect("the assignment lands");
-}
-
-// ---- the checks --------------------------------------------------------------
-
-fn create_then_show(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    let item = filed(store, "an item to read back");
-    assert!(!item.is_empty(), "{which}: the store names what it files");
-
-    let read = store.show(&item).expect("the item reads");
-    assert_eq!(read.id, item, "{which}: the read is of the item asked for");
-    assert_eq!(read.title, "an item to read back", "{which}");
-    assert_eq!(read.status, "open", "{which}: a fresh item is open");
-    assert_eq!(read.item_type, "task", "{which}");
-    assert!(
-        read.labels.iter().any(|label| label == "a-label"),
-        "{which}: the labels the new item carried: {:?}",
-        read.labels
-    );
-    assert_eq!(
-        read.assignee, None,
-        "{which}: an item nobody has assigned carries no assignee at all"
-    );
-}
-
-/// An item named by its hash alone — the part after the prefix, which is what
-/// a person types — reads as the item, and the answer carries the FULL id: it
-/// is what every verb acts on once it has resolved its argument.
-fn show_by_hash(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    let item = filed(store, "an item read by its hash");
-    let (_, hash) = item
-        .split_once('-')
-        .expect("the store files under a prefix");
-
-    let read = store.show(hash).expect("the item reads by its hash");
-    assert_eq!(read.id, item, "{which}: the answer carries the full id");
-    assert_eq!(read.title, "an item read by its hash", "{which}");
-}
-
-/// A fragment resolves as `show` resolves it, and the answer is the FULL id
-/// and nothing else: the item's hash alone names the item. An id no item
-/// carries is Refused, as `show`'s is.
-fn resolve(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    let item = filed(store, "an item resolved by its hash");
-    let (_, hash) = item
-        .split_once('-')
-        .expect("the store files under a prefix");
-
-    let resolved = store.resolve(hash).expect("the hash resolves");
-    assert_eq!(resolved, item, "{which}: the answer is the full id");
-
-    match store.resolve("fx-nobody-filed-this") {
-        Err(StoreError::Refused(_)) => {}
-        other => panic!("{which}: an absent id is Refused, and answered {other:?}"),
-    }
-}
-
-/// Each filter's listing answers the item it matches as one row, carrying the
-/// item's title, status, type, own labels and order — asked by MEMBERSHIP, as
-/// every check here asks, because the real half's board holds what the checks
-/// before it filed.
-fn list(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    let item = filed(store, "an item a listing answers");
-    let row_in = |filter: &Filter| {
-        store
-            .list(filter)
-            .unwrap_or_else(|e| panic!("{which}: the {filter:?} listing reads: {e}"))
-            .into_iter()
-            .find(|row| row.id == item)
-    };
-
-    let ready = row_in(&Filter::Ready)
-        .unwrap_or_else(|| panic!("{which}: a fresh item is in the ready set"));
-    assert_eq!(ready.title, "an item a listing answers", "{which}");
-    assert_eq!(ready.status, "open", "{which}");
-    assert_eq!(ready.item_type, "task", "{which}");
-    assert_eq!(ready.labels, ["a-label"], "{which}: the row's own labels");
-    assert_eq!(ready.order, OrderState::None, "{which}");
-
-    assert!(
-        row_in(&Filter::Label(String::from("a-label"))).is_some(),
-        "{which}: an open item is in its label's listing"
-    );
-    let seat = SeatId::parse(SEAT).expect("a seat id");
-    assert!(
-        row_in(&Filter::Assignee(seat)).is_none(),
-        "{which}: an item nobody holds is in no seat's listing"
-    );
-    hand_to(store, &item, SEAT);
-    assert!(
-        row_in(&Filter::Assignee(seat)).is_some(),
-        "{which}: an item assigned to the seat is in the seat's listing"
-    );
-}
-
-fn show_of_an_absent_item(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    match store.show("fx-nobody-filed-this") {
-        Err(fleet_core::store::StoreError::Refused(_)) => {}
-        other => panic!("{which}: an absent item is Refused, and answered {other:?}"),
-    }
-}
-
-/// The title alone, the assignee alone and both in one update: each moves the
-/// field it names, and the read beside it answers the move and leaves the
-/// other field as it was.
-fn update(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    let item = filed(store, "the title it was filed under");
-    let id = ItemId::from(item.as_str());
-    let read = |store: &dyn Store| store.show(&item).expect("the item reads");
-
-    store
-        .update(
-            &id,
-            &Update::title(String::from("the title it carries now")),
-            &by(),
-        )
-        .expect("the title lands");
-    let now = read(store);
-    assert_eq!(now.title, "the title it carries now", "{which}");
-    assert_eq!(
-        now.assignee, None,
-        "{which}: a title alone leaves the assignee absent"
-    );
-
-    hand_to(store, &item, SEAT);
-    let now = read(store);
-    assert_eq!(now.assignee.as_deref(), Some(SEAT), "{which}");
-    assert_eq!(
-        now.title, "the title it carries now",
-        "{which}: an assignee alone leaves the title"
-    );
-
-    store
-        .update(
-            &id,
-            &Update {
-                title: Some(String::from("the title and the holder both moved")),
-                assignee: Some(Some(SeatId::parse(ANOTHER_SEAT).expect("a seat id"))),
-            },
-            &by(),
-        )
-        .expect("the one update lands");
-    let now = read(store);
-    assert_eq!(now.title, "the title and the holder both moved", "{which}");
-    assert_eq!(
-        now.assignee.as_deref(),
-        Some(ANOTHER_SEAT),
-        "{which}: the last write is what the read answers"
-    );
-}
-
-/// An assignee handed to nobody reads ABSENT, as an item nobody ever held
-/// does, and never as an empty holder.
-fn cleared(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    let item = filed(store, "an item handed to nobody");
-    hand_to(store, &item, SEAT);
-    store
-        .update(&ItemId::from(item.as_str()), &Update::unassigned(), &by())
-        .expect("the clearing lands");
-    let read = store.show(&item).expect("the item reads");
-    assert_eq!(read.assignee, None, "{which}: {}", read.proof.as_str());
-    assert_eq!(
-        read.title, "an item handed to nobody",
-        "{which}: and the title stands"
-    );
-}
-
-/// An update naming neither field is Unreadable, word for word, and nothing
-/// moves.
-fn unchanged(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    let item = filed(store, "an item an empty update reaches");
-    hand_to(store, &item, SEAT);
-    match store.update(&ItemId::from(item.as_str()), &Update::default(), &by()) {
-        Err(StoreError::Unreadable(why)) => assert_eq!(
-            why, "an update names neither a title nor an assignee — nothing was written",
-            "{which}"
-        ),
-        other => panic!("{which}: an update naming nothing: {other:?}"),
-    }
-    let read = store.show(&item).expect("the item reads");
-    assert_eq!(read.title, "an item an empty update reaches", "{which}");
-    assert_eq!(read.assignee.as_deref(), Some(SEAT), "{which}");
-}
-
-fn orders(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    let item = filed(store, "an item with an order on it");
-    let id = ItemId::from(item.as_str());
-    let read = store.show(&item).expect("the item reads");
-    assert_eq!(
-        read.order,
-        OrderState::None,
-        "{which}: nothing has written an order yet"
-    );
-
-    store
-        .order_set(&id, &the_order(), &by())
-        .expect("the order lands");
-    let read = store.show(&item).expect("the item reads");
-    assert_eq!(read.order, OrderState::Ordered(the_order()), "{which}");
-    assert_eq!(read.assignee, None, "{which}: an order touches no assignee");
-
-    let transient = Order {
-        seat: None,
-        ..the_order()
-    };
-    store
-        .order_set(&id, &transient, &by())
-        .expect("an order naming no seat lands");
-    let read = store.show(&item).expect("the item reads");
-    assert_eq!(
-        read.order,
-        OrderState::Ordered(transient),
-        "{which}: an order naming no seat reads back naming none — the seat is left out \
-         and not written empty: {}",
-        read.proof.as_str()
-    );
-}
-
-/// AN ORDER WRITE REPLACES THE ORDER AND KEEPS THE RUN'S RECORD: run_set R,
-/// order_set O1, order_set O2, and the item answers O2 and R. The two keys a
-/// store keeps them under are its own, and a store that nested both under one
-/// object would lose the record to the first order written over it — measured
-/// on bd 1.3.0 (fleet-4j6).
-fn order_replaced(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    let item = filed(store, "an item whose order is given twice");
-    let id = ItemId::from(item.as_str());
-    store
-        .run_set(&id, &a_record("h1"), &by())
-        .expect("the run's record lands");
-    store
-        .order_set(&id, &the_order(), &by())
-        .expect("the first order lands");
-    store
-        .order_set(&id, &another_order(), &by())
-        .expect("the second order lands");
-
-    let read = store.show(&item).expect("the item reads");
-    assert_eq!(
-        read.order,
-        OrderState::Ordered(another_order()),
-        "{which}: the second order replaced the first whole: {}",
-        read.proof.as_str()
-    );
-    assert_eq!(
-        read.run,
-        Some(a_record("h1")),
-        "{which}: and the run's record stands: {}",
-        read.proof.as_str()
-    );
-}
-
-/// A RUN WRITE KEEPS THE ORDER: order_set O, run_set R1, run_set R2, and the
-/// item answers O and R2 — the second record replaced the first whole.
-fn run_replaced(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    let item = filed(store, "an item whose run record is written twice");
-    let id = ItemId::from(item.as_str());
-    store
-        .order_set(&id, &the_order(), &by())
-        .expect("the order lands");
-    store
-        .run_set(&id, &a_record("h1"), &by())
-        .expect("the first record lands");
-    let second = RunRecord {
-        workflow: String::from("another-workflow"),
-        ..a_record("h2")
-    };
-    store
-        .run_set(&id, &second, &by())
-        .expect("the second record lands");
-
-    let read = store.show(&item).expect("the item reads");
-    assert_eq!(
-        read.run,
-        Some(second),
-        "{which}: the second record replaced the first whole: {}",
-        read.proof.as_str()
-    );
-    assert_eq!(
-        read.order,
-        OrderState::Ordered(the_order()),
-        "{which}: and the order stands: {}",
-        read.proof.as_str()
-    );
-}
-
-/// ORDER_WITHDRAW CLEARS THE ASSIGNEE AND THE ORDER TOGETHER, in one act, and
-/// touches nothing else: the run's record and the status stand.
-fn withdrawn(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    let item = filed(store, "an item whose order is withdrawn");
-    let id = ItemId::from(item.as_str());
-    hand_to(store, &item, SEAT);
-    store
-        .run_set(&id, &a_record("h1"), &by())
-        .expect("the run's record lands");
-    store
-        .order_set(&id, &the_order(), &by())
-        .expect("the order lands");
-
-    store
-        .order_withdraw(&id, &by())
-        .expect("the withdrawal lands");
-    let read = store.show(&item).expect("the item reads");
-    assert_eq!(
-        read.assignee,
-        None,
-        "{which}: the assignee is cleared — absent, as an item nobody held reads: {}",
-        read.proof.as_str()
-    );
-    assert_eq!(
-        read.order,
-        OrderState::None,
-        "{which}: and the order is gone with it — told from an unreadable one"
-    );
-    assert_eq!(
-        read.run,
-        Some(a_record("h1")),
-        "{which}: and the run's record stands"
-    );
-    assert_eq!(read.status, "open", "{which}: and the status is untouched");
-}
-
-/// A fenced write lands only while the holder it names still holds the item,
-/// and is `Moved` with NOTHING written where somebody else does — bd's
-/// `--if-assignee`, which both halves keep. A withdrawal is fenced on the
-/// status it names too — bd's `--if-status` — so a closed item is never
-/// reopened by one, and the one that lands leaves the item open.
-fn fenced(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    let item = filed(store, "an item a fenced write reaches");
-    let id = ItemId::from(item.as_str());
-    let seat = SeatId::parse(SEAT).expect("a seat id");
-    hand_to(store, &item, SEAT);
-    store
-        .order_set(&id, &the_order(), &by())
-        .expect("the order lands");
-    let untouched = |store: &dyn Store, status: &str, what: &str| {
-        let read = store.show(&item).expect("the item reads");
-        assert_eq!(
-            read.assignee.as_deref(),
-            Some(SEAT),
-            "{which}: {what} — nothing was written, the holder stands"
-        );
-        assert_ne!(
-            read.order,
-            OrderState::None,
-            "{which}: {what} — and so does its order"
-        );
-        assert_eq!(read.status, status, "{which}: {what} — and its status");
-    };
-
-    let another = SeatId::parse(ANOTHER_SEAT).expect("a seat id");
-    match store.order_withdraw_from(&id, &another, &Status::Open, &by()) {
-        Err(StoreError::Moved(why)) => assert!(
-            why.contains(&item) && why.contains(ANOTHER_SEAT),
-            "{which}: the refusal names the item and the holder it expected: {why}"
-        ),
-        other => panic!("{which}: a withdraw naming a seat that does not hold it: {other:?}"),
-    }
-    untouched(store, "open", "another seat named");
-
-    match store.order_withdraw_from(&id, &seat, &Status::InProgress, &by()) {
-        Err(StoreError::Moved(why)) => assert!(
-            why.contains(&item) && why.contains("in_progress"),
-            "{which}: the refusal names the item and the status it expected: {why}"
-        ),
-        other => panic!("{which}: a withdraw naming a status the item is not in: {other:?}"),
-    }
-    untouched(store, "open", "another status named");
-
-    store
-        .close(&id, "landed by its seat", SEAT)
-        .expect("the holder closes it");
-    match store.order_withdraw_from(&id, &seat, &Status::Open, &by()) {
-        Err(StoreError::Moved(why)) => assert!(
-            why.contains(&item) && why.contains("closed"),
-            "{which}: the refusal names the item and the status it reads: {why}"
-        ),
-        other => panic!("{which}: a withdraw of an item closed since it was read: {other:?}"),
-    }
-    untouched(store, "closed", "a closed item");
-
-    store.reopen(&item, BY).expect("the reopen lands");
-    untouched(store, "open", "a reopen");
-
-    store
-        .order_withdraw_from(&id, &seat, &Status::Open, &by())
-        .expect("the holder's withdraw lands");
-    let read = store.show(&item).expect("the item reads");
-    assert_eq!(
-        read.assignee,
-        None,
-        "{which}: the assignee is cleared: {}",
-        read.proof.as_str()
-    );
-    assert_eq!(read.order, OrderState::None, "{which}: and the order unset");
-    assert_eq!(read.status, "open", "{which}: and the item open");
-
-    match store.hand_over(&item, SEAT, "the-builder", BY) {
-        Err(StoreError::Moved(_)) => {}
-        other => panic!("{which}: a hand-over from a seat that no longer holds it: {other:?}"),
-    }
-    store
-        .hand_over(&item, "", "the-builder", BY)
-        .expect("a hand-over of an item nobody holds, from nobody, lands");
-    store
-        .hand_over(&item, "the-builder", "a-reviewer", BY)
-        .expect("a hand-over from its holder lands");
-    assert_eq!(
-        store
-            .show(&item)
-            .expect("the item reads")
-            .assignee
-            .as_deref(),
-        Some("a-reviewer"),
-        "{which}"
-    );
-}
-
-/// FLEET'S WRITES MERGE BESIDE ANOTHER WRITER'S KEYS (fleet-4j6): a bare
-/// `orders` and a key of its own that another tool keeps on the item are
-/// neither read nor moved by an order, a run's record or a withdrawal, and
-/// the reads of fleet's own two keys answer through them.
-fn fleet_keys(store: &dyn Store, _: &Path, which: &str, foreign: &Foreign) {
-    let item = filed(store, "an item carrying another writer's keys");
-    let id = ItemId::from(item.as_str());
-    foreign(
-        &item,
-        r#"{"orders":{"seat":"another-tools-seat","by":7},"a_prior_key":{"kept":true}}"#,
-    );
-    let theirs = |read: &fleet_core::store::Item| {
-        let document: serde_json::Value =
-            serde_json::from_str(read.proof.as_str()).expect("the document is JSON");
-        let document = match document {
-            serde_json::Value::Array(mut rows) => rows.remove(0),
-            row => row,
-        };
-        (
-            document["metadata"]["orders"].clone(),
-            document["metadata"]["a_prior_key"].clone(),
-        )
-    };
-    let unmoved = |read: &fleet_core::store::Item, after: &str| {
-        assert_eq!(
-            theirs(read),
-            (
-                serde_json::json!({ "seat": "another-tools-seat", "by": 7 }),
-                serde_json::json!({ "kept": true }),
-            ),
-            "{which}: after {after}, the other writer's keys stand: {}",
-            read.proof.as_str()
-        );
-    };
-    let read = store.show(&item).expect("the item reads");
-    assert_eq!(
-        read.order,
-        OrderState::None,
-        "{which}: a bare `orders` is not fleet's and reads as no order"
-    );
-    assert_eq!(read.run, None, "{which}: and there is no run's record");
-
-    store
-        .run_set(&id, &a_record("h1"), &by())
-        .expect("the run's record lands");
-    let read = store.show(&item).expect("the item reads");
-    assert_eq!(read.run, Some(a_record("h1")), "{which}");
-    unmoved(&read, "a run's record");
-
-    store
-        .order_set(&id, &the_order(), &by())
-        .expect("the order lands");
-    let read = store.show(&item).expect("the item reads");
-    assert_eq!(read.order, OrderState::Ordered(the_order()), "{which}");
-    unmoved(&read, "an order");
-
-    hand_to(store, &item, SEAT);
-    store
-        .order_withdraw(&id, &by())
-        .expect("the withdrawal lands");
-    let read = store.show(&item).expect("the item reads");
-    assert_eq!(read.order, OrderState::None, "{which}");
-    assert_eq!(read.run, Some(a_record("h1")), "{which}");
-    unmoved(&read, "a withdrawal");
-}
-
-fn holds(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    let item = filed(store, "an item to park");
-    let hold = store
-        .hold_raise(
-            &ItemId::from(item.as_str()),
-            "the question this park asks",
-            &by(),
-        )
-        .expect("the hold is raised");
-    assert!(!hold.is_empty(), "{which}: the store names the hold");
-    assert!(
-        store
-            .holds_open()
-            .expect("the open listing answers")
-            .contains(&hold),
-        "{which}: a raised hold is open"
-    );
-    assert!(
-        !store
-            .list(&Filter::Ready)
-            .expect("the ready listing answers")
-            .iter()
-            .any(|row| row.id == item),
-        "{which}: and the item it holds is out of the ready set"
-    );
-
-    store.hold_clear(&hold, &by()).expect("the hold clears");
-    assert!(
-        !store
-            .holds_open()
-            .expect("the open listing answers")
-            .contains(&hold),
-        "{which}: and a cleared one is not"
-    );
-}
-
-/// A clear of a hold already cleared is Refused, naming the hold — the act is
-/// already done — and the hold stays off the open listing.
-fn clear_of_cleared(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    let item = filed(store, "an item whose hold is cleared twice");
-    let hold = store
-        .hold_raise(
-            &ItemId::from(item.as_str()),
-            "a question answered once",
-            &by(),
-        )
-        .expect("the hold is raised");
-    store
-        .hold_clear(&hold, &by())
-        .expect("the first clear lands");
-    match store.hold_clear(&hold, &by()) {
-        Err(StoreError::Refused(why)) => {
-            assert_eq!(why, format!("{hold} is already cleared"), "{which}")
+        let out = std::process::Command::new("bd")
+            .arg("-C")
+            .arg(root)
+            .args([
+                "update",
+                item,
+                "--metadata",
+                payload,
+                "--actor",
+                "another-tool",
+            ])
+            .output()
+            .map_err(|e| format!("bd could not be run: {e}"))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).into_owned())
         }
-        other => panic!("{which}: a clear of a cleared hold: {other:?}"),
-    }
-    assert!(
-        !store
-            .holds_open()
-            .expect("the open listing answers")
-            .contains(&hold),
-        "{which}: and the hold is still not open"
-    );
-}
-
-fn close(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    let item = filed(store, "an item to close");
-    assert_eq!(
-        store.show(&item).expect("the item reads").status,
-        "open",
-        "{which}"
-    );
-
-    store
-        .close(
-            &ItemId::from(item.as_str()),
-            "closed by the contract suite",
-            BY,
-        )
-        .expect("the close lands");
-    assert_eq!(
-        store.show(&item).expect("the item reads").status,
-        "closed",
-        "{which}: the close is what the read answers"
-    );
-}
-
-/// A close of an item already closed is Refused, naming the item — the act is
-/// already done — and the first close's reason is the one the item keeps.
-fn close_of_closed(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    let item = filed(store, "an item closed twice");
-    let id = ItemId::from(item.as_str());
-    store
-        .close(&id, "the first close's reason", BY)
-        .expect("the first close lands");
-    match store.close(&id, "the second close's reason", BY) {
-        Err(StoreError::Refused(why)) => {
-            assert_eq!(why, format!("{item} is already closed"), "{which}")
-        }
-        other => panic!("{which}: a close of a closed item: {other:?}"),
-    }
-    let read = store.show(&item).expect("the item reads");
-    assert_eq!(read.status, "closed", "{which}");
-    assert!(
-        read.proof.carries("the first close's reason")
-            && !read.proof.carries("the second close's reason"),
-        "{which}: the first close's reason stands: {}",
-        read.proof.as_str()
-    );
-}
-
-/// The store names itself and the version it is at, neither of them empty.
-fn version(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    let answered = store.version().expect("the version reads");
-    assert!(!answered.name.is_empty(), "{which}: {answered:?}");
-    assert!(!answered.version.is_empty(), "{which}: {answered:?}");
-}
-
-/// The export lands at the file the store's own capabilities declare, under
-/// the root the caller named, and the store answers that path.
-fn export(store: &dyn Store, root: &Path, which: &str, _: &Foreign) {
-    let item = filed(store, "an item the export carries");
-    let declared = store
-        .capabilities()
-        .expect("the capabilities read")
-        .export
-        .unwrap_or_else(|| panic!("{which}: this store declares an export"));
-    let into = root.join(&declared.file);
-    assert_eq!(
-        store.export(root).expect("the export runs"),
-        into,
-        "{which}: the store answers the path it wrote, the declared file under the root"
-    );
-
-    let before = std::fs::read(&into)
-        .unwrap_or_else(|e| panic!("{which}: the export left a file at {}: {e}", into.display()));
-    assert!(!before.is_empty(), "{which}: and the file is not empty");
-    assert!(
-        String::from_utf8_lossy(&before).contains(&item),
-        "{which}: carrying the item that was filed"
-    );
-
-    store
-        .append(
-            &ItemId::from(item.as_str()),
-            &Body::Ordered(Ordered {
-                order: OrderKind::Dispatch,
-                seat: None,
-            }),
-            &seat_actor("the-contract-seat"),
-        )
-        .expect("the entry the second export has to carry lands");
-    assert_eq!(
-        store.export(root).expect("the second export runs"),
-        into,
-        "{which}: and the same path the second time"
-    );
-    let after = std::fs::read(&into).expect("the export is still there");
-    assert_ne!(
-        before, after,
-        "{which}: the bytes move when an item does, which is what a landing's gate reads"
-    );
-}
-
-/// An entry appended is on the item's timeline, in the order it was appended,
-/// with the body that was written and the actor who wrote it — and an item
-/// nothing has appended to answers an empty timeline, not a refusal.
-fn append_then_timeline(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    let item = filed(store, "an item with a timeline");
-    let item = ItemId::from(item.as_str());
-    assert_eq!(
-        store.timeline(&item).expect("the timeline reads"),
-        Vec::new(),
-        "{which}: a filed item's timeline is empty"
-    );
-
-    let by = seat_actor("the-contract-seat");
-    let ordered = Body::Ordered(Ordered {
-        order: OrderKind::Dispatch,
-        seat: None,
-    });
-    let delivered = a_delivery(A_COMMIT);
-    let first = store
-        .append(&item, &ordered, &by)
-        .expect("the order entry lands");
-    let second = store
-        .append(&item, &delivered, &by)
-        .expect("the delivery entry lands");
-    assert_ne!(first, second, "{which}: each entry has an id of its own");
-
-    let timeline = store.timeline(&item).expect("the timeline reads");
-    let ids: Vec<&str> = timeline.iter().map(|entry| entry.id.as_str()).collect();
-    assert_eq!(
-        ids,
-        [first.as_str(), second.as_str()],
-        "{which}: the two entries, in the order they were appended"
-    );
-    assert_eq!(timeline[0].body, ordered, "{which}");
-    assert_eq!(timeline[1].body, delivered, "{which}");
-    for entry in &timeline {
-        assert_eq!(entry.by, by, "{which}: the actor who appended it");
-        assert!(!entry.at.is_empty(), "{which}: and the store's time");
     }
 }
 
-fn timeline_of_an_absent_item(store: &dyn Store, _: &Path, which: &str, _: &Foreign) {
-    match store.timeline(&ItemId::from("fx-nobody-filed-this")) {
-        Err(StoreError::Refused(_)) => {}
-        other => panic!("{which}: an absent item's timeline is Refused, and answered {other:?}"),
+/// A directory under the system temp directory, removed when this is dropped —
+/// a red included.
+struct Gone(PathBuf);
+
+impl Gone {
+    /// A name of its own, and nothing there yet.
+    fn named(label: &str) -> Gone {
+        let dir = std::env::temp_dir().join(format!("fleet-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Gone(dir)
+    }
+
+    /// The same, made and left empty.
+    fn empty(label: &str) -> Gone {
+        let gone = Gone::named(label);
+        std::fs::create_dir_all(&gone.0).expect("the empty directory is made");
+        gone
     }
 }
 
-// ---- the arms ----------------------------------------------------------------
-
-#[test]
-fn a_create_answers_an_id_the_next_read_answers_the_new_items_fields_for() {
-    in_memory("contract-create", create_then_show);
+impl Drop for Gone {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
-#[test]
-fn a_read_by_hash_answers_the_item_under_its_full_id() {
-    in_memory("contract-hash", show_by_hash);
-}
+// ---- one arm per check, on the board held in memory ------------------------
 
 #[test]
-fn resolve_answers_the_full_id_for_a_fragment() {
-    in_memory("contract-resolve", resolve);
-}
-
-#[test]
-fn a_listing_answers_the_items_row_under_each_filter() {
-    in_memory("contract-list", list);
-}
-
-#[test]
-fn a_read_of_an_item_nobody_filed_is_missing_and_not_unreadable() {
-    in_memory("contract-absent", show_of_an_absent_item);
-}
-
-#[test]
-fn update_title_and_assignee_move_what_show_answers() {
-    in_memory("contract-update", update);
-}
-
-#[test]
-fn an_assignee_cleared_by_update_reads_absent() {
-    in_memory("contract-cleared", cleared);
-}
-
-#[test]
-fn an_update_naming_nothing_is_unreadable_and_moves_nothing() {
-    in_memory("contract-unchanged", unchanged);
-}
-
-#[test]
-fn an_order_set_is_the_order_the_next_read_answers() {
-    in_memory("contract-orders", orders);
-}
-
-#[test]
-fn an_order_write_replaces_the_order_and_keeps_the_run_record() {
-    in_memory("contract-order-replaced", order_replaced);
-}
-
-#[test]
-fn a_run_write_keeps_the_order() {
-    in_memory("contract-run-replaced", run_replaced);
-}
-
-#[test]
-fn order_withdraw_clears_the_assignee_and_the_order_together() {
-    in_memory("contract-withdrawn", withdrawn);
-}
-
-#[test]
-fn a_fenced_write_lands_only_while_the_holder_it_names_holds_the_item() {
-    in_memory("contract-fenced", fenced);
-}
-
-#[test]
-fn another_writers_keys_are_neither_read_nor_moved_by_fleets_writes() {
-    in_memory("contract-fleet-keys", fleet_keys);
-}
-
-#[test]
-fn a_hold_is_on_the_open_listing_until_it_is_cleared() {
-    in_memory("contract-hold", holds);
-}
-
-#[test]
-fn clearing_a_cleared_hold_is_refused() {
-    in_memory("contract-clear-cleared", clear_of_cleared);
-}
-
-#[test]
-fn a_close_moves_the_status_the_next_read_answers() {
-    in_memory("contract-close", close);
-}
-
-#[test]
-fn closing_a_closed_item_is_refused() {
-    in_memory("contract-close-closed", close_of_closed);
+fn a_fresh_store_lists_nothing_ready_nothing_labelled_and_no_open_hold() {
+    in_memory("empty listings");
 }
 
 #[test]
 fn version_names_the_store_and_its_version() {
-    in_memory("contract-version", version);
+    in_memory("version");
+}
+
+#[test]
+fn a_declared_export_validates() {
+    in_memory("capabilities");
+}
+
+#[test]
+fn a_create_answers_an_id_the_next_read_answers_the_new_items_fields_for() {
+    in_memory("create then show");
+}
+
+#[test]
+fn a_fragment_resolves_to_the_full_id_and_reads_as_the_item() {
+    in_memory("resolve by fragment");
+}
+
+#[test]
+fn an_id_nobody_filed_is_refused_and_not_unreadable() {
+    in_memory("missing is refused");
+}
+
+#[test]
+fn a_fragment_naming_two_items_is_refused_naming_both() {
+    in_memory("ambiguous is refused with candidates");
+}
+
+#[test]
+fn a_store_that_is_not_there_is_unreadable_and_never_refused() {
+    in_memory("unreadable is could not tell");
+}
+
+#[test]
+fn a_hold_takes_an_item_out_of_the_ready_set_its_clear_brings_it_back_and_a_close_takes_it_out() {
+    in_memory("ready");
+}
+
+#[test]
+fn a_labels_listing_answers_its_open_items() {
+    in_memory("label filter");
+}
+
+#[test]
+fn a_seats_listing_answers_its_items_closed_ones_included() {
+    in_memory("assignee filter");
+}
+
+#[test]
+fn update_title_and_assignee_move_what_show_answers() {
+    in_memory("update");
+}
+
+#[test]
+fn an_order_write_replaces_the_order_and_keeps_the_run_record() {
+    in_memory("an order write keeps the run record");
+}
+
+#[test]
+fn a_run_write_keeps_the_order() {
+    in_memory("a run write keeps the order");
+}
+
+#[test]
+fn order_withdraw_clears_the_assignee_and_the_order_together() {
+    in_memory("order.withdraw clears both");
+}
+
+#[test]
+fn entries_appended_are_the_timelines_last_in_the_order_they_were_appended() {
+    in_memory("timeline is append-only and ordered");
+}
+
+#[test]
+fn a_hold_is_open_until_it_is_cleared_and_a_second_clear_is_refused() {
+    in_memory("holds");
+}
+
+#[test]
+fn a_close_moves_the_status_and_a_second_close_is_refused() {
+    in_memory("close");
 }
 
 #[test]
 fn an_export_writes_the_file_and_its_bytes_move_when_an_item_does() {
-    in_memory("contract-export", export);
+    in_memory("export");
 }
 
 #[test]
-fn an_entry_appended_is_on_the_timeline_in_the_order_it_was_appended() {
-    in_memory("contract-timeline", append_then_timeline);
+fn an_order_set_is_the_order_the_next_read_answers() {
+    in_memory("order.set reads back");
 }
 
 #[test]
-fn the_timeline_of_an_item_nobody_filed_is_missing() {
-    in_memory("contract-timeline-absent", timeline_of_an_absent_item);
+fn an_update_naming_nothing_is_unreadable_and_moves_nothing() {
+    in_memory("update naming nothing");
 }
 
-/// THE OTHER HALF: every check above, against the store `bd` answers.
+#[test]
+fn a_fenced_write_lands_only_while_the_holder_it_names_holds_the_item() {
+    in_memory("fenced writes");
+}
+
+#[test]
+fn another_writers_keys_are_neither_read_nor_moved_by_fleets_writes() {
+    in_memory("another writer's keys");
+}
+
+// ---- the real half ----------------------------------------------------------
+
+/// THE OTHER HALF: every check, against the store `bd` answers.
 ///
-/// One arm and one board for all of them, because a nextest arm is its own
-/// process and each board costs a `bd init`. A check that reds here and greens
-/// in its own arm above is the in-memory board having drifted from the real
-/// store, which is the whole reason this file exists.
+/// ON A BOARD OF ITS OWN, never a copy of the run's shared one: the first
+/// check lists a store nothing has written to, and the shared board holds
+/// every other rig's rows. A check that reds here and greens in its own arm
+/// above is the in-memory board having drifted from the real store, which is
+/// the whole reason this file exists.
 #[test]
 fn every_check_holds_against_bd_too() {
-    let scratch = shared_store("contract");
+    let scratch = Scratch::fresh("contract-checks");
     let bd = Bd::at(&scratch.root);
     // The file the export check reads is the one bd declares, and bd declares
     // its own.
@@ -1008,9 +309,131 @@ fn every_check_holds_against_bd_too() {
         .expect("bd declares an export");
     assert_eq!(declared.file, ".beads/issues.jsonl");
     assert_eq!(declared.file, fleet_core::store::bd::EXPORT);
-    let foreign = planted_on(scratch);
-    for (name, check) in CHECKS {
-        check(&bd, &scratch.root, &format!("bd — {name}"), &foreign);
+    every_check_holds(&bd, &scratch.root, "bd", &planted_on(&scratch.root));
+}
+
+/// THE ADAPTER'S OWN SCRATCH: `bd init` in a directory of the caller's, on
+/// bd's embedded engine, answered as that directory — and every check holds on
+/// a store over it, which is what `fleet store check` will ask of it.
+///
+/// That init is not one of the rigs', so it is counted here, where
+/// `fleet/tools/dolt-test-server` reads its run's count.
+#[test]
+fn the_bd_adapter_makes_a_scratch_store_every_check_holds_on() {
+    let dir = Gone::named("contract-scratch");
+    let adapter = Bd::at(&dir.0);
+    assert!(
+        adapter
+            .capabilities()
+            .expect("bd's capabilities read")
+            .scratch,
+        "bd declares a scratch store"
+    );
+    note_bd_init("contract-scratch");
+    let root = adapter
+        .scratch(&dir.0)
+        .unwrap_or_else(|e| panic!("bd makes a scratch store in {}: {e}", dir.0.display()));
+    assert_eq!(root, dir.0, "the answer is the directory it was handed");
+    assert!(
+        root.join(".beads").is_dir(),
+        "and the store is in it: {}",
+        root.display()
+    );
+    every_check_holds(
+        &Bd::at(&root),
+        &root,
+        "bd's own scratch",
+        &planted_on(&root),
+    );
+}
+
+/// The store held in memory declares a scratch store and answers the directory
+/// it was handed, a store over which is a fresh one of its own.
+#[test]
+fn the_board_held_in_memory_declares_a_scratch_and_answers_the_directory() {
+    let dir = Gone::named("contract-fake-scratch");
+    let store = FakeStore::default();
+    assert!(store.capabilities().expect("they read").scratch);
+    assert_eq!(store.scratch(&dir.0), Ok(dir.0.clone()));
+}
+
+/// A store that declares no scratch is asked for one anyway: the trait's own
+/// answer, Unreadable, with nothing made.
+#[test]
+fn a_store_declaring_no_scratch_is_unreadable_when_asked_for_one() {
+    let dir = Gone::named("contract-no-scratch");
+    let store = NoScratch(FakeStore::default());
+    assert!(!store.capabilities().expect("they read").scratch);
+    assert_eq!(
+        store.scratch(&dir.0),
+        Err(StoreError::Unreadable(String::from(
+            "this store declares no scratch"
+        )))
+    );
+    assert!(!dir.0.exists(), "and nothing is made");
+}
+
+/// The board held in memory with the scratch taken away: every verb its own,
+/// the capability undeclared and `scratch` left to the trait's default.
+struct NoScratch(FakeStore);
+
+impl Store for NoScratch {
+    fn show(&self, item: &str) -> Result<Item, StoreError> {
+        self.0.show(item)
+    }
+    fn resolve(&self, id: &str) -> Result<ItemId, StoreError> {
+        self.0.resolve(id)
+    }
+    fn list(&self, filter: &Filter) -> Result<Vec<ItemSummary>, StoreError> {
+        self.0.list(filter)
+    }
+    fn create(&self, item: &NewItem, by: &Actor) -> Result<ItemId, StoreError> {
+        self.0.create(item, by)
+    }
+    fn update(&self, id: &ItemId, change: &Update, by: &Actor) -> Result<(), StoreError> {
+        self.0.update(id, change, by)
+    }
+    fn order_set(&self, id: &ItemId, order: &Order, by: &Actor) -> Result<(), StoreError> {
+        self.0.order_set(id, order, by)
+    }
+    fn order_withdraw(&self, id: &ItemId, by: &Actor) -> Result<(), StoreError> {
+        self.0.order_withdraw(id, by)
+    }
+    fn run_set(&self, id: &ItemId, run: &RunRecord, by: &Actor) -> Result<(), StoreError> {
+        self.0.run_set(id, run, by)
+    }
+    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
+        self.0.reopen(item, by)
+    }
+    fn hold_raise(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<HoldId, StoreError> {
+        self.0.hold_raise(id, reason, by)
+    }
+    fn hold_clear(&self, hold: &HoldId, by: &Actor) -> Result<(), StoreError> {
+        self.0.hold_clear(hold, by)
+    }
+    fn holds_open(&self) -> Result<Vec<HoldId>, StoreError> {
+        self.0.holds_open()
+    }
+    fn close(&self, id: &ItemId, reason: &str, by: &str) -> Result<(), StoreError> {
+        self.0.close(id, reason, by)
+    }
+    fn append(&self, item: &ItemId, body: &Body, by: &Actor) -> Result<String, StoreError> {
+        self.0.append(item, body, by)
+    }
+    fn timeline(&self, item: &ItemId) -> Result<Vec<Entry>, StoreError> {
+        self.0.timeline(item)
+    }
+    fn capabilities(&self) -> Result<Capabilities, StoreError> {
+        Ok(Capabilities {
+            scratch: false,
+            ..self.0.capabilities()?
+        })
+    }
+    fn version(&self) -> Result<Version, StoreError> {
+        self.0.version()
+    }
+    fn export(&self, into: &Path) -> Result<PathBuf, StoreError> {
+        self.0.export(into)
     }
 }
 
@@ -1114,19 +537,23 @@ fn an_entry_that_does_not_validate_is_refused_and_nothing_is_written() {
     assert_eq!(comments(), before, "and bd lists nothing new");
 }
 
-/// The table the real half walks names every check this file holds, so a check
-/// added above and left out of it is a red here rather than a silence.
+/// Every check on the table has an arm of its own above, and every arm names a
+/// check on the table: a check added to the library and left without an arm,
+/// or an arm naming no check, is a red here rather than a silence.
 #[test]
 fn the_table_names_every_check() {
     let here = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/contract.rs");
     let arms = std::fs::read_to_string(&here).expect("this file is readable");
-    let written = arms
+    let mut armed: Vec<&str> = arms
         .lines()
-        .filter(|line| line.trim_start().starts_with("in_memory("))
-        .count();
+        .filter_map(|line| line.trim_start().strip_prefix("in_memory(\""))
+        .filter_map(|rest| rest.split_once("\");").map(|(name, _)| name))
+        .collect();
+    armed.sort_unstable();
+    let mut table: Vec<&str> = CHECKS.iter().map(|(name, _)| *name).collect();
+    table.sort_unstable();
     assert_eq!(
-        CHECKS.len(),
-        written,
-        "every check with an arm of its own is on the table the real half walks"
+        armed, table,
+        "every check on the table has an arm of its own, and every arm a check"
     );
 }

@@ -556,7 +556,12 @@ impl Store for Bd {
     /// inherits.
     ///
     /// A seat's items are held under its full id, which is what every
-    /// assignment writes.
+    /// assignment writes, and they are EVERY item it holds, whatever its
+    /// status — `--all`, because `list` leaves closed items out by default:
+    /// measured on 1.3.0, an item its holder closed was gone from `list -a
+    /// <seat>` and back with `--all`, reading `closed`. A caller reads the
+    /// status off each row, and the conformance suite's assignee check is the
+    /// arm that found the two stores disagreeing.
     fn list(&self, filter: &Filter) -> Result<Vec<ItemSummary>, StoreError> {
         let seat;
         let args: Vec<&str> = match filter {
@@ -566,7 +571,7 @@ impl Store for Bd {
             ],
             Filter::Assignee(held) => {
                 seat = held.to_string();
-                vec!["list", "-a", &seat, "--json", "-n", "0"]
+                vec!["list", "-a", &seat, "--all", "--json", "-n", "0"]
             }
         };
         Ok(self
@@ -947,7 +952,7 @@ impl Store for Bd {
                 file: EXPORT.to_string(),
                 dir: DIR.to_string(),
             }),
-            scratch: false,
+            scratch: true,
             item_prefix: None,
         })
     }
@@ -999,6 +1004,42 @@ impl Store for Bd {
         let into = written.to_string_lossy().into_owned();
         self.wrote(&["export", "-o", &into])?;
         Ok(written)
+    }
+
+    /// `bd init --prefix fx --quiet` run IN `into` — made first where it is
+    /// not there — and never under `-C`, which bd 1.3.0 refuses on a directory
+    /// holding no store: measured, `bd -C <empty dir> show x --json` exits 1
+    /// with `Error: cannot use -C directory "<dir>": no beads project found`
+    /// on stderr and nothing on stdout, which [`show`](Store::show) reads as
+    /// Unreadable.
+    ///
+    /// NO SERVER FLAG, so the store is bd's embedded engine under
+    /// `into/.beads` and never a port some other board is served on. bd writes
+    /// its agent integrations beside it even under `--quiet` — measured on
+    /// 1.3.0, a CLAUDE.md, an AGENTS.md, `.claude`, `.codex`, `.cursor` and a
+    /// repository of its own — so `into` is a directory the caller made for
+    /// this, and the answer is `into` itself.
+    fn scratch(&self, into: &Path) -> Result<PathBuf, StoreError> {
+        std::fs::create_dir_all(into).map_err(|e| {
+            StoreError::Unreadable(format!(
+                "the scratch directory {} could not be made: {e}",
+                into.display()
+            ))
+        })?;
+        let args = ["init", "--prefix", "fx", "--quiet"];
+        let mut cmd = Command::new(&self.bin);
+        cmd.env(ENVELOPE, "1").args(args).current_dir(into);
+        let out = run_bounded(cmd, self.timeout).map_err(|why| {
+            StoreError::Unreadable(format!(
+                "{} in {} could not be run ({why}) — no scratch store was made",
+                self.named(&args),
+                into.display()
+            ))
+        })?;
+        if !out.status.success() {
+            return Err(self.refused(&args, &out));
+        }
+        Ok(into.to_path_buf())
     }
 }
 
