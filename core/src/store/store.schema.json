@@ -1,0 +1,2333 @@
+{
+  "$defs": {
+    "About": {
+      "additionalProperties": false,
+      "properties": {
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "licenses": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "items",
+        "licenses"
+      ],
+      "type": "object"
+    },
+    "Actor": {
+      "pattern": "^(seat:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|(run|routine|controller):\\S+)$",
+      "type": "string"
+    },
+    "CheckResult": {
+      "additionalProperties": false,
+      "properties": {
+        "check": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "check",
+        "result"
+      ],
+      "type": "object"
+    },
+    "CheckRow": {
+      "additionalProperties": false,
+      "properties": {
+        "check": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "string"
+        },
+        "verdict": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "check",
+        "verdict",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "Choice": {
+      "additionalProperties": false,
+      "properties": {
+        "letter": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "letter",
+        "text"
+      ],
+      "type": "object"
+    },
+    "Classification": {
+      "enum": [
+        "safe",
+        "carries_unlanded_work",
+        "carries",
+        "could_not_tell",
+        "not_given"
+      ],
+      "type": "string"
+    },
+    "Clearance": {
+      "enum": [
+        "answer",
+        "cancel"
+      ],
+      "type": "string"
+    },
+    "Decision": {
+      "additionalProperties": false,
+      "properties": {
+        "because": {
+          "type": "string"
+        },
+        "call": {
+          "type": "string"
+        },
+        "not_taken": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "call",
+        "not_taken",
+        "because"
+      ],
+      "type": "object"
+    },
+    "Entry": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "at": {
+              "type": "string"
+            },
+            "by": {
+              "$ref": "#/$defs/Actor"
+            },
+            "fleet.entry": {
+              "const": 1
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "ordered",
+              "type": "string"
+            },
+            "order": {
+              "$ref": "#/$defs/OrderKind"
+            },
+            "seat": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SeatId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "order",
+            "id",
+            "at",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "at": {
+              "type": "string"
+            },
+            "by": {
+              "$ref": "#/$defs/Actor"
+            },
+            "cause": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "fleet.entry": {
+              "const": 1
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "order_withdrawn",
+              "type": "string"
+            },
+            "seat": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SeatId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "why": {
+              "$ref": "#/$defs/Withdrawal"
+            }
+          },
+          "required": [
+            "kind",
+            "why",
+            "id",
+            "at",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "at": {
+              "type": "string"
+            },
+            "base": {
+              "type": "string"
+            },
+            "branch": {
+              "type": "string"
+            },
+            "by": {
+              "$ref": "#/$defs/Actor"
+            },
+            "checks": {
+              "items": {
+                "$ref": "#/$defs/CheckResult"
+              },
+              "type": "array"
+            },
+            "commit": {
+              "type": "string"
+            },
+            "covers": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "decisions": {
+              "items": {
+                "$ref": "#/$defs/Decision"
+              },
+              "type": "array"
+            },
+            "files": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "fleet.entry": {
+              "const": 1
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "delivered",
+              "type": "string"
+            },
+            "not_proven": {
+              "items": {
+                "$ref": "#/$defs/NotProven"
+              },
+              "type": "array"
+            },
+            "spec_corrections": {
+              "items": {
+                "$ref": "#/$defs/SpecCorrection"
+              },
+              "type": "array"
+            },
+            "suite": {
+              "$ref": "#/$defs/SuiteRun"
+            }
+          },
+          "required": [
+            "kind",
+            "commit",
+            "branch",
+            "base",
+            "files",
+            "checks",
+            "suite",
+            "spec_corrections",
+            "not_proven",
+            "decisions",
+            "covers",
+            "id",
+            "at",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "at": {
+              "type": "string"
+            },
+            "by": {
+              "$ref": "#/$defs/Actor"
+            },
+            "commit": {
+              "type": "string"
+            },
+            "findings": {
+              "items": {
+                "$ref": "#/$defs/Finding"
+              },
+              "type": "array"
+            },
+            "fleet.entry": {
+              "const": 1
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "reviewed",
+              "type": "string"
+            },
+            "size": {
+              "$ref": "#/$defs/Size"
+            },
+            "verdict": {
+              "$ref": "#/$defs/Verdict"
+            },
+            "walk": {
+              "items": {
+                "$ref": "#/$defs/Ruling"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "verdict",
+            "commit",
+            "size",
+            "walk",
+            "id",
+            "at",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "about": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/About"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "at": {
+              "type": "string"
+            },
+            "branch": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "by": {
+              "$ref": "#/$defs/Actor"
+            },
+            "commit": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "context": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "fleet.entry": {
+              "const": 1
+            },
+            "hold": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "held",
+              "type": "string"
+            },
+            "options": {
+              "items": {
+                "$ref": "#/$defs/Choice"
+              },
+              "type": "array"
+            },
+            "question": {
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/HoldReason"
+            },
+            "run_hash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "hold",
+            "reason",
+            "question",
+            "options",
+            "id",
+            "at",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "at": {
+              "type": "string"
+            },
+            "by": {
+              "$ref": "#/$defs/Actor"
+            },
+            "fleet.entry": {
+              "const": 1
+            },
+            "hold": {
+              "type": "string"
+            },
+            "how": {
+              "$ref": "#/$defs/Clearance"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "cleared",
+              "type": "string"
+            },
+            "letter": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "hold",
+            "how",
+            "id",
+            "at",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "at": {
+              "type": "string"
+            },
+            "by": {
+              "$ref": "#/$defs/Actor"
+            },
+            "checks": {
+              "items": {
+                "$ref": "#/$defs/CheckRow"
+              },
+              "type": "array"
+            },
+            "fleet.entry": {
+              "const": 1
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "landed",
+              "type": "string"
+            },
+            "old": {
+              "type": "string"
+            },
+            "run": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sha": {
+              "type": "string"
+            },
+            "squash_of": {
+              "type": "string"
+            },
+            "test": {
+              "$ref": "#/$defs/SuiteRun"
+            },
+            "work_branch": {
+              "$ref": "#/$defs/WorkBranch"
+            }
+          },
+          "required": [
+            "kind",
+            "sha",
+            "old",
+            "squash_of",
+            "test",
+            "checks",
+            "work_branch",
+            "id",
+            "at",
+            "by"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ExportSpec": {
+      "properties": {
+        "dir": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "dir"
+      ],
+      "type": "object"
+    },
+    "Filter": {
+      "oneOf": [
+        {
+          "enum": [
+            "ready"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "label"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "assignee": {
+              "$ref": "#/$defs/SeatId"
+            }
+          },
+          "required": [
+            "assignee"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Finding": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "HoldId": {
+      "type": "string"
+    },
+    "HoldReason": {
+      "enum": [
+        "ask",
+        "max_crashes"
+      ],
+      "type": "string"
+    },
+    "Item": {
+      "properties": {
+        "assignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SeatId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "blockers": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ItemId"
+          },
+          "type": "array"
+        },
+        "description": {
+          "type": "string"
+        },
+        "foreign": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "$ref": "#/$defs/ItemId"
+        },
+        "labels": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "order": {
+          "$ref": "#/$defs/OrderState",
+          "default": {
+            "state": "none"
+          }
+        },
+        "run": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "title": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "status",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ItemId": {
+      "type": "string"
+    },
+    "ItemSummary": {
+      "properties": {
+        "assignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SeatId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "foreign": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "$ref": "#/$defs/ItemId"
+        },
+        "labels": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "order": {
+          "$ref": "#/$defs/OrderState",
+          "default": {
+            "state": "none"
+          }
+        },
+        "run": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "title": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "status",
+        "type"
+      ],
+      "type": "object"
+    },
+    "NewEntry": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fleet.entry": {
+              "const": 1
+            },
+            "kind": {
+              "const": "ordered",
+              "type": "string"
+            },
+            "order": {
+              "$ref": "#/$defs/OrderKind"
+            },
+            "seat": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SeatId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "order",
+            "fleet.entry"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "cause": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "fleet.entry": {
+              "const": 1
+            },
+            "kind": {
+              "const": "order_withdrawn",
+              "type": "string"
+            },
+            "seat": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SeatId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "why": {
+              "$ref": "#/$defs/Withdrawal"
+            }
+          },
+          "required": [
+            "kind",
+            "why",
+            "fleet.entry"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "base": {
+              "type": "string"
+            },
+            "branch": {
+              "type": "string"
+            },
+            "checks": {
+              "items": {
+                "$ref": "#/$defs/CheckResult"
+              },
+              "type": "array"
+            },
+            "commit": {
+              "type": "string"
+            },
+            "covers": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "decisions": {
+              "items": {
+                "$ref": "#/$defs/Decision"
+              },
+              "type": "array"
+            },
+            "files": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "fleet.entry": {
+              "const": 1
+            },
+            "kind": {
+              "const": "delivered",
+              "type": "string"
+            },
+            "not_proven": {
+              "items": {
+                "$ref": "#/$defs/NotProven"
+              },
+              "type": "array"
+            },
+            "spec_corrections": {
+              "items": {
+                "$ref": "#/$defs/SpecCorrection"
+              },
+              "type": "array"
+            },
+            "suite": {
+              "$ref": "#/$defs/SuiteRun"
+            }
+          },
+          "required": [
+            "kind",
+            "commit",
+            "branch",
+            "base",
+            "files",
+            "checks",
+            "suite",
+            "spec_corrections",
+            "not_proven",
+            "decisions",
+            "covers",
+            "fleet.entry"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "commit": {
+              "type": "string"
+            },
+            "findings": {
+              "items": {
+                "$ref": "#/$defs/Finding"
+              },
+              "type": "array"
+            },
+            "fleet.entry": {
+              "const": 1
+            },
+            "kind": {
+              "const": "reviewed",
+              "type": "string"
+            },
+            "size": {
+              "$ref": "#/$defs/Size"
+            },
+            "verdict": {
+              "$ref": "#/$defs/Verdict"
+            },
+            "walk": {
+              "items": {
+                "$ref": "#/$defs/Ruling"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "verdict",
+            "commit",
+            "size",
+            "walk",
+            "fleet.entry"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "about": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/About"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "branch": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "commit": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "context": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "fleet.entry": {
+              "const": 1
+            },
+            "hold": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "held",
+              "type": "string"
+            },
+            "options": {
+              "items": {
+                "$ref": "#/$defs/Choice"
+              },
+              "type": "array"
+            },
+            "question": {
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/HoldReason"
+            },
+            "run_hash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "hold",
+            "reason",
+            "question",
+            "options",
+            "fleet.entry"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fleet.entry": {
+              "const": 1
+            },
+            "hold": {
+              "type": "string"
+            },
+            "how": {
+              "$ref": "#/$defs/Clearance"
+            },
+            "kind": {
+              "const": "cleared",
+              "type": "string"
+            },
+            "letter": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "hold",
+            "how",
+            "fleet.entry"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "checks": {
+              "items": {
+                "$ref": "#/$defs/CheckRow"
+              },
+              "type": "array"
+            },
+            "fleet.entry": {
+              "const": 1
+            },
+            "kind": {
+              "const": "landed",
+              "type": "string"
+            },
+            "old": {
+              "type": "string"
+            },
+            "run": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sha": {
+              "type": "string"
+            },
+            "squash_of": {
+              "type": "string"
+            },
+            "test": {
+              "$ref": "#/$defs/SuiteRun"
+            },
+            "work_branch": {
+              "$ref": "#/$defs/WorkBranch"
+            }
+          },
+          "required": [
+            "kind",
+            "sha",
+            "old",
+            "squash_of",
+            "test",
+            "checks",
+            "work_branch",
+            "fleet.entry"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "NewItem": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "labels": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "priority": {
+          "format": "uint8",
+          "maximum": 4,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "description",
+        "type"
+      ],
+      "type": "object"
+    },
+    "NotProven": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "surface": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "surface",
+        "command"
+      ],
+      "type": "object"
+    },
+    "NotTested": {
+      "additionalProperties": false,
+      "properties": {
+        "not_tested": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "not_tested"
+      ],
+      "type": "object"
+    },
+    "Order": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Stamp"
+        },
+        "by": {
+          "$ref": "#/$defs/Actor"
+        },
+        "kind": {
+          "$ref": "#/$defs/OrderKind"
+        },
+        "seat": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SeatId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "by",
+        "at"
+      ],
+      "type": "object"
+    },
+    "OrderKind": {
+      "enum": [
+        "dispatch",
+        "review"
+      ],
+      "type": "string"
+    },
+    "OrderState": {
+      "oneOf": [
+        {
+          "properties": {
+            "state": {
+              "const": "none",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "state": {
+              "const": "unreadable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "order": {
+              "$ref": "#/$defs/Order"
+            },
+            "state": {
+              "const": "ordered",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "order"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Priorities": {
+      "properties": {
+        "max": {
+          "format": "uint8",
+          "maximum": 4,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "min": {
+          "format": "uint8",
+          "maximum": 4,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "min",
+        "max"
+      ],
+      "type": "object"
+    },
+    "Ran": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "rc": {
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command",
+        "rc"
+      ],
+      "type": "object"
+    },
+    "Refusal": {
+      "properties": {
+        "candidates": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ItemId"
+          },
+          "type": "array"
+        },
+        "message": {
+          "type": "string"
+        },
+        "reason": {
+          "$ref": "#/$defs/RefusalReason"
+        }
+      },
+      "required": [
+        "reason",
+        "message"
+      ],
+      "type": "object"
+    },
+    "RefusalReason": {
+      "enum": [
+        "missing",
+        "ambiguous",
+        "already",
+        "moved"
+      ],
+      "type": "string"
+    },
+    "Ruling": {
+      "additionalProperties": false,
+      "properties": {
+        "decision": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ruling": {
+          "$ref": "#/$defs/RulingKind"
+        }
+      },
+      "required": [
+        "decision",
+        "ruling"
+      ],
+      "type": "object"
+    },
+    "RulingKind": {
+      "enum": [
+        "accept",
+        "overrule"
+      ],
+      "type": "string"
+    },
+    "RunRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "entry": {
+          "type": "string"
+        },
+        "hash": {
+          "type": "string"
+        },
+        "pack": {
+          "type": "string"
+        },
+        "started_at": {
+          "$ref": "#/$defs/Stamp"
+        },
+        "workflow": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "hash",
+        "workflow",
+        "pack",
+        "entry",
+        "started_at"
+      ],
+      "type": "object"
+    },
+    "SeatId": {
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "type": "string"
+    },
+    "Size": {
+      "additionalProperties": false,
+      "properties": {
+        "added": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "base": {
+          "type": "string"
+        },
+        "binary": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deleted": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "executable": {
+          "type": "boolean"
+        },
+        "files": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tests": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "files",
+        "added",
+        "deleted",
+        "binary",
+        "tests",
+        "executable",
+        "base"
+      ],
+      "type": "object"
+    },
+    "SpecCorrection": {
+      "additionalProperties": false,
+      "properties": {
+        "premise": {
+          "type": "string"
+        },
+        "refuted_by": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "premise",
+        "refuted_by"
+      ],
+      "type": "object"
+    },
+    "Stamp": {
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$",
+      "type": "string"
+    },
+    "Status": {
+      "anyOf": [
+        {
+          "enum": [
+            "open",
+            "in_progress",
+            "closed"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "SuiteRun": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Ran"
+        },
+        {
+          "$ref": "#/$defs/NotTested"
+        }
+      ]
+    },
+    "Verdict": {
+      "enum": [
+        "accepted",
+        "returned"
+      ],
+      "type": "string"
+    },
+    "Vocabulary": {
+      "properties": {
+        "priority": {
+          "$ref": "#/$defs/Priorities",
+          "default": {
+            "max": 4,
+            "min": 0
+          }
+        },
+        "types": {
+          "default": [
+            "bug",
+            "feature",
+            "task",
+            "epic",
+            "chore",
+            "decision"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Withdrawal": {
+      "enum": [
+        "retire",
+        "spawn_refused"
+      ],
+      "type": "string"
+    },
+    "WorkBranch": {
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "classification": {
+          "$ref": "#/$defs/Classification"
+        }
+      },
+      "required": [
+        "classification"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "error": {
+    "properties": {
+      "error": {
+        "type": "string"
+      },
+      "schema_version": {
+        "const": 1
+      }
+    },
+    "required": [
+      "schema_version",
+      "error"
+    ],
+    "type": "object"
+  },
+  "refusal": {
+    "properties": {
+      "refused": {
+        "$ref": "#/$defs/Refusal"
+      },
+      "schema_version": {
+        "const": 1
+      }
+    },
+    "required": [
+      "schema_version",
+      "refused"
+    ],
+    "type": "object"
+  },
+  "schema_version": 1,
+  "verbs": {
+    "append": {
+      "request": {
+        "properties": {
+          "by": {
+            "$ref": "#/$defs/Actor"
+          },
+          "entry": {
+            "$ref": "#/$defs/NewEntry"
+          },
+          "id": {
+            "$ref": "#/$defs/ItemId"
+          },
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "id",
+          "by",
+          "entry",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "entry": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "entry",
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "capabilities": {
+      "request": {
+        "properties": {
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "cli": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "export": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ExportSpec"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "item_prefix": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "items": {
+            "$ref": "#/$defs/Vocabulary",
+            "default": {
+              "priority": {
+                "max": 4,
+                "min": 0
+              },
+              "types": [
+                "bug",
+                "feature",
+                "task",
+                "epic",
+                "chore",
+                "decision"
+              ]
+            }
+          },
+          "schema_version": {
+            "const": 1
+          },
+          "scratch": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "close": {
+      "request": {
+        "properties": {
+          "by": {
+            "$ref": "#/$defs/Actor"
+          },
+          "id": {
+            "$ref": "#/$defs/ItemId"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "id",
+          "by",
+          "reason",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "create": {
+      "request": {
+        "properties": {
+          "by": {
+            "$ref": "#/$defs/Actor"
+          },
+          "item": {
+            "$ref": "#/$defs/NewItem"
+          },
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "item",
+          "by",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/ItemId"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "id",
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "export": {
+      "request": {
+        "properties": {
+          "into": {
+            "type": "string"
+          },
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "into",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "file",
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "hold.clear": {
+      "request": {
+        "properties": {
+          "by": {
+            "$ref": "#/$defs/Actor"
+          },
+          "hold": {
+            "$ref": "#/$defs/HoldId"
+          },
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "hold",
+          "by",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "hold.raise": {
+      "request": {
+        "properties": {
+          "by": {
+            "$ref": "#/$defs/Actor"
+          },
+          "id": {
+            "$ref": "#/$defs/ItemId"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "id",
+          "by",
+          "reason",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "hold": {
+            "$ref": "#/$defs/HoldId"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "hold",
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "holds.open": {
+      "request": {
+        "properties": {
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "holds": {
+            "items": {
+              "$ref": "#/$defs/HoldId"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "holds",
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "list": {
+      "request": {
+        "properties": {
+          "filter": {
+            "$ref": "#/$defs/Filter"
+          },
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "filter",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/ItemSummary"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "items",
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "order.set": {
+      "request": {
+        "properties": {
+          "by": {
+            "$ref": "#/$defs/Actor"
+          },
+          "id": {
+            "$ref": "#/$defs/ItemId"
+          },
+          "order": {
+            "$ref": "#/$defs/Order"
+          },
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "id",
+          "by",
+          "order",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "order.withdraw": {
+      "request": {
+        "properties": {
+          "by": {
+            "$ref": "#/$defs/Actor"
+          },
+          "id": {
+            "$ref": "#/$defs/ItemId"
+          },
+          "if_assignee": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SeatId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The fence, which changes nothing itself. Absent, the write is not fenced. A seat id, it lands only while that seat holds the item; null, only while nobody does. An item that does not meet it is refused as moved, with nothing written."
+          },
+          "if_status": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Status"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reopen": {
+            "type": "boolean"
+          },
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "id",
+          "by",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "resolve": {
+      "request": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "id",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/ItemId"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "id",
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "run.set": {
+      "request": {
+        "properties": {
+          "by": {
+            "$ref": "#/$defs/Actor"
+          },
+          "id": {
+            "$ref": "#/$defs/ItemId"
+          },
+          "root": {
+            "type": "string"
+          },
+          "run": {
+            "$ref": "#/$defs/RunRecord"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "id",
+          "by",
+          "run",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "scratch": {
+      "request": {
+        "properties": {
+          "into": {
+            "type": "string"
+          },
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "into",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "root",
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "show": {
+      "request": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "id",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "item": {
+            "$ref": "#/$defs/Item"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "item",
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "timeline": {
+      "request": {
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/ItemId"
+          },
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "id",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/$defs/Entry"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "entries",
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "update": {
+      "request": {
+        "properties": {
+          "assignee": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SeatId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Absent, the assignee is left alone. A seat id hands the item to that seat, and null hands it to nobody."
+          },
+          "by": {
+            "$ref": "#/$defs/Actor"
+          },
+          "id": {
+            "$ref": "#/$defs/ItemId"
+          },
+          "if_assignee": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SeatId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The fence, which changes nothing itself. Absent, the write is not fenced. A seat id, it lands only while that seat holds the item; null, only while nobody does. An item that does not meet it is refused as moved, with nothing written."
+          },
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          },
+          "status": {
+            "const": "open"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "by",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "version": {
+      "request": {
+        "properties": {
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}

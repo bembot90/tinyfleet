@@ -9,18 +9,19 @@ name = "fleet_core"
 path = "src/lib.rs"
 
 # What a dependent's DEV-dependency turns on to reach `test_support` — the
-# applying fake store and the board over it. Off by default and never a normal
-# dependency's: under resolver 2 a dev-dependency's features do not reach a
-# non-dev build, so a shipped binary carries none of it.
+# applying fake store and the board over it — and the store schema's validator.
+# Off by default and never a normal dependency's: under resolver 2 a
+# dev-dependency's features do not reach a non-dev build, so a shipped binary
+# carries none of it, regex-lite included.
 [features]
-test-support = []
+test-support = ["dep:regex-lite"]
 
-# Four crates: the same three the controller carries and serde_path_to_error,
-# all at the workspace's versions, and uuid, pinned here. This crate depends on
-# no other member of the workspace, and on the controller least of all: the
-# boundary between pack-and-project work and the process table is kept in the
-# type system rather than in discipline, and a test in the cli crate refuses the
-# edge.
+# Five crates: the same three the controller carries, serde_path_to_error and
+# schemars, all at the workspace's versions, and uuid, pinned here. This crate
+# depends on no other member of the workspace, and on the controller least of
+# all: the boundary between pack-and-project work and the process table is kept
+# in the type system rather than in discipline, and a test in the cli crate
+# refuses the edge.
 #
 # toml: a pack manifest, an order and the shadow registry are all
 # TOML, and this crate is their reader.
@@ -29,23 +30,36 @@ test-support = []
 # a row that fails names the key it failed at — serde's own error names only
 # the type it expected.
 #
+# schemars: the store contract's JSON Schema document is generated from the
+# contract's own types (store::schema), so what `fleet store schema` prints is
+# what those types read and write.
+#
 # uuid: a seat's id is a UUID v7, minted here and stored whole, because an id
 # cut down to what is unique inside one fleet stops being unique when seats
 # carry into a workspace or onto another machine (fleet-iex R1, Alberto's
 # ruling). Default features off; v7 for now_v7 (it pulls the rng, getrandom)
 # and std. The serde feature is not taken: a SeatId serializes through its own
 # string form.
+#
+# regex-lite, under `test-support` only: the validator the suites hold the
+# schema's instances to checks a `pattern` with it.
 [dependencies]
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_path_to_error.workspace = true
 toml.workspace = true
 uuid = { version = "=1.23.3", default-features = false, features = ["std", "v7"] }
+regex-lite = { workspace = true, optional = true }
 
 # THIS CRATE, ON ITSELF, WITH THE FEATURE ON. The module above is reached by
 # `tests/*.rs`, and an integration test links the library as an ordinary
 # dependent does — so `cfg(test)` alone would leave it invisible to the suites
 # that use it. The controller needs no such row because only its own unit tests
 # read its `test_support`.
+#
+# regex-lite again, for this crate's own unit tests, which compile the
+# validator under `cfg(test)` whatever the feature says.
 [dev-dependencies]
 fleet-core = { path = ".", features = ["test-support"] }
+regex-lite.workspace = true

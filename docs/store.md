@@ -493,6 +493,47 @@ carries `by` as the seat that holds the item, `seat:<its assignee>`.
 - `scratch` makes a new, empty store inside `into`, and never touches a store
   outside it.
 
+## The schema
+
+`fleet store schema` prints this contract as one JSON Schema document, draft
+2020-12, on standard output: the contract of the fleet binary you run it
+with. You read it to validate what your adapter receives and answers, or to
+generate your adapter's types from it. It reads no project and no store, so
+it runs anywhere.
+
+```sh
+$ fleet store schema > contract.json
+$ jq '.verbs | keys' contract.json
+[
+  "append",
+  "capabilities",
+  "close",
+...
+  "update",
+  "version"
+]
+```
+
+It exits 0.
+
+The document's top-level keys:
+
+- `schema_version` is `1`, the contract's version.
+- `verbs` holds one entry per row of the [verbs table](#verbs), each with a
+  `request` and a `response` schema. A request is the envelope's
+  `schema_version` and `root` with the verb's own fields; a response is
+  `schema_version` with the verb's response fields.
+- `refusal` is the answer of exit 1, `{"schema_version":1,"refused":…}`, and
+  `error` the answer of exit 3, `{"schema_version":1,"error":…}`.
+- `$defs` holds the types. Every `$ref` in the document points into it, so a
+  tool loads the whole document and reaches one verb's schema by its pointer:
+  `#/verbs/show/request`.
+
+A type that does not read with a key it does not name, such as an order, a
+run record or an entry, says `"additionalProperties": false`. Every other
+object, a request among them, accepts keys it does not name. An update's
+`status` is `"open"` and nothing else.
+
 ## Checking an adapter
 
 `fleet store check [--adapter <path>]` runs every check of this contract

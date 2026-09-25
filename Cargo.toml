@@ -37,6 +37,15 @@ clap = { version = "4", default-features = false, features = [
     "error-context",
 ] }
 serde = { version = "1", features = ["derive"] }
+# schemars is exact-pinned because its output is committed: the store contract's
+# document (core/src/store/store.schema.json) is what this release of it writes,
+# byte for byte, and a release that spells one schema otherwise reds the drift
+# test with no change to the contract. `derive` and `std` are its defaults,
+# named with default-features off like every pin here.
+schemars = { version = "=1.2.2", default-features = false, features = ["derive", "std"] }
+# regex-lite is the test-support validator's, for a schema's `pattern`: one
+# crate with no dependencies of its own.
+regex-lite = "0.1"
 # float_roundtrip: the step writer parses a workflow's `--result` and stores the
 # value re-serialized, and the default parser can land a decimal literal on the
 # neighbouring double — so a replayed number would differ from the one the

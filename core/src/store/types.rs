@@ -18,10 +18,12 @@
 //! item nobody holds — so those fields are read and written by hand, and never
 //! by the derive that would fold the two together.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::ops::Deref;
 use std::path::Path;
 
+use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -40,7 +42,7 @@ macro_rules! store_id {
     ($(#[$doc:meta])* $name:ident) => {
         $(#[$doc])*
         #[derive(
-            Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize,
+            Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize, JsonSchema,
         )]
         #[serde(transparent)]
         pub struct $name(String);
@@ -189,6 +191,23 @@ impl PartialEq<&str> for Status {
     }
 }
 
+/// Any string, with the three fleet acts on named: the derive would describe
+/// the enum's variants, and the wire carries the text `from` and `into` make.
+impl JsonSchema for Status {
+    fn schema_name() -> Cow<'static, str> {
+        "Status".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "anyOf": [
+                {"enum": ["open", "in_progress", "closed"]},
+                {"type": "string"},
+            ],
+        })
+    }
+}
+
 // ---- stamp ----------------------------------------------------------------------
 
 /// A moment as fleet writes one: `YYYY-MM-DDTHH:MM:SSZ`, in UTC, to the second.
@@ -266,10 +285,28 @@ impl From<Stamp> for String {
     }
 }
 
+/// The text [`Stamp::parse`] takes, as one pattern: each field its digits,
+/// and a month, day, hour, minute and second each in the range it holds.
+pub(crate) const STAMP_PATTERN: &str =
+    "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$";
+
+impl JsonSchema for Stamp {
+    fn schema_name() -> Cow<'static, str> {
+        "Stamp".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "pattern": STAMP_PATTERN,
+        })
+    }
+}
+
 // ---- the order ------------------------------------------------------------------
 
 /// What an order asks of the seat it names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OrderKind {
     Dispatch,
@@ -288,7 +325,7 @@ impl OrderKind {
 
 /// The order an item stands under: what it asks, who gave it, the seat it is
 /// for where one is named, and when.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Order {
     pub kind: OrderKind,
@@ -300,7 +337,7 @@ pub struct Order {
 
 /// Whether an item is ordered: no order, one the store holds and fleet cannot
 /// read, or the order itself.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "state", content = "order", rename_all = "snake_case")]
 pub enum OrderState {
     #[default]
@@ -313,7 +350,7 @@ pub enum OrderState {
 
 /// A run's record, on the item that records it: the workflow's pinned hash,
 /// the workflow, its pack and entry, and when the run started.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RunRecord {
     pub hash: String,
@@ -354,7 +391,7 @@ impl ReadProof {
 /// One item as a read answers it: its id, title, description, status and
 /// type, its own labels, who holds it, its order, what blocks it, a run's
 /// record and the names of the keys another writer keeps on it.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Item {
     pub id: ItemId,
     /// What a person calls this item. `land` writes it into the commit subject,
@@ -407,7 +444,7 @@ pub struct Item {
 /// One item as a listing answers it: enough to choose from without reading
 /// each one, its holder and its run's record among it — so a listing is one
 /// call, and never one more per row.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ItemSummary {
     pub id: ItemId,
     pub title: String,
@@ -435,7 +472,7 @@ pub struct ItemSummary {
 
 /// Which items a listing asks for: the ready ones, those carrying a label, or
 /// those a seat holds.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Filter {
     Ready,
@@ -444,7 +481,7 @@ pub enum Filter {
 }
 
 /// An item to file: the store names it, so there is no id here.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct NewItem {
     pub title: String,
     pub description: String,
@@ -453,6 +490,7 @@ pub struct NewItem {
     #[serde(default)]
     pub labels: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(max = PRIORITY_MAX))]
     pub priority: Option<u8>,
 }
 
@@ -480,7 +518,7 @@ impl NewItem {
 /// `if_assignee` is the FENCE, and changes nothing: where it is present the
 /// change lands only while that seat holds the item — `null` for nobody — and
 /// is otherwise refused as moved, with nothing written.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Update {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -502,7 +540,14 @@ pub struct Update {
     /// which brings an item nobody is working back to the ready set. Any other
     /// status is the caller's mistake, refused before the store is asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "reopened")]
     pub status: Option<Status>,
+}
+
+/// An update's `status`, which is `"open"` and nothing else: the schema says
+/// what [`super::writable`] lets through to a store, not all a `Status` reads.
+fn reopened(_: &mut SchemaGenerator) -> Schema {
+    json_schema!({"const": "open"})
 }
 
 /// A present `assignee` or `if_assignee` as its JSON: the seat's id, or `null`
@@ -571,7 +616,7 @@ impl Update {
 /// moved, with nothing written. `reopen` sets the status to `open` in the SAME
 /// act that clears the assignee and takes the order away: an item left
 /// `in_progress` with nobody holding it is out of the ready set.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WithdrawFence {
     #[serde(
         default,
@@ -592,7 +637,7 @@ pub struct WithdrawFence {
 /// export fleet commits, a scratch board for a suite, the prefix its ids
 /// carry, the command a seat types against it, and the types and priorities
 /// its items take.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Capabilities {
     #[serde(default)]
     pub export: Option<ExportSpec>,
@@ -631,7 +676,7 @@ impl Capabilities {
 
 /// The types a store files an item under and the priorities it takes: what a
 /// routine's item is held to before the store is sent it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Vocabulary {
     #[serde(default = "default_types")]
     pub types: Vec<String>,
@@ -640,9 +685,11 @@ pub struct Vocabulary {
 }
 
 /// The lowest and the highest priority a store takes, both inclusive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Priorities {
+    #[schemars(range(max = PRIORITY_MAX))]
     pub min: u8,
+    #[schemars(range(max = PRIORITY_MAX))]
     pub max: u8,
 }
 
@@ -720,7 +767,7 @@ impl Vocabulary {
 
 /// Where a store's export lands, relative to the project root: the file, and
 /// the directory it sits in.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ExportSpec {
     pub file: String,
     pub dir: String,
@@ -757,7 +804,7 @@ impl ExportSpec {
 }
 
 /// Which store answered, and at which version of itself.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Version {
     pub name: String,
     pub version: String,
@@ -767,7 +814,7 @@ pub struct Version {
 
 /// The store's answer that the act cannot be done as asked, and why — the
 /// record's answer, not a store that failed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Refusal {
     pub reason: RefusalReason,
     pub message: String,
@@ -778,7 +825,7 @@ pub struct Refusal {
 /// Why a store refused: nothing by that id, more than one item it could mean,
 /// the act already done, or a fence the item no longer meets — whose message
 /// names what holds the item instead.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RefusalReason {
     Missing,
@@ -793,62 +840,62 @@ pub enum RefusalReason {
 // [`crate::entry`]'s, read and folded there.
 
 /// The one item a partial id names, whole.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Resolved {
     pub id: ItemId,
 }
 
 /// One item, read.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Shown {
     pub item: Item,
 }
 
 /// The items a filter matched, in the store's order.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Listed {
     pub items: Vec<ItemSummary>,
 }
 
 /// The id the store gave an item it filed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Created {
     pub id: ItemId,
 }
 
 /// The id the store gave an entry it appended to an item's timeline, as text:
 /// the same id [`crate::entry::Entry`] carries.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Appended {
     pub entry: String,
 }
 
 /// The id of a hold the store raised.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Raised {
     pub hold: HoldId,
 }
 
 /// Every hold the store still calls open.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct OpenHolds {
     pub holds: Vec<HoldId>,
 }
 
 /// The export file the store wrote.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Exported {
     pub file: String,
 }
 
 /// The root of a scratch board the store made for a suite.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Scratched {
     pub root: String,
 }
 
 /// A write the store took, which answers nothing more.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Answered {}
 
 // ---- the envelope ---------------------------------------------------------------
@@ -1492,18 +1539,62 @@ mod tests {
 
     // ---- 9: the store's documentation ----
 
-    /// docs/store.md prints the contract's JSON, and this arm holds every
-    /// example there to the types: the Item byte for byte, as the arm above
-    /// holds it, each other shape as the types write it, and the envelope's
-    /// answer as [`answer`] reads it.
-    ///
-    /// RED-PROOF: one byte of one example changed in the doc fails this arm,
-    /// naming the example it no longer finds.
-    #[test]
-    fn the_store_doc_prints_every_example_as_the_types_write_it() {
-        let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/store.md"))
-            .expect("docs/store.md reads");
+    /// One JSON example docs/store.md prints, and the message of the contract
+    /// it sits in: the schema in the contract's document that takes it, and
+    /// the whole request or answer it is part of there.
+    struct Documented {
+        text: String,
+        schema: &'static str,
+        message: serde_json::Value,
+    }
 
+    /// The example `text`, and the message `place` builds around it for the
+    /// schema at `schema`.
+    fn documented(
+        text: String,
+        schema: &'static str,
+        place: fn(serde_json::Value) -> serde_json::Value,
+    ) -> Documented {
+        let example = serde_json::from_str(&text).expect("a documented example is JSON");
+        Documented {
+            message: place(example),
+            text,
+            schema,
+        }
+    }
+
+    /// The example as it stands: the whole message, or a type of its own.
+    fn whole(example: serde_json::Value) -> serde_json::Value {
+        example
+    }
+
+    /// `fields` merged into `into`.
+    fn merged(mut into: serde_json::Value, fields: serde_json::Value) -> serde_json::Value {
+        if let (serde_json::Value::Object(into), serde_json::Value::Object(fields)) =
+            (&mut into, fields)
+        {
+            into.extend(fields);
+        }
+        into
+    }
+
+    /// A request's envelope, with the item and the actor the writes name.
+    fn sent(fields: serde_json::Value) -> serde_json::Value {
+        let envelope = serde_json::json!({
+            "schema_version": 1, "root": "/work/project",
+            "id": "fx-a1b2", "by": format!("seat:{PERSON}"),
+        });
+        merged(envelope, fields)
+    }
+
+    /// An answer: the example's fields beside `schema_version`.
+    fn answered(fields: serde_json::Value) -> serde_json::Value {
+        merged(serde_json::json!({"schema_version": 1}), fields)
+    }
+
+    /// Every JSON example docs/store.md prints of the contract's types, each
+    /// as the types write it, placed in its verb's message.
+    fn documented_examples() -> Vec<Documented> {
         let mut show = serde_json::Map::new();
         show.insert(String::from("id"), serde_json::Value::from("a1b2"));
         let refusal = Refusal {
@@ -1564,89 +1655,225 @@ mod tests {
             reopen: true,
         };
 
-        let mut examples = vec![
-            ITEM_EXAMPLE.to_string(),
-            json(&request(show, Path::new("/work/project"))),
-            format!(r#"{{"schema_version":1,"refused":{}}}"#, json(&refusal)),
-            format!(r#"{{"schema_version":1,"refused":{}}}"#, json(&moved)),
-            json(&HoldId::from("fx-h9")),
-            json(&Status::from("deferred")),
-            json(&stamp("2026-09-23T10:00:00Z")),
-            json(&Actor::seat(seat(PERSON))),
-            json(&an_order(Some(seat(SEAT)))),
-            json(&review),
-            json(&OrderState::None),
-            json(&OrderState::Unreadable),
-            json(&OrderState::Ordered(an_order(Some(seat(SEAT))))),
-            json(&run),
-            json(&summary),
-            json(&Filter::Ready),
-            json(&Filter::Label(String::from("fleet"))),
-            json(&Filter::Assignee(seat(SEAT))),
-            json(&new_item),
-            json(&Update::title(String::from("Name the stamp's fields"))),
-            json(&Update::assignee(seat(SEAT))),
-            json(&Update::unassigned()),
-            json(&Update {
-                assignee: Some(Some(seat(SEAT))),
-                ..Update::fenced(None)
-            }),
-            json(&Update {
-                status: Some(Status::Open),
-                ..Update::fenced(None)
-            }),
-            json(&retire),
-            json(&exporting),
-            json(&Capabilities::default()),
-            json(&Version {
-                name: String::from("tracker"),
-                version: String::from("0.4.0"),
-            }),
-            json(&Resolved {
-                id: ItemId::from("fx-a1b2"),
-            }),
-            json(&Appended {
-                entry: String::from("e-17"),
-            }),
-            json(&Raised {
-                hold: HoldId::from("fx-h9"),
-            }),
-            json(&OpenHolds {
-                holds: vec![HoldId::from("fx-h9")],
-            }),
-            json(&Exported {
-                file: String::from("/work/lane/store/export.jsonl"),
-            }),
-            json(&Scratched {
-                root: String::from("/tmp/fleet-scratch/store"),
-            }),
-        ];
+        let item = |item| serde_json::json!({"schema_version": 1, "item": item});
+        let row = |row| serde_json::json!({"schema_version": 1, "items": [row]});
+        let filter = |filter| serde_json::json!({"schema_version": 1, "root": "/work/project", "filter": filter});
+        let filed = |item| sent(serde_json::json!({"item": item}));
+        let ordered = |order| sent(serde_json::json!({"order": order}));
+        let ran = |run| sent(serde_json::json!({"run": run}));
+        let cleared = |hold| sent(serde_json::json!({"hold": hold}));
+        vec![
+            documented(ITEM_EXAMPLE.to_string(), "/verbs/show/response", item),
+            documented(
+                json(&request(show, Path::new("/work/project"))),
+                "/verbs/show/request",
+                whole,
+            ),
+            documented(
+                format!(r#"{{"schema_version":1,"refused":{}}}"#, json(&refusal)),
+                "/refusal",
+                whole,
+            ),
+            documented(
+                format!(r#"{{"schema_version":1,"refused":{}}}"#, json(&moved)),
+                "/refusal",
+                whole,
+            ),
+            documented(
+                String::from(r#"{"schema_version":1,"error":"the database is locked"}"#),
+                "/error",
+                whole,
+            ),
+            documented(
+                json(&HoldId::from("fx-h9")),
+                "/verbs/hold.clear/request",
+                cleared,
+            ),
+            documented(json(&Status::from("deferred")), "/$defs/Status", whole),
+            documented(json(&stamp("2026-09-23T10:00:00Z")), "/$defs/Stamp", whole),
+            documented(json(&Actor::seat(seat(PERSON))), "/$defs/Actor", whole),
+            documented(
+                json(&an_order(Some(seat(SEAT)))),
+                "/verbs/order.set/request",
+                ordered,
+            ),
+            documented(json(&review), "/verbs/order.set/request", ordered),
+            documented(json(&OrderState::None), "/$defs/OrderState", whole),
+            documented(json(&OrderState::Unreadable), "/$defs/OrderState", whole),
+            documented(
+                json(&OrderState::Ordered(an_order(Some(seat(SEAT))))),
+                "/$defs/OrderState",
+                whole,
+            ),
+            documented(json(&run), "/verbs/run.set/request", ran),
+            documented(json(&summary), "/verbs/list/response", row),
+            documented(json(&Filter::Ready), "/verbs/list/request", filter),
+            documented(
+                json(&Filter::Label(String::from("fleet"))),
+                "/verbs/list/request",
+                filter,
+            ),
+            documented(
+                json(&Filter::Assignee(seat(SEAT))),
+                "/verbs/list/request",
+                filter,
+            ),
+            documented(json(&new_item), "/verbs/create/request", filed),
+            documented(
+                json(&Update::title(String::from("Name the stamp's fields"))),
+                "/verbs/update/request",
+                sent,
+            ),
+            documented(
+                json(&Update::assignee(seat(SEAT))),
+                "/verbs/update/request",
+                sent,
+            ),
+            documented(json(&Update::unassigned()), "/verbs/update/request", sent),
+            documented(
+                json(&Update {
+                    assignee: Some(Some(seat(SEAT))),
+                    ..Update::fenced(None)
+                }),
+                "/verbs/update/request",
+                sent,
+            ),
+            documented(
+                json(&Update {
+                    status: Some(Status::Open),
+                    ..Update::fenced(None)
+                }),
+                "/verbs/update/request",
+                sent,
+            ),
+            documented(json(&retire), "/verbs/order.withdraw/request", sent),
+            documented(json(&exporting), "/verbs/capabilities/response", answered),
+            documented(
+                json(&Capabilities::default()),
+                "/verbs/capabilities/response",
+                answered,
+            ),
+            documented(
+                json(&Version {
+                    name: String::from("tracker"),
+                    version: String::from("0.4.0"),
+                }),
+                "/verbs/version/response",
+                answered,
+            ),
+            documented(
+                json(&Resolved {
+                    id: ItemId::from("fx-a1b2"),
+                }),
+                "/verbs/resolve/response",
+                answered,
+            ),
+            documented(
+                json(&Appended {
+                    entry: String::from("e-17"),
+                }),
+                "/verbs/append/response",
+                answered,
+            ),
+            documented(
+                json(&Raised {
+                    hold: HoldId::from("fx-h9"),
+                }),
+                "/verbs/hold.raise/response",
+                answered,
+            ),
+            documented(
+                json(&OpenHolds {
+                    holds: vec![HoldId::from("fx-h9")],
+                }),
+                "/verbs/holds.open/response",
+                answered,
+            ),
+            documented(
+                json(&Exported {
+                    file: String::from("/work/lane/store/export.jsonl"),
+                }),
+                "/verbs/export/response",
+                answered,
+            ),
+            documented(
+                json(&Scratched {
+                    root: String::from("/tmp/fleet-scratch/store"),
+                }),
+                "/verbs/scratch/response",
+                answered,
+            ),
+            // The whole answer the envelope section prints, read as `resolve`'s
+            // by the arm below.
+            documented(
+                String::from(r#"{"schema_version":1,"id":"fx-a1b2"}"#),
+                "/verbs/resolve/response",
+                whole,
+            ),
+        ]
+    }
 
-        // The whole answer the envelope section prints, read as `resolve`'s.
-        let answered = r#"{"schema_version":1,"id":"fx-a1b2"}"#;
+    /// docs/store.md prints the contract's JSON, and this arm holds every
+    /// example there to the types: the Item byte for byte, as the arm above
+    /// holds it, each other shape as the types write it, and the envelope's
+    /// answer as [`answer`] reads it.
+    ///
+    /// RED-PROOF: one byte of one example changed in the doc fails this arm,
+    /// naming the example it no longer finds.
+    #[test]
+    fn the_store_doc_prints_every_example_as_the_types_write_it() {
+        let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/store.md"))
+            .expect("docs/store.md reads");
+
         assert_eq!(
-            answer::<Resolved>(answered),
+            answer::<Resolved>(r#"{"schema_version":1,"id":"fx-a1b2"}"#),
             Ok(Resolved {
                 id: ItemId::from("fx-a1b2")
             })
         );
-        examples.push(answered.to_string());
 
         // THE CONTROLS: the capability example keeps the rules the doc
         // states, and `{}` reads as the store that declares nothing.
+        let exporting: Capabilities = serde_json::from_str(
+            r#"{"export":{"file":".beads/issues.jsonl","dir":".beads/"},"scratch":true,"item_prefix":"fx","cli":"tracker","items":{"types":["task","bug"],"priority":{"min":0,"max":4}}}"#,
+        )
+        .unwrap();
         assert_eq!(exporting.validate(), Ok(()));
         assert_eq!(
             serde_json::from_str::<Capabilities>("{}").unwrap(),
             Capabilities::default()
         );
 
+        let examples = documented_examples();
         let missing: Vec<&String> = examples
             .iter()
-            .filter(|example| !doc.contains(example.as_str()))
+            .map(|example| &example.text)
+            .filter(|text| !doc.contains(text.as_str()))
             .collect();
         assert!(
             missing.is_empty(),
             "docs/store.md does not print these examples verbatim: {missing:#?}"
+        );
+    }
+
+    /// Each example the arm above finds in the doc, placed in its verb's
+    /// request or answer, passes that verb's schema in the contract's
+    /// document: what the doc shows an adapter author is what the schema they
+    /// generate from takes.
+    #[test]
+    fn every_documented_example_passes_its_verbs_schema() {
+        let document = super::super::schema::document();
+        let failing: Vec<String> = documented_examples()
+            .into_iter()
+            .filter_map(|example| {
+                super::super::schema::check(&document, example.schema, &example.message)
+                    .err()
+                    .map(|why| format!("{} at {}: {why}", example.text, example.schema))
+            })
+            .collect();
+        assert!(
+            failing.is_empty(),
+            "documented examples the schema does not take: {failing:#?}"
         );
     }
 }

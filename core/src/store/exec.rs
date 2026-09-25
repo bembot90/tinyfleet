@@ -1147,4 +1147,194 @@ esac"#,
         );
         assert_eq!((rows[1].assignee, rows[1].run.clone()), (None, None));
     }
+
+    /// One call of the verb through `Exec`, with every field it can send set.
+    type Call = fn(&Exec, &Path) -> Result<(), StoreError>;
+
+    /// Every verb the schema document names, called with every field it can
+    /// send set: the request carries exactly the properties the verb's
+    /// request schema names, and passes it; and the answer the stub gave
+    /// passes the verb's response schema and is one `Exec` reads.
+    ///
+    /// RED-PROOF: a field this file sends that the schema does not name — or
+    /// one the schema names that this file never sends — fails here, naming
+    /// the verb.
+    #[test]
+    fn each_verb_sends_exactly_the_fields_its_schema_names() {
+        let document = super::super::schema::document();
+        let seat = || crate::seat::identity::SeatId::parse(SEAT).expect("a seat id");
+        let entry = entry::to_json(&Entry {
+            id: String::from("e-17"),
+            at: String::from("2026-09-23T10:00:00Z"),
+            by: by(),
+            body: Body::Ordered(entry::Ordered {
+                order: crate::store::OrderKind::Dispatch,
+                seat: Some(seat()),
+            }),
+        });
+        let summary = json!({
+            "id": "fx-c3d4", "title": "Name the stamp's fields", "status": "open",
+            "type": "task", "labels": ["fleet"], "assignee": SEAT,
+            "order": {"state": "none"}, "run": null, "foreign": ["sprint"],
+        });
+        let done = json!({"schema_version": 1});
+        let answers = [
+            (
+                "version",
+                json!({"schema_version": 1, "name": "stub", "version": "0.1.0"}),
+            ),
+            (
+                "capabilities",
+                json!({
+                    "schema_version": 1,
+                    "export": {"file": "store/export.jsonl", "dir": "store/"},
+                    "scratch": true, "item_prefix": "fx", "cli": "stub",
+                    "items": {"types": ["task"], "priority": {"min": 0, "max": 4}},
+                }),
+            ),
+            ("resolve", json!({"schema_version": 1, "id": "fx-a1b2"})),
+            ("show", serde_json::from_str(SHOWN).expect("SHOWN is JSON")),
+            ("list", json!({"schema_version": 1, "items": [summary]})),
+            ("timeline", json!({"schema_version": 1, "entries": [entry]})),
+            ("create", json!({"schema_version": 1, "id": "fx-a1b2"})),
+            ("update", done.clone()),
+            ("append", json!({"schema_version": 1, "entry": "e-17"})),
+            ("order.set", done.clone()),
+            ("order.withdraw", done.clone()),
+            ("run.set", done.clone()),
+            ("hold.raise", json!({"schema_version": 1, "hold": "fx-h9"})),
+            ("hold.clear", done.clone()),
+            (
+                "holds.open",
+                json!({"schema_version": 1, "holds": ["fx-h9"]}),
+            ),
+            ("close", done),
+            (
+                "export",
+                json!({"schema_version": 1, "file": "/work/store/export.jsonl"}),
+            ),
+            (
+                "scratch",
+                json!({"schema_version": 1, "root": "/tmp/store"}),
+            ),
+        ];
+        let arms: Vec<String> = answers
+            .iter()
+            .map(|(verb, answer)| format!("{verb})\ncat <<'JSON'\n{answer}\nJSON\n;;"))
+            .collect();
+        let stub = Stub::new(
+            "schema",
+            &format!("case \"$1\" in\n{}\nesac", arms.join("\n")),
+        );
+
+        let calls: [(&str, Call); 18] = [
+            ("version", |exec, _| exec.version().map(drop)),
+            ("capabilities", |exec, _| exec.capabilities().map(drop)),
+            ("resolve", |exec, _| exec.resolve("a1b2").map(drop)),
+            ("show", |exec, _| exec.show("a1b2").map(drop)),
+            ("list", |exec, _| {
+                exec.list(&Filter::Label(String::from("fleet"))).map(drop)
+            }),
+            ("timeline", |exec, _| exec.timeline(&id()).map(drop)),
+            ("create", |exec, _| {
+                let item = NewItem {
+                    title: String::from("t"),
+                    description: String::from("d"),
+                    item_type: String::from("task"),
+                    labels: vec![String::from("fleet")],
+                    priority: Some(2),
+                };
+                exec.create(&item, &by()).map(drop)
+            }),
+            ("update", |exec, _| {
+                let seat = crate::seat::identity::SeatId::parse(SEAT).expect("a seat id");
+                let change = Update {
+                    title: Some(String::from("t")),
+                    assignee: Some(Some(seat)),
+                    if_assignee: Some(None),
+                    status: Some(types::Status::Open),
+                };
+                exec.update(&id(), &change, &by())
+            }),
+            ("append", |exec, _| {
+                let body = Body::Ordered(entry::Ordered {
+                    order: crate::store::OrderKind::Review,
+                    seat: None,
+                });
+                exec.append(&id(), &body, &by()).map(drop)
+            }),
+            ("order.set", |exec, _| {
+                let seat = crate::seat::identity::SeatId::parse(SEAT).expect("a seat id");
+                let order = Order {
+                    kind: crate::store::OrderKind::Dispatch,
+                    by: by(),
+                    seat: Some(seat),
+                    at: crate::store::Stamp::parse("2026-09-23T10:00:00Z").expect("a stamp"),
+                };
+                exec.order_set(&id(), &order, &by())
+            }),
+            ("order.withdraw", |exec, _| {
+                let seat = crate::seat::identity::SeatId::parse(SEAT).expect("a seat id");
+                let fence = WithdrawFence {
+                    if_assignee: Some(Some(seat)),
+                    if_status: Some(types::Status::InProgress),
+                    reopen: true,
+                };
+                exec.order_withdraw(&id(), &fence, &by())
+            }),
+            ("run.set", |exec, _| {
+                let run = RunRecord {
+                    hash: String::from("abc"),
+                    workflow: String::from("build"),
+                    pack: String::from("ts"),
+                    entry: String::from("workflows/build.ts"),
+                    started_at: crate::store::Stamp::parse("2026-09-23T10:00:00Z")
+                        .expect("a stamp"),
+                };
+                exec.run_set(&id(), &run, &by())
+            }),
+            ("hold.raise", |exec, _| {
+                exec.hold_raise(&id(), "ask", &by()).map(drop)
+            }),
+            ("hold.clear", |exec, _| {
+                exec.hold_clear(&HoldId::from("fx-h9"), &by())
+            }),
+            ("holds.open", |exec, _| exec.holds_open().map(drop)),
+            ("close", |exec, _| exec.close(&id(), "landed", &by())),
+            ("export", |exec, dir| exec.export(dir).map(drop)),
+            ("scratch", |exec, dir| {
+                exec.scratch(&dir.join("store")).map(drop)
+            }),
+        ];
+
+        let exec = stub.exec();
+        let mut called = Vec::new();
+        for ((verb, call), (answered, answer)) in calls.iter().zip(&answers) {
+            assert_eq!(verb, answered, "the calls and the answers are in one order");
+            call(&exec, &stub.dir).unwrap_or_else(|why| panic!("{verb} did not read: {why}"));
+            let request = stub.request();
+            let sent: Vec<&String> = request.as_object().expect("an object").keys().collect();
+            let schema = &document["verbs"][verb]["request"]["properties"];
+            let named: Vec<&String> = schema.as_object().expect("properties").keys().collect();
+            assert_eq!(
+                sent, named,
+                "{verb}: the fields Exec sends are not the ones its request schema names"
+            );
+            for (pointer, instance) in [("request", &request), ("response", answer)] {
+                let at = format!("/verbs/{verb}/{pointer}");
+                if let Err(why) = super::super::schema::check(&document, &at, instance) {
+                    panic!("{instance} does not pass {at}: {why}");
+                }
+            }
+            called.push(*verb);
+        }
+        let verbs: Vec<&str> = document["verbs"]
+            .as_object()
+            .expect("verbs")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        called.sort_unstable();
+        assert_eq!(called, verbs, "every verb the document names is called");
+    }
 }

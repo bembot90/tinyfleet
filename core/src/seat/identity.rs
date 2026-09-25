@@ -79,6 +79,26 @@ impl<'de> serde::Deserialize<'de> for SeatId {
     }
 }
 
+/// The 8-4-4-4-12 hex form [`SeatId::parse`] takes, unanchored, so an actor's
+/// pattern can carry it after its `seat:`.
+pub(crate) const SEAT_ID_PATTERN: &str =
+    "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+
+/// A seat id on the wire is its string form, which the derive cannot see
+/// through the hand-written serde above.
+impl schemars::JsonSchema for SeatId {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "SeatId".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "pattern": format!("^{SEAT_ID_PATTERN}$"),
+        })
+    }
+}
+
 // ---- the seat -----------------------------------------------------------------
 
 /// Who holds a seat: a person or an agent.

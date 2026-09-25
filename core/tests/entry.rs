@@ -587,3 +587,77 @@ fn to_json_carries_the_actor_as_its_string_the_kind_and_no_key() {
     assert_eq!(json.get("commit"), Some(&serde_json::json!(C1)));
     assert!(json.get(KEY).is_none(), "{json}");
 }
+
+// ---- 8. the contract's schema ---------------------------------------------------
+
+/// Every kind, as `timeline` answers it and as `append` sends it, passes the
+/// store contract's schema for it — in the verb's message as well as alone —
+/// and the same objects one key off what the reader takes do not.
+///
+/// RED-PROOF: a key `to_json` or `encode` writes that the entry's schema
+/// does not name — the item's id beside the store's — fails here, because
+/// each kind refuses a key it does not name.
+#[test]
+fn every_kind_passes_the_contracts_entry_schemas() {
+    let document = fleet_core::store::schema::document();
+    let passes = |pointer: &str, instance: &serde_json::Value| {
+        if let Err(why) = fleet_core::store::schema::check(&document, pointer, instance) {
+            panic!("{instance} does not pass {pointer}: {why}");
+        }
+    };
+    let refused = |pointer: &str, instance: &serde_json::Value, naming: &str| {
+        match fleet_core::store::schema::check(&document, pointer, instance) {
+            Ok(()) => panic!("{instance} passes {pointer}, and the reader refuses it"),
+            Err(why) => assert!(why.contains(naming), "{instance} at {pointer}: {why}"),
+        }
+    };
+    let bodies = one_of_each();
+    assert_eq!(bodies.len(), KINDS.len(), "one of each kind");
+    let mut read = Vec::new();
+    for body in bodies {
+        let answered = to_json(&entry("e-1", body.clone()));
+        let appended: serde_json::Value =
+            serde_json::from_str(&encode(&body)).expect("an entry's text is JSON");
+        passes("/$defs/Entry", &answered);
+        passes("/$defs/NewEntry", &appended);
+        let mut kept = answered.clone();
+        kept[KEY] = serde_json::json!(VERSION);
+        passes("/$defs/Entry", &kept);
+        read.push(answered.clone());
+        passes(
+            "/verbs/append/request",
+            &serde_json::json!({
+                "schema_version": 1, "root": "/work/project", "id": "fleet-7",
+                "by": format!("seat:{SEAT}"), "entry": appended,
+            }),
+        );
+
+        // THE CONTROLS, each refused by the reader too: a key the kind does
+        // not name, an entry with no actor, a text at another version, and a
+        // text without the key.
+        let mut extra = answered.clone();
+        extra["note"] = serde_json::json!("x");
+        refused("/$defs/Entry", &extra, "`note` is not a named key");
+        let mut anonymous = answered.clone();
+        anonymous.as_object_mut().map(|entry| entry.remove("by"));
+        refused("/$defs/Entry", &anonymous, "`by` is required");
+        let mut later = appended.clone();
+        later[KEY] = serde_json::json!(2);
+        refused("/$defs/NewEntry", &later, "is not 1");
+        let mut bare = appended.clone();
+        bare.as_object_mut().map(|text| text.remove(KEY));
+        refused("/$defs/NewEntry", &bare, "is required");
+    }
+    passes(
+        "/verbs/timeline/response",
+        &serde_json::json!({"schema_version": 1, "entries": read}),
+    );
+    refused(
+        "/$defs/Entry",
+        &serde_json::json!({
+            "id": "e-1", "at": "2026-09-24T10:00:00Z", "by": format!("seat:{SEAT}"),
+            "kind": "parked",
+        }),
+        "branches pass",
+    );
+}

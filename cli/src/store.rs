@@ -1,10 +1,12 @@
-//! `fleet store check [--adapter <path>]`.
+//! `fleet store check [--adapter <path>]` and `fleet store schema`.
 //!
 //! One family module and one arm in the dispatch. `check` runs every check of
 //! the store contract ([`conformance::run`]) against an adapter, and prints one
 //! line per check as it is answered, then a summary: the checks are the
 //! library's, and what this module owns is which adapter, the store they run
-//! on, and the exit.
+//! on, and the exit. `schema` prints the contract's JSON Schema document
+//! ([`schema::text`]), which the core suite holds byte for byte to the
+//! committed `core/src/store/store.schema.json`.
 //!
 //! THE CHECKS WRITE, so they never run on a project's own store. They run on a
 //! scratch store the adapter makes through its `scratch` verb, inside a temp
@@ -25,12 +27,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use fleet_controller::platform;
 use fleet_core::policy::{self, Value};
 use fleet_core::store::conformance::{self, Ctx, Passed};
+use fleet_core::store::schema;
 use fleet_core::store::{self, AdapterSource, Opening, PackDirs, STORE_TIMEOUT};
 
 use crate::exit::Exit;
 use crate::item;
 
-/// The family's one verb.
+/// The family's verbs.
 #[derive(clap::Subcommand)]
 pub enum Verb {
     /// run the store contract's conformance suite against an adapter
@@ -51,11 +54,21 @@ not be run.")]
         )]
         adapter: Option<PathBuf>,
     },
+    /// print the store contract as a JSON Schema document
+    #[command(long_about = "\
+print the store contract (docs/store.md) as one JSON Schema document: each
+verb's request and response, the refusal and the error, generated from the
+types this fleet reads and writes. Exits 0.")]
+    Schema,
 }
 
 pub fn command(verb: &Verb) -> Exit {
     match verb {
         Verb::Check { adapter } => check(adapter.as_deref()),
+        Verb::Schema => {
+            print!("{}", schema::text());
+            Exit::Done
+        }
     }
 }
 

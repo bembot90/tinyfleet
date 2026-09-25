@@ -22,6 +22,7 @@ use types::Capabilities;
 pub mod bd;
 pub mod conformance;
 pub mod exec;
+pub mod schema;
 pub mod types;
 
 pub use types::{

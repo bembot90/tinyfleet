@@ -27,8 +27,11 @@
 //! the slice it is handed, and ids are never sorted: an id is the store's to
 //! mint, and nothing promises it counts up.
 
+use std::borrow::Cow;
+
+use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::seat::actor::Actor;
 use crate::seat::identity::SeatId;
@@ -64,7 +67,7 @@ pub struct Entry {
 }
 
 /// What an entry says, one variant per kind.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Body {
     Ordered(Ordered),
@@ -95,7 +98,7 @@ impl Body {
 
 /// An order given: to a named seat, or to whichever transient seat the spawner
 /// opens, which is `None` until one is.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Ordered {
     pub order: OrderKind,
@@ -104,7 +107,7 @@ pub struct Ordered {
 }
 
 /// An order taken back, and why.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OrderWithdrawn {
     pub why: Withdrawal,
@@ -116,7 +119,7 @@ pub struct OrderWithdrawn {
 
 /// The two acts that withdraw an order: the seat holding it retired, or the
 /// spawner refused the seat it was for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Withdrawal {
     Retire,
@@ -128,7 +131,7 @@ pub enum Withdrawal {
 /// A seat's handoff: the commit it made, on which branch from which base, the
 /// files it touched, what it checked, the suite it ran, and what it could not
 /// prove.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Delivered {
     pub commit: String,
@@ -143,21 +146,21 @@ pub struct Delivered {
     pub covers: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CheckResult {
     pub check: String,
     pub result: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpecCorrection {
     pub premise: String,
     pub refuted_by: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NotProven {
     pub surface: String,
@@ -166,7 +169,7 @@ pub struct NotProven {
 
 /// A call the seat made, numbered by its place in the list: the review's walk
 /// rules on `D<k>`, 1-based.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Decision {
     pub call: String,
@@ -176,21 +179,21 @@ pub struct Decision {
 
 /// A suite that ran, with the command and its exit, or one that did not, with
 /// the reason. The two share no field, so the text itself says which.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum SuiteRun {
     Ran(Ran),
     NotTested(NotTested),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Ran {
     pub command: String,
     pub rc: i32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NotTested {
     pub not_tested: String,
@@ -200,7 +203,7 @@ pub struct NotTested {
 
 /// A reviewer's verdict on one commit, the size it measured, its ruling on each
 /// numbered decision and, on a return, what it found.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Reviewed {
     pub verdict: Verdict,
@@ -211,7 +214,7 @@ pub struct Reviewed {
     pub findings: Vec<Finding>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
     Accepted,
@@ -219,7 +222,7 @@ pub enum Verdict {
 }
 
 /// The review's size line: a measurement, and no tier.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Size {
     pub files: u64,
@@ -232,21 +235,21 @@ pub struct Size {
 }
 
 /// The ruling on the delivery's decision `D<decision>`, 1-based.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Ruling {
     pub decision: u32,
     pub ruling: RulingKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RulingKind {
     Accept,
     Overrule,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Finding {
     pub text: String,
@@ -257,7 +260,7 @@ pub struct Finding {
 /// Work stopped on a question: the store's hold id, why, the lettered options,
 /// and what it stopped on — a work branch at a commit, or a run by its hash.
 /// `about` is set where the hold licenses something about other items.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Held {
     pub hold: String,
@@ -278,14 +281,14 @@ pub struct Held {
 
 /// A seat's own question, or a run the controller stopped at
 /// `[core.run] max_crashes`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HoldReason {
     Ask,
     MaxCrashes,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Choice {
     pub letter: String,
@@ -294,7 +297,7 @@ pub struct Choice {
 
 /// The items a hold is about, the commit it names where it names one, and the
 /// option letter whose clearance licenses them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct About {
     pub items: Vec<String>,
@@ -305,7 +308,7 @@ pub struct About {
 
 /// A hold cleared: answered with an option's letter (and, where the person
 /// saw a third way, their own text), or cancelled.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Cleared {
     pub hold: String,
@@ -316,7 +319,7 @@ pub struct Cleared {
     pub text: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Clearance {
     Answer,
@@ -328,7 +331,7 @@ pub enum Clearance {
 /// A landing: the trunk's new sha and the one it moved from, the commit it
 /// squashed, the suite it ran, every check row it read, and what it made of
 /// the work branch left behind.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Landed {
     pub sha: String,
@@ -341,7 +344,7 @@ pub struct Landed {
     pub work_branch: WorkBranch,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CheckRow {
     pub check: String,
@@ -349,7 +352,7 @@ pub struct CheckRow {
     pub evidence: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkBranch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -357,7 +360,7 @@ pub struct WorkBranch {
     pub classification: Classification,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Classification {
     Safe,
@@ -732,6 +735,62 @@ pub fn to_json(entry: &Entry) -> Value {
     object.insert(String::from("at"), entry.at.clone().into());
     object.insert(String::from("by"), entry.by.to_string().into());
     Value::Object(object)
+}
+
+// ---- the schemas ----------------------------------------------------------------
+
+/// [`to_json`]'s object, which is what `timeline` answers for each entry: the
+/// body's fields and `kind`, the store's `id` and `at`, and the actor. The key
+/// may ride along, at this version only, because [`decode`] reads a text that
+/// kept it the same as one that did not.
+impl JsonSchema for Entry {
+    fn schema_name() -> Cow<'static, str> {
+        "Entry".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        let by = generator.subschema_for::<Actor>().to_value();
+        each_kind(
+            generator,
+            json!({
+                "id": {"type": "string"},
+                "at": {"type": "string"},
+                "by": by,
+                KEY: {"const": VERSION},
+            }),
+            &["id", "at", "by"],
+        )
+    }
+}
+
+/// [`encode`]'s object, which is what `append` sends as its `entry`: the
+/// body's fields and `kind`, and the key at this version.
+pub fn encoded_schema(generator: &mut SchemaGenerator) -> Schema {
+    each_kind(generator, json!({KEY: {"const": VERSION}}), &[KEY])
+}
+
+/// The body's schema with `fields` beside each kind's own, the names in
+/// `required` demanded. Each kind refuses a key it does not name, so the
+/// fields go into every kind and never beside the `oneOf` that holds them.
+fn each_kind(generator: &mut SchemaGenerator, fields: Value, required: &[&str]) -> Schema {
+    let mut body = Body::json_schema(generator);
+    let kinds = body
+        .get_mut("oneOf")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object_mut);
+    for kind in kinds {
+        if let (Some(Value::Object(properties)), Value::Object(added)) =
+            (kind.get_mut("properties"), &fields)
+        {
+            properties.extend(added.clone());
+        }
+        if let Some(Value::Array(names)) = kind.get_mut("required") {
+            names.extend(required.iter().map(|name| Value::from(*name)));
+        }
+    }
+    body
 }
 
 // ---- the fold -------------------------------------------------------------------

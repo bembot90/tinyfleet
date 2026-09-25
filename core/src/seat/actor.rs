@@ -11,7 +11,7 @@
 
 use std::fmt;
 
-use super::identity::SeatId;
+use super::identity::{SeatId, SEAT_ID_PATTERN};
 
 /// What an actor is, spelled once. The word is the string form's prefix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -114,5 +114,21 @@ impl<'de> serde::Deserialize<'de> for Actor {
                 "`{text}` is not a typed actor — say seat:, run:, routine: or controller: and its id"
             ))),
         }
+    }
+}
+
+/// An actor on the wire is its one string, which the derive cannot see
+/// through the hand-written serde above: a seat's id whole, and any other
+/// kind's non-empty with no whitespace, as [`Actor::typed`] reads them.
+impl schemars::JsonSchema for Actor {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Actor".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "pattern": format!("^(seat:{SEAT_ID_PATTERN}|(run|routine|controller):\\S+)$"),
+        })
     }
 }
