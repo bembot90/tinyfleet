@@ -105,6 +105,7 @@ pub mod add;
 pub mod defaults;
 pub mod digest;
 pub mod embedded;
+pub mod entry;
 pub mod guard;
 pub mod item;
 pub mod lock;
