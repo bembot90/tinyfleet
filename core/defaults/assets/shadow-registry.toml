@@ -70,8 +70,16 @@ path = "assets/delivery-note.md"
 purpose = "the note a delivery renders, with the machine-read lines a reviewer parses"
 
 [[shadow]]
+path = "assets/delivery.schema.json"
+purpose = "the JSON shape a seat's delivery file takes, shown in its brief; fleet deliver reads the file against the binary's own type"
+
+[[shadow]]
 path = "assets/verdict.md"
 purpose = "the two shapes a review writes, and the markers a reader tells them from a delivery by"
+
+[[shadow]]
+path = "assets/findings.schema.json"
+purpose = "the JSON shape a reviewer's findings take; fleet review --return reads it against the binary's own type"
 
 [[shadow]]
 path = "assets/landing-note.md"
@@ -84,6 +92,10 @@ purpose = "the note a park renders, carrying the question, the branch, the commi
 [[shadow]]
 path = "assets/question-note.md"
 purpose = "the grammar a seat's blocking question is written in: the marker, the question and one lettered option per line"
+
+[[shadow]]
+path = "assets/question.schema.json"
+purpose = "the JSON shape a seat's question takes, shown in its brief; fleet hold reads it against the binary's own type"
 
 [[shadow]]
 path = "assets/answer-note.md"

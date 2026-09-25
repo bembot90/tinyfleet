@@ -107,6 +107,7 @@ pub mod digest;
 pub mod embedded;
 pub mod entry;
 pub mod guard;
+pub mod input;
 pub mod item;
 pub mod lock;
 mod os_litter;

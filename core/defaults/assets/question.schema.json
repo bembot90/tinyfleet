@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:fleet:question",
+  "title": "A seat's question",
+  "description": "The one thing a person has to decide before work goes on, and the lettered options they choose among. A person answering from a phone presses a letter, so a question with no options is a conversation and is refused. The hold, the branch, the commit and the time are the verb's to fill, so the file carries none of them. No string is empty.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["question", "options"],
+  "properties": {
+    "question": {
+      "description": "The question itself, in one line. Anything more goes in context.",
+      "type": "string",
+      "pattern": "^[^\\n]+$"
+    },
+    "context": {
+      "description": "What the person answering needs beyond the question: what was tried, what each option costs, a link. It reaches the person who answers and the seat that resumes.",
+      "type": "string"
+    },
+    "options": {
+      "description": "The options, each under its own capital letter, no letter twice. A person may still answer with a letter none carries, and say what they mean.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["letter", "text"],
+        "properties": {
+          "letter": {
+            "description": "The option's letter: one capital, A to Z.",
+            "type": "string",
+            "pattern": "^[A-Z]$"
+          },
+          "text": {
+            "description": "The option, and what taking it means.",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "about": {
+      "description": "Set where the answer licenses something about other items: the items, the commit where one is named, and the option whose letter licenses them when a person clears the hold with it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["items", "licenses"],
+      "properties": {
+        "items": {
+          "description": "The ids of the items the question is about. Never empty.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "commit": {
+          "description": "The commit the question names, as the whole 40-hex sha.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "licenses": {
+          "description": "The letter of the option that licenses the items. One of the options carries it.",
+          "type": "string",
+          "pattern": "^[A-Z]$"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "question": "Land fleet-7 on the review alone, with its suite not run?",
+      "context": "The suite needs a bd server the box does not have; the review read every changed line.",
+      "options": [
+        {
+          "letter": "A",
+          "text": "Land it on the review alone."
+        },
+        {
+          "letter": "B",
+          "text": "Hold it until the suite can run."
+        }
+      ],
+      "about": {
+        "items": ["fleet-7"],
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "licenses": "A"
+      }
+    }
+  ]
+}

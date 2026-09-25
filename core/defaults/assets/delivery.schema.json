@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:fleet:delivery",
+  "title": "A seat's delivery",
+  "description": "What a seat hands in when its work is done: the files it touched, what it checked, the suite it ran, what the item got wrong, what it could not prove, and the calls it made. The commit, the branch, the base, the time and the seat are the verb's to fill, so the file carries none of them. Every property is required; a list with nothing in it is [], except files and not_proven, which are never empty. No string is empty.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "files",
+    "checks",
+    "suite",
+    "spec_corrections",
+    "not_proven",
+    "decisions",
+    "covers"
+  ],
+  "properties": {
+    "files": {
+      "description": "Every path this delivery touched, relative to the repository's root. Never empty.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "checks": {
+      "description": "Each acceptance check the item named, with the result observed when it ran.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["check", "result"],
+        "properties": {
+          "check": {
+            "description": "The check, as the item names it.",
+            "type": "string"
+          },
+          "result": {
+            "description": "What running it showed.",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "suite": {
+      "description": "The suite that ran, with its command and the exit status read from the command itself; or, where none ran, why not.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["command", "rc"],
+          "properties": {
+            "command": {
+              "description": "The command the suite ran as.",
+              "type": "string"
+            },
+            "rc": {
+              "description": "The exit status the command returned.",
+              "type": "integer"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["not_tested"],
+          "properties": {
+            "not_tested": {
+              "description": "Why no suite ran.",
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "spec_corrections": {
+      "description": "What the item got wrong about the world: a premise it stated about the tree, and the measurement that proved it false. Not a design call, a residual or a judgment.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["premise", "refuted_by"],
+        "properties": {
+          "premise": {
+            "description": "The premise the item stated.",
+            "type": "string"
+          },
+          "refuted_by": {
+            "description": "The measurement that refuted it.",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "not_proven": {
+      "description": "What this delivery does NOT establish: each surface, and the command that would have measured it. Never empty — the reviewer re-measures on the commit, so name what could not be measured rather than letting a green imply it.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["surface", "command"],
+        "properties": {
+          "surface": {
+            "description": "What was not proven.",
+            "type": "string"
+          },
+          "command": {
+            "description": "The command that would have measured it.",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "decisions": {
+      "description": "The calls the item left to the seat, in order: the first is D1, and the reviewer accepts or overrules each by its number. A call nobody listed is a call nobody reviewed.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["call", "not_taken", "because"],
+        "properties": {
+          "call": {
+            "description": "The call made.",
+            "type": "string"
+          },
+          "not_taken": {
+            "description": "The alternative not taken.",
+            "type": "string"
+          },
+          "because": {
+            "description": "Why, in one clause.",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "covers": {
+      "description": "The requirement numbers this delivery covered.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "examples": [
+    {
+      "files": ["core/src/input.rs", "core/tests/schema.rs"],
+      "checks": [
+        {
+          "check": "each schema agrees with its type",
+          "result": "PASS: cargo nextest run -p fleet-core --test schema"
+        }
+      ],
+      "suite": {
+        "command": "cargo nextest run -p fleet-core",
+        "rc": 0
+      },
+      "spec_corrections": [
+        {
+          "premise": "the module list sits at core/src/lib.rs:100-116",
+          "refuted_by": "it sits at 104-121 at the branch's base"
+        }
+      ],
+      "not_proven": [
+        {
+          "surface": "a seat reading the schema from its brief",
+          "command": "fleet brief fleet-1"
+        }
+      ],
+      "decisions": [
+        {
+          "call": "the nested types are the entry's own",
+          "not_taken": "a second copy of each for the input",
+          "because": "two copies drift, and one cannot"
+        }
+      ],
+      "covers": ["AC1", "AC2"]
+    }
+  ]
+}

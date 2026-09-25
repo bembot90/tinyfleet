@@ -47,6 +47,34 @@ fn every_embedded_default_sits_under_a_slot_the_resolver_walks() {
     );
 }
 
+/// What a seat hands in is read against the binary's own type, and the schema
+/// its brief shows is a default like any other: embedded, and listed so a pack
+/// on top may reword what a seat reads.
+#[test]
+fn the_defaults_carry_the_three_input_schemas_and_the_registry_lists_them() {
+    use fleet_core::input::{DELIVERY_SCHEMA, FINDINGS_SCHEMA, QUESTION_SCHEMA};
+    use fleet_core::registry;
+
+    let registry = registry::parse(
+        std::str::from_utf8(
+            fleet_core::embedded::bytes(registry::REGISTRY).expect("the set carries the registry"),
+        )
+        .expect("the registry is UTF-8"),
+    )
+    .expect("the registry parses");
+    for schema in [DELIVERY_SCHEMA, QUESTION_SCHEMA, FINDINGS_SCHEMA] {
+        assert!(
+            fleet_core::embedded::bytes(schema).is_some(),
+            "the defaults carry `{schema}`"
+        );
+        assert!(
+            registry.lists(schema),
+            "and the registry lists `{schema}`: {:?}",
+            registry.shadows
+        );
+    }
+}
+
 #[test]
 fn the_doctrine_pack_is_valid_under_the_same_check() {
     let report = pack::check(&bundled_tiny());
