@@ -1721,10 +1721,15 @@ fn also_widens_the_delivered_set_and_reason_rides_the_close() {
         shown.contains("plus --also the-log.md"),
         "the staged-set row names what was admitted:\n{shown}"
     );
-    assert!(
+    assert_eq!(
         scratch
-            .json(&item)
-            .contains(&format!("landed {LANDED} — the gate is the owner's")),
+            .store
+            .closed
+            .lock()
+            .expect("not poisoned")
+            .get(&item)
+            .cloned(),
+        Some(format!("landed {LANDED} — the gate is the owner's")),
         "the close reason carries both halves"
     );
 }

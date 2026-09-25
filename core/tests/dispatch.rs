@@ -796,20 +796,31 @@ fn an_item_already_ordered_is_refused_and_nothing_is_written() {
     assert_eq!(rig.events.count(), 0, "a refusal appends nothing");
 }
 
-/// An order index whose fields do not read as an order — here an `at` that is
-/// not a stamp — is the index read as unreadable, never as an order this fleet
-/// can weigh: a dispatch could-not-tell over it, with nothing written.
+/// An order index this fleet cannot read is present and unreadable — never
+/// absent, never an order it can weigh — and a dispatch could-not-tell over
+/// it, naming the version it reads, with nothing written (fleet-4j6 AC4).
+///
+/// Seeded as the contract reads one. Which of a store's own shapes read so —
+/// an `at` that is no stamp, a version this fleet does not know or none — is
+/// the adapter's reading, and bd's unit tests hold it.
 #[test]
-fn an_order_index_that_does_not_parse_reads_unreadable_and_dispatch_says_could_not_tell() {
-    let rig = Rig::new("unparsed");
-    let item = rig.graph.item("an item whose order index names no stamp");
-    rig.graph.set_metadata(
-        &item,
-        &format!(r#"{{"fleet.orders":{{"v":1,"by":"{BY}","kind":"dispatch","at":"then"}}}}"#),
+fn an_order_index_that_does_not_read_is_unreadable_and_dispatch_says_could_not_tell() {
+    let rig = Rig::new("unreadable-order");
+    let item = rig.graph.item("an item whose order index does not read");
+    let Graph::Memory(board) = &rig.graph else {
+        unreachable!("the rig is in memory");
+    };
+    board.amend(&item, |held| held.order = OrderState::Unreadable);
+    let read = rig.graph.store().show(&item).expect("the item reads");
+    assert_eq!(
+        read.order,
+        OrderState::Unreadable,
+        "present and unreadable: {}",
+        read.proof.as_str()
     );
 
     let before = rig.graph.json(&item);
-    let seat = String::from("s-unparsed");
+    let seat = String::from("s-unreadable");
     let ring = StubRing::answering(RingOutcome::Delivered);
     let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
     let answer = rig.run(
@@ -825,70 +836,13 @@ fn an_order_index_that_does_not_parse_reads_unreadable_and_dispatch_says_could_n
     assert!(
         answer
             .why
-            .contains("order index is not one this fleet can read"),
-        "{}",
+            .contains("order index is not one this fleet can read")
+            && answer.why.contains("v 1"),
+        "the index and the version this fleet reads are named: {}",
         answer.why
     );
     assert_eq!(rig.graph.json(&item), before, "the item is untouched");
     assert!(ring.calls().is_empty(), "nobody is rung");
-    assert_eq!(rig.events.count(), 0, "a could-not-tell appends nothing");
-}
-
-/// An order index at a version this binary does not know, or at none, is
-/// present and unreadable — never absent, never an order — and a dispatch
-/// could-not-tell over it with nothing written (fleet-4j6 AC4).
-#[test]
-fn a_fleet_orders_at_an_unknown_version_is_unreadable_and_dispatch_could_not_tell() {
-    let rig = Rig::new("unversioned");
-    for (label, payload) in [
-        (
-            "v2",
-            r#"{"fleet.orders":{"v":2,"by":"run:a-newer-fleet","kind":"dispatch","at":"2026-09-08T18:46:55Z"}}"#,
-        ),
-        (
-            "no-v",
-            r#"{"fleet.orders":{"by":"run:an-older-fleet","kind":"dispatch","at":"2026-09-08T18:46:55Z"}}"#,
-        ),
-    ] {
-        let item = rig.graph.item(&format!("an item ordered at {label}"));
-        rig.graph.set_metadata(&item, payload);
-        let read = rig.graph.store().show(&item).expect("the item reads");
-        assert_eq!(
-            read.order,
-            OrderState::Unreadable,
-            "{label}: present and unreadable: {}",
-            read.proof.as_str()
-        );
-
-        let before = rig.graph.json(&item);
-        let seat = format!("s-unversioned-{label}");
-        let ring = StubRing::answering(RingOutcome::Delivered);
-        let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
-        let answer = rig.run(
-            &item,
-            Some(&seat),
-            std::slice::from_ref(&seat),
-            rig.graph.store(),
-            &ring,
-            &spawner,
-        );
-
-        assert_eq!(answer.code, Some(3), "{label}: {}", answer.why);
-        assert!(
-            answer
-                .why
-                .contains("order index is not one this fleet can read")
-                && answer.why.contains("v 1"),
-            "{label}: the index and the version this fleet reads are named: {}",
-            answer.why
-        );
-        assert_eq!(
-            rig.graph.json(&item),
-            before,
-            "{label}: the item is untouched"
-        );
-        assert!(ring.calls().is_empty(), "{label}: nobody is rung");
-    }
     assert_eq!(rig.events.count(), 0, "a could-not-tell appends nothing");
 }
 
@@ -1504,8 +1458,8 @@ fn an_ambiguous_suffix_is_refused_naming_the_items_it_matches() {
     assert_eq!(rig.events.count(), 0, "a refusal appends nothing");
 }
 
-/// The board held in memory tells the same ambiguity the same way: it answers
-/// `bd`'s JSON and `bd`'s stderr, and the one reading of both is the store's.
+/// The board held in memory tells the same ambiguity in the same words: the
+/// text refused, and every item it names.
 #[test]
 fn the_board_in_memory_refuses_an_ambiguous_suffix_the_same_way() {
     let rig = Rig::new("ambiguous-memory");

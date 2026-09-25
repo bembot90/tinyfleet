@@ -7,22 +7,21 @@
 //! that wants a real `bd` board builds one in its own `tests/common`, which is
 //! where everything needing a subprocess stays.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
+use serde::{Deserialize, Serialize};
+
 use crate::entry::{self, Body, Entry};
 use crate::seat::actor::Actor;
 use crate::seat::identity::SeatId;
-use crate::store::bd::{
-    item_from, keys, opened, order_metadata, run_metadata, shown, summary_from, SCHEMA_VERSION,
-};
 use crate::store::types::{Capabilities, ExportSpec, Vocabulary};
 use crate::store::{
     already_cleared, already_closed, holder_named, validated_new, writable, Filter, HoldId, Item,
-    ItemId, ItemSummary, NewItem, Order, OrderState, RunRecord, Status, Store, StoreError, Update,
-    Version, WithdrawFence,
+    ItemId, ItemSummary, NewItem, Order, OrderState, ReadProof, RunRecord, Status, Store,
+    StoreError, Update, Version, WithdrawFence,
 };
 
 /// Where the fake's export goes, relative to the root it is handed: a file of
@@ -49,10 +48,10 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 /// disagrees with the write beside it — is [`FakeStore::ignore_writes`], off
 /// until an arm asks for it.
 ///
-/// Every read is decoded by [`crate::store::bd::item_from`], the same function
-/// the real store's reads go through: a row is built in `bd`'s own JSON shape
-/// and handed to it, so the fake cannot decode a field the real store decodes
-/// differently.
+/// Every item is held as the contract's own [`Item`] — its order, its run's
+/// record and the names of another writer's keys are its own fields — and a
+/// read answers a clone of it, carrying the contract's JSON of it as the
+/// read's proof. Nothing here reads any store's own shape.
 #[derive(Default)]
 pub struct FakeStore {
     pub ready: Vec<String>,
@@ -65,12 +64,13 @@ pub struct FakeStore {
     /// The id the next `create` answers, in order. An empty queue is not a
     /// failure: the store names what it files, as the real one does.
     pub creates: Mutex<Vec<String>>,
-    /// What the metadata writes have left, per item, as one top-level object.
-    ///
-    /// The write MERGES AT THE TOP LEVEL and replaces one key's object whole,
-    /// which is the polarity measured on bd 1.3.0 and pinned by an arm of the
-    /// plan suite.
-    pub metadata: Mutex<BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
+    /// What another writer keeps on each item, by key, as it was planted:
+    /// values no write here reads or moves, whose names are the item's
+    /// `foreign`.
+    pub planted: Mutex<BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
+    /// The items whose run's record is at a shape this fleet does not read,
+    /// which the contract answers as no item at all: their read refuses.
+    pub unreadable_runs: Mutex<BTreeSet<String>>,
     /// Rows answered for a seat, keyed by its full id, on top of the items
     /// assigned to it here.
     pub held: BTreeMap<String, Vec<ItemSummary>>,
@@ -82,9 +82,8 @@ pub struct FakeStore {
     /// The holds a `hold_clear` has closed, by id, so the open listing below
     /// answers what this store has actually been told.
     pub cleared: Mutex<Vec<String>>,
-    /// Why each closed item was closed. The real store holds it in a field of
-    /// its own that no read decodes but every document carries, and a close
-    /// reason is asserted off the document.
+    /// Why each closed item was closed. The contract's item carries no close
+    /// reason, so an arm asserting one reads it here.
     pub closed: Mutex<BTreeMap<String, String>>,
     /// Answered instead of a read, where an arm is about the store refusing.
     pub unreadable: Option<String>,
@@ -105,16 +104,17 @@ pub struct FakeStore {
     /// itself and stamps them in filing order.
     pub filed: AtomicUsize,
     /// Each item's comments, in the order they were added: the entries an
-    /// append writes and the raw text [`FakeStore::comment`] plants, kept the
-    /// way bd keeps them and read through the same `read_row`.
+    /// append writes and the raw text [`FakeStore::comment`] plants, read
+    /// through [`entry::read_row`] as the real store's are.
     pub comments: Mutex<BTreeMap<String, Vec<Comment>>>,
     /// How many comments this store has taken, which names the next one and
     /// stamps it a second after the last.
     pub comment_ids: AtomicUsize,
 }
 
-/// One comment as the store keeps it: bd's four fields, the text as written.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One comment as the store keeps it: the four fields a timeline row is read
+/// by, the text as written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Comment {
     pub id: String,
     pub author: String,
@@ -203,16 +203,43 @@ impl FakeStore {
         }
     }
 
-    /// A metadata object merged onto the item as ANOTHER WRITER leaves one: a
-    /// key fleet does not own, or one of fleet's own at a shape no writer here
-    /// makes. The trait writes only the contract's types, so this is a rig's
-    /// way in, and it is logged as nothing — the rig is putting the board in a
-    /// state. It merges at the top level, as every metadata write here does.
+    /// ANOTHER WRITER'S KEYS put on the item: each key of the object is named
+    /// in the item's `foreign` and its value kept as given, replacing one the
+    /// same key held. Every key is another writer's, whatever it is called —
+    /// the item's order and run's record are its own fields, which only the
+    /// trait's writes and [`FakeStore::amend`] move. The trait writes only the
+    /// contract's types, so this is a rig's way in, and it is logged as
+    /// nothing: the rig is putting the board in a state.
     pub fn plant_metadata(&self, item: &str, payload: &str) {
-        let metadata = crate::store::first_value(payload)
-            .unwrap_or_else(|| panic!("the metadata for {item} is JSON: {payload}"));
-        self.merged(item, metadata)
-            .unwrap_or_else(|e| panic!("the metadata on {item}: {e}"));
+        let Some(serde_json::Value::Object(theirs)) = crate::store::first_value(payload) else {
+            panic!("another writer's keys on {item} are one JSON object: {payload}");
+        };
+        let mut items = self.items.lock().expect("the items are not poisoned");
+        let held = items
+            .get_mut(item)
+            .unwrap_or_else(|| panic!("{item} is in this store"));
+        let mut planted = self
+            .planted
+            .lock()
+            .expect("the planted keys are not poisoned");
+        let kept = planted.entry(item.to_string()).or_default();
+        for (key, value) in theirs {
+            if !held.foreign.contains(&key) {
+                held.foreign.push(key.clone());
+            }
+            kept.insert(key, value);
+        }
+    }
+
+    /// The item's run's record put at a shape this fleet does not read, which
+    /// no [`RunRecord`] can hold: every read of the item refuses from here
+    /// on, as the contract reads one.
+    pub fn unreadable_run(&self, item: &str) {
+        assert!(self.stored(item).is_some(), "{item} is in this store");
+        self.unreadable_runs
+            .lock()
+            .expect("the marks are not poisoned")
+            .insert(item.to_string());
     }
 
     /// Writes land again.
@@ -297,74 +324,54 @@ impl FakeStore {
             .collect()
     }
 
-    fn close_reason(&self, item: &str) -> Option<String> {
-        self.closed
+    /// One item's row: the contract's JSON of it, with what another writer
+    /// planted on it beside that.
+    fn row(&self, item: &Item) -> serde_json::Value {
+        let planted = self
+            .planted
             .lock()
-            .expect("the reasons are not poisoned")
-            .get(item)
-            .cloned()
+            .expect("the planted keys are not poisoned");
+        row_of(item, planted.get(item.id.as_str()))
     }
 
-    /// The metadata object this item's reads are decoded from: what the writes
-    /// have left, or what the seeded item carries where nothing has written.
-    fn metadata_of(&self, item: &Item) -> serde_json::Map<String, serde_json::Value> {
-        self.metadata
-            .lock()
-            .expect("the metadata is not poisoned")
-            .get(item.id.as_str())
-            .cloned()
-            .unwrap_or_else(|| seeded_metadata(item))
-    }
-
-    /// One metadata write, over the object the item already reads as.
-    fn metadata_write(
-        &self,
-        item: &str,
-        change: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
-    ) -> Result<(), StoreError> {
-        if self.deaf() {
-            return Ok(());
-        }
-        let seeded = {
-            let items = self.items.lock().expect("the items are not poisoned");
-            let held = items
-                .get(item)
-                .ok_or_else(|| StoreError::Refused(format!("{item} is not here")))?;
-            seeded_metadata(held)
-        };
-        let mut all = self.metadata.lock().expect("the metadata is not poisoned");
-        let object = all.entry(item.to_string()).or_insert(seeded);
-        change(object);
-        Ok(())
-    }
-
-    /// Every item as one JSON object, in id order.
+    /// Every item's row, in id order.
     fn rows(&self) -> Vec<serde_json::Value> {
         let items = self.items.lock().expect("the items are not poisoned");
-        items
-            .values()
-            .map(|item| {
-                row_of(
-                    item,
-                    &self.metadata_of(item),
-                    self.close_reason(&item.id).as_deref(),
-                )
-            })
-            .collect()
+        items.values().map(|item| self.row(item)).collect()
     }
 
-    /// One stored item as a listing's row answers it: the item's row in bd's
-    /// own shape, its order, its run's record and another writer's keys off
-    /// the METADATA this store would answer a read with and not off the
-    /// seeded fields, read by the reader the real listing's rows take — so a
-    /// row whose index a write has removed answers here as the real listing
-    /// does, and a record or a holder the real listing refuses refuses this
-    /// one.
+    /// One stored item as a listing's row answers it: the item's own fields,
+    /// or the refusal its read answers, which refuses the listing it is in.
     fn summary(&self, item: &Item) -> Result<ItemSummary, StoreError> {
-        let row = row_of(item, &self.metadata_of(item), None);
-        summary_from(&row)?.ok_or_else(|| {
-            StoreError::Unreadable(format!("{} answered a row naming no id", item.id))
+        self.readable(item)?;
+        Ok(ItemSummary {
+            id: item.id.clone(),
+            title: item.title.clone(),
+            status: item.status.clone(),
+            item_type: item.item_type.clone(),
+            labels: item.labels.clone(),
+            assignee: item.assignee,
+            order: item.order.clone(),
+            run: item.run.clone(),
+            foreign: item.foreign.clone(),
         })
+    }
+
+    /// The item, where its run's record is one this fleet reads; else the
+    /// refusal the contract answers for a record it does not.
+    fn readable(&self, item: &Item) -> Result<(), StoreError> {
+        let unread = self
+            .unreadable_runs
+            .lock()
+            .expect("the marks are not poisoned")
+            .contains(item.id.as_str());
+        if unread {
+            return Err(StoreError::Unreadable(format!(
+                "{}'s run record is not one this fleet reads",
+                item.id
+            )));
+        }
+        Ok(())
     }
 
     /// Each id as the summary of the item stored under it, and an id-only
@@ -447,156 +454,51 @@ impl FakeStore {
         Ok(rows)
     }
 
-    /// The answer `bd show --json` gives under the envelope — the row as an
-    /// array of one, or an error coded `not_found` as beads' contract spells
-    /// it — opened and read by the same functions the real store's `show` goes
-    /// through, so the fake cannot classify an answer the real store classifies
-    /// differently. bd 1.3.0's own error carries no code, and the real half of
-    /// the contract suite is what reads that one.
+    /// The one item the text names, as it stands, or the store's word that
+    /// the text names none or more than one.
     ///
-    /// THE ARGUMENT IS RESOLVED AS bd RESOLVES IT, by [`named`], and an
-    /// ambiguous one answers what bd 1.3.0 answers: the error with no code, and
-    /// the matches on stderr alone. Only a read resolves; every write here
-    /// takes a whole id, so a verb that wrote under the text it was typed is a
-    /// refusal on this board and never a write that quietly landed.
-    fn shown_row(&self, item: &str) -> Result<serde_json::Value, StoreError> {
-        let matches = {
-            let items = self.items.lock().expect("the items are not poisoned");
-            named(items.keys(), item)
-                .into_iter()
-                .filter_map(|id| items.get(&id).cloned())
-                .collect::<Vec<Item>>()
-        };
-        let (data, said) = match matches.as_slice() {
-            [held] => {
-                let metadata = self.metadata_of(held);
-                let reason = self.close_reason(&held.id);
-                (
-                    serde_json::json!([row_of(held, &metadata, reason.as_deref())]),
-                    String::new(),
-                )
-            }
-            [] => (
-                serde_json::json!({
-                    "error": "no issues found matching the provided IDs",
-                    "code": "not_found",
-                }),
-                format!(
-                    "Issue {item} not found\nHint: this ID may have never existed, or may \
-                     reference a deleted/purged record with no trace left in the live database \
-                     — try 'bd history {item}'\n"
-                ),
-            ),
-            many => (
-                serde_json::json!({ "error": "no issues found matching the provided IDs" }),
-                format!(
-                    "Error fetching {item}: ambiguous issue ID: \"{item}\" matches {} issues: \
-                     [{}]\nUse more characters to disambiguate\n",
-                    many.len(),
-                    many.iter()
-                        .map(|held| held.id.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                ),
-            ),
-        };
-        let answer = serde_json::json!({
-            "schema_version": SCHEMA_VERSION,
-            "data": data,
-        });
-        let answer = opened(answer, || String::from("the board held in memory"));
-        shown(item, answer, &said)
-    }
-}
-
-/// The metadata a seeded item carries in its own fields, as the object a read
-/// decodes from, under fleet's own keys and at the version each is written at.
-/// An unreadable order is a key holding something that is not an object, which
-/// is a third answer and not an absence. Another writer's key is there by name,
-/// holding an empty object: fleet reads the name and never the value. A seed
-/// that wants a run's record the fleet cannot read, or an index at another
-/// version, writes that metadata itself: the item's own fields hold only what
-/// reads.
-fn seeded_metadata(item: &Item) -> serde_json::Map<String, serde_json::Value> {
-    let mut object = serde_json::Map::new();
-    for key in &item.foreign {
-        object.insert(
-            key.clone(),
-            serde_json::Value::Object(serde_json::Map::new()),
-        );
-    }
-    if let Some(run) = &item.run {
-        object.extend(top_level(run_metadata(run)));
-    }
-    match &item.order {
-        OrderState::Ordered(order) => {
-            object.extend(top_level(order_metadata(order)));
+    /// THE ARGUMENT IS RESOLVED BY THE CONTRACT'S RULES, [`named`]. Only a
+    /// read resolves; every write here takes a whole id, so a verb that wrote
+    /// under the text it was typed is a refusal on this board and never a
+    /// write that quietly landed.
+    fn the_one(&self, item: &str) -> Result<Item, StoreError> {
+        let items = self.items.lock().expect("the items are not poisoned");
+        let matches: Vec<&Item> = named(items.keys(), item)
+            .into_iter()
+            .filter_map(|id| items.get(&id))
+            .collect();
+        match matches.as_slice() {
+            [held] => Ok((*held).clone()),
+            [] => Err(StoreError::Refused(format!("{item} is not in the store"))),
+            many => Err(StoreError::Refused(format!(
+                "`{item}` matches more than one item — {} — and more of the id says which one \
+                 this is",
+                many.iter()
+                    .map(|held| held.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))),
         }
-        OrderState::Unreadable => {
-            object.insert(
-                String::from(keys::ORDERS),
-                serde_json::Value::String(String::new()),
-            );
-        }
-        OrderState::None => {}
-    }
-    object
-}
-
-/// The top-level keys of a metadata object the adapter built, which is what
-/// a write merges in.
-fn top_level(metadata: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
-    match metadata {
-        serde_json::Value::Object(keys) => keys,
-        other => panic!("the adapter's metadata is one object: {other}"),
     }
 }
 
-/// One item in the store's own JSON shape — the row a read is decoded from and
-/// the line the export writes. A field the store has no value for is OMITTED
-/// rather than written null, which is what the real store does and what tells
-/// an absent assignee from an empty one.
+/// One item as the contract's JSON — the text a read's proof carries and the
+/// line the export writes — with another writer's keys beside it under
+/// `metadata`, where any were planted.
+///
+/// THOSE VALUES ARE ANSWERED BECAUSE A CHECK READS THEM. The conformance
+/// check on another writer's keys asks that a write here left them as
+/// planted, and it reads them off the proof under `metadata`, the name it
+/// gives what another writer keeps on an item.
 fn row_of(
     item: &Item,
-    metadata: &serde_json::Map<String, serde_json::Value>,
-    close_reason: Option<&str>,
+    planted: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> serde_json::Value {
-    let mut row = serde_json::Map::new();
-    row.insert(String::from("id"), item.id.as_str().into());
-    row.insert(String::from("title"), item.title.clone().into());
-    if !item.description.is_empty() {
-        row.insert(String::from("description"), item.description.clone().into());
+    let mut row = serde_json::to_value(item).expect("an item is the contract's JSON");
+    if let Some(theirs) = planted.filter(|theirs| !theirs.is_empty()) {
+        row["metadata"] = serde_json::Value::Object(theirs.clone());
     }
-    row.insert(String::from("status"), item.status.as_str().into());
-    row.insert(String::from("issue_type"), item.item_type.clone().into());
-    if let Some(assignee) = &item.assignee {
-        row.insert(String::from("assignee"), assignee.to_string().into());
-    }
-    if let Some(reason) = close_reason {
-        row.insert(String::from("close_reason"), reason.into());
-    }
-    row.insert(
-        String::from("labels"),
-        serde_json::Value::Array(item.labels.iter().map(|l| l.clone().into()).collect()),
-    );
-    if !metadata.is_empty() {
-        row.insert(
-            String::from("metadata"),
-            serde_json::Value::Object(metadata.clone()),
-        );
-    }
-    if !item.blockers.is_empty() {
-        row.insert(
-            String::from("dependencies"),
-            serde_json::Value::Array(
-                item.blockers
-                    .iter()
-                    .map(|id| serde_json::json!({ "id": id, "status": "open" }))
-                    .collect(),
-            ),
-        );
-    }
-    serde_json::Value::Object(row)
+    row
 }
 
 /// A holder as a log line names one: the seat, or `nobody`.
@@ -606,14 +508,14 @@ fn logged(holder: &Option<SeatId>) -> String {
         .unwrap_or_else(|| String::from("nobody"))
 }
 
-/// The ids a `show` argument names, by the rule bd 1.3.0 resolves one with —
-/// measured on a scratch board. A whole id names itself. Else a whole HASH, the
-/// part after the prefix, names its item (`7cx` is `fx-7cx`, even with a child
-/// `fx-7cx.1` beside it). Else every id whose hash OPENS WITH the argument is
-/// named, with a leading prefix taken off the argument first (`fx-7c` names
-/// what `7c` does, and `x-7c` names nothing), so `35` names nothing beside
-/// `fx-h35`, which holds it but does not open with it. One id is the item,
-/// more than one an ambiguity, none a missing id.
+/// The ids a `show` argument names, by the contract's three rules — which bd
+/// 1.3.0 answered alike on a scratch board. A whole id names itself. Else a
+/// whole HASH, the part after the prefix, names its item (`7cx` is `fx-7cx`,
+/// even with a child `fx-7cx.1` beside it). Else every id whose hash OPENS
+/// WITH the argument is named, with a leading prefix taken off the argument
+/// first (`fx-7c` names what `7c` does, and `x-7c` names nothing), so `35`
+/// names nothing beside `fx-h35`, which holds it but does not open with it.
+/// One id is the item, more than one an ambiguity, none a missing id.
 fn named<'a>(ids: impl Iterator<Item = &'a String> + Clone, given: &str) -> Vec<String> {
     let parts = |id: &'a str| id.split_once('-').unwrap_or(("", id));
     let needle = |prefix: &str| {
@@ -659,17 +561,13 @@ impl Store for FakeStore {
         }
     }
 
-    /// The id `show` would answer, resolved by the same [`named`] and read
-    /// off the same row, and nothing else of it decoded.
+    /// The id `show` would answer, resolved by the same [`named`], and nothing
+    /// else of the item read.
     fn resolve(&self, id: &str) -> Result<ItemId, StoreError> {
         if let Some(refused) = self.refuse() {
             return refused;
         }
-        let row = self.shown_row(id)?;
-        row.get("id")
-            .and_then(serde_json::Value::as_str)
-            .map(ItemId::from)
-            .ok_or_else(|| StoreError::Unreadable(format!("{id} answered a row naming no id")))
+        Ok(self.the_one(id)?.id)
     }
 
     fn create(&self, item: &NewItem, by: &Actor) -> Result<ItemId, StoreError> {
@@ -708,9 +606,13 @@ impl Store for FakeStore {
                     ..Item::default()
                 },
             );
-        self.metadata
+        self.planted
             .lock()
-            .expect("the metadata is not poisoned")
+            .expect("the planted keys are not poisoned")
+            .remove(&id);
+        self.unreadable_runs
+            .lock()
+            .expect("the marks are not poisoned")
             .remove(&id);
         Ok(ItemId::from(id))
     }
@@ -718,8 +620,7 @@ impl Store for FakeStore {
     /// One log line naming each field the change moves — `title <t>`,
     /// `assignee <seat>` or `assignee nobody`, `status open` — and the fence
     /// it names, `if_assignee <seat>` or `if_assignee nobody`; then the moves
-    /// themselves, only while the fence holds. An assignee handed to nobody is
-    /// ABSENT, as bd answers one it cleared.
+    /// themselves, only while the fence holds.
     fn update(&self, id: &ItemId, change: &Update, by: &Actor) -> Result<(), StoreError> {
         writable(change)?;
         let mut line = format!("update {id}");
@@ -752,27 +653,31 @@ impl Store for FakeStore {
         })
     }
 
-    /// The row [`FakeStore::shown_row`] answers, decoded as the real store's
-    /// `show` decodes it.
+    /// The stored item, cloned, with its row as the read's proof — or, where
+    /// its run's record is one this fleet does not read, the refusal the
+    /// contract answers for that.
     fn show(&self, item: &str) -> Result<Item, StoreError> {
         if let Some(refused) = self.refuse() {
             return refused;
         }
-        item_from(item, &self.shown_row(item)?)
+        let held = self.the_one(item)?;
+        self.readable(&held)?;
+        Ok(Item {
+            proof: ReadProof::of(self.row(&held).to_string()),
+            ..held
+        })
     }
 
-    /// The order written as the bd adapter writes it — the same object, built
-    /// by the same function — and merged at the top level, so the run's record
-    /// beside it stands.
+    /// The order replaced whole; the run's record and another writer's keys
+    /// beside it stand.
     fn order_set(&self, id: &ItemId, order: &Order, by: &Actor) -> Result<(), StoreError> {
-        let metadata = order_metadata(order);
-        self.log(format!("order_set {id} {metadata} {by}"))?;
-        self.merged(id, metadata)
+        self.log(format!("order_set {id} {} {by}", json_of(order)))?;
+        self.moving(id, |held| held.order = OrderState::Ordered(order.clone()))
     }
 
     /// One log line and every move, which is what the real store's one call
-    /// leaves: the assignee ABSENT, as bd answers one it cleared, the key gone
-    /// and, where the fence says `reopen`, the status open. No move is made
+    /// leaves: nobody holding the item, no order and, where the fence says
+    /// `reopen`, the status open. No move is made
     /// while the item misses a fence the caller named — bd's `--if-assignee`
     /// and `--if-status`.
     fn order_withdraw(
@@ -800,19 +705,17 @@ impl Store for FakeStore {
         }
         self.moving(id, |held| {
             held.assignee = None;
+            held.order = OrderState::None;
             if fence.reopen {
                 held.status = Status::Open;
             }
-        })?;
-        self.metadata_write(id, |object| {
-            object.remove(keys::ORDERS);
         })
     }
 
+    /// The run's record replaced whole; the order beside it stands.
     fn run_set(&self, id: &ItemId, run: &RunRecord, by: &Actor) -> Result<(), StoreError> {
-        let metadata = run_metadata(run);
-        self.log(format!("run_set {id} {metadata} {by}"))?;
-        self.merged(id, metadata)
+        self.log(format!("run_set {id} {} {by}", json_of(run)))?;
+        self.moving(id, |held| held.run = Some(run.clone()))
     }
 
     /// The hold recorded and answered as an id derived from the call's own
@@ -981,10 +884,9 @@ impl Store for FakeStore {
     /// are about the board and not the file. A store that declares no export
     /// refuses it, and writes nothing.
     ///
-    /// An item's line carries its comments, which is where its entries live —
-    /// measured on bd 1.3.0, whose export writes them under `comments` with the
-    /// fields a comment read answers — so an append moves the export's bytes as
-    /// it moves the real one's.
+    /// Each line is an item's row, and carries the item's comments under
+    /// `comments`, which is where its entries live — so an append moves the
+    /// export's bytes as it moves the real one's.
     fn export(&self, into: &Path) -> Result<PathBuf, StoreError> {
         if self.no_export {
             return Err(StoreError::Unreadable(String::from(
@@ -1013,18 +915,7 @@ impl Store for FakeStore {
         for mut row in self.rows() {
             let id = row["id"].as_str().unwrap_or_default().to_string();
             if let Some(held) = comments.get(&id).filter(|held| !held.is_empty()) {
-                row["comments"] = held
-                    .iter()
-                    .map(|comment| {
-                        serde_json::json!({
-                            "id": comment.id,
-                            "issue_id": id,
-                            "author": comment.author,
-                            "text": comment.text,
-                            "created_at": comment.at,
-                        })
-                    })
-                    .collect();
+                row["comments"] = json_of(held);
             }
             body.push_str(&row.to_string());
             body.push('\n');
@@ -1039,21 +930,9 @@ impl Store for FakeStore {
     }
 }
 
-impl FakeStore {
-    /// One metadata object merged at the top level, which is every metadata
-    /// write's polarity.
-    fn merged(&self, item: &str, metadata: serde_json::Value) -> Result<(), StoreError> {
-        let serde_json::Value::Object(written) = metadata else {
-            return Err(StoreError::Unreadable(format!(
-                "the payload is not one JSON object: {metadata}"
-            )));
-        };
-        self.metadata_write(item, |object| {
-            for (key, value) in written {
-                object.insert(key, value);
-            }
-        })
-    }
+/// A value the fake writes into a log line or its export, as JSON.
+fn json_of<T: Serialize>(value: &T) -> serde_json::Value {
+    serde_json::to_value(value).expect("the value is JSON")
 }
 
 /// The refusal the fake answers where a write fenced on its holder finds
@@ -1241,8 +1120,7 @@ impl Board {
             .unwrap_or_else(|e| panic!("the run record on {item}: {e}"));
     }
 
-    /// A metadata object merged onto the item as ANOTHER WRITER leaves one —
-    /// [`FakeStore::plant_metadata`].
+    /// ANOTHER WRITER'S KEYS put on the item — [`FakeStore::plant_metadata`].
     pub fn set_metadata(&self, item: &str, payload: &str) {
         self.store.plant_metadata(item, payload);
     }

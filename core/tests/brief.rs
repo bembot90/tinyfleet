@@ -515,34 +515,23 @@ fn an_item_with_no_order_index_is_refused_and_writes_nothing() {
     assert!(rendered.why.contains("no order index"), "{}", rendered.why);
     assert_eq!(rendered.body.len(), 0, "nothing reaches stdout");
 
-    // An index that is there and cannot be read is refused by its own line, and
-    // so is one naming nobody, which is an index only partly filled: the order
-    // the brief prints is rendered from who gave it. Each is the ordered store
-    // with one reading taken away, so what refuses is that reading and not the
-    // rest of the record.
+    // An index that is there and cannot be read is refused by its own line: the
+    // ordered store with that one reading taken away, so what refuses is that
+    // reading and not the rest of the record. One only partly filled — naming
+    // nobody who gave it — reads so too, which is the adapter's reading and
+    // bd's unit tests hold.
     let unreadable = ordered();
     unreadable.amend(ITEM, |item| item.order = OrderState::Unreadable);
-    let nobody = one_item();
-    nobody
-        .metadata
-        .lock()
-        .expect("the metadata is not poisoned")
-        .insert(
-            ITEM.to_string(),
-            serde_json::json!({ "fleet.orders": { "v": 1, "kind": "dispatch", "at": AT } })
-                .as_object()
-                .cloned()
-                .expect("an object"),
-        );
-    for (store, wanted) in [
-        (&unreadable, "order index is not one this fleet can read"),
-        (&nobody, "order index is not one this fleet can read"),
-    ] {
-        let rendered = rig.render(store, SEAT);
-        assert_eq!(rendered.code, Some(1), "{}", rendered.why);
-        assert!(rendered.why.contains(wanted), "{}", rendered.why);
-        assert_eq!(rendered.body.len(), 0, "nothing reaches stdout");
-    }
+    let rendered = rig.render(&unreadable, SEAT);
+    assert_eq!(rendered.code, Some(1), "{}", rendered.why);
+    assert!(
+        rendered
+            .why
+            .contains("order index is not one this fleet can read"),
+        "{}",
+        rendered.why
+    );
+    assert_eq!(rendered.body.len(), 0, "nothing reaches stdout");
     assert_eq!(
         rig.render(&ordered(), SEAT).code,
         None,
@@ -804,9 +793,9 @@ fn a_dispatched_item_still_gets_its_brief() {
     );
 }
 
-/// THE ORDER IS THE INDEX'S, rendered: who gave it and when, off
-/// `fleet.orders`, with no template and no note behind it. The index here names
-/// a dispatcher and a time no other arm's does, so the block is read off this
+/// THE ORDER IS THE INDEX'S, rendered: who gave it and when, off the item's
+/// order, with no template and no note behind it. The index here names a
+/// dispatcher and a time no other arm's does, so the block is read off this
 /// record and not off a constant.
 #[test]
 fn the_order_block_reads_who_gave_it_and_when_off_the_index() {

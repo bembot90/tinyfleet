@@ -25,7 +25,7 @@ use fleet_core::item::run;
 use fleet_core::item::{Change, Git, Project, Stop, ITEM_ENTRY};
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::store::bd::Bd;
-use fleet_core::store::{Filter, Item, NewItem, Store, StoreError};
+use fleet_core::store::{Filter, Item, NewItem, RunRecord, Stamp, Store, StoreError};
 use fleet_core::test_support::Board;
 
 const AT: &str = "2026-09-13T04:05:06Z";
@@ -700,10 +700,7 @@ fn a_runs_record_parks_off_the_trunk_and_performs_no_git_act() {
     let scratch = &store();
     let item = an_item(&scratch.store, "a run being asked about");
     scratch.label(&item, run::LABEL);
-    scratch.set_metadata(
-        &item,
-        &format!(r#"{{"fleet.run": {{"v": 1, "hash": "{RUN_HASH}", "workflow": "takeoff", "pack": "ts", "entry": "takeoff.ts", "started_at": "{AT}"}}}}"#),
-    );
+    scratch.amend(&item, |held| held.run = Some(takeoffs_record()));
     let its_run = Actor {
         kind: ActorKind::Run,
         id: item.clone(),
@@ -809,10 +806,7 @@ fn an_item_that_is_not_a_runs_record_is_refused_the_park_on_the_trunk() {
     let scratch = &store();
     let seat = "g-not-a-run";
     let item = an_ordered_item(&scratch.store, "an item that is not a run's record", seat);
-    scratch.set_metadata(
-        &item,
-        &format!(r#"{{"fleet.run": {{"v": 1, "hash": "{RUN_HASH}", "workflow": "takeoff", "pack": "ts", "entry": "takeoff.ts", "started_at": "{AT}"}}}}"#),
-    );
+    scratch.amend(&item, |held| held.run = Some(takeoffs_record()));
     let question = a_question(scratch, "not-a-run", QUESTION);
     let before = scratch.json(&item);
     let git = StubGit {
@@ -1773,11 +1767,19 @@ const CAPPED_REASON: &str = "fx-capped has been executed 3 time(s) and nothing c
 fn a_runs_record(scratch: &Board, title: &str) -> String {
     let run = an_item(&scratch.store, title);
     scratch.label(&run, run::LABEL);
-    scratch.set_metadata(
-        &run,
-        &format!(r#"{{"fleet.run": {{"v": 1, "hash": "{RUN_HASH}", "workflow": "takeoff", "pack": "ts", "entry": "takeoff.ts", "started_at": "{AT}"}}}}"#),
-    );
+    scratch.amend(&run, |held| held.run = Some(takeoffs_record()));
     run
+}
+
+/// The record a takeoff run's open writes on its item: the hash it pinned.
+fn takeoffs_record() -> RunRecord {
+    RunRecord {
+        hash: RUN_HASH.to_string(),
+        workflow: String::from("takeoff"),
+        pack: String::from("ts"),
+        entry: String::from("takeoff.ts"),
+        started_at: Stamp::parse(AT).expect("a stamp"),
+    }
 }
 
 /// A run held at `[core.run] max_crashes` is CLEARABLE: the park is exactly
