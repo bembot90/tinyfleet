@@ -639,6 +639,97 @@ fn review_land_writes_the_accept_on_the_record_and_the_event_on_the_stream() {
     );
 }
 
+/// `review --return` through the same binary, fed the findings file tiny's
+/// takeoff writes when a person answers B at its hold — the fixture its own
+/// suite asserts it writes byte for byte, because that suite runs a fake
+/// binary and never learns whether the real one reads the file.
+///
+/// The control is the file takeoff wrote before its findings were JSON: a
+/// marker line and a sentence, numbering nothing, which the verb refuses with
+/// exit 2 and without handing the item over.
+#[test]
+fn review_return_takes_the_findings_file_takeoff_writes_on_b() {
+    let rig = Rig::new("review-return");
+    let item = rig.an_ordered_item();
+
+    let out = rig.run(&["deliver", "--note", &rig.note.display().to_string()]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let head = rig.git(&["rev-parse", "HEAD"]);
+    assert_eq!(
+        rig.item_json(&item)["assignee"],
+        serde_json::json!(REVIEWER_ID),
+        "the premise: the delivery handed the item to the reviewer"
+    );
+
+    let prose = rig.root.join("findings.md");
+    std::fs::write(
+        &prose,
+        format!(
+            "RETURNED {item} at {head}\nThe person answered B at the run's hold: B. return to \
+             the builder.\n"
+        ),
+    )
+    .expect("the old file is written");
+    let out = rig.run(&[
+        "review",
+        &item,
+        "--return",
+        &prose.display().to_string(),
+        "--by",
+        REVIEWER,
+    ]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("assets/findings.schema.json"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        rig.item_json(&item)["assignee"],
+        serde_json::json!(REVIEWER_ID),
+        "a file that does not read hands nothing over"
+    );
+
+    let takeoff = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../packs/ts/assets/sdk/testdata/takeoff_findings_b.json");
+    let out = rig.run(&[
+        "review",
+        &item,
+        "--return",
+        &takeoff.display().to_string(),
+        "--by",
+        REVIEWER,
+    ]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+
+    assert_eq!(
+        rig.item_json(&item)["assignee"],
+        serde_json::json!(rig.seat_id()),
+        "the item goes back to the seat the order named"
+    );
+    let notes = rig.item_json(&item)["notes"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        notes.contains(&format!(
+            "RETURNED WITH FINDINGS {head} — seat:{REVIEWER_ID}\nfindings: 1\n"
+        )),
+        "the verdict counts the one finding: {notes}"
+    );
+    assert!(
+        notes.contains("\n  F1 The person answered B at the run's hold: B. return to the builder."),
+        "and numbers it: {notes}"
+    );
+    let last = rig
+        .events()
+        .last()
+        .cloned()
+        .expect("the stream carries the return");
+    assert_eq!(last["type"].as_str(), Some("item.returned"), "{last}");
+    assert_eq!(last["payload"]["findings"], serde_json::json!(1), "{last}");
+}
+
 /// The size line's counts over the rows `git diff --numstat` printed.
 fn counted(rows: &str) -> String {
     let (mut files, mut added, mut deleted) = (0usize, 0u64, 0u64);

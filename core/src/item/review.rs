@@ -14,6 +14,8 @@
 use std::io::Write;
 use std::path::Path;
 
+use crate::entry::Finding;
+use crate::input::{self, FindingsInput, FINDINGS_SCHEMA};
 use crate::item::brief::Packs;
 use crate::item::deliver::{named, BASE, COMMIT};
 use crate::item::{
@@ -43,7 +45,10 @@ pub enum Mode<'a> {
     Show,
     /// Write the ACCEPTED verdict, its decisions walk in it.
     Land,
-    /// Write the RETURNED WITH FINDINGS verdict from this findings file.
+    /// Write the RETURNED WITH FINDINGS verdict from this findings file: a
+    /// JSON file of the shape [`FINDINGS_SCHEMA`] gives, read against
+    /// [`FindingsInput`] before anything is written. Its findings are numbered
+    /// by their place in the list, so the file numbers nothing itself.
     Return(&'a Path),
 }
 
@@ -384,23 +389,11 @@ fn retur(
     verdict: &Verdict,
     wiring: &Wiring,
 ) -> Result<String, Stop> {
-    let body = std::fs::read_to_string(findings).map_err(|e| {
-        Stop::usage(format!(
-            "the findings at {} could not be read: {e}",
-            findings.display()
-        ))
-    })?;
-    let count = body
-        .lines()
-        .filter_map(|line| numbered(line.trim(), 'F'))
-        .count();
-    if count == 0 {
-        return Err(Stop::usage(format!(
-            "{} numbers no finding — a return that numbers nothing is a question and goes back as \
-             one",
-            findings.display()
-        )));
-    }
+    // Read whole before anything is written: a file that does not parse, or
+    // parses and numbers nothing, stops here with the item still the
+    // reviewer's.
+    let findings = input::read::<FindingsInput>(findings, "findings", FINDINGS_SCHEMA)?.findings();
+    let count = findings.len();
     // The builder is the order index's seat: the record of who was given this
     // item, which is the one place that says where a return goes. It is the
     // seat's full id, which is what the return assigns and rings.
@@ -420,7 +413,7 @@ fn retur(
             ("item", &item.id),
             ("size", size),
             ("findings", &count.to_string()),
-            ("body", &off_column_zero(body.trim_end())),
+            ("body", &off_column_zero(&numbered_findings(&findings))),
         ],
     )
     .map_err(|name| unresolved(&name))?;
@@ -540,14 +533,32 @@ fn unresolved(name: &str) -> Stop {
     ))
 }
 
+/// The findings as the verdict's body: `F<k> <text>` for the k-th finding,
+/// each line that continues its text two spaces in, so a finding that runs
+/// over lines still reads as one.
+fn numbered_findings(findings: &[Finding]) -> String {
+    findings
+        .iter()
+        .enumerate()
+        .map(|(k, finding)| {
+            format!(
+                "F{} {}",
+                k + 1,
+                finding.text.trim_end().replace('\n', "\n  ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The findings body, indented off column zero.
 ///
-/// A region ends at the next marker AT COLUMN ZERO, and a findings body is
-/// prose a reviewer wrote — which in this store habitually quotes a delivery's
-/// or a landing's own first line. Indented, no line of it can end the verdict
-/// it is inside, so the read-back below compares the whole note against the
-/// whole note. The count was taken from the body as written and each line is
-/// still read with `trim`, so nothing about what a finding IS changes here.
+/// A region ends at the next marker AT COLUMN ZERO, and a finding is prose a
+/// reviewer wrote — which in this store habitually quotes a delivery's or a
+/// landing's own first line. Indented, no line of it can end the verdict it
+/// is inside, so the read-back below compares the whole note against the
+/// whole note. The count was taken from the findings file, so nothing about
+/// how many findings there are changes here.
 fn off_column_zero(body: &str) -> String {
     body.lines()
         .map(|line| {

@@ -332,9 +332,23 @@ fn an_item(store: &dyn Store, title: &str) -> String {
 }
 
 fn file(scratch: &dyn Rooted, label: &str, body: &str) -> PathBuf {
-    let path = scratch.root().join(format!("findings-{label}.md"));
+    let path = scratch.root().join(format!("findings-{label}.json"));
     std::fs::write(&path, body).expect("the file is written");
     path
+}
+
+/// A findings file in the shape `--return` reads: one finding per text, in
+/// order.
+fn findings(scratch: &dyn Rooted, label: &str, texts: &[&str]) -> PathBuf {
+    let findings: Vec<serde_json::Value> = texts
+        .iter()
+        .map(|text| serde_json::json!({ "text": text }))
+        .collect();
+    file(
+        scratch,
+        label,
+        &serde_json::json!({ "findings": findings }).to_string(),
+    )
 }
 
 /// An item carrying this delivery and nothing else.
@@ -563,12 +577,14 @@ fn a_findings_body_quoting_a_marker_is_written_and_read_back_whole() {
         "an item returned with a quoted marker",
         builder,
     );
-    let findings = file(
+    let findings = findings(
         scratch,
         "quoting",
-        "F1 the note opens on the wrong word. It reads\nDELIVERED abc — someone\n\
-         where it must read RE-DELIVERED, and a reader anchoring on the last\n\
-         ACCEPTED abc — someone\nfinds this note instead.\n",
+        &[
+            "the note opens on the wrong word. It reads\nDELIVERED abc — someone\n\
+           where it must read RE-DELIVERED, and a reader anchoring on the last\n\
+           ACCEPTED abc — someone\nfinds this note instead.",
+        ],
     );
     let git = StubGit::answering(a_diff());
     let ring = StubRing::new();
@@ -599,10 +615,16 @@ fn a_findings_body_quoting_a_marker_is_written_and_read_back_whole() {
     );
     // The control: the body reached the note as the reviewer wrote it, moved
     // off column zero and not edited — so what was measured is the indentation
-    // and not a verb that dropped the awkward lines.
+    // and not a verb that dropped the awkward lines. The finding opens on its
+    // `F1`, and the lines that continue its text sit two further in.
     assert!(
-        verdict.contains("  DELIVERED abc — someone"),
-        "the body is indented, not rewritten: {verdict}"
+        verdict.contains("\n  F1 the note opens on the wrong word. It reads\n"),
+        "the finding is numbered by its place in the file: {verdict}"
+    );
+    assert!(
+        verdict.contains("\n    DELIVERED abc — someone\n")
+            && verdict.contains("\n    finds this note instead."),
+        "its continuation lines are indented under it, not rewritten: {verdict}"
     );
     assert!(
         fleet_core::item::last_delivery(&notes(&scratch.store, &item))
@@ -618,10 +640,13 @@ fn a_return_writes_the_findings_count_first_and_hands_the_item_back() {
     let bd = &Bd::at(&scratch.root);
     let builder = "s-return";
     let item = a_delivered_item(bd, "an item to return", builder);
-    let findings = file(
+    let findings = findings(
         scratch,
         "two",
-        "F1 the first finding, with what to measure.\nF2 the second one.\n",
+        &[
+            "the first finding, with what to measure.",
+            "the second one.",
+        ],
     );
     let git = StubGit::answering(a_diff());
     let ring = StubRing::new();
@@ -661,7 +686,17 @@ fn a_return_writes_the_findings_count_first_and_hands_the_item_back() {
         Some("findings: 2"),
         "the count is the first line after the marker: {verdict}"
     );
-    assert!(verdict.contains("F1 the first finding"), "{verdict}");
+    assert_eq!(
+        verdict
+            .lines()
+            .filter(|line| line.trim_start().starts_with('F'))
+            .collect::<Vec<_>>(),
+        [
+            "  F1 the first finding, with what to measure.",
+            "  F2 the second one."
+        ],
+        "one F-line per finding, numbered by its place in the file: {verdict}"
+    );
 
     assert_eq!(
         bd.show(&item).expect("the item reads").assignee.as_deref(),
@@ -672,6 +707,10 @@ fn a_return_writes_the_findings_count_first_and_hands_the_item_back() {
     assert_eq!(rung.len(), 1);
     assert_eq!(rung[0].0, full(builder));
     assert!(rung[0].1.contains(&item), "{:?}", rung);
+    assert!(
+        rung[0].1.contains("with 2 finding(s)"),
+        "the ring carries the count: {rung:?}"
+    );
 }
 
 /// A return goes to `fleet.orders.seat`, which is the builder's full id: the
@@ -693,7 +732,7 @@ fn a_return_reassigns_to_the_orders_seat_id_and_an_absent_builder_is_named_by_la
         Some(full(builder)),
         "the premise: the order index carries the builder's id"
     );
-    let findings = file(scratch, "absent", "F1 the one finding.\n");
+    let findings = findings(scratch, "absent", &["the one finding."]);
     let ring = StubRing::answering(RingOutcome::Absent);
 
     let (said, code) = run(
@@ -750,7 +789,7 @@ fn another_writers_orders_key_and_run_label_ride_through_a_review() {
         common::foreign_of(&scratch.store, &returned),
         common::foreign_of(&scratch.store, &accepted),
     ];
-    let findings = file(scratch, "foreign", "F1 the one finding.\n");
+    let findings = findings(scratch, "foreign", &["the one finding."]);
     let ring = StubRing::new();
 
     let (said, code) = run(
@@ -804,7 +843,7 @@ fn a_return_whose_assignee_reads_back_as_somebody_else_could_not_tell_and_rings_
     let scratch = &store();
     let builder = "s-bent";
     let item = a_delivered_item(&scratch.store, "an item whose return is misread", builder);
-    let findings = file(scratch, "bent", "F1 the one finding.\n");
+    let findings = findings(scratch, "bent", &["the one finding."]);
     let bent = Doctored {
         inner: &scratch.store,
         assignee: "somebody-else".to_string(),
@@ -844,34 +883,73 @@ fn a_return_whose_assignee_reads_back_as_somebody_else_could_not_tell_and_rings_
     assert!(ring.calls().is_empty(), "rung: {:?}", ring.calls());
 }
 
+/// A findings file `--return` does not read is a usage stop, and it stops
+/// before the hand-over: the item is still the reviewer's, no note is written,
+/// nothing reaches the stream and nobody is rung.
+///
+/// Each file is one way a return is not one — a list that numbers nothing, a
+/// key the schema does not name, and the numbered lines a return took before
+/// its findings were JSON, which do not parse.
 #[test]
-fn a_return_that_numbers_nothing_is_a_usage_error_and_writes_nothing() {
+fn a_findings_file_that_does_not_read_is_a_usage_error_and_writes_nothing() {
     let scratch = &store();
     let item = a_delivered_item(
         &scratch.store,
-        "an item returned with no findings",
+        "an item returned with findings that do not read",
         "s-none",
     );
     let before = scratch.json(&item);
-    let findings = file(
-        scratch,
-        "none",
-        "This reads like a question and numbers nothing.\nIt asks about F-something in prose.\n",
-    );
+    let schema = fleet_core::input::FINDINGS_SCHEMA;
 
-    let (said, code) = run(
-        scratch,
-        &item,
-        Mode::Return(&findings),
-        &StubGit::answering(a_diff()),
-        &StubRing::new(),
-    );
+    for (label, body, says) in [
+        (
+            "empty",
+            r#"{"findings": []}"#,
+            "numbers no finding — a return that numbers nothing is a question",
+        ),
+        (
+            "unknown-key",
+            r#"{"findings": [{"text": "the one finding.", "line": 12}]}"#,
+            schema,
+        ),
+        (
+            "not-json",
+            "F1 the one finding.\nF2 the second one.\n",
+            schema,
+        ),
+    ] {
+        let unread = file(scratch, label, body);
+        let ring = StubRing::new();
+        let events = StubEvents::default();
 
-    assert_eq!(code, 2, "{}{}", said.out, said.err);
-    assert_eq!(before, scratch.json(&item), "nothing was written");
+        let (said, code) = run_watched(
+            scratch,
+            &item,
+            Mode::Return(&unread),
+            &StubGit::answering(a_diff()),
+            &ring,
+            &events,
+        );
 
-    // The control: the same call with one numbered finding gets past the gate.
-    let numbered = file(scratch, "one", "F1 the one finding.\n");
+        assert_eq!(code, 2, "{label}: {}{}{}", said.out, said.err, said.stop);
+        assert!(
+            said.stop
+                .starts_with(&format!("the findings at {}", unread.display()))
+                && said.stop.contains(says),
+            "{label}: the file, and why it does not read: {}",
+            said.stop
+        );
+        assert_eq!(
+            before,
+            scratch.json(&item),
+            "{label}: nothing was written, and the item is not reassigned"
+        );
+        assert_eq!(events.count(), 0, "{label}: nothing reached the stream");
+        assert!(ring.calls().is_empty(), "{label}: rung: {:?}", ring.calls());
+    }
+
+    // The control: the same call with one finding gets past the read.
+    let numbered = findings(scratch, "one", &["the one finding."]);
     let (said, code) = run(
         scratch,
         &item,

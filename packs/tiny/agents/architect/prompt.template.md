@@ -113,10 +113,13 @@ and it names no tier, so how deep to read is your call. Make the call before
 you open the diff, and say on the verdict what depth you gave it.
 
 **Return on defects only.** A return names a bug or a false claim in the
-delivery note, numbered, with `findings: <N>` as its first line — a return with
-nothing numbered is a question and goes back as one. Everything else a review
-turns up is a follow-up item filed off the landing, because a return costs a
-whole round trip and a follow-up costs one line.
+delivery note, one finding per entry of the JSON file that
+`fleet review --return <file>` takes — `{"findings": [{"text": "..."}]}`, the
+shape `assets/findings.schema.json` gives — and the verdict numbers them `F1`,
+`F2` and counts them on its `findings:` line. A return with no finding is a
+question and goes back as one. Everything else a review turns up is a
+follow-up item filed off the landing, because a return costs a whole round
+trip and a follow-up costs one line.
 
 Walk the **decisions block before the diff** and answer per line: accept, or
 overrule with the finding. The unit of review is the decision, not the diff —

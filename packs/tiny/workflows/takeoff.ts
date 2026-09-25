@@ -42,15 +42,19 @@ export async function takeoff(run: Run): Promise<void> {
       const landed = await run.land(item, commit, { test });
       rows.push({ item, outcome: "landed", sha: landed.sha });
     } else {
-      const findings = `${run.env.runDir}/${FINDINGS_DIR}/${item}.md`;
+      // The findings file `fleet review --return` reads: JSON of the shape
+      // core's findings schema gives, one finding naming the letter. The verb
+      // numbers it, so the file numbers nothing.
+      const findings = `${run.env.runDir}/${FINDINGS_DIR}/${item}.json`;
       await Deno.mkdir(`${run.env.runDir}/${FINDINGS_DIR}`, {
         recursive: true,
       });
+      const option = OPTIONS.find((o) => o.startsWith(letter)) ?? letter;
+      const text =
+        `The person answered ${letter} at the run's hold: ${option}.`;
       await Deno.writeTextFile(
         findings,
-        `RETURNED ${item} at ${commit}\nThe person answered ${letter} at the run's hold: ${
-          OPTIONS.find((o) => o.startsWith(letter)) ?? letter
-        }.\n`,
+        JSON.stringify({ findings: [{ text }] }, null, 2) + "\n",
       );
       await run.review(item, { returned: findings });
       rows.push({ item, outcome: "returned", sha: "" });
@@ -74,7 +78,8 @@ export const REPORT = "report.md";
  * ticks on the departure board. A workflow writes the run directory and nothing
  * else, so the edit itself is the hand's, `--also` on its landing. */
 export const TICK = "board-tick.md";
-/** Where a returned item's findings file goes under the run directory. */
+/** Where a returned item's findings file goes under the run directory, as
+ * `<item>.json`. */
 export const FINDINGS_DIR = "findings";
 
 /** The report's first line where the flight was handed no test command: every

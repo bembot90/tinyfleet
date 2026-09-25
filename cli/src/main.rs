@@ -209,6 +209,10 @@ decisions block on --show; the ACCEPTED verdict with its decisions walk on
 --land; the RETURNED WITH FINDINGS verdict on --return <file>, which reassigns
 the item to the seat the order named and rings them.
 
+The findings file is JSON of the shape assets/findings.schema.json, one entry
+per finding, and the verdict numbers them F1, F2 and on in that order. A file
+that does not read is refused with exit 2, before anything is written.
+
 --land lands nothing. It writes the accept verdict that `fleet land` reads.")]
     Review(item::ReviewArgs),
 

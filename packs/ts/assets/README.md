@@ -76,11 +76,19 @@ binary on `FLEET_BIN` that answers `event …` with the real one.
 
 - `review(item, verdict)` — `fleet review <item> --json` with `--land` for
   `"accepted"` or `--return <file>` for `{ returned: file }`; the result's
-  `state` is the one the verdict moved the item to.
+  `state` is the one the verdict moved the item to. The findings file is JSON
+  of the shape core's `assets/findings.schema.json` gives, one entry per
+  finding, written under the run directory; the verb numbers them `F1`, `F2`,
+  and refuses a file that does not read with exit 2 before it writes anything.
 
   ```ts
   await run.review("item-12", "accepted");
-  await run.review("item-13", { returned: `${run.env.runDir}/findings.md` });
+  const findings = `${run.env.runDir}/findings.json`;
+  await Deno.writeTextFile(
+    findings,
+    JSON.stringify({ findings: [{ text: "the one finding" }] }),
+  );
+  await run.review("item-13", { returned: findings });
   ```
 
 - `land(item, sha, { test? })` — `fleet land <item> <sha> [--test <command>]

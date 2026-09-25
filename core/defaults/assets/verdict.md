@@ -22,6 +22,9 @@ rather than extending it.
 the delivery numbered, then the count accepted and overruled. A call the
 delivery listed and the walk skipped is a call nobody reviewed.
 
-`findings:` is the first line after the marker, and it counts the numbered
-findings the return carries. A return that numbers nothing is a question, and
-it goes back as one rather than as a verdict.
+`findings:` is the first line after the marker, and it counts the findings the
+return carries. They are read from the JSON file `--return` is handed, of the
+shape `assets/findings.schema.json`, and `{body}` numbers them `F1`, `F2` and on
+in the file's order, each line that continues a finding two spaces in. A return
+that numbers nothing is a question, and it goes back as one rather than as a
+verdict.

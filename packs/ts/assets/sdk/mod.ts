@@ -104,7 +104,11 @@ export interface LandOptions {
   test?: string;
 }
 
-/** What `review` writes: the accept, or the return with its findings file. */
+/** What `review` writes: the accept, or the return with its findings file —
+ * a JSON file of the shape core's `assets/findings.schema.json` gives,
+ * `{"findings": [{"text": "..."}]}`, which the verb numbers `F1`, `F2` in its
+ * order. A file that does not read is refused, exit 2, before anything is
+ * written. */
 export type Verdict = "accepted" | { returned: string };
 
 /** The item events `until` waits on, by their last word. */
@@ -211,7 +215,7 @@ export interface Run {
    * delivery-note grammar. */
   deliver(item: string, note: string): Promise<Delivered>;
   /** `fleet review <item> --json`: `--land` for the accept, `--return <file>`
-   * for the return. */
+   * for the return, the file JSON in the shape {@link Verdict} names. */
   review(item: string, verdict: Verdict): Promise<Reviewed>;
   /** `fleet land <item> <sha> [--test <command>] --json`. */
   land(item: string, sha: string, options?: LandOptions): Promise<Landed>;

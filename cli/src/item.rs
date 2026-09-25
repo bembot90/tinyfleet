@@ -156,7 +156,9 @@ pub struct ReviewArgs {
     /// write the ACCEPTED verdict; it lands nothing
     #[arg(long, conflicts_with = "returned")]
     pub land: bool,
-    /// write the RETURNED verdict from this findings file
+    /// write the RETURNED verdict from these findings
+    ///
+    /// the findings, a JSON file of the shape assets/findings.schema.json
     #[arg(long = "return", value_name = "FILE")]
     pub returned: Option<PathBuf>,
     /// who is reviewing; else FLEET_ACTOR, else this machine
