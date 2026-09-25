@@ -76,7 +76,7 @@ dependencies are the real blockers.
 | fleet-zlk.1 | the entry model — an item's record as typed timeline entries, their wire text and the fold, in core | fleet-iex.1 | ☑ |
 | fleet-zlk.2 | the store appends and reads an item's timeline — bd comments in the adapter, the fake, the contract, and one append-a… | fleet-zlk.1 | ☑ |
 | fleet-zlk.3 | a seat hands in JSON — the delivery, question and findings input types and their JSON Schemas in the defaults | fleet-zlk.1 | ☑ |
-| fleet-zlk.4 | `fleet item show <id> [--json]` renders an item and its timeline, and the brief carries that rendering instead of bd's | fleet-zlk.1, fleet-zlk.2 | ☐ |
+| fleet-zlk.4 | `fleet item show <id> [--json]` renders an item and its timeline, and the brief carries that rendering instead of bd's | fleet-zlk.1, fleet-zlk.2 | ☑ |
 | fleet-zlk.5 | dispatch, its withdrawal and retire write ordered / order_withdrawn entries, not notes | fleet-iex.9, fleet-iex.11, fleet-zlk.2, fleet-zlk.4 | ☐ |
 | fleet-zlk.6 | `fleet deliver --delivery <file.json>` — the seat hands in JSON validated before any write, and `--item` checks the h… | fleet-iex.9, fleet-zlk.3, fleet-zlk.4 | ☐ |
 | fleet-zlk.7 | deliver writes the delivered entry, and review and land read the delivery off the timeline | fleet-zlk.2, fleet-zlk.6 | ☐ |
