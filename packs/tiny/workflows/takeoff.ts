@@ -139,11 +139,13 @@ export interface Policy {
   width: number;
 }
 
+/** The delivered entry `until` answers for an item, as `fleet item show
+ * --json` prints it: the commit is what the flight holds, reviews and lands. */
 interface Delivery {
-  item: string;
+  kind: "delivered";
   commit: string;
-  branch?: string;
-  base?: string;
+  branch: string;
+  base: string;
 }
 
 interface Row {

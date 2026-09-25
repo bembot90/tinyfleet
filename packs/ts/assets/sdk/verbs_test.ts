@@ -1,16 +1,20 @@
-// The seven verbs against a fake fleet binary on FLEET_BIN — a script that
-// answers every verb from a canned envelope and hands `event …` to the real
-// binary — so each arm reads the argv the verb spawned, the step it recorded
-// with the envelope's data as its result, and the exit the wrapper takes.
+// The six verbs against a fake fleet binary on FLEET_BIN — a script that
+// answers every verb from a canned envelope, answers `item show` from the
+// records an arm plants, and hands `event …` to the real binary — so each arm
+// reads the argv the verb spawned, the step it recorded with the envelope's
+// data as its result, and the exit the wrapper takes.
 //
-// The stream lines a verb's re-run reads — a park, a cleared hold, an item's
-// landing, a child run's close — are appended by the arm itself in the stored
-// shape, the way `rig.ts` seeds the opening line.
+// The records `until`, `spawn` and `hold` read are planted by the arm itself,
+// entry by entry in the shape `fleet item show --json` prints (`rig.ts`'s
+// `plant` and `enter`), or by a canned verb the way the verb writes its entry.
+// The stream lines `start` reads — a child run's start and its end — are
+// appended in the stored shape, the way `rig.ts` seeds the opening line.
 
 import { assert, assertEquals, assertMatch } from "jsr:@std/assert@1";
 import {
   type Dispatched,
   HOLDS_DIR,
+  KINDS_OF,
   replay,
   RETAKEN,
   type Run,
@@ -19,11 +23,22 @@ import {
 } from "./mod.ts";
 import {
   closes,
+  enter,
+  fakeOf,
   lines,
+  plant,
   type Scratch,
   scratch as bare,
   starts,
 } from "./testdata/rig.ts";
+import {
+  type Body,
+  cleared,
+  delivered,
+  held,
+  landed,
+  reviewed,
+} from "./testdata/store.ts";
 import { append } from "./testdata/stream.ts";
 
 const here = import.meta.dirname!;
@@ -39,10 +54,13 @@ const SPAWNED: Seat = {
   kind: "agent",
 };
 
+/** The person who clears a hold. */
+const A_PERSON = { kind: "seat", id: "a-person" };
+
 /** The scratch rig with the fake binary in front of the real one. */
 async function scratch(): Promise<Faked> {
   const s = await bare();
-  const fake = `${s.root}/fake`;
+  const fake = fakeOf(s);
   await Deno.mkdir(fake);
   const script = `${s.root}/fake-fleet`;
   await Deno.writeTextFile(
@@ -70,6 +88,7 @@ async function can(
     stdout: string;
     code?: number;
     append?: { type: string; payload: Record<string, unknown> }[];
+    plant?: Record<string, Body[]>;
     cwd?: string;
   },
 ): Promise<void> {
@@ -133,6 +152,7 @@ Deno.test("AC1 spawn — fleet dispatch <item> --by <run> --json, the seat in th
   // @ts-expect-error — a seat is `{id, name?, kind}` and never a bare name.
   const named: Dispatched = { item: "it-1", state: "dispatched", seat: "tr-1" };
   assertEquals(typeof named.seat, "string");
+  await plant(s, "it-1");
   await can(s, "dispatch", { stdout: envelope("dispatch", data) });
   const seen = await oneStep(
     s,
@@ -173,58 +193,11 @@ Deno.test("AC1 spawn — fleet dispatch <item> --by <run> --json, the seat in th
   assertEquals(await calls(t), [], "neither refusal spawned the binary");
 });
 
-/** One line of an item's record on the stream, in the stored shape the
- * binary's own verb writes it. */
-function recorded(
-  s: Faked,
-  kind: "delivered" | "returned" | "landed",
-  item: string,
-  commit: string,
-): Promise<number> {
-  const payload = kind === "delivered"
-    ? { item, commit, branch: `w/${item}`, base: "0" }
-    : kind === "returned"
-    ? { item, commit, findings: "f.md" }
-    : { item, sha: commit, base: "0", squash_of: commit };
-  return append(
-    s.env.stream,
-    `item.${kind}`,
-    { kind: "seat", id: "a-seat" },
-    payload,
-  );
-}
-
-Deno.test("spawn — a delivery a verdict returned, or a landing closed, is not carried: an item delivered then returned below the start seq is dispatched, and so is one delivered then landed", async () => {
-  const data: Dispatched = { item: "it-1", state: "dispatched", seat: SPAWNED };
-  for (const after of ["returned", "landed"] as const) {
-    const s = await scratch();
-    await can(s, "dispatch", { stdout: envelope("dispatch", data) });
-    await recorded(s, "delivered", "it-1", "aaa1111");
-    const seq = await recorded(s, after, "it-1", "aaa1111");
-    let got: unknown;
-    const outcome = await replay(
-      async (run) => {
-        got = await run.spawn({ role: "builder", item: "it-1" });
-      },
-      { ...s.env, streamSeq: seq },
-      "{}",
-    );
-    assertEquals(outcome, { code: 0 });
-    assertEquals(got, data, `a delivery then ${after} is dispatched`);
-    assertEquals(
-      await calls(s),
-      [["dispatch", "it-1", "--by", `run:${s.env.runId}`, "--json"]],
-      `a delivery then ${after} is no RETAKEN`,
-    );
-  }
-});
-
-Deno.test("spawn — the fence: a delivery nobody judged at or below the start seq closes on RETAKEN, and so does one whose return sits above that seq", async () => {
-  const s = await scratch();
-  const seq = await recorded(s, "delivered", "it-1", "aaa1111");
-  const env = { ...s.env, streamSeq: seq };
+Deno.test("spawn — an item whose standing delivery no landing followed is carried: the step closes on RETAKEN<commit> with no dispatch, and a delivery after a return is the one carried", async () => {
   const fn = (run: Run) => run.spawn({ role: "builder", item: "it-1" });
-  assertEquals(await replay(fn, env, "{}"), { code: 0 });
+  const s = await scratch();
+  await enter(s, "it-1", delivered("aaa1111"));
+  assertEquals(await replay(fn, s.env, "{}"), { code: 0 });
   assertEquals(await calls(s), [], "a carried delivery calls no dispatch");
   assertEquals(
     closes(await lines(s))[0].payload.result,
@@ -232,67 +205,179 @@ Deno.test("spawn — the fence: a delivery nobody judged at or below the start s
   );
 
   const t = await scratch();
-  const at = await recorded(t, "delivered", "it-1", "bbb2222");
-  await recorded(t, "returned", "it-1", "bbb2222");
-  assertEquals(await replay(fn, { ...t.env, streamSeq: at }, "{}"), {
-    code: 0,
-  });
-  assertEquals(await calls(t), [], "a return above the start seq is unread");
+  await enter(t, "it-1", delivered("aaa1111"));
+  await enter(t, "it-1", reviewed("returned", "aaa1111"));
+  await enter(t, "it-1", delivered("bbb2222"));
+  assertEquals(await replay(fn, t.env, "{}"), { code: 0 });
+  assertEquals(await calls(t), []);
   assertEquals(
     closes(await lines(t))[0].payload.result,
     `${RETAKEN}bbb2222`,
+    "the delivery the return did not judge",
   );
 });
 
-Deno.test("until delivered — each item's latest delivery that no return follows: delivered then returned waits, delivered again answers the second commit, and a landing does not withdraw it", async () => {
+Deno.test("spawn — a delivery a verdict returned, or a landing closed, is not carried: an item delivered then returned is dispatched, and so is one delivered then landed", async () => {
+  const data: Dispatched = { item: "it-1", state: "dispatched", seat: SPAWNED };
+  for (
+    const after of [
+      reviewed("returned", "aaa1111"),
+      landed("fedcba9", "aaa1111"),
+    ]
+  ) {
+    const s = await scratch();
+    await can(s, "dispatch", { stdout: envelope("dispatch", data) });
+    await enter(s, "it-1", delivered("aaa1111"));
+    await enter(s, "it-1", after);
+    let got: unknown;
+    const outcome = await replay(
+      async (run) => {
+        got = await run.spawn({ role: "builder", item: "it-1" });
+      },
+      s.env,
+      "{}",
+    );
+    assertEquals(outcome, { code: 0 });
+    assertEquals(got, data, `a delivery then ${after.kind} is dispatched`);
+    assertEquals(
+      await calls(s),
+      [["dispatch", "it-1", "--by", `run:${s.env.runId}`, "--json"]],
+      `a delivery then ${after.kind} is no RETAKEN`,
+    );
+  }
+});
+
+Deno.test("until delivered — fleet-45m over the store: delivered then returned waits on the item's delivered entries from the start seq, delivered again answers that entry, and a landing does not withdraw it", async () => {
   const s = await scratch();
+  // A start position of its own, so the wake's `since` is read off this
+  // execution's FLEET_STREAM_SEQ and not off anything the stream holds.
+  const env = { ...s.env, streamSeq: 5 };
   let got: Record<string, unknown> | undefined;
   const fn = async (run: Run) => {
     got = await run.until(["it-1"], "delivered");
   };
-  await recorded(s, "delivered", "it-1", "aaa1111");
-  await recorded(s, "returned", "it-1", "aaa1111");
+  await enter(s, "it-1", delivered("aaa1111"));
+  await enter(s, "it-1", reviewed("returned", "aaa1111"));
   assertEquals(
-    await replay(fn, s.env, "{}"),
-    { code: 2, waiting: ["it-1"] },
+    await replay(fn, env, "{}"),
+    {
+      code: 2,
+      waiting: { items: ["it-1"], kinds: ["delivered"], since: 5 },
+    },
     "a returned delivery is still outstanding",
   );
-  await recorded(s, "delivered", "it-1", "bbb2222");
-  assertEquals(await replay(fn, s.env, "{}"), { code: 0 });
+  const again = await enter(s, "it-1", delivered("bbb2222"));
+  assertEquals(await replay(fn, env, "{}"), { code: 0 });
+  assertEquals(got, { "it-1": again }, "the answer is the entry, whole");
   assertEquals((got!["it-1"] as { commit: string }).commit, "bbb2222");
 
   const t = await scratch();
-  await recorded(t, "delivered", "it-1", "aaa1111");
-  await recorded(t, "landed", "it-1", "aaa1111");
+  const first = await enter(t, "it-1", delivered("aaa1111"));
+  await enter(t, "it-1", landed("fedcba9", "aaa1111"));
   assertEquals(
     await replay(fn, t.env, "{}"),
     { code: 0 },
     "a landed item answers its delivery rather than waiting for good",
   );
-  assertEquals((got!["it-1"] as { commit: string }).commit, "aaa1111");
+  assertEquals(got, { "it-1": first });
+  assertEquals(await calls(t), [], "until reads the store and writes nothing");
 });
 
-Deno.test("AC1 deliver — fleet deliver --item <item> --delivery <file> --by <run> --json, the commit in the step's result", async () => {
+Deno.test("until held — an item with no open hold waits on its held entries, and answers the open hold once one is on its record; a cleared hold is no open hold", async () => {
   const s = await scratch();
-  const data = { item: "it-1", state: "delivered", commit: "0123abc" };
-  await can(s, "deliver", { stdout: envelope("deliver", data) });
-  const delivery = `${s.env.runDir}/delivery.json`;
-  const seen = await oneStep(
-    s,
-    "deliver it-1",
-    data,
-    (run) => run.deliver("it-1", delivery),
+  await plant(s, "it-1");
+  let got: Record<string, unknown> | undefined;
+  const fn = async (run: Run) => {
+    got = await run.until(["it-1"], "held");
+  };
+  assertEquals(await replay(fn, s.env, "{}"), {
+    code: 2,
+    waiting: { items: ["it-1"], kinds: ["held"], since: 1 },
+  });
+  const hold = await enter(s, "it-1", held("hold-1", "ask"));
+  assertEquals(await replay(fn, s.env, "{}"), { code: 0 });
+  assertEquals(got, { "it-1": hold });
+
+  const t = await scratch();
+  await enter(t, "it-1", held("hold-1", "ask"));
+  await enter(t, "it-1", cleared("hold-1", "A"));
+  assertEquals(await replay(fn, t.env, "{}"), {
+    code: 2,
+    waiting: { items: ["it-1"], kinds: ["held"], since: 1 },
+  });
+});
+
+/** Core's entry kinds as `core/src/entry.rs` spells them, and the rows of the
+ * controller's transitional table as `controller/src/runs.rs` spells them:
+ * the SDK reaches neither crate but through the binary, so its suite reads
+ * their source. */
+async function rustTables(): Promise<{
+  kinds: string[];
+  lines: Map<string, string[]>;
+}> {
+  const workspace = `${here}/../../../..`;
+  const entry = await Deno.readTextFile(`${workspace}/core/src/entry.rs`);
+  const declared = /pub const KINDS: \[&str; \d+\] = \[([^\]]*)\];/.exec(entry);
+  assert(declared !== null, "core/src/entry.rs declares KINDS");
+  const kinds = [...declared[1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+  const runs = await Deno.readTextFile(`${workspace}/controller/src/runs.rs`);
+  const table = /pub const LINES_OF: [^=]+= \[([\s\S]*?)\n\];/.exec(runs);
+  assert(table !== null, "controller/src/runs.rs declares LINES_OF");
+  const lines = new Map<string, string[]>();
+  for (const row of table[1].matchAll(/\("([a-z_]+)", &\[([^\]]*)\]\)/g)) {
+    lines.set(
+      row[1],
+      row[2].split(",").map((l) => l.trim()).filter((l) => l !== ""),
+    );
+  }
+  return { kinds, lines };
+}
+
+Deno.test("KINDS_OF — every state waits on entry kinds core defines, each of which the controller wakes on some line for, and so does a hold's clearance", async () => {
+  const { kinds, lines } = await rustTables();
+  assertEquals(kinds.length, 7, `core's seven entry kinds: ${kinds}`);
+  assertEquals(
+    [...lines.keys()],
+    kinds,
+    "the controller's table is keyed by the entry kinds",
   );
-  assertEquals(seen, [[
-    "deliver",
-    "--item",
-    "it-1",
-    "--delivery",
-    delivery,
-    "--by",
-    `run:${s.env.runId}`,
-    "--json",
-  ]]);
+  const states = Object.keys(KINDS_OF);
+  assertEquals(states.length, 6, `every state has a row: ${states}`);
+  for (
+    const [state, named] of [...Object.entries(KINDS_OF), ["(hold)", [
+      "cleared",
+    ]]] as [string, string[]][]
+  ) {
+    assert(named.length > 0, `${state} names no kind`);
+    for (const kind of named) {
+      assert(kinds.includes(kind), `${state} waits on ${kind}, no entry kind`);
+      assert(
+        (lines.get(kind) ?? []).length > 0,
+        `${state} waits on ${kind}, and no line wakes it`,
+      );
+    }
+  }
+});
+
+Deno.test("a read the store refuses — item show on an item with no record — is a thrown Refusal: exit 1 with the refusal's code in the reason, the step started and not closed", async () => {
+  const s = await scratch();
+  const outcome = await replay(
+    (run) => run.until(["no-such-item"], "delivered"),
+    s.env,
+    "{}",
+  );
+  assertEquals(outcome, {
+    code: 1,
+    reason: {
+      verb: "item show",
+      code: "refused",
+      why: "no-such-item: no issues found matching the provided IDs",
+    },
+  });
+  const all = await lines(s);
+  assertEquals(starts(all).map((l) => l.payload.n), [1]);
+  assertEquals(closes(all), []);
+  assertEquals(await calls(s), []);
 });
 
 Deno.test("AC1 review — accepted is --land and { returned } is --return <file>, each the state its verdict moved the item to", async () => {
@@ -355,29 +440,38 @@ Deno.test("AC1 land — fleet land <item> <sha> --by <run> --json, the landed sh
   ]]);
 });
 
-Deno.test("AC2 hold — the question file as JSON, fleet hold --question on the run's record item, exit 2 with the hold id, one hold across the re-runs, then the letter", async () => {
-  const s = await scratch();
+/** A hold on the run's record, canned: the verb answers `hold`, and the held
+ * entry it writes lands on the run's record by the run, the way `fleet hold`
+ * writes it. */
+async function asks(s: Faked, hold: string): Promise<void> {
   const runId = s.env.runId;
   await can(s, "hold", {
-    stdout: envelope("hold", { item: runId, state: "held", hold: "hold-7" }),
-    append: [{
-      type: "item.held",
-      payload: {
-        item: runId,
-        reason: "ask",
-        branch: "",
-        commit: "",
-        hold: "hold-7",
-      },
-    }],
+    stdout: envelope("hold", { item: runId, state: "held", hold }),
+    plant: { [runId]: [held(hold, "ask")] },
   });
+}
+
+/** The Waiting a hold on the run's record throws: the record, its clearance,
+ * and the position the execution started from. */
+function clearanceOf(s: Faked): unknown {
+  return { items: [s.env.runId], kinds: ["cleared"], since: s.env.streamSeq };
+}
+
+Deno.test("AC2 hold — the question file as JSON, fleet hold --question on the run's record item, exit 2 waiting on the record's clearance, one hold across the re-runs, then the letter", async () => {
+  const s = await scratch();
+  const runId = s.env.runId;
+  await plant(s, runId);
+  await asks(s, "hold-7");
   const letters: string[] = [];
   const fn = async (run: Run) => {
     await run.step("count", () => 1);
     letters.push(await run.hold("Ship the report?", ["A. yes", "B. hold"]));
   };
 
-  assertEquals(await replay(fn, s.env, "{}"), { code: 2, waiting: "hold-7" });
+  assertEquals(await replay(fn, s.env, "{}"), {
+    code: 2,
+    waiting: clearanceOf(s),
+  });
   const file = `${s.env.runDir}/${HOLDS_DIR}/1.json`;
   assertEquals(
     await Deno.readTextFile(file),
@@ -402,16 +496,15 @@ Deno.test("AC2 hold — the question file as JSON, fleet hold --question on the 
   );
   assertEquals(starts(all).map((l) => l.payload.n), [1, 2]);
 
-  // The stream has not moved past the park: the re-run waits on the same hold
-  // and asks nothing — the park on the stream is the record it reads.
-  assertEquals(await replay(fn, s.env, "{}"), { code: 2, waiting: "hold-7" });
+  // Nobody has cleared: the re-run finds its ask on the record, waits on the
+  // same clearance and asks nothing.
+  assertEquals(await replay(fn, s.env, "{}"), {
+    code: 2,
+    waiting: clearanceOf(s),
+  });
   assertEquals((await calls(s)).length, 1, "the re-run does not ask twice");
 
-  await append(s.env.stream, "hold.cleared", { kind: "seat", id: "a-person" }, {
-    item: runId,
-    hold: "hold-7",
-    letter: "B",
-  });
+  await enter(s, runId, cleared("hold-7", "B"), A_PERSON);
   assertEquals(await replay(fn, s.env, "{}"), { code: 0 });
   assertEquals(letters, ["B"]);
   assertEquals((await calls(s)).length, 1);
@@ -425,12 +518,90 @@ Deno.test("AC2 hold — the question file as JSON, fleet hold --question on the 
   assertEquals(closes(await lines(s)).length, 2);
 });
 
-Deno.test("AC2 hold — the about licence rides in the question file, and an option with no letter throws before the binary is asked", async () => {
+Deno.test("hold — the k-th hold is the k-th ask this run wrote on its record: a second hold asks once and never again, and neither the controller's max_crashes hold nor another run's ask on the same record is one of this run's", async () => {
   const s = await scratch();
   const runId = s.env.runId;
-  await can(s, "hold", {
-    stdout: envelope("hold", { item: runId, state: "held", hold: "hold-8" }),
+  await plant(s, runId);
+  const fn = async (run: Run) => {
+    await run.hold("First?", ["A. yes", "B. no"]);
+    await run.hold("Second?", ["A. yes", "B. no"]);
+  };
+
+  await asks(s, "hold-1");
+  assertEquals(await replay(fn, s.env, "{}"), {
+    code: 2,
+    waiting: clearanceOf(s),
   });
+  await enter(s, runId, cleared("hold-1", "A"), A_PERSON);
+  // Two holds on the same record, neither of them this run's ask, between its
+  // first and its second.
+  await enter(s, runId, held("crash-1", "max_crashes"), {
+    kind: "controller",
+    id: "a-machine",
+  });
+  await enter(s, runId, held("other-1", "ask"), {
+    kind: "run",
+    id: "fleet-run-another",
+  });
+  await asks(s, "hold-2");
+
+  assertEquals(await replay(fn, s.env, "{}"), {
+    code: 2,
+    waiting: clearanceOf(s),
+  });
+  assertEquals(
+    (await calls(s)).map((argv) => argv[0]),
+    ["hold", "hold"],
+    "the second hold asked: no other hold on the record is this run's second ask",
+  );
+  assertEquals(await replay(fn, s.env, "{}"), {
+    code: 2,
+    waiting: clearanceOf(s),
+  });
+  assertEquals((await calls(s)).length, 2, "and the re-run found it");
+
+  await enter(s, runId, cleared("hold-2", "B"), A_PERSON);
+  assertEquals(await replay(fn, s.env, "{}"), { code: 0 });
+  assertEquals((await calls(s)).length, 2);
+  assertEquals(
+    closes(await lines(s)).map((l) => [l.payload.name, l.payload.result]),
+    [["hold First?", "A"], ["hold Second?", "B"]],
+    "each hold closes on its own clearance's letter",
+  );
+});
+
+Deno.test('hold — a cancel\'s clearance answers "cancelled" and not the string "null": the cleared entry says how it was cleared, where the stream\'s line carries a null letter', async () => {
+  const s = await scratch();
+  const runId = s.env.runId;
+  await plant(s, runId);
+  await asks(s, "hold-9");
+  // What `fleet cancel` leaves behind: the clearance on the record, and the
+  // stream's line for it, whose letter is null.
+  await enter(s, runId, cleared("hold-9"), A_PERSON);
+  await append(s.env.stream, "hold.cleared", A_PERSON, {
+    item: runId,
+    hold: "hold-9",
+    letter: null,
+  });
+  let got: string | undefined;
+  assertEquals(
+    await replay(
+      async (run) => {
+        got = await run.hold("Ship the report?", ["A. yes", "B. hold"]);
+      },
+      s.env,
+      "{}",
+    ),
+    { code: 0 },
+  );
+  assertEquals(got, "cancelled");
+  assertEquals(closes(await lines(s))[0].payload.result, "cancelled");
+});
+
+Deno.test("AC2 hold — the about licence rides in the question file, and an option with no letter throws before the binary is asked", async () => {
+  const s = await scratch();
+  await plant(s, s.env.runId);
+  await asks(s, "hold-8");
   const about = {
     items: ["it-1"],
     commit: "0123456789abcdef0123456789abcdef01234567",
@@ -442,7 +613,7 @@ Deno.test("AC2 hold — the about licence rides in the question file, and an opt
       s.env,
       "{}",
     ),
-    { code: 2, waiting: "hold-8" },
+    { code: 2, waiting: clearanceOf(s) },
   );
   assertEquals(
     JSON.parse(await Deno.readTextFile(`${s.env.runDir}/${HOLDS_DIR}/1.json`)),
@@ -457,9 +628,8 @@ Deno.test("AC2 hold — the about licence rides in the question file, and an opt
   );
 
   const t = await scratch();
-  await can(t, "hold", {
-    stdout: envelope("hold", { item: t.env.runId, state: "held", hold: "x" }),
-  });
+  await plant(t, t.env.runId);
+  await asks(t, "x");
   const unlettered = await replay(
     (run) => run.hold("Ship the report?", ["yes", "B. hold"]),
     t.env,
@@ -473,44 +643,30 @@ Deno.test("AC2 hold — the about licence rides in the question file, and an opt
   assertEquals(await calls(t), [], "the binary was never asked");
 });
 
-Deno.test("AC3 until — Waiting names exactly the outstanding items, in the order given, and closes when the last event lands", async () => {
+Deno.test("AC3 until — Waiting names exactly the outstanding items, in the order given, with the state's entry kinds, and closes once the last item's record answers", async () => {
   const s = await scratch();
   const items = ["it-a", "it-b", "it-c"];
+  for (const item of items) await plant(s, item);
   let got: Record<string, unknown> | undefined;
   const fn = async (run: Run) => {
     got = await run.until(items, "landed");
   };
+  const waiting = (outstanding: string[]) => ({
+    code: 2 as const,
+    waiting: { items: outstanding, kinds: ["landed"], since: 1 },
+  });
 
-  assertEquals(await replay(fn, s.env, "{}"), {
-    code: 2,
-    waiting: ["it-a", "it-b", "it-c"],
-  });
-  await append(s.env.stream, "item.landed", { kind: "seat", id: "kite" }, {
-    item: "it-b",
-    sha: "b0b",
-    base: "0",
-    squash_of: "x",
-  });
-  await append(s.env.stream, "item.delivered", { kind: "seat", id: "pell" }, {
-    item: "it-a",
-    commit: "a0a",
-    branch: "w",
-    base: "0",
-  });
+  assertEquals(await replay(fn, s.env, "{}"), waiting(items));
+  await enter(s, "it-b", landed("b0b", "b1b"));
+  await enter(s, "it-a", delivered("a0a"));
   assertEquals(
     await replay(fn, s.env, "{}"),
-    { code: 2, waiting: ["it-a", "it-c"] },
+    waiting(["it-a", "it-c"]),
     "a delivery is not a landing",
   );
-  await append(s.env.stream, "item.landed", { kind: "seat", id: "kite" }, {
-    item: "it-c",
-    sha: "c0c",
-  });
-  assertEquals(await replay(fn, s.env, "{}"), { code: 2, waiting: ["it-a"] });
-  await append(s.env.stream, "item.landed", { kind: "seat", id: "kite" }, {
-    item: "it-a",
-    sha: "a0a",
-  });
+  await enter(s, "it-c", landed("c0c", "c1c"));
+  assertEquals(await replay(fn, s.env, "{}"), waiting(["it-a"]));
+  await enter(s, "it-a", landed("a0a", "a1a"));
   assertEquals(await replay(fn, s.env, "{}"), { code: 0 });
   assertEquals(Object.keys(got!), items);
   assertEquals((got!["it-b"] as { sha: string }).sha, "b0b");
@@ -519,7 +675,7 @@ Deno.test("AC3 until — Waiting names exactly the outstanding items, in the ord
     "until landed it-a it-b it-c",
   ]);
   assertEquals(recorded[0].payload.result, got);
-  assertEquals(await calls(s), [], "until reads the stream and spawns no verb");
+  assertEquals(await calls(s), [], "until reads the store and writes nothing");
 
   const t = await scratch();
   const unknown = await replay(
@@ -530,7 +686,7 @@ Deno.test("AC3 until — Waiting names exactly the outstanding items, in the ord
   assertEquals(unknown.code, 1);
   assertMatch(
     String((unknown as { reason: unknown }).reason),
-    /no item event is named item\.shipped/,
+    /until: no item state is named shipped; the states are dispatched, delivered, reviewed, returned, landed, held/,
   );
 });
 
@@ -775,6 +931,7 @@ async function fromTheRunDirectory(
 Deno.test("a verb runs from the project root under a run-directory cwd: the fake binary, canned to refuse any other cwd, answers dispatch from FLEET_PROJECT while the wrapper's own cwd is the run directory", async () => {
   const s = await scratch();
   const data: Dispatched = { item: "it-1", state: "dispatched", seat: SPAWNED };
+  await plant(s, "it-1");
   await can(s, "dispatch", {
     stdout: envelope("dispatch", data),
     cwd: s.project,
@@ -792,6 +949,7 @@ Deno.test("a verb runs from the project root under a run-directory cwd: the fake
   // refuses, which is the fake's cwd check observed firing — so the green
   // above is the verb's cwd and not a check that never ran.
   const t = await scratch();
+  await plant(t, "it-1");
   await can(t, "dispatch", {
     stdout: envelope("dispatch", data),
     cwd: t.env.runDir,

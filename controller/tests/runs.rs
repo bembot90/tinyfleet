@@ -55,9 +55,10 @@ enum Ends {
     Closed,
     /// Waiting, recording the stream's position as the child left it.
     Waiting,
-    /// Waiting on the id given — a hold or a child the stream may or may not
-    /// know — as `hold` and `start` throw it.
-    WaitingOn(&'static str),
+    /// Waiting on a clearance on the run's own record, as `hold` throws it:
+    /// the wake names the run, the `cleared` kind, and the position this
+    /// execution started from.
+    Holding,
     CouldNotTell,
 }
 
@@ -97,6 +98,9 @@ impl Runs for Stub {
             .pop_front()
             .ok_or_else(|| format!("the script has no execution left for {run}"))?;
         self.reruns.borrow_mut().push(run.to_string());
+        // The position the execution starts from, read before its own start
+        // line as core reads it for FLEET_STREAM_SEQ: a wake's `since`.
+        let at_start = self.log().seq();
         let mut log = self.log();
         log.append(
             runs::RUN_STARTED,
@@ -115,9 +119,13 @@ impl Runs for Stub {
                 runs::RUN_WAITING,
                 serde_json::json!({ "run": run, "wake": { "for": "a line" }, "seq": at_exit }),
             ),
-            Ends::WaitingOn(id) => (
+            Ends::Holding => (
                 runs::RUN_WAITING,
-                serde_json::json!({ "run": run, "wake": id, "seq": at_exit }),
+                serde_json::json!({
+                    "run": run,
+                    "wake": a_wake_on(&[run], &["cleared"], at_start),
+                    "seq": at_exit,
+                }),
             ),
             Ends::CouldNotTell => (
                 runs::RUN_COULD_NOT_TELL,
@@ -218,6 +226,19 @@ fn a_line_from_elsewhere(stream: &Path) {
         .expect("the line lands");
 }
 
+/// The stream's position now: the last sequence it holds, which is what core
+/// hands a run's child as FLEET_STREAM_SEQ when it starts one.
+fn at(stream: &Path) -> u64 {
+    EventLog::open(stream).seq()
+}
+
+/// The wake `until` and `hold` throw: the items to re-read, the entry kinds any
+/// of which could satisfy the wait, and the position the waiting execution
+/// started from.
+fn a_wake_on(items: &[&str], kinds: &[&str], since: u64) -> serde_json::Value {
+    serde_json::json!({ "items": items, "kinds": kinds, "since": since })
+}
+
 /// The stream as one run that has been opened and has stopped on the wake it is
 /// handed — the condition the wrapper printed, as the back half stores it. A
 /// `null` stands for the payload that carries no wake key at all: `get` answers
@@ -249,7 +270,7 @@ fn an_item_moved(stream: &Path, kind: &str, item: &str) {
 /// A hold raised on a run's own record, announced as `fleet hold` announces it:
 /// `item.held` naming the run as the item and the hold it raised. The SDK's
 /// `hold` raises first and waits after, so the raise is on the stream below the
-/// wait that names the hold.
+/// wait on the run's record.
 fn a_hold_raised(stream: &Path, run: &str, hold: &str) {
     EventLog::open(stream)
         .append(
@@ -376,83 +397,179 @@ fn a_re_run_that_waits_again_is_not_woken_by_its_own_line() {
     assert_eq!(stub.reruns.borrow().len(), 2);
 }
 
-/// A run stopped on `until` is woken by a line for an item its wake names, and
-/// by nothing else — not by a seat's line, and not by another item's delivery.
+/// A run stopped on `until` is woken by a line for an item its wake names, of
+/// a kind its wake names, and by nothing else — not by a seat's line, not by
+/// another item's delivery, and not by the named item's other states.
 ///
 /// THE UNRELATED ITEM IS THE ARM. Every line any seat writes while a run waits
 /// is past the position the wait recorded, so a pass reading only the position
 /// executes the whole workflow again for a delivery the run is not waiting on —
-/// one deno child per event, each ending waiting in the same place.
+/// one deno child per event, each ending waiting in the same place. The named
+/// item's dispatch is the same arm for a state: a run waiting on its delivery
+/// that woke on its dispatch would re-read a record that still answers
+/// nothing.
+///
+/// A KIND IS WOKEN BY EVERY LINE THE TRANSITIONAL TABLE MAPS IT TO: a wait on
+/// `reviewed` is a wait on the verdict, and a return is `item.returned` on the
+/// stream.
 #[test]
-fn a_waiting_run_is_woken_only_by_a_line_for_an_item_its_wake_names() {
+fn a_waiting_run_is_woken_only_by_a_line_for_an_item_and_a_kind_its_wake_names() {
     let scratch = Scratch::new("wake-match");
     let stream = scratch.stream();
-    a_run_waiting_with(&stream, "r1", serde_json::json!(["x"]));
-    // One execution in the script: a second re-run refuses, so an arm that
-    // over-woke would be reported as well as counted.
-    let stub = Stub::with(&stream, &[Ends::Closed]);
+    let since = at(&stream);
+    a_run_waiting_with(&stream, "r1", a_wake_on(&["x"], &["delivered"], since));
+    let since = at(&stream);
+    a_run_waiting_with(&stream, "r2", a_wake_on(&["w"], &["reviewed"], since));
+    // One execution per run in the script: a third re-run refuses, so an arm
+    // that over-woke would be reported as well as counted.
+    let stub = Stub::with(&stream, &[Ends::Closed, Ends::Closed]);
 
     a_line_from_elsewhere(&stream);
     pass(&stub, &stream, 2).expect("the pass runs");
     an_item_moved(&stream, "item.delivered", "y");
     pass(&stub, &stream, 2).expect("the pass runs");
+    an_item_moved(&stream, "item.dispatched", "x");
+    an_item_moved(&stream, "item.delivered", "w");
+    pass(&stub, &stream, 2).expect("the pass runs");
     assert!(
         stub.reruns.borrow().is_empty(),
-        "a seat's line and another item's delivery are not what it is waiting for"
+        "a seat's line, another item's delivery and the named item's other states are not \
+         what either is waiting for: {:?}",
+        stub.reruns.borrow()
     );
-    assert_eq!(count(&stream, runs::RUN_STARTED), 1);
+    assert_eq!(count(&stream, runs::RUN_STARTED), 2);
 
     an_item_moved(&stream, "item.delivered", "x");
     pass(&stub, &stream, 2).expect("the pass runs");
     assert_eq!(
         *stub.reruns.borrow(),
         vec!["r1".to_string()],
-        "the item it named moved, so it ran again"
+        "the item it named reached the kind it named, so it ran again"
     );
-    assert_eq!(count(&stream, runs::RUN_STARTED), 2);
+
+    an_item_moved(&stream, "item.returned", "w");
+    pass(&stub, &stream, 2).expect("the pass runs");
+    assert_eq!(
+        *stub.reruns.borrow(),
+        vec!["r1".to_string(), "r2".to_string()],
+        "a return is a line for `reviewed`"
+    );
+    assert_eq!(count(&stream, runs::RUN_STARTED), 4);
+}
+
+/// fleet-0oi: a line for a named item and kind wakes the run wherever it sits
+/// relative to the position `run.waiting` recorded, so long as it is above the
+/// position the waiting execution STARTED from — and a line at or below that
+/// start wakes nothing, however many passes read it.
+///
+/// THE GAP IS THE ARM. The recorded position is read when the process exits,
+/// after `until` read the store and threw; a delivery that landed in between is
+/// below it, and a match that looked only above it kept the run waiting on a
+/// delivery already made. The start is the other bound: whatever sat below it
+/// was already in the store when the execution read it, so waking on it would
+/// re-run the workflow into the same wait every poll.
+#[test]
+fn a_line_above_the_wait_s_start_wakes_it_though_it_sits_below_the_recorded_position() {
+    // The run waits with since 5, on a `run.waiting` at seq 8, and the delivery
+    // at seq 6 sits between the two.
+    let scratch = Scratch::new("wake-since");
+    let stream = scratch.stream();
+    for _ in 0..5 {
+        a_line_from_elsewhere(&stream);
+    }
+    an_item_moved(&stream, "item.delivered", "x");
+    assert_eq!(at(&stream), 6, "the delivery is at seq 6");
+    a_run_waiting_after(&stream, "r1", a_wake_on(&["x"], &["delivered"], 5), |_| {});
+    assert_eq!(at(&stream), 8, "the wait is at seq 8");
+    let stub = Stub::with(&stream, &[Ends::Closed]);
+
+    pass(&stub, &stream, 2).expect("the pass runs");
+    assert_eq!(
+        *stub.reruns.borrow(),
+        vec!["r1".to_string()],
+        "the delivery above the start woke the run in one pass"
+    );
+
+    // The same wait with the only delivery at seq 4, below the start.
+    let scratch = Scratch::new("wake-since-below");
+    let stream = scratch.stream();
+    for _ in 0..3 {
+        a_line_from_elsewhere(&stream);
+    }
+    an_item_moved(&stream, "item.delivered", "x");
+    assert_eq!(at(&stream), 4, "the delivery is at seq 4");
+    a_line_from_elsewhere(&stream);
+    a_line_from_elsewhere(&stream);
+    a_run_waiting_after(&stream, "r1", a_wake_on(&["x"], &["delivered"], 5), |_| {});
+    assert_eq!(at(&stream), 8, "the wait is at seq 8");
+    let stub = Stub::with(&stream, &[]);
+
+    for _ in 0..3 {
+        let passed = pass(&stub, &stream, 2);
+        assert!(
+            stub.reruns.borrow().is_empty(),
+            "a delivery below the start was read by the execution that waited: {:?}",
+            stub.reruns.borrow()
+        );
+        passed.expect("the pass runs");
+        a_line_from_elsewhere(&stream);
+    }
 }
 
 /// A wake the pass cannot read re-runs on any move: the behaviour that stood
 /// before the match, kept for every shape the match does not know.
 ///
-/// THE FOUR SHAPES ARE THE POINT — a payload with no wake, a list with nothing
-/// in it, an object a workflow threw itself, and an id no hold and no run on
-/// the stream carries. A match that refused any of them would hold a run
-/// waiting for a line that is never coming.
+/// THE SHAPES ARE THE POINT — a payload with no wake, a list with nothing in
+/// it, an object a workflow threw itself, an id no run on the stream carries,
+/// and a wake of the items shape that is not whole: no items, a kind that is
+/// no entry's, no kinds, no position. A match that refused any of them would
+/// hold a run waiting for a line that is never coming.
+///
+/// AND THE WAKES A BUNDLE PINNED BEFORE THE STORE WAS READ STILL THROWS — a
+/// bare list of items, the `{"waiting": …}` wrapper, a hold's id — are the
+/// clean break: none of them says which kinds could satisfy it or where the
+/// execution started, so each wakes on any move and the re-run reads for
+/// itself. The mover is a seat's line, which no readable wake would take.
 #[test]
 fn a_waiting_run_whose_wake_the_pass_cannot_read_is_woken_by_any_line() {
     let scratch = Scratch::new("wake-fallback");
     let stream = scratch.stream();
-    a_run_waiting_with(&stream, "r-none", serde_json::Value::Null);
-    a_run_waiting_with(&stream, "r-empty", serde_json::json!([]));
-    a_run_waiting_with(&stream, "r-own", serde_json::json!({ "for": "a line" }));
-    a_run_waiting_with(&stream, "r-word", serde_json::json!("tomorrow"));
-    let stub = Stub::with(
-        &stream,
-        &[Ends::Closed, Ends::Closed, Ends::Closed, Ends::Closed],
-    );
+    let shapes = [
+        ("r-none", serde_json::Value::Null),
+        ("r-empty", serde_json::json!([])),
+        ("r-own", serde_json::json!({ "for": "a line" })),
+        ("r-word", serde_json::json!("tomorrow")),
+        ("r-no-items", a_wake_on(&[], &["delivered"], 0)),
+        ("r-no-kind", a_wake_on(&["x"], &["shipped"], 0)),
+        ("r-no-kinds", a_wake_on(&["x"], &[], 0)),
+        (
+            "r-no-since",
+            serde_json::json!({ "items": ["x"], "kinds": ["delivered"] }),
+        ),
+        ("r-bare", serde_json::json!(["x"])),
+        ("r-wrapped", serde_json::json!({ "waiting": ["x"] })),
+        ("r-hold", serde_json::json!("g1")),
+    ];
+    a_hold_raised(&stream, "r-hold", "g1");
+    for (run, wake) in &shapes {
+        a_run_waiting_with(&stream, run, wake.clone());
+    }
+    let stub = Stub::with(&stream, &[Ends::Closed; 11]);
 
-    // A line for an item none of the four ever named.
-    an_item_moved(&stream, "item.delivered", "z");
+    a_line_from_elsewhere(&stream);
     pass(&stub, &stream, 2).expect("the pass runs");
 
     let mut woken = stub.reruns.borrow().clone();
     woken.sort();
-    assert_eq!(
-        woken,
-        vec![
-            "r-empty".to_string(),
-            "r-none".to_string(),
-            "r-own".to_string(),
-            "r-word".to_string()
-        ]
-    );
+    let mut every: Vec<String> = shapes.iter().map(|(run, _)| run.to_string()).collect();
+    every.sort();
+    assert_eq!(woken, every);
 }
 
-/// A run stopped on a hold is woken by that hold's clearance and by nothing
-/// else — not by a seat's line, not by an item's, not by another hold's
-/// clearance, and
-/// not by the lines another waiting run's re-run writes.
+/// A run stopped on a hold is woken by a clearance on its own record and by
+/// nothing else — not by a seat's line, not by its record's other lines, not by
+/// another item's clearance, and not by the lines another waiting run's re-run
+/// writes.
 ///
 /// THE LAST OF THOSE IS THE ARM. Two runs waiting on holds, each re-run on any
 /// move, keep each other running: the first one's re-run writes `run.started`,
@@ -462,19 +579,22 @@ fn a_waiting_run_whose_wake_the_pass_cannot_read_is_woken_by_any_line() {
 /// clears. A kill-and-resume on a takeoff stopped at its hold is exactly that
 /// run.
 #[test]
-fn a_run_waiting_on_a_hold_is_woken_only_by_that_hold_s_clearance() {
+fn a_run_waiting_on_a_hold_is_woken_only_by_a_clearance_on_its_own_record() {
     let scratch = Scratch::new("wake-hold");
     let stream = scratch.stream();
+    let since = at(&stream);
     a_hold_raised(&stream, "r1", "g1");
-    a_run_waiting_with(&stream, "r1", serde_json::json!("g1"));
+    a_run_waiting_with(&stream, "r1", a_wake_on(&["r1"], &["cleared"], since));
+    let since = at(&stream);
     a_hold_raised(&stream, "r2", "g2");
-    a_run_waiting_with(&stream, "r2", serde_json::json!("g2"));
+    a_run_waiting_with(&stream, "r2", a_wake_on(&["r2"], &["cleared"], since));
     // One execution in the script: a second re-run refuses, so a pass that
     // over-woke is reported as well as counted.
     let stub = Stub::with(&stream, &[Ends::Closed]);
 
     a_line_from_elsewhere(&stream);
-    an_item_moved(&stream, "item.delivered", "g1");
+    an_item_moved(&stream, "item.delivered", "r1");
+    a_hold_raised(&stream, "r1", "g5");
     a_hold_cleared(&stream, "it-9", "g9");
     let passed = pass(&stub, &stream, 2);
     assert!(
@@ -489,7 +609,7 @@ fn a_run_waiting_on_a_hold_is_woken_only_by_that_hold_s_clearance() {
     assert_eq!(
         *stub.reruns.borrow(),
         vec!["r1".to_string()],
-        "its hold was cleared, so it ran again, and the other did not"
+        "a hold on its record was cleared, so it ran again, and the other did not"
     );
 
     // The re-run's own lines are on the stream now, above where r2 stopped.
@@ -595,22 +715,26 @@ fn a_run_waiting_on_a_child_is_woken_by_that_child_s_cancel_and_no_other() {
 /// written, the stream would never move past it for any match to look at.
 ///
 /// ONCE, AND NOT EVERY POLL: the clearance stays on the stream, and what stops it
-/// waking the run again is that the fold reads the run's latest `run.waiting`,
-/// which after the re-run names another hold.
+/// waking the run again is that the re-run waits from its own start, which is
+/// above it.
 #[test]
 fn a_hold_cleared_before_the_run_exited_still_wakes_it_and_only_once() {
     let scratch = Scratch::new("wake-hold-early");
     let stream = scratch.stream();
-    a_run_waiting_after(&stream, "r1", serde_json::json!("g1"), |stream| {
+    let since = at(&stream);
+    let wake = a_wake_on(&["r1"], &["cleared"], since);
+    a_run_waiting_after(&stream, "r1", wake, |stream| {
         a_hold_raised(stream, "r1", "g1");
         a_hold_cleared(stream, "r1", "g1");
     });
-    a_run_waiting_after(&stream, "r2", serde_json::json!("g2"), |stream| {
+    let since = at(&stream);
+    let wake = a_wake_on(&["r2"], &["cleared"], since);
+    a_run_waiting_after(&stream, "r2", wake, |stream| {
         a_hold_raised(stream, "r2", "g2");
         a_hold_cleared(stream, "it-9", "g3");
     });
     // The re-run replays past the cleared hold and stops on the next one.
-    let stub = Stub::with(&stream, &[Ends::WaitingOn("g4")]);
+    let stub = Stub::with(&stream, &[Ends::Holding]);
 
     let passed = pass(&stub, &stream, 2);
     assert_eq!(
@@ -627,7 +751,8 @@ fn a_hold_cleared_before_the_run_exited_still_wakes_it_and_only_once() {
         assert_eq!(
             *stub.reruns.borrow(),
             vec!["r1".to_string()],
-            "g1's clearance woke r1 once; r1 now waits on g4, which nobody cleared"
+            "g1's clearance woke r1 once; r1 now waits on g4, which nobody cleared, from \
+             above g1's clearance"
         );
         passed.expect("the pass runs");
     }
@@ -670,39 +795,6 @@ fn a_child_that_ended_before_its_parent_exited_still_wakes_the_parent() {
         "p1 closed on its re-run, and nothing else moved"
     );
     passed.expect("the pass runs");
-}
-
-/// A wake still wrapped as `{"waiting": <condition>}` is read as the condition
-/// inside it, on both shapes the match knows.
-///
-/// A RUN'S BUNDLE IS PINNED in its directory and every re-run executes that
-/// same file, so a run bundled by an SDK that printed the wrapper keeps printing
-/// it for as long as it waits. Read whole, both waits below would fall to the
-/// fallback and wake on any move.
-#[test]
-fn a_wake_still_wrapped_by_a_pinned_bundle_is_read_as_the_condition_inside() {
-    let scratch = Scratch::new("wake-wrapped");
-    let stream = scratch.stream();
-    a_run_waiting_with(&stream, "r-items", serde_json::json!({ "waiting": ["x"] }));
-    a_hold_raised(&stream, "r-hold", "g1");
-    a_run_waiting_with(&stream, "r-hold", serde_json::json!({ "waiting": "g1" }));
-    let stub = Stub::with(&stream, &[Ends::Closed, Ends::Closed]);
-
-    a_line_from_elsewhere(&stream);
-    let passed = pass(&stub, &stream, 2);
-    assert!(
-        stub.reruns.borrow().is_empty(),
-        "a seat's line is neither wait's condition: {:?}",
-        stub.reruns.borrow()
-    );
-    passed.expect("the pass runs");
-
-    an_item_moved(&stream, "item.delivered", "x");
-    a_hold_cleared(&stream, "r-hold", "g1");
-    pass(&stub, &stream, 2).expect("the pass runs");
-    let mut woken = stub.reruns.borrow().clone();
-    woken.sort();
-    assert_eq!(woken, vec!["r-hold".to_string(), "r-items".to_string()]);
 }
 
 /// The re-run is at most once per pass, and a run that has ended is not

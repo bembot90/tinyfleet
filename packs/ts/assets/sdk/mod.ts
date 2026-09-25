@@ -22,14 +22,24 @@
 // opens the stream file for neither, so what it records and what it replays
 // cannot be two files.
 //
-// The verbs — spawn, deliver, review, land, hold, until and start — are each
-// one step whose exec runs the binary with `--json` and records the envelope's
-// `data`; a refusal envelope is a thrown `Refusal`, exit 1 with the code in the
-// reason. Every act a verb takes is attributed `--by run:<id>`, the run typed as
-// an actor, and the two verbs that leave something open across a Waiting exit —
-// a hold's question, a start's child run — find their own record on a re-run by
-// that actor: the k-th park or the k-th run this run raised is the k-th hold or
-// start call, so neither holds nor starts twice.
+// AN ITEM IS READ OFF THE STORE AND NEVER OFF THE STREAM: `until`, `spawn` and
+// `hold` read `fleet item show <id> --json` and fold the item's timeline, the
+// typed entries its store keeps. A stream line's payload decides nothing; the
+// line is the controller's signal that an entry was written. So a step that
+// cannot close waits on `{ items, kinds, since }` — the items to read again,
+// the entry kinds any of which could satisfy it, and FLEET_STREAM_SEQ, where
+// this execution started — and the controller re-runs the bundle on a line
+// for one of those items and kinds above that position.
+//
+// The verbs — spawn, review, land, hold, until and start — are each one step
+// whose exec runs the binary with `--json` and records the envelope's `data`;
+// a refusal envelope is a thrown `Refusal`, exit 1 with the code in the
+// reason, and so is a read the store refuses. Every act a verb takes is
+// attributed `--by run:<id>`, the run typed as an actor, and the two verbs that
+// leave something open across a Waiting exit find their own record on a re-run
+// by that actor: the k-th ask this run held on its own record is its k-th
+// `hold`, and the k-th run it started on the stream its k-th `start`, so
+// neither holds nor starts twice.
 
 /// The six names the run exports to its child (core's run module), and the
 /// machine directory the binary resolves the stream under.
@@ -111,7 +121,7 @@ export interface LandOptions {
  * written. */
 export type Verdict = "accepted" | { returned: string };
 
-/** The item events `until` waits on, by their last word. */
+/** The states `until` waits on an item to reach, each read off its record. */
 export type ItemState =
   | "dispatched"
   | "delivered"
@@ -120,14 +130,20 @@ export type ItemState =
   | "landed"
   | "held";
 
-const ITEM_STATES: readonly ItemState[] = [
-  "dispatched",
-  "delivered",
-  "reviewed",
-  "returned",
-  "landed",
-  "held",
-];
+/** The entry kinds each state is read off: any one of them written on the
+ * item could satisfy a wait on the state, so they are the kinds its Waiting
+ * names for the controller to wake it on. A verdict is one kind, accepted or
+ * returned. */
+export const KINDS_OF: Record<ItemState, string[]> = {
+  dispatched: ["ordered"],
+  delivered: ["delivered"],
+  reviewed: ["reviewed"],
+  returned: ["reviewed"],
+  landed: ["landed"],
+  held: ["held"],
+};
+
+const ITEM_STATES = Object.keys(KINDS_OF) as readonly ItemState[];
 
 /** A seat, as every machine-readable document names one: its full id, its
  * own name where it has one — the key is absent, never null, where it has
@@ -143,13 +159,6 @@ export interface Dispatched {
   item: string;
   state: string;
   seat: Seat;
-}
-
-/** `fleet deliver --json`'s data. */
-export interface Delivered {
-  item: string;
-  state: string;
-  commit: string;
 }
 
 /** `fleet review --json`'s data. */
@@ -204,25 +213,20 @@ export interface Run {
    * nothing a step would add, and a recorded result cannot carry undefined. */
   config(key: string): unknown;
   /** A builder on an item: `fleet dispatch <item> [--touched <command>]
-   * --json`, which cuts a
-   * transient seat, orders it and rings it — unless the item's delivery is
-   * already on the stream at or below the position this execution started
-   * from, which is an item a failed run delivered and left behind: dispatch
-   * refuses an item that already carries an order, so the step closes on
-   * `${RETAKEN}<commit>` without a dispatch and the flight reads the delivery
-   * already there. A delivery ABOVE that position is this run's own builder
-   * answering a spawn this run has already recorded.
+   * --json`, which cuts a transient seat, orders it and rings it — unless the
+   * item is carried, which is an item a failed run delivered and left behind:
+   * dispatch refuses an item that already carries an order, so the step closes
+   * on `${RETAKEN}<commit>` without a dispatch and the flight reads the
+   * delivery already there.
    *
-   * THE FENCE HOLDS FOR A DELIVERY NOBODY JUDGED. One an `item.returned`
-   * follows at or below that position is a verdict's return, and one an
-   * `item.landed` follows there closed the item: neither is a delivery to
-   * review, so the item is dispatched as any other. The landing is spawn's
-   * alone: `until` reads the return and not the landing. */
+   * AN ITEM WHOSE STANDING DELIVERY NO LANDING FOLLOWED IS CARRIED, read off
+   * its record. A delivery a return followed is a verdict's return, and one a
+   * landing followed closed the item: neither is a delivery to review, so the
+   * item is dispatched as any other. The landing is spawn's alone: `until`
+   * reads the return and not the landing. A spawn this run already recorded
+   * replays its result and reads nothing, so its own builder's delivery is
+   * never taken for one left behind. */
   spawn(order: Spawn): Promise<Dispatched | string>;
-  /** `fleet deliver --json` for the item, with the delivery file: JSON of the
-   * shape `assets/delivery.schema.json`, which the verb reads before it
-   * commits anything. */
-  deliver(item: string, delivery: string): Promise<Delivered>;
   /** `fleet review <item> --json`: `--land` for the accept, `--return <file>`
    * for the return, the file JSON in the shape {@link Verdict} names. */
   review(item: string, verdict: Verdict): Promise<Reviewed>;
@@ -231,16 +235,22 @@ export interface Run {
   /** A question for a person, held on the run's own record item: the
    * question file, JSON of the shape `assets/question.schema.json`, each
    * option `<letter>. <text>` taken apart into its letter and its text, then
-   * `fleet hold --question <file> --json`, then Waiting on the hold id; the
-   * clearance's letter once `hold.cleared` is on the stream. `about` names the
-   * items the answer licenses and the letter that licenses them. */
+   * `fleet hold --question <file> --json` — unless this run's k-th ask is
+   * already on its record, for its k-th hold. Then the hold's clearance, read
+   * off the record: the letter it was answered with, `"cancelled"` where it
+   * was cancelled, or Waiting on the record's `cleared` entries. `about` names
+   * the items the answer licenses and the letter that licenses them. */
   hold(question: string, options: string[], about?: About): Promise<string>;
-  /** Waiting until every item's `item.<state>` is on the stream, naming the
-   * outstanding ones; then each item's event payload. For `delivered` that is
-   * the item's latest delivery no later `item.returned` follows: an item whose
-   * delivery was returned is outstanding until it is delivered again. A
-   * landing does not withdraw it, so a landed item answers the delivery it
-   * landed rather than waiting for one that will never come. */
+  /** Waiting until every item's record answers `state`, naming the
+   * outstanding items and the state's entry kinds ({@link KINDS_OF}); then
+   * each item's answering entry, as `fleet item show --json` prints it:
+   * `dispatched` its current order; `delivered` its standing delivery, the
+   * latest no return follows — so an item whose delivery was returned is
+   * outstanding until it is delivered again, and a landing does not withdraw
+   * it, so a landed item answers the delivery it landed rather than waiting
+   * for one that will never come; `reviewed` and `returned` its last verdict,
+   * where it is that verdict and no delivery follows it; `held` its open
+   * hold; `landed` its last landing. */
   until(items: string[], state: ItemState): Promise<Record<string, unknown>>;
   /** A child run: `fleet run <name> --input k=v …`, then `{ run }` once its
    * `run.closed` is on the stream, a failure once its `run.failed` or its
@@ -251,14 +261,9 @@ export interface Run {
   ): Promise<{ run: string }>;
 }
 
-/** The kinds the verbs read off the stream. Spelled here because the SDK
- * reaches core through the binary alone. */
+/** The kinds the wrapper and `start` read off the stream. Spelled here because
+ * the SDK reaches core through the binary alone. */
 const STEP_CLOSED = "step.closed";
-const ITEM_DELIVERED = "item.delivered";
-const ITEM_RETURNED = "item.returned";
-const ITEM_LANDED = "item.landed";
-const ITEM_HELD = "item.held";
-const HOLD_CLEARED = "hold.cleared";
 const RUN_STARTED = "run.started";
 const RUN_CLOSED = "run.closed";
 const RUN_FAILED = "run.failed";
@@ -267,9 +272,9 @@ const RUN_CANCELLED = "run.cancelled";
 /** Where a hold's question file goes under the run directory. */
 export const HOLDS_DIR = "holds";
 
-/** What a spawn step closes on where the item was already delivered before
- * this execution began and no return or landing followed the delivery there,
- * the delivery's commit appended. */
+/** What a spawn step closes on where the item is carried — its record holds a
+ * delivery no return and no landing followed — the delivery's commit
+ * appended. */
 export const RETAKEN = "already delivered at ";
 
 /** A result over this many bytes goes to the run directory and the event
@@ -426,13 +431,9 @@ class Handle implements Run {
           "spawn: fleet dispatch pins no model; the policy's default is the one a hand-run dispatch takes",
         );
       }
-      const carried = (await this.standing(
-        [ITEM_RETURNED, ITEM_LANDED],
-        this.env.streamSeq,
-      ))
-        .get(order.item);
-      if (carried !== undefined) {
-        return `${RETAKEN}${String(carried.payload.commit)}`;
+      const delivery = carried((await this.read(order.item)).timeline);
+      if (delivery !== undefined) {
+        return `${RETAKEN}${String(delivery.commit)}`;
       }
       return this.verb<Dispatched>([
         "dispatch",
@@ -440,20 +441,6 @@ class Handle implements Run {
         ...given("--touched", order.touched),
       ]);
     });
-  }
-
-  deliver(item: string, delivery: string): Promise<Delivered> {
-    return this.step(
-      `deliver ${item}`,
-      () =>
-        this.verb<Delivered>([
-          "deliver",
-          "--item",
-          item,
-          "--delivery",
-          delivery,
-        ]),
-    );
   }
 
   review(item: string, verdict: Verdict): Promise<Reviewed> {
@@ -490,11 +477,16 @@ class Handle implements Run {
         }
         return { letter: lettered[1], text: lettered[2] };
       });
-      const parks = (await this.tail({ type: ITEM_HELD, actor: this.actor }))
-        .filter((r) => r.payload.item === this.id);
+      // THIS RUN'S OWN ASKS, AND NO OTHER HOLD ON ITS RECORD: the controller
+      // holds the same record at the crash cap, and that hold is no question
+      // this run put.
+      const asks = (await this.read(this.id)).timeline.filter((e) =>
+        e.kind === "held" && e.reason === "ask" && e.by.kind === "run" &&
+        e.by.id === this.id
+      );
       let hold: string;
-      if (parks.length >= k) {
-        hold = String(parks[k - 1].payload.hold);
+      if (asks.length >= k) {
+        hold = String(asks[k - 1].hold);
       } else {
         const file = `${this.env.runDir}/${HOLDS_DIR}/${k}.json`;
         await Deno.mkdir(`${this.env.runDir}/${HOLDS_DIR}`, {
@@ -517,10 +509,18 @@ class Handle implements Run {
         ]);
         hold = held.hold;
       }
-      const cleared = (await this.tail({ type: HOLD_CLEARED }))
-        .find((r) => r.payload.hold === hold);
-      if (cleared === undefined) throw new Waiting(hold);
-      return String(cleared.payload.letter);
+      const clearance = clearanceOf((await this.read(this.id)).timeline, hold);
+      if (clearance === undefined) {
+        throw new Waiting({
+          items: [this.id],
+          kinds: ["cleared"],
+          since: this.env.streamSeq,
+        });
+      }
+      // A CANCEL TAKES NO OPTION, so it has no letter to answer with: the word
+      // says what happened, and no option's letter is a word.
+      if (clearance.how === "cancel") return "cancelled";
+      return String(clearance.letter);
     });
   }
 
@@ -528,26 +528,24 @@ class Handle implements Run {
     return this.step(`until ${state} ${items.join(" ")}`, async () => {
       if (!ITEM_STATES.includes(state)) {
         throw new Error(
-          `until: no item event is named item.${state}; the states are ${
+          `until: no item state is named ${state}; the states are ${
             ITEM_STATES.join(", ")
           }`,
         );
       }
-      const seen = new Map<string, unknown>();
-      if (state === "delivered") {
-        for (const [item, r] of await this.standing([ITEM_RETURNED])) {
-          if (items.includes(item)) seen.set(item, r.payload);
-        }
-      } else {
-        for (const r of await this.tail({ type: `item.${state}` })) {
-          const item = r.payload.item;
-          if (typeof item === "string" && items.includes(item)) {
-            seen.set(item, r.payload);
-          }
-        }
+      const seen = new Map<string, Entry>();
+      for (const item of items) {
+        const answer = answerOf((await this.read(item)).timeline, state);
+        if (answer !== undefined) seen.set(item, answer);
       }
       const outstanding = items.filter((item) => !seen.has(item));
-      if (outstanding.length > 0) throw new Waiting(outstanding);
+      if (outstanding.length > 0) {
+        throw new Waiting({
+          items: outstanding,
+          kinds: KINDS_OF[state],
+          since: this.env.streamSeq,
+        });
+      }
       return Object.fromEntries(items.map((item) => [item, seen.get(item)]));
     });
   }
@@ -607,57 +605,30 @@ class Handle implements Run {
 
   /** One verb under `--json`, `--by run:<id>`: the envelope's data, or the
    * refusal thrown. */
-  private async verb<T>(args: string[]): Promise<T> {
-    const full = [...args, "--by", this.actor, "--json"];
-    const ran = await spawnFleet(this.env, full);
-    const envelope = lastDocument(ran.stdout);
-    if (envelope !== null && envelope.ok === false) {
-      const refusal = (envelope.refusal ?? {}) as Record<string, unknown>;
-      throw new Refusal(
-        String(envelope.verb),
-        String(refusal.code),
-        String(refusal.why),
-      );
-    }
-    if (ran.code !== 0) throw exited(this.env, full, ran);
-    if (envelope === null || envelope.ok !== true) {
+  private verb<T>(args: string[]): Promise<T> {
+    return answered<T>(this.env, [...args, "--by", this.actor, "--json"]);
+  }
+
+  /** One item's record: `fleet item show <item> --json`, which writes nothing
+   * and so is attributed to nobody. An item the store does not know is the
+   * verb's refusal, thrown. */
+  private async read(item: string): Promise<Shown> {
+    const args = ["item", "show", item, "--json"];
+    const data = await answered<Record<string, unknown>>(this.env, args);
+    if (
+      data === null || typeof data !== "object" || !Array.isArray(data.timeline)
+    ) {
       throw new Error(
-        `${this.env.bin} ${
-          full.join(" ")
-        } printed no envelope: ${ran.stdout.trim()}`,
+        `${this.env.bin} ${args.join(" ")} answered no timeline: ${
+          JSON.stringify(data)
+        }`,
       );
     }
-    return envelope.data as T;
+    return data as unknown as Shown;
   }
 
   private tail(filter: Filter): Promise<Record_[]> {
     return tail(this.env, filter);
-  }
-
-  /** Each item's STANDING delivery, by item: its latest `item.delivered` that
-   * no later line of a `clearing` kind follows, over the lines at or below
-   * `upTo`. A return is a verdict against the commit, so a delivery it follows
-   * is not one still to review, and a delivery after the return stands again.
-   * spawn passes `item.landed` too, because a landing closed the item; until
-   * does not, so a landed item still answers its delivery. */
-  private async standing(
-    clearing: string[],
-    upTo = Infinity,
-  ): Promise<Map<string, Record_>> {
-    const records: Record_[] = [];
-    for (const type of [ITEM_DELIVERED, ...clearing]) {
-      records.push(...await this.tail({ type }));
-    }
-    const standing = new Map<string, Record_>();
-    const inOrder = records.filter((r) => r.seq <= upTo)
-      .sort((a, b) => a.seq - b.seq);
-    for (const r of inOrder) {
-      const item = r.payload.item;
-      if (typeof item !== "string") continue;
-      if (r.kind === ITEM_DELIVERED) standing.set(item, r);
-      else standing.delete(item);
-    }
-    return standing;
   }
 
   /** A recorded result: inline, or read from the run directory and checked
@@ -696,6 +667,159 @@ class Handle implements Run {
  * there. */
 function given(flag: string, command: string | undefined): string[] {
   return command === undefined || command.trim() === "" ? [] : [flag, command];
+}
+
+/** One fleet process whose stdout ends on the `--json` envelope: its data, or
+ * its refusal thrown as a `Refusal`; a non-zero exit that printed no refusal
+ * is the exit, thrown. */
+async function answered<T>(env: Env, args: string[]): Promise<T> {
+  const ran = await spawnFleet(env, args);
+  const envelope = lastDocument(ran.stdout);
+  if (envelope !== null && envelope.ok === false) {
+    const refusal = (envelope.refusal ?? {}) as Record<string, unknown>;
+    throw new Refusal(
+      String(envelope.verb),
+      String(refusal.code),
+      String(refusal.why),
+    );
+  }
+  if (ran.code !== 0) throw exited(env, args, ran);
+  if (envelope === null || envelope.ok !== true) {
+    throw new Error(
+      `${env.bin} ${args.join(" ")} printed no envelope: ${ran.stdout.trim()}`,
+    );
+  }
+  return envelope.data as T;
+}
+
+// ---- an item's record --------------------------------------------------------
+
+/** One entry of an item's timeline as `fleet item show --json` prints it: the
+ * store's id and time, who wrote it, its kind — one of core's entry kinds —
+ * and the kind's own fields beside them. */
+interface Entry {
+  id: string;
+  at: string;
+  by: Actor;
+  kind: string;
+  [field: string]: unknown;
+}
+
+/** `fleet item show --json`'s data, as far as the verbs read it: the entries
+ * in the store's order. */
+interface Shown {
+  id: string;
+  status: string;
+  timeline: Entry[];
+}
+
+// THE FOLDS BELOW ARE CORE'S TIMELINE'S (`fleet_core::entry::Timeline`), by
+// position in the store's order, so the SDK and the verbs answer one question
+// the same way.
+
+/** The position of the last entry `is` takes, or -1. */
+function lastAt(timeline: Entry[], is: (e: Entry) => boolean): number {
+  for (let at = timeline.length - 1; at >= 0; at--) {
+    if (is(timeline[at])) return at;
+  }
+  return -1;
+}
+
+/** Whether any entry after position `at` is one `is` takes. */
+function after(
+  timeline: Entry[],
+  at: number,
+  is: (e: Entry) => boolean,
+): boolean {
+  return timeline.slice(at + 1).some(is);
+}
+
+function isVerdict(verdict: "accepted" | "returned"): (e: Entry) => boolean {
+  return (e) => e.kind === "reviewed" && e.verdict === verdict;
+}
+
+/** The last entry of `kind`. */
+function lastOf(timeline: Entry[], kind: string): Entry | undefined {
+  const at = lastAt(timeline, (e) => e.kind === kind);
+  return at < 0 ? undefined : timeline[at];
+}
+
+/** The last order, where no withdrawal came after it. */
+function currentOrder(timeline: Entry[]): Entry | undefined {
+  const at = lastAt(timeline, (e) => e.kind === "ordered");
+  if (at < 0 || after(timeline, at, (e) => e.kind === "order_withdrawn")) {
+    return undefined;
+  }
+  return timeline[at];
+}
+
+/** The position of the last delivery no return came after, or -1. */
+function standingAt(timeline: Entry[]): number {
+  const at = lastAt(timeline, (e) => e.kind === "delivered");
+  return at < 0 || after(timeline, at, isVerdict("returned")) ? -1 : at;
+}
+
+/** The last delivery no return came after. A landing does not clear it
+ * (fleet-45m): what was landed still stood when it was. */
+function standing(timeline: Entry[]): Entry | undefined {
+  const at = standingAt(timeline);
+  return at < 0 ? undefined : timeline[at];
+}
+
+/** The standing delivery, where no landing came after it: the work the item
+ * still carries. */
+function carried(timeline: Entry[]): Entry | undefined {
+  const at = standingAt(timeline);
+  if (at < 0 || after(timeline, at, (e) => e.kind === "landed")) {
+    return undefined;
+  }
+  return timeline[at];
+}
+
+/** The last verdict, where it is `verdict` and no delivery came after it: a
+ * delivery after a verdict is new work nobody has judged. */
+function lastVerdict(
+  timeline: Entry[],
+  verdict: "accepted" | "returned",
+): Entry | undefined {
+  const at = lastAt(timeline, (e) => e.kind === "reviewed");
+  if (at < 0 || !isVerdict(verdict)(timeline[at])) return undefined;
+  if (after(timeline, at, (e) => e.kind === "delivered")) return undefined;
+  return timeline[at];
+}
+
+/** The last hold no clearance naming it came after. */
+function openHold(timeline: Entry[]): Entry | undefined {
+  for (let at = timeline.length - 1; at >= 0; at--) {
+    const e = timeline[at];
+    const clears = (c: Entry) => c.kind === "cleared" && c.hold === e.hold;
+    if (e.kind === "held" && !after(timeline, at, clears)) return e;
+  }
+  return undefined;
+}
+
+/** The first clearance naming `hold`, whether or not a hold came before it: a
+ * clearance answers by the id it names. */
+function clearanceOf(timeline: Entry[], hold: string): Entry | undefined {
+  return timeline.find((e) => e.kind === "cleared" && e.hold === hold);
+}
+
+/** The entry that answers `until` for `state`, where the record holds one. */
+function answerOf(timeline: Entry[], state: ItemState): Entry | undefined {
+  switch (state) {
+    case "dispatched":
+      return currentOrder(timeline);
+    case "delivered":
+      return standing(timeline);
+    case "reviewed":
+      return lastVerdict(timeline, "accepted");
+    case "returned":
+      return lastVerdict(timeline, "returned");
+    case "held":
+      return openHold(timeline);
+    case "landed":
+      return lastOf(timeline, "landed");
+  }
 }
 
 /** Every closed step of this run, by number, off `fleet event tail --json`. */

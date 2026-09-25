@@ -181,6 +181,31 @@ fn the_run_vocabulary_is_one_string_in_both_crates() {
     }
 }
 
+/// The table a wake's entry kinds are woken through is keyed by core's entry
+/// kinds, in core's order, and every line it maps one to is a kind core
+/// writes — so a wake the SDK throws naming a kind is readable, and no kind
+/// waits on a line nothing writes.
+#[test]
+fn the_wake_table_is_keyed_by_core_s_entry_kinds_and_maps_to_core_s_lines() {
+    use fleet_controller::runs::LINES_OF;
+    use fleet_core::{entry, item};
+
+    let keys: Vec<&str> = LINES_OF.iter().map(|(kind, _)| *kind).collect();
+    assert_eq!(
+        keys,
+        entry::KINDS,
+        "one row per entry kind, in core's order"
+    );
+    for (kind, lines) in LINES_OF {
+        for line in lines {
+            assert!(
+                item::ITEM_KINDS.contains(line),
+                "{kind} maps to {line}, which is no kind core writes"
+            );
+        }
+    }
+}
+
 /// And the run's crash cap has one default, for the same reason: the controller
 /// reads `[core.run] max_crashes` off the policy in force and core's own reader
 /// answers the same key.

@@ -1,7 +1,7 @@
 //! The run lifecycle's controller half: a waiting run re-run once the stream
-//! has moved past where it stopped and carries a line its wake could be
-//! satisfied by, a run nothing could classify re-run to a cap and then held,
-//! and the seats a run spawned let go when it ends.
+//! carries a line its wake could be satisfied by, a run nothing could classify
+//! re-run to a cap and then held, and the seats a run spawned let go when it
+//! ends.
 //!
 //! WHY THE ACTS ARE A SEAM AND THE DECISION IS NOT. This crate takes nothing
 //! from core but its bounded runner (`fleet_core::process`), the release it
@@ -57,17 +57,25 @@ pub const ITEM_HELD: &str = "item.held";
 /// `hold` is woken by. Spelled here for the same reason.
 pub const HOLD_CLEARED: &str = "hold.cleared";
 
-/// The item kinds a `run.waiting` that names items can be woken by: one per
-/// state the SDK's `until` accepts (`ITEM_STATES` in
-/// `fleet/packs/ts/assets/sdk/mod.ts`), which is the only step whose wake names
-/// items at all.
-pub const ITEM_WAKE_KINDS: [&str; 6] = [
-    "item.dispatched",
-    "item.delivered",
-    "item.reviewed",
-    "item.returned",
-    "item.landed",
-    ITEM_HELD,
+/// The stream kinds each entry kind is announced on, one row per entry kind in
+/// the order `fleet_core::entry::KINDS` spells them: what a `run.waiting` whose
+/// wake names entry kinds is woken by. The SDK's `until` and `hold` read the
+/// store and name the entries that could satisfy them; the stream is only the
+/// signal that something was written.
+///
+/// TRANSITIONAL, AND ONE TABLE: the verbs announce an entry on the stream kinds
+/// they wrote before the store kept entries, so a kind maps to the lines its
+/// writer puts there — a verdict to both `item.reviewed` and `item.returned`,
+/// and a withdrawn order to none, since nothing announces one. fleet-zlk.15
+/// replaces this table with lines that name the entry.
+pub const LINES_OF: [(&str, &[&str]); 7] = [
+    ("ordered", &["item.dispatched"]),
+    ("order_withdrawn", &[]),
+    ("delivered", &["item.delivered"]),
+    ("reviewed", &["item.reviewed", "item.returned"]),
+    ("held", &[ITEM_HELD]),
+    ("cleared", &[HOLD_CLEARED]),
+    ("landed", &["item.landed"]),
 ];
 
 /// The line the loop prints for a pass that refused.
@@ -385,51 +393,76 @@ pub fn readings(stream: &[Record]) -> Vec<Reading> {
 /// as it was printed.
 #[derive(Default)]
 enum Wake {
-    /// The items `until` still has outstanding.
-    Items(Vec<String>),
-    /// One id: the hold `hold` raised, or the child run `start` opened. The two
-    /// verbs throw the id alone, and nothing in the wake says which it is — the
-    /// stream does, and [`could_wake`] asks it.
+    /// What `until` and `hold` throw: the items whose records the step
+    /// re-reads, the entry kinds any of which could satisfy it, and `since`,
+    /// the stream's position when the waiting execution started.
+    Items {
+        items: Vec<String>,
+        kinds: Vec<String>,
+        since: u64,
+    },
+    /// One id: the child run `start` opened. The verb throws the id alone, and
+    /// the stream says whether it is a run — [`could_wake`] asks it.
     Id(String),
     /// Every other shape, and no wake at all: re-run on any move.
     #[default]
     Any,
 }
 
-/// The wake a `run.waiting` carries, as a [`Wake`].
+/// The wake a `run.waiting` carries, as a [`Wake`]: `{items, kinds, since}`
+/// with at least one item, at least one kind, every kind an entry kind
+/// ([`LINES_OF`]'s) and `since` a position, is [`Wake::Items`]; a non-empty
+/// string is [`Wake::Id`]; everything else is [`Wake::Any`].
 ///
 /// EVERY SHAPE THE MATCH DOES NOT KNOW IS `Any` AND NOT A REFUSAL — a wake a
-/// workflow threw itself, an empty list nothing could satisfy, a list holding
-/// something other than ids, a payload with no wake at all. `Any` is the
-/// behaviour that stood before the match: re-run on any move.
+/// workflow threw itself, an items wake missing a part or naming a kind no
+/// entry is, a payload with no wake at all. `Any` is the behaviour that stood
+/// before the match: re-run on any move.
 ///
-/// A WAKE STILL WRAPPED AS `{"waiting": <condition>}` IS READ AS THE CONDITION
-/// INSIDE IT. The SDK printed that wrapper once, and a run's bundle is pinned in
-/// its directory, so a run bundled then prints it on every re-run for as long
-/// as it waits — and read whole it would fall to `Any`.
+/// THE CLEAN BREAK: a bundle pinned before the SDK read the store throws a
+/// bare list of items, or a hold's id, or either inside `{"waiting": …}`, on
+/// every re-run for as long as it waits. None of those says which entries could
+/// satisfy it or where its execution started, so each is `Any` — a hold's id
+/// among them, which names no run the stream started — and the re-run reads for
+/// itself.
 fn wake_of(record: &Record) -> Wake {
-    let Some(wake) = record.payload.get("wake") else {
-        return Wake::Any;
-    };
-    let condition = match wake.as_object() {
-        Some(wrapped) if wrapped.len() == 1 => wrapped.get("waiting").unwrap_or(wake),
-        _ => wake,
-    };
-    match condition {
-        serde_json::Value::String(id) if !id.is_empty() => Wake::Id(id.clone()),
-        serde_json::Value::Array(waiting) => {
-            let items: Vec<String> = waiting
-                .iter()
-                .filter_map(|value| value.as_str().map(str::to_string))
-                .collect();
-            if !items.is_empty() && items.len() == waiting.len() {
-                Wake::Items(items)
-            } else {
-                Wake::Any
-            }
-        }
+    match record.payload.get("wake") {
+        Some(serde_json::Value::String(id)) if !id.is_empty() => Wake::Id(id.clone()),
+        Some(wake @ serde_json::Value::Object(_)) => items_of(wake).unwrap_or_default(),
         _ => Wake::Any,
     }
+}
+
+/// An items wake, where every part of it is there and reads.
+fn items_of(wake: &serde_json::Value) -> Option<Wake> {
+    let strings = |key: &str| -> Option<Vec<String>> {
+        let list = wake.get(key)?.as_array()?;
+        let strings = list
+            .iter()
+            .map(|value| value.as_str().map(str::to_string))
+            .collect::<Option<Vec<String>>>()?;
+        (!strings.is_empty()).then_some(strings)
+    };
+    let items = strings("items")?;
+    let kinds = strings("kinds")?;
+    let known = |kind: &String| LINES_OF.iter().any(|(entry, _)| entry == kind);
+    if !kinds.iter().all(known) {
+        return None;
+    }
+    let since = wake.get("since")?.as_u64()?;
+    Some(Wake::Items {
+        items,
+        kinds,
+        since,
+    })
+}
+
+/// Whether a stream kind announces one of the entry kinds named.
+fn announces(kinds: &[String], line: &str) -> bool {
+    LINES_OF
+        .iter()
+        .filter(|(entry, _)| kinds.iter().any(|kind| kind == entry))
+        .any(|(_, lines)| lines.contains(&line))
 }
 
 /// Whether the waiting run is to be executed again: `at` is the sequence its
@@ -447,54 +480,53 @@ fn wake_of(record: &Record) -> Wake {
 /// steps — costs one child execution of the whole workflow that ends waiting in
 /// the same place.
 ///
-/// THE ITEMS' WINDOW OPENS AT THE RECORDED POSITION, not at the `run.waiting`
-/// line above it: the back half takes the stream's position and appends after
-/// it, so a line that landed in that gap is one a narrower window would lose
-/// the run's wake to. The state is not compared, only the item: an `until`
-/// names one state and the item's other states are cheap to admit, where
-/// reading the state from the wake the payload does not carry would be a
-/// guess.
+/// AN ITEMS WAKE IS WOKEN BY A LINE ABOVE ITS `since`, for one of its items, of
+/// a kind [`LINES_OF`] maps one of its entry kinds to — wherever that line sits
+/// against the recorded position, and with no move needed past it. The
+/// recorded position is read when the process exits, after `until` or `hold`
+/// read the store and threw, so a delivery or a clearance written in between
+/// sits at or below it (fleet-0oi); `since` is where the execution STARTED, and
+/// what the store held before that the execution read. It cannot loop: the
+/// re-run's own wait starts from a position above the line that woke it.
 ///
-/// A HOLD WAKES ON ITS CLEARANCE AND A CHILD ON EITHER END, WHEREVER ON THE
-/// STREAM IT SITS. The recorded position is read when the process exits, after
-/// `hold` or `start` read the stream and threw, so a clearance or an end that
-/// landed in between sits at or below it — and a match that looked only above
-/// it, or waited for the stream to move, would keep the run on a hold already
-/// cleared. Waking on it wherever it is loops on nothing: the re-run replays
-/// past the cleared hold or the ended child, so the run's last line is no
-/// longer this wait. `start` returns on the child's close and fails on its
-/// failure or its cancel, and each is a re-run's to read.
+/// A CHILD WAKES ITS PARENT ON EITHER END, WHEREVER ON THE STREAM IT SITS, for
+/// the same reason: `start` read the stream and threw before the parent exited.
+/// Waking on it wherever it is loops on nothing: the re-run replays past the
+/// ended child, so the run's last line is no longer this wait. `start` returns
+/// on the child's close and fails on its failure or its cancel, and each is a
+/// re-run's to read.
 ///
-/// AN ID IS A HOLD'S OR A RUN'S ONLY WHERE THE STREAM SAYS SO: a hold that was
-/// raised or cleared, or a run that was started. An id the stream knows as
-/// neither is a word a workflow threw itself, and a match on it would hold the
-/// run waiting for a line that is never coming — so it wakes on any move.
+/// AN ID IS A RUN'S ONLY WHERE THE STREAM SAYS SO: a run that was started. An
+/// id the stream does not know as one is a word a workflow threw itself — or a
+/// hold's id from a bundle pinned before holds woke through the store — and a
+/// match on it would hold the run waiting for a line that is never coming, so
+/// it wakes on any move.
 fn could_wake(stream: &[Record], head: u64, at: u64, state: &Folded) -> bool {
     let moved = head > state.recorded.max(at);
     match &state.wake {
         Wake::Any => moved,
-        Wake::Items(items) => {
-            moved
-                && stream.iter().any(|record| {
-                    record.seq > state.recorded
-                        && ITEM_WAKE_KINDS.contains(&record.kind.as_str())
-                        && payload_str(record, "item").is_some_and(|item| items.contains(&item))
-                })
-        }
+        Wake::Items {
+            items,
+            kinds,
+            since,
+        } => stream.iter().any(|record| {
+            record.seq > *since
+                && announces(kinds, &record.kind)
+                && payload_str(record, "item").is_some_and(|item| items.contains(&item))
+        }),
         Wake::Id(id) => {
-            let names = |record: &Record, key: &str| payload_str(record, key).as_ref() == Some(id);
-            let known = stream.iter().any(|record| match record.kind.as_str() {
-                ITEM_HELD | HOLD_CLEARED => names(record, "hold"),
-                RUN_STARTED => names(record, "run"),
-                _ => false,
-            });
+            let names = |record: &Record| payload_str(record, "run").as_ref() == Some(id);
+            let known = stream
+                .iter()
+                .any(|record| record.kind == RUN_STARTED && names(record));
             if !known {
                 return moved;
             }
-            stream.iter().any(|record| match record.kind.as_str() {
-                HOLD_CLEARED => names(record, "hold"),
-                RUN_CLOSED | RUN_FAILED | RUN_CANCELLED => names(record, "run"),
-                _ => false,
+            stream.iter().any(|record| {
+                matches!(
+                    record.kind.as_str(),
+                    RUN_CLOSED | RUN_FAILED | RUN_CANCELLED
+                ) && names(record)
             })
         }
     }

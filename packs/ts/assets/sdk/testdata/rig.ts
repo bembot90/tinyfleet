@@ -8,7 +8,8 @@
 // where a run reads its own opening line.
 
 import type { Env } from "../mod.ts";
-import { type Line, lines as stored } from "./stream.ts";
+import { type Actor, type Line, lines as stored } from "./stream.ts";
+import { type Body, enter as entered, type Entry, write } from "./store.ts";
 
 // THE ACTOR A SESSION IS STARTED WITH IS STRIPPED, off this process and so
 // off every binary an arm spawns — the real one and the fake alike. The
@@ -88,6 +89,35 @@ export async function scratch(): Promise<Scratch> {
 }
 
 export type { Line };
+
+/** The fake binary's own directory under a scratch root, where a suite that
+ * puts the fake in front of the real binary builds it: its canned answers, its
+ * `calls.jsonl`, and the records `item show` answers from. */
+export function fakeOf(s: Scratch): string {
+  return `${s.root}/fake`;
+}
+
+/** An item's record planted whole where the fake's `item show` reads it:
+ * `data` is the document's data, `{ id, status, timeline }`, the id and an
+ * open status filled in where it names neither. */
+export function plant(
+  s: Scratch,
+  item: string,
+  data: Record<string, unknown> = {},
+): Promise<void> {
+  return write(fakeOf(s), item, data);
+}
+
+/** One entry appended to an item's planted record — what a verb's write leaves
+ * in the store — by a seat unless an actor is named. */
+export function enter(
+  s: Scratch,
+  item: string,
+  body: Body,
+  by?: Actor,
+): Promise<Entry> {
+  return entered(fakeOf(s), item, body, by);
+}
 
 /** The stream as stored, parsed: what the writer put there. */
 export function lines(s: Scratch): Promise<Line[]> {

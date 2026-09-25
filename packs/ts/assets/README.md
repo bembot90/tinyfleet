@@ -35,7 +35,7 @@ What it holds today:
 
 ## The verbs
 
-The run handle carries seven verbs beside `step`, `now`, `random` and
+The run handle carries six verbs beside `step`, `now`, `random` and
 `input`. Each is one numbered step whose exec runs the fleet binary with
 `--json` and records the envelope's `data` as the step's result, so a re-run
 returns what the first run was told and spawns nothing. Every act is
@@ -46,12 +46,21 @@ refusal envelope (`ok: false`) is a thrown `Refusal` carrying the verb, the
 refusal code and its why; the wrapper turns it into exit 1 with the reason
 `{"verb", "code", "why"}` on stdout's last line.
 
+An item is read off its store and never off the stream: `spawn`, `hold` and
+`until` read `fleet item show <id> --json` and fold the timeline of typed
+entries it prints; a read the store refuses is a `Refusal` like any verb's. A
+step that cannot close waits on `{ items, kinds, since }` — the items to read
+again, the entry kinds any of which could satisfy it, and `FLEET_STREAM_SEQ`,
+where the execution started — and the controller re-runs the workflow on a
+line for one of those items and kinds above that position.
+
 Two verbs leave something open across a Waiting exit and must not repeat it
 on the re-run: a hold's question and a start's child run. Each finds its own
-record on the stream by the actor — the k-th `item.held` and the k-th
-`run.started` this run raised are its k-th `hold` and k-th `start` call — so
-neither holds nor starts twice. Their suite is `assets/sdk/verbs_test.ts`, against a fake
-binary on `FLEET_BIN` that answers `event …` with the real one.
+record by the actor — the k-th ask this run held on its own record is its
+k-th `hold`, and the k-th `run.started` it raised on the stream its k-th
+`start` — so neither holds nor starts twice. Their suite is
+`assets/sdk/verbs_test.ts`, against a fake binary on `FLEET_BIN` that answers
+`item show` from the records an arm plants and `event …` with the real one.
 
 - `spawn({ role, item, model?, touched? })` — a builder on an item, over
   `fleet dispatch <item> [--touched <command>] --json`: the verb that cuts a
@@ -60,23 +69,13 @@ binary on `FLEET_BIN` that answers `event …` with the real one.
   deliver. The one role is `"builder"` (a reviewer's spawn is the flight's
   own), and a hand-run dispatch pins no model, so a `model` given is refused
   rather than dropped. `touched` is the builder's checks its brief names;
-  without one the brief names the absence.
+  without one the brief names the absence. An item whose record carries a
+  delivery no return and no landing followed is carried — delivered by a run
+  that failed and left it behind — and the step closes on `already delivered
+  at <commit>` without a dispatch.
 
   ```ts
   const { seat } = await run.spawn({ role: "builder", item: "item-12" });
-  ```
-
-- `deliver(item, delivery)` — `fleet deliver --item <item> --delivery <file>
-  --json`; the delivery is a JSON file of the shape
-  `assets/delivery.schema.json`, written under the run directory, which is the
-  one place a workflow may write. The verb refuses one that does not match the
-  shape before it commits anything.
-
-  ```ts
-  const { commit } = await run.deliver(
-    "item-12",
-    `${run.env.runDir}/delivery.json`,
-  );
   ```
 
 - `review(item, verdict)` — `fleet review <item> --json` with `--land` for
@@ -112,21 +111,24 @@ binary on `FLEET_BIN` that answers `event …` with the real one.
   `assets/question.schema.json` gives, each option `<letter>. <text>` taken
   apart into its `letter` and its `text` (an option of any other shape throws
   before anything is written), then `fleet hold --item <run> --question <file>
-  --json`, then Waiting with the hold id as the condition. Once `hold.cleared`
-  for that hold is on the stream the re-run closes the step with the
-  clearance's letter. `about` — `{ items, commit?, licenses }` — names the
-  items the answer licenses and the letter that licenses them, and rides in
-  the file as the schema's `about`.
+  --json`, then Waiting on the run's record's `cleared` entries. Once the
+  hold's clearance is on the record the re-run closes the step with its
+  letter, or with `"cancelled"` where the hold was cancelled. `about` —
+  `{ items, commit?, licenses }` — names the items the answer licenses and
+  the letter that licenses them, and rides in the file as the schema's
+  `about`.
 
   ```ts
   const letter = await run.hold("Ship the report?", ["A. yes", "B. not yet"]);
   ```
 
-- `until(items, state)` — reads `item.<state>` events off the stream and
-  throws Waiting whose condition is exactly the outstanding items, in the
-  order given; once every item has one it returns each item's event payload.
-  The states are the item kinds' last words: `dispatched`, `delivered`,
-  `reviewed`, `returned`, `landed`, `held`.
+- `until(items, state)` — reads each item's record and throws Waiting whose
+  `items` are exactly the outstanding ones, in the order given; once every
+  item's record answers it returns each item's answering entry. The states
+  are `dispatched` (the current order), `delivered` (the latest delivery no
+  return followed; a landing does not withdraw it), `reviewed` and `returned`
+  (the last verdict, where it is that one and no delivery followed it),
+  `landed` (the last landing) and `held` (the open hold).
 
   ```ts
   const landed = await run.until(["item-12", "item-13"], "landed");
