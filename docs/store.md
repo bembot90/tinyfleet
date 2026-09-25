@@ -8,9 +8,9 @@ read it when you connect fleet to a store of your own.
 ## What a store is
 
 The store is the work graph fleet reads and writes: each item with its title,
-status, type and labels, who holds it, the order it stands under, the open
-items that block it and a run's record; the holds raised on items; and each
-item's timeline of entries. bd is built in. Any other store is an executable,
+description, status, type and labels, who holds it, the order it stands
+under, the open items that block it and a run's record; the holds raised on
+items; and each item's timeline of entries. bd is built in. Any other store is an executable,
 named by `[store] adapter`, that answers the verbs on this page.
 
 **Status:** The contract is live.
@@ -101,10 +101,13 @@ fleet reads any other code, or death by a signal, as 3.
 
 A refusal names its reason. `missing` is nothing by that id. `ambiguous` is
 text that names more than one item, and `candidates` lists them. `already` is
-an act that is already done. `message` is the sentence for a person:
+an act that is already done. `moved` is a fenced write whose item no longer
+meets its fence: nothing was written, and `message` names who holds the item
+or the status it reads. `message` is the sentence for a person:
 
 ```json
 {"schema_version":1,"refused":{"reason":"ambiguous","message":"a1 matches more than one item","candidates":["fx-a1b2","fx-a1c9"]}}
+{"schema_version":1,"refused":{"reason":"moved","message":"fx-a1b2 is held by 0199a3c4-7d8e-7f90-a1b2-c3d4e5f60718","candidates":[]}}
 ```
 
 A refusal without `candidates` reads as one with none. An exit 3 names what
@@ -191,6 +194,7 @@ it, and blocked by one open item.
 {
   "id": "fx-a1b2",
   "title": "Teach the parser the new stamp",
+  "description": "The stamp gains a seconds field.",
   "status": "in_progress",
   "type": "task",
   "labels": [
@@ -213,12 +217,13 @@ it, and blocked by one open item.
 }
 ```
 
-`labels` are the item's own. `assignee` is the seat that holds the item, or
-`null`. `order` is an order state. `blockers` are the ids of the open items
-that block this one. `run` is a run record, or `null`. `id`, `title`,
-`status` and `type` are always there; an item that leaves out `labels`,
-`assignee`, `order`, `blockers` or `run` reads as having no labels, nobody
-assigned, `{"state":"none"}`, no blockers and no run record.
+`description` is what the item says; `fleet item show` prints it. `labels`
+are the item's own. `assignee` is the seat that holds the item, or `null`.
+`order` is an order state. `blockers` are the ids of the open items that
+block this one. `run` is a run record, or `null`. `id`, `title`, `status` and
+`type` are always there; an item that leaves out `description`, `labels`,
+`assignee`, `order`, `blockers` or `run` reads as having no description, no
+labels, nobody assigned, `{"state":"none"}`, no blockers and no run record.
 
 ### Item summary
 
@@ -266,13 +271,40 @@ fleet never sends one outside that range.
 
 ### Update
 
-A change to one item's title or assignee. A key left out is left alone, and
-`null` for the assignee is the item handed to nobody:
+A change to one item's title, assignee or status. A key left out is left
+alone, and `null` for the assignee is the item handed to nobody:
 
 ```json
 {"title":"Name the stamp's fields"}
 {"assignee":"0199a3c4-7d8e-7f90-a1b2-c3d4e5f60718"}
 {"assignee":null}
+```
+
+`status` takes one value, `"open"`: it reopens the item.
+
+`if_assignee` is a fence, and changes nothing itself. With a seat id, the
+change lands only while that seat holds the item; with `null`, only while
+nobody holds it. An item that does not meet the fence is refused with exit 1,
+`moved`, and nothing is written. Left out, the change is not fenced. An
+update handing an item nobody holds to a seat, and one reopening an item
+nobody holds:
+
+```json
+{"assignee":"0199a3c4-7d8e-7f90-a1b2-c3d4e5f60718","if_assignee":null}
+{"if_assignee":null,"status":"open"}
+```
+
+### Withdrawal fence
+
+`order.withdraw`'s own fields beyond `id` and `by`, each left out where it
+is not set. `if_assignee` is a fence as on an update. `if_status` is a status
+the item has to read, or the withdrawal is refused as `moved` with nothing
+written. `reopen: true` sets the status to `open` in the same act that clears
+the assignee and takes the order away; left out, it is `false`. A withdrawal
+of an item its seat holds in progress, reopening it:
+
+```json
+{"if_assignee":"0199a3c4-7d8e-7f90-a1b2-c3d4e5f60718","if_status":"in_progress","reopen":true}
 ```
 
 ### Capabilities
@@ -317,10 +349,10 @@ fields the ones beyond `schema_version`.
 | `list` | `{filter}` | `{items: [item summary]}` | — |
 | `timeline` | `{id}` | `{entries: [entry]}`, in append order | `missing` |
 | `create` | `{item: new item, by}` | `{id}` | — |
-| `update` | `{id, by, title?, assignee?}` | `{}` | `missing` |
+| `update` | `{id, by, title?, assignee?, status?, if_assignee?}` | `{}` | `missing`, `moved` |
 | `append` | `{id, by, entry}` | `{entry: entry id}` | `missing` |
 | `order.set` | `{id, by, order}` | `{}` | `missing` |
-| `order.withdraw` | `{id, by}` | `{}` | `missing` |
+| `order.withdraw` | `{id, by, if_assignee?, if_status?, reopen?}` | `{}` | `missing`, `moved` |
 | `run.set` | `{id, by, run}` | `{}` | `missing` |
 | `hold.raise` | `{id, by, reason}` | `{hold}` | `missing` |
 | `hold.clear` | `{hold, by}` | `{}` | `missing`, `already` |
@@ -331,8 +363,11 @@ fields the ones beyond `schema_version`.
 
 - `by` is an actor, `order` an order and `run` a run record.
 - `show` resolves its `id` exactly as `resolve` does.
-- `update` with neither `title` nor `assignee` is could not tell, exit 3,
-  and writes nothing. fleet never sends one.
+- `update` naming none of `title`, `assignee` and `status`, or a `status`
+  other than `"open"`, is a malformed request: the adapter answers usage,
+  exit 2, and writes nothing. fleet never sends either. It refuses the first
+  as could not tell, exit 3, and the second as usage, exit 2, before the
+  adapter is run.
 - `append`'s `entry` is the entry fleet appends: one JSON object carrying
   `"fleet.entry": 1` and a `kind`. Each entry `timeline` answers is an entry,
   with the `by` the `append` carried. An entry that does not read, a `by`
@@ -385,6 +420,17 @@ the whole id as that part.
   assignee nor the run record. `run.set` likewise never touches the order.
 - `order.withdraw` clears the assignee and the order in one act. After any
   exit, an item never has its assignee cleared while its order stands.
+- With `reopen: true`, the same act sets the status to `open`, so an item its
+  seat left in progress is open again, with nobody holding it. The reopen is
+  never a second write.
+
+### Fences
+
+A write carrying `if_assignee`, or a withdrawal carrying `if_status`, is
+fenced: the store takes it only while the item is held by that seat, or by
+nobody for `null`, and reads that status. An item whose `assignee` is `null`
+or left out meets a fence of `null`. A write whose fence the item does not
+meet is exit 1, `moved`, and nothing of it is written.
 
 ### The timeline
 
@@ -434,9 +480,9 @@ PASS  empty listings
 PASS  version
 PASS  capabilities
 ...
-PASS  fenced writes
+PASS  fenced withdraw with reopen
 SKIP  another writer's keys: no other writer was handed to this run, so nothing plants another tool's keys
-store check: bd — 22 passed, 0 failed, 1 skipped
+store check: bd — 25 passed, 0 failed, 1 skipped
 ```
 
 It exits 0.

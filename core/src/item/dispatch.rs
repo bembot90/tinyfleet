@@ -30,7 +30,7 @@ use crate::seat::actor::Actor;
 use crate::seat::identity::{Directory, Kind, SeatId, SeatRef};
 use crate::store::types::CONTRACT_VERSION;
 use crate::store::{
-    self, Filter, Item, ItemId, OrderState, Stamp, Status, Store, StoreError, Update,
+    self, Filter, Item, ItemId, OrderState, Stamp, Status, Store, StoreError, Update, WithdrawFence,
 };
 
 /// The kind of order this verb writes. The reference's other two grammars —
@@ -514,7 +514,11 @@ fn announce(order: &Order, wiring: &Wiring, entry: &str) -> Result<(), Stop> {
 fn withdraw(err: &mut dyn Write, order: &Order, wiring: &Wiring, cause: &str) -> Result<(), Stop> {
     wiring
         .store
-        .order_withdraw(&ItemId::from(order.item), order.by)
+        .order_withdraw(
+            &ItemId::from(order.item),
+            &WithdrawFence::default(),
+            order.by,
+        )
         .map_err(|e| {
             stands(
                 order.item,

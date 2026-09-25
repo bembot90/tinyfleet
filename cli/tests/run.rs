@@ -1853,9 +1853,10 @@ impl fleet_core::store::Store for Planted {
     fn order_withdraw(
         &self,
         id: &fleet_core::store::ItemId,
+        fence: &fleet_core::store::WithdrawFence,
         by: &fleet_core::seat::actor::Actor,
     ) -> Result<(), StoreError> {
-        self.0.order_withdraw(id, by)
+        self.0.order_withdraw(id, fence, by)
     }
 
     fn run_set(

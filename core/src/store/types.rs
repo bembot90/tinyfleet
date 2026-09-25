@@ -13,8 +13,10 @@
 //!
 //! AN ABSENT KEY AND A NULL ONE ARE TWO ANSWERS WHERE A WRITE SAYS SO. An
 //! [`Update`] that leaves `assignee` out touches nothing, and one that says
-//! `"assignee": null` clears it — so that field is read and written by hand,
-//! and never by the derive that would fold the two together.
+//! `"assignee": null` clears it; a write that leaves `if_assignee` out is
+//! fenced on nobody, and one that says `"if_assignee": null` lands only on an
+//! item nobody holds — so those fields are read and written by hand, and never
+//! by the derive that would fold the two together.
 
 use std::fmt;
 use std::ops::Deref;
@@ -448,6 +450,10 @@ impl NewItem {
 
 /// A change to one item: each field is left alone where it is absent, and
 /// `"assignee": null` is the item handed to nobody.
+///
+/// `if_assignee` is the FENCE, and changes nothing: where it is present the
+/// change lands only while that seat holds the item — `null` for nobody — and
+/// is otherwise refused as moved, with nothing written.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Update {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -459,10 +465,22 @@ pub struct Update {
         deserialize_with = "assignee_in"
     )]
     pub assignee: Option<Option<SeatId>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "assignee_out",
+        deserialize_with = "assignee_in"
+    )]
+    pub if_assignee: Option<Option<SeatId>>,
+    /// The status the item is set to, which is `open` or nothing: the reopen,
+    /// which brings an item nobody is working back to the ready set. Any other
+    /// status is the caller's mistake, refused before the store is asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<Status>,
 }
 
-/// A present `assignee` as its JSON: the seat's id, or `null` for nobody. An
-/// absent one never reaches here, because the key is skipped.
+/// A present `assignee` or `if_assignee` as its JSON: the seat's id, or `null`
+/// for nobody. An absent one never reaches here, because the key is skipped.
 fn assignee_out<S: Serializer>(
     assignee: &Option<Option<SeatId>>,
     serializer: S,
@@ -473,8 +491,8 @@ fn assignee_out<S: Serializer>(
     }
 }
 
-/// A present `assignee` key, `null` included, as `Some`: only a key that is
-/// not there at all is left to `default` as `None`.
+/// A present `assignee` or `if_assignee` key, `null` included, as `Some`: only
+/// a key that is not there at all is left to `default` as `None`.
 fn assignee_in<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Option<SeatId>>, D::Error> {
@@ -503,10 +521,43 @@ impl Update {
         }
     }
 
-    /// Whether this changes nothing at all.
-    pub fn is_empty(&self) -> bool {
-        self.title.is_none() && self.assignee.is_none()
+    /// No change yet, fenced on `from` holding the item — `None` for nobody —
+    /// for the caller to name what the fenced write moves.
+    pub fn fenced(from: Option<SeatId>) -> Update {
+        Update {
+            if_assignee: Some(from),
+            ..Update::default()
+        }
     }
+
+    /// Whether this changes nothing at all: a fence alone is no change.
+    pub fn is_empty(&self) -> bool {
+        self.title.is_none() && self.assignee.is_none() && self.status.is_none()
+    }
+}
+
+/// What an order's withdrawal is fenced on, and whether it reopens the item:
+/// sent as `order.withdraw`'s own fields, each left out where it is unset, so
+/// the default is the plain withdrawal.
+///
+/// A fence that is present is one the item must meet — held by `if_assignee`
+/// (`null` for nobody), reading `if_status` — or the withdrawal is refused as
+/// moved, with nothing written. `reopen` sets the status to `open` in the SAME
+/// act that clears the assignee and takes the order away: an item left
+/// `in_progress` with nobody holding it is out of the ready set.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WithdrawFence {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "assignee_out",
+        deserialize_with = "assignee_in"
+    )]
+    pub if_assignee: Option<Option<SeatId>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_status: Option<Status>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reopen: bool,
 }
 
 // ---- what a store can do --------------------------------------------------------
@@ -582,13 +633,15 @@ pub struct Refusal {
 }
 
 /// Why a store refused: nothing by that id, more than one item it could mean,
-/// or the act already done.
+/// the act already done, or a fence the item no longer meets — whose message
+/// names what holds the item instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RefusalReason {
     Missing,
     Ambiguous,
     Already,
+    Moved,
 }
 
 // ---- response bodies ------------------------------------------------------------
@@ -710,6 +763,7 @@ mod tests {
     const ITEM_EXAMPLE: &str = r#"{
   "id": "fx-a1b2",
   "title": "Teach the parser the new stamp",
+  "description": "The stamp gains a seconds field.",
   "status": "in_progress",
   "type": "task",
   "labels": [
@@ -941,6 +995,68 @@ mod tests {
         }
     }
 
+    /// RED-PROOF: a derived `if_assignee` reads `null` as no fence, which is a
+    /// write landing on an item somebody holds.
+    #[test]
+    fn a_null_fence_is_nobody_holding_and_an_absent_one_no_fence() {
+        let unheld: Update =
+            serde_json::from_str(r#"{"if_assignee":null,"status":"open"}"#).unwrap();
+        assert_eq!(unheld.if_assignee, Some(None));
+        assert_eq!(unheld.status, Some(Status::Open));
+        assert_eq!(json(&unheld), r#"{"if_assignee":null,"status":"open"}"#);
+
+        let unfenced: Update = serde_json::from_str(r#"{"status":"open"}"#).unwrap();
+        assert_eq!(unfenced.if_assignee, None);
+
+        let held = Update {
+            assignee: Some(None),
+            ..Update::fenced(Some(seat(SEAT)))
+        };
+        assert_eq!(
+            json(&held),
+            format!(r#"{{"assignee":null,"if_assignee":"{SEAT}"}}"#)
+        );
+        assert_eq!(serde_json::from_str::<Update>(&json(&held)).unwrap(), held);
+    }
+
+    #[test]
+    fn a_fence_alone_changes_nothing() {
+        assert!(Update::fenced(None).is_empty());
+        assert!(Update::fenced(Some(seat(SEAT))).is_empty());
+        let reopened = Update {
+            status: Some(Status::Open),
+            ..Update::fenced(None)
+        };
+        assert!(!reopened.is_empty());
+    }
+
+    /// The plain withdrawal sends no field beyond its id and actor, so an
+    /// adapter that knows no fence answers it as it always did.
+    #[test]
+    fn a_withdrawal_fence_sends_only_what_it_sets() {
+        assert_eq!(json(&WithdrawFence::default()), "{}");
+        assert_eq!(
+            serde_json::from_str::<WithdrawFence>("{}").unwrap(),
+            WithdrawFence::default()
+        );
+        let retire = WithdrawFence {
+            if_assignee: Some(Some(seat(SEAT))),
+            if_status: Some(Status::InProgress),
+            reopen: true,
+        };
+        let written = json(&retire);
+        assert_eq!(
+            written,
+            format!(r#"{{"if_assignee":"{SEAT}","if_status":"in_progress","reopen":true}}"#)
+        );
+        assert_eq!(
+            serde_json::from_str::<WithdrawFence>(&written).unwrap(),
+            retire
+        );
+        let unheld: WithdrawFence = serde_json::from_str(r#"{"if_assignee":null}"#).unwrap();
+        assert_eq!(unheld.if_assignee, Some(None));
+    }
+
     // ---- 6: the export ----
 
     #[test]
@@ -1013,6 +1129,7 @@ mod tests {
     fn the_documented_item_reads_and_writes_back_byte_for_byte() {
         let read: Item = serde_json::from_str(ITEM_EXAMPLE).unwrap();
         assert_eq!(read.id, "fx-a1b2");
+        assert_eq!(read.description, "The stamp gains a seconds field.");
         assert_eq!(read.status, Status::InProgress);
         assert_eq!(read.assignee, Some(seat(SEAT)));
         assert_eq!(read.order, OrderState::Ordered(an_order(Some(seat(SEAT)))));
@@ -1166,11 +1283,22 @@ mod tests {
             kind: OrderKind::Review,
             ..an_order(None)
         };
+        let moved = Refusal {
+            reason: RefusalReason::Moved,
+            message: format!("fx-a1b2 is held by {SEAT}"),
+            candidates: Vec::new(),
+        };
+        let retire = WithdrawFence {
+            if_assignee: Some(Some(seat(SEAT))),
+            if_status: Some(Status::InProgress),
+            reopen: true,
+        };
 
         let mut examples = vec![
             ITEM_EXAMPLE.to_string(),
             json(&request(show, Path::new("/work/project"))),
             format!(r#"{{"schema_version":1,"refused":{}}}"#, json(&refusal)),
+            format!(r#"{{"schema_version":1,"refused":{}}}"#, json(&moved)),
             json(&HoldId::from("fx-h9")),
             json(&Status::from("deferred")),
             json(&stamp("2026-09-23T10:00:00Z")),
@@ -1189,6 +1317,15 @@ mod tests {
             json(&Update::title(String::from("Name the stamp's fields"))),
             json(&Update::assignee(seat(SEAT))),
             json(&Update::unassigned()),
+            json(&Update {
+                assignee: Some(Some(seat(SEAT))),
+                ..Update::fenced(None)
+            }),
+            json(&Update {
+                status: Some(Status::Open),
+                ..Update::fenced(None)
+            }),
+            json(&retire),
             json(&exporting),
             json(&Capabilities::default()),
             json(&Version {

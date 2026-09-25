@@ -24,9 +24,10 @@ use serde::Deserialize;
 
 use super::types::{Capabilities, ExportSpec};
 use super::{
-    already_cleared, already_closed, first_value, holder_named, not_a_seat, tail, unchanged,
-    validated, validated_new, Filter, HoldId, Item, ItemId, ItemSummary, NewItem, Order,
-    OrderState, ReadProof, RunRecord, Status, Store, StoreError, Update, Version, STORE_TIMEOUT,
+    already_cleared, already_closed, first_value, held_text, holder_named, not_a_seat, tail,
+    validated, validated_new, writable, Filter, HoldId, Item, ItemId, ItemSummary, NewItem, Order,
+    OrderState, ReadProof, RunRecord, Status, Store, StoreError, Update, Version, WithdrawFence,
+    STORE_TIMEOUT,
 };
 use crate::entry::{self, Body, Entry};
 use crate::process::{deadline_cause, run_bounded};
@@ -270,11 +271,13 @@ impl Bd {
         self.written(args).map(|_| ())
     }
 
-    /// A write carrying `--if-assignee <holder>`, and `--if-status` beside it
-    /// where `fence` names a status too, whose exit 13 is bd's word that the
-    /// item moved and nothing was written — measured on 1.3.0: `assignee
-    /// mismatch: X is held by "s2", expected "s1"` and `status mismatch: X has
-    /// status "closed", expected "in_progress"`, both exit 13.
+    /// A write carrying `--if-assignee <holder>`, `--if-status <status>` or
+    /// both, whose exit 13 is bd's word that the item moved and nothing was
+    /// written — measured on 1.3.0: `assignee mismatch: X is held by "s2",
+    /// expected "s1"` and `status mismatch: X has status "closed", expected
+    /// "in_progress"`, each exit 13 with its flag alone or beside the other,
+    /// and each the last line on stderr, so the refusal names what holds the
+    /// item. `fence` is what the write was fenced on, as the refusal says it.
     fn fenced(&self, args: &[&str], item: &str, fence: &str) -> Result<(), StoreError> {
         let out = self.run(args)?;
         if out.status.code() == Some(FENCE_MISMATCH) {
@@ -315,7 +318,8 @@ impl Bd {
     }
 }
 
-/// The exit bd gives a write whose `--if-assignee` no longer holds.
+/// The exit bd gives a write whose `--if-assignee` or `--if-status` no longer
+/// holds.
 const FENCE_MISMATCH: i32 = 13;
 
 /// The answer inside bd's JSON envelope, or the value itself where it carries
@@ -681,24 +685,37 @@ impl Store for Bd {
     /// and `--assignee` on one call — measured on 1.3.0, where one call moved
     /// both — and the empty assignee is what clears the field, measured too:
     /// the item read back with no `assignee` at all.
+    ///
+    /// The fence is `--if-assignee`, and `""` fences on nobody holding the
+    /// item — measured on 1.3.0: it took the write on an item never assigned
+    /// and on one whose assignee `--assignee ""` had cleared, and on an item a
+    /// seat held it wrote nothing, exited 13 and named the holder on stderr.
+    /// `--status open` rides the same call, and with the holder's fence it is
+    /// taken from a writer who is not the holder — measured, on an item its
+    /// holder had closed.
     fn update(&self, id: &ItemId, change: &Update, by: &Actor) -> Result<(), StoreError> {
-        if change.is_empty() {
-            return Err(unchanged());
-        }
-        let assignee = change
-            .assignee
-            .as_ref()
-            .map(|seat| seat.map(|seat| seat.to_string()).unwrap_or_default());
+        writable(change)?;
+        let assignee = change.assignee.as_ref().map(|seat| held_text(*seat));
+        let fence = change.if_assignee.as_ref().map(|seat| held_text(*seat));
         let by = by.to_string();
         let mut args = vec!["update", id.as_str()];
+        if let Some(fence) = &fence {
+            args.extend(["--if-assignee", fence.as_str()]);
+        }
         if let Some(title) = &change.title {
             args.extend(["--title", title.as_str()]);
         }
         if let Some(assignee) = &assignee {
             args.extend(["--assignee", assignee.as_str()]);
         }
+        if let Some(status) = &change.status {
+            args.extend(["--status", status.as_str()]);
+        }
         args.extend(["--actor", &by]);
-        self.wrote(&args)
+        match &fence {
+            Some(holder) => self.fenced(&args, id, &format!("held by {}", holder_named(holder))),
+            None => self.wrote(&args),
+        }
     }
 
     /// bd 1.3.0 refuses a plain `--assignee` from anyone but the holder on an
@@ -744,18 +761,46 @@ impl Store for Bd {
     /// and `--unset-metadata` takes the one key away — measured on bd 1.3.0,
     /// where the one call left no `assignee` and no `fleet.orders`, and the
     /// `fleet.run` key and another writer's bare `orders` beside it standing.
-    fn order_withdraw(&self, id: &ItemId, by: &Actor) -> Result<(), StoreError> {
+    ///
+    /// The fence and the reopen ride the SAME call, because bd takes every
+    /// flag on one: `--if-assignee`, `--if-status` and `--status open` —
+    /// measured on 1.3.0, where that one call also left an item its seat had
+    /// marked `in_progress` open and in `bd ready` again. `--if-assignee`
+    /// naming the holder is what bd 1.3.0 takes from a writer
+    /// who is not the holder on an item that seat marked `in_progress` —
+    /// measured, where the same call without it is refused. `--if-status` is
+    /// what keeps a reopen off a CLOSED item: measured, the call without it
+    /// reopened an item its holder had closed, and with it wrote nothing and
+    /// exited 13.
+    fn order_withdraw(
+        &self,
+        id: &ItemId,
+        fence: &WithdrawFence,
+        by: &Actor,
+    ) -> Result<(), StoreError> {
+        let holder = fence.if_assignee.as_ref().map(|seat| held_text(*seat));
         let by = by.to_string();
-        self.wrote(&[
-            "update",
-            id.as_str(),
-            "--assignee",
-            "",
-            "--unset-metadata",
-            keys::ORDERS,
-            "--actor",
-            &by,
-        ])
+        let mut args = vec!["update", id.as_str()];
+        if let Some(holder) = &holder {
+            args.extend(["--if-assignee", holder.as_str()]);
+        }
+        if let Some(status) = &fence.if_status {
+            args.extend(["--if-status", status.as_str()]);
+        }
+        args.extend(["--assignee", "", "--unset-metadata", keys::ORDERS]);
+        if fence.reopen {
+            args.extend(["--status", Status::Open.as_str()]);
+        }
+        args.extend(["--actor", &by]);
+        let named = match (&holder, &fence.if_status) {
+            (None, None) => return self.wrote(&args),
+            (Some(holder), None) => format!("held by {}", holder_named(holder)),
+            (None, Some(status)) => format!("{status}"),
+            (Some(holder), Some(status)) => {
+                format!("held by {} as {status}", holder_named(holder))
+            }
+        };
+        self.fenced(&args, id, &named)
     }
 
     /// `{"fleet.run": {…, "v": 1}}` by the same flag [`order_set`] writes
@@ -783,17 +828,8 @@ impl Store for Bd {
         self.wrote(&["update", item, "--status", "open", "--actor", by])
     }
 
-    /// ONE `update` rather than three, because bd takes every flag on one call:
-    /// [`order_withdraw`]'s argv, fenced, with the reopen beside it.
-    ///
-    /// Measured on 1.3.0: the one call left no `assignee` and no
-    /// `fleet.orders`, the `fleet.run` key beside it standing, and an item its
-    /// seat had marked `in_progress` open and in `bd ready` again.
-    /// `--if-assignee` names the retiring seat, which is what bd 1.3.0 takes
-    /// from a retirer on an item that seat marked `in_progress` — measured,
-    /// where the same call without it is refused. `--if-status` is what keeps
-    /// the reopen off a CLOSED item: measured, the call without it reopened an
-    /// item its holder had closed, and with it wrote nothing and exited 13.
+    /// ONE `update` rather than three: [`order_withdraw`] fenced on the seat
+    /// and the status, reopening the item.
     ///
     /// [`order_withdraw`]: Store::order_withdraw
     fn order_withdraw_from(
@@ -803,28 +839,12 @@ impl Store for Bd {
         status: &Status,
         by: &Actor,
     ) -> Result<(), StoreError> {
-        let seat = seat.to_string();
-        let by = by.to_string();
-        self.fenced(
-            &[
-                "update",
-                id.as_str(),
-                "--if-assignee",
-                &seat,
-                "--if-status",
-                status.as_str(),
-                "--assignee",
-                "",
-                "--unset-metadata",
-                keys::ORDERS,
-                "--status",
-                "open",
-                "--actor",
-                &by,
-            ],
-            id,
-            &format!("held by {} as {status}", holder_named(&seat)),
-        )
+        let fence = WithdrawFence {
+            if_assignee: Some(Some(*seat)),
+            if_status: Some(status.clone()),
+            reopen: true,
+        };
+        self.order_withdraw(id, &fence, by)
     }
 
     /// bd files a hold as a gate of type human, and the held item leaves the

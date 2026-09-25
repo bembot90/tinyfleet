@@ -282,6 +282,21 @@ fn a_fenced_write_lands_only_while_the_holder_it_names_holds_the_item() {
 }
 
 #[test]
+fn an_update_fenced_on_a_holder_lands_only_while_that_holder_holds_the_item() {
+    in_memory("fenced update refuses moved");
+}
+
+#[test]
+fn an_update_to_open_reopens_the_item_and_any_other_status_is_usage() {
+    in_memory("reopen through update");
+}
+
+#[test]
+fn a_fenced_withdrawal_reopens_in_the_same_act_or_is_moved_with_nothing_written() {
+    in_memory("fenced withdraw with reopen");
+}
+
+#[test]
 fn another_writers_keys_are_neither_read_nor_moved_by_fleets_writes() {
     in_memory("another writer's keys");
 }
@@ -432,8 +447,13 @@ impl Store for NoScratch {
     fn order_set(&self, id: &ItemId, order: &Order, by: &Actor) -> Result<(), StoreError> {
         self.0.order_set(id, order, by)
     }
-    fn order_withdraw(&self, id: &ItemId, by: &Actor) -> Result<(), StoreError> {
-        self.0.order_withdraw(id, by)
+    fn order_withdraw(
+        &self,
+        id: &ItemId,
+        fence: &fleet_core::store::WithdrawFence,
+        by: &Actor,
+    ) -> Result<(), StoreError> {
+        self.0.order_withdraw(id, fence, by)
     }
     fn run_set(&self, id: &ItemId, run: &RunRecord, by: &Actor) -> Result<(), StoreError> {
         self.0.run_set(id, run, by)

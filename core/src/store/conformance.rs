@@ -29,7 +29,7 @@ use std::path::Path;
 
 use super::{
     Filter, Item, ItemId, ItemSummary, NewItem, Order, OrderKind, OrderState, RunRecord, Stamp,
-    Status, Store, StoreError, Update,
+    Status, Store, StoreError, Update, WithdrawFence,
 };
 use crate::entry::{
     Body, Delivered, NotProven, OrderWithdrawn, Ordered, Ran, SuiteRun, Withdrawal,
@@ -78,7 +78,8 @@ pub type Check = fn(&Ctx) -> Result<Passed, String>;
 /// The contract's nineteen first, in the spec's order; then the four the
 /// suite had grown beside them before it moved here — an order read back,
 /// an update naming nothing, the fenced writes, and another writer's keys —
-/// so nothing it asked is lost in the move.
+/// so nothing it asked is lost in the move, with the three that check the
+/// contract's own fences before the last of them.
 pub const CHECKS: &[(&str, Check)] = &[
     ("empty listings", empty_listings),
     ("version", version),
@@ -102,6 +103,9 @@ pub const CHECKS: &[(&str, Check)] = &[
     ("order.set reads back", order_reads_back),
     ("update naming nothing", update_naming_nothing),
     ("fenced writes", fenced_writes),
+    ("fenced update refuses moved", fenced_update),
+    ("reopen through update", reopen_through_update),
+    ("fenced withdraw with reopen", fenced_withdraw),
     ("another writer's keys", another_writers_keys),
 ];
 
@@ -164,6 +168,7 @@ fn refusal(e: &StoreError) -> String {
     match e {
         StoreError::Refused(why) => format!("Refused ({why})"),
         StoreError::Moved(why) => format!("Moved ({why})"),
+        StoreError::Usage(why) => format!("Usage ({why})"),
         StoreError::Unreadable(why) => format!("Unreadable ({why})"),
     }
 }
@@ -173,6 +178,20 @@ fn outcome<T: std::fmt::Debug>(answer: &Result<T, StoreError>) -> String {
     match answer {
         Ok(value) => format!("Ok({value:?})"),
         Err(e) => refusal(e),
+    }
+}
+
+/// A fenced write the item did not meet: Moved, naming every one of `names` —
+/// the item, and what holds it where the check knows.
+fn moved(call: &str, answer: Result<(), StoreError>, names: &[&str]) -> Result<(), String> {
+    match answer {
+        Err(StoreError::Moved(why)) => ensure(names.iter().all(|name| why.contains(name)), || {
+            format!("{call} was Moved without naming {names:?}: {why}")
+        }),
+        answer => Err(format!(
+            "{call} answered {}, and a fenced write that does not hold is Moved",
+            outcome(&answer)
+        )),
     }
 }
 
@@ -663,6 +682,7 @@ fn update(ctx: &Ctx) -> Answer {
             &Update {
                 title: Some(String::from("the title and the holder both moved")),
                 assignee: Some(Some(another)),
+                ..Update::default()
             },
             &by(),
         ),
@@ -748,7 +768,8 @@ fn withdraw_clears_both(ctx: &Ctx) -> Answer {
     ordered(ctx, &id, &an_order(Some(seat))?)?;
     answered(
         &format!("order.withdraw {id}"),
-        ctx.store.order_withdraw(&id, &by()),
+        ctx.store
+            .order_withdraw(&id, &WithdrawFence::default(), &by()),
     )?;
     let now = read(ctx, &id)?;
     same("the assignee after a withdrawal", &now.assignee, &None)?;
@@ -1080,15 +1101,6 @@ fn fenced_writes(ctx: &Ctx) -> Answer {
         })?;
         same(&format!("{after}: the status"), &now.status, &status)
     };
-    let moved = |call: &str, answer: Result<(), StoreError>, names: &[&str]| match answer {
-        Err(StoreError::Moved(why)) => ensure(names.iter().all(|name| why.contains(name)), || {
-            format!("{call} was Moved without naming {names:?}: {why}")
-        }),
-        answer => Err(format!(
-            "{call} answered {}, and a fenced write that does not hold is Moved",
-            outcome(&answer)
-        )),
-    };
 
     let another = SeatId::mint();
     let other = another.to_string();
@@ -1162,6 +1174,271 @@ fn fenced_writes(ctx: &Ctx) -> Answer {
     Ok(Passed::Pass)
 }
 
+/// An update fenced on a seat lands only while that seat holds the item, and
+/// one fenced on nobody only while nobody does — an item never held, or one
+/// whose holder was cleared. A fence the item does not meet is Moved, naming
+/// the item and the seat that holds it, with NOTHING written.
+fn fenced_update(ctx: &Ctx) -> Answer {
+    let title = "an item a fenced update reaches";
+    let id = filed(ctx, title, &[])?;
+    let seat = SeatId::mint();
+    let holder = seat.to_string();
+    answered(
+        &format!("update {id} assignee {seat}, fenced on nobody"),
+        ctx.store.update(
+            &id,
+            &Update {
+                assignee: Some(Some(seat)),
+                ..Update::fenced(None)
+            },
+            &by(),
+        ),
+    )?;
+    same(
+        "the holder an update fenced on nobody wrote on an item never held",
+        &read(ctx, &id)?.assignee,
+        &Some(seat),
+    )?;
+
+    let another = SeatId::mint();
+    for (fence, call) in [
+        (Some(another), "fenced on a seat that does not hold it"),
+        (None, "fenced on nobody"),
+    ] {
+        moved(
+            &format!("an update of {id} {call}"),
+            ctx.store.update(
+                &id,
+                &Update {
+                    title: Some(String::from("a title nothing writes")),
+                    assignee: Some(Some(another)),
+                    ..Update::fenced(fence)
+                },
+                &by(),
+            ),
+            &[id.as_str(), &holder],
+        )?;
+        let now = read(ctx, &id)?;
+        same(
+            &format!("{call}: the holder, as nothing was written"),
+            &now.assignee,
+            &Some(seat),
+        )?;
+        same(
+            &format!("{call}: the title, as nothing was written"),
+            &now.title.as_str(),
+            &title,
+        )?;
+    }
+
+    answered(
+        &format!("update {id} title, fenced on its holder"),
+        ctx.store.update(
+            &id,
+            &Update {
+                title: Some(String::from("the title its holder's fence let through")),
+                ..Update::fenced(Some(seat))
+            },
+            &by(),
+        ),
+    )?;
+    let now = read(ctx, &id)?;
+    same(
+        "the title an update fenced on its holder moved",
+        &now.title.as_str(),
+        &"the title its holder's fence let through",
+    )?;
+    same("and the holder it left", &now.assignee, &Some(seat))?;
+
+    answered(
+        &format!("update {id} unassigned, fenced on its holder"),
+        ctx.store.update(
+            &id,
+            &Update {
+                assignee: Some(None),
+                ..Update::fenced(Some(seat))
+            },
+            &by(),
+        ),
+    )?;
+    same(
+        "the holder an update fenced on its holder cleared",
+        &read(ctx, &id)?.assignee,
+        &None,
+    )?;
+    answered(
+        &format!("update {id} assignee {another}, fenced on nobody"),
+        ctx.store.update(
+            &id,
+            &Update {
+                assignee: Some(Some(another)),
+                ..Update::fenced(None)
+            },
+            &by(),
+        ),
+    )?;
+    same(
+        "the holder an update fenced on nobody wrote on an item whose holder was cleared",
+        &read(ctx, &id)?.assignee,
+        &Some(another),
+    )?;
+    Ok(Passed::Pass)
+}
+
+/// An update's status is `open` or nothing. Fenced on its holder, it reopens
+/// an item that holder closed and hands it to nobody in the same write, which
+/// brings it back to the ready set; fenced on nobody while a seat holds it, it
+/// is Moved with nothing written; and a status other than `open` is Usage,
+/// with nothing written.
+fn reopen_through_update(ctx: &Ctx) -> Answer {
+    let id = filed(ctx, "an item an update reopens", &[])?;
+    let seat = SeatId::mint();
+    let holder = seat.to_string();
+    assign(ctx, &id, seat)?;
+    closed(ctx, &id, "closed by its holder", &Actor::seat(seat))?;
+    let reopened = |fence: Option<SeatId>| Update {
+        assignee: Some(None),
+        status: Some(Status::Open),
+        ..Update::fenced(fence)
+    };
+    let untouched = |after: &str| -> Result<(), String> {
+        let now = read(ctx, &id)?;
+        same(
+            &format!("{after}: the holder, as nothing was written"),
+            &now.assignee,
+            &Some(seat),
+        )?;
+        same(
+            &format!("{after}: the status, as nothing was written"),
+            &now.status,
+            &Status::Closed,
+        )
+    };
+
+    moved(
+        &format!("a reopen of {id} fenced on nobody"),
+        ctx.store.update(&id, &reopened(None), &by()),
+        &[id.as_str(), &holder],
+    )?;
+    untouched("a reopen fenced on nobody")?;
+
+    let usage = ctx.store.update(
+        &id,
+        &Update {
+            status: Some(Status::InProgress),
+            ..Update::fenced(Some(seat))
+        },
+        &by(),
+    );
+    ensure(matches!(usage, Err(StoreError::Usage(_))), || {
+        format!(
+            "an update of {id} to in_progress answered {}, and a status other than open is \
+             Usage",
+            outcome(&usage)
+        )
+    })?;
+    untouched("an update to in_progress")?;
+
+    answered(
+        &format!("a reopen of {id} fenced on its holder"),
+        ctx.store.update(&id, &reopened(Some(seat)), &by()),
+    )?;
+    let now = read(ctx, &id)?;
+    same("the status a reopen wrote", &now.status, &Status::Open)?;
+    same("the holder the same write cleared", &now.assignee, &None)?;
+    ensure(row_in(ctx, &Filter::Ready, &id)?.is_some(), || {
+        format!("{id} is not back in the ready set once it is reopened and held by nobody")
+    })?;
+    Ok(Passed::Pass)
+}
+
+/// A withdrawal fenced on the item's holder and the status it reads, and
+/// reopening it, clears the assignee, takes the order away and sets the
+/// status to `open` in ONE act, the run's record standing. One whose fence
+/// the item does not meet — another holder, nobody, another status — is Moved
+/// with nothing written, naming what the item is held by or reads.
+fn fenced_withdraw(ctx: &Ctx) -> Answer {
+    let id = filed(ctx, "an item a fenced withdrawal reopens", &[])?;
+    let seat = SeatId::mint();
+    let holder = seat.to_string();
+    let record = a_record("h1", "greet")?;
+    assign(ctx, &id, seat)?;
+    recorded(ctx, &id, &record)?;
+    ordered(ctx, &id, &an_order(Some(seat))?)?;
+    closed(ctx, &id, "closed by its holder", &Actor::seat(seat))?;
+    let fence = |held: Option<SeatId>, status: Status| WithdrawFence {
+        if_assignee: Some(held),
+        if_status: Some(status),
+        reopen: true,
+    };
+
+    let another = SeatId::mint();
+    for (missed, call, named) in [
+        (
+            fence(Some(another), Status::Closed),
+            "fenced on a seat that does not hold it",
+            holder.as_str(),
+        ),
+        (
+            fence(None, Status::Closed),
+            "fenced on nobody",
+            holder.as_str(),
+        ),
+        (
+            fence(Some(seat), Status::Open),
+            "fenced on a status it does not read",
+            Status::Closed.as_str(),
+        ),
+    ] {
+        moved(
+            &format!("a withdrawal of {id} {call}"),
+            ctx.store.order_withdraw(&id, &missed, &by()),
+            &[id.as_str(), named],
+        )?;
+        let now = read(ctx, &id)?;
+        same(
+            &format!("{call}: the holder, as nothing was written"),
+            &now.assignee,
+            &Some(seat),
+        )?;
+        ensure(now.order != OrderState::None, || {
+            format!("{call}: the order is gone, and nothing was to be written")
+        })?;
+        same(
+            &format!("{call}: the status, as nothing was written"),
+            &now.status,
+            &Status::Closed,
+        )?;
+    }
+
+    answered(
+        &format!("the withdrawal of {id} fenced on its holder and its status, reopening it"),
+        ctx.store
+            .order_withdraw(&id, &fence(Some(seat), Status::Closed), &by()),
+    )?;
+    let now = read(ctx, &id)?;
+    same("the assignee after the withdrawal", &now.assignee, &None)?;
+    same(
+        "the order after the withdrawal",
+        &now.order,
+        &OrderState::None,
+    )?;
+    same(
+        "the status the withdrawal reopened",
+        &now.status,
+        &Status::Open,
+    )?;
+    same(
+        "the run's record after the withdrawal",
+        &now.run,
+        &Some(record),
+    )?;
+    ensure(row_in(ctx, &Filter::Ready, &id)?.is_some(), || {
+        format!("{id} is not back in the ready set once its withdrawal reopened it")
+    })?;
+    Ok(Passed::Pass)
+}
+
 /// Fleet's writes merge BESIDE another writer's keys (fleet-4j6): a bare
 /// `orders` and a key of its own that another tool keeps on the item are
 /// neither read nor moved by an order, a run's record or a withdrawal, and
@@ -1224,7 +1501,8 @@ fn another_writers_keys(ctx: &Ctx) -> Answer {
     assign(ctx, &id, seat)?;
     answered(
         &format!("order.withdraw {id}"),
-        ctx.store.order_withdraw(&id, &by()),
+        ctx.store
+            .order_withdraw(&id, &WithdrawFence::default(), &by()),
     )?;
     let now = read(ctx, &id)?;
     same(

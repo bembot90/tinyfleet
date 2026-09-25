@@ -43,7 +43,7 @@ use fleet_core::seat::identity::SeatId;
 use fleet_core::store::bd::{item_from, Bd};
 use fleet_core::store::{
     self, Filter, HoldId, ItemId, ItemSummary, NewItem, Order, OrderKind, OrderState, RunRecord,
-    Stamp, Store, StoreError, Update,
+    Stamp, Status, Store, StoreError, Update, WithdrawFence,
 };
 use fleet_core::test_support::the_test;
 
@@ -810,6 +810,7 @@ fn an_update_is_one_call_naming_each_field_it_moves() {
         Update {
             title: Some(String::from("both")),
             assignee: Some(Some(seat)),
+            ..Update::default()
         },
         Update::unassigned(),
     ] {
@@ -826,6 +827,112 @@ fn an_update_is_one_call_naming_each_field_it_moves() {
             String::from("[update][fx-1][--assignee][][--actor][run:the-test]"),
         ]
     );
+}
+
+/// A fenced update carries `--if-assignee` — the seat's full id, or the empty
+/// string for nobody — and the reopen its `--status open`, on the one call.
+#[test]
+fn a_fenced_update_is_one_call_carrying_its_fence_and_its_status() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-update-fenced-argv");
+    let log = dir.path("argv");
+    let bin = argv_bd(&dir, &log, "");
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+    let store = Bd::at_bin(&root, &bin);
+    let id = ItemId::from("fx-1");
+    let seat = SeatId::parse(SEAT).expect("the seat's id parses");
+
+    for change in [
+        Update {
+            assignee: Some(Some(seat)),
+            ..Update::fenced(None)
+        },
+        Update {
+            assignee: Some(None),
+            status: Some(Status::Open),
+            ..Update::fenced(Some(seat))
+        },
+    ] {
+        store
+            .update(&id, &change, &the_test())
+            .unwrap_or_else(|e| panic!("{change:?} lands: {e}"));
+    }
+    assert_eq!(
+        argvs(&log, &root),
+        [
+            format!("[update][fx-1][--if-assignee][][--assignee][{SEAT}][--actor][run:the-test]"),
+            format!(
+                "[update][fx-1][--if-assignee][{SEAT}][--assignee][][--status][open]\
+                 [--actor][run:the-test]"
+            ),
+        ]
+    );
+}
+
+/// bd's exit 13 on a fenced update is Moved, naming the fence and, in bd's own
+/// line, what holds the item.
+#[test]
+fn a_fenced_update_bd_answers_13_is_moved() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-update-fence-13");
+    let bin = dir.path("bd");
+    std::fs::write(
+        &bin,
+        "#!/bin/sh\n\
+         echo 'fx-1: updating issue: assignee mismatch: fx-1 is held by \"s2\", expected \"\"' >&2\n\
+         exit 13\n",
+    )
+    .expect("the shim is written");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+        .expect("the shim is executable");
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+
+    let answer = Bd::at_bin(&root, &bin).update(
+        &ItemId::from("fx-1"),
+        &Update {
+            title: Some(String::from("t")),
+            ..Update::fenced(None)
+        },
+        &the_test(),
+    );
+    assert_eq!(
+        answer,
+        Err(StoreError::Moved(String::from(
+            "fx-1 is not held by nobody — nothing was written (fx-1: updating issue: assignee \
+             mismatch: fx-1 is held by \"s2\", expected \"\")"
+        )))
+    );
+}
+
+/// A status other than `open` is usage, refused before the binary is asked.
+#[test]
+fn an_update_to_a_status_other_than_open_runs_nothing() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-update-in-progress");
+    let log = dir.path("argv");
+    let bin = argv_bd(&dir, &log, "");
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+
+    let answer = Bd::at_bin(&root, &bin).update(
+        &ItemId::from("fx-1"),
+        &Update {
+            status: Some(Status::InProgress),
+            ..Update::default()
+        },
+        &the_test(),
+    );
+    assert_eq!(
+        answer,
+        Err(StoreError::Usage(String::from(
+            "an update sets a status only to open, and this one names `in_progress` — nothing \
+             was written"
+        )))
+    );
+    assert_eq!(argvs(&log, &root), Vec::<String>::new(), "bd was not asked");
 }
 
 /// The one metadata object an `update --metadata` call carried, off its argv.
@@ -935,8 +1042,29 @@ fn a_withdrawal_is_one_update_clearing_the_assignee_and_the_order() {
     let seat = SeatId::parse(SEAT).expect("the seat's id parses");
 
     store
-        .order_withdraw(&id, &the_test())
+        .order_withdraw(&id, &WithdrawFence::default(), &the_test())
         .expect("the withdrawal lands");
+    store
+        .order_withdraw(
+            &id,
+            &WithdrawFence {
+                if_assignee: Some(None),
+                ..WithdrawFence::default()
+            },
+            &the_test(),
+        )
+        .expect("the withdrawal fenced on nobody lands");
+    store
+        .order_withdraw(
+            &id,
+            &WithdrawFence {
+                if_status: Some(Status::Closed),
+                reopen: true,
+                ..WithdrawFence::default()
+            },
+            &the_test(),
+        )
+        .expect("the withdrawal fenced on a status lands");
     store
         .order_withdraw_from(
             &id,
@@ -950,6 +1078,14 @@ fn a_withdrawal_is_one_update_clearing_the_assignee_and_the_order() {
         [
             String::from(
                 "[update][fx-1][--assignee][][--unset-metadata][fleet.orders][--actor][run:the-test]"
+            ),
+            String::from(
+                "[update][fx-1][--if-assignee][][--assignee][][--unset-metadata][fleet.orders]\
+                 [--actor][run:the-test]"
+            ),
+            String::from(
+                "[update][fx-1][--if-status][closed][--assignee][][--unset-metadata]\
+                 [fleet.orders][--status][open][--actor][run:the-test]"
             ),
             format!(
                 "[update][fx-1][--if-assignee][{SEAT}][--if-status][in_progress][--assignee][]\
@@ -1018,7 +1154,7 @@ fn an_update_naming_nothing_runs_nothing() {
     assert_eq!(
         answer,
         Err(StoreError::Unreadable(String::from(
-            "an update names neither a title nor an assignee — nothing was written"
+            "an update names no title, assignee or status — nothing was written"
         )))
     );
     assert_eq!(argvs(&log, &root), Vec::<String>::new(), "bd was not asked");
@@ -1155,7 +1291,28 @@ fn a_write_on_an_item_bd_does_not_hold_is_refused() {
         ("run.set", Box::new(|bd| bd.run_set(&id, &run, &the_test()))),
         (
             "order.withdraw",
-            Box::new(|bd| bd.order_withdraw(&id, &the_test())),
+            Box::new(|bd| bd.order_withdraw(&id, &WithdrawFence::default(), &the_test())),
+        ),
+        (
+            "a fenced update",
+            Box::new(|bd| {
+                let reopened = Update {
+                    status: Some(Status::Open),
+                    ..Update::fenced(Some(seat))
+                };
+                bd.update(&id, &reopened, &the_test())
+            }),
+        ),
+        (
+            "a fenced order.withdraw",
+            Box::new(|bd| {
+                let fence = WithdrawFence {
+                    if_assignee: Some(None),
+                    if_status: Some(Status::InProgress),
+                    reopen: true,
+                };
+                bd.order_withdraw(&id, &fence, &the_test())
+            }),
         ),
         ("reopen", Box::new(|bd| bd.reopen(gone, "run:the-test"))),
         (

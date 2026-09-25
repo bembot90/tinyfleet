@@ -1793,8 +1793,8 @@ pub(crate) fn run_record(store: &dyn Store, by: &Actor) -> Result<Item, Stop> {
     match store.show(&by.id) {
         Ok(record) if record.labels.iter().any(|label| label == run::LABEL) => Ok(record),
         Ok(_) | Err(StoreError::Refused(_)) => Err(named_no_run()),
-        // A read never answers `Moved`, which only a fenced write does.
-        Err(StoreError::Unreadable(why) | StoreError::Moved(why)) => {
+        // A read never answers `Moved` or `Usage`, which only a write does.
+        Err(StoreError::Unreadable(why) | StoreError::Moved(why) | StoreError::Usage(why)) => {
             Err(Stop::could_not_tell(format!(
                 "the store could not say whether `{}` is a run's record: {why} — a run's landing \
                  acts as the reviewer, and this is where its record is read",

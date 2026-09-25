@@ -26,12 +26,13 @@ pub mod types;
 
 pub use types::{
     Filter, HoldId, Item, ItemId, ItemSummary, NewItem, Order, OrderKind, OrderState, ReadProof,
-    RunRecord, Stamp, Status, Update, Version,
+    RunRecord, Stamp, Status, Update, Version, WithdrawFence,
 };
 
 /// The ways a store call ends badly, which are different exits: an act the
 /// record refuses, or an item not held by whom the write required, is the
-/// record's answer, and a store that will not answer is no reading at all.
+/// record's answer; a write no store takes is the caller's mistake; and a
+/// store that will not answer is no reading at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
     /// The store answered, and its answer is that the act cannot be done as
@@ -41,6 +42,10 @@ pub enum StoreError {
     /// The store answered, and its answer is that the item is held by someone
     /// other than the holder a fenced write named — so NOTHING was written.
     Moved(String),
+    /// The write asked for is one the contract refuses whatever the store
+    /// holds — an update setting a status other than `open` — and it is
+    /// answered before the store is asked, with nothing written.
+    Usage(String),
     /// The store could not be run, or did not answer something readable.
     Unreadable(String),
 }
@@ -50,6 +55,7 @@ impl std::fmt::Display for StoreError {
         match self {
             StoreError::Refused(why) => write!(f, "{why}"),
             StoreError::Moved(why) => write!(f, "{why}"),
+            StoreError::Usage(why) => write!(f, "{why}"),
             StoreError::Unreadable(why) => write!(f, "{why}"),
         }
     }
@@ -81,12 +87,12 @@ impl std::fmt::Display for StoreError {
 /// | `export` | [`export`](Store::export) |
 /// | `scratch` | [`scratch`](Store::scratch) |
 ///
-/// BESIDE THE TABLE are the fenced writes, which the contract does not name
-/// yet and whose defaults are written in its verbs: [`hand_over`], an update
-/// that lands only while the holder it names still holds the item;
-/// [`reopen`]; and [`order_withdraw_from`], the withdrawal a retire makes,
-/// fenced on the retiring seat and the status it listed. A store with a fence
-/// of its own takes each in one call.
+/// BESIDE THE TABLE are three writes the contract's own fences express, whose
+/// defaults are written in its verbs: [`hand_over`], an update fenced on
+/// `if_assignee`; [`reopen`], an update of `status`; and
+/// [`order_withdraw_from`], the withdrawal a retire makes, fenced on the
+/// retiring seat and the status it listed and reopening the item. A store
+/// with a fence of its own takes each in one call.
 ///
 /// No storage shape crosses this trait: an order and a run's record go in as
 /// the contract's own types, and where a store keeps them is its adapter's.
@@ -130,12 +136,18 @@ pub trait Store {
     /// and nothing is sent: the store is never asked to file it.
     fn create(&self, item: &NewItem, by: &Actor) -> Result<ItemId, StoreError>;
 
-    /// The item's title, its assignee or both moved in ONE write. A field the
-    /// change leaves out is left alone, and an assignee of `None` is the item
-    /// handed to nobody.
+    /// The item's title, its assignee and its status moved in ONE write. A
+    /// field the change leaves out is left alone, an assignee of `None` is
+    /// the item handed to nobody, and the status is `open` or left alone.
     ///
-    /// A change naming neither is Unreadable, and nothing is written: it is a
-    /// caller's mistake, and never a write that quietly did nothing.
+    /// A change carrying `if_assignee` lands only while that seat holds the
+    /// item — `None` for nobody — and is [`StoreError::Moved`] otherwise, with
+    /// nothing written.
+    ///
+    /// A change naming no field is Unreadable, and one setting a status other
+    /// than `open` is [`StoreError::Usage`]; both are answered before the
+    /// store is asked, with nothing written: a caller's mistake, and never a
+    /// write that quietly did something else.
     fn update(&self, id: &ItemId, change: &Update, by: &Actor) -> Result<(), StoreError>;
 
     /// The item handed from `from` to `to`, and only while `from` still holds
@@ -183,14 +195,24 @@ pub trait Store {
     /// the order without touching the record.
     fn order_set(&self, id: &ItemId, order: &Order, by: &Actor) -> Result<(), StoreError>;
 
-    /// The assignee cleared and the order taken away in ONE act. After any
-    /// answer, an item never reads with its assignee cleared while its order
-    /// stands.
+    /// The assignee cleared and the order taken away in ONE act — and the
+    /// status set to `open` in the same act where the fence says `reopen`.
+    /// After any answer, an item never reads with its assignee cleared while
+    /// its order stands.
+    ///
+    /// A fence the item does not meet — another holder than `if_assignee`,
+    /// another status than `if_status` — is [`StoreError::Moved`], with
+    /// nothing written. [`WithdrawFence::default`] is the plain withdrawal.
     ///
     /// NO DEFAULT BODY: two writes in a row are exactly the half-withdrawal
-    /// the one act exists to rule out, so every store says how it takes both
-    /// at once.
-    fn order_withdraw(&self, id: &ItemId, by: &Actor) -> Result<(), StoreError>;
+    /// the one act exists to rule out, so every store says how it takes all
+    /// of it at once.
+    fn order_withdraw(
+        &self,
+        id: &ItemId,
+        fence: &WithdrawFence,
+        by: &Actor,
+    ) -> Result<(), StoreError>;
 
     /// The run's record on the item that records it, replaced whole. The
     /// order beside it is left as it was.
@@ -232,7 +254,7 @@ pub trait Store {
             return Err(restatused(id, status.as_str(), read.status.as_str()));
         }
         self.reopen(id, &by.to_string())?;
-        self.order_withdraw(id, by)
+        self.order_withdraw(id, &WithdrawFence::default(), by)
     }
 
     /// A hold raised on this item, answered as the hold's own id.
@@ -587,12 +609,22 @@ pub(crate) fn validated_new(item: &NewItem) -> Result<(), StoreError> {
     })
 }
 
-/// The refusal an update naming neither a title nor an assignee answers — the
-/// one both stores answer, word for word, before anything is run.
-pub(crate) fn unchanged() -> StoreError {
-    StoreError::Unreadable(String::from(
-        "an update names neither a title nor an assignee — nothing was written",
-    ))
+/// The change, or the refusal every store answers for one it must not take,
+/// word for word and before anything is run: a change naming no field, and a
+/// status other than `open`.
+pub(crate) fn writable(change: &Update) -> Result<(), StoreError> {
+    if change.is_empty() {
+        return Err(StoreError::Unreadable(String::from(
+            "an update names no title, assignee or status — nothing was written",
+        )));
+    }
+    match &change.status {
+        Some(status) if *status != Status::Open => Err(StoreError::Usage(format!(
+            "an update sets a status only to open, and this one names `{status}` — nothing was \
+             written"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// The refusal a close of an item already closed answers.

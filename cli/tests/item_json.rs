@@ -1125,10 +1125,11 @@ impl Drop for Named {
 }
 
 /// The one item the adapter holds, as its `show` answers it.
-const SHOWN: &str = r#"{"schema_version":1,"item":{"id":"fx-c3d4","title":"an item only the adapter holds","status":"open","type":"task","labels":["fleet"],"order":{"state":"none"}}}"#;
+const SHOWN: &str = r#"{"schema_version":1,"item":{"id":"fx-c3d4","title":"an item only the adapter holds","description":"what the adapter says of it","status":"open","type":"task","labels":["fleet"],"order":{"state":"none"}}}"#;
 
 /// `[store] adapter` naming an executable by absolute path: `item show` reads
-/// the item through it, and the item's title is the one the adapter answered.
+/// the item through it, and the item's title and description are the ones the
+/// adapter answered.
 /// The `show` request names the project's root — the contract's envelope,
 /// which only the opener that picked this adapter for this project can fill.
 ///
@@ -1154,6 +1155,7 @@ fn a_project_naming_an_adapter_executable_is_read_through_it() {
     let data = data_of(&out, "item show");
     assert_eq!(data["id"], "fx-c3d4", "the id the adapter answered: {data}");
     assert_eq!(data["title"], "an item only the adapter holds", "{data}");
+    assert_eq!(data["description"], "what the adapter says of it", "{data}");
 
     let request = std::fs::read_to_string(named.root.join("request.json"))
         .expect("the adapter recorded the show request");

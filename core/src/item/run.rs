@@ -533,8 +533,8 @@ pub fn cancel(
         StoreError::Refused(why) => Stop::refused(format!(
             "{run} is not an item this project's store holds — {why}"
         )),
-        // A read never answers `Moved`, which only a fenced write does.
-        StoreError::Unreadable(why) | StoreError::Moved(why) => {
+        // A read never answers `Moved` or `Usage`, which only a write does.
+        StoreError::Unreadable(why) | StoreError::Moved(why) | StoreError::Usage(why) => {
             Stop::could_not_tell(format!("{run} could not be read: {why}"))
         }
     })?;

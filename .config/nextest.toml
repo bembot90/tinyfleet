@@ -35,9 +35,18 @@ default-filter = 'not binary(/^ring_/)'
 # one after the other, and 125.4 s and 128.5 s side by side at -j 2 — each
 # doubles the other, and side by side under the rest of the suite both met the
 # 160 s kill. One at a time keeps each arm's own seconds.
+#
+# Their period is their OWN, measured: with the fence checks in the table, on
+# 2026-09-25 at a load of 2.6 to 5.2 from the box's other seats, three runs of
+# each arm alone, one after another — every_check_holds_against_bd_too 75.0 s,
+# 70.7 s and 135.9 s; the_bd_adapter_makes_a_scratch_store_every_check_holds_on
+# 78.5 s, 137.6 s and 135.3 s — and one run of the contract binary under this
+# profile, 168.1 s and 175.2 s. The slowest, 175.2 s, rounded up is the period,
+# so two of them are the kill: the default's 160 s kill is under that reading.
 [[profile.default.overrides]]
 filter = 'binary_id(fleet-core::contract) & (test(=every_check_holds_against_bd_too) | test(=the_bd_adapter_makes_a_scratch_store_every_check_holds_on))'
 test-group = 'contract-bd'
+slow-timeout = { period = "180s", terminate-after = 2, grace-period = "5s" }
 
 # The junit report is the instrument: tools/suite-profile reads every arm's
 # seconds and the run's test-phase time from it. Written under this profile's

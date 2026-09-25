@@ -20,8 +20,9 @@ use crate::store::bd::{
 };
 use crate::store::types::{Capabilities, ExportSpec};
 use crate::store::{
-    already_cleared, already_closed, unchanged, validated_new, Filter, HoldId, Item, ItemId,
+    already_cleared, already_closed, validated_new, writable, Filter, HoldId, Item, ItemId,
     ItemSummary, NewItem, Order, OrderState, RunRecord, Status, Store, StoreError, Update, Version,
+    WithdrawFence,
 };
 
 /// Where the fake's export goes, relative to the root it is handed: a file of
@@ -248,9 +249,10 @@ impl FakeStore {
         Ok(())
     }
 
-    /// The fence a hand-over writes behind: the item held by `holder` (`""`
-    /// for nobody), or [`StoreError::Moved`] and nothing written — the rule
-    /// bd's `--if-assignee` keeps.
+    /// The fence a hand-over, a fenced update and a fenced withdrawal write
+    /// behind: the item held by `holder` (`""` for nobody), or
+    /// [`StoreError::Moved`] and nothing written — the rule bd's
+    /// `--if-assignee` keeps.
     fn held_by(&self, item: &str, holder: &str) -> Result<(), StoreError> {
         let items = self.items.lock().expect("the items are not poisoned");
         let held = items
@@ -588,6 +590,13 @@ fn row_of(
     serde_json::Value::Object(row)
 }
 
+/// A holder as a log line names one: the seat, or `nobody`.
+fn logged(holder: &Option<SeatId>) -> String {
+    holder
+        .map(|seat| seat.to_string())
+        .unwrap_or_else(|| String::from("nobody"))
+}
+
 /// The ids a `show` argument names, by the rule bd 1.3.0 resolves one with —
 /// measured on a scratch board. A whole id names itself. Else a whole HASH, the
 /// part after the prefix, names its item (`7cx` is `fx-7cx`, even with a child
@@ -698,29 +707,38 @@ impl Store for FakeStore {
     }
 
     /// One log line naming each field the change moves — `title <t>`,
-    /// `assignee <seat>` or `assignee nobody` — and the moves themselves. An
-    /// assignee handed to nobody is ABSENT, as bd answers one it cleared.
+    /// `assignee <seat>` or `assignee nobody`, `status open` — and the fence
+    /// it names, `if_assignee <seat>` or `if_assignee nobody`; then the moves
+    /// themselves, only while the fence holds. An assignee handed to nobody is
+    /// ABSENT, as bd answers one it cleared.
     fn update(&self, id: &ItemId, change: &Update, by: &Actor) -> Result<(), StoreError> {
-        if change.is_empty() {
-            return Err(unchanged());
-        }
+        writable(change)?;
         let mut line = format!("update {id}");
         if let Some(title) = &change.title {
             line.push_str(&format!(" title {title}"));
         }
         if let Some(assignee) = &change.assignee {
-            match assignee {
-                Some(seat) => line.push_str(&format!(" assignee {seat}")),
-                None => line.push_str(" assignee nobody"),
-            }
+            line.push_str(&format!(" assignee {}", logged(assignee)));
+        }
+        if let Some(status) = &change.status {
+            line.push_str(&format!(" status {status}"));
+        }
+        if let Some(holder) = &change.if_assignee {
+            line.push_str(&format!(" if_assignee {}", logged(holder)));
         }
         self.log(format!("{line} {by}"))?;
+        if let Some(holder) = &change.if_assignee {
+            self.held_by(id, &holder.map(|seat| seat.to_string()).unwrap_or_default())?;
+        }
         self.moving(id, |held| {
             if let Some(title) = &change.title {
                 held.title = title.clone();
             }
             if let Some(assignee) = &change.assignee {
                 held.assignee = *assignee;
+            }
+            if let Some(status) = &change.status {
+                held.status = status.clone();
             }
         })
     }
@@ -758,12 +776,40 @@ impl Store for FakeStore {
         self.merged(id, metadata)
     }
 
-    /// One log line and both moves, which is what the real store's one call
-    /// leaves: the assignee ABSENT, as bd answers one it cleared, and the key
-    /// gone.
-    fn order_withdraw(&self, id: &ItemId, by: &Actor) -> Result<(), StoreError> {
-        self.log(format!("order_withdraw {id} {by}"))?;
-        self.moving(id, |held| held.assignee = None)?;
+    /// One log line and every move, which is what the real store's one call
+    /// leaves: the assignee ABSENT, as bd answers one it cleared, the key gone
+    /// and, where the fence says `reopen`, the status open. No move is made
+    /// while the item misses a fence the caller named — bd's `--if-assignee`
+    /// and `--if-status`.
+    fn order_withdraw(
+        &self,
+        id: &ItemId,
+        fence: &WithdrawFence,
+        by: &Actor,
+    ) -> Result<(), StoreError> {
+        let mut line = format!("order_withdraw {id}");
+        if let Some(holder) = &fence.if_assignee {
+            line.push_str(&format!(" if_assignee {}", logged(holder)));
+        }
+        if let Some(status) = &fence.if_status {
+            line.push_str(&format!(" if_status {status}"));
+        }
+        if fence.reopen {
+            line.push_str(" reopen");
+        }
+        self.log(format!("{line} {by}"))?;
+        if let Some(holder) = &fence.if_assignee {
+            self.held_by(id, &holder.map(|seat| seat.to_string()).unwrap_or_default())?;
+        }
+        if let Some(status) = &fence.if_status {
+            self.status_is(id, status.as_str())?;
+        }
+        self.moving(id, |held| {
+            held.assignee = None;
+            if fence.reopen {
+                held.status = Status::Open;
+            }
+        })?;
         self.metadata_write(id, |object| {
             object.remove(keys::ORDERS);
         })
@@ -1066,8 +1112,13 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     fn order_set(&self, id: &ItemId, order: &Order, by: &Actor) -> Result<(), StoreError> {
         (**self).order_set(id, order, by)
     }
-    fn order_withdraw(&self, id: &ItemId, by: &Actor) -> Result<(), StoreError> {
-        (**self).order_withdraw(id, by)
+    fn order_withdraw(
+        &self,
+        id: &ItemId,
+        fence: &WithdrawFence,
+        by: &Actor,
+    ) -> Result<(), StoreError> {
+        (**self).order_withdraw(id, fence, by)
     }
     fn run_set(&self, id: &ItemId, run: &RunRecord, by: &Actor) -> Result<(), StoreError> {
         (**self).run_set(id, run, by)

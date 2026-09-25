@@ -72,13 +72,15 @@ impl Stop {
     }
 }
 
-/// The store's two answers in the exit vocabulary: an item that is not there is
-/// refused on the record, and a store that would not answer is could-not-tell.
-/// The store's own sentence is the message, word for word.
+/// The store's answers in the exit vocabulary: an item that is not there is
+/// refused on the record, a write no store takes is usage, and a store that
+/// would not answer is could-not-tell. The store's own sentence is the
+/// message, word for word.
 impl From<StoreError> for Stop {
     fn from(e: StoreError) -> Stop {
         match e {
             StoreError::Refused(why) | StoreError::Moved(why) => Stop::refused(why),
+            StoreError::Usage(why) => Stop::usage(why),
             StoreError::Unreadable(why) => Stop::could_not_tell(why),
         }
     }

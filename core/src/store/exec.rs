@@ -34,9 +34,9 @@ use super::types::{
     RefusalReason, Resolved, Scratched, Shown,
 };
 use super::{
-    first_value, tail, unchanged, validated, validated_new, Filter, HoldId, Item, ItemId,
+    first_value, tail, validated, validated_new, writable, Filter, HoldId, Item, ItemId,
     ItemSummary, NewItem, Order, ReadProof, RunRecord, Store, StoreError, Update, Version,
-    STORE_TIMEOUT,
+    WithdrawFence, STORE_TIMEOUT,
 };
 use crate::entry::{self, Body, Entry};
 use crate::process::{deadline_cause, run_bounded_fed};
@@ -169,7 +169,8 @@ impl Exec {
 
 /// Exit 1's refusal as the record's answer, by its reason. `subject` is the
 /// text the request named the item by; a verb that names none is refused in
-/// the adapter's own words.
+/// the adapter's own words. `moved` is a fence the item did not meet, and its
+/// message is the adapter's, which names what holds the item.
 fn on_the_record(refused: Refusal, subject: Option<String>) -> StoreError {
     let Refusal {
         reason,
@@ -177,8 +178,8 @@ fn on_the_record(refused: Refusal, subject: Option<String>) -> StoreError {
         candidates,
     } = refused;
     let subject = subject.unwrap_or_else(|| message.clone());
-    StoreError::Refused(match reason {
-        RefusalReason::Missing => format!("{subject} is not in the store"),
+    match reason {
+        RefusalReason::Missing => StoreError::Refused(format!("{subject} is not in the store")),
         RefusalReason::Ambiguous => {
             let named = if candidates.is_empty() {
                 message
@@ -189,13 +190,14 @@ fn on_the_record(refused: Refusal, subject: Option<String>) -> StoreError {
                     .collect::<Vec<_>>()
                     .join(", ")
             };
-            format!(
+            StoreError::Refused(format!(
                 "{subject} matches more than one item — {named} — and more of the id says which \
                  one this is"
-            )
+            ))
         }
-        RefusalReason::Already => message,
-    })
+        RefusalReason::Already => StoreError::Refused(message),
+        RefusalReason::Moved => StoreError::Moved(message),
+    }
 }
 
 /// The refusal with what the adapter said last on stderr beside it, where it
@@ -252,10 +254,10 @@ impl Store for Exec {
         Ok(id)
     }
 
+    /// A change no store takes is refused here and the adapter is never run:
+    /// a status other than `open` is usage on this side of the call too.
     fn update(&self, id: &ItemId, change: &Update, by: &Actor) -> Result<(), StoreError> {
-        if change.is_empty() {
-            return Err(unchanged());
-        }
+        writable(change)?;
         let mut request = fields(json!({ "id": id, "by": by }));
         request.extend(fields(json!(change)));
         self.call::<Answered>("update", request).map(|_| ())
@@ -269,9 +271,17 @@ impl Store for Exec {
         .map(|_| ())
     }
 
-    fn order_withdraw(&self, id: &ItemId, by: &Actor) -> Result<(), StoreError> {
-        self.call::<Answered>("order.withdraw", fields(json!({ "id": id, "by": by })))
-            .map(|_| ())
+    /// The fence's fields beside the id, each only where it is set: the plain
+    /// withdrawal is the request it always was.
+    fn order_withdraw(
+        &self,
+        id: &ItemId,
+        fence: &WithdrawFence,
+        by: &Actor,
+    ) -> Result<(), StoreError> {
+        let mut request = fields(json!({ "id": id, "by": by }));
+        request.extend(fields(json!(fence)));
+        self.call::<Answered>("order.withdraw", request).map(|_| ())
     }
 
     fn run_set(&self, id: &ItemId, run: &RunRecord, by: &Actor) -> Result<(), StoreError> {
@@ -279,17 +289,29 @@ impl Store for Exec {
             .map(|_| ())
     }
 
-    /// THE CONTRACT HAS NO REOPEN, so none is asked for: an adapter answers
-    /// the verbs `docs/store.md` names, and a status write is not one. So the
-    /// trait's default [`order_withdraw_from`](Store::order_withdraw_from),
-    /// which this store takes as it is, refuses after its fence's read with
-    /// nothing written.
-    fn reopen(&self, item: &str, _by: &str) -> Result<(), StoreError> {
-        Err(StoreError::Unreadable(format!(
-            "the store contract has no verb that reopens an item, so {} is not asked to reopen \
-             {item} — nothing was written",
-            self.adapter.display()
-        )))
+    /// The contract's reopen is an `update` whose status is `open`, under the
+    /// actor the text types as: text that is no typed actor is Unreadable,
+    /// with nothing asked.
+    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
+        let actor = match Actor::typed(by) {
+            Some(Ok(actor)) => actor,
+            Some(Err(why)) => {
+                return Err(StoreError::Unreadable(format!(
+                    "{why} — nothing was written"
+                )))
+            }
+            None => {
+                return Err(StoreError::Unreadable(format!(
+                    "`{by}` is not a typed actor, and a reopen of {item} is written under one \
+                     — nothing was written"
+                )))
+            }
+        };
+        let reopened = Update {
+            status: Some(super::Status::Open),
+            ..Update::default()
+        };
+        self.update(&ItemId::from(item), &reopened, &actor)
     }
 
     fn hold_raise(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<HoldId, StoreError> {
@@ -811,7 +833,7 @@ mod tests {
 
         let stub = Stub::new("unchanged", &answers(r#"{"schema_version":1}"#, 0));
         let why = unreadable(stub.exec().update(&id(), &Update::default(), &by()));
-        assert!(why.starts_with("an update names neither"), "{why}");
+        assert!(why.starts_with("an update names no title"), "{why}");
         assert!(stub.verbs().is_empty(), "nothing was run");
 
         let stub = Stub::new(
@@ -829,6 +851,128 @@ mod tests {
             "the item `t` does not validate: priority is 5; the range is 0 to 4 — nothing was written"
         );
         assert!(stub.verbs().is_empty(), "nothing was sent");
+    }
+
+    /// The fences go out as the verb's own fields — `null` for nobody — and
+    /// the plain withdrawal carries none of them.
+    #[test]
+    fn a_fenced_write_carries_its_fence_and_a_plain_one_none() {
+        let seat = crate::seat::identity::SeatId::parse(SEAT).expect("a seat id");
+        let stub = Stub::new("fenced-update", &answers(r#"{"schema_version":1}"#, 0));
+        let reopened = Update {
+            status: Some(types::Status::Open),
+            ..Update::fenced(None)
+        };
+        stub.exec()
+            .update(&id(), &reopened, &by())
+            .expect("the update was taken");
+        let request = stub.request();
+        assert_eq!(request["if_assignee"], Value::Null, "{request}");
+        assert!(request
+            .as_object()
+            .expect("an object")
+            .contains_key("if_assignee"));
+        assert_eq!(request["status"], "open");
+        assert!(request.get("assignee").is_none(), "{request}");
+
+        let stub = Stub::new("plain-withdraw", &answers(r#"{"schema_version":1}"#, 0));
+        stub.exec()
+            .order_withdraw(&id(), &WithdrawFence::default(), &by())
+            .expect("the withdrawal was taken");
+        assert_eq!(
+            stub.request(),
+            json!({
+                "id": "fx-a1b2",
+                "by": "routine:nightly",
+                "schema_version": 1,
+                "root": stub.dir.display().to_string(),
+            })
+        );
+
+        let stub = Stub::new("fenced-withdraw", &answers(r#"{"schema_version":1}"#, 0));
+        let fence = WithdrawFence {
+            if_assignee: Some(Some(seat)),
+            if_status: Some(types::Status::InProgress),
+            reopen: true,
+        };
+        stub.exec()
+            .order_withdraw(&id(), &fence, &by())
+            .expect("the withdrawal was taken");
+        let request = stub.request();
+        assert_eq!(request["if_assignee"], SEAT);
+        assert_eq!(request["if_status"], "in_progress");
+        assert_eq!(request["reopen"], true);
+    }
+
+    /// A status other than `open` is usage, answered before the adapter is
+    /// run — the exit-2 row of the caller's own table.
+    #[test]
+    fn a_status_other_than_open_is_usage_and_runs_nothing() {
+        let stub = Stub::new("closing", &answers(r#"{"schema_version":1}"#, 0));
+        let closing = Update {
+            status: Some(types::Status::Closed),
+            ..Update::default()
+        };
+        match stub.exec().update(&id(), &closing, &by()) {
+            Err(StoreError::Usage(why)) => assert_eq!(
+                why,
+                "an update sets a status only to open, and this one names `closed` — nothing \
+                 was written"
+            ),
+            other => panic!("wanted Usage, got {other:?}"),
+        }
+        assert!(stub.verbs().is_empty(), "nothing was run");
+    }
+
+    /// Exit 1 with `moved` is the fence the item did not meet, in the
+    /// adapter's words, which name what holds it.
+    #[test]
+    fn an_exit_1_moved_is_moved_in_the_adapters_words() {
+        let stub = Stub::new(
+            "moved",
+            &answers(
+                r#"{"schema_version":1,"refused":{"reason":"moved","message":"fx-a1b2 is held by 0199a3c4-7d8e-7f90-a1b2-c3d4e5f60718"}}"#,
+                1,
+            ),
+        );
+        let answer = stub.exec().update(
+            &id(),
+            &Update {
+                assignee: Some(None),
+                ..Update::fenced(None)
+            },
+            &by(),
+        );
+        assert_eq!(
+            answer,
+            Err(StoreError::Moved(format!("fx-a1b2 is held by {SEAT}")))
+        );
+    }
+
+    /// The reopen is the contract's `update` with status `open`.
+    #[test]
+    fn a_reopen_is_an_update_to_open() {
+        let stub = Stub::new("reopen", &answers(r#"{"schema_version":1}"#, 0));
+        stub.exec()
+            .reopen("fx-a1b2", "routine:nightly")
+            .expect("the reopen was taken");
+        assert_eq!(stub.verbs(), ["update"]);
+        let request = stub.request();
+        assert_eq!(request["status"], "open");
+        assert_eq!(request["by"], "routine:nightly");
+    }
+
+    /// The description an adapter answers is the item's.
+    #[test]
+    fn a_show_answers_the_description_the_adapter_sent() {
+        let shown = SHOWN.replacen(
+            r#""status""#,
+            r#""description":"The stamp gains a seconds field.","status""#,
+            1,
+        );
+        let stub = Stub::new("described", &answers(&shown, 0));
+        let item = stub.exec().show("a1b2").expect("the stub answered an item");
+        assert_eq!(item.description, "The stamp gains a seconds field.");
     }
 
     /// A timeline's entries read in the shape `fleet item show --json` prints
