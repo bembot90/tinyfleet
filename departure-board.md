@@ -81,9 +81,9 @@ dependencies are the real blockers.
 | fleet-zlk.6 | `fleet deliver --delivery <file.json>` — the seat hands in JSON validated before any write, and `--item` checks the h… | fleet-iex.9, fleet-zlk.3, fleet-zlk.4 | ☑ |
 | fleet-zlk.7 | deliver writes the delivered entry, and review and land read the delivery off the timeline | fleet-zlk.2, fleet-zlk.6 | ☑ |
 | fleet-zlk.8 | `fleet review --return <file.json>` — findings are JSON, and takeoff's return writes a findings file the verb accepts | fleet-zlk.3, fleet-zlk.4 | ☑ |
-| fleet-zlk.9 | review writes the reviewed entry; review refuses a reviewer who is not the item's; land lands only its own reviewer's… | fleet-zlk.7, fleet-zlk.8 | ☐ |
+| fleet-zlk.9 | review writes the reviewed entry; review refuses a reviewer who is not the item's; land lands only its own reviewer's… | fleet-zlk.7, fleet-zlk.8 | ☑ |
 | fleet-zlk.10 | `fleet hold --question <file.json>` — a seat's and a run's question is JSON, and the brief shows its schema | fleet-zlk.3, fleet-zlk.4, fleet-zlk.6 | ☑ |
-| fleet-zlk.11 | hold, clear, cancel and the crash cap write held / cleared entries; clear reads the open hold off the timeline; a run… | fleet-zlk.2, fleet-zlk.8, fleet-zlk.10 | ☐ |
+| fleet-zlk.11 | hold, clear, cancel and the crash cap write held / cleared entries; clear reads the open hold off the timeline; a run… | fleet-zlk.2, fleet-zlk.8, fleet-zlk.10 | ☑ |
 | fleet-zlk.12 | land writes the landed entry with full shas, and retire's branch release reads it | fleet-zlk.2, fleet-zlk.7, fleet-zlk.9, fleet-zlk.11 | ☐ |
 | fleet-zlk.13 | fleet status counts open holds off every registered project's store, not the stream | fleet-zlk.11 | ☐ |
 | fleet-zlk.14 | the SDK reads the store through `fleet item show --json` — until, spawn and hold — and a wake names kinds and a strea… | fleet-zlk.4, fleet-zlk.5, fleet-zlk.7, fleet-zlk.9, fleet-zlk.11, fleet-zlk.12 | ☐ |
