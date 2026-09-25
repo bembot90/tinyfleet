@@ -16,13 +16,13 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use common::{fleet_of, full, keys_agree, seat_actor, Graph, Rooted, StubEvents};
+use fleet_core::entry::{Body, Entry, Timeline};
 use fleet_core::input::{DeliveryInput, DELIVERY_SCHEMA};
 use fleet_core::item::brief::Packs;
-use fleet_core::item::deliver::{self, transitional_note, Delivered, Delivery, Wiring};
+use fleet_core::item::deliver::{self, Delivered, Delivery, Wiring};
 use fleet_core::item::review::{self, Mode, Verdict};
 use fleet_core::item::{
-    control_token, label_value, last_delivery, run, Change, Git, Project, Ring, RingOutcome, Stop,
-    ITEM_DELIVERED, TRUNK,
+    control_token, run, Change, Git, Project, Ring, RingOutcome, Stop, ITEM_DELIVERED, TRUNK,
 };
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::store::{AssignedItem, Item, Store, StoreError};
@@ -140,11 +140,14 @@ impl Ring for StubRing {
 }
 
 /// The real store with one reading bent, so an arm can force the disagreement
-/// the read-back exists to catch.
+/// the read-back exists to catch — or with its entry append refused, which is
+/// the write a real store will not refuse on demand.
 struct Doctored<'a> {
     inner: &'a dyn Store,
     assignee: Option<String>,
     append: Option<String>,
+    /// Answered by `append` instead of the write.
+    unwritable: Option<String>,
 }
 
 impl Store for Doctored<'_> {
@@ -229,6 +232,9 @@ impl Store for Doctored<'_> {
         body: &fleet_core::entry::Body,
         by: &fleet_core::seat::actor::Actor,
     ) -> Result<String, StoreError> {
+        if let Some(why) = &self.unwritable {
+            return Err(StoreError::Unreadable(why.clone()));
+        }
         self.inner.append(item, body, by)
     }
 
@@ -325,9 +331,23 @@ fn whole() -> serde_json::Value {
     })
 }
 
-/// A delivery as the verb reads it, for the note an arm expects rendered.
+/// A delivery as the verb reads it, for the entry an arm expects written.
 fn input_of(body: &serde_json::Value) -> DeliveryInput {
     serde_json::from_value(body.clone()).expect("the delivery reads as the type")
+}
+
+/// The entry a delivery of `body` at the stub's commit, branch and base is.
+fn expected(body: &serde_json::Value, commit: &str) -> Body {
+    Body::Delivered(input_of(body).into_delivered(
+        commit.to_string(),
+        BRANCH.to_string(),
+        TRUNK_SHA.to_string(),
+    ))
+}
+
+/// The item's timeline, as the store answers it.
+fn timeline(graph: &Graph, item: &str) -> Vec<Entry> {
+    graph.store().timeline(item).expect("the timeline reads")
 }
 
 /// What an arm varies, gathered so the call below reads as the arm and not as
@@ -383,10 +403,10 @@ fn read(graph: &Graph, item: &str) -> Item {
 // ---- the arms ----------------------------------------------------------------
 
 /// THE INTEGRATION RING of this suite, and the one arm here that delivers
-/// through `bd`: the reassignment and the note written and read back through
-/// the store the verb actually talks to.
+/// through `bd`: the reassignment and the delivered entry written and read
+/// back through the store the verb actually talks to.
 #[test]
-fn a_clean_delivery_commits_reassigns_and_writes_the_note_it_rendered() {
+fn a_clean_delivery_commits_reassigns_and_writes_the_delivered_entry() {
     let scratch = &ring();
     let seat = "s-clean";
     let item = an_ordered_item(scratch, "an item to deliver", seat);
@@ -418,47 +438,20 @@ fn a_clean_delivery_commits_reassigns_and_writes_the_note_it_rendered() {
         "the seat the reviewer policy names, by its id"
     );
 
-    // The note is RENDERED from the delivery, line for line as the grammar the
-    // readers anchor on has it: the three machine lines from the verb's own
-    // values, and every other line from the seat's JSON.
-    let expected = format!(
-        "DELIVERED {SHA} — {by}\n\
-         commit:  {SHA}\n\
-         branch:  {BRANCH}\n\
-         base:    {TRUNK} at {TRUNK_SHA}, read at {AT}\n\
-         files:   a/file.rs\n\
-         checks:  AC1: green, read from the arm's own status\n\
-         suite:   the workspace suite, rc 0\n\
-         spec corrections: none\n\
-         not proven: nothing this arm did not run — cargo nextest run\n\
-         decisions: 2\n\
-         \x20 D1 the seat's delivery is carried through; not taken: composing it here; because \
-         the words are the seat's\n\
-         \x20 D2 the machine lines are filled; not taken: trusting the seat's; because only a \
-         process knows them\n\
-         covers: R6",
-        by = seat_actor(seat)
-    );
-    assert_eq!(delivered.note, expected, "the note, rendered whole");
-    assert_eq!(
-        transitional_note(
-            &input_of(&whole()),
-            SHA,
-            BRANCH,
-            TRUNK_SHA,
-            &seat_actor(seat),
-            AT
-        ),
-        expected,
-        "and it is the renderer's own output"
-    );
+    // The timeline ENDS IN THE DELIVERED ENTRY, by the seat: the three
+    // machine fields from the verb's own values, all whole shas where they are
+    // shas, and every other field the seat's JSON as it was handed in.
+    let entries = timeline(scratch, &item);
+    let last = entries.last().expect("the timeline carries an entry");
+    assert_eq!(last.body, expected(&whole(), SHA), "the entry, whole");
+    assert_eq!(last.by, seat_actor(seat), "written by the seat delivering");
+    assert_eq!(delivered.entry, last.id, "and answered by its id");
 
     let read = read(scratch, &item);
     assert_eq!(read.assignee.as_deref(), Some(full(REVIEWER).as_str()));
-    assert_eq!(
-        last_delivery(read.notes.as_deref().expect("the item carries notes")).as_deref(),
-        Some(expected.as_str()),
-        "the note the store holds is the note that was rendered"
+    assert!(
+        !read.notes.unwrap_or_default().contains("DELIVERED"),
+        "the delivery is the entry, and no note carries one"
     );
 
     assert!(
@@ -468,7 +461,8 @@ fn a_clean_delivery_commits_reassigns_and_writes_the_note_it_rendered() {
         "the commit subject names the item by its full id: {:?}",
         git.calls()
     );
-    // The one event, carrying the three values the note's own machine lines do.
+    // The one event, carrying the three values the entry's own machine fields
+    // do.
     assert_eq!(events.count(), 1, "exactly one event");
     let (actor, payload) = events.one(ITEM_DELIVERED);
     assert_eq!(
@@ -707,22 +701,17 @@ fn a_clean_tree_ahead_of_the_base_delivers_head_and_commits_nothing() {
         "nothing was committed: {:?}",
         git.calls()
     );
-    assert_eq!(
-        label_value(&delivered.note, deliver::COMMIT).as_deref(),
-        Some(was.as_str()),
-        "the note's commit line carries that sha: {}",
-        delivered.note
-    );
+    let entries = timeline(scratch, &item);
+    let (entry, body) = Timeline(&entries)
+        .last_delivery()
+        .expect("the delivery is on the timeline");
+    assert_eq!(body.commit, was, "the entry's commit is that sha");
+    assert_eq!(entry.id, delivered.entry, "and it is the entry answered");
     let read = read(scratch, &item);
     assert_eq!(
         read.assignee.as_deref(),
         Some(full(REVIEWER).as_str()),
         "the handoff is recorded"
-    );
-    assert_eq!(
-        last_delivery(read.notes.as_deref().expect("the item carries notes")).as_deref(),
-        Some(delivered.note.as_str()),
-        "the note the store holds is the note that was rendered"
     );
     let (_, payload) = events.one(ITEM_DELIVERED);
     assert_eq!(payload["commit"], serde_json::json!(was));
@@ -811,16 +800,67 @@ fn review_shown(scratch: &Graph, item: &str) -> (review::Read, String) {
     (read, String::from_utf8(out).expect("the page is utf-8"))
 }
 
-/// A DELIVERY IS JSON, AND THE NOTE IS RENDERED FROM IT. The file reads as the
-/// binary's own type, the note written is the renderer's output whole, and the
-/// reader that has not moved yet — `review --show` — reads its commit and both
-/// numbered calls off it.
+/// A DELIVERY IS JSON, AND THE DELIVERED ENTRY IS BUILT FROM IT. The file reads
+/// as the binary's own type, the entry written carries it whole beside the
+/// three values the verb fills, and `review --show` reads its commit and both
+/// numbered calls off the entry.
 #[test]
-fn a_delivery_file_is_delivered_and_review_reads_the_note_rendered_from_it() {
+fn a_delivery_file_is_delivered_and_review_reads_the_entry_built_from_it() {
     let scratch = &store();
     let seat = "s-json";
     let item = an_ordered_item(scratch, "an item delivered as JSON", seat);
     let delivery = a_delivery(scratch, "json", &whole());
+
+    deliver_with(
+        None,
+        &delivery,
+        seat,
+        &Seams {
+            store: scratch.store(),
+            git: &StubGit::clean(),
+            ring: &StubRing::answering(RingOutcome::Delivered),
+            project: &project(scratch),
+            packs: &packs(scratch),
+            events: &StubEvents::default(),
+        },
+    )
+    .expect("the delivery is made");
+
+    let entries = timeline(scratch, &item);
+    let (_, body) = Timeline(&entries)
+        .last_delivery()
+        .expect("the delivery is on the timeline");
+    assert_eq!(
+        Body::Delivered(body.clone()),
+        expected(&whole(), SHA),
+        "the entry is the seat's JSON and the verb's three values"
+    );
+
+    let (shown, page) = review_shown(scratch, &item);
+    assert_eq!(shown.commit, SHA, "the review reads the delivered commit");
+    assert_eq!(
+        review::decisions(body),
+        vec!["D1".to_string(), "D2".to_string()],
+        "and both numbered calls"
+    );
+    for call in ["D1 the seat's delivery", "D2 the machine lines"] {
+        assert!(page.contains(call), "the page shows `{call}`:\n{page}");
+    }
+}
+
+/// THE ENTRY IS THE ONLY WRITE ABOUT THE DELIVERY. Of what the verb wrote, one
+/// line is the reassignment and one the delivered entry, by the seat; no line
+/// is a note.
+#[test]
+fn a_delivery_appends_one_delivered_entry_and_writes_no_note() {
+    let scratch = &store();
+    let seat = "s-no-note";
+    let item = an_ordered_item(scratch, "an item delivered without a note", seat);
+    let delivery = a_delivery(scratch, "no-note", &whole());
+    let Graph::Memory(board) = scratch else {
+        unreachable!("the rig is in memory");
+    };
+    board.forget_writes();
 
     let delivered = deliver_with(
         None,
@@ -837,34 +877,118 @@ fn a_delivery_file_is_delivered_and_review_reads_the_note_rendered_from_it() {
     )
     .expect("the delivery is made");
 
-    let rendered = transitional_note(
-        &input_of(&whole()),
-        SHA,
-        BRANCH,
-        TRUNK_SHA,
-        &seat_actor(seat),
-        AT,
-    );
+    let wrote = board.store.wrote();
     assert_eq!(
-        delivered.note, rendered,
-        "the note is the renderer's output"
+        wrote,
+        vec![
+            format!("assign {item} {} {}", full(REVIEWER), seat_actor(seat)),
+            format!("append {item} delivered {}", seat_actor(seat)),
+        ],
+        "the reassignment and the entry, and nothing else"
     );
-    assert_eq!(
-        last_delivery(read(scratch, &item).notes.as_deref().unwrap_or_default()).as_deref(),
-        Some(rendered.as_str()),
-        "and it is what the store holds"
+    assert!(
+        !wrote.iter().any(|line| line.starts_with("note ")),
+        "no note: {wrote:?}"
     );
+    let entries = timeline(scratch, &item);
+    let last = entries.last().expect("the timeline carries an entry");
+    assert_eq!(last.body, expected(&whole(), SHA));
+    assert_eq!(last.by, seat_actor(seat));
+    assert_eq!(delivered.entry, last.id, "the id answered is the entry's");
+}
 
-    let (shown, page) = review_shown(scratch, &item);
-    assert_eq!(shown.commit, SHA, "the review reads the delivered commit");
-    assert_eq!(
-        review::decisions(&rendered),
-        vec!["D1".to_string(), "D2".to_string()],
-        "and both numbered calls"
+/// A STORE THAT TAKES THE ENTRY AND DOES NOT KEEP IT is caught by the entry's
+/// own read-back: exit 3, saying the commit STANDS and the item is the
+/// reviewer's now — because the commit is real, and a caller that read this
+/// as nothing having happened would deliver twice. Nothing is announced and
+/// nobody is rung.
+#[test]
+fn a_delivered_entry_the_store_does_not_keep_exits_three_and_the_commit_stands() {
+    let scratch = &store();
+    let seat = "s-unkept";
+    an_ordered_item(scratch, "an item whose store forgets its writes", seat);
+    let delivery = a_delivery(scratch, "unkept", &whole());
+    let Graph::Memory(board) = scratch else {
+        unreachable!("the rig is in memory");
+    };
+    board.store.ignore_writes();
+    let ring = StubRing::answering(RingOutcome::Delivered);
+    let events = StubEvents::default();
+
+    let stop = deliver_with(
+        None,
+        &delivery,
+        seat,
+        &Seams {
+            store: scratch.store(),
+            git: &StubGit::clean(),
+            ring: &ring,
+            project: &project(scratch),
+            packs: &packs(scratch),
+            events: &events,
+        },
+    )
+    .expect_err("the entry is not on the timeline");
+
+    assert_eq!(stop.code, 3, "{}", stop.message);
+    assert!(
+        stop.message.contains("does not hold the delivered entry"),
+        "the stop names the entry the timeline does not hold: {}",
+        stop.message
     );
-    for call in ["  D1 the seat's delivery", "  D2 the machine lines"] {
-        assert!(page.contains(call), "the page shows `{call}`:\n{page}");
-    }
+    assert!(
+        stop.message
+            .contains(&format!("the commit {SHA} STANDS on the work branch and "))
+            && stop
+                .message
+                .ends_with(&format!(" is reassigned to {}", full(REVIEWER))),
+        "the commit STANDS: {}",
+        stop.message
+    );
+    assert_eq!(events.count(), 0, "nothing is announced");
+    assert!(ring.calls().is_empty(), "nobody is rung");
+}
+
+/// An entry the store REFUSES to write is exit 3 too, and says the commit
+/// STANDS and the item carries no delivery.
+#[test]
+fn a_delivered_entry_the_store_refuses_exits_three_and_the_commit_stands() {
+    let scratch = &store();
+    let seat = "s-refused";
+    let item = an_ordered_item(scratch, "an item whose store refuses the entry", seat);
+    let delivery = a_delivery(scratch, "refused", &whole());
+    let refusing = Doctored {
+        inner: scratch.store(),
+        assignee: None,
+        append: None,
+        unwritable: Some("the store would not take the comment".to_string()),
+    };
+    let events = StubEvents::default();
+
+    let stop = deliver_with(
+        None,
+        &delivery,
+        seat,
+        &Seams {
+            store: &refusing,
+            git: &StubGit::clean(),
+            ring: &StubRing::answering(RingOutcome::Delivered),
+            project: &project(scratch),
+            packs: &packs(scratch),
+            events: &events,
+        },
+    )
+    .expect_err("the entry is not written");
+
+    assert_eq!(stop.code, 3, "{}", stop.message);
+    assert_eq!(
+        stop.message,
+        format!(
+            "the delivered entry did not land: the store would not take the comment\n  the \
+             commit {SHA} STANDS on the work branch and {item} carries no delivery"
+        )
+    );
+    assert_eq!(events.count(), 0, "nothing is announced");
 }
 
 /// A FILE THAT DOES NOT READ IS REFUSED BEFORE ANY WRITE. Each of the four is
@@ -951,13 +1075,12 @@ fn a_delivery_that_does_not_read_is_refused_at_two_before_anything_is_written() 
     }
 }
 
-/// FLEET-4RL: a value that carries a marker cannot end the region it sits in.
-/// The seat writes no prose, and every newline in a value renders two spaces
-/// in, so a `because` naming a delivery and a verdict and a check result
-/// naming a return all stay inside the one delivery: the read-back passes,
-/// the last delivery is the note whole, and a review reads its commit.
+/// FLEET-4RL, CLOSED BY THE SHAPE: there is no delivery grammar for a value to
+/// break. A `because` naming a delivery and a verdict, and a check result
+/// naming a return, are values of the entry and nothing else — carried whole,
+/// newlines and all, the read-back passes, and a review reads the commit.
 #[test]
-fn a_marker_inside_a_value_stays_inside_the_delivery() {
+fn a_marker_inside_a_value_is_carried_whole_in_the_entry() {
     let scratch = &store();
     let seat = "s-4rl";
     let item = an_ordered_item(scratch, "an item whose delivery quotes markers", seat);
@@ -967,7 +1090,7 @@ fn a_marker_inside_a_value_stays_inside_the_delivery() {
     body["checks"][0]["result"] = serde_json::json!("RETURNED WITH FINDINGS a — b");
     let delivery = a_delivery(scratch, "4rl", &body);
 
-    let delivered = deliver_with(
+    deliver_with(
         None,
         &delivery,
         seat,
@@ -982,28 +1105,19 @@ fn a_marker_inside_a_value_stays_inside_the_delivery() {
     )
     .expect("the delivery is made, and its read-back passes");
 
-    assert!(
-        delivered
-            .note
-            .contains("because fine\n  DELIVERED deadbeef — x\n  ACCEPTED deadbeef — y"),
-        "each line of the value is two spaces in:\n{}",
-        delivered.note
+    let entries = timeline(scratch, &item);
+    let (_, delivered) = Timeline(&entries)
+        .last_delivery()
+        .expect("the delivery is on the timeline");
+    assert_eq!(
+        delivered.decisions[0].because, "fine\nDELIVERED deadbeef — x\nACCEPTED deadbeef — y",
+        "the value, as the seat wrote it"
     );
     assert_eq!(
-        delivered
-            .note
-            .lines()
-            .filter(|line| line.starts_with("DELIVERED"))
-            .count(),
-        1,
-        "one marker at column zero:\n{}",
-        delivered.note
+        delivered.checks[0].result, "RETURNED WITH FINDINGS a — b",
+        "and the other, as the seat wrote it"
     );
-    assert_eq!(
-        last_delivery(read(scratch, &item).notes.as_deref().unwrap_or_default()).as_deref(),
-        Some(delivered.note.as_str()),
-        "the last delivery is the note whole"
-    );
+    assert_eq!(Body::Delivered(delivered.clone()), expected(&body, SHA));
     let (shown, _) = review_shown(scratch, &item);
     assert_eq!(shown.commit, SHA, "and a review reads the delivered commit");
 }
@@ -1142,6 +1256,7 @@ fn a_read_back_that_disagrees_exits_three_and_prints_both_values() {
         inner: scratch.store(),
         assignee: Some("somebody-else".to_string()),
         append: None,
+        unwritable: None,
     };
 
     // No `--item`: the bent reading is `show`'s, which the holder check on a
@@ -1188,6 +1303,7 @@ fn the_negative_control_catches_a_planted_token() {
         inner: scratch.store(),
         assignee: None,
         append: Some(control_token().to_string()),
+        unwritable: None,
     };
 
     let stop = deliver_with(
@@ -1362,7 +1478,7 @@ fn a_run_is_no_seat_and_delivers_only_the_item_it_names() {
     );
 
     // A RUN'S OWN RECORD is the one item it holds: the run named by the
-    // record's id delivers it, signing the note with its string form.
+    // record's id delivers it, and the delivered entry is the run's.
     let record = scratch.item("a run's record");
     scratch.label(&record, run::LABEL);
     let its_run = Actor {
@@ -1371,13 +1487,12 @@ fn a_run_is_no_seat_and_delivers_only_the_item_it_names() {
     };
     let delivered = run(&its_run, Some(&record), &StubGit::clean()).expect("its own record");
     assert_eq!(delivered.item, record);
-    assert!(
-        delivered
-            .note
-            .starts_with(&format!("DELIVERED {SHA} — run:{record}")),
-        "{}",
-        delivered.note
-    );
+    let entries = timeline(scratch, &record);
+    let (entry, body) = Timeline(&entries)
+        .last_delivery()
+        .expect("the delivery is on the timeline");
+    assert_eq!(entry.by, its_run, "written by the run");
+    assert_eq!(body.commit, SHA);
 }
 
 /// `--item` NAMES AN ITEM THE ACTING SEAT HOLDS (fleet-pl6 (a)), read the way
@@ -1508,7 +1623,7 @@ fn an_item_named_by_its_suffix_is_delivered_under_its_full_id() {
 
     assert_eq!(delivered.item, item);
     let wrote = board.store.wrote();
-    for verb in ["assign", "note"] {
+    for verb in ["assign", "append"] {
         assert!(
             wrote
                 .iter()

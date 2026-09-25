@@ -42,15 +42,15 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::entry::Timeline;
 use crate::item::brief::Packs;
-use crate::item::deliver::{named, reviewer_of, BRANCH};
+use crate::item::deliver::{named, reviewer_of};
 use crate::item::lane;
 use crate::item::review::last_verdict;
 use crate::item::run;
 use crate::item::{
-    control_token, label_value, last_answer, last_delivery, last_landing, marker_block, opens_with,
-    render, Events, Git, Project, Stop, CHECK_READ, ITEM_LANDED, LANDING_MARKERS, TRUNK,
-    TRUNK_BRANCH, VERDICT_MARKERS,
+    control_token, last_answer, last_landing, marker_block, opens_with, render, Events, Git,
+    Project, Stop, CHECK_READ, ITEM_LANDED, LANDING_MARKERS, TRUNK, TRUNK_BRANCH, VERDICT_MARKERS,
 };
 use crate::policy;
 use crate::seat::actor::{Actor, ActorKind};
@@ -122,8 +122,8 @@ pub const REBASE_NEEDED: &str = "REBASE NEEDED";
 /// they are this verb's own bookkeeping and not the delivery's.
 const STORE_DIR: &str = ".beads/";
 
-/// The prefix every land branch this verb cuts is named under. A delivery note
-/// that names one names a landing's branch and not a builder's.
+/// The prefix every land branch this verb cuts is named under. A delivery that
+/// names one names a landing's branch and not a builder's.
 const LAND_PREFIX: &str = "land/";
 
 /// The machine's seat table, under the machine directory this verb is already
@@ -607,26 +607,25 @@ fn run(
     };
     let notes = item.notes.clone().unwrap_or_default();
     let accepted = accepted_commit(&item.id, &notes, commit, wiring)?;
-    let delivery = last_delivery(&notes).ok_or_else(|| {
-        Stop::refused(format!(
+    // THE DELIVERY IS THE TIMELINE'S LAST DELIVERED ENTRY. A prose delivery
+    // note is not one: the record has no delivery grammar left to read.
+    let entries = wiring.store.timeline(&item.id)?;
+    let Some((delivered_by, delivery)) = Timeline(&entries).last_delivery() else {
+        return Err(Stop::refused(format!(
             "{} carries a verdict and no delivery — the work branch and the builder are read from \
              one and there is none to read",
             item.id
-        ))
-    })?;
-    let work_branch = label_value(&delivery, BRANCH).filter(|b| !b.is_empty());
-    // The builder as the actor the delivery's own line names: a seat by its
-    // full id, and any other kind — a run's delivery names the run — in its
-    // string form, as written.
-    let builder = match after_dash(&delivery) {
-        Some(who) => match Actor::typed(&who) {
-            Some(Ok(typed)) => typed
-                .seat_id()
-                .map_or_else(|| typed.to_string(), |seat| seat.to_string()),
-            _ => who,
-        },
-        None => closer_id.clone(),
+        )));
     };
+    let work_branch = Some(delivery.branch.clone()).filter(|b| !b.is_empty());
+    let delivered_base = delivery.base.clone();
+    // The builder is the actor the delivered entry is by: a seat by its full
+    // id, and any other kind — a run's delivery is the run's — in its string
+    // form.
+    let builder = delivered_by
+        .by
+        .seat_id()
+        .map_or_else(|| delivered_by.by.to_string(), |seat| seat.to_string());
     rows.read(
         out,
         wiring,
@@ -934,7 +933,7 @@ fn run(
 
     // (k) THE LANDING NOTE, written through the store and read back. The
     // landing stands on the trunk whatever this step says.
-    let rebased = rebased_from(&delivery, &old);
+    let rebased = rebased_from(&delivered_base, &old);
     let tested = match (&suite_command, suite_rc) {
         (Some(command), Some(rc)) => format!("suite: {command}, rc {}", rc_word(rc)),
         _ => format!("{NOT_TESTED}: {UNTESTED}"),
@@ -1557,7 +1556,7 @@ impl Classification {
                 format!("{named} — {cause}; nothing is deleted")
             }
             Classification::NotGiven => {
-                "the delivery names no `branch:` — there is no work branch to classify".to_string()
+                "the delivery names no branch — there is no work branch to classify".to_string()
             }
         }
     }
@@ -1565,16 +1564,13 @@ impl Classification {
 
 /// The names a delete may never be aimed at, and the reason if this is one.
 ///
-/// The branch comes off a note, which is text somebody wrote, and SAFE ends in
-/// `git branch -D` and `git push --delete`. Three refs would take a trunk or
-/// this act's own working branch with them, and a leading `-` is a name git
-/// would read as an option wherever a `--` were ever dropped.
+/// The branch comes off the record — a delivery's entry, or the landing note a
+/// retire reads — which is text somebody wrote, and SAFE ends in `git branch
+/// -D` and `git push --delete`. Three refs would take a trunk or this act's own
+/// working branch with them, and a leading `-` is a name git would read as an
+/// option wherever a `--` were ever dropped.
 fn unsafe_to_delete(branch: &str, land_branch: &str) -> Option<String> {
-    let named = |what: &str| {
-        Some(format!(
-            "its `{BRANCH}:` line reads `{branch}`, which is {what}"
-        ))
-    };
+    let named = |what: &str| Some(format!("the branch is `{branch}`, which is {what}"));
     match branch {
         TRUNK_BRANCH => named("the trunk"),
         "HEAD" => named("HEAD"),
@@ -1781,18 +1777,11 @@ fn accepted_commit(item: &str, notes: &str, commit: &str, wiring: &Wiring) -> Re
 /// a delivery that was current, and the clause is empty there rather than
 /// saying so twice.
 ///
-/// A delivery whose `base:` line names no commit reads as no clause. It is a
-/// note somebody wrote, and a landing does not refuse over prose.
-fn rebased_from(delivery: &str, landed_on: &str) -> String {
-    let Some(line) = label_value(delivery, "base") else {
-        return String::new();
-    };
-    let Some(base) = line
-        .split(|c: char| c.is_whitespace() || c == ',')
-        .find(|word| (7..=40).contains(&word.len()) && word.chars().all(|c| c.is_ascii_hexdigit()))
-    else {
-        return String::new();
-    };
+/// The delivery's base is a whole sha, which the delivered entry cannot be
+/// written without. The comparison is still by prefix either way, because the
+/// sha it is compared with is read off the push's own range line, which git
+/// abbreviates — until the landing records that one whole too.
+fn rebased_from(base: &str, landed_on: &str) -> String {
     if landed_on.starts_with(base) || base.starts_with(landed_on) {
         return String::new();
     }

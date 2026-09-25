@@ -2,8 +2,8 @@
 //! a stub that stands in for the provider.
 //!
 //! This is where the live git path is proven: the project is a real repository,
-//! the commit the verb makes is read back out of it with git, and the delivery
-//! note the store holds names that commit.
+//! the commit the verb makes is read back out of it with git, and the delivered
+//! entry the store holds names that commit.
 //!
 //! One repository per arm, because an arm's subject is the state of a working
 //! tree. `bd init` writes the repository and its first commit; the fixture adds
@@ -321,6 +321,29 @@ impl Rig {
         value[0].clone()
     }
 
+    /// The item's last delivered entry as `fleet item show --json` lists it:
+    /// the reader's own document, off the shipped binary. That verb renders
+    /// from the store alone, so it takes no `--packs-dir`.
+    fn delivered(&self, item: &str) -> serde_json::Value {
+        let out = Command::new(env!("CARGO_BIN_EXE_fleet"))
+            .args(["item", "show", item, "--json"])
+            .current_dir(&self.project)
+            .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub))
+            .output()
+            .expect("the built binary runs");
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let document: serde_json::Value =
+            serde_json::from_str(stdout(&out).trim()).expect("item show answers one document");
+        document["data"]["timeline"]
+            .as_array()
+            .expect("the document carries a timeline")
+            .iter()
+            .rev()
+            .find(|entry| entry["kind"] == "delivered")
+            .cloned()
+            .unwrap_or_else(|| panic!("the timeline carries a delivered entry: {document}"))
+    }
+
     /// The stub: `agents` is the roster read, `-p` is the one print-mode turn.
     fn write_stub(&self) {
         std::fs::write(
@@ -435,22 +458,43 @@ fn a_live_reviewer_is_rung_with_the_item_and_the_commit_the_delivery_made() {
 
     let record = rig.item_json(&item);
     assert_eq!(record["assignee"], serde_json::json!(REVIEWER_ID));
-    let notes = record["notes"].as_str().unwrap_or_default();
     assert!(
-        notes.contains(&format!("commit:  {head}")),
-        "the note names the commit that was made: {notes}"
+        !record["notes"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("DELIVERED"),
+        "no note carries the delivery: {record}"
     );
-    assert!(
-        notes.contains("branch:  a-seat/feat/the-work"),
-        "and the branch it sits on: {notes}"
+    let delivered = rig.delivered(&item);
+    assert_eq!(
+        delivered["commit"].as_str(),
+        Some(head.as_str()),
+        "the entry names the commit that was made: {delivered}"
     );
-    assert!(
-        notes.contains("base:    origin/main at"),
-        "and the base it read: {notes}"
+    assert_eq!(
+        delivered["branch"].as_str(),
+        Some("a-seat/feat/the-work"),
+        "and the branch it sits on: {delivered}"
+    );
+    let base = rig.git(&["rev-parse", "refs/remotes/origin/main"]);
+    assert_eq!(
+        delivered["base"].as_str(),
+        Some(base.as_str()),
+        "and the base it read, whole: {delivered}"
+    );
+    assert_eq!(
+        delivered["by"],
+        serde_json::json!({ "kind": "seat", "id": rig.seat_id().to_string() }),
+        "written by the seat delivering"
+    );
+    assert_eq!(
+        delivered["files"],
+        serde_json::json!(["the-work.txt"]),
+        "and the rest is the seat's JSON: {delivered}"
     );
 
     // The event, off the stream the binary wrote, carrying the same three values
-    // the note's machine lines do.
+    // the entry's machine fields do.
     let last = rig
         .events()
         .last()
@@ -468,12 +512,9 @@ fn a_live_reviewer_is_rung_with_the_item_and_the_commit_the_delivery_made() {
         last["payload"]["branch"].as_str(),
         Some("a-seat/feat/the-work")
     );
-    assert!(
-        notes.contains(&format!(
-            "base:    origin/main at {}",
-            last["payload"]["base"].as_str().expect("a base")
-        )),
-        "the event's base is the note's own: {last}\n{notes}"
+    assert_eq!(
+        last["payload"]["base"], delivered["base"],
+        "the event's base is the entry's own: {last}\n{delivered}"
     );
 
     let argv = rig.nudge_argv();
@@ -515,10 +556,10 @@ fn an_empty_roster_exits_zero_and_the_delivery_stands() {
         serde_json::json!(REVIEWER_ID),
         "the reassignment recorded the handoff whatever the doorbell did"
     );
-    assert!(record["notes"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("DELIVERED "));
+    assert!(
+        rig.delivered(&item)["commit"].is_string(),
+        "and the delivery is on the record"
+    );
 }
 
 /// The refusals through the binary: each rc read from its own command, and the
@@ -584,8 +625,8 @@ fn review_show_reads_the_delivery_the_binary_wrote() {
         "the size of the one-line file this delivery added: {said}"
     );
     assert!(
-        said.contains(&format!("commit:  {head}")),
-        "the delivery note it read: {said}"
+        said.contains(&format!("delivered {head} on a-seat/feat/the-work, base ")),
+        "the delivered entry it read: {said}"
     );
     assert!(said.contains("D1 the delivery is the seat's"), "{said}");
 }
@@ -890,10 +931,10 @@ fn a_seat_worktree_beside_an_uncommitted_policy_delivers_through_the_machine_con
     );
     let record = rig.item_json(&item);
     assert_eq!(record["assignee"], serde_json::json!(REVIEWER_ID));
-    let notes = record["notes"].as_str().unwrap_or_default();
-    assert!(
-        notes.contains(&format!("commit:  {head}")),
-        "the note names the commit that was made: {notes}"
+    assert_eq!(
+        rig.delivered(&item)["commit"].as_str(),
+        Some(head.as_str()),
+        "the delivered entry names the commit that was made"
     );
 }
 
@@ -974,12 +1015,9 @@ fn a_seat_worktree_carrying_the_policy_delivers_from_its_own_checkout() {
         "a-seat/feat/the-work",
         "and on the seat's own branch"
     );
-    let notes = rig.item_json(&item)["notes"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
-    assert!(
-        notes.contains(&format!("commit:  {head}")),
-        "the note names the commit that was made: {notes}"
+    assert_eq!(
+        rig.delivered(&item)["commit"].as_str(),
+        Some(head.as_str()),
+        "the delivered entry names the commit that was made"
     );
 }

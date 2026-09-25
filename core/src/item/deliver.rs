@@ -15,40 +15,32 @@
 //! Nothing staged and HEAD AT the trunk ref is a seat that built nothing, and
 //! is refused.
 //!
-//! THE DELIVERY IS THE SEAT'S JSON, THE MACHINE LINES ARE THIS VERB'S. A
+//! THE DELIVERY IS THE SEAT'S JSON, THE MACHINE FIELDS ARE THIS VERB'S. A
 //! builder hands in a file of the shape `assets/delivery.schema.json` gives,
 //! read against the binary's own type ([`DeliveryInput`]) before anything is
 //! written: a file that does not read is exit 2 and the tree, the store and
-//! the stream are as they were. The note this verb writes is RENDERED from it
-//! ([`transitional_note`]) with the three lines only a process knows — the
-//! commit, the branch, the base — and the marker line. The seat writes no
-//! prose, so no line of what it says can open a marker at column zero: every
-//! newline inside a value renders two spaces in.
-//!
-//! THE NOTE IS TRANSITIONAL. It is the text the note readers — review and
-//! land — still parse, until the delivered entry replaces it (fleet-zlk.7).
+//! the stream are as they were. What this verb writes is one `delivered`
+//! entry on the item's timeline: the seat's fields as it handed them in,
+//! beside the three only a process knows — the commit, the branch and the
+//! base, each commit a whole sha — appended by the actor delivering and read
+//! back before anything is announced. No note is written, so there is no
+//! grammar for a value the seat wrote to break.
 
 use std::io::Write;
 use std::path::Path;
 
-use crate::entry::SuiteRun;
+use crate::entry::Body;
 use crate::input::{self, DeliveryInput, DELIVERY_SCHEMA};
 use crate::item::brief::Packs;
 use crate::item::dispatch::EPIC;
 use crate::item::{
-    control_token, label_value, last_delivery, run, Events, Git, Project, Ring, RingOutcome, Stop,
-    DELIVERY_MARKERS, ITEM_DELIVERED, TRUNK, TRUNK_BRANCH,
+    control_token, recorded, run, Events, Git, Project, Ring, RingOutcome, Stop, Unrecorded,
+    ITEM_DELIVERED, TRUNK, TRUNK_BRANCH,
 };
 use crate::policy;
 use crate::seat::actor::{Actor, ActorKind};
 use crate::seat::identity::{Directory, SeatRef};
 use crate::store::{AssignedItem, Item, Store};
-
-/// The three lines the verb fills. Everything else the note says is the
-/// seat's.
-pub const COMMIT: &str = "commit";
-pub const BRANCH: &str = "branch";
-pub const BASE: &str = "base";
 
 /// What the ring carries: where to look and what to look at. The record is the
 /// item, as it is for every other ring this crate sends.
@@ -99,7 +91,8 @@ pub struct Delivered {
     pub commit: String,
     /// The reviewer's full id, which the item is now assigned to.
     pub reviewer: String,
-    pub note: String,
+    /// The delivered entry's id, as the store answered it.
+    pub entry: String,
 }
 
 pub fn deliver(
@@ -170,15 +163,8 @@ pub fn deliver(
             .map_err(step)?,
     };
 
-    let note = transitional_note(&input, &commit, &branch, &base, delivery.by, delivery.at);
-    // The post-condition of the render, asked of the text that will be
-    // written rather than of the values it was built from.
-    if label_value(&note, COMMIT).as_deref() != Some(commit.as_str()) {
-        return Err(Stop::could_not_tell(format!(
-            "the rendered note's `{COMMIT}:` line reads {} and the commit is {commit}",
-            label_value(&note, COMMIT).unwrap_or_else(|| "(absent)".to_string())
-        )));
-    }
+    let delivered =
+        Body::Delivered(input.into_delivered(commit.clone(), branch.clone(), base.clone()));
 
     wiring.store.assign(&item, &reviewer, &by).map_err(|e| {
         committed(
@@ -187,14 +173,23 @@ pub fn deliver(
             &format!("the reassignment did not land: {e}"),
         )
     })?;
-    wiring.store.note(&item, &note, &by).map_err(|e| {
-        committed(
-            &item,
-            &commit,
-            &format!("the delivery note did not land: {e}"),
-        )
+    // THE ENTRY IS APPENDED AND READ BACK in the one helper every entry
+    // writer goes through: the id it answers is the one the timeline holds,
+    // carrying the body and the actor written.
+    let entry = recorded(wiring.store, &item, &delivered, delivery.by).map_err(|unrecorded| {
+        match unrecorded {
+            Unrecorded::NotWritten(e) => committed(
+                &item,
+                &commit,
+                &format!("the delivered entry did not land: {e}"),
+            ),
+            Unrecorded::Unconfirmed(why) => Stop::could_not_tell(format!(
+                "{why}\n  the commit {commit} STANDS on the work branch and {item} is \
+                     reassigned to {reviewer}"
+            )),
+        }
     })?;
-    read_back(&item, &note, &reviewer, wiring)?;
+    read_back(&item, &reviewer, wiring)?;
     announce(&item, &commit, &branch, &base, delivery, wiring)?;
 
     if as_is {
@@ -209,17 +204,17 @@ pub fn deliver(
         item,
         commit,
         reviewer,
-        note,
+        entry,
     })
 }
 
 /// The one event this verb writes.
 ///
-/// AFTER THE READ-BACK AND BEFORE THE DOORBELL: the note is written and read
+/// AFTER THE READ-BACK AND BEFORE THE DOORBELL: the entry is written and read
 /// back first, so a crash between the two leaves a delivery nothing announced
 /// and never an announcement with no delivery behind it. The three values are
-/// the three machine lines the note carries, taken from the same variables that
-/// filled them rather than parsed back out of the text.
+/// the three machine fields the entry carries, taken from the same variables
+/// that filled them rather than read back out of the entry.
 fn announce(
     item: &str,
     commit: &str,
@@ -511,127 +506,12 @@ fn porcelain_path(line: &str) -> String {
     }
 }
 
-// ---- the note ----------------------------------------------------------------
-
-/// The delivery note, rendered from the seat's delivery and the verb's own
-/// facts in the grammar the note readers anchor on: the marker line, the three
-/// machine lines, then one line per field the seat filled, and each numbered
-/// call two spaces in under `decisions:`.
-///
-/// EVERY NEWLINE INSIDE A VALUE RENDERS AS "\n  ", so a value quoting a marker
-/// never opens one at column zero and never ends the region it sits in
-/// (fleet-4rl). A list with nothing in it renders `none`.
-///
-/// TRANSITIONAL: review's decisions walk and land's label reads parse this text
-/// until deliver writes the delivered entry, which deletes this and its
-/// callers (fleet-zlk.7).
-pub fn transitional_note(
-    input: &DeliveryInput,
-    commit: &str,
-    branch: &str,
-    base: &str,
-    by: &Actor,
-    at: &str,
-) -> String {
-    let listed = |values: Vec<String>, between: &str| {
-        if values.is_empty() {
-            String::from("none")
-        } else {
-            values.join(between)
-        }
-    };
-    let suite = match &input.suite {
-        SuiteRun::Ran(ran) => format!("{}, rc {}", off(&ran.command), ran.rc),
-        SuiteRun::NotTested(not) => format!("NOT TESTED — {}", off(&not.not_tested)),
-    };
-    let corrections = match input.spec_corrections.len() {
-        0 => String::from("none"),
-        n => format!(
-            "{n} — {}",
-            input
-                .spec_corrections
-                .iter()
-                .map(|c| format!("{} — refuted by {}", off(&c.premise), off(&c.refuted_by)))
-                .collect::<Vec<_>>()
-                .join("; ")
-        ),
-    };
-
-    let mut lines = vec![
-        format!(
-            "{} {} — {}",
-            DELIVERY_MARKERS[0],
-            off(commit),
-            off(&by.to_string())
-        ),
-        format!("{COMMIT}:  {}", off(commit)),
-        format!("{BRANCH}:  {}", off(branch)),
-        format!("{BASE}:    {TRUNK} at {}, read at {}", off(base), off(at)),
-        format!(
-            "files:   {}",
-            listed(input.files.iter().map(|file| off(file)).collect(), ", ")
-        ),
-        format!(
-            "checks:  {}",
-            listed(
-                input
-                    .checks
-                    .iter()
-                    .map(|row| format!("{}: {}", off(&row.check), off(&row.result)))
-                    .collect(),
-                "; "
-            )
-        ),
-        format!("suite:   {suite}"),
-        format!("spec corrections: {corrections}"),
-        format!(
-            "not proven: {}",
-            listed(
-                input
-                    .not_proven
-                    .iter()
-                    .map(|gap| format!("{} — {}", off(&gap.surface), off(&gap.command)))
-                    .collect(),
-                "; "
-            )
-        ),
-        match input.decisions.len() {
-            0 => String::from("decisions: none"),
-            n => format!("decisions: {n}"),
-        },
-    ];
-    // Numbered by position: the first is D1, which is the name the reviewer
-    // rules on.
-    for (k, decision) in input.decisions.iter().enumerate() {
-        lines.push(format!(
-            "  D{} {}; not taken: {}; because {}",
-            k + 1,
-            off(&decision.call),
-            off(&decision.not_taken),
-            off(&decision.because)
-        ));
-    }
-    lines.push(format!(
-        "covers: {}",
-        listed(
-            input.covers.iter().map(|covered| off(covered)).collect(),
-            ", "
-        )
-    ));
-    lines.join("\n").trim_end().to_string()
-}
-
-/// A value with every line after its first two spaces in, so no line of it
-/// sits at column zero.
-fn off(value: &str) -> String {
-    value.replace('\n', "\n  ")
-}
-
 // ---- the read-back -----------------------------------------------------------
 
-/// One read, asserting the assignee and the delivery region against the
-/// ARGUMENTS — plus a token nothing wrote.
-fn read_back(item: &str, note: &str, reviewer: &str, wiring: &Wiring) -> Result<(), Stop> {
+/// One read, asserting the assignee against the ARGUMENT — plus a token
+/// nothing wrote. The delivered entry is not asked again here: [`recorded`]
+/// read it back off the timeline before this runs.
+fn read_back(item: &str, reviewer: &str, wiring: &Wiring) -> Result<(), Stop> {
     let read = read(wiring.store, item)?;
     if read.assignee.as_deref() != Some(reviewer) {
         return Err(disagrees(
@@ -642,16 +522,6 @@ fn read_back(item: &str, note: &str, reviewer: &str, wiring: &Wiring) -> Result<
             &format!("bd update {item} --assignee {reviewer}"),
         ));
     }
-    let seen = read.notes.as_deref().and_then(last_delivery);
-    if seen.as_deref().map(normalised) != Some(normalised(note)) {
-        return Err(disagrees(
-            item,
-            "the last delivery note",
-            note,
-            seen.as_deref(),
-            &format!("bd note {item} \"<the note, as it is printed above>\""),
-        ));
-    }
     let control = control_token();
     if read.document.contains(control) {
         return Err(Stop::could_not_tell(format!(
@@ -660,12 +530,6 @@ fn read_back(item: &str, note: &str, reviewer: &str, wiring: &Wiring) -> Result<
         )));
     }
     Ok(())
-}
-
-/// Whitespace normalised to single spaces, because the store keeps a note with
-/// the wrapping it was written with and the comparison is about the words.
-fn normalised(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn read(store: &dyn Store, item: &str) -> Result<Item, Stop> {

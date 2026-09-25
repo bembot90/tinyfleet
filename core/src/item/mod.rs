@@ -617,6 +617,9 @@ fn last_region(notes: &str, opens: &[&str], ends: &[&[&str]]) -> Option<String> 
 
 /// The last delivery region of an item's notes, ended by the verdict or the
 /// landing that follows it.
+///
+/// No verb reads a delivery here: a delivery is the timeline's `delivered`
+/// entry. The region stays until the other notes it ends go too.
 pub fn last_delivery(notes: &str) -> Option<String> {
     last_region(
         notes,

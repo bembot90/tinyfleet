@@ -437,6 +437,7 @@ pub fn deliver_command(args: &DeliverArgs) -> Exit {
                 "item": made.item,
                 "state": state(ITEM_DELIVERED),
                 "commit": made.commit,
+                "entry": made.entry,
             }),
             args.json,
         ),

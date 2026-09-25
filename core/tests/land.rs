@@ -20,9 +20,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use common::{agent, full, keys_agree, seat_actor, shared_store, Rooted, Scratch, StubEvents};
-use fleet_core::input::{DeliveryInput, DELIVERY_SCHEMA};
+use fleet_core::entry::{Body, CheckResult, Delivered, NotProven, SuiteRun};
 use fleet_core::item::brief::Packs;
-use fleet_core::item::deliver::transitional_note;
 use fleet_core::item::land::{
     self, LandGit, Landed, Landing, Progress, Pushed, Squashed, Wiring, CRITERIA, LANDING_NOTE,
     REBASE_NEEDED, SUITE_RERUN,
@@ -31,8 +30,8 @@ use fleet_core::item::lane;
 use fleet_core::item::review::VERDICT;
 use fleet_core::item::{
     control_token, last_delivery, last_landing, marker_block, render, review::last_verdict, Change,
-    Git, Project, Stop, CHECK_READ, ITEM_LANDED, LANDING_MARKERS, TRUNK, TRUNK_BRANCH,
-    VERDICT_MARKERS,
+    Git, Project, Stop, CHECK_READ, DELIVERY_MARKERS, ITEM_LANDED, LANDING_MARKERS, TRUNK,
+    TRUNK_BRANCH, VERDICT_MARKERS,
 };
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
@@ -606,25 +605,34 @@ fn packs(scratch: &dyn Rooted) -> Packs {
         .expect("the defaults resolve under the scratch")
 }
 
-fn a_delivery(commit: &str) -> String {
+fn a_delivery(commit: &str) -> Delivered {
     a_delivery_on(commit, WORK)
 }
 
-fn a_delivery_on(commit: &str, branch: &str) -> String {
-    format!(
-        "DELIVERED {commit} — {}\n\
-         commit:  {commit}\n\
-         branch:  {branch}\n\
-         base:    {TRUNK} at {OLD}, fetched at 2026-09-12T00:00:00Z\n\
-         files:   {FILE}\n\
-         checks:  AC1 green, read from the arm's own status\n\
-         suite:   the workspace suite, rc 0\n\
-         spec corrections: none\n\
-         not proven: what this arm did not run\n\
-         decisions: none\n\
-         covers: R8",
-        seat_actor(BUILDER)
-    )
+/// The delivered entry a builder's `fleet deliver` writes, on `branch`, cut
+/// from the base the push below lands on.
+fn a_delivery_on(commit: &str, branch: &str) -> Delivered {
+    Delivered {
+        commit: commit.to_string(),
+        branch: branch.to_string(),
+        base: OLD.to_string(),
+        files: vec![FILE.to_string()],
+        checks: vec![CheckResult {
+            check: "AC1".to_string(),
+            result: "green, read from the arm's own status".to_string(),
+        }],
+        suite: SuiteRun::Ran(fleet_core::entry::Ran {
+            command: "the workspace suite".to_string(),
+            rc: 0,
+        }),
+        spec_corrections: Vec::new(),
+        not_proven: vec![NotProven {
+            surface: "what this arm did not run".to_string(),
+            command: "cargo nextest run".to_string(),
+        }],
+        decisions: Vec::new(),
+        covers: vec!["R8".to_string()],
+    }
 }
 
 fn a_verdict(marker: &str, commit: &str, item: &str) -> String {
@@ -638,26 +646,37 @@ fn a_verdict(marker: &str, commit: &str, item: &str) -> String {
 
 /// One item held by the reviewer, carrying a delivery and a verdict.
 fn an_item(store: &dyn Store, title: &str, verdict: Option<(&str, &str)>) -> String {
-    an_item_delivering(store, title, &a_delivery(SHA), verdict)
+    an_item_delivering(store, title, a_delivery(SHA), verdict)
 }
 
-/// One item whose delivery note names this branch, and an accepted verdict.
+/// One item whose delivered entry names this branch, and an accepted verdict.
 fn an_item_on_branch(store: &dyn Store, title: &str, branch: &str) -> String {
     an_item_delivering(
         store,
         title,
-        &a_delivery_on(SHA, branch),
+        a_delivery_on(SHA, branch),
         Some(("ACCEPTED", SHA)),
     )
 }
 
-/// Built through the trait and not through a binary, so one builder fills
-/// either board. The reviewer holds it by its full id, as `deliver` hands it
-/// over.
+/// The same item, delivered by the builder's seat.
 fn an_item_delivering(
     store: &dyn Store,
     title: &str,
-    delivery: &str,
+    delivery: Delivered,
+    verdict: Option<(&str, &str)>,
+) -> String {
+    an_item_delivered_by(store, title, delivery, &seat_actor(BUILDER), verdict)
+}
+
+/// Built through the trait and not through a binary, so one builder fills
+/// either board. The reviewer holds it by its full id, as `deliver` hands it
+/// over, and the delivery is the entry `by` appended.
+fn an_item_delivered_by(
+    store: &dyn Store,
+    title: &str,
+    delivery: Delivered,
+    by: &Actor,
     verdict: Option<(&str, &str)>,
 ) -> String {
     let item = store
@@ -675,7 +694,7 @@ fn an_item_delivering(
         .assign(&item, REVIEWER_ID, REVIEWER)
         .expect("the reviewer holds it");
     store
-        .note(&item, delivery, BUILDER)
+        .append(&item, &Body::Delivered(delivery), by)
         .expect("the delivery is on it");
     if let Some((marker, commit)) = verdict {
         store
@@ -1153,6 +1172,99 @@ fn the_marker_and_the_two_trailers_ride_the_commit_subject() {
     assert!(
         message.contains(&format!("Implemented-by: {}", full(BUILDER))),
         "the Implemented-by trailer names the builder by id: {message}"
+    );
+}
+
+/// THE BUILDER IS THE DELIVERED ENTRY'S AUTHOR, and the work branch is the
+/// entry's branch. A delivery a run made is signed by the run, which the
+/// trailer names in its string form; the branch it names is the one the
+/// landing classifies and deletes.
+#[test]
+fn the_delivered_entrys_author_and_branch_are_the_builder_and_the_work_branch() {
+    let scratch = &store();
+    let branch = "a-run/feat/its-work";
+    let by = Actor {
+        kind: ActorKind::Run,
+        id: "fx-run-record".to_string(),
+    };
+    let item = an_item_delivered_by(
+        &scratch.store,
+        "an item a run delivered",
+        a_delivery_on(SHA, branch),
+        &by,
+        Some(("ACCEPTED", SHA)),
+    );
+    let mut git = StubGit::clean();
+    git.reviewed_too = Some(branch.to_string());
+
+    let ran = run(scratch, &scratch.store, &git, &item, SHA);
+    assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
+
+    let calls = git.calls();
+    let message = calls
+        .iter()
+        .find(|call| call.starts_with("commit_message_file"))
+        .expect("a commit was made from a message file");
+    assert!(
+        message.ends_with(" / Implemented-by: run:fx-run-record"),
+        "the trailer names the delivering run: {message}"
+    );
+    assert!(
+        calls.contains(&format!("delete_remote_branch origin {branch}")),
+        "the entry's branch is the one classified SAFE and deleted: {calls:?}"
+    );
+}
+
+/// THE CLEAN BREAK, on the landing side: an accepted item whose only delivery
+/// is a prose note carries no delivery, and is refused before the trunk is
+/// touched.
+#[test]
+fn an_accepted_item_delivered_only_as_a_prose_note_is_refused() {
+    let scratch = &store();
+    let item = scratch
+        .store
+        .create(
+            &fleet_core::store::NewItem {
+                title: "an item delivered as prose",
+                description: "an item to land",
+                item_type: "task",
+                labels: &[],
+            },
+            BUILDER,
+        )
+        .expect("the item is filed");
+    scratch
+        .store
+        .assign(&item, REVIEWER_ID, REVIEWER)
+        .expect("the reviewer holds it");
+    let prose = format!(
+        "{} {SHA} — {}\ncommit:  {SHA}\nbranch:  {WORK}\nbase:    {TRUNK} at {OLD}",
+        DELIVERY_MARKERS[0],
+        seat_actor(BUILDER)
+    );
+    scratch
+        .store
+        .note(&item, &prose, BUILDER)
+        .expect("the prose delivery is on it");
+    scratch
+        .store
+        .note(&item, &a_verdict("ACCEPTED", SHA, &item), REVIEWER)
+        .expect("the verdict is on it");
+    let git = StubGit::clean();
+
+    let ran = run(scratch, &scratch.store, &git, &item, SHA);
+    assert_eq!(ran.code(), Some(1), "{}\n{}", ran.why(), ran.out);
+    assert_eq!(
+        ran.why(),
+        format!(
+            "{item} carries a verdict and no delivery — the work branch and the builder are \
+             read from one and there is none to read"
+        )
+    );
+    assert!(
+        !git.calls().iter().any(|call| call.starts_with("fetch")),
+        "the trunk was not touched: {:?}",
+        git.calls()
     );
 }
 
@@ -3189,23 +3301,16 @@ fn a_delivery_naming_another_landings_branch_is_never_deleted() {
 /// of each in one note, and each reader finds only its own.
 #[test]
 fn each_reader_finds_only_its_own_region() {
-    // THE THREE SHIPPED SHAPES, rendered — not three literals typed here, which
-    // would prove the arm's own strings and not the pack's markers. The
-    // delivery is the renderer's own, over the shipped schema's example.
+    // THE SHIPPED SHAPES, rendered — not literals typed here, which would prove
+    // the arm's own strings and not the pack's markers. No verb writes a
+    // delivery note any more, so the delivery region is one a person's older
+    // record still carries, opened on the marker the region reader anchors on.
     let scratch = &store();
     let packs = packs(scratch);
-    let schema: serde_json::Value =
-        serde_json::from_str(&packs.read(DELIVERY_SCHEMA).expect("core carries it"))
-            .expect("the schema is JSON");
-    let example: DeliveryInput =
-        serde_json::from_value(schema["examples"][0].clone()).expect("the example reads");
-    let delivery = transitional_note(
-        &example,
-        SHA,
-        "a-builder/feat/the-work",
-        OLD,
-        &seat_actor(BUILDER),
-        "2026-09-24T00:00:00Z",
+    let delivery = format!(
+        "{} {SHA} — {}\ncommit:  {SHA}\nbranch:  a-builder/feat/the-work",
+        DELIVERY_MARKERS[0],
+        seat_actor(BUILDER)
     );
     let verdict = render(
         &marker_block(
@@ -4075,20 +4180,10 @@ fn a_behind_delivery_names_its_own_base_and_a_current_one_does_not() {
     let behind = an_item_delivering(
         &scratch.store,
         "an item delivered behind the trunk",
-        &format!(
-            "DELIVERED {SHA} — {}\n\
-             commit:  {SHA}\n\
-             branch:  {WORK}\n\
-             base:    {TRUNK} at {OTHER}, fetched at 2026-09-12T00:00:00Z\n\
-             files:   {FILE}\n\
-             checks:  AC1 green, read from the arm's own status\n\
-             suite:   the workspace suite, rc 0\n\
-             spec corrections: none\n\
-             not proven: what this arm did not run\n\
-             decisions: none\n\
-             covers: R8",
-            seat_actor(BUILDER)
-        ),
+        Delivered {
+            base: OTHER.to_string(),
+            ..a_delivery(SHA)
+        },
         Some(("ACCEPTED", SHA)),
     );
     let ran = run(scratch, bd, &StubGit::clean(), &behind, SHA);

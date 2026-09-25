@@ -1,8 +1,9 @@
 //! `fleet review` against a real work graph.
 //!
-//! The delivery each arm reads is planted as a note, because what review reads
-//! is the record and not the verb that wrote it: a review of a hand-written
-//! delivery note is the same read as a review of one `fleet deliver` rendered.
+//! The delivery each arm reads is appended as a delivered entry, because what
+//! review reads is the record and not the verb that wrote it: a review of an
+//! entry appended here is the same read as a review of one `fleet deliver`
+//! wrote.
 //!
 //! The size line is asserted against a numstat of known shape, so the counts
 //! are read from the arm's own fixture rather than from whatever the tree
@@ -16,9 +17,12 @@ use std::sync::Mutex;
 use common::{
     agent, fleet_of, full, keys_agree, seat_actor, shared_store, Rooted, Scratch, StubEvents,
 };
+use fleet_core::entry::{
+    Body, CheckResult, Decision, Delivered, NotProven, Ran, SuiteRun, Timeline,
+};
 use fleet_core::item::brief::Packs;
-use fleet_core::item::deliver::BASE;
 use fleet_core::item::review::{self, Mode, Verdict, Wiring};
+use fleet_core::item::show::entry_lines;
 use fleet_core::item::{
     Change, Git, Project, Ring, RingOutcome, ITEM_RETURNED, ITEM_REVIEWED, VERDICT_ACCEPTED,
 };
@@ -27,6 +31,8 @@ use fleet_core::test_support::Board;
 
 const AT: &str = "2026-09-09T04:05:06Z";
 const SHA: &str = "3333333333333333333333333333333333333333";
+/// The base the delivery was cut from, which the size line measures from.
+const BASE: &str = "4444444444444444444444444444444444444444";
 const REVIEWER: &str = "a-reviewer";
 const POLICY: &str = "[core]\nreviewer = \"a-reviewer\"\n";
 
@@ -34,9 +40,40 @@ const POLICY: &str = "[core]\nreviewer = \"a-reviewer\"\n";
 /// fleet a return's sentence names its builder among.
 const BUILDERS: [&str; 5] = [REVIEWER, "s-return", "s-foreign", "s-bent", "s-absent"];
 
-/// The delivery every arm reads: two numbered calls, and a commit line the
-/// review takes its diff from.
-fn a_delivery() -> String {
+/// The delivery every arm reads: two numbered calls, the commit the review
+/// takes its diff to, and the base it takes it from.
+fn a_delivery() -> Delivered {
+    let decision = |call: &str| Decision {
+        call: call.to_string(),
+        not_taken: "the other one".to_string(),
+        because: "a clause".to_string(),
+    };
+    Delivered {
+        commit: SHA.to_string(),
+        branch: "a-seat/feat/the-work".to_string(),
+        base: BASE.to_string(),
+        files: vec!["a/file.rs".to_string()],
+        checks: vec![CheckResult {
+            check: "AC3".to_string(),
+            result: "green".to_string(),
+        }],
+        suite: SuiteRun::Ran(Ran {
+            command: "the workspace suite".to_string(),
+            rc: 0,
+        }),
+        spec_corrections: Vec::new(),
+        not_proven: vec![NotProven {
+            surface: "what this arm did not run".to_string(),
+            command: "cargo nextest run".to_string(),
+        }],
+        decisions: vec![decision("the first call"), decision("the second call")],
+        covers: vec!["R7".to_string()],
+    }
+}
+
+/// The same delivery as the prose note `fleet deliver` wrote before the
+/// delivered entry: a record carrying only this carries no delivery.
+fn a_prose_delivery() -> String {
     format!(
         "\
 DELIVERED {SHA} — a-seat
@@ -293,11 +330,11 @@ fn project(scratch: &dyn Rooted) -> Project {
 }
 
 /// An item carrying a delivery and the order index that says who built it, in
-/// one call apiece. The index and the assignee carry seat ids, as dispatch and
-/// deliver write them.
+/// one call apiece. The index and the assignee carry seat ids, and the entry
+/// the builder's typed actor, as dispatch and deliver write them.
 fn a_delivered_item(store: &dyn Store, title: &str, builder: &str) -> String {
     let item = an_item(store, title);
-    let builder = full(builder);
+    let seat = full(builder);
     store
         .assign(&item, &full(REVIEWER), "an-architect")
         .expect("the reviewer holds it");
@@ -305,15 +342,24 @@ fn a_delivered_item(store: &dyn Store, title: &str, builder: &str) -> String {
         .set_orders(
             &item,
             &format!(
-                r#"{{"fleet.orders": {{"v": 1, "by": "an-architect", "kind": "dispatch", "seat": "{builder}", "at": "{AT}"}}}}"#
+                r#"{{"fleet.orders": {{"v": 1, "by": "an-architect", "kind": "dispatch", "seat": "{seat}", "at": "{AT}"}}}}"#
             ),
             "an-architect",
         )
         .expect("the order index lands");
     store
-        .note(&item, &a_delivery(), &builder)
+        .append(&item, &Body::Delivered(a_delivery()), &seat_actor(builder))
         .expect("the delivery lands");
     item
+}
+
+/// The item's last delivered entry, as review reads it.
+fn delivered_entry(store: &dyn Store, item: &str) -> fleet_core::entry::Entry {
+    let entries = store.timeline(item).expect("the timeline reads");
+    Timeline(&entries)
+        .last_delivery()
+        .map(|(entry, _)| entry.clone())
+        .expect("the item carries a delivered entry")
 }
 
 /// One item filed through the trait, so the same builder fills either board.
@@ -352,10 +398,10 @@ fn findings(scratch: &dyn Rooted, label: &str, texts: &[&str]) -> PathBuf {
 }
 
 /// An item carrying this delivery and nothing else.
-fn an_item_delivering(store: &dyn Store, title: &str, delivery: &str) -> String {
+fn an_item_delivering(store: &dyn Store, title: &str, delivery: Delivered) -> String {
     let item = an_item(store, title);
     store
-        .note(&item, delivery, "s-header")
+        .append(&item, &Body::Delivered(delivery), &seat_actor("s-header"))
         .expect("the delivery lands");
     item
 }
@@ -436,86 +482,81 @@ fn notes(store: &dyn Store, item: &str) -> String {
 
 // ---- the arms ----------------------------------------------------------------
 
+/// `--show` over a delivered entry and no note: the size line measured from the
+/// entry's base to its commit, a blank line, then the entry as `fleet item
+/// show` renders it — its decisions among it. Nothing is written.
 #[test]
-fn show_prints_the_delivery_the_size_line_and_the_decisions_block_and_writes_nothing() {
+fn show_prints_the_size_line_then_the_delivered_entry_and_writes_nothing() {
     let scratch = &store();
     let item = a_delivered_item(&scratch.store, "an item to look at", "s-show");
+    assert_eq!(
+        notes(&scratch.store, &item),
+        "",
+        "the premise: the delivery is an entry and there is no note"
+    );
     let before = scratch.json(&item);
     let git = StubGit::answering(a_diff());
 
     let events = StubEvents::default();
     let (said, code) = run_watched(scratch, &item, Mode::Show, &git, &StubRing::new(), &events);
 
-    assert_eq!(code, 0, "{}", said.err);
+    assert_eq!(code, 0, "{}{}", said.err, said.stop);
     assert_eq!(events.count(), 0, "--show announces nothing");
-    assert!(
-        said.out.contains("size: 3 file(s), +42, -4 (1 binary)"),
-        "the counts of the fixture diff: {}",
-        said.out
-    );
-    assert!(
-        said.out.contains("tests: yes"),
-        "a changed path under tests/: {}",
-        said.out
-    );
-    assert!(
-        said.out.contains(&format!("commit:  {SHA}")),
-        "the delivery note: {}",
-        said.out
-    );
-    assert!(
-        said.out.contains("D1 the first call") && said.out.contains("D2 the second call"),
-        "the decisions block: {}",
-        said.out
-    );
-    let recorded = fleet_core::item::label_value(&a_delivery(), BASE).expect("a base: line");
-    let base = recorded
-        .split(" at ")
-        .nth(1)
-        .and_then(|rest| rest.split(',').next())
-        .expect("a sha after ` at `");
     assert_eq!(
         git.calls(),
-        vec![format!("numstat {base} {SHA}")],
-        "the base the delivery recorded, against the delivery commit"
+        vec![format!("numstat {BASE} {SHA}")],
+        "the entry's base, against the entry's commit"
     );
+    let size = "size: 3 file(s), +42, -4 (1 binary) — tests: yes, executable: no";
+    let entry = entry_lines(&delivered_entry(&scratch.store, &item)).join("\n");
+    assert_eq!(
+        said.out,
+        format!("{size}\n\n{entry}\n"),
+        "the size line, a blank line, then the entry"
+    );
+    for call in [
+        "D1 the first call; not taken: the other one; because a clause",
+        "D2 the second call; not taken: the other one; because a clause",
+    ] {
+        assert!(
+            said.out.contains(call),
+            "the decision `{call}`: {}",
+            said.out
+        );
+    }
     assert_eq!(before, scratch.json(&item), "--show writes nothing");
 }
 
+/// THE CLEAN BREAK: a record whose notes carry the prose delivery `fleet
+/// deliver` wrote before the entry, and no delivered entry, carries no
+/// delivery. There is no migration.
 #[test]
-fn a_delivery_naming_no_readable_base_is_measured_against_the_commits_parent() {
+fn a_prose_delivery_note_with_no_delivered_entry_carries_no_delivery() {
     let scratch = &store();
-    let recorded = a_delivery()
-        .lines()
-        .find(|line| line.starts_with(&format!("{BASE}:")))
-        .expect("the fixture carries a base: line")
-        .to_string();
-    let delivery = a_delivery().replace(&recorded, "base:    (none)");
-    let item = an_item_delivering(
-        &scratch.store,
-        "an item whose delivery names no base",
-        &delivery,
-    );
+    let item = an_item(&scratch.store, "an item delivered as prose");
+    scratch
+        .store
+        .note(&item, &a_prose_delivery(), &full("s-prose"))
+        .expect("the prose note lands");
     let git = StubGit::answering(a_diff());
 
-    let (said, code) = run(scratch, &item, Mode::Show, &git, &StubRing::new());
-
-    assert_eq!(code, 0, "{}", said.err);
-    assert_eq!(
-        git.calls(),
-        vec![format!("numstat {SHA}^ {SHA}")],
-        "the delivery commit against its parent"
-    );
-    let size = said
-        .out
-        .lines()
-        .find(|line| line.starts_with("size:"))
-        .expect("a size line");
+    for mode in [Mode::Show, Mode::Land] {
+        let (said, code) = run(scratch, &item, mode, &git, &StubRing::new());
+        assert_eq!(code, 1, "{}{}", said.out, said.err);
+        assert_eq!(
+            said.stop,
+            format!("{item} carries no delivery — a review reads one and there is none to read")
+        );
+    }
     assert!(
-        size.ends_with(&format!(
-            " — against {SHA}^: the delivery names no readable base"
-        )),
-        "the size line says what it measured against: {size}"
+        git.calls().is_empty(),
+        "nothing was measured: {:?}",
+        git.calls()
+    );
+    assert_eq!(
+        review::last_verdict(&notes(&scratch.store, &item)),
+        None,
+        "no verdict is written"
     );
 }
 
@@ -553,11 +594,9 @@ fn land_walks_every_call_the_delivery_numbered_and_writes_the_count() {
         "the walk's last line: {verdict}"
     );
     assert!(
-        review::last_verdict(&notes(&scratch.store, &item)).is_some()
-            && fleet_core::item::last_delivery(&notes(&scratch.store, &item))
-                .expect("the delivery is still findable")
-                .starts_with("DELIVERED"),
-        "a verdict after a delivery is not read as one"
+        !notes(&scratch.store, &item).contains("DELIVERED"),
+        "the verdict walked an entry, and no note carries a delivery: {}",
+        notes(&scratch.store, &item)
     );
 }
 
@@ -626,11 +665,10 @@ fn a_findings_body_quoting_a_marker_is_written_and_read_back_whole() {
             && verdict.contains("\n    finds this note instead."),
         "its continuation lines are indented under it, not rewritten: {verdict}"
     );
-    assert!(
-        fleet_core::item::last_delivery(&notes(&scratch.store, &item))
-            .expect("the delivery is still findable")
-            .starts_with("DELIVERED "),
-        "and the delivery region is still the delivery's"
+    assert_eq!(
+        delivered_entry(&scratch.store, &item).body,
+        Body::Delivered(a_delivery()),
+        "and the delivery is still the entry it was"
     );
 }
 
@@ -973,6 +1011,10 @@ fn an_item_with_no_delivery_is_refused() {
         &StubRing::new(),
     );
     assert_eq!(code, 1, "{}{}", said.out, said.err);
+    assert_eq!(
+        said.stop,
+        format!("{item} carries no delivery — a review reads one and there is none to read")
+    );
 }
 
 /// The size line is a measurement and names no tier: core is one reviewer's
@@ -994,61 +1036,33 @@ fn the_size_line_carries_counts_and_no_tier() {
     );
 }
 
-/// The walk answers per call, so the block the delivery wrote is what it reads.
+/// The walk answers per decision the entry lists, named by its place in the
+/// list: the array is the count, so there is no header to disagree with it.
 #[test]
-fn the_decisions_read_are_the_ones_the_note_numbered() {
+fn the_decisions_read_are_the_ones_the_entry_lists() {
     let delivery = a_delivery();
     assert_eq!(review::decisions(&delivery), vec!["D1", "D2"]);
-    assert!(review::decisions_block(&delivery).starts_with("decisions: 2"));
 
-    let none = delivery.replace(
-        "decisions: 2\n  D1 the first call; not taken: the other one; because a clause\n  D2 the second call; not taken: the other one; because a clause",
-        "decisions: none",
-    );
+    let none = Delivered {
+        decisions: Vec::new(),
+        ..a_delivery()
+    };
     assert!(
         review::decisions(&none).is_empty(),
-        "a measured zero is not a call"
-    );
-    assert_eq!(review::decisions_block(&none), "decisions: none");
-}
-
-#[test]
-fn land_refuses_a_header_counting_more_calls_than_the_walk_finds_and_writes_nothing() {
-    let scratch = &store();
-    let delivery = a_delivery().replace("decisions: 2", "decisions: 3");
-    let item = an_item_delivering(&scratch.store, "an item whose header says three", &delivery);
-
-    let (said, code) = run(
-        scratch,
-        &item,
-        Mode::Land,
-        &StubGit::answering(a_diff()),
-        &StubRing::new(),
-    );
-
-    assert_eq!(code, 1, "{}{}", said.out, said.err);
-    assert!(
-        said.stop.contains("decisions: 3") && said.stop.contains("found 2"),
-        "both numbers: {}",
-        said.stop
-    );
-    assert!(said.stop.contains("indented"), "{}", said.stop);
-    assert_eq!(
-        review::last_verdict(&notes(&scratch.store, &item)),
-        None,
-        "no verdict is written"
+        "an empty list is not a call"
     );
 }
 
 #[test]
-fn land_refuses_calls_at_column_zero_that_the_header_counts() {
+fn land_over_a_delivery_listing_no_decisions_walks_zero() {
     let scratch = &store();
-    let delivery = a_delivery().replace("\n  D", "\nD");
-    assert_eq!(review::decisions(&delivery), Vec::<String>::new());
     let item = an_item_delivering(
         &scratch.store,
-        "an item listing its calls unindented",
-        &delivery,
+        "an item whose delivery lists no decisions",
+        Delivered {
+            decisions: Vec::new(),
+            ..a_delivery()
+        },
     );
 
     let (said, code) = run(
@@ -1059,44 +1073,15 @@ fn land_refuses_calls_at_column_zero_that_the_header_counts() {
         &StubRing::new(),
     );
 
-    assert_eq!(code, 1, "{}{}", said.out, said.err);
+    assert_eq!(code, 0, "{}{}", said.err, said.stop);
+    let verdict =
+        review::last_verdict(&notes(&scratch.store, &item)).expect("a verdict is written");
     assert!(
-        said.stop.contains("decisions: 2") && said.stop.contains("found 0"),
-        "both numbers: {}",
-        said.stop
+        verdict
+            .lines()
+            .any(|line| line == "decisions: 0 accepted, 0 overruled"),
+        "no call is walked, and the count says so: {verdict}"
     );
-    assert_eq!(review::last_verdict(&notes(&scratch.store, &item)), None);
-}
-
-#[test]
-fn land_on_a_header_of_none_or_zero_over_no_calls_walks_zero() {
-    let scratch = &store();
-    let block = "decisions: 2\n  D1 the first call; not taken: the other one; because a clause\n  D2 the second call; not taken: the other one; because a clause";
-    for header in ["decisions: none", "decisions: 0"] {
-        let delivery = a_delivery().replace(block, header);
-        assert!(delivery.contains(&format!("\n{header}\n")), "{delivery}");
-        let item = an_item_delivering(
-            &scratch.store,
-            &format!("an item whose {header}"),
-            &delivery,
-        );
-
-        let (said, code) = run(
-            scratch,
-            &item,
-            Mode::Land,
-            &StubGit::answering(a_diff()),
-            &StubRing::new(),
-        );
-
-        assert_eq!(code, 0, "{header}: {}{}", said.err, said.stop);
-        let verdict =
-            review::last_verdict(&notes(&scratch.store, &item)).expect("a verdict is written");
-        assert!(
-            verdict.contains("0 accepted, 0 overruled"),
-            "{header}: {verdict}"
-        );
-    }
 }
 
 /// The tests: answer reads a path's directories and its file's stem, never a

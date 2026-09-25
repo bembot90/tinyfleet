@@ -10,17 +10,23 @@
 //! then reads; the squash, the push and the close are that verb's. A verdict
 //! is a note like every other note the verbs write, and it is read back before
 //! exit 0.
+//!
+//! THE DELIVERY IS THE TIMELINE'S LAST DELIVERED ENTRY, and nothing else. Its
+//! commit is what is reviewed, its base is where the size is measured from,
+//! and its decisions are what the walk rules on. A prose delivery note on the
+//! item is not one: the record has no delivery grammar left to read it by.
 
 use std::io::Write;
 use std::path::Path;
 
-use crate::entry::Finding;
+use crate::entry::{Delivered, Finding, Timeline};
 use crate::input::{self, FindingsInput, FINDINGS_SCHEMA};
 use crate::item::brief::Packs;
-use crate::item::deliver::{named, BASE, COMMIT};
+use crate::item::deliver::named;
+use crate::item::show::entry_lines;
 use crate::item::{
-    control_token, label_value, last_delivery, render, Change, Events, Git, Project, Ring,
-    RingOutcome, Stop, ITEM_RETURNED, ITEM_REVIEWED, VERDICT_ACCEPTED, VERDICT_MARKERS,
+    control_token, render, Change, Events, Git, Project, Ring, RingOutcome, Stop, ITEM_RETURNED,
+    ITEM_REVIEWED, VERDICT_ACCEPTED, VERDICT_MARKERS,
 };
 use crate::seat::actor::Actor;
 use crate::seat::identity::Directory;
@@ -28,9 +34,6 @@ use crate::store::{Item, Store};
 
 /// The verdict grammar, in core's pack and shadowable like every other asset.
 pub const VERDICT: &str = "assets/verdict.md";
-
-/// The label the delivery note lists the builder's calls under.
-pub const DECISIONS: &str = "decisions";
 
 /// What the ring carries on a return.
 pub const RING: &str = "{item} is returned with {findings} finding(s) and is yours again. \
@@ -91,29 +94,29 @@ pub fn review(
     // Resolved once: everything below names `item.id`, the store's full id,
     // and never `verdict.item`, the part of it that was typed.
     let item = read(wiring.store, verdict.item)?;
-    let Some(delivery) = item.notes.as_deref().and_then(last_delivery) else {
+    let entries = wiring.store.timeline(&item.id)?;
+    let Some((entry, delivered)) = Timeline(&entries).last_delivery() else {
         return Err(Stop::refused(format!(
             "{} carries no delivery — a review reads one and there is none to read",
             item.id
         )));
     };
-    let Some(commit) = label_value(&delivery, COMMIT).filter(|sha| !sha.is_empty()) else {
-        return Err(Stop::refused(format!(
-            "the delivery on {} names no `{COMMIT}:` — a review takes a commit, never a branch",
-            item.id
-        )));
-    };
+    let commit = delivered.commit.clone();
 
-    let size = size_line(&commit, &delivery, wiring)?;
+    let size = size_line(&commit, &delivered.base, wiring)?;
     let _ = writeln!(out, "{size}");
 
     let written = match &verdict.mode {
         Mode::Show => {
-            let _ = writeln!(out, "{delivery}");
-            let _ = writeln!(out, "{}", decisions_block(&delivery));
+            // The entry as `fleet item show` renders it, so a reviewer and a
+            // person reading the item read one rendering of it.
+            let _ = writeln!(out);
+            for line in entry_lines(entry) {
+                let _ = writeln!(out, "{line}");
+            }
             None
         }
-        Mode::Land => Some(accept(&item, &delivery, &commit, &size, verdict, wiring)?),
+        Mode::Land => Some(accept(&item, delivered, &commit, &size, verdict, wiring)?),
         Mode::Return(findings) => Some(retur(
             out, err, &item, findings, &commit, &size, verdict, wiring,
         )?),
@@ -129,44 +132,19 @@ pub fn review(
 
 // ---- the size line -----------------------------------------------------------
 
-/// The measurement, from the base the delivery recorded to the delivery commit,
-/// counted from their merge-base; a delivery naming no readable base is measured
-/// against `<commit>^` and the line says so.
-///
-/// `<commit>^` and not a parent read of its own: the seam takes two commits and
-/// git resolves the expression, so a root commit answers with git's own refusal
-/// rather than with a count taken from nothing.
-fn size_line(commit: &str, delivery: &str, wiring: &Wiring) -> Result<String, Stop> {
-    size_of(commit, delivery, wiring.git, &wiring.project.root)
+/// The measurement, from the base the delivery was cut from to the delivery
+/// commit, counted from their merge-base. The base is always a whole sha: the
+/// delivered entry cannot be written with anything else.
+fn size_line(commit: &str, base: &str, wiring: &Wiring) -> Result<String, Stop> {
+    size_of(commit, base, wiring.git, &wiring.project.root)
 }
 
 /// The same measurement, for a caller that has a git and a root and no
 /// [`Wiring`] — the flight rendering a reviewer's brief, which must show the
 /// line `review` will print and not a second one measured its own way.
-pub fn size_of(commit: &str, delivery: &str, git: &dyn Git, root: &Path) -> Result<String, Stop> {
-    let base = recorded_base(delivery);
-    let from = base.clone().unwrap_or_else(|| format!("{commit}^"));
-    let changes = git.numstat(&from, commit).map_err(Stop::could_not_tell)?;
-    let size = rendered_size(&changes, root);
-    Ok(match base {
-        Some(_) => size,
-        None => format!("{size} — against {from}: the delivery names no readable base"),
-    })
-}
-
-/// The sha of the `base:` line: the token after ` at `, up to a comma or a
-/// space, and only as 7 to 40 lowercase hex.
-fn recorded_base(delivery: &str) -> Option<String> {
-    let value = label_value(delivery, BASE)?;
-    let (_, after) = value.split_once(" at ")?;
-    let sha: String = after
-        .chars()
-        .take_while(|c| *c != ',' && !c.is_whitespace())
-        .collect();
-    let hex = sha
-        .chars()
-        .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c));
-    ((7..=40).contains(&sha.len()) && hex).then_some(sha)
+pub fn size_of(commit: &str, base: &str, git: &dyn Git, root: &Path) -> Result<String, Stop> {
+    let changes = git.numstat(base, commit).map_err(Stop::could_not_tell)?;
+    Ok(rendered_size(&changes, root))
 }
 
 pub fn rendered_size(changes: &[Change], root: &Path) -> String {
@@ -232,97 +210,36 @@ fn is_executable(root: &Path, path: &str) -> bool {
 
 // ---- the decisions walk ------------------------------------------------------
 
-/// The `decisions:` line of a delivery and the lines under it, which is where
-/// the numbered calls sit.
-pub fn decisions_block(delivery: &str) -> String {
-    let head = format!("{DECISIONS}:");
-    let lines: Vec<&str> = delivery.lines().collect();
-    let Some(at) = lines.iter().position(|line| line.starts_with(&head)) else {
-        return format!("{head} (absent)");
-    };
-    let end = lines[at + 1..]
-        .iter()
-        .position(|line| !line.starts_with(char::is_whitespace) || line.trim().is_empty())
-        .map(|offset| at + 1 + offset)
-        .unwrap_or(lines.len());
-    lines[at..end].join("\n")
-}
-
-/// The calls the delivery numbered, by their `D<k>` names, in the order the
-/// note lists them.
-pub fn decisions(delivery: &str) -> Vec<String> {
-    decisions_block(delivery)
-        .lines()
-        .filter_map(|line| numbered(line.trim(), 'D'))
+/// The calls the delivery lists, by their `D<k>` names: the k-th decision in
+/// the entry's list is `D<k>`, 1-based. The list is the count, so there is no
+/// header for it to disagree with.
+pub fn decisions(delivered: &Delivered) -> Vec<String> {
+    (1..=delivered.decisions.len())
+        .map(|k| format!("D{k}"))
         .collect()
 }
 
-/// A `D1`/`F2` name at the start of a line: the letter, digits, and then a
-/// boundary. `D1 the call` is one and `Dispatch` is not.
-fn numbered(line: &str, letter: char) -> Option<String> {
-    let rest = line.strip_prefix(letter)?;
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    if digits.is_empty() {
-        return None;
-    }
-    match rest[digits.len()..].chars().next() {
-        None | Some(' ') | Some('.') | Some(':') | Some(')') => Some(format!("{letter}{digits}")),
-        _ => None,
-    }
-}
-
-/// The walk: one line per call the delivery numbered, then the count.
+/// The walk: one line per call the delivery lists, then the count.
 ///
 /// `--land` is the accept, so every call it walks is accepted; a call the
 /// reviewer will not take is a finding and the delivery goes back with it.
-fn walk(delivery: &str) -> String {
-    let calls = decisions(delivery);
+fn walk(delivered: &Delivered) -> String {
+    let calls = decisions(delivered);
     let mut lines: Vec<String> = calls.iter().map(|name| format!("{name} ACCEPT")).collect();
     lines.push(format!("{} accepted, 0 overruled", calls.len()));
     lines.join("\n  ")
-}
-
-/// The header's count against the calls the walk finds. The `decisions:` line
-/// at column zero reads `N` or `none`; an absent, unreadable or disagreeing
-/// header is refused, because a call the walk does not find is one nobody
-/// reviewed.
-fn counted(item: &str, delivery: &str) -> Result<(), Stop> {
-    let Some(header) = label_value(delivery, DECISIONS) else {
-        return Err(Stop::refused(format!(
-            "{item}'s delivery carries no `{DECISIONS}:` line at column zero — the header \
-             counts the calls and the walk is checked against it"
-        )));
-    };
-    let token = header.split_whitespace().next().unwrap_or("");
-    let said = match token {
-        "none" => Some(0),
-        count => count.parse::<usize>().ok(),
-    };
-    let found = decisions(delivery).len();
-    match said {
-        None => Err(Stop::refused(format!(
-            "{item}'s delivery says `{DECISIONS}: {header}`, which is not a count — the header \
-             reads `{DECISIONS}: <N>` or `{DECISIONS}: none`"
-        ))),
-        Some(n) if n != found => Err(Stop::refused(format!(
-            "{item}'s delivery says `{DECISIONS}: {n}` and the walk found {found} — the calls \
-             under the header are indented, one `D<k>` per line"
-        ))),
-        Some(_) => Ok(()),
-    }
 }
 
 // ---- the two verdicts --------------------------------------------------------
 
 fn accept(
     item: &Item,
-    delivery: &str,
+    delivered: &Delivered,
     commit: &str,
     size: &str,
     verdict: &Verdict,
     wiring: &Wiring,
 ) -> Result<String, Stop> {
-    counted(&item.id, delivery)?;
     let note = render(
         &block(&wiring.packs.read(VERDICT)?, VERDICT_MARKERS[0])?,
         &[
@@ -330,7 +247,7 @@ fn accept(
             ("reviewer", &verdict.by.to_string()),
             ("item", &item.id),
             ("size", size),
-            ("decisions", &walk(delivery)),
+            ("decisions", &walk(delivered)),
         ],
     )
     .map_err(|name| unresolved(&name))?;
@@ -346,7 +263,7 @@ fn accept(
             "item": item.id,
             "commit": commit,
             "verdict": VERDICT_ACCEPTED,
-            "accepted": decisions(delivery).len(),
+            "accepted": delivered.decisions.len(),
             "overruled": 0,
         }),
     )?;

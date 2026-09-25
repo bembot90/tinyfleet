@@ -486,9 +486,10 @@ fn dispatch_prints_the_seat_it_named_and_the_trunks_bytes_on_the_stream_the_flag
 }
 
 /// `deliver --json`: the commit the delivery made, which only this verb
-/// produces. Then `review --json` on that delivery: the state the verdict moved
-/// the item to — and the `--show` that moves it nowhere, whose state is null
-/// rather than a fourth word.
+/// produces, and the delivered entry it wrote, by its id. Then `review --json`
+/// on that delivery: the state the verdict moved the item to — and the
+/// `--show` that moves it nowhere, whose state is null rather than a fourth
+/// word.
 #[test]
 fn deliver_prints_the_commit_it_made_and_review_the_state_its_verdict_moved_the_item_to() {
     let rig = Rig::new("review");
@@ -514,6 +515,21 @@ fn deliver_prints_the_commit_it_made_and_review_the_state_its_verdict_moved_the_
         data["commit"],
         serde_json::json!(head),
         "the commit the delivery made: {data}"
+    );
+    // The entry the delivery wrote, by the id `item show` lists it under.
+    let shown = rig.item_show(&[&item, "--json"]);
+    assert_eq!(shown.status.code(), Some(0), "{}", stderr(&shown));
+    let timeline = data_of(&shown, "item show")["timeline"].clone();
+    let last = timeline
+        .as_array()
+        .and_then(|entries| entries.last())
+        .expect("the timeline carries an entry");
+    assert_eq!(last["kind"], serde_json::json!("delivered"), "{timeline}");
+    assert_eq!(last["commit"], serde_json::json!(head), "{timeline}");
+    assert!(data["entry"].is_string(), "{data}");
+    assert_eq!(
+        data["entry"], last["id"],
+        "the delivered entry's id: {data}"
     );
 
     let out = rig.run(&["review", &item, "--by", REVIEWER, "--json"]);

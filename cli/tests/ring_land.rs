@@ -564,24 +564,35 @@ impl Rig {
         self.root.join("hooks").display().to_string()
     }
 
-    /// An item held by the reviewer, carrying the orders and the delivery note
-    /// the verb reads. ONE `bd create`: every field it needs is one that call
-    /// already takes, and a bd call on a served board is the cost this rig
-    /// pays most of.
+    /// An item held by the reviewer, carrying the orders and the delivered
+    /// entry the verb reads. One `bd create`, whose every field is one that
+    /// call already takes, then the one comment the entry is — the builder's,
+    /// as `fleet deliver` appends it: a bd call on a served board is the cost
+    /// this rig pays most of.
     fn a_delivered_item(&self, title: &str, branch: &str, file: &str, commit: &str) -> String {
-        let delivery = format!(
-            "DELIVERED {commit} — seat:{BUILDER_ID}\n\
-             commit:  {commit}\n\
-             branch:  {branch}\n\
-             base:    origin/main at {commit}, fetched at 2026-09-12T00:00:00Z\n\
-             files:   {file}\n\
-             checks:  AC2 green, each rc read from its own command\n\
-             suite:   the workspace suite, rc 0\n\
-             spec corrections: none\n\
-             not proven: what this arm did not run\n\
-             decisions: none\n\
-             covers: R8"
-        );
+        use fleet_core::entry::{Body, CheckResult, Delivered, NotProven, Ran, SuiteRun};
+
+        let delivery = fleet_core::entry::encode(&Body::Delivered(Delivered {
+            commit: commit.to_string(),
+            branch: branch.to_string(),
+            base: commit.to_string(),
+            files: vec![file.to_string()],
+            checks: vec![CheckResult {
+                check: "AC2".to_string(),
+                result: "green, each rc read from its own command".to_string(),
+            }],
+            suite: SuiteRun::Ran(Ran {
+                command: "the workspace suite".to_string(),
+                rc: 0,
+            }),
+            spec_corrections: Vec::new(),
+            not_proven: vec![NotProven {
+                surface: "what this arm did not run".to_string(),
+                command: "cargo nextest run".to_string(),
+            }],
+            decisions: Vec::new(),
+            covers: vec!["R8".to_string()],
+        }));
         let made = bd_in(
             &self.primary,
             &[
@@ -598,8 +609,6 @@ impl Rig {
                 &format!(
                     r#"{{"fleet.orders": {{"v": 1, "by": "an-architect", "kind": "dispatch", "seat": "{BUILDER_ID}", "at": "2026-09-12T00:00:00Z"}}}}"#
                 ),
-                "--notes",
-                &delivery,
                 "--actor",
                 BUILDER,
                 "--json",
@@ -608,7 +617,25 @@ impl Rig {
         assert!(made.status.success(), "bd create: {}", stderr(&made));
         let value: serde_json::Value =
             serde_json::from_str(stdout(&made).trim()).expect("bd create answers JSON");
-        value["id"].as_str().expect("an id").to_string()
+        let item = value["id"].as_str().expect("an id").to_string();
+        let appended = bd_in(
+            &self.primary,
+            &[
+                "comments",
+                "add",
+                &item,
+                &delivery,
+                "--actor",
+                &format!("seat:{BUILDER_ID}"),
+                "--json",
+            ],
+        );
+        assert!(
+            appended.status.success(),
+            "bd comments add: {}",
+            stderr(&appended)
+        );
+        item
     }
 
     /// The ACCEPTED verdict, written by the SHIPPED verb rather than typed
