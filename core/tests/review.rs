@@ -1067,11 +1067,14 @@ fn a_return_whose_assignee_reads_back_as_somebody_else_could_not_tell_and_rings_
         said.stop
     );
     assert!(
-        said.stop.contains(&format!(
-            "RERUN: bd update {item} --assignee {}",
-            full(builder)
-        )),
-        "{}",
+        said.stop
+            .contains(&format!("\n  READ: fleet item show {item}")),
+        "the read that shows what the item holds: {}",
+        said.stop
+    );
+    assert!(
+        !said.stop.contains("RERUN") && !said.stop.contains("--assignee"),
+        "and no write to make again: {}",
         said.stop
     );
     assert!(ring.calls().is_empty(), "rung: {:?}", ring.calls());

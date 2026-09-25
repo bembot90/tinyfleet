@@ -86,7 +86,7 @@ const RETIRE_DELETES: &str =
 /// The criterion the suite's SECOND reading is printed under. It is not one of
 /// [`CRITERIA`]: a landing that needed no rerun carries no such row, so the
 /// count is not fixed and the name cannot be positional.
-pub const SUITE_RERUN: &str = "suite rerun";
+pub const SUITE_RERUN_ROW: &str = "suite rerun";
 
 /// The line a landing ends on, which is also the one a caller greps for.
 pub const LANDED: &str = "LANDED";
@@ -1072,10 +1072,10 @@ fn run(
     wiring
         .store
         .close(&item.id, &reason, &closer_id)
-        .map_err(|e| rerun(&item.id, &sha, &e.to_string()))?;
+        .map_err(|e| unclosed(&item.id, &sha, &e.to_string()))?;
     let closed = read(wiring.store, &item.id)?;
     if closed.status != Status::Closed {
-        return Err(rerun(
+        return Err(unclosed(
             &item.id,
             &sha,
             &format!("it read back with status `{}`", closed.status),
@@ -1279,7 +1279,7 @@ fn suite_check(
     rows.read_named(
         out,
         wiring,
-        SUITE_RERUN,
+        SUITE_RERUN_ROW,
         if second.green() { "PASS" } else { "RED" },
         second.evidence(command),
     );
@@ -1886,10 +1886,12 @@ fn message(item: &Item, marker: &str, closer: &str, builder: &str) -> String {
     format!("{subject}\n\nSeat: {closer}\nImplemented-by: {builder}\n")
 }
 
-fn rerun(item: &str, sha: &str, why: &str) -> Stop {
+/// A close that did not happen after the push. The landing is real and the
+/// message says so, and names the read that shows what the item holds.
+fn unclosed(item: &str, sha: &str, why: &str) -> Stop {
     Stop::could_not_tell(format!(
-        "{item} did not close: {why}\n  the landing {sha} STANDS on {TRUNK_BRANCH}\n  RERUN: close \
-         {item} in the store with the reason \"landed {sha}\""
+        "{item} did not close: {why}\n  the landing {sha} STANDS on {TRUNK_BRANCH}\n  READ: \
+         fleet item show {item}"
     ))
 }
 

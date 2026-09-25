@@ -1370,9 +1370,10 @@ fn a_hold_left_behind_by_a_failed_create_is_cleared_and_named() {
 }
 
 /// The same failure where the clear fails too: the hold stands, and the
-/// refusal names it with the command that clears it.
+/// refusal names it as standing on the store with no park naming it — and no
+/// store's command, which is the adapter's to know and not fleet's to print.
 #[test]
-fn a_hold_left_behind_that_cannot_be_cleared_is_named_with_its_command() {
+fn a_hold_left_behind_that_cannot_be_cleared_is_named_as_standing() {
     let scratch = &store();
     let seat = "g-left-stands";
     let item = "fx-left-stands";
@@ -1400,12 +1401,35 @@ fn a_hold_left_behind_that_cannot_be_cleared_is_named_with_its_command() {
         stop.message.contains(&format!(
             "the store raised the hold {LEFT_BEHIND} all the same, and it STANDS with no park \
              naming it"
-        )) && stop
-            .message
-            .contains(&format!("`bd gate resolve {LEFT_BEHIND}` clears it")),
-        "the refusal names the hold and the command: {}",
+        )) && stop.message.contains(&format!(
+            "; the hold {LEFT_BEHIND} stands on the store with no park naming it"
+        )),
+        "the refusal names the hold and what stands: {}",
         stop.message
     );
+    // FLEET'S OWN WORDS NAME NO bd. The store's answer is quoted as the store
+    // gave it, and this store's is a bd's argv, so the line is read with that
+    // answer taken out: what is before it and what follows it are fleet's.
+    let line = stop
+        .message
+        .lines()
+        .find(|line| line.contains("withdrawing it failed: "))
+        .unwrap_or_else(|| panic!("no withdrawal line: {}", stop.message));
+    let (before, rest) = line
+        .split_once("withdrawing it failed: ")
+        .expect("the line names the failed withdrawal");
+    let (_, after) = rest
+        .rsplit_once("; ")
+        .expect("the store's answer is followed by what stands");
+    for words in [before, after] {
+        assert!(
+            !words
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|word| word == "bd"),
+            "and no bd in fleet's words `{words}`: {}",
+            stop.message
+        );
+    }
     assert_eq!(standing(&dir), vec![String::from(LEFT_BEHIND)]);
 }
 

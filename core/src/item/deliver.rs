@@ -510,7 +510,6 @@ fn read_back(item: &str, reviewer: &str, wiring: &Wiring) -> Result<(), Stop> {
             "assignee",
             reviewer,
             read.assignee.as_deref(),
-            &format!("bd update {item} --assignee {reviewer}"),
         ));
     }
     let control = control_token();
@@ -541,9 +540,9 @@ fn committed(item: &str, commit: &str, why: &str) -> Stop {
     ))
 }
 
-fn disagrees(item: &str, field: &str, wanted: &str, got: Option<&str>, rerun: &str) -> Stop {
+fn disagrees(item: &str, field: &str, wanted: &str, got: Option<&str>) -> Stop {
     Stop::could_not_tell(format!(
-        "{item} read back with {field} ==\n{}\n  wanted:\n{wanted}\n  RERUN: {rerun}",
+        "{item} read back with {field} ==\n{}\n  wanted:\n{wanted}\n  READ: fleet item show {item}",
         got.unwrap_or("(absent)")
     ))
 }

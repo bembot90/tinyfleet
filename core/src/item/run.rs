@@ -234,11 +234,11 @@ impl Ended {
     /// Whether the record item is closed with the event.
     ///
     /// THE OPEN SET IS THE STORE'S and not a field beside it: `[core.run]
-    /// max_open` is measured with `bd list --status open`, so a run leaves that
-    /// set by being closed and by nothing else. A waiting run and one nothing
-    /// could classify are both still open — the first because the controller
-    /// re-runs it, the second because retiring a run nobody could read would
-    /// spend the cap's answer on a guess.
+    /// max_open` is measured by the store's open-with-label listing, so a run
+    /// leaves that set by being closed and by nothing else. A waiting run and
+    /// one nothing could classify are both still open — the first because the
+    /// controller re-runs it, the second because retiring a run nobody could
+    /// read would spend the cap's answer on a guess.
     pub fn retires_the_record(self) -> bool {
         matches!(self, Ended::Closed | Ended::Failed)
     }
@@ -1184,8 +1184,7 @@ fn file_the_record(order: &Order, resolved: &Resolved, wiring: &Wiring) -> Resul
 
 /// The hash and the run's own record onto the record item, read back.
 ///
-/// The record is written WHOLE, and the store replaces the one the item
-/// carried whole: a record of one field alone would drop the rest of it.
+/// The run record is written whole, so no field of it is left behind.
 fn write_the_pins(
     id: &str,
     hash: &str,
@@ -1212,11 +1211,9 @@ fn write_the_pins(
         .store
         .run_set(&ItemId::from(id), &run, order.by)
         .map_err(|e| {
-            let json = serde_json::to_string(&run)
-                .unwrap_or_else(|e| format!("(a record that did not print: {e})"));
             Stop::could_not_tell(format!(
                 "the pins did not land on {id}: {e}\n  the run directory is WRITTEN and the \
-                 record does not name it\n  RERUN: set the run record on {id} to {json}"
+                 record does not name it\n  READ: fleet item show {id}"
             ))
         })?;
 

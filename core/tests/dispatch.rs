@@ -114,6 +114,9 @@ struct Doctored<'a> {
     /// The seat the order index reads back naming.
     seat: Option<SeatId>,
     append: Option<String>,
+    /// Whether the order's own write is refused, after the entry before it
+    /// landed.
+    refuse_order: bool,
 }
 
 impl Store for Doctored<'_> {
@@ -167,6 +170,11 @@ impl Store for Doctored<'_> {
         order: &fleet_core::store::Order,
         by: &fleet_core::seat::actor::Actor,
     ) -> Result<(), StoreError> {
+        if self.refuse_order {
+            return Err(StoreError::Unreadable(String::from(
+                "the store did not answer the order's write",
+            )));
+        }
         self.inner.order_set(id, order, by)
     }
 
@@ -1130,6 +1138,7 @@ fn a_read_back_that_disagrees_exits_three_with_both_values() {
         assignee: Some(String::from("somebody-else")),
         seat: None,
         append: None,
+        refuse_order: false,
     };
 
     let answer = rig.run(
@@ -1151,19 +1160,18 @@ fn a_read_back_that_disagrees_exits_three_with_both_values() {
         "the value wanted: {}",
         answer.why
     );
-    // THE REPAIR FOR THE FIELD THAT DISAGREED: a lost assignee is set again,
-    // and handing it the index write instead would leave it lost.
+    // THE REPAIR IS A READ, and fleet's own: the line names the item to read
+    // with fleet's verb, never a store's command to type.
     assert!(
-        answer.why.contains(&format!(
-            "RERUN: bd update {item} --assignee {} --actor {BY}",
-            full(&seat)
-        )),
-        "the assignee's own repair: {}",
+        answer
+            .why
+            .contains(&format!("\n  READ: fleet item show {item}")),
+        "the read that shows what the item holds: {}",
         answer.why
     );
     assert!(
-        !answer.why.contains("--metadata"),
-        "and not the index's: {}",
+        !answer.why.contains("RERUN") && !answer.why.contains("--assignee"),
+        "and no write to make again: {}",
         answer.why
     );
     assert!(
@@ -1191,10 +1199,11 @@ fn a_read_back_that_disagrees_exits_three_with_both_values() {
     assert_eq!(answer.code, None, "{}", answer.why);
 }
 
-/// The index's own disagreement gets the index's own repair: the whole
-/// `fleet.orders` object written again, and not the assignee's write.
+/// The index's own disagreement names the field that disagreed and the read
+/// that shows the item, and never a write to make again: the command that
+/// writes an order is the store's, and fleet does not print a store's command.
 #[test]
-fn an_index_that_reads_back_wrong_is_handed_the_index_repair() {
+fn an_index_that_reads_back_wrong_names_the_field_and_the_read() {
     let rig = Rig::new("disagree-index");
     let item = rig.graph.item("a ready item whose index reads back wrong");
     let seat = String::from("s-disagree-index");
@@ -1205,6 +1214,7 @@ fn an_index_that_reads_back_wrong_is_handed_the_index_repair() {
         assignee: None,
         seat: Some(seat_id("somebody-else")),
         append: None,
+        refuse_order: false,
     };
 
     let answer = rig.run(
@@ -1225,12 +1235,15 @@ fn an_index_that_reads_back_wrong_is_handed_the_index_repair() {
         answer.why
     );
     assert!(
-        answer.why.contains(&format!(
-            "RERUN: set the order on {item} to {}",
-            serde_json::to_string(&a_dispatch(BY, Some(&full(&seat)), AT))
-                .expect("an order prints")
-        )),
-        "the order's own repair, as the contract's JSON: {}",
+        answer
+            .why
+            .contains(&format!("\n  READ: fleet item show {item}")),
+        "the read that shows what the item holds: {}",
+        answer.why
+    );
+    assert!(
+        !answer.why.contains("RERUN") && !answer.why.contains("set the order"),
+        "and no write to make again: {}",
         answer.why
     );
     assert!(
@@ -1242,6 +1255,49 @@ fn an_index_that_reads_back_wrong_is_handed_the_index_repair() {
     assert!(
         !answer.why.contains("--assignee"),
         "and not the assignee's: {}",
+        answer.why
+    );
+    assert!(ring.calls().is_empty(), "nobody is rung");
+}
+
+/// An order the store will not take, after the entry before it landed, says
+/// the entry STANDS and names the read that shows the item — and no write to
+/// make again, which would be the store's command and not fleet's.
+#[test]
+fn an_order_the_store_does_not_take_names_the_read_and_what_stands() {
+    let rig = Rig::new("unordered");
+    let item = rig.graph.item("a ready item whose order is not taken");
+    let seat = String::from("s-unordered");
+    let ring = StubRing::answering(RingOutcome::Delivered);
+    let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
+    let refusing = Doctored {
+        inner: rig.graph.store(),
+        assignee: None,
+        seat: None,
+        append: None,
+        refuse_order: true,
+    };
+
+    let answer = rig.run(
+        &item,
+        Some(&seat),
+        std::slice::from_ref(&seat),
+        &refusing,
+        &ring,
+        &spawner,
+    );
+    assert_eq!(answer.code, Some(3), "{}", answer.why);
+    assert!(
+        answer.why.contains(&format!(
+            "the order did not land: the store did not answer the order's write\n  READ: fleet \
+             item show {item}\n  the ordered entry on {item} STANDS"
+        )),
+        "the cause, the read and what stands: {}",
+        answer.why
+    );
+    assert!(
+        !answer.why.contains("RERUN") && !answer.why.contains("set the order"),
+        "and no write to make again: {}",
         answer.why
     );
     assert!(ring.calls().is_empty(), "nobody is rung");
@@ -1261,6 +1317,7 @@ fn the_negative_control_catches_a_read_that_is_not_this_items() {
         assignee: None,
         seat: None,
         append: Some(control_token().to_string()),
+        refuse_order: false,
     };
 
     let answer = rig.run(

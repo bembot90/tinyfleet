@@ -129,8 +129,8 @@ pub fn withdraw(
 
 /// An item that moved between the listing and the write — somebody else holds
 /// it now, or it was closed: the record's answer, so a refusal and not a
-/// could-not-tell. The withdrawal is fenced on the retiring seat — bd 1.3.0
-/// takes a retirer's clear of an `in_progress` item only so — and on the
+/// could-not-tell. The withdrawal is fenced on the retiring seat — a store may
+/// take a retirer's clear of an `in_progress` item only so — and on the
 /// listed status, and neither the new holder's claim nor a close is this
 /// retire's to take away.
 fn moved_on(item: &str, seat: &str, why: &str) -> Stop {

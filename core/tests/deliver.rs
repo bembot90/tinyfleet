@@ -1292,7 +1292,7 @@ fn a_reviewer_named_by_name_is_assigned_by_its_full_id_and_a_stranger_is_refused
 fn a_read_back_that_disagrees_exits_three_and_prints_both_values() {
     let scratch = &store();
     let seat = "s-doctored";
-    an_ordered_item(scratch, "an item whose read-back is bent", seat);
+    let item = an_ordered_item(scratch, "an item whose read-back is bent", seat);
     let delivery = a_delivery(scratch, "doctored", &whole());
 
     let doctored = Doctored {
@@ -1326,6 +1326,17 @@ fn a_read_back_that_disagrees_exits_three_and_prints_both_values() {
     assert!(
         stop.message.contains("somebody-else") && stop.message.contains(&full(REVIEWER)),
         "both values: {}",
+        stop.message
+    );
+    assert!(
+        stop.message
+            .contains(&format!("\n  READ: fleet item show {item}")),
+        "the read that shows what the item holds: {}",
+        stop.message
+    );
+    assert!(
+        !stop.message.contains("RERUN") && !stop.message.contains("--assignee"),
+        "and no write to make again: {}",
         stop.message
     );
     assert_eq!(

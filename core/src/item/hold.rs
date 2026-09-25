@@ -43,7 +43,6 @@ use crate::item::{
     recorded, signal, Events, Git, Project, Stop, Unrecorded, ITEM_ENTRY, TRUNK_BRANCH,
 };
 use crate::seat::actor::Actor;
-use crate::store::bd::BD;
 use crate::store::{HoldId, Item, ItemId, Store};
 
 /// What a run's park answers as its branch, where a seat's answers its work
@@ -138,10 +137,8 @@ pub fn hold(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result
 
     // (b) THE HOLD, whose id comes off the command's own answer. The open list
     // is read FIRST, because a create that fails can still have filed its hold
-    // — bd 1.2.2 on an epic filed it, refused the edge and exited 1; 1.3.0
-    // files both and exits 0, measured, but a bd off the pin still runs here —
-    // and the listing names no item, so what the create left is what was not
-    // there before it.
+    // — a store was measured doing it, on an epic — and the listing names no
+    // item, so what the create left is what was not there before it.
     let before = wiring.store.holds_open().map_err(|e| {
         parked(
             &item,
@@ -512,7 +509,7 @@ fn left_behind(store: &dyn Store, before: &[HoldId], by: &Actor) -> String {
         Err(e) => {
             return format!(
                 "\n  the open holds could not be read again: {e} — a hold the store raised all \
-                 the same is not known, and `{BD} gate list` lists every open one"
+                 the same is not known, and fleet status counts every open hold"
             )
         }
     };
@@ -525,7 +522,8 @@ fn left_behind(store: &dyn Store, before: &[HoldId], by: &Actor) -> String {
             }
             Err(e) => format!(
                 "\n  the store raised the hold {hold} all the same, and it STANDS with no park \
-                 naming it — withdrawing it failed: {e}; `{BD} gate resolve {hold}` clears it"
+                 naming it — withdrawing it failed: {e}; the hold {hold} stands on the store \
+                 with no park naming it"
             ),
         })
         .collect()

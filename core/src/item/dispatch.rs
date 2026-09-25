@@ -28,7 +28,7 @@ use crate::item::{
 };
 use crate::seat::actor::Actor;
 use crate::seat::identity::{Directory, Kind, SeatId, SeatRef};
-use crate::store::bd::keys;
+use crate::store::types::CONTRACT_VERSION;
 use crate::store::{
     self, Filter, Item, ItemId, OrderState, Stamp, Status, Store, StoreError, Update,
 };
@@ -245,11 +245,10 @@ fn refuse_unless_dispatchable<'w>(
         // never taken for absent or overwritten.
         OrderState::Unreadable => {
             return Err(Stop::could_not_tell(format!(
-                "{}'s order index is not one this fleet can read — this fleet reads an order at \
-                 {} {} — and a dispatch will not guess whether it is an order",
-                order.item,
-                keys::VERSION_FIELD,
-                keys::VERSION
+                "{}'s order index is not one this fleet can read — this fleet reads an order \
+                 index at the store contract's v {CONTRACT_VERSION} — and a dispatch will not \
+                 guess whether it is an order",
+                order.item
             )));
         }
         OrderState::Ordered(index) => {
@@ -602,8 +601,8 @@ fn write_order(
             stands(
                 order.item,
                 &format!(
-                    "the order did not land: {e}\n  RERUN: {}",
-                    order_repair(order.item, &given)
+                    "the order did not land: {e}\n  READ: fleet item show {}",
+                    order.item
                 ),
             )
         })?;
@@ -612,8 +611,8 @@ fn write_order(
 
 /// The order this dispatch gives, with the seat present only where one was
 /// named: a dispatch to a transient seat names no seat until the spawn answers
-/// with one. The one place it is built, so the order written and the order a
-/// repair names are the same value.
+/// with one. The one place it is built, so the order written and the order the
+/// read-back wants are the same value.
 fn the_order(order: &Order, seat: Option<SeatId>) -> Result<store::Order, Stop> {
     Ok(store::Order {
         kind: store::OrderKind::Dispatch,
@@ -651,7 +650,6 @@ fn read_back(
     let item = read(wiring.store, order.item)?;
     let seat_text = seat.map(SeatId::to_string);
     let given = the_order(order, seat.copied())?;
-    let repair = || order_repair(order.item, &given);
 
     if let Some(wanted) = assignee {
         if item.assignee.as_deref() != Some(wanted) {
@@ -660,7 +658,6 @@ fn read_back(
                 "assignee",
                 wanted,
                 item.assignee.as_deref(),
-                &assignee_repair(order, wanted),
             ));
         }
     }
@@ -674,7 +671,6 @@ fn read_back(
                 "the order index",
                 "a readable order index",
                 Some("one this fleet cannot read"),
-                &repair(),
             ))
         }
         OrderState::None => {
@@ -683,7 +679,6 @@ fn read_back(
                 "the order index",
                 "a readable order index",
                 None,
-                &repair(),
             ))
         }
     };
@@ -693,7 +688,6 @@ fn read_back(
             &format!("order.{name}"),
             wanted.as_deref().unwrap_or("(absent)"),
             got.as_deref(),
-            &repair(),
         )
     };
     if index.by != *order.by {
@@ -831,33 +825,13 @@ fn stands(item: &str, why: &str) -> Stop {
     ))
 }
 
-/// A read-back that disagrees, with the repair for THE FIELD THAT DISAGREED:
-/// the caller names it, because an assignee handed the index's write would
-/// read back lost again.
-fn disagrees(item: &str, field: &str, wanted: &str, got: Option<&str>, repair: &str) -> Stop {
+/// A read-back that disagrees, naming THE FIELD THAT DISAGREED and the read
+/// that shows the item. The repair is a read and never a write to make again:
+/// the command that writes a field is the store's, and not fleet's to print.
+fn disagrees(item: &str, field: &str, wanted: &str, got: Option<&str>) -> Stop {
     Stop::could_not_tell(format!(
         "{item} read back with {field} == {}\n  wanted: {wanted} (from the arguments)\n  \
-         RERUN: {repair}",
+         READ: fleet item show {item}",
         got.unwrap_or("(absent)"),
     ))
-}
-
-/// The assignee written again, as the store's own command.
-fn assignee_repair(order: &Order, seat: &str) -> String {
-    format!(
-        "bd update {} --assignee {seat} --actor {}",
-        order.item, order.by
-    )
-}
-
-/// The order set again whole, naming the seat the read-back wanted: the id
-/// the argument resolved to, never the argument. The order is printed as the
-/// contract's own JSON, which is what a store is handed; the command a person
-/// runs to write it is fleet-0q4's to name.
-fn order_repair(item: &str, order: &store::Order) -> String {
-    format!(
-        "set the order on {item} to {}",
-        serde_json::to_string(order)
-            .unwrap_or_else(|e| format!("(an order that did not print: {e})"))
-    )
 }

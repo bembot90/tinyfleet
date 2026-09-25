@@ -395,7 +395,7 @@ fn retur(
 
     // HANDED OVER FROM THE HOLDER THIS REVIEW READ, and only while it still
     // holds the item: under a run the holder is the `[core] reviewer` and not
-    // the `--by` of the call, and bd 1.3.0 refuses a plain reassignment of an
+    // the `--by` of the call, and a store may refuse a plain reassignment of an
     // `in_progress` item by anyone but its holder — which the builder's claim
     // leaves it through delivery.
     wiring.store.hand_over(
@@ -453,8 +453,8 @@ fn write_verdict(
         let read = read(wiring.store, item)?;
         if read.assignee.as_deref() != Some(wanted) {
             return Err(Stop::could_not_tell(format!(
-                "{item} read back with assignee ==\n{}\n  wanted:\n{wanted}\n  RERUN: bd update \
-                 {item} --assignee {wanted}",
+                "{item} read back with assignee ==\n{}\n  wanted:\n{wanted}\n  READ: fleet item \
+                 show {item}",
                 read.assignee.as_deref().unwrap_or("(absent)")
             )));
         }

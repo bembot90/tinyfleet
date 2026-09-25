@@ -32,7 +32,7 @@ use fleet_core::entry::{
 use fleet_core::item::brief::Packs;
 use fleet_core::item::land::{
     self, LandGit, Landed, Landing, Progress, Pushed, Squashed, Wiring, CRITERIA, REBASE_NEEDED,
-    SUITE_RERUN, UNTESTED,
+    SUITE_RERUN_ROW, UNTESTED,
 };
 use fleet_core::item::lane;
 use fleet_core::item::show::entry_lines;
@@ -442,6 +442,8 @@ struct Doctored<'a> {
     /// An entry id every timeline read carries beside the real ones, under the
     /// last entry's body — a read that answers for something nothing wrote.
     plant: Option<String>,
+    /// Whether the close is refused, after the push landed.
+    refuse_close: bool,
 }
 
 impl Store for Doctored<'_> {
@@ -529,6 +531,11 @@ impl Store for Doctored<'_> {
     }
 
     fn close(&self, id: &ItemId, reason: &str, by: &str) -> Result<(), StoreError> {
+        if self.refuse_close {
+            return Err(StoreError::Unreadable(String::from(
+                "the store did not answer the close",
+            )));
+        }
         self.inner.close(id, reason, by)
     }
 
@@ -3474,6 +3481,7 @@ fn the_read_back_catches_a_planted_token() {
     let doctored = Doctored {
         inner: bd,
         plant: Some(control_token().to_string()),
+        refuse_close: false,
     };
     let git = StubGit::clean();
 
@@ -3481,6 +3489,39 @@ fn the_read_back_catches_a_planted_token() {
     assert_eq!(ran.code(), Some(3), "{}", ran.why());
     assert!(ran.why().contains(control_token()), "{}", ran.why());
     assert!(ran.why().contains("STANDS"), "{}", ran.why());
+}
+
+/// A close the store will not make, after the push, says the landing STANDS
+/// on the trunk and names the read that shows the item — and no close to make
+/// again, which would be the store's command and not fleet's.
+#[test]
+fn a_close_the_store_does_not_make_names_the_read_and_the_landing_stands() {
+    let scratch = &store();
+    let item = an_item(
+        &scratch.store,
+        "an item whose close is not made",
+        Some(("ACCEPTED", SHA)),
+    );
+    let doctored = Doctored {
+        inner: &scratch.store,
+        plant: None,
+        refuse_close: true,
+    };
+
+    let ran = run(scratch, &doctored, &StubGit::clean(), &item, SHA);
+    assert_eq!(ran.code(), Some(3), "{}\n{}", ran.why(), ran.out);
+    assert_eq!(
+        ran.why(),
+        format!(
+            "{item} did not close: the store did not answer the close\n  the landing {LANDED} \
+             STANDS on {TRUNK_BRANCH}\n  READ: fleet item show {item}"
+        )
+    );
+    assert_eq!(
+        scratch.store.show(&item).expect("the item reads").status,
+        "open",
+        "and nothing is closed"
+    );
 }
 
 // ---- the work branch ---------------------------------------------------------
@@ -4407,7 +4448,7 @@ fn a_red_gate_is_rerun_once_and_a_green_second_reading_lands_with_both_rows() {
             CRITERIA[1],
             CRITERIA[2],
             CRITERIA[3],
-            SUITE_RERUN,
+            SUITE_RERUN_ROW,
             CRITERIA[4],
             CRITERIA[5],
             CRITERIA[6],
@@ -4433,7 +4474,7 @@ fn a_red_gate_is_rerun_once_and_a_green_second_reading_lands_with_both_rows() {
         suite_rows[0]
     );
     assert!(
-        suite_rows[1].contains(SUITE_RERUN) && suite_rows[1].contains("PASS"),
+        suite_rows[1].contains(SUITE_RERUN_ROW) && suite_rows[1].contains("PASS"),
         "the second is the rerun and it is green: {}",
         suite_rows[1]
     );
@@ -4592,7 +4633,7 @@ fn the_rerun_waits_for_the_box_to_quieten_and_the_row_says_it_did() {
     assert!(
         checks
             .lines()
-            .any(|line| line.contains(SUITE_RERUN) && line.contains("the box quietened after")),
+            .any(|line| line.contains(SUITE_RERUN_ROW) && line.contains("the box quietened after")),
         "the second row says what the wait ended as:\n{checks}"
     );
     assert!(
@@ -4652,7 +4693,7 @@ fn a_wait_that_expires_reruns_anyway_and_the_row_says_it_expired() {
     assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
     let checks = shown(bd, &item);
     assert!(
-        checks.lines().any(|line| line.contains(SUITE_RERUN)
+        checks.lines().any(|line| line.contains(SUITE_RERUN_ROW)
             && line.contains("expired")
             && line.contains("ran anyway")),
         "the second row says the wait expired and the rerun ran:\n{checks}"

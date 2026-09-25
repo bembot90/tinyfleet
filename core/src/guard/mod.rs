@@ -471,6 +471,10 @@ pub const SURFACES: [Surface; 5] = [
 ];
 
 /// The command word every guarded call is made through: the work graph's.
+///
+/// The guard polices the CLI a seat types in its shell, which is bd's whatever
+/// store fleet itself reads through (fleet-0q4 D7); it is the one place outside
+/// the store adapter that names bd.
 pub const WORK_GRAPH: &str = "bd";
 
 /// The work graph's subcommand for this statement, or `None` where the

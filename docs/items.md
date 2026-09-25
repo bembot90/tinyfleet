@@ -859,7 +859,7 @@ Exits follow the table every command shares; see
 | `land` suite red twice | 1 | both log tails, and ``the suite `<command>` exited <rc> and, rerun once, <rc> — …`` | Read the logs |
 | `land` trunk moved | 1 | `REBASE NEEDED: origin/main moved (<n>)` | Rebase the work, then land |
 | `land` push rejected | 1 | the push's output, and `the push to origin/main exited <rc> — nothing after it ran: …` | Read `push.out` |
-| A write that did not read back | 3 | what the record holds against what the verb wrote, and what STANDS; for an assignee, an order index or a close, a `RERUN:` line | Run the `RERUN:` line, and read the item with `fleet item show` |
+| A write that did not read back | 3 | what the record holds against what the verb wrote, or which write did not land and what STANDS; for an assignee, an order index or a close, a `READ:` line | Read the item with the `READ:` line, then re-run the verb or report it |
 
 ## See also
 
