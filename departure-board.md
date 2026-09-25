@@ -73,7 +73,7 @@ dependencies are the real blockers.
 
 | Bead | What | Blocked by | Landed |
 | --- | --- | --- | --- |
-| fleet-zlk.1 | the entry model — an item's record as typed timeline entries, their wire text and the fold, in core | fleet-iex.1 | ☐ |
+| fleet-zlk.1 | the entry model — an item's record as typed timeline entries, their wire text and the fold, in core | fleet-iex.1 | ☑ |
 | fleet-zlk.2 | the store appends and reads an item's timeline — bd comments in the adapter, the fake, the contract, and one append-a… | fleet-zlk.1 | ☐ |
 | fleet-zlk.3 | a seat hands in JSON — the delivery, question and findings input types and their JSON Schemas in the defaults | fleet-zlk.1 | ☐ |
 | fleet-zlk.4 | `fleet item show <id> [--json]` renders an item and its timeline, and the brief carries that rendering instead of bd's | fleet-zlk.1, fleet-zlk.2 | ☐ |
