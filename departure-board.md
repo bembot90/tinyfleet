@@ -105,9 +105,9 @@ dependencies are the real blockers.
 | fleet-0q4.8 | The conformance suite as a library, run against the fake and the bd adapter, and the bd adapter's scratch verb | fleet-0q4.7 | ☑ |
 | fleet-0q4.9 | The external store client: one process per call, JSON on stdin and stdout, fleet's exit table, the 60s bound | fleet-0q4.2, fleet-0q4.7 | ☑ |
 | fleet-0q4.10 | [store] adapter selects the store, one opener serves every caller, and bd's resolution moves behind the adapter | fleet-0q4.9 | ☑ |
-| fleet-0q4.11 | fleet store check [--adapter <path>]: the conformance suite against an adapter on a scratch store it makes | fleet-0q4.10, fleet-0q4.8 | ☐ |
+| fleet-0q4.11 | fleet store check [--adapter <path>]: the conformance suite against an adapter on a scratch store it makes | fleet-0q4.10, fleet-0q4.8 | ☑ |
 | fleet-0q4.12 | Repair lines print a fleet command, not a bd one, and core names bd only inside the adapter | fleet-0q4.7, fleet-zlk.4 | ☑ |
-| fleet-0q4.13 | Routines file items through the store, fleet create reads the item prefix from the adapter, and no file outside the a… | fleet-0q4.10, fleet-0q4.12, fleet-iex.9 | ☐ |
+| fleet-0q4.13 | Routines file items through the store, fleet create reads the item prefix from the adapter, and no file outside the a… | fleet-0q4.10, fleet-0q4.12, fleet-iex.9 | ☑ |
 | fleet-0ml | Adopt an existing board: a doctor check that reads the board through fleet, and a mapping skill | fleet-2u3.1, fleet-zlk.4 | ☑ |
 
 ## The walkthrough
