@@ -174,10 +174,10 @@ pub struct ReviewArgs {
     /// print the delivery and the size line; write nothing
     #[arg(long, conflicts_with_all = ["land", "returned"])]
     pub show: bool,
-    /// write the ACCEPTED verdict; it lands nothing
+    /// append the ACCEPTED verdict; it lands nothing
     #[arg(long, conflicts_with = "returned")]
     pub land: bool,
-    /// write the RETURNED verdict from these findings
+    /// append the RETURNED verdict with these findings
     ///
     /// the findings, a JSON file of the shape assets/findings.schema.json
     #[arg(long = "return", value_name = "FILE")]
@@ -550,8 +550,9 @@ pub fn review_command(args: &ReviewArgs) -> Exit {
     let mut err = std::io::stderr();
     let mut human = Human::under(args.json);
     match run_review(args, &mut human, &mut err) {
-        // `--show` writes no verdict and moves the item nowhere, so its state is
-        // null: the absent value and not a fourth word for "it did not move".
+        // `--show` writes no verdict and moves the item nowhere, so its state
+        // and its entry are null: the absent value and not a fourth word for
+        // "it did not move".
         Ok(read) => answered(
             "review",
             serde_json::json!({
@@ -561,6 +562,7 @@ pub fn review_command(args: &ReviewArgs) -> Exit {
                     (None, true) => Some(state(ITEM_REVIEWED)),
                     (None, false) => None,
                 },
+                "entry": read.entry,
             }),
             args.json,
         ),

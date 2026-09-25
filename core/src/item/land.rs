@@ -2,9 +2,10 @@
 //! landing.
 //!
 //! IT LANDS A REVIEW, NOT A DELIVERY. The check that decides whether anything
-//! may be squashed is the item's last verdict: an `ACCEPTED` naming this exact
-//! commit. A delivery nobody accepted, an accept naming a different commit, and
-//! a return are each refused before the trunk is touched.
+//! may be squashed is the timeline's last `reviewed` entry: an accept of this
+//! exact commit, appended by this landing's own reviewer. A delivery nobody
+//! accepted, an accept of a different commit, an accept another actor wrote,
+//! and a return are each refused before the trunk is touched.
 //!
 //! IT TAKES A COMMIT AND NEVER A BRANCH NAME. A branch resolves perfectly well
 //! — to whatever its tip is at merge time, which is not what the reviewer read
@@ -42,15 +43,14 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::entry::Timeline;
+use crate::entry::{Timeline, Verdict};
 use crate::item::brief::Packs;
 use crate::item::deliver::{named, reviewer_of};
 use crate::item::lane;
-use crate::item::review::last_verdict;
 use crate::item::run;
 use crate::item::{
-    control_token, last_answer, last_landing, marker_block, opens_with, render, Events, Git,
-    Project, Stop, CHECK_READ, ITEM_LANDED, LANDING_MARKERS, TRUNK, TRUNK_BRANCH, VERDICT_MARKERS,
+    control_token, last_answer, last_landing, marker_block, render, Events, Git, Project, Stop,
+    CHECK_READ, ITEM_LANDED, LANDING_MARKERS, TRUNK, TRUNK_BRANCH,
 };
 use crate::policy;
 use crate::seat::actor::{Actor, ActorKind};
@@ -605,11 +605,17 @@ fn run(
         Some(record) => format!("{closer_named} ({closer_id}) through run {}", record.id),
         None => format!("{closer_named} ({closer_id})"),
     };
-    let notes = item.notes.clone().unwrap_or_default();
-    let accepted = accepted_commit(&item.id, &notes, commit, wiring)?;
-    // THE DELIVERY IS THE TIMELINE'S LAST DELIVERED ENTRY. A prose delivery
-    // note is not one: the record has no delivery grammar left to read.
+    // THE VERDICT IS THE TIMELINE'S LAST REVIEWED ENTRY, and the delivery its
+    // last delivered one. A prose note is neither: the record has no grammar
+    // left to read one by.
     let entries = wiring.store.timeline(&item.id)?;
+    let accepted = accepted(
+        &item.id,
+        &Timeline(&entries),
+        commit,
+        &acting,
+        by_run.as_ref(),
+    )?;
     let Some((delivered_by, delivery)) = Timeline(&entries).last_delivery() else {
         return Err(Stop::refused(format!(
             "{} carries a verdict and no delivery — the work branch and the builder are read from \
@@ -1728,43 +1734,50 @@ fn classify(
 
 // ---- the record ---------------------------------------------------------------
 
-/// The commit the last verdict accepted, as a full sha, against the one this
-/// landing was given.
-fn accepted_commit(item: &str, notes: &str, commit: &str, wiring: &Wiring) -> Result<String, Stop> {
-    let Some(verdict) = last_verdict(notes) else {
+/// The commit the timeline's last verdict accepted, against the one this
+/// landing was given — both whole shas, so they are compared as they are.
+///
+/// THE ACCEPT IS THE LANDING'S OWN REVIEWER'S (fleet-pl6 (c)): the entry was
+/// appended by the closer's seat, or — where a run carries this landing — by
+/// that run, which reviewed as the same seat. An accept any other actor wrote
+/// is refused, naming both.
+fn accepted(
+    item: &str,
+    timeline: &Timeline,
+    commit: &str,
+    closer: &Actor,
+    by_run: Option<&Item>,
+) -> Result<String, Stop> {
+    let Some((entry, reviewed)) = timeline.last_review() else {
         return Err(Stop::refused(format!(
             "{item} carries no verdict — a landing lands a review and there is none to land"
         )));
     };
-    let first = verdict.lines().next().unwrap_or_default();
-    if opens_with(first, &[VERDICT_MARKERS[1]]) {
+    if reviewed.verdict == Verdict::Returned {
         return Err(Stop::refused(format!(
-            "the last verdict on {item} is `{}` — the work went back and nothing has accepted it \
-             since",
-            VERDICT_MARKERS[1]
+            "the last verdict on {item} is a return — the work went back and nothing has \
+             accepted it since"
         )));
     }
-    let named = first
-        .strip_prefix(VERDICT_MARKERS[0])
-        .unwrap_or_default()
-        .split_whitespace()
-        .next()
-        .unwrap_or_default();
-    let resolved = match wiring.git.rev(named).map_err(Stop::could_not_tell)? {
-        Some(sha) => sha,
-        None => {
-            return Err(Stop::could_not_tell(format!(
-                "the last verdict on {item} names `{named}`, which resolves to no commit here"
-            )))
-        }
-    };
-    if resolved != commit {
+    if reviewed.commit != commit {
         return Err(Stop::refused(format!(
-            "the last verdict on {item} accepts {resolved} and this landing was given {commit} — a \
-             landing lands the commit the review read"
+            "the last verdict on {item} accepts {} and this landing was given {commit} — a \
+             landing lands the commit the review read",
+            reviewed.commit
         )));
     }
-    Ok(resolved)
+    let its_run = by_run.map(|record| Actor {
+        kind: ActorKind::Run,
+        id: record.id.clone(),
+    });
+    if entry.by != *closer && Some(&entry.by) != its_run.as_ref() {
+        return Err(Stop::refused(format!(
+            "the last verdict on {item} was written by {}, and this landing closes as {closer} — \
+             a landing lands its own reviewer's accept",
+            entry.by
+        )));
+    }
+    Ok(reviewed.commit.clone())
 }
 
 /// The clause the landing note's first line gains when the delivery was BEHIND
@@ -1796,7 +1809,10 @@ fn rebased_from(base: &str, landed_on: &str) -> String {
 /// a run's park from a seat's. An id the store holds no item for, or one whose
 /// item carries no label, is refused: the actor said it was a run, and it is
 /// not one. A store that could not answer is a could-not-tell.
-fn run_record(store: &dyn Store, by: &Actor) -> Result<Item, Stop> {
+///
+/// `review` asks it too: a run reviews as the `[core] reviewer` on the same
+/// record a run's landing closes as that seat on.
+pub(crate) fn run_record(store: &dyn Store, by: &Actor) -> Result<Item, Stop> {
     let named_no_run = || Stop::refused(format!("{by} names no run record"));
     match store.show(&by.id) {
         Ok(record) if record.labels.iter().any(|label| label == run::LABEL) => Ok(record),

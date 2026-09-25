@@ -18,7 +18,8 @@ use common::{
     agent, fleet_of, full, keys_agree, seat_actor, shared_store, Rooted, Scratch, StubEvents,
 };
 use fleet_core::entry::{
-    Body, CheckResult, Decision, Delivered, NotProven, Ran, SuiteRun, Timeline,
+    Body, CheckResult, Decision, Delivered, Entry, Finding, NotProven, Ran, Reviewed, Ruling,
+    RulingKind, Size, SuiteRun, Timeline,
 };
 use fleet_core::item::brief::Packs;
 use fleet_core::item::review::{self, Mode, Verdict, Wiring};
@@ -26,6 +27,7 @@ use fleet_core::item::show::entry_lines;
 use fleet_core::item::{
     Change, Git, Project, Ring, RingOutcome, ITEM_RETURNED, ITEM_REVIEWED, VERDICT_ACCEPTED,
 };
+use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::store::{AssignedItem, Bd, Item, Store, StoreError};
 use fleet_core::test_support::Board;
 
@@ -38,7 +40,17 @@ const POLICY: &str = "[core]\nreviewer = \"a-reviewer\"\n";
 
 /// Every seat this suite's arms deliver as, listed, with the reviewer: the
 /// fleet a return's sentence names its builder among.
-const BUILDERS: [&str; 5] = [REVIEWER, "s-return", "s-foreign", "s-bent", "s-absent"];
+const BUILDERS: [&str; 6] = [
+    REVIEWER,
+    "s-return",
+    "s-foreign",
+    "s-bent",
+    "s-absent",
+    CAROL,
+];
+
+/// A listed seat that is not the reviewer and holds nothing the arms review.
+const CAROL: &str = "s-carol";
 
 /// The delivery every arm reads: two numbered calls, the commit the review
 /// takes its diff to, and the base it takes it from.
@@ -204,11 +216,13 @@ impl Ring for StubRing {
     }
 }
 
-/// The real store with its assignee reading bent, so an arm can force the
-/// disagreement the return's read-back exists to catch.
+/// The real store with its assignee reading bent once an assignment has been
+/// written, so an arm can force the disagreement the return's read-back exists
+/// to catch — while the holder the review reads first is still the real one.
 struct Doctored<'a> {
     inner: &'a dyn Store,
     assignee: String,
+    assigned: std::sync::atomic::AtomicBool,
 }
 
 impl Store for Doctored<'_> {
@@ -230,7 +244,9 @@ impl Store for Doctored<'_> {
 
     fn show(&self, item: &str) -> Result<Item, StoreError> {
         let mut read = self.inner.show(item)?;
-        read.assignee = Some(self.assignee.clone());
+        if self.assigned.load(std::sync::atomic::Ordering::SeqCst) {
+            read.assignee = Some(self.assignee.clone());
+        }
         Ok(read)
     }
 
@@ -243,6 +259,8 @@ impl Store for Doctored<'_> {
     }
 
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
+        self.assigned
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self.inner.assign(item, seat, by)
     }
 
@@ -397,9 +415,12 @@ fn findings(scratch: &dyn Rooted, label: &str, texts: &[&str]) -> PathBuf {
     )
 }
 
-/// An item carrying this delivery and nothing else.
+/// An item carrying this delivery, held by the reviewer as deliver leaves it.
 fn an_item_delivering(store: &dyn Store, title: &str, delivery: Delivered) -> String {
     let item = an_item(store, title);
+    store
+        .assign(&item, &full(REVIEWER), "an-architect")
+        .expect("the reviewer holds it");
     store
         .append(&item, &Body::Delivered(delivery), &seat_actor("s-header"))
         .expect("the delivery lands");
@@ -411,6 +432,8 @@ struct Said {
     err: String,
     /// The stop's message, where the verb stopped.
     stop: String,
+    /// The reviewed entry's id the verb answered, where it wrote one.
+    entry: Option<String>,
 }
 
 fn run(scratch: &Board, item: &str, mode: Mode, git: &StubGit, ring: &StubRing) -> (Said, u8) {
@@ -439,16 +462,37 @@ fn run_through(
     ring: &StubRing,
     events: &StubEvents,
 ) -> (Said, u8) {
+    run_as(
+        store,
+        scratch,
+        item,
+        mode,
+        &seat_actor(REVIEWER),
+        git,
+        ring,
+        events,
+    )
+}
+
+/// The same run with the ACTOR in the arm's hands: every arm above reviews as
+/// the reviewer seat, and the holder arms are about who else asks.
+#[allow(clippy::too_many_arguments)]
+fn run_as(
+    store: &dyn Store,
+    scratch: &dyn Rooted,
+    item: &str,
+    mode: Mode,
+    by: &Actor,
+    git: &StubGit,
+    ring: &StubRing,
+    events: &StubEvents,
+) -> (Said, u8) {
     let mut out = Vec::new();
     let mut err = Vec::new();
     let answer = review::review(
         &mut out,
         &mut err,
-        &Verdict {
-            item,
-            by: &seat_actor(REVIEWER),
-            mode,
-        },
+        &Verdict { item, by, mode },
         &Wiring {
             store,
             git,
@@ -460,16 +504,48 @@ fn run_through(
             seats: &fleet_of(&BUILDERS),
         },
     );
-    let (code, stop) = match answer {
-        Ok(_) => (0, String::new()),
-        Err(stop) => (stop.code, stop.message),
+    let (code, stop, entry) = match answer {
+        Ok(read) => (0, String::new(), read.entry),
+        Err(stop) => (stop.code, stop.message, None),
     };
     let said = Said {
         out: String::from_utf8_lossy(&out).into_owned(),
         err: String::from_utf8_lossy(&err).into_owned(),
         stop,
+        entry,
     };
     (said, code)
+}
+
+/// The item's last reviewed entry, as land reads it.
+fn last_review(store: &dyn Store, item: &str) -> Option<Entry> {
+    let entries = store.timeline(item).expect("the timeline reads");
+    Timeline(&entries)
+        .last_review()
+        .map(|(entry, _)| entry.clone())
+}
+
+/// The reviewed entry's body, for an arm that asserts it whole.
+fn reviewed(entry: &Entry) -> &Reviewed {
+    match &entry.body {
+        Body::Reviewed(reviewed) => reviewed,
+        other => panic!("the entry is a reviewed one: {other:?}"),
+    }
+}
+
+/// The size [`a_diff`] measures, from the delivery's base: two text files and
+/// a binary, one under a tests directory, nothing executable in a tree that
+/// holds none of them.
+fn a_diffs_size() -> Size {
+    Size {
+        files: 3,
+        added: 42,
+        deleted: 4,
+        binary: 1,
+        tests: true,
+        executable: false,
+        base: BASE.to_string(),
+    }
 }
 
 fn notes(store: &dyn Store, item: &str) -> String {
@@ -534,6 +610,7 @@ fn show_prints_the_size_line_then_the_delivered_entry_and_writes_nothing() {
 fn a_prose_delivery_note_with_no_delivered_entry_carries_no_delivery() {
     let scratch = &store();
     let item = an_item(&scratch.store, "an item delivered as prose");
+    scratch.assign(&item, &full(REVIEWER));
     scratch
         .store
         .note(&item, &a_prose_delivery(), &full("s-prose"))
@@ -554,14 +631,23 @@ fn a_prose_delivery_note_with_no_delivered_entry_carries_no_delivery() {
         git.calls()
     );
     assert_eq!(
-        review::last_verdict(&notes(&scratch.store, &item)),
+        last_review(&scratch.store, &item),
         None,
         "no verdict is written"
     );
+    assert_eq!(
+        notes(&scratch.store, &item),
+        a_prose_delivery(),
+        "and the notes are the prose alone"
+    );
 }
 
+/// `--land` leaves the timeline ending in the accept: this commit whole, the
+/// size measured from the delivery's base, and every call the delivery listed
+/// ruled accepted by its number — appended by the reviewer, answered as the id
+/// the timeline holds it under, and with no note beside it.
 #[test]
-fn land_walks_every_call_the_delivery_numbered_and_writes_the_count() {
+fn land_appends_the_accept_walking_every_call_the_delivery_numbered() {
     let scratch = &store();
     let item = a_delivered_item(&scratch.store, "an item to accept", "s-land");
     let git = StubGit::answering(a_diff());
@@ -569,6 +655,45 @@ fn land_walks_every_call_the_delivery_numbered_and_writes_the_count() {
     let events = StubEvents::default();
     let (said, code) = run_watched(scratch, &item, Mode::Land, &git, &StubRing::new(), &events);
     assert_eq!(code, 0, "{}", said.err);
+
+    let entries = scratch.store.timeline(&item).expect("the timeline reads");
+    let last = entries.last().expect("the timeline carries entries");
+    assert_eq!(
+        last.body,
+        Body::Reviewed(Reviewed {
+            verdict: fleet_core::entry::Verdict::Accepted,
+            commit: SHA.to_string(),
+            size: a_diffs_size(),
+            walk: vec![
+                Ruling {
+                    decision: 1,
+                    ruling: RulingKind::Accept,
+                },
+                Ruling {
+                    decision: 2,
+                    ruling: RulingKind::Accept,
+                },
+            ],
+            findings: Vec::new(),
+        }),
+        "the timeline ends in the accept"
+    );
+    assert_eq!(last.by, seat_actor(REVIEWER), "appended by the reviewer");
+    assert_eq!(
+        said.entry.as_deref(),
+        Some(last.id.as_str()),
+        "the id answered is the entry's"
+    );
+    assert_eq!(notes(&scratch.store, &item), "", "and no note is written");
+    assert_eq!(
+        git.calls(),
+        vec![format!("numstat {BASE} {SHA}")],
+        "one measurement, from the entry's base"
+    );
+    assert_eq!(
+        said.out, "size: 3 file(s), +42, -4 (1 binary) — tests: yes, executable: no\n",
+        "the line printed is the same measurement"
+    );
 
     // The one event, its counts the walk's own.
     assert_eq!(events.count(), 1, "exactly one event");
@@ -580,35 +705,48 @@ fn land_walks_every_call_the_delivery_numbered_and_writes_the_count() {
     assert_eq!(payload["verdict"], serde_json::json!(VERDICT_ACCEPTED));
     assert_eq!(payload["accepted"], serde_json::json!(2));
     assert_eq!(payload["overruled"], serde_json::json!(0));
-
-    let verdict =
-        review::last_verdict(&notes(&scratch.store, &item)).expect("a verdict is written");
-    assert!(
-        verdict.starts_with(&format!("ACCEPTED {SHA} — {}", seat_actor(REVIEWER))),
-        "{verdict}"
-    );
-    assert!(verdict.contains("D1 ACCEPT"), "{verdict}");
-    assert!(verdict.contains("D2 ACCEPT"), "{verdict}");
-    assert!(
-        verdict.contains("2 accepted, 0 overruled"),
-        "the walk's last line: {verdict}"
-    );
-    assert!(
-        !notes(&scratch.store, &item).contains("DELIVERED"),
-        "the verdict walked an entry, and no note carries a delivery: {}",
-        notes(&scratch.store, &item)
-    );
 }
 
-/// A findings body that QUOTES a marker at column zero is still written, read
-/// back and read out whole.
-///
-/// A region starts at the last marker of its kind and ends at the next of
-/// another, so an un-indented body line opening on a marker would be read as
-/// the region's own start or its end, and the read-back inside this verb would
-/// then report a verdict it had just written correctly as disagreeing.
+/// A STORE THAT TAKES THE VERDICT AND DOES NOT KEEP IT is caught by the entry's
+/// own read-back: exit 3, saying the verdict STANDS — the write was made, and
+/// a caller that read this as nothing having happened would review twice.
+/// Nothing is announced.
 #[test]
-fn a_findings_body_quoting_a_marker_is_written_and_read_back_whole() {
+fn a_reviewed_entry_the_store_does_not_keep_exits_three_and_the_verdict_stands() {
+    let scratch = &store();
+    let item = a_delivered_item(&scratch.store, "an item whose store forgets", "s-unkept");
+    scratch.store.ignore_writes();
+    let events = StubEvents::default();
+
+    let (said, code) = run_watched(
+        scratch,
+        &item,
+        Mode::Land,
+        &StubGit::answering(a_diff()),
+        &StubRing::new(),
+        &events,
+    );
+
+    assert_eq!(code, 3, "{}{}{}", said.out, said.err, said.stop);
+    assert!(
+        said.stop.contains("does not hold the reviewed entry"),
+        "the stop names the entry the timeline does not hold: {}",
+        said.stop
+    );
+    assert!(
+        said.stop
+            .ends_with(&format!("\n  the verdict on {item} STANDS")),
+        "{}",
+        said.stop
+    );
+    assert_eq!(events.count(), 0, "nothing is announced");
+}
+
+/// A finding that QUOTES a marker at column zero is carried whole: a finding
+/// is a field of the entry and not a line of a note, so no text in it can open
+/// or end anything, and the entry reads back as the reviewer wrote it.
+#[test]
+fn a_finding_quoting_a_marker_is_carried_whole() {
     let scratch = &store();
     let builder = "s-quoting";
     let item = a_delivered_item(
@@ -616,55 +754,25 @@ fn a_findings_body_quoting_a_marker_is_written_and_read_back_whole() {
         "an item returned with a quoted marker",
         builder,
     );
-    let findings = findings(
-        scratch,
-        "quoting",
-        &[
-            "the note opens on the wrong word. It reads\nDELIVERED abc — someone\n\
-           where it must read RE-DELIVERED, and a reader anchoring on the last\n\
-           ACCEPTED abc — someone\nfinds this note instead.",
-        ],
-    );
+    let quoting = "the note opens on the wrong word. It reads\nDELIVERED abc — someone\n\
+                   where it must read RE-DELIVERED, and a reader anchoring on the last\n\
+                   ACCEPTED abc — someone\nfinds this note instead.";
+    let findings = findings(scratch, "quoting", &[quoting]);
     let git = StubGit::answering(a_diff());
     let ring = StubRing::new();
 
-    // Exit 0 IS the assertion: this verb reads its own write back and answers 3
-    // on a disagreement, so a truncated region could not get here.
     let (said, code) = run(scratch, &item, Mode::Return(&findings), &git, &ring);
     assert_eq!(code, 0, "{}", said.err);
 
-    let verdict =
-        review::last_verdict(&notes(&scratch.store, &item)).expect("a verdict is written");
-    assert!(
-        verdict.starts_with(&format!("RETURNED WITH FINDINGS {SHA}")),
-        "the region starts at the marker this verb wrote, not at a line of its body: {verdict}"
+    let entry = last_review(&scratch.store, &item).expect("a verdict is written");
+    assert_eq!(
+        reviewed(&entry).findings,
+        vec![Finding {
+            text: quoting.to_string()
+        }],
+        "the finding is the reviewer's text, byte for byte"
     );
-    assert!(
-        verdict.contains("DELIVERED abc — someone") && verdict.contains("finds this note instead."),
-        "and it carries the whole body, quoted markers and all: {verdict}"
-    );
-    assert!(
-        verdict
-            .lines()
-            .skip(1)
-            .all(|line| !line.starts_with("DELIVERED")
-                && !line.starts_with("ACCEPTED")
-                && !line.starts_with("LANDED")),
-        "no line of the body opens a marker at column zero: {verdict}"
-    );
-    // The control: the body reached the note as the reviewer wrote it, moved
-    // off column zero and not edited — so what was measured is the indentation
-    // and not a verb that dropped the awkward lines. The finding opens on its
-    // `F1`, and the lines that continue its text sit two further in.
-    assert!(
-        verdict.contains("\n  F1 the note opens on the wrong word. It reads\n"),
-        "the finding is numbered by its place in the file: {verdict}"
-    );
-    assert!(
-        verdict.contains("\n    DELIVERED abc — someone\n")
-            && verdict.contains("\n    finds this note instead."),
-        "its continuation lines are indented under it, not rewritten: {verdict}"
-    );
+    assert_eq!(notes(&scratch.store, &item), "", "and no note is written");
     assert_eq!(
         delivered_entry(&scratch.store, &item).body,
         Body::Delivered(a_delivery()),
@@ -672,8 +780,11 @@ fn a_findings_body_quoting_a_marker_is_written_and_read_back_whole() {
     );
 }
 
+/// `--return` through `bd`: the timeline ends in the return — this commit, the
+/// size, no walk and the findings in the file's order — appended by the
+/// reviewer, with the item handed to the seat the order index names.
 #[test]
-fn a_return_writes_the_findings_count_first_and_hands_the_item_back() {
+fn a_return_appends_the_findings_and_hands_the_item_back() {
     let scratch = ring();
     let bd = &Bd::at(&scratch.root);
     let builder = "s-return";
@@ -710,31 +821,32 @@ fn a_return_writes_the_findings_count_first_and_hands_the_item_back() {
     assert_eq!(
         payload["findings"],
         serde_json::json!(2),
-        "the count the verdict's first line carries"
+        "the count of the findings the entry carries"
     );
 
-    let verdict = review::last_verdict(&notes(bd, &item)).expect("a verdict is written");
-    let mut lines = verdict.lines();
+    let entries = bd.timeline(&item).expect("the timeline reads");
+    let last = entries.last().expect("the timeline carries entries");
     assert_eq!(
-        lines.next(),
-        Some(format!("RETURNED WITH FINDINGS {SHA} — {}", seat_actor(REVIEWER)).as_str())
+        last.body,
+        Body::Reviewed(Reviewed {
+            verdict: fleet_core::entry::Verdict::Returned,
+            commit: SHA.to_string(),
+            size: a_diffs_size(),
+            walk: Vec::new(),
+            findings: vec![
+                Finding {
+                    text: "the first finding, with what to measure.".to_string(),
+                },
+                Finding {
+                    text: "the second one.".to_string(),
+                },
+            ],
+        }),
+        "the timeline ends in the return, its findings in the file's order"
     );
-    assert_eq!(
-        lines.next(),
-        Some("findings: 2"),
-        "the count is the first line after the marker: {verdict}"
-    );
-    assert_eq!(
-        verdict
-            .lines()
-            .filter(|line| line.trim_start().starts_with('F'))
-            .collect::<Vec<_>>(),
-        [
-            "  F1 the first finding, with what to measure.",
-            "  F2 the second one."
-        ],
-        "one F-line per finding, numbered by its place in the file: {verdict}"
-    );
+    assert_eq!(last.by, seat_actor(REVIEWER), "appended by the reviewer");
+    assert_eq!(said.entry.as_deref(), Some(last.id.as_str()));
+    assert_eq!(notes(bd, &item), "", "and no note is written");
 
     assert_eq!(
         bd.show(&item).expect("the item reads").assignee.as_deref(),
@@ -858,9 +970,9 @@ fn another_writers_orders_key_and_run_label_ride_through_a_review() {
         &StubRing::new(),
     );
     assert_eq!(code, 0, "{}{}", said.err, said.stop);
-    assert!(
-        review::last_verdict(&notes(&scratch.store, &accepted))
-            .is_some_and(|verdict| verdict.starts_with("ACCEPTED")),
+    assert_eq!(
+        last_review(&scratch.store, &accepted).map(|entry| reviewed(&entry).verdict),
+        Some(fleet_core::entry::Verdict::Accepted),
         "the accept is written"
     );
 
@@ -885,6 +997,7 @@ fn a_return_whose_assignee_reads_back_as_somebody_else_could_not_tell_and_rings_
     let bent = Doctored {
         inner: &scratch.store,
         assignee: "somebody-else".to_string(),
+        assigned: std::sync::atomic::AtomicBool::new(false),
     };
     let ring = StubRing::new();
     let events = StubEvents::default();
@@ -1074,13 +1187,39 @@ fn land_over_a_delivery_listing_no_decisions_walks_zero() {
     );
 
     assert_eq!(code, 0, "{}{}", said.err, said.stop);
-    let verdict =
-        review::last_verdict(&notes(&scratch.store, &item)).expect("a verdict is written");
+    let entry = last_review(&scratch.store, &item).expect("a verdict is written");
+    let accept = reviewed(&entry);
+    assert_eq!(accept.verdict, fleet_core::entry::Verdict::Accepted);
     assert!(
-        verdict
-            .lines()
-            .any(|line| line == "decisions: 0 accepted, 0 overruled"),
-        "no call is walked, and the count says so: {verdict}"
+        accept.walk.is_empty(),
+        "no call is walked: {:?}",
+        accept.walk
+    );
+}
+
+/// The verdict template retires with the note: the binary's own defaults carry
+/// no `assets/verdict.md`, and the shadow registry — the list of paths a pack
+/// may replace — names no such slot.
+#[test]
+fn the_defaults_carry_no_verdict_template_and_the_registry_no_row_for_one() {
+    assert!(
+        fleet_core::embedded::bytes("assets/verdict.md").is_none(),
+        "the embedded defaults carry no verdict template"
+    );
+    let registry = String::from_utf8(
+        fleet_core::embedded::bytes("assets/shadow-registry.toml")
+            .expect("the defaults carry the registry")
+            .to_vec(),
+    )
+    .expect("the registry is text");
+    assert!(
+        !registry.contains("assets/verdict.md"),
+        "the registry names no verdict template:\n{registry}"
+    );
+    // The control: the registry is the one read, and it names its neighbour.
+    assert!(
+        registry.contains("assets/findings.schema.json"),
+        "{registry}"
     );
 }
 
@@ -1118,4 +1257,215 @@ fn the_tests_answer_reads_test_directories_and_test_stems_only() {
         })
         .collect();
     assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+// ---- who writes a verdict ----------------------------------------------------
+
+/// The item's timeline, whole, for an arm asserting a refusal left it as it
+/// was.
+fn timeline(store: &dyn Store, item: &str) -> Vec<fleet_core::entry::Entry> {
+    store.timeline(item).expect("the timeline reads")
+}
+
+/// fleet-pl6 (b): A VERDICT IS THE HOLDER'S. A seat that does not hold the item
+/// — here a listed seat, while the reviewer holds it — writes neither verdict:
+/// each writing mode is exit 1 naming the holder and the seat, and nothing is
+/// measured, written, announced or rung. `--show` writes nothing, so the same
+/// seat still reads.
+///
+/// RED-PROOF: HEAD wrote the accept `s-carol` asked for (items#4).
+#[test]
+fn a_seat_that_does_not_hold_the_item_writes_no_verdict() {
+    let scratch = &store();
+    let item = a_delivered_item(
+        &scratch.store,
+        "an item another seat tries to review",
+        "s-held",
+    );
+    let carol = seat_actor(CAROL);
+    let before = timeline(&scratch.store, &item);
+    let findings = findings(scratch, "carol", &["the one finding."]);
+
+    for mode in [Mode::Land, Mode::Return(&findings)] {
+        let git = StubGit::answering(a_diff());
+        let ring = StubRing::new();
+        let events = StubEvents::default();
+        let (said, code) = run_as(
+            &scratch.store,
+            scratch,
+            &item,
+            mode,
+            &carol,
+            &git,
+            &ring,
+            &events,
+        );
+        assert_eq!(code, 1, "{}{}{}", said.out, said.err, said.stop);
+        assert_eq!(
+            said.stop,
+            format!(
+                "{item} is held by {} and not by {carol} — a verdict is the holder's, and a \
+                 delivered item's holder is its reviewer",
+                full(REVIEWER)
+            )
+        );
+        assert!(
+            git.calls().is_empty(),
+            "nothing was measured: {:?}",
+            git.calls()
+        );
+        assert_eq!(events.count(), 0, "nothing reached the stream");
+        assert!(ring.calls().is_empty(), "rung: {:?}", ring.calls());
+    }
+    assert_eq!(
+        timeline(&scratch.store, &item),
+        before,
+        "the timeline is unchanged"
+    );
+    assert_eq!(notes(&scratch.store, &item), "", "and no note is written");
+    assert_eq!(
+        scratch
+            .store
+            .show(&item)
+            .expect("the item reads")
+            .assignee
+            .as_deref(),
+        Some(full(REVIEWER).as_str()),
+        "the item is still the reviewer's"
+    );
+
+    // The control: the same seat's --show reads the delivery.
+    let (said, code) = run_as(
+        &scratch.store,
+        scratch,
+        &item,
+        Mode::Show,
+        &carol,
+        &StubGit::answering(a_diff()),
+        &StubRing::new(),
+        &StubEvents::default(),
+    );
+    assert_eq!(code, 0, "{}{}", said.err, said.stop);
+    assert_eq!(timeline(&scratch.store, &item), before);
+}
+
+/// A run's record, as `fleet run` files one: an item under the run label.
+fn a_run_record(store: &dyn Store) -> String {
+    store
+        .create(
+            &fleet_core::store::NewItem {
+                title: "a run of takeoff",
+                description: "a run's record",
+                item_type: "task",
+                labels: &[fleet_core::item::run::LABEL],
+            },
+            "an-architect",
+        )
+        .expect("the run's record is filed")
+}
+
+fn the_run(record: &str) -> Actor {
+    Actor {
+        kind: ActorKind::Run,
+        id: record.to_string(),
+    }
+}
+
+/// A RUN REVIEWS AS THE `[core] reviewer`, as a run's landing already closes as
+/// it: `run:<record>` writes the verdict on an item that seat holds, and the
+/// entry is the run's. An item another seat holds is refused naming the run,
+/// the reviewer and the holder; a run id naming no run record is refused as
+/// land refuses it.
+#[test]
+fn a_run_reviews_as_the_core_reviewer_and_only_what_that_seat_holds() {
+    let scratch = &store();
+    let record = a_run_record(&scratch.store);
+    let run = the_run(&record);
+
+    let item = a_delivered_item(&scratch.store, "an item a run accepts", "s-run-built");
+    let (said, code) = run_as(
+        &scratch.store,
+        scratch,
+        &item,
+        Mode::Land,
+        &run,
+        &StubGit::answering(a_diff()),
+        &StubRing::new(),
+        &StubEvents::default(),
+    );
+    assert_eq!(code, 0, "{}{}", said.err, said.stop);
+    let entries = timeline(&scratch.store, &item);
+    let (entry, _) = Timeline(&entries)
+        .last_review()
+        .expect("the run's verdict is on the timeline");
+    assert_eq!(entry.by, run, "the entry is the run's");
+
+    let other = a_delivered_item(&scratch.store, "an item another seat holds", "s-run-held");
+    scratch.assign(&other, &full("s-run-held"));
+    let before = timeline(&scratch.store, &other);
+    let (said, code) = run_as(
+        &scratch.store,
+        scratch,
+        &other,
+        Mode::Land,
+        &run,
+        &StubGit::answering(a_diff()),
+        &StubRing::new(),
+        &StubEvents::default(),
+    );
+    assert_eq!(code, 1, "{}{}", said.err, said.stop);
+    assert_eq!(
+        said.stop,
+        format!(
+            "run {record} reviews as the [core] reviewer {}, and {other} is held by {}",
+            full(REVIEWER),
+            full("s-run-held")
+        )
+    );
+    assert_eq!(timeline(&scratch.store, &other), before);
+
+    let (said, code) = run_as(
+        &scratch.store,
+        scratch,
+        &item,
+        Mode::Land,
+        &the_run("fx-nothing"),
+        &StubGit::answering(a_diff()),
+        &StubRing::new(),
+        &StubEvents::default(),
+    );
+    assert_eq!(code, 1, "{}{}", said.err, said.stop);
+    assert_eq!(said.stop, "run:fx-nothing names no run record");
+}
+
+/// A routine and the controller hold nothing and review nothing: each writing
+/// mode refuses them by their kind.
+#[test]
+fn a_routine_or_the_controller_writes_no_verdict() {
+    let scratch = &store();
+    let item = a_delivered_item(&scratch.store, "an item a routine tries", "s-kind");
+    let before = timeline(&scratch.store, &item);
+
+    for (kind, word) in [
+        (ActorKind::Routine, "routine"),
+        (ActorKind::Controller, "controller"),
+    ] {
+        let by = Actor {
+            kind,
+            id: full(REVIEWER),
+        };
+        let (said, code) = run_as(
+            &scratch.store,
+            scratch,
+            &item,
+            Mode::Land,
+            &by,
+            &StubGit::answering(a_diff()),
+            &StubRing::new(),
+            &StubEvents::default(),
+        );
+        assert_eq!(code, 1, "{word}: {}{}", said.err, said.stop);
+        assert_eq!(said.stop, format!("a {word} writes no verdict"));
+    }
+    assert_eq!(timeline(&scratch.store, &item), before);
 }

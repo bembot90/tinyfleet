@@ -20,18 +20,19 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use common::{agent, full, keys_agree, seat_actor, shared_store, Rooted, Scratch, StubEvents};
-use fleet_core::entry::{Body, CheckResult, Delivered, NotProven, SuiteRun};
+use fleet_core::entry::{
+    Body, CheckResult, Delivered, Finding, NotProven, Reviewed, Size, SuiteRun, Verdict,
+};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::land::{
     self, LandGit, Landed, Landing, Progress, Pushed, Squashed, Wiring, CRITERIA, LANDING_NOTE,
     REBASE_NEEDED, SUITE_RERUN,
 };
 use fleet_core::item::lane;
-use fleet_core::item::review::VERDICT;
 use fleet_core::item::{
-    control_token, last_delivery, last_landing, marker_block, render, review::last_verdict, Change,
-    Git, Project, Stop, CHECK_READ, DELIVERY_MARKERS, ITEM_LANDED, LANDING_MARKERS, TRUNK,
-    TRUNK_BRANCH, VERDICT_MARKERS,
+    control_token, last_delivery, last_landing, marker_block, render, Change, Git, Project, Stop,
+    CHECK_READ, DELIVERY_MARKERS, ITEM_LANDED, LANDING_MARKERS, TRUNK, TRUNK_BRANCH,
+    VERDICT_MARKERS,
 };
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
@@ -635,13 +636,40 @@ fn a_delivery_on(commit: &str, branch: &str) -> Delivered {
     }
 }
 
-fn a_verdict(marker: &str, commit: &str, item: &str) -> String {
-    format!(
-        "{marker} {commit} — {REVIEWER}\n\
-         item:    {item}\n\
-         size: 1 file(s), +1, -0 — tests: no, executable: no\n\
-         decisions: 0 accepted, 0 overruled"
-    )
+/// The verdict an arm names by the word a reviewer reads it by: `ACCEPTED` or
+/// `RETURNED WITH FINDINGS`.
+fn verdict_of(word: &str) -> Verdict {
+    match word {
+        "ACCEPTED" => Verdict::Accepted,
+        "RETURNED WITH FINDINGS" => Verdict::Returned,
+        other => panic!("`{other}` is no verdict"),
+    }
+}
+
+/// The reviewed entry `fleet review` appends: this verdict on this commit, the
+/// size it measured from the delivery's base, and no decision walked — the
+/// delivery lists none. A return carries the one finding a return needs.
+fn a_review(verdict: Verdict, commit: &str) -> Body {
+    Body::Reviewed(Reviewed {
+        verdict,
+        commit: commit.to_string(),
+        size: Size {
+            files: 1,
+            added: 1,
+            deleted: 0,
+            binary: 0,
+            tests: false,
+            executable: false,
+            base: OLD.to_string(),
+        },
+        walk: Vec::new(),
+        findings: match verdict {
+            Verdict::Accepted => Vec::new(),
+            Verdict::Returned => vec![Finding {
+                text: "the one finding.".to_string(),
+            }],
+        },
+    })
 }
 
 /// One item held by the reviewer, carrying a delivery and a verdict.
@@ -671,7 +699,8 @@ fn an_item_delivering(
 
 /// Built through the trait and not through a binary, so one builder fills
 /// either board. The reviewer holds it by its full id, as `deliver` hands it
-/// over, and the delivery is the entry `by` appended.
+/// over, the delivery is the entry `by` appended, and the verdict is the
+/// reviewed entry the reviewer's seat appended after it, as `review` does.
 fn an_item_delivered_by(
     store: &dyn Store,
     title: &str,
@@ -696,9 +725,9 @@ fn an_item_delivered_by(
     store
         .append(&item, &Body::Delivered(delivery), by)
         .expect("the delivery is on it");
-    if let Some((marker, commit)) = verdict {
+    if let Some((word, commit)) = verdict {
         store
-            .note(&item, &a_verdict(marker, commit, &item), REVIEWER)
+            .append(&item, &a_review(verdict_of(word), commit), &as_reviewer())
             .expect("the verdict is on it");
     }
     item
@@ -1248,7 +1277,7 @@ fn an_accepted_item_delivered_only_as_a_prose_note_is_refused() {
         .expect("the prose delivery is on it");
     scratch
         .store
-        .note(&item, &a_verdict("ACCEPTED", SHA, &item), REVIEWER)
+        .append(&item, &a_review(Verdict::Accepted, SHA), &as_reviewer())
         .expect("the verdict is on it");
     let git = StubGit::clean();
 
@@ -2366,8 +2395,15 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
 
 // ---- the refusals ------------------------------------------------------------
 
+/// Whether the landing stopped before the trunk: nothing was fetched.
+fn no_fetch(git: &StubGit) -> bool {
+    git.calls().iter().all(|call| !call.starts_with("fetch"))
+}
+
 /// Every refusal that can be reached before the push, each with its own exit
-/// and each leaving the item byte-identical.
+/// and each leaving the item byte-identical. The three the verdict answers —
+/// none, a return, an accept of another commit — are each refused in their own
+/// words, before the fetch.
 #[test]
 fn every_refusal_before_the_push_leaves_the_item_untouched() {
     let scratch = &store();
@@ -2445,7 +2481,11 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
     let git = StubGit::clean();
     let ran = run(scratch, bd, &git, &bare, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
-    assert!(ran.why().contains("no verdict"), "{}", ran.why());
+    assert_eq!(
+        ran.why(),
+        format!("{bare} carries no verdict — a landing lands a review and there is none to land")
+    );
+    assert!(no_fetch(&git), "{:?}", git.calls());
     assert_eq!(scratch.json(&bare), before_bare);
 
     // A return as the last verdict.
@@ -2458,7 +2498,14 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
     let git = StubGit::clean();
     let ran = run(scratch, bd, &git, &returned, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
-    assert!(ran.why().contains("went back"), "{}", ran.why());
+    assert_eq!(
+        ran.why(),
+        format!(
+            "the last verdict on {returned} is a return — the work went back and nothing has \
+             accepted it since"
+        )
+    );
+    assert!(no_fetch(&git), "{:?}", git.calls());
     assert_eq!(scratch.json(&returned), before_returned);
 
     // An accept naming a different commit.
@@ -2471,11 +2518,14 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
     let git = StubGit::clean();
     let ran = run(scratch, bd, &git, &elsewhere, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
-    assert!(
-        ran.why().contains(OTHER) && ran.why().contains(SHA),
-        "{}",
-        ran.why()
+    assert_eq!(
+        ran.why(),
+        format!(
+            "the last verdict on {elsewhere} accepts {OTHER} and this landing was given {SHA} — \
+             a landing lands the commit the review read"
+        )
     );
+    assert!(no_fetch(&git), "{:?}", git.calls());
     assert_eq!(scratch.json(&elsewhere), before_elsewhere);
 
     // A closed item.
@@ -2489,6 +2539,105 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert!(ran.why().contains("closed"), "{}", ran.why());
     assert_eq!(scratch.json(&elsewhere), before_closed);
+}
+
+/// fleet-pl6 (c): A LANDING LANDS ITS OWN REVIEWER'S ACCEPT. The item's last
+/// verdict accepts the very commit handed in, and it was appended by another
+/// seat: the reviewer's landing of it is exit 1 naming that seat and the
+/// closer, and git is asked nothing past the reads that come before the record
+/// — no fetch, no branch, no squash — and the item is as it was.
+///
+/// RED-PROOF: HEAD landed an accept `a-carol` wrote (items#4).
+#[test]
+fn an_accept_another_seat_wrote_is_refused_before_the_trunk_is_touched() {
+    let scratch = &store();
+    let item = an_item(&scratch.store, "an item another seat accepted", None);
+    let carol = seat_actor("a-carol");
+    scratch
+        .store
+        .append(&item, &a_review(Verdict::Accepted, SHA), &carol)
+        .expect("the accept is on it");
+    let before = scratch.json(&item);
+    let git = StubGit::clean();
+
+    let ran = run(scratch, &scratch.store, &git, &item, SHA);
+    assert_eq!(ran.code(), Some(1), "{}\n{}", ran.why(), ran.out);
+    assert_eq!(
+        ran.why(),
+        format!(
+            "the last verdict on {item} was written by {carol}, and this landing closes as {} \
+             — a landing lands its own reviewer's accept",
+            as_reviewer()
+        )
+    );
+    assert_eq!(
+        git.calls(),
+        vec![
+            "is_linked_worktree".to_string(),
+            format!("rev {SHA}"),
+            "status".to_string(),
+        ],
+        "the reads before the record, and nothing after them"
+    );
+    assert_eq!(scratch.json(&item), before, "the item is as it was");
+}
+
+/// A RUN'S LANDING LANDS THE ACCEPT ITS OWN RUN WROTE: a run reviews as the
+/// `[core] reviewer`, so the accept `run:<record>` appended is the landing's
+/// own reviewer's when that same run carries the landing — and another run's
+/// accept is not, and is refused naming it before anything is fetched.
+#[test]
+fn a_runs_landing_lands_its_own_runs_accept_and_no_other_runs() {
+    let board = store();
+    let scratch = &board;
+    let answered = as_reviewer().to_string();
+    let record = a_run(&scratch.store, Some(&answered));
+    let other = a_run(&scratch.store, Some(&answered));
+
+    let foreign = an_item(&scratch.store, "an item another run accepted", None);
+    scratch
+        .store
+        .append(
+            &foreign,
+            &a_review(Verdict::Accepted, SHA),
+            &the_run(&other),
+        )
+        .expect("the accept is on it");
+    let git = StubGit::clean();
+    let ran = run_as(
+        scratch,
+        &scratch.store,
+        &git,
+        &foreign,
+        &the_run(&record),
+        &StubEvents::default(),
+    );
+    assert_eq!(ran.code(), Some(1), "{}", ran.why());
+    assert_eq!(
+        ran.why(),
+        format!(
+            "the last verdict on {foreign} was written by run:{other}, and this landing closes as \
+             {} — a landing lands its own reviewer's accept",
+            as_reviewer()
+        )
+    );
+    assert!(no_fetch(&git), "{:?}", git.calls());
+
+    // THE CONTROL: the accept the landing's own run wrote.
+    let own = an_item(&scratch.store, "an item its own run accepted", None);
+    scratch
+        .store
+        .append(&own, &a_review(Verdict::Accepted, SHA), &the_run(&record))
+        .expect("the accept is on it");
+    let ran = run_as(
+        scratch,
+        &scratch.store,
+        &StubGit::clean(),
+        &own,
+        &the_run(&record),
+        &StubEvents::default(),
+    );
+    assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
 }
 
 /// A branch name where a commit is meant: exit 2, and nothing was written at
@@ -3301,10 +3450,11 @@ fn a_delivery_naming_another_landings_branch_is_never_deleted() {
 /// of each in one note, and each reader finds only its own.
 #[test]
 fn each_reader_finds_only_its_own_region() {
-    // THE SHIPPED SHAPES, rendered — not literals typed here, which would prove
-    // the arm's own strings and not the pack's markers. No verb writes a
-    // delivery note any more, so the delivery region is one a person's older
-    // record still carries, opened on the marker the region reader anchors on.
+    // THE SHIPPED LANDING SHAPE, rendered — not a literal typed here, which
+    // would prove the arm's own string and not the pack's marker. No verb
+    // writes a delivery or a verdict note any more, so those two regions are
+    // ones a person's older record still carries, each opened on the marker
+    // the region readers anchor on.
     let scratch = &store();
     let packs = packs(scratch);
     let delivery = format!(
@@ -3312,21 +3462,10 @@ fn each_reader_finds_only_its_own_region() {
         DELIVERY_MARKERS[0],
         seat_actor(BUILDER)
     );
-    let verdict = render(
-        &marker_block(
-            &packs.read(VERDICT).expect("core carries it"),
-            VERDICT_MARKERS[0],
-        )
-        .expect("the verdict grammar names ACCEPTED"),
-        &[
-            ("commit", SHA),
-            ("reviewer", REVIEWER),
-            ("item", "fx-1"),
-            ("size", "size: 1 file(s), +1, -0"),
-            ("decisions", "0 accepted, 0 overruled"),
-        ],
-    )
-    .expect("every placeholder is one this arm offers");
+    let verdict = format!(
+        "{} {SHA} — {REVIEWER}\nitem:    fx-1\ndecisions: 0 accepted, 0 overruled",
+        VERDICT_MARKERS[0]
+    );
     let landing = render(
         &marker_block(
             &packs.read(LANDING_NOTE).expect("core carries it"),
@@ -3355,72 +3494,62 @@ fn each_reader_finds_only_its_own_region() {
         "the delivery region stops at the verdict"
     );
     assert_eq!(
-        last_verdict(&notes).as_deref(),
-        Some(verdict.as_str()),
-        "the verdict region stops at the landing"
-    );
-    assert_eq!(
         last_landing(&notes).as_deref(),
         Some(landing.as_str()),
         "and the landing region is the landing"
     );
-    // The control: with the landing taken away the verdict runs to the end, so
-    // the boundary above is the landing marker's doing and not an artefact.
-    let without = format!("{delivery}\n{verdict}");
-    assert_eq!(last_verdict(&without).as_deref(), Some(verdict.as_str()));
-    assert!(last_landing(&without).is_none());
+    // The control: with the verdict taken away the delivery stops at the
+    // landing instead, so each boundary is its own marker's doing and not an
+    // artefact.
+    let without = format!("{delivery}\n{landing}");
+    assert_eq!(last_delivery(&without).as_deref(), Some(delivery.as_str()));
+    assert!(last_landing(&format!("{delivery}\n{verdict}")).is_none());
 }
 
 /// A REGION IS ENDED BY WHAT FOLLOWS IT, NEVER BY ITS OWN KIND.
 ///
-/// The two halves are separate: a body may not open a marker at column zero,
-/// which the verdict grammar's own indentation keeps (the review suite proves
-/// that end), and a reader may not stop at a marker of the kind it is reading,
-/// which is this arm. Both are needed — bounding at every marker cut a verdict
-/// off inside itself, and bounding at none let a landing extend one.
+/// A reader may not stop at a marker of the kind it is reading, and must stop
+/// at every other: bounding at every marker cut a note off inside itself, and
+/// bounding at none let a landing extend one. The delivery reader is the one
+/// left whose kind has two markers, so it is the one this arm reads.
 #[test]
 fn a_region_is_ended_by_what_follows_it_and_never_by_its_own_kind() {
-    let verdict = format!(
-        "RETURNED WITH FINDINGS {SHA} — {REVIEWER}\n\
-         findings: 1\n\
-         item:    fx-1\n\
-         F1 the note quotes a verdict, indented as the grammar writes it:\n\
-         \x20 ACCEPTED abc — someone"
+    let delivered = format!(
+        "{} {SHA} — {BUILDER}\ncommit:  {SHA}\nbranch:  {WORK}",
+        DELIVERY_MARKERS[0]
     );
+    let verdict = format!("{} {SHA} — {REVIEWER}", VERDICT_MARKERS[1]);
     let landed = format!(
         "LANDED {LANDED} on {TRUNK_BRANCH} by {REVIEWER} — NOT TESTED: no test command was \
          handed to this landing"
     );
 
     assert_eq!(
-        last_verdict(&verdict).as_deref(),
-        Some(verdict.as_str()),
-        "a verdict alone is the whole verdict"
+        last_delivery(&delivered).as_deref(),
+        Some(delivered.as_str()),
+        "a delivery alone is the whole delivery"
     );
     assert_eq!(
-        last_verdict(&format!("{verdict}\n{landed}")).as_deref(),
-        Some(verdict.as_str()),
-        "and a landing after it ends it"
+        last_delivery(&format!("{delivered}\n{verdict}")).as_deref(),
+        Some(delivered.as_str()),
+        "a verdict after it ends it"
     );
     assert_eq!(
-        last_landing(&format!("{verdict}\n{landed}")).as_deref(),
+        last_delivery(&format!("{delivered}\n{landed}")).as_deref(),
+        Some(delivered.as_str()),
+        "and so does a landing"
+    );
+    assert_eq!(
+        last_landing(&format!("{delivered}\n{landed}")).as_deref(),
         Some(landed.as_str())
     );
-    // The half a naive bound gets wrong: a SECOND verdict does not end the
-    // first — a reader that stopped at its own kind would cut a verdict off at
-    // any line of its body that opened one.
-    let accepted = format!("ACCEPTED {SHA} — {REVIEWER}");
+    // The half a naive bound gets wrong: a SECOND delivery does not end the
+    // first — it is the one read, and it runs to the end.
+    let redelivered = format!("{} {SHA} — {BUILDER}\nbase:    {OLD}", DELIVERY_MARKERS[1]);
     assert_eq!(
-        last_verdict(&format!("{accepted}\n{verdict}")).as_deref(),
-        Some(verdict.as_str()),
-        "the LAST verdict is the one read, and it runs to the end"
-    );
-    // The control on the other side: a delivery DOES end a verdict, so the
-    // bound is a rule about kinds and not a bound that never fires.
-    let redelivered = format!("RE-DELIVERED {SHA} — {BUILDER}");
-    assert_eq!(
-        last_verdict(&format!("{verdict}\n{redelivered}")).as_deref(),
-        Some(verdict.as_str())
+        last_delivery(&format!("{delivered}\n{redelivered}")).as_deref(),
+        Some(redelivered.as_str()),
+        "the LAST delivery is the one read, and it runs to the end"
     );
 }
 

@@ -66,10 +66,6 @@ path = "assets/delivery.schema.json"
 purpose = "the JSON shape a seat's delivery file takes, shown in its brief; fleet deliver reads the file against the binary's own type"
 
 [[shadow]]
-path = "assets/verdict.md"
-purpose = "the two shapes a review writes, and the markers a reader tells them from a delivery by"
-
-[[shadow]]
 path = "assets/findings.schema.json"
 purpose = "the JSON shape a reviewer's findings take; fleet review --return reads it against the binary's own type"
 

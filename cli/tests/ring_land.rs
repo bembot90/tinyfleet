@@ -638,11 +638,11 @@ impl Rig {
         item
     }
 
-    /// The ACCEPTED verdict, written by the SHIPPED verb rather than typed
-    /// here: what land gates on is what `fleet review --land` actually writes.
+    /// The accept, appended by the SHIPPED verb as the reviewer rather than
+    /// typed here: what land gates on is the reviewed entry `fleet review
+    /// --land` actually writes.
     fn accepted(&self) {
-        let reviewed = self.run(&["review", &self.item, "--land"]);
-        assert_eq!(reviewed.status.code(), Some(0), "{}", stderr(&reviewed));
+        reviewed(self, &self.item);
     }
 
     fn in_primary(&self, args: &[&str]) -> String {
@@ -955,6 +955,10 @@ fn a_green_landing_moves_the_bare_and_closes_the_item() {
     assert!(
         notes.contains(&format!("LANDED {landed} on main by {CLOSER}")),
         "the note's first line is on the item:\n{notes}"
+    );
+    assert!(
+        !notes.lines().any(|line| line.starts_with("ACCEPTED")),
+        "the accept it landed is an entry, and no note opens on one:\n{notes}"
     );
     assert!(
         notes.contains("suite: sh the-suite.sh, rc 0"),
@@ -1376,9 +1380,21 @@ fn make_executable(path: &Path) {
 fn a_second_item(rig: &Rig) -> (String, String) {
     let commit = rig.other.clone();
     let item = rig.a_delivered_item("a second item to land", OTHER, "the-other.txt", &commit);
-    let reviewed = rig.run(&["review", &item, "--land"]);
-    assert_eq!(reviewed.status.code(), Some(0), "{}", stderr(&reviewed));
+    reviewed(rig, &item);
     (item, commit)
+}
+
+/// `fleet review --land` on this item as the reviewer, answering the reviewed
+/// entry it appended by its id.
+fn reviewed(rig: &Rig, item: &str) {
+    let out = rig.run(&["review", item, "--land", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let document: serde_json::Value =
+        serde_json::from_str(stdout(&out).trim()).expect("review --json answers one document");
+    assert!(
+        document["data"]["entry"].is_string(),
+        "the accept is an entry on the record: {document}"
+    );
 }
 
 /// TWO LANDINGS ASKED FOR AT ONCE QUEUE ON THE LANE, and both land in order.

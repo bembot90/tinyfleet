@@ -6,10 +6,16 @@
 //! tiny pack's opinion and plug in as size tiers with a per-tier review a pack
 //! defines.
 //!
-//! IT NEVER LANDS. `--land` writes the ACCEPTED verdict that the landing verb
-//! then reads; the squash, the push and the close are that verb's. A verdict
-//! is a note like every other note the verbs write, and it is read back before
-//! exit 0.
+//! IT NEVER LANDS. `--land` appends the ACCEPTED `reviewed` entry that the
+//! landing verb then reads; the squash, the push and the close are that verb's.
+//! A verdict is one entry on the item's timeline, appended by the reviewing
+//! actor and read back before exit 0. No note is written.
+//!
+//! A VERDICT IS THE HOLDER'S (fleet-pl6 (b)). Either writing mode refuses an
+//! actor that does not hold the item: a seat holds it by its id, and a
+//! delivered item's holder is its reviewer; a run reviews as the `[core]
+//! reviewer`, as a run's landing closes as it; no other kind writes one.
+//! `--show` writes nothing and is anyone's.
 //!
 //! THE DELIVERY IS THE TIMELINE'S LAST DELIVERED ENTRY, and nothing else. Its
 //! commit is what is reviewed, its base is where the size is measured from,
@@ -19,21 +25,19 @@
 use std::io::Write;
 use std::path::Path;
 
-use crate::entry::{Delivered, Finding, Timeline};
+use crate::entry::{self, Body, Delivered, Finding, Reviewed, Ruling, RulingKind, Size, Timeline};
 use crate::input::{self, FindingsInput, FINDINGS_SCHEMA};
 use crate::item::brief::Packs;
-use crate::item::deliver::named;
+use crate::item::deliver::{named, reviewer_of};
+use crate::item::land::run_record;
 use crate::item::show::entry_lines;
 use crate::item::{
-    control_token, render, Change, Events, Git, Project, Ring, RingOutcome, Stop, ITEM_RETURNED,
-    ITEM_REVIEWED, VERDICT_ACCEPTED, VERDICT_MARKERS,
+    control_token, recorded, render, Change, Events, Git, Project, Ring, RingOutcome, Stop,
+    Unrecorded, ITEM_RETURNED, ITEM_REVIEWED, VERDICT_ACCEPTED,
 };
-use crate::seat::actor::Actor;
+use crate::seat::actor::{Actor, ActorKind};
 use crate::seat::identity::Directory;
 use crate::store::{Item, Store};
-
-/// The verdict grammar, in core's pack and shadowable like every other asset.
-pub const VERDICT: &str = "assets/verdict.md";
 
 /// What the ring carries on a return.
 pub const RING: &str = "{item} is returned with {findings} finding(s) and is yours again. \
@@ -46,10 +50,10 @@ pub const STANDS: &str = "RETURNED, NOT RUNG";
 pub enum Mode<'a> {
     /// Print what a reviewer needs; write nothing.
     Show,
-    /// Write the ACCEPTED verdict, its decisions walk in it.
+    /// Append the ACCEPTED verdict, its decisions walk in it.
     Land,
-    /// Write the RETURNED WITH FINDINGS verdict from this findings file: a
-    /// JSON file of the shape [`FINDINGS_SCHEMA`] gives, read against
+    /// Append the RETURNED verdict with the findings in this file: a JSON
+    /// file of the shape [`FINDINGS_SCHEMA`] gives, read against
     /// [`FindingsInput`] before anything is written. Its findings are numbered
     /// by their place in the list, so the file numbers nothing itself.
     Return(&'a Path),
@@ -57,7 +61,8 @@ pub enum Mode<'a> {
 
 pub struct Verdict<'a> {
     pub item: &'a str,
-    /// The reviewer.
+    /// The reviewer: the item's holder, or a run acting as the `[core]
+    /// reviewer`.
     pub by: &'a Actor,
     pub mode: Mode<'a>,
 }
@@ -70,7 +75,7 @@ pub struct Wiring<'a> {
     pub ring: &'a dyn Ring,
     pub events: &'a dyn Events,
     /// The seats this fleet knows, which a return's sentence names the builder
-    /// by.
+    /// by and `[core] reviewer` is found among.
     pub seats: &'a Directory,
 }
 
@@ -81,8 +86,9 @@ pub struct Read {
     pub item: String,
     pub commit: String,
     pub size: String,
-    /// The verdict written, where a mode wrote one.
-    pub verdict: Option<String>,
+    /// The reviewed entry's id, as the store answered it, where a mode wrote
+    /// one.
+    pub entry: Option<String>,
 }
 
 pub fn review(
@@ -94,6 +100,11 @@ pub fn review(
     // Resolved once: everything below names `item.id`, the store's full id,
     // and never `verdict.item`, the part of it that was typed.
     let item = read(wiring.store, verdict.item)?;
+    // THE HOLDER BEFORE ANYTHING IS READ OR MEASURED: an actor that may not
+    // write a verdict is refused with the record and the stream as they were.
+    if !matches!(verdict.mode, Mode::Show) {
+        holds(&item, verdict.by, wiring)?;
+    }
     let entries = wiring.store.timeline(&item.id)?;
     let Some((entry, delivered)) = Timeline(&entries).last_delivery() else {
         return Err(Stop::refused(format!(
@@ -103,8 +114,15 @@ pub fn review(
     };
     let commit = delivered.commit.clone();
 
-    let size = size_line(&commit, &delivered.base, wiring)?;
+    // ONE MEASUREMENT: the line printed here and the size a verdict carries
+    // are read off the same numstat.
+    let changes = wiring
+        .git
+        .numstat(&delivered.base, &commit)
+        .map_err(Stop::could_not_tell)?;
+    let size = rendered_size(&changes, &wiring.project.root);
     let _ = writeln!(out, "{size}");
+    let measured = sized(&changes, &wiring.project.root, &delivered.base);
 
     let written = match &verdict.mode {
         Mode::Show => {
@@ -116,9 +134,11 @@ pub fn review(
             }
             None
         }
-        Mode::Land => Some(accept(&item, delivered, &commit, &size, verdict, wiring)?),
+        Mode::Land => Some(accept(
+            &item, delivered, &commit, measured, verdict, wiring,
+        )?),
         Mode::Return(findings) => Some(retur(
-            out, err, &item, findings, &commit, &size, verdict, wiring,
+            out, err, &item, findings, &commit, measured, verdict, wiring,
         )?),
     };
 
@@ -126,45 +146,102 @@ pub fn review(
         item: item.id,
         commit,
         size,
-        verdict: written,
+        entry: written,
     })
+}
+
+// ---- the holder --------------------------------------------------------------
+
+/// Whether `by` may write a verdict on this item (fleet-pl6 (b)).
+///
+/// A SEAT holds the item by its id: deliver hands every delivery to the
+/// reviewer, so a delivered item's holder is its reviewer. A RUN answers for
+/// nothing itself and reviews as the `[core] reviewer`, as land already treats
+/// it: its id must name a run's record, and the item must be that seat's. No
+/// other kind writes a verdict.
+fn holds(item: &Item, by: &Actor, wiring: &Wiring) -> Result<(), Stop> {
+    let id = &item.id;
+    let assignee = item.assignee.as_deref().unwrap_or("nobody");
+    match by.kind {
+        ActorKind::Seat => {
+            if let (Some(seat), Some(holder)) = (by.seat_id(), item.assignee.as_deref()) {
+                if seat.to_string() == holder {
+                    return Ok(());
+                }
+            }
+            Err(Stop::refused(format!(
+                "{id} is held by {assignee} and not by {by} — a verdict is the holder's, and a \
+                 delivered item's holder is its reviewer"
+            )))
+        }
+        ActorKind::Run => {
+            let record = run_record(wiring.store, by)?;
+            let reviewer = reviewer_of(wiring.project, wiring.seats)?.id.to_string();
+            if item.assignee.as_deref() == Some(reviewer.as_str()) {
+                return Ok(());
+            }
+            Err(Stop::refused(format!(
+                "run {} reviews as the [core] reviewer {reviewer}, and {id} is held by {assignee}",
+                record.id
+            )))
+        }
+        ActorKind::Routine | ActorKind::Controller => Err(Stop::refused(format!(
+            "a {} writes no verdict",
+            by.kind.as_str()
+        ))),
+    }
 }
 
 // ---- the size line -----------------------------------------------------------
 
 /// The measurement, from the base the delivery was cut from to the delivery
-/// commit, counted from their merge-base. The base is always a whole sha: the
-/// delivered entry cannot be written with anything else.
-fn size_line(commit: &str, base: &str, wiring: &Wiring) -> Result<String, Stop> {
-    size_of(commit, base, wiring.git, &wiring.project.root)
-}
-
-/// The same measurement, for a caller that has a git and a root and no
-/// [`Wiring`] — the flight rendering a reviewer's brief, which must show the
-/// line `review` will print and not a second one measured its own way.
+/// commit, counted from their merge-base, for a caller that has a git and a
+/// root and no [`Wiring`] — the flight rendering a reviewer's brief, which must
+/// show the line `review` will print and not a second one measured its own way.
+/// The base is always a whole sha: the delivered entry cannot be written with
+/// anything else.
 pub fn size_of(commit: &str, base: &str, git: &dyn Git, root: &Path) -> Result<String, Stop> {
     let changes = git.numstat(base, commit).map_err(Stop::could_not_tell)?;
     Ok(rendered_size(&changes, root))
 }
 
+/// The size line a person reads. It names no base: the line is printed beside
+/// the delivery that says where it was cut from.
 pub fn rendered_size(changes: &[Change], root: &Path) -> String {
-    let added: u64 = changes.iter().filter_map(|c| c.added).sum();
-    let deleted: u64 = changes.iter().filter_map(|c| c.deleted).sum();
-    let binary = changes
-        .iter()
-        .filter(|c| c.added.is_none() || c.deleted.is_none())
-        .count();
+    let size = sized(changes, root, "");
     format!(
-        "size: {} file(s), +{added}, -{deleted}{} — tests: {}, executable: {}",
-        changes.len(),
-        if binary == 0 {
+        "size: {} file(s), +{}, -{}{} — tests: {}, executable: {}",
+        size.files,
+        size.added,
+        size.deleted,
+        if size.binary == 0 {
             String::new()
         } else {
-            format!(" ({binary} binary)")
+            format!(" ({} binary)", size.binary)
         },
-        yes(changes.iter().any(|c| is_test(&c.path))),
-        yes(changes.iter().any(|c| is_executable(root, &c.path))),
+        yes(size.tests),
+        yes(size.executable),
     )
+}
+
+/// The same measurement as the verdict carries it, beside the base it was
+/// measured from.
+pub fn sized(changes: &[Change], root: &Path, base: &str) -> Size {
+    let count = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+    Size {
+        files: count(changes.len()),
+        added: changes.iter().filter_map(|c| c.added).sum(),
+        deleted: changes.iter().filter_map(|c| c.deleted).sum(),
+        binary: count(
+            changes
+                .iter()
+                .filter(|c| c.added.is_none() || c.deleted.is_none())
+                .count(),
+        ),
+        tests: changes.iter().any(|c| is_test(&c.path)),
+        executable: changes.iter().any(|c| is_executable(root, &c.path)),
+        base: base.to_string(),
+    }
 }
 
 fn yes(answer: bool) -> &'static str {
@@ -219,15 +296,17 @@ pub fn decisions(delivered: &Delivered) -> Vec<String> {
         .collect()
 }
 
-/// The walk: one line per call the delivery lists, then the count.
+/// The walk: one ruling per call the delivery lists, by its number.
 ///
 /// `--land` is the accept, so every call it walks is accepted; a call the
 /// reviewer will not take is a finding and the delivery goes back with it.
-fn walk(delivered: &Delivered) -> String {
-    let calls = decisions(delivered);
-    let mut lines: Vec<String> = calls.iter().map(|name| format!("{name} ACCEPT")).collect();
-    lines.push(format!("{} accepted, 0 overruled", calls.len()));
-    lines.join("\n  ")
+fn walk(delivered: &Delivered) -> Vec<Ruling> {
+    (1..=delivered.decisions.len())
+        .map(|k| Ruling {
+            decision: u32::try_from(k).unwrap_or(u32::MAX),
+            ruling: RulingKind::Accept,
+        })
+        .collect()
 }
 
 // ---- the two verdicts --------------------------------------------------------
@@ -236,22 +315,18 @@ fn accept(
     item: &Item,
     delivered: &Delivered,
     commit: &str,
-    size: &str,
+    size: Size,
     verdict: &Verdict,
     wiring: &Wiring,
 ) -> Result<String, Stop> {
-    let note = render(
-        &block(&wiring.packs.read(VERDICT)?, VERDICT_MARKERS[0])?,
-        &[
-            ("commit", commit),
-            ("reviewer", &verdict.by.to_string()),
-            ("item", &item.id),
-            ("size", size),
-            ("decisions", &walk(delivered)),
-        ],
-    )
-    .map_err(|name| unresolved(&name))?;
-    write_verdict(&item.id, &note, None, verdict, wiring)?;
+    let reviewed = Body::Reviewed(Reviewed {
+        verdict: entry::Verdict::Accepted,
+        commit: commit.to_string(),
+        size,
+        walk: walk(delivered),
+        findings: Vec::new(),
+    });
+    let id = write_verdict(&item.id, &reviewed, None, verdict, wiring)?;
     // The walk is the accept, so every call it found is accepted and none is
     // overruled: a `--land` that would overrule one is a return instead.
     announce(
@@ -267,7 +342,7 @@ fn accept(
             "overruled": 0,
         }),
     )?;
-    Ok(note)
+    Ok(id)
 }
 
 /// The one event either writing mode appends.
@@ -302,14 +377,15 @@ fn retur(
     item: &Item,
     findings: &Path,
     commit: &str,
-    size: &str,
+    size: Size,
     verdict: &Verdict,
     wiring: &Wiring,
 ) -> Result<String, Stop> {
     // Read whole before anything is written: a file that does not parse, or
     // parses and numbers nothing, stops here with the item still the
     // reviewer's.
-    let findings = input::read::<FindingsInput>(findings, "findings", FINDINGS_SCHEMA)?.findings();
+    let findings: Vec<Finding> =
+        input::read::<FindingsInput>(findings, "findings", FINDINGS_SCHEMA)?.findings();
     let count = findings.len();
     // The builder is the order index's seat: the record of who was given this
     // item, which is the one place that says where a return goes. It is the
@@ -322,30 +398,26 @@ fn retur(
         )));
     };
 
-    let note = render(
-        &block(&wiring.packs.read(VERDICT)?, VERDICT_MARKERS[1])?,
-        &[
-            ("commit", commit),
-            ("reviewer", &verdict.by.to_string()),
-            ("item", &item.id),
-            ("size", size),
-            ("findings", &count.to_string()),
-            ("body", &off_column_zero(&numbered_findings(&findings))),
-        ],
-    )
-    .map_err(|name| unresolved(&name))?;
+    let reviewed = Body::Reviewed(Reviewed {
+        verdict: entry::Verdict::Returned,
+        commit: commit.to_string(),
+        size,
+        walk: Vec::new(),
+        findings,
+    });
 
     // HANDED OVER FROM THE HOLDER THIS REVIEW READ, and only while it still
-    // holds the item: the reviewer need not be the `--by` of the call, and bd
-    // 1.3.0 refuses a plain reassignment of an `in_progress` item by anyone
-    // but its holder — which the builder's claim leaves it through delivery.
+    // holds the item: under a run the holder is the `[core] reviewer` and not
+    // the `--by` of the call, and bd 1.3.0 refuses a plain reassignment of an
+    // `in_progress` item by anyone but its holder — which the builder's claim
+    // leaves it through delivery.
     wiring.store.hand_over(
         &item.id,
         item.assignee.as_deref().unwrap_or_default(),
         &builder,
         &verdict.by.to_string(),
     )?;
-    write_verdict(&item.id, &note, Some(&builder), verdict, wiring)?;
+    let id = write_verdict(&item.id, &reviewed, Some(&builder), verdict, wiring)?;
     announce(
         &item.id,
         ITEM_RETURNED,
@@ -377,22 +449,31 @@ fn retur(
             let _ = writeln!(err, "{STANDS}: {cause}; the return stands");
         }
     }
-    Ok(note)
+    Ok(id)
 }
 
-/// The verdict written and read back: the assignee a return reassigned to, the
-/// last verdict region of the item's notes against the text this verb
-/// rendered, plus a token nothing wrote.
+/// The verdict appended and read back, answered as the entry's id: the entry
+/// through [`recorded`], which reads it off the timeline by the id the store
+/// answered, then — for a return — the assignee it reassigned to, plus a token
+/// nothing wrote.
 fn write_verdict(
     item: &str,
-    note: &str,
+    reviewed: &Body,
     assignee: Option<&str>,
     verdict: &Verdict,
     wiring: &Wiring,
-) -> Result<(), Stop> {
-    wiring.store.note(item, note, &verdict.by.to_string())?;
-    let read = read(wiring.store, item)?;
+) -> Result<String, Stop> {
+    let id =
+        recorded(wiring.store, item, reviewed, verdict.by).map_err(
+            |unrecorded| match unrecorded {
+                Unrecorded::NotWritten(e) => Stop::from(e),
+                Unrecorded::Unconfirmed(why) => {
+                    Stop::could_not_tell(format!("{why}\n  the verdict on {item} STANDS"))
+                }
+            },
+        )?;
     if let Some(wanted) = assignee {
+        let read = read(wiring.store, item)?;
         if read.assignee.as_deref() != Some(wanted) {
             return Err(Stop::could_not_tell(format!(
                 "{item} read back with assignee ==\n{}\n  wanted:\n{wanted}\n  RERUN: bd update \
@@ -400,97 +481,15 @@ fn write_verdict(
                 read.assignee.as_deref().unwrap_or("(absent)")
             )));
         }
+        let control = control_token();
+        if read.document.contains(control) {
+            return Err(Stop::could_not_tell(format!(
+                "the read-back on {item} carries {control}, which nothing wrote — the read is not \
+                 reading this item"
+            )));
+        }
     }
-    let seen = read.notes.as_deref().and_then(last_verdict);
-    if seen.as_deref().map(normalised) != Some(normalised(note)) {
-        return Err(Stop::could_not_tell(format!(
-            "{item} read back with its last verdict ==\n{}\n  wanted:\n{note}\n  RERUN: bd note \
-             {item} \"<the verdict, as it is printed above>\"",
-            seen.as_deref().unwrap_or("(absent)")
-        )));
-    }
-    let control = control_token();
-    if read.document.contains(control) {
-        return Err(Stop::could_not_tell(format!(
-            "the read-back on {item} carries {control}, which nothing wrote — the read is not \
-             reading this item"
-        )));
-    }
-    Ok(())
-}
-
-/// The last verdict region of an item's notes, ended by the delivery or the
-/// landing that follows it — and by NEITHER verdict marker, because a return's
-/// findings body is a reviewer's own text and habitually quotes one.
-pub fn last_verdict(notes: &str) -> Option<String> {
-    crate::item::last_region(
-        notes,
-        &VERDICT_MARKERS,
-        &[
-            &crate::item::DELIVERY_MARKERS,
-            &crate::item::LANDING_MARKERS,
-            &crate::item::PARK_MARKERS,
-            &crate::item::ANSWER_MARKERS,
-        ],
-    )
-}
-
-/// The template's block for one marker, in this verb's own words.
-fn block(template: &str, marker: &str) -> Result<String, Stop> {
-    crate::item::marker_block(template, marker).ok_or_else(|| {
-        Stop::could_not_tell(format!(
-            "`{VERDICT}` carries no `{marker}` block — the pack's verdict grammar names both"
-        ))
-    })
-}
-
-fn unresolved(name: &str) -> Stop {
-    Stop::could_not_tell(format!(
-        "`{VERDICT}` writes `{{{name}}}`, which is not a placeholder this verb resolves"
-    ))
-}
-
-/// The findings as the verdict's body: `F<k> <text>` for the k-th finding,
-/// each line that continues its text two spaces in, so a finding that runs
-/// over lines still reads as one.
-fn numbered_findings(findings: &[Finding]) -> String {
-    findings
-        .iter()
-        .enumerate()
-        .map(|(k, finding)| {
-            format!(
-                "F{} {}",
-                k + 1,
-                finding.text.trim_end().replace('\n', "\n  ")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// The findings body, indented off column zero.
-///
-/// A region ends at the next marker AT COLUMN ZERO, and a finding is prose a
-/// reviewer wrote — which in this store habitually quotes a delivery's or a
-/// landing's own first line. Indented, no line of it can end the verdict it
-/// is inside, so the read-back below compares the whole note against the
-/// whole note. The count was taken from the findings file, so nothing about
-/// how many findings there are changes here.
-fn off_column_zero(body: &str) -> String {
-    body.lines()
-        .map(|line| {
-            if line.trim().is_empty() {
-                String::new()
-            } else {
-                format!("  {line}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn normalised(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    Ok(id)
 }
 
 fn read(store: &dyn Store, item: &str) -> Result<Item, Stop> {

@@ -211,26 +211,29 @@ the next flight that lists it is what resumes the work.")]
 
     /// read a delivery and write the verdict
     #[command(long_about = "\
-read a delivery and write the verdict: the size line, the delivery note and the
-decisions block on --show; the ACCEPTED verdict with its decisions walk on
---land; the RETURNED WITH FINDINGS verdict on --return <file>, which reassigns
+read a delivery and write the verdict: the size line and the delivered entry on
+--show; the accepted reviewed entry, every decision walked, on --land; the
+returned reviewed entry with its findings on --return <file>, which reassigns
 the item to the seat the order named and rings them.
 
 The findings file is JSON of the shape assets/findings.schema.json, one entry
-per finding, and the verdict numbers them F1, F2 and on in that order. A file
-that does not read is refused with exit 2, before anything is written.
+per finding, and the verdict keeps them in that order. A file that does not
+read is refused with exit 2, before anything is written.
 
---land lands nothing. It writes the accept verdict that `fleet land` reads.")]
+A verdict is the holder's: --land and --return refuse a seat that does not hold
+the item, and a run writes one as the [core] reviewer.
+
+--land lands nothing. It appends the accept that `fleet land` reads.")]
     Review(item::ReviewArgs),
 
     /// squash a reviewed commit onto the trunk and close the item
     #[command(long_about = "\
 squash a reviewed commit onto the trunk and close the item, from the reviewer's
 own worktree. It takes a commit and never a branch name. Its checks are the
-last ACCEPTED verdict naming that commit, a staged set equal to the delivery's,
-the --test command it is handed, run on the land branch before the push, and a
-trunk nobody has moved — the last of those in the same act as the push, so the
-two cannot race.
+last verdict, an accept of that commit by the landing's own reviewer, a staged
+set equal to the delivery's, the --test command it is handed, run on the land
+branch before the push, and a trunk nobody has moved — the last of those in the
+same act as the push, so the two cannot race.
 
 Every check row is printed as it is read, and the landed sha is taken from the
 push's own range line and from nowhere else. A landing handed no --test runs

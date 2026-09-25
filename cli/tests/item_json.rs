@@ -537,7 +537,7 @@ fn deliver_prints_the_commit_it_made_and_review_the_state_its_verdict_moved_the_
     let data = data_of(&out, "review");
     assert_eq!(data["item"], serde_json::json!(item), "{data}");
     assert!(
-        data["state"].is_null(),
+        data["state"].is_null() && data["entry"].is_null(),
         "a --show writes no verdict and moves the item nowhere: {data}"
     );
     assert!(
@@ -550,11 +550,17 @@ fn deliver_prints_the_commit_it_made_and_review_the_state_its_verdict_moved_the_
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let data = data_of(&out, "review");
     assert_eq!(data["state"], serde_json::json!("reviewed"), "{data}");
-    assert!(
-        rig.notes_of(&item).contains("ACCEPTED"),
-        "and the verdict is on the record: {}",
-        rig.notes_of(&item)
-    );
+    // The verdict on the record, by the id `item show` lists it under.
+    let shown = rig.item_show(&[&item, "--json"]);
+    assert_eq!(shown.status.code(), Some(0), "{}", stderr(&shown));
+    let timeline = data_of(&shown, "item show")["timeline"].clone();
+    let last = timeline
+        .as_array()
+        .and_then(|entries| entries.last())
+        .expect("the timeline carries an entry");
+    assert_eq!(last["kind"], serde_json::json!("reviewed"), "{timeline}");
+    assert_eq!(last["verdict"], serde_json::json!("accepted"), "{timeline}");
+    assert_eq!(data["entry"], last["id"], "the reviewed entry's id: {data}");
 }
 
 /// `hold --json` and `clear --json`: the hold id, which only these two carry,

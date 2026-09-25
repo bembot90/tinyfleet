@@ -325,6 +325,11 @@ impl Rig {
     /// the reader's own document, off the shipped binary. That verb renders
     /// from the store alone, so it takes no `--packs-dir`.
     fn delivered(&self, item: &str) -> serde_json::Value {
+        self.last_entry(item, "delivered")
+    }
+
+    /// The item's last entry of this kind, read the same way.
+    fn last_entry(&self, item: &str, kind: &str) -> serde_json::Value {
         let out = Command::new(env!("CARGO_BIN_EXE_fleet"))
             .args(["item", "show", item, "--json"])
             .current_dir(&self.project)
@@ -339,9 +344,9 @@ impl Rig {
             .expect("the document carries a timeline")
             .iter()
             .rev()
-            .find(|entry| entry["kind"] == "delivered")
+            .find(|entry| entry["kind"] == kind)
             .cloned()
-            .unwrap_or_else(|| panic!("the timeline carries a delivered entry: {document}"))
+            .unwrap_or_else(|| panic!("the timeline carries a {kind} entry: {document}"))
     }
 
     /// The stub: `agents` is the roster read, `-p` is the one print-mode turn.
@@ -664,7 +669,8 @@ fn the_old_note_flag_is_usage_naming_the_delivery_flag() {
     );
 }
 
-/// `review --land` through the same binary: the accept on the record, and the
+/// `review --land` through the same binary: the accept on the record, as the
+/// reviewed entry `fleet item show` reads and `--json` names by its id, and the
 /// one event on the stream carrying the walk's own counts.
 #[test]
 fn review_land_writes_the_accept_on_the_record_and_the_event_on_the_stream() {
@@ -675,16 +681,35 @@ fn review_land_writes_the_accept_on_the_record_and_the_event_on_the_stream() {
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let head = rig.git(&["rev-parse", "HEAD"]);
 
-    let out = rig.run(&["review", &item, "--land", "--by", REVIEWER]);
+    let out = rig.run(&["review", &item, "--land", "--by", REVIEWER, "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let document: serde_json::Value =
+        serde_json::from_str(stdout(&out).trim()).expect("review --json answers one document");
 
+    let accept = rig.last_entry(&item, "reviewed");
+    assert_eq!(accept["verdict"], serde_json::json!("accepted"), "{accept}");
+    assert_eq!(accept["commit"], serde_json::json!(head), "{accept}");
+    assert_eq!(
+        accept["size"]["base"],
+        rig.delivered(&item)["base"],
+        "measured from the delivery's base: {accept}"
+    );
+    assert_eq!(
+        accept["by"],
+        serde_json::json!({ "kind": "seat", "id": REVIEWER_ID }),
+        "appended by the reviewer: {accept}"
+    );
+    assert_eq!(
+        document["data"]["entry"], accept["id"],
+        "--json names the entry it wrote: {document}"
+    );
     let notes = rig.item_json(&item)["notes"]
         .as_str()
         .unwrap_or_default()
         .to_string();
     assert!(
-        notes.contains(&format!("ACCEPTED {head} — seat:{REVIEWER_ID}")),
-        "the verdict is on the record: {notes}"
+        !notes.contains("ACCEPTED"),
+        "and no verdict note is written: {notes}"
     );
 
     let last = rig
@@ -705,10 +730,18 @@ fn review_land_writes_the_accept_on_the_record_and_the_event_on_the_stream() {
         serde_json::json!(0),
         "an accept overrules nothing: {last}"
     );
-    let accepted = last["payload"]["accepted"].as_u64().expect("a count");
+    let walk = accept["walk"].as_array().expect("the walk is a list");
+    assert_eq!(
+        last["payload"]["accepted"],
+        serde_json::json!(walk.len()),
+        "the event's count is the walk's own: {last}\n{accept}"
+    );
     assert!(
-        notes.contains(&format!("{accepted} accepted, 0 overruled")),
-        "the event's counts are the walk's own: {last}\n{notes}"
+        !walk.is_empty()
+            && walk.iter().enumerate().all(|(k, ruling)| {
+                *ruling == serde_json::json!({ "decision": k + 1, "ruling": "accept" })
+            }),
+        "every call the delivery listed, accepted by its number: {accept}"
     );
 }
 
@@ -780,19 +813,24 @@ fn review_return_takes_the_findings_file_takeoff_writes_on_b() {
         serde_json::json!(rig.seat_id()),
         "the item goes back to the seat the order named"
     );
-    let notes = rig.item_json(&item)["notes"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
-    assert!(
-        notes.contains(&format!(
-            "RETURNED WITH FINDINGS {head} — seat:{REVIEWER_ID}\nfindings: 1\n"
-        )),
-        "the verdict counts the one finding: {notes}"
+    let returned = rig.last_entry(&item, "reviewed");
+    assert_eq!(
+        returned["verdict"],
+        serde_json::json!("returned"),
+        "{returned}"
     );
-    assert!(
-        notes.contains("\n  F1 The person answered B at the run's hold: B. return to the builder."),
-        "and numbers it: {notes}"
+    assert_eq!(returned["commit"], serde_json::json!(head), "{returned}");
+    assert_eq!(
+        returned["by"],
+        serde_json::json!({ "kind": "seat", "id": REVIEWER_ID }),
+        "{returned}"
+    );
+    assert_eq!(
+        returned["findings"],
+        serde_json::json!([
+            { "text": "The person answered B at the run's hold: B. return to the builder." }
+        ]),
+        "the one finding the file carries, as it carries it: {returned}"
     );
     let last = rig
         .events()

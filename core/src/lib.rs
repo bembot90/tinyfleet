@@ -42,13 +42,13 @@
 //!
 //! `review` is the reviewer's read and the verdict it writes. It prints a size
 //! line that is a measurement and carries no tier — core is one reviewer's read
-//! at every size — walks the calls the delivery numbered, and writes ACCEPTED
-//! or RETURNED WITH FINDINGS from the pack's verdict grammar. It never lands:
-//! the accept verdict is what the landing verb reads.
+//! at every size — walks the calls the delivery numbered, and appends the
+//! `reviewed` entry, accepted or returned with its findings, as the item's
+//! holder. It never lands: the accept is what the landing verb reads.
 //!
 //! `land` is the reviewer's, and it lands a REVIEW: the licence to squash
-//! anything is the item's last verdict, an ACCEPTED naming the exact commit it
-//! was given. It takes a commit and never a branch name, runs from a linked
+//! anything is the item's last verdict, an accept of the exact commit it was
+//! given, written by the landing's own reviewer. It takes a commit and never a branch name, runs from a linked
 //! worktree and never the primary, squashes onto the trunk, runs the one test
 //! command it is handed (or lands on the review alone, NOT TESTED, where it is
 //! handed none), counts
