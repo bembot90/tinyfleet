@@ -24,7 +24,7 @@ use serde::Deserialize;
 
 use super::types::{Capabilities, ExportSpec};
 use super::{
-    already_cleared, already_closed, first_value, holder_named, unchanged, validated, Filter,
+    already_cleared, already_closed, first_value, holder_named, tail, unchanged, validated, Filter,
     HoldId, Item, ItemId, ItemSummary, NewItem, Order, OrderState, ReadProof, RunRecord, Status,
     Store, StoreError, Update, Version, STORE_TIMEOUT,
 };
@@ -284,24 +284,6 @@ impl Bd {
 
 /// The exit bd gives a write whose `--if-assignee` no longer holds.
 const FENCE_MISMATCH: i32 = 13;
-
-/// What a call said last: the last line of its stderr that is not blank, else
-/// of its stdout, cut to 160 characters.
-fn tail(out: &Output) -> String {
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let body = if stderr.trim().is_empty() {
-        String::from_utf8_lossy(&out.stdout)
-    } else {
-        stderr
-    };
-    body.lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("no output")
-        .chars()
-        .take(160)
-        .collect()
-}
 
 /// The answer inside bd's JSON envelope, or the value itself where it carries
 /// none.

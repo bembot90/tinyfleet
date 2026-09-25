@@ -7,7 +7,7 @@
 //! every public name here, so its callers reach them by the paths they always
 //! had.
 
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
@@ -62,8 +62,9 @@ pub fn is_killable_group(leader: u32) -> bool {
 // ONE RUNNER, TWO COLLECTIONS. The adapter wants the child's own bytes and the
 // routines module wants them on disk, and both want the same deadline with the
 // same process-group kill behind it. So the spawn, the wait and the kill are
-// one path here and the two entry points differ only in where the child's
-// output goes.
+// one path here and the two collections differ only in where the child's
+// output goes. The first has a fed twin, for a store adapter whose request
+// goes in on stdin.
 
 /// A bounded run whose output went somewhere this process never read.
 #[derive(Debug)]
@@ -103,11 +104,12 @@ pub const DRAIN_GRACE: Duration = Duration::from_millis(200);
 /// How often the wait asks whether the child has exited.
 const WAIT_SLICE: Duration = Duration::from_millis(20);
 
-/// Spawn a child leading a process group of its own, with the stdio the caller
-/// has already set. `stdin` is null on both paths: a bounded child has nobody
-/// to answer a prompt.
-fn spawn_in_group(cmd: &mut Command) -> Result<Child, String> {
-    cmd.stdin(Stdio::null());
+/// Spawn a child leading a process group of its own, with the stdout and
+/// stderr the caller has already set and the stdin it names: null wherever
+/// nothing is fed, because a bounded child has nobody to answer a prompt, and
+/// a pipe where a request is.
+fn spawn_in_group(cmd: &mut Command, stdin: Stdio) -> Result<Child, String> {
+    cmd.stdin(stdin);
     // Between fork and exec, where only async-signal-safe calls are legal.
     unsafe {
         cmd.pre_exec(own_process_group);
@@ -187,11 +189,43 @@ fn wait_or_kill(
 /// A command that outruns the deadline on either path is killed and reported as
 /// an error, which reaches the caller as Unknown: a listing that hangs must not
 /// hang the poll.
-pub fn run_bounded(mut cmd: Command, timeout: Duration) -> Result<Output, String> {
+pub fn run_bounded(cmd: Command, timeout: Duration) -> Result<Output, String> {
+    collected(cmd, None, timeout)
+}
+
+/// [`run_bounded`], with `input` fed to the child's stdin: the same group, the
+/// same deadline and the same drains, and one more pipe.
+///
+/// THE FEED IS A DETACHED THREAD OF ITS OWN, as each drain is. It writes the
+/// input and drops the pipe, which is the child's end of file, and a broken
+/// pipe is ignored: a child that exits without reading its request has
+/// answered, and its exit says how. Written ahead of the wait instead, an
+/// input past the pipe's buffer blocks on a child that is itself blocked on a
+/// full stdout, and nothing then reaches the deadline.
+///
+/// The deadline covers the whole call, the feed included: a child that never
+/// reads is killed with its group at the deadline, which breaks the pipe the
+/// feed is blocked on and lets that thread end.
+pub fn run_bounded_fed(cmd: Command, input: Vec<u8>, timeout: Duration) -> Result<Output, String> {
+    collected(cmd, Some(input), timeout)
+}
+
+/// The one path both piped entry points take, fed or not.
+fn collected(mut cmd: Command, feed: Option<Vec<u8>>, timeout: Duration) -> Result<Output, String> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = spawn_in_group(&mut cmd)?;
+    let stdin = match feed {
+        Some(_) => Stdio::piped(),
+        None => Stdio::null(),
+    };
+    let mut child = spawn_in_group(&mut cmd, stdin)?;
     // The group is named by the leader's pid, which is the child's own.
     let group = child.id();
+    if let Some(input) = feed {
+        let mut pipe = child.stdin.take().expect("stdin is piped");
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(&input);
+        });
+    }
     let mut out = child.stdout.take().expect("stdout is piped");
     let mut err = child.stderr.take().expect("stderr is piped");
     let (tx, rx) = std::sync::mpsc::channel();
@@ -263,7 +297,7 @@ pub fn run_bounded_to_file(
         .try_clone()
         .map_err(|e| format!("{}: {e}", log.display()))?;
     cmd.stdout(Stdio::from(handle)).stderr(Stdio::from(second));
-    let mut child = spawn_in_group(&mut cmd)?;
+    let mut child = spawn_in_group(&mut cmd, Stdio::null())?;
     let group = child.id();
     let deadline = Instant::now() + timeout;
     match wait_or_kill(&mut child, group, deadline)? {
@@ -386,6 +420,20 @@ mod tests {
             .expect("the listing answered inside its deadline and is read");
         assert!(run.status.success(), "the child exited 0");
         assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "answered");
+    }
+
+    /// The fed runner hands the child its input whole, and the child's answer
+    /// comes back whole: a MiB is past any pipe's buffer both ways, so the
+    /// feed has to run beside the drains — a feed written ahead of the wait
+    /// blocks on a child that is itself blocked on a full stdout.
+    #[test]
+    fn a_fed_run_hands_the_child_its_input_whole() {
+        let input: Vec<u8> = (0..1usize << 20).map(|n| (n % 251) as u8).collect();
+        let run = run_bounded_fed(Command::new("cat"), input.clone(), Duration::from_secs(30))
+            .expect("cat answered inside its deadline");
+        assert!(run.status.success(), "cat exited 0");
+        assert_eq!(run.stdout.len(), input.len(), "every byte fed came back");
+        assert!(run.stdout == input, "and in the order it was fed");
     }
 
     /// The cause names the deadline it ran on. Under a sub-second one a whole-

@@ -11,6 +11,7 @@
 //! sits in are read from there, and never spelled by a verb.
 
 use std::path::{Path, PathBuf};
+use std::process::Output;
 use std::time::Duration;
 
 use crate::entry::{Body, Entry};
@@ -19,6 +20,7 @@ use crate::seat::identity::SeatId;
 use types::Capabilities;
 
 pub mod bd;
+pub mod exec;
 pub mod types;
 
 pub use types::{
@@ -408,6 +410,27 @@ fn holder_named(seat: &str) -> String {
     } else {
         format!("`{seat}`")
     }
+}
+
+/// What a call said last: the last line of its stderr that is not blank, else
+/// of its stdout, cut to 160 characters.
+///
+/// Beside the trait and not inside an adapter: bd and an adapter executable
+/// both carry it into their refusals.
+pub(crate) fn tail(out: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let body = if stderr.trim().is_empty() {
+        String::from_utf8_lossy(&out.stdout)
+    } else {
+        stderr
+    };
+    body.lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("no output")
+        .chars()
+        .take(160)
+        .collect()
 }
 
 /// The first JSON value of an answer, with whatever trails it discarded.
