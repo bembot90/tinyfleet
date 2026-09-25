@@ -16,6 +16,16 @@ path = "src/lib.rs"
 [features]
 test-support = ["dep:regex-lite"]
 
+# The store contract answered from the fake, as an adapter executable, for the
+# suites that run every Exec path with no bd on the box. Under the feature
+# alone: this crate's own tests turn it on through the dev-dependency below, so
+# `cargo test -p fleet-core` builds it beside the test binaries, and a plain
+# build of the workspace never does.
+[[bin]]
+name = "fleet-store-stub"
+path = "src/bin/store_stub.rs"
+required-features = ["test-support"]
+
 # Five crates: the same three the controller carries, serde_path_to_error and
 # schemars, all at the workspace's versions, and uuid, pinned here. This crate
 # depends on no other member of the workspace, and on the controller least of

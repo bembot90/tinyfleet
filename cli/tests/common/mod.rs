@@ -1,12 +1,12 @@
 //! What the cli rigs share: which dolt engine their scratch boards run on, and
-//! how each of them comes by a board.
+//! how each of them comes by a board — or by the store stub in its place.
 //!
 //! The rule lives once, in the core crate's test module, and is included here
 //! rather than copied — the port this refuses is the fleet's live board, and a
 //! second copy is a second thing to remember to change.
 #![allow(dead_code)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[path = "../../../core/tests/common/board.rs"]
@@ -27,6 +27,49 @@ pub use board::{bd_init_server_args, run_board};
 /// rest.
 pub fn note_bd_init(label: &str) {
     board::note_bd_init(label);
+}
+
+/// The store stub this crate's test build made: its example
+/// `fleet-store-stub`, in `examples/` beside the `fleet` it builds. Core's own
+/// `fleet-store-stub` is not built by a test build of this crate, so the one
+/// beside `fleet` is whatever an earlier core build left.
+pub fn stub_path() -> PathBuf {
+    let stub = Path::new(env!("CARGO_BIN_EXE_fleet"))
+        .parent()
+        .expect("the built binary sits in a directory")
+        .join("examples/fleet-store-stub");
+    assert!(
+        stub.is_file(),
+        "{} is built by a test build of fleet-cli — `cargo nextest run -p fleet-cli`, or \
+         `cargo build -p fleet-cli --examples`",
+        stub.display()
+    );
+    stub
+}
+
+/// The project at `root` kept on the stub: `[store] adapter` naming it
+/// appended to the project's own file — `.fleet/project.toml` where there is
+/// one, else `fleet.toml`, made where it is not — and an empty store
+/// scratched at the root, through the stub itself. Answers the stub's path.
+///
+/// The file must not already carry a `[store]` table: a second one does not
+/// parse.
+pub fn stub_store(root: &Path) -> PathBuf {
+    use fleet_core::store::Store as _;
+    let stub = stub_path();
+    let file = [root.join(".fleet/project.toml"), root.join("fleet.toml")]
+        .into_iter()
+        .find(|file| file.is_file())
+        .unwrap_or_else(|| root.join("fleet.toml"));
+    let mut policy = std::fs::read_to_string(&file).unwrap_or_default();
+    let named = serde_json::to_string(&stub.display().to_string()).expect("a path is JSON text");
+    policy.push_str(&format!("\n[store]\nadapter = {named}\n"));
+    std::fs::write(&file, policy).expect("the project's file names the stub");
+    let made = fleet_core::store::exec::Exec::at(&stub, root)
+        .scratch(root)
+        .unwrap_or_else(|e| panic!("the stub makes a store in {}: {e}", root.display()));
+    assert_eq!(made, root, "the stub's store is the project's root");
+    stub
 }
 
 /// A work graph at `root`: the run's board copied in, or a `bd init` of this

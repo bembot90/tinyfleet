@@ -8,7 +8,8 @@
 //!
 //! The stubs are `#!/bin/sh` adapters that append their verb to `argv` beside
 //! them and read their request off stdin, one process per call, as
-//! `core/src/store/exec.rs` runs one.
+//! `core/src/store/exec.rs` runs one — bar the store stub, the board held in
+//! memory answering the whole contract, for the runs that pass.
 
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -18,6 +19,8 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use fleet_core::store::conformance::CHECKS;
+use fleet_core::store::exec::Exec;
+use fleet_core::store::{Filter, Store};
 
 mod common;
 use common::hermetic::Hermetic;
@@ -473,6 +476,87 @@ fn each_line_is_printed_as_its_check_is_answered() {
         rest.len(),
         CHECKS.len(),
         "every other check's line and the summary followed: {rest:?}"
+    );
+    assert!(
+        rig.left().is_empty(),
+        "the temp dir is gone: {:?}",
+        rig.left()
+    );
+}
+
+/// The two checks that plant another writer's keys, skipped where the run
+/// hands no other writer in — which `fleet store check` never does, since no
+/// verb of the contract plants one.
+const NO_OTHER_WRITER: [&str; 2] = [
+    "another writer's keys: no other writer was handed to this run, so nothing plants another \
+     tool's keys",
+    "another writer's keys are listed as foreign: no other writer was handed to this run, so \
+     nothing plants another tool's keys",
+];
+
+/// Arm 8. The store stub, handed by path, passes every check the run asks of
+/// it: one PASS line for every check but the two that plant another writer's
+/// keys, and those two skipped. Nothing of bd is run.
+#[test]
+fn the_store_stub_passes_every_check_it_is_asked() {
+    let rig = Rig::new("stub");
+    let stub = common::stub_path();
+    let out = rig.check(&["--adapter", &stub.to_string_lossy()]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stdout:\n{}\nstderr:\n{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let read = read(&out, "stub");
+    assert!(read.fail.is_empty(), "no check failed: {:?}", read.fail);
+    assert_eq!(read.skip, NO_OTHER_WRITER, "{}", read.summary);
+    assert_eq!(
+        read.summary,
+        format!(
+            "store check: stub — {} passed, 0 failed, 2 skipped",
+            CHECKS.len() - 2
+        )
+    );
+    assert!(
+        rig.left().is_empty(),
+        "the temp dir is gone: {:?}",
+        rig.left()
+    );
+}
+
+/// Arm 9. A project `stub_store` keeps on the stub is checked on the stub with
+/// no flag — its own file names it — and the project's own store is the empty
+/// one the helper made, which the run never writes to.
+#[test]
+fn a_project_kept_on_the_stub_is_checked_on_it() {
+    let rig = Rig::new("stub-store");
+    let stub = common::stub_store(&rig.project());
+    let policy = std::fs::read_to_string(rig.project().join("fleet.toml"))
+        .expect("the project's file reads");
+    assert!(
+        policy.contains(&format!("[store]\nadapter = \"{}\"", stub.display())),
+        "{policy}"
+    );
+
+    let out = rig.check(&[]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stdout:\n{}\nstderr:\n{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let read = read(&out, "stub");
+    assert!(read.fail.is_empty(), "no check failed: {:?}", read.fail);
+    assert_eq!(read.skip, NO_OTHER_WRITER, "{}", read.summary);
+
+    let own = Exec::at(&stub, &rig.project());
+    assert_eq!(
+        own.list(&Filter::Ready).expect("the project's store reads"),
+        Vec::new(),
+        "the check ran on a scratch of its own, and the project's store is as it was made"
     );
     assert!(
         rig.left().is_empty(),

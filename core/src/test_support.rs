@@ -17,12 +17,14 @@ use serde::{Deserialize, Serialize};
 use crate::entry::{self, Body, Entry};
 use crate::seat::actor::Actor;
 use crate::seat::identity::SeatId;
-use crate::store::types::{Capabilities, ExportSpec, Vocabulary};
+use crate::store::types::{Capabilities, ExportSpec, Refusal, RefusalReason, Vocabulary};
 use crate::store::{
     already_cleared, already_closed, holder_named, validated_new, writable, Filter, HoldId, Item,
     ItemId, ItemSummary, NewItem, Order, OrderState, ReadProof, RunRecord, Status, Store,
     StoreError, Update, Version, WithdrawFence,
 };
+
+pub mod stub;
 
 /// Where the fake's export goes, relative to the root it is handed: a file of
 /// its own and under a directory of its own, so an arm on the fake that passes
@@ -110,6 +112,46 @@ pub struct FakeStore {
     /// How many comments this store has taken, which names the next one and
     /// stamps it a second after the last.
     pub comment_ids: AtomicUsize,
+    /// Whether an item this store names itself is named `fx-` and three
+    /// base-36 characters rather than `fx-<n>`. Off by default. A counted id
+    /// cannot be made ambiguous — every prefix of a number is another number
+    /// the store already holds — so a store asked the ambiguity check through
+    /// ids of its own minting, the stub's, mints these.
+    pub hashed: bool,
+    /// The refusal behind the last Refused or Moved this store answered, typed:
+    /// the reason, the text the error carries, and the ids an ambiguity names.
+    /// Every refusal here is built from one of these and its text derived from
+    /// it, so the stub answers exit 1 by its reason and never by reading the
+    /// text back.
+    pub refusal: Mutex<Option<Refusal>>,
+}
+
+/// What a [`FakeStore`] holds between two calls, as JSON: every item, hold,
+/// comment and count, and the seeds and knobs an arm set on it. The stub keeps
+/// one of these in a file, since each of its calls is a process of its own.
+///
+/// Not held: the root, which is the request's; `deaf`, which is one call's;
+/// `hashed`, which is the stub's; and the last refusal, which is one answer's.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct State {
+    pub ready: Vec<String>,
+    pub items: BTreeMap<String, Item>,
+    pub labelled: BTreeMap<String, Vec<String>>,
+    pub creates: Vec<String>,
+    pub planted: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
+    pub unreadable_runs: BTreeSet<String>,
+    pub held: BTreeMap<String, Vec<ItemSummary>>,
+    pub writes: Vec<String>,
+    pub holds: Vec<(String, String)>,
+    pub cleared: Vec<String>,
+    pub closed: BTreeMap<String, String>,
+    pub unreadable: Option<String>,
+    pub no_export: bool,
+    pub vocabulary: Vocabulary,
+    pub filed: usize,
+    pub comments: BTreeMap<String, Vec<Comment>>,
+    pub comment_ids: usize,
 }
 
 /// One comment as the store keeps it: the four fields a timeline row is read
@@ -129,6 +171,140 @@ impl FakeStore {
             root: Some(root.to_path_buf()),
             ..FakeStore::default()
         }
+    }
+
+    /// The store `state` describes, whose export writes under `root`.
+    pub fn from_state(state: State, root: &Path) -> FakeStore {
+        FakeStore {
+            ready: state.ready,
+            items: Mutex::new(state.items),
+            labelled: state.labelled,
+            creates: Mutex::new(state.creates),
+            planted: Mutex::new(state.planted),
+            unreadable_runs: Mutex::new(state.unreadable_runs),
+            held: state.held,
+            writes: Mutex::new(state.writes),
+            holds: Mutex::new(state.holds),
+            cleared: Mutex::new(state.cleared),
+            closed: Mutex::new(state.closed),
+            unreadable: state.unreadable,
+            root: Some(root.to_path_buf()),
+            no_export: state.no_export,
+            vocabulary: state.vocabulary,
+            filed: AtomicUsize::new(state.filed),
+            comments: Mutex::new(state.comments),
+            comment_ids: AtomicUsize::new(state.comment_ids),
+            ..FakeStore::default()
+        }
+    }
+
+    /// What this store holds, for the next call to be answered from.
+    pub fn state(&self) -> State {
+        State {
+            ready: self.ready.clone(),
+            items: self
+                .items
+                .lock()
+                .expect("the items are not poisoned")
+                .clone(),
+            labelled: self.labelled.clone(),
+            creates: self
+                .creates
+                .lock()
+                .expect("the queue is not poisoned")
+                .clone(),
+            planted: self
+                .planted
+                .lock()
+                .expect("the planted keys are not poisoned")
+                .clone(),
+            unreadable_runs: self
+                .unreadable_runs
+                .lock()
+                .expect("the marks are not poisoned")
+                .clone(),
+            held: self.held.clone(),
+            writes: self.wrote(),
+            holds: self.raised(),
+            cleared: self
+                .cleared
+                .lock()
+                .expect("the holds are not poisoned")
+                .clone(),
+            closed: self
+                .closed
+                .lock()
+                .expect("the reasons are not poisoned")
+                .clone(),
+            unreadable: self.unreadable.clone(),
+            no_export: self.no_export,
+            vocabulary: self.vocabulary.clone(),
+            filed: self.filed.load(Ordering::SeqCst),
+            comments: self
+                .comments
+                .lock()
+                .expect("the comments are not poisoned")
+                .clone(),
+            comment_ids: self.comment_ids.load(Ordering::SeqCst),
+        }
+    }
+
+    /// The refusal kept as this store's last, and the error whose text is its
+    /// message: Moved for a fence the item did not meet, Refused for the rest.
+    fn refused(
+        &self,
+        reason: RefusalReason,
+        message: String,
+        candidates: Vec<ItemId>,
+    ) -> StoreError {
+        let error = match reason {
+            RefusalReason::Moved => StoreError::Moved(message.clone()),
+            _ => StoreError::Refused(message.clone()),
+        };
+        *self.refusal.lock().expect("the refusal is not poisoned") = Some(Refusal {
+            reason,
+            message,
+            candidates,
+        });
+        error
+    }
+
+    /// Nothing by that id, in this store's words.
+    fn not_here(&self, id: &str) -> StoreError {
+        self.refused(
+            RefusalReason::Missing,
+            format!("{id} is not here"),
+            Vec::new(),
+        )
+    }
+
+    /// An act already done, in the words the store's shared refusal gives it.
+    fn already(&self, done: StoreError) -> StoreError {
+        self.refused(RefusalReason::Already, done.to_string(), Vec::new())
+    }
+
+    /// The id the store names its `n`th item by, where it mints hashed ids:
+    /// three base-36 characters of an FNV-1a hash over `n`, and over `n` and a
+    /// salt where that id is already held.
+    fn hashed_id(&self, n: usize) -> String {
+        const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+        let items = self.items.lock().expect("the items are not poisoned");
+        (0_u64..)
+            .map(|salt| {
+                let mut hash = format!("{n}.{salt}")
+                    .bytes()
+                    .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+                    });
+                let mut id = String::from("fx-");
+                for _ in 0..3 {
+                    id.push(char::from(DIGITS[(hash % 36) as usize]));
+                    hash /= 36;
+                }
+                id
+            })
+            .find(|id| !items.contains_key(id))
+            .expect("some salt names an id nothing holds")
     }
 
     pub fn wrote(&self) -> Vec<String> {
@@ -272,9 +448,7 @@ impl FakeStore {
             return Ok(());
         }
         let mut items = self.items.lock().expect("the items are not poisoned");
-        let held = items
-            .get_mut(item)
-            .ok_or_else(|| StoreError::Refused(format!("{item} is not here")))?;
+        let held = items.get_mut(item).ok_or_else(|| self.not_here(item))?;
         change(held);
         Ok(())
     }
@@ -284,15 +458,13 @@ impl FakeStore {
     /// nothing written — the rule bd's `--if-assignee` keeps.
     fn held_by(&self, item: &str, holder: &str) -> Result<(), StoreError> {
         let items = self.items.lock().expect("the items are not poisoned");
-        let held = items
-            .get(item)
-            .ok_or_else(|| StoreError::Refused(format!("{item} is not here")))?;
+        let held = items.get(item).ok_or_else(|| self.not_here(item))?;
         let now = held
             .assignee
             .map(|seat| seat.to_string())
             .unwrap_or_default();
         if now != holder {
-            return Err(moved(item, holder, &now));
+            return Err(self.refused(RefusalReason::Moved, moved(item, holder, &now), Vec::new()));
         }
         Ok(())
     }
@@ -302,11 +474,13 @@ impl FakeStore {
     /// keeps.
     fn status_is(&self, item: &str, status: &str) -> Result<(), StoreError> {
         let items = self.items.lock().expect("the items are not poisoned");
-        let held = items
-            .get(item)
-            .ok_or_else(|| StoreError::Refused(format!("{item} is not here")))?;
+        let held = items.get(item).ok_or_else(|| self.not_here(item))?;
         if held.status != status {
-            return Err(restatused(item, status, held.status.as_str()));
+            return Err(self.refused(
+                RefusalReason::Moved,
+                restatused(item, status, held.status.as_str()),
+                Vec::new(),
+            ));
         }
         Ok(())
     }
@@ -469,15 +643,27 @@ impl FakeStore {
             .collect();
         match matches.as_slice() {
             [held] => Ok((*held).clone()),
-            [] => Err(StoreError::Refused(format!("{item} is not in the store"))),
-            many => Err(StoreError::Refused(format!(
-                "`{item}` matches more than one item — {} — and more of the id says which one \
-                 this is",
-                many.iter()
-                    .map(|held| held.id.as_str())
+            [] => Err(self.refused(
+                RefusalReason::Missing,
+                format!("{item} is not in the store"),
+                Vec::new(),
+            )),
+            many => {
+                let candidates: Vec<ItemId> = many.iter().map(|held| held.id.clone()).collect();
+                let named = candidates
+                    .iter()
+                    .map(ItemId::as_str)
                     .collect::<Vec<_>>()
-                    .join(", ")
-            ))),
+                    .join(", ");
+                Err(self.refused(
+                    RefusalReason::Ambiguous,
+                    format!(
+                        "`{item}` matches more than one item — {named} — and more of the id says \
+                         which one this is"
+                    ),
+                    candidates,
+                ))
+            }
         }
     }
 }
@@ -580,13 +766,14 @@ impl Store for FakeStore {
             item.labels.join(",")
         ))?;
         let n = self.filed.fetch_add(1, Ordering::SeqCst) + 1;
-        let id = {
+        let queued = {
             let mut queued = self.creates.lock().expect("the queue is not poisoned");
-            if queued.is_empty() {
-                format!("fx-{n}")
-            } else {
-                queued.remove(0)
-            }
+            (!queued.is_empty()).then(|| queued.remove(0))
+        };
+        let id = match queued {
+            Some(id) => id,
+            None if self.hashed => self.hashed_id(n),
+            None => format!("fx-{n}"),
         };
         if self.deaf() {
             return Ok(ItemId::from(id));
@@ -738,11 +925,11 @@ impl Store for FakeStore {
         self.log(format!("hold_clear {hold} {by}"))?;
         let raised = self.holds.lock().expect("the holds are not poisoned").len();
         if !(1..=raised).any(|n| *hold == format!("hold-{n}")) {
-            return Err(StoreError::Refused(format!("{hold} is not here")));
+            return Err(self.not_here(hold));
         }
         let mut cleared = self.cleared.lock().expect("the holds are not poisoned");
         if cleared.iter().any(|held| *hold == *held) {
-            return Err(already_cleared(hold));
+            return Err(self.already(already_cleared(hold)));
         }
         if !self.deaf() {
             cleared.push(hold.to_string());
@@ -778,7 +965,7 @@ impl Store for FakeStore {
             .get(id.as_str())
             .is_some_and(|held| held.status == Status::Closed);
         if closed {
-            return Err(already_closed(id));
+            return Err(self.already(already_closed(id)));
         }
         self.moving(id, |held| held.status = Status::Closed)?;
         if !self.deaf() {
@@ -803,7 +990,7 @@ impl Store for FakeStore {
             .expect("the items are not poisoned")
             .contains_key(item.as_str())
         {
-            return Err(StoreError::Refused(format!("{item} is not here")));
+            return Err(self.not_here(item));
         }
         let comment = self.minted(&by.to_string(), &entry::encode(body));
         let id = comment.id.clone();
@@ -831,7 +1018,7 @@ impl Store for FakeStore {
             .expect("the items are not poisoned")
             .contains_key(item.as_str())
         {
-            return Err(StoreError::Refused(format!("{item} is not here")));
+            return Err(self.not_here(item));
         }
         let comments = self.comments.lock().expect("the comments are not poisoned");
         let mut entries = Vec::new();
@@ -938,20 +1125,18 @@ fn json_of<T: Serialize>(value: &T) -> serde_json::Value {
 /// The refusal the fake answers where a write fenced on its holder finds
 /// another holding the item. The fake's words and no store's: bd's are its
 /// adapter's, and an adapter's are its own.
-fn moved(item: &str, expected: &str, held: &str) -> StoreError {
-    StoreError::Moved(format!(
+fn moved(item: &str, expected: &str, held: &str) -> String {
+    format!(
         "{item} is held by {} and not by {} — nothing was written",
         holder_named(held),
         holder_named(expected)
-    ))
+    )
 }
 
 /// The refusal the fake answers where a fenced withdrawal finds the item in
 /// another status than the one it named.
-fn restatused(item: &str, expected: &str, now: &str) -> StoreError {
-    StoreError::Moved(format!(
-        "{item} reads {now} and not {expected} — nothing was written"
-    ))
+fn restatused(item: &str, expected: &str, now: &str) -> String {
+    format!("{item} reads {now} and not {expected} — nothing was written")
 }
 
 /// A store REACHED THROUGH A HANDLE, so a caller that hands the store away
@@ -1167,6 +1352,30 @@ pub fn the_test() -> Actor {
     Actor::typed("run:the-test")
         .expect("a typed actor")
         .expect("with a run's id")
+}
+
+/// The `fleet-store-stub` executable this crate's own test build made: in
+/// `target/<profile>/`, the directory above the running test binary's `deps/`,
+/// which is where `env!("CARGO_BIN_EXE_fleet-store-stub")` points a suite of
+/// this crate. The library cannot name that variable, since cargo sets it only
+/// for a crate's test targets.
+///
+/// FOR CORE'S TESTS ONLY. Another crate's test build does not build this
+/// crate's executables, so the file here is whatever an earlier core build
+/// left, or nothing; the cli's rigs run the copy their own build makes.
+pub fn stub_path() -> PathBuf {
+    let running = std::env::current_exe().expect("the running test binary has a path");
+    let stub = running
+        .parent()
+        .and_then(Path::parent)
+        .expect("a test binary runs from target/<profile>/deps")
+        .join("fleet-store-stub");
+    assert!(
+        stub.is_file(),
+        "{} is built by a test build of fleet-core",
+        stub.display()
+    );
+    stub
 }
 
 pub fn copy_tree(from: &Path, to: &Path) {

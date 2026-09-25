@@ -8,7 +8,7 @@ One binary, three crates.
 | --- | --- | --- | --- |
 | `controller/` | `fleet-controller` | `fleet_controller` | The process table and the platform layer: observe, the projection, the event stream. A library. |
 | `core/` | `fleet-core` | `fleet_core` | Pack-and-project work: the verbs that never read the process table. A library. |
-| `cli/` | `fleet-cli` | — | The one binary, named `fleet`. Its `[[bin]]` is the only one in the workspace, so the package name carries the `-cli` suffix and no crate shares a name with the binary a user installs. |
+| `cli/` | `fleet-cli` | — | The one binary, named `fleet`. Its `[[bin]]` is the only one a release build makes — core's `fleet-store-stub` is built only under `test-support` — so the package name carries the `-cli` suffix and no crate shares a name with the binary a user installs. |
 
 **Core never depends on the controller.** The boundary between pack-and-project
 work and the process table is kept in the type system rather than in discipline:

@@ -45,7 +45,9 @@ indicatif.workspace = true
 # reaches the test targets and never the binary a release build produces.
 #
 # fleet-core the same way, for the applying fake store the flight engine's own
-# arm opens through its store seam.
+# arm opens through its store seam, and for examples/fleet-store-stub.rs: the
+# store stub as an executable, which this crate's test build makes because no
+# test build makes another crate's executables.
 [dev-dependencies]
 fleet-controller = { path = "../controller", features = ["test-support"] }
 fleet-core = { path = "../core", features = ["test-support"] }

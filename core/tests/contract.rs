@@ -6,8 +6,10 @@
 //! same expectation. The questions are the library's own checks,
 //! [`fleet_core::store::conformance`], which `fleet store check` asks of an
 //! adapter; this file is only their runner. Each check has an arm of its own
-//! against [`Board`]'s store, and two arms ask the whole table of `bd`: once on
-//! a board a rig made, and once on the scratch store the adapter makes itself.
+//! against [`Board`]'s store, two arms ask the whole table of `bd`: once on a
+//! board a rig made, and once on the scratch store the adapter makes itself —
+//! and one asks it of the same board held in memory behind the contract's JSON,
+//! the stub, through `Exec`.
 //!
 //! WHY THE REAL HALF IS ONE ARM AND NOT TWENTY. A nextest arm is its own
 //! process, so a shared store is shared only with itself and every arm that
@@ -25,12 +27,13 @@ use fleet_core::entry::{Body, Entry};
 use fleet_core::seat::actor::Actor;
 use fleet_core::store::bd::Bd;
 use fleet_core::store::conformance::{self, AnotherWriter, Ctx, Passed, CHECKS};
+use fleet_core::store::exec::Exec;
 use fleet_core::store::types::{Capabilities, Priorities, Vocabulary};
 use fleet_core::store::{
     Filter, HoldId, Item, ItemId, ItemSummary, NewItem, Order, RunRecord, Store, StoreError,
     Update, Version,
 };
-use fleet_core::test_support::{Board, FakeStore};
+use fleet_core::test_support::{stub_path, Board, FakeStore};
 
 /// The ids bd 1.3.0 minted on a scratch board, in the order it minted them,
 /// which the board held in memory files under in place of its own `fx-<n>`.
@@ -406,6 +409,66 @@ fn the_bd_adapter_makes_a_scratch_store_every_check_holds_on() {
         &root,
         "bd's own scratch",
         &planted_on(&root),
+    );
+}
+
+/// THE THIRD HALF: every check against the stub, through `Exec` — the board
+/// held in memory answering the contract's JSON, one process per call, as an
+/// adapter out of process answers it. The store is the stub's own scratch,
+/// asked for through `Exec` as `fleet store check` asks; the store that is not
+/// there is the stub at a root holding none.
+///
+/// TWO SKIPS AND NO MORE: the two checks on another writer's keys. The
+/// contract has no verb that plants another tool's keys, so this run hands no
+/// other writer in, as `fleet store check` hands none, and every other check is
+/// asked of the stub.
+#[test]
+fn every_check_holds_against_the_stub_through_exec() {
+    let stub = stub_path();
+    assert_eq!(
+        stub.canonicalize().expect("the stub is there"),
+        Path::new(env!("CARGO_BIN_EXE_fleet-store-stub"))
+            .canonicalize()
+            .expect("cargo built the stub"),
+        "stub_path names the executable cargo built for this crate's tests"
+    );
+    let dir = Gone::named("contract-stub");
+    let root = Exec::at(&stub, &dir.0)
+        .scratch(&dir.0)
+        .unwrap_or_else(|e| panic!("the stub makes a scratch store in {}: {e}", dir.0.display()));
+    assert_eq!(root, dir.0, "the answer is the directory it was handed");
+    let nowhere = Gone::empty("contract-stub-absent");
+    let store = Exec::at(&stub, &root);
+    let absent = Exec::at(&stub, &nowhere.0);
+    let ctx = Ctx {
+        store: &store,
+        root: &root,
+        absent: &absent,
+        another_writer: None,
+    };
+    let mut skipped = Vec::new();
+    let mut failed = Vec::new();
+    for (name, answer) in conformance::run(&ctx) {
+        match answer {
+            Ok(Passed::Pass) => {}
+            Ok(Passed::Skip(_)) => skipped.push(name),
+            Err(why) => failed.push(format!("{name}: {why}")),
+        }
+    }
+    assert!(
+        failed.is_empty(),
+        "the stub — {} of the {} checks did not hold:\n{}",
+        failed.len(),
+        CHECKS.len(),
+        failed.join("\n")
+    );
+    assert_eq!(
+        skipped,
+        [
+            "another writer's keys",
+            "another writer's keys are listed as foreign"
+        ],
+        "only the checks that plant another writer's keys are skipped"
     );
 }
 
