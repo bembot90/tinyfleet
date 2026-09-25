@@ -70,8 +70,9 @@ pub fn render(item: &Item, timeline: &[Entry]) -> String {
 }
 
 /// The item and its timeline, as a caller parses them. Each entry is
-/// [`entry::to_json`]'s, so this document and the entry model cannot disagree
-/// about what an entry carries.
+/// [`entry::to_json`]'s, the contract's own entry, so this document, an
+/// adapter's `timeline` answer and the entry model cannot disagree about what
+/// an entry carries — its `by` included, as the actor's one string.
 pub fn document(item: &Item, timeline: &[Entry]) -> Value {
     let order = order_json(&item.order);
     serde_json::json!({

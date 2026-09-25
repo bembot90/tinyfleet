@@ -262,13 +262,11 @@ pub trait Store {
     /// AN ITEM ALREADY CLOSED IS REFUSED, and its first close's reason
     /// stands: the act is already done, which is the record's answer.
     ///
-    /// `by` IS TEXT AND NOT AN [`Actor`], the one write here that keeps it: a
-    /// landing closes under the holder's own assignee string, because a store
-    /// may close an assigned item only for an actor equal to its assignee —
-    /// the adapter's `close` says where that was measured. Whether that
-    /// string becomes a typed actor is fleet-0q4's to rule, and the order
-    /// writes did not rule it.
-    fn close(&self, id: &ItemId, reason: &str, by: &str) -> Result<(), StoreError>;
+    /// `by` is an [`Actor`] as every write's is, and a landing closes as the
+    /// seat that holds the item. A store that fences a close on the assignee
+    /// matches that seat to its own assignee inside its adapter: the built-in
+    /// adapter's `close` says how, and where it was measured.
+    fn close(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<(), StoreError>;
 
     /// One entry appended to the item's timeline, answered as the entry's id.
     ///

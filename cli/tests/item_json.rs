@@ -899,10 +899,7 @@ fn item_show_prints_the_item_and_its_entries_and_refuses_what_it_cannot_read() {
     assert_eq!(timeline.len(), 1, "one entry: {data}");
     assert_eq!(timeline[0]["id"], serde_json::json!(appended));
     assert_eq!(timeline[0]["kind"], "ordered");
-    assert_eq!(
-        timeline[0]["by"],
-        serde_json::json!({ "kind": "seat", "id": by.id })
-    );
+    assert_eq!(timeline[0]["by"], serde_json::json!(by.to_string()));
 
     // The person's rendering: the same item, the same one entry.
     let out = rig.item_show(&[&item]);

@@ -530,7 +530,7 @@ impl Store for Doctored<'_> {
         self.inner.hold_clear(hold, by)
     }
 
-    fn close(&self, id: &ItemId, reason: &str, by: &str) -> Result<(), StoreError> {
+    fn close(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<(), StoreError> {
         if self.refuse_close {
             return Err(StoreError::Unreadable(String::from(
                 "the store did not answer the close",
@@ -2776,7 +2776,7 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
         .close(
             &ItemId::from(elsewhere.as_str()),
             "closed by hand",
-            REVIEWER,
+            &as_reviewer(),
         )
         .expect("it closes");
     let before_closed = scratch.json(&elsewhere);
@@ -5170,8 +5170,8 @@ fn a_run_lands_as_the_reviewer_and_names_the_run_beside_it() {
         .unwrap_or_else(|| panic!("the item was closed: {wrote:?}"));
     assert_eq!(
         closed,
-        &format!("close {item} landed {LANDED} through run {run} {REVIEWER_ID}"),
-        "the close is made under the holder's own assignee string, which bd fences it on"
+        &format!("close {item} landed {LANDED} through run {run} seat:{REVIEWER_ID}"),
+        "the close is the holder's, typed as every write's actor is, and never the run's"
     );
 
     // The landed entry a person reads afterwards names both: the reviewer's act,

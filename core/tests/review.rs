@@ -325,7 +325,7 @@ impl Store for Doctored<'_> {
         self.inner.hold_clear(hold, by)
     }
 
-    fn close(&self, id: &ItemId, reason: &str, by: &str) -> Result<(), StoreError> {
+    fn close(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<(), StoreError> {
         self.inner.close(id, reason, by)
     }
 

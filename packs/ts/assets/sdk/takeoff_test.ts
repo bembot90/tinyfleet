@@ -76,7 +76,7 @@ const DISPATCHED = {
 };
 
 /** The person who clears a hold. */
-const A_PERSON = { kind: "seat", id: "a-person" };
+const A_PERSON = "seat:a-person";
 
 /** The scratch rig with the fake binary in front of the real one, the three
  * verbs a landing flight calls canned to answer, and a record in the store for
@@ -175,7 +175,7 @@ async function builds(
 /** An item's delivery written on its record by the arm: one delivered before
  * the flight began, or by a builder after the flight stopped waiting. */
 async function deliver(s: Faked, item: string, commit: string): Promise<void> {
-  await enter(s, item, delivered(commit), { kind: "seat", id: "a-builder" });
+  await enter(s, item, delivered(commit), "seat:a-builder");
 }
 
 function pinned(

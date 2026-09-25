@@ -310,9 +310,7 @@ impl Store for Exec {
         Ok(holds)
     }
 
-    /// `by` goes out as the text it came as: the trait keeps it untyped for
-    /// the close alone.
-    fn close(&self, id: &ItemId, reason: &str, by: &str) -> Result<(), StoreError> {
+    fn close(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<(), StoreError> {
         self.call::<Answered>(
             "close",
             fields(json!({ "id": id, "by": by, "reason": reason })),
@@ -337,10 +335,10 @@ impl Store for Exec {
 
     /// Each entry as `fleet item show --json` prints one ([`entry::to_json`]):
     /// the body's fields and `kind` beside the store's `id` and `at` and the
-    /// actor. The actor is read as that `{"kind", "id"}` object or as the
-    /// contract's `<kind>:<id>` text, and the body through the same reader the
-    /// built-in adapter's comments go through, so an entry that does not read
-    /// refuses the whole timeline, naming it.
+    /// actor as its `<kind>:<id>` string. The body is read through the same
+    /// reader the built-in adapter's comments go through, so an entry that
+    /// does not read — an actor in any other shape among them — refuses the
+    /// whole timeline, naming it.
     fn timeline(&self, item: &ItemId) -> Result<Vec<Entry>, StoreError> {
         let (Entries { entries }, _) = self.call("timeline", fields(json!({ "id": item })))?;
         entries
@@ -412,8 +410,10 @@ impl Store for Exec {
 }
 
 /// One timeline entry read into an [`Entry`]: `id`, `at` and `by` taken off
-/// the object, and the rest read as the entry's text is, with the entry key
-/// stamped in where the adapter left it out.
+/// the object as text, and the rest read as the entry's text is, with the
+/// entry key stamped in where the adapter left it out. `by` is the actor's
+/// one string and is read as a comment's author is, so a `by` in any other
+/// shape is no actor.
 fn entry_of(item: &ItemId, row: Value) -> Result<Entry, String> {
     let Value::Object(mut object) = row else {
         return Err(String::from("it is not an object"));
@@ -425,20 +425,7 @@ fn entry_of(item: &ItemId, row: Value) -> Result<Entry, String> {
     };
     let id = text_of(&mut object, "id")?;
     let at = text_of(&mut object, "at")?;
-    let by = match object.remove("by") {
-        Some(Value::String(actor)) => actor,
-        Some(Value::Object(actor)) => match (actor.get("kind"), actor.get("id")) {
-            (Some(Value::String(kind)), Some(Value::String(id))) => format!("{kind}:{id}"),
-            _ => {
-                return Err(format!(
-                    "its by is {}, which is no actor",
-                    Value::Object(actor)
-                ))
-            }
-        },
-        Some(other) => return Err(format!("its by is {other}, which is no actor")),
-        None => return Err(String::from("it carries no by")),
-    };
+    let by = text_of(&mut object, "by")?;
     object
         .entry(entry::KEY)
         .or_insert_with(|| Value::from(entry::VERSION));
@@ -624,7 +611,7 @@ mod tests {
             ),
         );
         assert_eq!(
-            refused(stub.exec().close(&id(), "done", "seat:x")),
+            refused(stub.exec().close(&id(), "done", &by())),
             "fx-a1b2 is already closed"
         );
 
@@ -788,8 +775,8 @@ mod tests {
         );
     }
 
-    /// Each write carries its verb's fields, `by` as the actor's text — and
-    /// the close's as the text it was handed.
+    /// Each write carries its verb's fields, `by` as the actor's text — the
+    /// close's too.
     #[test]
     fn a_write_carries_its_verbs_fields() {
         let stub = Stub::new("update", &answers(r#"{"schema_version":1}"#, 0));
@@ -810,11 +797,16 @@ mod tests {
         );
 
         let stub = Stub::new("close", &answers(r#"{"schema_version":1}"#, 0));
+        let seat = crate::seat::identity::SeatId::parse(SEAT).expect("a seat id");
         stub.exec()
-            .close(&id(), "landed", SEAT)
+            .close(&id(), "landed", &Actor::seat(seat))
             .expect("the close was taken");
         let request = stub.request();
-        assert_eq!(request["by"], SEAT, "the close's by goes out as it came");
+        assert_eq!(
+            request["by"],
+            format!("seat:{SEAT}"),
+            "the close's by is the actor's text, as every write's is"
+        );
         assert_eq!(request["reason"], "landed");
 
         let stub = Stub::new("unchanged", &answers(r#"{"schema_version":1}"#, 0));
@@ -852,12 +844,11 @@ mod tests {
                 seat: Some(crate::seat::identity::SeatId::parse(SEAT).expect("a seat id")),
             }),
         };
-        let mut texted = entry::to_json(&ordered);
-        texted["id"] = Value::from("e-2");
-        texted["by"] = Value::from("routine:nightly");
+        let mut second = entry::to_json(&ordered);
+        second["id"] = Value::from("e-2");
         let answer = json!({
             "schema_version": 1,
-            "entries": [entry::to_json(&ordered), texted],
+            "entries": [entry::to_json(&ordered), second],
         });
         let stub = Stub::new("timeline", &answers(&answer.to_string(), 0));
         let entries = stub.exec().timeline(&id()).expect("the entries read");
@@ -880,6 +871,28 @@ mod tests {
             why.contains("row 0, that does not read: it carries no by"),
             "{why}"
         );
+    }
+
+    /// An entry's `by` is the actor's one string, `<kind>:<id>`: the same
+    /// actor as a `{"kind", "id"}` object is no actor, and refuses the whole
+    /// timeline, naming the row.
+    #[test]
+    fn a_timeline_entry_whose_by_is_not_the_actors_string_refuses_the_timeline() {
+        let good = json!({
+            "kind": "ordered", "order": "dispatch",
+            "id": "e-1", "at": "2026-09-23T10:00:00Z", "by": "routine:nightly",
+        });
+        let mut object = good.clone();
+        object["id"] = Value::from("e-2");
+        object["by"] = json!({ "kind": "routine", "id": "nightly" });
+        let answer = json!({ "schema_version": 1, "entries": [good, object] });
+        let stub = Stub::new("timeline-object-by", &answers(&answer.to_string(), 0));
+        let why = unreadable(stub.exec().timeline(&id()));
+        assert!(
+            why.contains("row 1, that does not read: its by is"),
+            "{why}"
+        );
+        assert!(why.contains("which is not text"), "{why}");
     }
 
     /// An export is asked only of an adapter that declares one.

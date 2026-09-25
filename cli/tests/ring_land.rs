@@ -974,7 +974,7 @@ fn a_green_landing_moves_the_bare_and_closes_the_item() {
     assert_eq!(entry["squash_of"], serde_json::json!(rig.commit), "{entry}");
     assert_eq!(
         entry["by"],
-        serde_json::json!({ "kind": "seat", "id": REVIEWER_ID }),
+        serde_json::json!(format!("seat:{REVIEWER_ID}")),
         "{entry}"
     );
     assert_eq!(

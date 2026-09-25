@@ -563,9 +563,9 @@ fn run(
         },
         ActorKind::Routine | ActorKind::Controller => return Err(neither(landing.by)),
     };
-    // The closer's id, which the holder is compared with, the trailer names
-    // and the close is made under; and the actor the landed entry and the
-    // events are written by — the closer, in its typed form.
+    // The closer's id, which the holder is compared with and the trailer
+    // names; and the actor the landed entry, the events and the close are
+    // written by — the closer, in its typed form.
     let closer_id = closer.to_string();
     let acting = Actor::seat(closer);
     let closer_named = wiring.seats.label(&closer);
@@ -1064,14 +1064,13 @@ fn run(
         Some(text) if !text.trim().is_empty() => format!("{landed} — {}", text.trim()),
         _ => landed,
     };
-    // THE CLOSE IS MADE UNDER THE HOLDER'S OWN ASSIGNEE STRING, the closer's
-    // bare id, and not its typed form: a store may close an assigned item only
-    // for an actor equal to its assignee — the adapter's `close` says where
-    // that was measured — and the holder check above has already said the
-    // closer is that seat.
+    // THE CLOSE IS THE HOLDER'S: a store may close an assigned item only for
+    // its assignee — the adapter's `close` says how it matches the seat to
+    // one — and the holder check above has already said the closer is that
+    // seat.
     wiring
         .store
-        .close(&item.id, &reason, &closer_id)
+        .close(&item.id, &reason, &acting)
         .map_err(|e| unclosed(&item.id, &sha, &e.to_string()))?;
     let closed = read(wiring.store, &item.id)?;
     if closed.status != Status::Closed {

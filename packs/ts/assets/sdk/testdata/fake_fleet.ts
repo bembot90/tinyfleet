@@ -10,8 +10,9 @@
 // argv: <fake dir> <real binary> <fleet args…>; the canned file is
 // `<fake dir>/<verb>.json` — `{ stdout, code, append?: [{ type, payload }],
 // plant?: { <item>: [{ kind, …fields }] }, cwd? }` — and an appended line's
-// actor, like a planted entry's author, is the `--by` the call carried, typed
-// as the stream stores it. `plant` is keyed by the item the call names —
+// actor is the `--by` the call carried, typed as the stream stores it, and a
+// planted entry's author is the same actor as its one string, `<kind>:<id>`,
+// as `fleet item show --json` prints it. `plant` is keyed by the item the call names —
 // `--item`'s value, else the verb's first argument — so one canned dispatch
 // can deliver each item it is called for, and a call for an item it does not
 // name plants nothing. A canned `cwd` is the directory the verb must have been
@@ -91,15 +92,16 @@ if (canned.cwd !== undefined) {
 }
 
 const by = args[args.indexOf("--by") + 1] ?? "nobody";
+const actor = typed(by);
 const stream = `${Deno.env.get("FLEET_DIR")}/events.jsonl`;
 for (const line of canned.append ?? []) {
-  await append(stream, line.type, typed(by), line.payload);
+  await append(stream, line.type, actor, line.payload);
 }
 const named = args.includes("--item")
   ? args[args.indexOf("--item") + 1]
   : args[1];
 for (const body of canned.plant?.[named] ?? []) {
-  await enter(dir, named, body, typed(by));
+  await enter(dir, named, body, `${actor.kind}:${actor.id}`);
 }
 if (canned.stdout !== "") {
   await Deno.stdout.write(new TextEncoder().encode(canned.stdout));

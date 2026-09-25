@@ -40,7 +40,7 @@ import {
   landed,
   reviewed,
 } from "./testdata/store.ts";
-import { append } from "./testdata/stream.ts";
+import { append, typed } from "./testdata/stream.ts";
 
 const here = import.meta.dirname!;
 
@@ -56,7 +56,7 @@ const SPAWNED: Seat = {
 };
 
 /** The person who clears a hold. */
-const A_PERSON = { kind: "seat", id: "a-person" };
+const A_PERSON = "seat:a-person";
 
 /** The scratch rig with the fake binary in front of the real one. */
 async function scratch(): Promise<Faked> {
@@ -555,14 +555,8 @@ Deno.test("hold — the k-th hold is the k-th ask this run wrote on its record: 
   await enter(s, runId, cleared("hold-1", "A"), A_PERSON);
   // Two holds on the same record, neither of them this run's ask, between its
   // first and its second.
-  await enter(s, runId, held("crash-1", "max_crashes"), {
-    kind: "controller",
-    id: "a-machine",
-  });
-  await enter(s, runId, held("other-1", "ask"), {
-    kind: "run",
-    id: "fleet-run-another",
-  });
+  await enter(s, runId, held("crash-1", "max_crashes"), "controller:a-machine");
+  await enter(s, runId, held("other-1", "ask"), "run:fleet-run-another");
   await asks(s, "hold-2");
 
   assertEquals(await replay(fn, s.env, "{}"), {
@@ -598,7 +592,7 @@ Deno.test('hold — a cancel\'s clearance answers "cancelled" and not the string
   // What `fleet cancel` leaves behind: the clearance on the record, and the
   // stream's signal for it, which names the entry and carries no letter.
   const clearance = await enter(s, runId, cleared("hold-9"), A_PERSON);
-  await append(s.env.stream, "item.entry", A_PERSON, {
+  await append(s.env.stream, "item.entry", typed(A_PERSON), {
     item: runId,
     entry: clearance.id,
     kind: "cleared",

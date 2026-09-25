@@ -450,7 +450,7 @@ impl Store for NoScratch {
     fn holds_open(&self) -> Result<Vec<HoldId>, StoreError> {
         self.0.holds_open()
     }
-    fn close(&self, id: &ItemId, reason: &str, by: &str) -> Result<(), StoreError> {
+    fn close(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<(), StoreError> {
         self.0.close(id, reason, by)
     }
     fn append(&self, item: &ItemId, body: &Body, by: &Actor) -> Result<String, StoreError> {

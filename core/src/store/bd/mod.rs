@@ -30,7 +30,7 @@ use super::{
 };
 use crate::entry::{self, Body, Entry};
 use crate::process::{deadline_cause, run_bounded};
-use crate::seat::actor::Actor;
+use crate::seat::actor::{Actor, ActorKind};
 use crate::seat::identity::SeatId;
 
 mod bd_cli;
@@ -892,10 +892,16 @@ impl Store for Bd {
             .collect())
     }
 
-    /// bd 1.3.0 closes an assigned item only for an actor equal to its
-    /// assignee — measured, `cannot close X: assignee is "<id>", actor is
-    /// "seat:<id>"` — which is why a landing closes under the holder's own
-    /// assignee string.
+    /// A SEAT CLOSES AS ITS BARE ID, and every other actor as its text. bd
+    /// 1.3.0 closes an assigned item only for an actor equal to its assignee,
+    /// and an assignee is the seat's bare id. Measured on 1.3.0, on a scratch
+    /// board: `--actor seat:<id>` on an item assigned `<id>` exits 1 with
+    /// `cannot close X: assignee is "<id>", actor is "seat:<id>"; reclaim or
+    /// use --force to override`, and `--actor <id>` closes it. An unassigned
+    /// item has no fence, and `--actor run:<id>` closes one. On an assigned
+    /// item that actor is refused the same way, which no verb meets: a
+    /// landing closes as the seat that holds the item, and every other close
+    /// is of a run's record, which is filed with no assignee.
     ///
     /// A CLOSE OF A CLOSED ITEM IS READ FIRST, because bd does not refuse one.
     /// Measured on 1.3.0, on a scratch board: a second `bd close` of a closed
@@ -908,12 +914,16 @@ impl Store for Bd {
     /// answers with exit 1 and an error that carries no code. A close landing
     /// between the read and the call is not caught: bd answers the second
     /// close as a close.
-    fn close(&self, id: &ItemId, reason: &str, by: &str) -> Result<(), StoreError> {
+    fn close(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<(), StoreError> {
         let row = self.shown_row(id)?;
         if row.get("status").and_then(serde_json::Value::as_str) == Some(Status::Closed.as_str()) {
             return Err(already_closed(id));
         }
-        self.wrote(&["close", id.as_str(), "--reason", reason, "--actor", by])
+        let by = match by.kind {
+            ActorKind::Seat => by.id.clone(),
+            ActorKind::Run | ActorKind::Routine | ActorKind::Controller => by.to_string(),
+        };
+        self.wrote(&["close", id.as_str(), "--reason", reason, "--actor", &by])
     }
 
     /// Each entry is ONE COMMENT whose text is [`entry::encode`]'s. Measured on

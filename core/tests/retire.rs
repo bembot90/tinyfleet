@@ -203,7 +203,11 @@ fn a_retire_whose_item_was_closed_after_the_listing_is_refused_and_reopens_nothi
     store.seed(item(HELD, "in_progress", SEAT, true));
     let held = retire::held(&store, &seat()).expect("the board answers");
     store
-        .close(&fleet_core::store::ItemId::from(HELD), "landed", SEAT)
+        .close(
+            &fleet_core::store::ItemId::from(HELD),
+            "landed",
+            &Actor::seat(seat()),
+        )
         .expect("the seat lands its item after the listing");
 
     let stop =

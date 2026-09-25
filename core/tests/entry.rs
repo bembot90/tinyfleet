@@ -12,7 +12,7 @@ use fleet_core::entry::{
     Landed, NotProven, NotTested, OrderWithdrawn, Ordered, Ran, Read, Reviewed, Ruling, RulingKind,
     Size, SpecCorrection, SuiteRun, Timeline, Verdict, Withdrawal, WorkBranch, KEY, KINDS, VERSION,
 };
-use fleet_core::seat::actor::{Actor, ActorKind};
+use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
 use fleet_core::store::OrderKind;
 
@@ -571,11 +571,12 @@ fn a_hold_about_an_item_is_found_by_that_item() {
 // ---- 7. the reader's JSON -------------------------------------------------------
 
 #[test]
-fn to_json_carries_the_actor_typed_the_kind_and_no_key() {
+fn to_json_carries_the_actor_as_its_string_the_kind_and_no_key() {
     let json = to_json(&entry("c1", delivered(C1)));
     assert_eq!(
         json.get("by"),
-        Some(&serde_json::json!({"kind": ActorKind::Seat.as_str(), "id": SEAT}))
+        Some(&serde_json::json!(format!("seat:{SEAT}"))),
+        "the actor is the one string every write's by is: {json}"
     );
     assert_eq!(json.get("kind"), Some(&serde_json::json!("delivered")));
     assert_eq!(json.get("id"), Some(&serde_json::json!("c1")));

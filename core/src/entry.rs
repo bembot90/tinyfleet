@@ -720,16 +720,17 @@ pub fn read_row(
 }
 
 /// An entry as a reader's JSON shows it: the body's object with its `kind` and
-/// without the key, beside the store's `id` and `at` and the actor as
-/// `{"kind", "id"}`.
+/// without the key, beside the store's `id` and `at` and the actor as its one
+/// string, `<kind>:<id>`.
+///
+/// THIS IS THE CONTRACT'S ENTRY: what an adapter's `timeline` answers for
+/// each entry, so `fleet item show --json` and an adapter print one document,
+/// and the actor is spelled as every write's `by` is.
 pub fn to_json(entry: &Entry) -> Value {
     let mut object = object(&entry.body);
     object.insert(String::from("id"), entry.id.clone().into());
     object.insert(String::from("at"), entry.at.clone().into());
-    object.insert(
-        String::from("by"),
-        serde_json::json!({"kind": entry.by.kind.as_str(), "id": entry.by.id}),
-    );
+    object.insert(String::from("by"), entry.by.to_string().into());
     Value::Object(object)
 }
 

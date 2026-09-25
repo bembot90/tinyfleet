@@ -8,7 +8,7 @@
 // where a run reads its own opening line.
 
 import type { Env } from "../mod.ts";
-import { type Actor, type Line, lines as stored } from "./stream.ts";
+import { type Line, lines as stored } from "./stream.ts";
 import { type Body, enter as entered, type Entry, write } from "./store.ts";
 
 // THE ACTOR A SESSION IS STARTED WITH IS STRIPPED, off this process and so
@@ -109,12 +109,12 @@ export function plant(
 }
 
 /** One entry appended to an item's planted record — what a verb's write leaves
- * in the store — by a seat unless an actor is named. */
+ * in the store — by a seat unless an actor is named, as its `<kind>:<id>`. */
 export function enter(
   s: Scratch,
   item: string,
   body: Body,
-  by?: Actor,
+  by?: string,
 ): Promise<Entry> {
   return entered(fakeOf(s), item, body, by);
 }

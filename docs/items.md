@@ -728,8 +728,8 @@ order a refused spawn or a retired seat took back.
 `--json` prints one document: `id`, `title`, `description`, `status`,
 `type`, `labels`, `assignee`, `order` (the index's `by`, `kind`, `seat` and
 `at`, `{"unreadable": true}`, or `null`), `blockers`, and `timeline`, one
-object per entry carrying its `id`, `at`, `by` (as `{"kind", "id"}`), `kind`
-and the kind's own fields.
+object per entry carrying its `id`, `at`, `by` (the actor as one string,
+`<kind>:<id>`, such as `seat:<you>`), `kind` and the kind's own fields.
 
 An item the store does not hold is exit 1:
 `fleet item show: <item>: no issues found matching the provided IDs`. A

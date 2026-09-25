@@ -1906,7 +1906,7 @@ impl fleet_core::store::Store for Planted {
         &self,
         id: &fleet_core::store::ItemId,
         reason: &str,
-        by: &str,
+        by: &fleet_core::seat::actor::Actor,
     ) -> Result<(), StoreError> {
         self.0.close(id, reason, by)
     }

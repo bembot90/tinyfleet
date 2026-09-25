@@ -228,6 +228,20 @@ One item as a listing answers it:
 {"id":"fx-c3d4","title":"Name the stamp's fields","status":"open","type":"task","labels":["fleet"],"order":{"state":"none"}}
 ```
 
+### Entry
+
+One entry on an item's timeline, as `timeline` answers it: the `id` and `at`
+the store gave it, `by`, the actor who appended it, and beside them the fields
+of the entry fleet appended, its `kind` among them:
+
+```json
+{"id":"e-17","at":"2026-09-23T10:00:00Z","by":"seat:0199a3c4-5e6f-7a8b-9c0d-1e2f3a4b5c6d","kind":"ordered","order":"dispatch","seat":"0199a3c4-7d8e-7f90-a1b2-c3d4e5f60718"}
+```
+
+`id`, `at` and `by` are strings, and `by` is an actor. An entry that keeps
+the `"fleet.entry": 1` that `append` sent reads the same as one that leaves
+it out. This is also the shape of each entry `fleet item show --json` prints.
+
 ### Filter
 
 Which items a listing asks for: the ready ones, those carrying a label, or
@@ -320,9 +334,11 @@ fields the ones beyond `schema_version`.
 - `update` with neither `title` nor `assignee` is could not tell, exit 3,
   and writes nothing. fleet never sends one.
 - `append`'s `entry` is the entry fleet appends: one JSON object carrying
-  `"fleet.entry": 1` and a `kind`. Each entry `timeline` answers carries the
-  id and time the store gave it, the actor who appended it, and the entry fleet
-  appended. The kinds are in [Items and the record](items.md#terms).
+  `"fleet.entry": 1` and a `kind`. Each entry `timeline` answers is an entry,
+  with the `by` the `append` carried. An entry that does not read, a `by`
+  that is not an actor's string among them, makes the whole read could not
+  tell, naming its row. The kinds are in
+  [Items and the record](items.md#terms).
 - `export` and `scratch` are answered only by a store whose capabilities
   declare them. A store that does not declare one answers it with exit 2.
 - `scratch`'s `root` is the root fleet sends in every request to the new
@@ -383,7 +399,8 @@ ids, and the store sets each entry's id and time.
 
 ### Closing
 
-`close` of an item already closed is exit 1, `already`.
+`close` of an item already closed is exit 1, `already`. A landing's `close`
+carries `by` as the seat that holds the item, `seat:<its assignee>`.
 
 ### Export and scratch
 

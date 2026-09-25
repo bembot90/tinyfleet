@@ -489,7 +489,7 @@ fn a_live_reviewer_is_rung_with_the_item_and_the_commit_the_delivery_made() {
     );
     assert_eq!(
         delivered["by"],
-        serde_json::json!({ "kind": "seat", "id": rig.seat_id().to_string() }),
+        serde_json::json!(format!("seat:{}", rig.seat_id())),
         "written by the seat delivering"
     );
     assert_eq!(
@@ -695,7 +695,7 @@ fn review_land_writes_the_accept_on_the_record_and_the_event_on_the_stream() {
     );
     assert_eq!(
         accept["by"],
-        serde_json::json!({ "kind": "seat", "id": REVIEWER_ID }),
+        serde_json::json!(format!("seat:{REVIEWER_ID}")),
         "appended by the reviewer: {accept}"
     );
     assert_eq!(
@@ -835,7 +835,7 @@ fn review_return_takes_the_findings_file_takeoff_writes_on_b() {
     assert_eq!(returned["commit"], serde_json::json!(head), "{returned}");
     assert_eq!(
         returned["by"],
-        serde_json::json!({ "kind": "seat", "id": REVIEWER_ID }),
+        serde_json::json!(format!("seat:{REVIEWER_ID}")),
         "{returned}"
     );
     assert_eq!(

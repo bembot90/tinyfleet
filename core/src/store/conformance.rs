@@ -251,7 +251,7 @@ fn assign(ctx: &Ctx, id: &ItemId, seat: SeatId) -> Result<(), String> {
     )
 }
 
-fn closed(ctx: &Ctx, id: &ItemId, reason: &str, closer: &str) -> Result<(), String> {
+fn closed(ctx: &Ctx, id: &ItemId, reason: &str, closer: &Actor) -> Result<(), String> {
     answered(&format!("close {id}"), ctx.store.close(id, reason, closer))
 }
 
@@ -566,12 +566,7 @@ fn ready(ctx: &Ctx) -> Answer {
     ensure(row_in(ctx, &Filter::Ready, &id)?.is_some(), || {
         format!("{id} is not back in the ready set once its hold {hold} is cleared")
     })?;
-    closed(
-        ctx,
-        &id,
-        "closed by the conformance suite",
-        &by().to_string(),
-    )?;
+    closed(ctx, &id, "closed by the conformance suite", &by())?;
     ensure(row_in(ctx, &Filter::Ready, &id)?.is_none(), || {
         format!("{id} is still in the ready set once it is closed")
     })?;
@@ -589,12 +584,7 @@ fn label_filter(ctx: &Ctx) -> Answer {
         &ids(&rows),
         &vec![id.to_string()],
     )?;
-    closed(
-        ctx,
-        &id,
-        "closed by the conformance suite",
-        &by().to_string(),
-    )?;
+    closed(ctx, &id, "closed by the conformance suite", &by())?;
     let rows = listed(ctx, &Filter::Label(label.clone()))?;
     ensure(!rows.iter().any(|row| row.id == id), || {
         format!("{id} is still in list Label({label}) once it is closed")
@@ -606,9 +596,9 @@ fn label_filter(ctx: &Ctx) -> Answer {
 /// is closed, reading closed: a seat's listing is of every item it holds,
 /// whatever its status.
 ///
-/// The close is under the seat's own id, because a store may close an
-/// assigned item only for its assignee — the built-in store at its pinned
-/// release does.
+/// The close is by the seat itself, because a store may close an assigned
+/// item only for its assignee — the built-in store at its pinned release
+/// does, and its adapter matches the seat actor to the assignee it wrote.
 fn assignee_filter(ctx: &Ctx) -> Answer {
     let seat = SeatId::mint();
     let id = filed(ctx, "an item a seat holds", &[])?;
@@ -623,7 +613,7 @@ fn assignee_filter(ctx: &Ctx) -> Answer {
         &ids(&rows),
         &vec![id.to_string()],
     )?;
-    closed(ctx, &id, "closed by its holder", &seat.to_string())?;
+    closed(ctx, &id, "closed by its holder", &Actor::seat(seat))?;
     let row = row_in(ctx, &Filter::Assignee(seat), &id)?
         .ok_or_else(|| format!("{id} is not in list Assignee({seat}) once it is closed"))?;
     same(
@@ -924,7 +914,7 @@ fn close(ctx: &Ctx) -> Answer {
         &read(ctx, &id)?.status,
         &Status::Open,
     )?;
-    let closer = by().to_string();
+    let closer = by();
     closed(ctx, &id, "the first close's reason", &closer)?;
     same(
         "the status after a close",
@@ -1118,7 +1108,7 @@ fn fenced_writes(ctx: &Ctx) -> Answer {
     )?;
     untouched(Status::Open, "a withdrawal naming another status")?;
 
-    closed(ctx, &id, "landed by its seat", &holder)?;
+    closed(ctx, &id, "landed by its seat", &Actor::seat(seat))?;
     moved(
         "a withdrawal of an item closed since it was read",
         ctx.store

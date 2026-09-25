@@ -484,8 +484,7 @@ class Handle implements Run {
       // holds the same record at the crash cap, and that hold is no question
       // this run put.
       const asks = (await this.read(this.id)).timeline.filter((e) =>
-        e.kind === "held" && e.reason === "ask" && e.by.kind === "run" &&
-        e.by.id === this.id
+        e.kind === "held" && e.reason === "ask" && e.by === `run:${this.id}`
       );
       let hold: string;
       if (asks.length >= k) {
@@ -698,12 +697,13 @@ async function answered<T>(env: Env, args: string[]): Promise<T> {
 // ---- an item's record --------------------------------------------------------
 
 /** One entry of an item's timeline as `fleet item show --json` prints it: the
- * store's id and time, who wrote it, its kind — one of core's entry kinds —
- * and the kind's own fields beside them. */
+ * store's id and time, who wrote it as the actor's one string `<kind>:<id>`,
+ * its kind — one of core's entry kinds — and the kind's own fields beside
+ * them. */
 interface Entry {
   id: string;
   at: string;
-  by: Actor;
+  by: string;
   kind: string;
   [field: string]: unknown;
 }

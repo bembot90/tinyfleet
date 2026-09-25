@@ -855,7 +855,7 @@ impl Store for FakeStore {
     ///
     /// An item already closed is Refused and its first reason stands, which is
     /// what bd's adapter answers after its own read.
-    fn close(&self, id: &ItemId, reason: &str, by: &str) -> Result<(), StoreError> {
+    fn close(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<(), StoreError> {
         self.log(format!("close {id} {reason} {by}"))?;
         let closed = self
             .items
@@ -1096,7 +1096,7 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     fn holds_open(&self) -> Result<Vec<HoldId>, StoreError> {
         (**self).holds_open()
     }
-    fn close(&self, id: &ItemId, reason: &str, by: &str) -> Result<(), StoreError> {
+    fn close(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<(), StoreError> {
         (**self).close(id, reason, by)
     }
     fn append(&self, item: &ItemId, body: &Body, by: &Actor) -> Result<String, StoreError> {

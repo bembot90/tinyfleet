@@ -7,14 +7,13 @@
 // core's `entry::to_json` prints them, so a fold the SDK makes over a planted
 // record reads the fields a real record would hand it.
 
-import type { Actor } from "./stream.ts";
-
 /** One entry as `fleet item show --json` prints it: the store's id and time,
- * who wrote it, its kind, and the kind's own fields beside them. */
+ * who wrote it as the actor's one string `<kind>:<id>`, its kind, and the
+ * kind's own fields beside them. */
 export interface Entry {
   id: string;
   at: string;
-  by: Actor;
+  by: string;
   kind: string;
   [field: string]: unknown;
 }
@@ -27,7 +26,7 @@ export interface Body {
 }
 
 /** Who writes an entry where an arm names nobody: a seat. */
-export const A_SEAT: Actor = { kind: "seat", id: "a-seat" };
+export const A_SEAT = "seat:a-seat";
 
 /** The directory the fake answers `item show` from, under its own. */
 export function storeOf(fake: string): string {
@@ -54,7 +53,7 @@ export async function enter(
   fake: string,
   item: string,
   body: Body,
-  by: Actor = A_SEAT,
+  by: string = A_SEAT,
 ): Promise<Entry> {
   let data: Record<string, unknown> = {};
   try {

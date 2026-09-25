@@ -231,7 +231,7 @@ impl Store for Swallowing<'_> {
         &self,
         id: &fleet_core::store::ItemId,
         reason: &str,
-        by: &str,
+        by: &fleet_core::seat::actor::Actor,
     ) -> Result<(), StoreError> {
         self.inner.close(id, reason, by)
     }

@@ -529,8 +529,6 @@ pub fn cancel(
     events: &dyn Events,
 ) -> Result<Cancelled, Stop> {
     let run = cancel.run;
-    // The string form every write and every line carries.
-    let by = cancel.by.to_string();
     let record = store.show(run).map_err(|e| match e {
         StoreError::Refused(why) => Stop::refused(format!(
             "{run} is not an item this project's store holds — {why}"
@@ -594,7 +592,7 @@ pub fn cancel(
     }
 
     store
-        .close(&record.id, "the run cancelled", &by)
+        .close(&record.id, "the run cancelled", cancel.by)
         .map_err(|e| {
             Stop::could_not_tell(format!(
                 "{run}'s record did not close: {e}\n  {} cleared and {run} is NOT cancelled",
@@ -1299,11 +1297,10 @@ fn pin_and_bundle(pinning: Pinning, order: &Order, wiring: &Wiring) -> Result<St
 /// over a record still open would announce an end the store does not hold. The
 /// refusal keeps its own exit, because what went wrong is still what it says.
 fn never_started(id: &str, stop: Stop, by: &Actor, wiring: &Wiring) -> Stop {
-    let fate = match wiring.store.close(
-        &ItemId::from(id),
-        "the run failed before it started",
-        &by.to_string(),
-    ) {
+    let fate = match wiring
+        .store
+        .close(&ItemId::from(id), "the run failed before it started", by)
+    {
         Err(e) => format!(
             "the record {id} filed for this run STANDS open, and its close did not land: {e} — \
              `fleet cancel {id}` closes it"
@@ -1494,7 +1491,7 @@ fn execute(
             .close(
                 &ItemId::from(started.run.as_str()),
                 &format!("the run {}", ended.word()),
-                &order.by.to_string(),
+                order.by,
             )
             .map_err(|e| {
                 Stop::could_not_tell(format!(

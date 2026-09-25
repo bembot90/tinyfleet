@@ -462,7 +462,7 @@ fn a_live_row_in_the_seats_worktree_is_rung_with_the_item_and_the_brief() {
     assert_eq!(timeline[0]["order"], serde_json::json!("dispatch"));
     assert_eq!(
         timeline[0]["by"],
-        serde_json::json!({"kind": "seat", "id": LEAD_ID})
+        serde_json::json!(format!("seat:{LEAD_ID}"))
     );
 }
 
@@ -853,7 +853,7 @@ fn the_retired_actor_variable_is_not_read() {
     let timeline = rig.timeline(&item);
     assert_eq!(
         timeline[0]["by"],
-        serde_json::json!({"kind": "seat", "id": identity_of(&rig)}),
+        serde_json::json!(format!("seat:{}", identity_of(&rig))),
         "the entry's author is the identity too: {timeline:?}"
     );
 }
