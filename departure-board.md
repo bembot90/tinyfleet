@@ -77,10 +77,10 @@ dependencies are the real blockers.
 | fleet-zlk.2 | the store appends and reads an item's timeline — bd comments in the adapter, the fake, the contract, and one append-a… | fleet-zlk.1 | ☑ |
 | fleet-zlk.3 | a seat hands in JSON — the delivery, question and findings input types and their JSON Schemas in the defaults | fleet-zlk.1 | ☑ |
 | fleet-zlk.4 | `fleet item show <id> [--json]` renders an item and its timeline, and the brief carries that rendering instead of bd's | fleet-zlk.1, fleet-zlk.2 | ☑ |
-| fleet-zlk.5 | dispatch, its withdrawal and retire write ordered / order_withdrawn entries, not notes | fleet-iex.9, fleet-iex.11, fleet-zlk.2, fleet-zlk.4 | ☐ |
-| fleet-zlk.6 | `fleet deliver --delivery <file.json>` — the seat hands in JSON validated before any write, and `--item` checks the h… | fleet-iex.9, fleet-zlk.3, fleet-zlk.4 | ☐ |
+| fleet-zlk.5 | dispatch, its withdrawal and retire write ordered / order_withdrawn entries, not notes | fleet-iex.9, fleet-iex.11, fleet-zlk.2, fleet-zlk.4 | ☑ |
+| fleet-zlk.6 | `fleet deliver --delivery <file.json>` — the seat hands in JSON validated before any write, and `--item` checks the h… | fleet-iex.9, fleet-zlk.3, fleet-zlk.4 | ☑ |
 | fleet-zlk.7 | deliver writes the delivered entry, and review and land read the delivery off the timeline | fleet-zlk.2, fleet-zlk.6 | ☐ |
-| fleet-zlk.8 | `fleet review --return <file.json>` — findings are JSON, and takeoff's return writes a findings file the verb accepts | fleet-zlk.3, fleet-zlk.4 | ☐ |
+| fleet-zlk.8 | `fleet review --return <file.json>` — findings are JSON, and takeoff's return writes a findings file the verb accepts | fleet-zlk.3, fleet-zlk.4 | ☑ |
 | fleet-zlk.9 | review writes the reviewed entry; review refuses a reviewer who is not the item's; land lands only its own reviewer's… | fleet-zlk.7, fleet-zlk.8 | ☐ |
 | fleet-zlk.10 | `fleet hold --question <file.json>` — a seat's and a run's question is JSON, and the brief shows its schema | fleet-zlk.3, fleet-zlk.4, fleet-zlk.6 | ☐ |
 | fleet-zlk.11 | hold, clear, cancel and the crash cap write held / cleared entries; clear reads the open hold off the timeline; a run… | fleet-zlk.2, fleet-zlk.8, fleet-zlk.10 | ☐ |
