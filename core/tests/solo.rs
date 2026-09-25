@@ -88,7 +88,7 @@ fn every_rig_that_asserts_on_the_whole_board_is_in_the_solo_table() {
 
     let reads = set_reads(&read(&root.join("core/src/store/mod.rs")));
     assert!(
-        reads.contains("ready") && reads.contains("open_holds"),
+        reads.contains("list") && reads.contains("open_holds"),
         "the set reads are parsed off the trait: {reads:?}"
     );
     assert!(

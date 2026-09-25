@@ -28,7 +28,7 @@ use crate::item::{
 };
 use crate::seat::actor::Actor;
 use crate::seat::identity::{Directory, Kind, SeatId, SeatRef};
-use crate::store::{self, keys, Item, OrderState, Stamp, Status, Store, StoreError};
+use crate::store::{self, keys, Filter, Item, OrderState, Stamp, Status, Store, StoreError};
 
 /// The kind of order this verb writes. The reference's other two grammars —
 /// a run's feed, a spawn's own line — are that repository's; here there is one
@@ -217,7 +217,12 @@ fn refuse_unless_dispatchable<'w>(
     item: &Item,
     wiring: &Wiring<'w>,
 ) -> Result<Option<&'w SeatRef>, Stop> {
-    let ready = wiring.store.ready()?;
+    let ready: Vec<store::ItemId> = wiring
+        .store
+        .list(&Filter::Ready)?
+        .into_iter()
+        .map(|row| row.id)
+        .collect();
 
     if !ready.iter().any(|id| id == order.item) {
         return Err(Stop::refused(format!(
@@ -261,7 +266,7 @@ fn refuse_unless_dispatchable<'w>(
     let seat = wiring.seats.resolve_running(to).map_err(Stop::from)?;
     // What the seat HOLDS, in deliver's own reading: an item merely assigned
     // to it — an epic, a bug nobody ordered — is not work it was given.
-    let held: Vec<String> = holds(wiring.store, &seat.id.to_string())?
+    let held: Vec<String> = holds(wiring.store, &seat.id)?
         .held
         .into_iter()
         .map(|row| format!("{} ({})", row.id, row.status))

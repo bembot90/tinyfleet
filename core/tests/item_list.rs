@@ -1,6 +1,6 @@
 //! `fleet item list`'s read and its document, over the applying fake store.
 //!
-//! The store's three set reads are the filters, so what this suite proves is
+//! The store's three listings are the filters, so what this suite proves is
 //! which ids each one answers, what two of them answer together, and that a
 //! row carries `item show`'s fields plus the run's record — the typed fields
 //! the item carries, and no raw metadata. The shipped binary and a real board
@@ -33,7 +33,7 @@ fn a_store() -> FakeStore {
     store.seed(item("fx-3", "open", &["fleet:run"]));
     store.seed(item("fx-4", "open", &[]));
     let mut held = item("fx-5", "in_progress", &[]);
-    held.assignee = Some(String::from("s1"));
+    held.assignee = Some(String::from(HOLDER));
     store.seed(held);
 
     let mut metadata = store.metadata.lock().expect("the metadata is not poisoned");
@@ -60,6 +60,9 @@ fn a_store() -> FakeStore {
     drop(metadata);
     store
 }
+
+/// The seat fx-5 is held against, by its full id.
+const HOLDER: &str = "01a0d1f1-0aec-765f-9abe-0000000005e1";
 
 /// Who gave fx-4's order, the seat it names and when.
 const BY: &str = "run:lead-1";
@@ -95,6 +98,24 @@ fn a_list_naming_no_read_is_usage_and_reads_nothing() {
     assert!(stop.message.contains("--ready"), "{}", stop.message);
 }
 
+/// A seat is listed by its full id, which is what the store holds its items
+/// under: a name, a short id or a person a board assigned is usage, said before
+/// any listing is read — never a listing of nothing.
+#[test]
+fn an_assignee_that_is_no_seat_id_is_usage_and_reads_nothing() {
+    let mut store = a_store();
+    store.unreadable = Some(String::from("not asked"));
+    for assignee in ["s1", "0000005e1", "Alberto Vildosola"] {
+        let stop = ids(&store, &filter(true, None, Some(assignee))).expect_err("refused");
+        assert_eq!(stop.code, USAGE, "{assignee}: {}", stop.message);
+        assert!(
+            stop.message.contains("--assignee takes a seat's full id"),
+            "{assignee}: {}",
+            stop.message
+        );
+    }
+}
+
 #[test]
 fn each_filter_answers_its_own_read() {
     let store = a_store();
@@ -108,7 +129,7 @@ fn each_filter_answers_its_own_read() {
         ["fx-3"]
     );
     assert_eq!(
-        ids(&store, &filter(false, None, Some("s1"))).expect("the assignee"),
+        ids(&store, &filter(false, None, Some(HOLDER))).expect("the assignee"),
         ["fx-5"]
     );
 }
@@ -122,7 +143,7 @@ fn two_filters_answer_what_both_reads_answer() {
         ids(&store, &filter(true, Some("backend"), None)).expect("ready and labelled"),
         ["fx-2"]
     );
-    assert!(ids(&store, &filter(true, None, Some("s1")))
+    assert!(ids(&store, &filter(true, None, Some(HOLDER)))
         .expect("ready and held")
         .is_empty());
 }
@@ -205,6 +226,12 @@ fn a_row_carries_the_fields_and_the_run_record() {
         "{rendered}"
     );
     assert_eq!(render(&[]), "(no items)");
+
+    // The assignee is no listing's field: it is read off the item.
+    let held = list(&store, &filter(false, None, Some(HOLDER))).expect("the seat's items");
+    let held = fleet_core::item::list::document(&held);
+    assert_eq!(held["items"][0]["assignee"], HOLDER, "{held}");
+    assert_eq!(held["items"][0]["status"], "in_progress", "{held}");
 }
 
 /// A `fleet.run` this binary does not read is no row: it refuses the read of

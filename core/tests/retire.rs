@@ -17,7 +17,9 @@ use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
 use fleet_core::seat::retire;
 use fleet_core::store::bd::Bd;
-use fleet_core::store::{AssignedItem, Item, Order, OrderKind, OrderState, Stamp, Status, Store};
+use fleet_core::store::{
+    Filter, Item, ItemSummary, Order, OrderKind, OrderState, Stamp, Status, Store,
+};
 use fleet_core::test_support::FakeStore;
 
 /// A transient seat's full id, which is what an order assigns to: the incident
@@ -111,15 +113,15 @@ fn withdrawn_at_retire() -> Body {
 }
 
 /// The ids of the rows `held` answered, in the order it answered them.
-fn ids_of(held: &[AssignedItem]) -> Vec<String> {
-    held.iter().map(|row| row.id.clone()).collect()
+fn ids_of(held: &[ItemSummary]) -> Vec<String> {
+    held.iter().map(|row| row.id.to_string()).collect()
 }
 
 #[test]
 fn a_retire_withdraws_every_open_ordered_item_the_seat_still_holds() {
     let store = board();
 
-    let held = retire::held(&store, SEAT).expect("the board answers");
+    let held = retire::held(&store, &seat()).expect("the board answers");
     assert_eq!(
         ids_of(&held),
         vec![HELD.to_string()],
@@ -160,13 +162,14 @@ fn a_retire_reopens_an_item_the_seat_marked_in_progress() {
     store.seed(item(HELD, "in_progress", SEAT, true));
     assert!(
         !store
-            .ready()
+            .list(&Filter::Ready)
             .expect("the store answers")
-            .contains(&HELD.to_string()),
+            .iter()
+            .any(|row| row.id == HELD),
         "an in_progress item is not ready, which is the whole defect"
     );
 
-    let held = retire::held(&store, SEAT).expect("the board answers");
+    let held = retire::held(&store, &seat()).expect("the board answers");
     assert_eq!(ids_of(&held), vec![HELD.to_string()], "the query names it");
     retire::withdraw(&store, &held, &seat(), LABEL, &by()).expect("the withdrawal lands");
 
@@ -179,9 +182,10 @@ fn a_retire_reopens_an_item_the_seat_marked_in_progress() {
     );
     assert!(
         store
-            .ready()
+            .list(&Filter::Ready)
             .expect("the store answers")
-            .contains(&HELD.to_string()),
+            .iter()
+            .any(|row| row.id == HELD),
         "and back in the ready set"
     );
 }
@@ -194,7 +198,7 @@ fn a_retire_reopens_an_item_the_seat_marked_in_progress() {
 fn a_retire_whose_item_was_closed_after_the_listing_is_refused_and_reopens_nothing() {
     let store = board();
     store.seed(item(HELD, "in_progress", SEAT, true));
-    let held = retire::held(&store, SEAT).expect("the board answers");
+    let held = retire::held(&store, &seat()).expect("the board answers");
     store
         .close(HELD, "landed", SEAT)
         .expect("the seat lands its item after the listing");
@@ -231,11 +235,11 @@ fn a_retire_whose_item_was_closed_after_the_listing_is_refused_and_reopens_nothi
 #[test]
 fn a_retire_handed_a_closed_row_writes_nothing() {
     let store = board();
-    let row = AssignedItem {
-        id: CLOSED.to_string(),
+    let row = ItemSummary {
+        id: CLOSED.into(),
         status: Status::Closed,
         order: an_order(),
-        ..AssignedItem::default()
+        ..ItemSummary::default()
     };
 
     let stop = retire::withdraw(&store, &[row], &seat(), LABEL, &by()).expect_err("a closed row");
@@ -257,7 +261,7 @@ fn a_retire_handed_a_closed_row_writes_nothing() {
 fn a_retire_leaves_what_the_seat_does_not_hold_under_an_open_order() {
     let store = board();
 
-    let held = retire::held(&store, SEAT).expect("the board answers");
+    let held = retire::held(&store, &seat()).expect("the board answers");
     retire::withdraw(&store, &held, &seat(), LABEL, &by()).expect("the withdrawal lands");
 
     for untouched in [UNORDERED, CLOSED, ANOTHER] {
@@ -301,7 +305,7 @@ fn a_retire_leaves_another_writers_orders_key_untouched() {
         common::foreign_of(&store, HELD),
     ];
 
-    let held = retire::held(&store, SEAT).expect("the board answers");
+    let held = retire::held(&store, &seat()).expect("the board answers");
     assert_eq!(
         ids_of(&held),
         vec![HELD.to_string()],
@@ -342,7 +346,7 @@ fn a_retire_withdraws_an_ordered_epic_the_seat_still_names() {
         ..item(EPIC, "open", SEAT, true)
     });
 
-    let mut held = retire::held(&store, SEAT).expect("the board answers");
+    let mut held = retire::held(&store, &seat()).expect("the board answers");
     held.sort_by(|a, b| a.id.cmp(&b.id));
     assert_eq!(
         ids_of(&held),
@@ -365,9 +369,9 @@ fn a_retire_withdraws_an_ordered_epic_the_seat_still_names() {
 fn a_retire_of_a_seat_holding_nothing_ordered_writes_nothing() {
     let store = board();
 
-    let held = retire::held(&store, NOBODY).expect("the board answers");
-    assert!(held.is_empty(), "the seat holds nothing: {held:?}");
     let nobody = SeatId::parse(NOBODY).expect("the id parses");
+    let held = retire::held(&store, &nobody).expect("the board answers");
+    assert!(held.is_empty(), "the seat holds nothing: {held:?}");
     retire::withdraw(&store, &held, &nobody, "agent-4a8c1e37", &by()).expect("nothing to withdraw");
 
     assert!(
@@ -390,7 +394,7 @@ fn a_retire_of_a_seat_holding_nothing_ordered_writes_nothing() {
 fn a_retire_withdrawing_one_item_makes_one_update_and_one_append() {
     let store = board();
 
-    let held = retire::held(&store, SEAT).expect("the board answers");
+    let held = retire::held(&store, &seat()).expect("the board answers");
     retire::withdraw(&store, &held, &seat(), LABEL, &by()).expect("the withdrawal lands");
 
     let wrote = store.wrote();
@@ -418,7 +422,7 @@ fn a_retire_withdrawing_one_item_makes_one_update_and_one_append() {
 #[test]
 fn a_retire_whose_withdrawal_does_not_land_refuses_and_names_the_item() {
     let store = board();
-    let held = retire::held(&store, SEAT).expect("the board answers");
+    let held = retire::held(&store, &seat()).expect("the board answers");
     store.ignore_writes();
 
     let stop = retire::withdraw(&store, &held, &seat(), LABEL, &by())
@@ -449,7 +453,7 @@ fn a_retire_whose_withdrawal_does_not_land_refuses_and_names_the_item() {
 #[test]
 fn a_retire_whose_item_moved_to_another_seat_is_refused_and_writes_nothing() {
     let store = board();
-    let held = retire::held(&store, SEAT).expect("the board answers");
+    let held = retire::held(&store, &seat()).expect("the board answers");
     store
         .assign(HELD, "agent-9d2b4f60", "the-test")
         .expect("another seat takes the item after the listing");
@@ -492,12 +496,13 @@ fn a_retire_that_cannot_read_the_board_refuses_rather_than_reading_no_hold() {
         unreadable: Some(String::from("`bd` could not be run")),
         held: [(
             SEAT.to_string(),
-            vec![AssignedItem {
-                id: HELD.to_string(),
+            vec![ItemSummary {
+                id: HELD.into(),
                 title: String::new(),
                 status: Status::Open,
                 order: an_order(),
                 item_type: String::from("task"),
+                labels: Vec::new(),
             }],
         )]
         .into_iter()
@@ -505,7 +510,7 @@ fn a_retire_that_cannot_read_the_board_refuses_rather_than_reading_no_hold() {
         ..FakeStore::default()
     };
 
-    let stop = retire::held(&store, SEAT).expect_err("an unreadable board is no reading");
+    let stop = retire::held(&store, &seat()).expect_err("an unreadable board is no reading");
 
     assert_eq!(stop.code, COULD_NOT_TELL, "{}", stop.message);
     assert!(
@@ -539,7 +544,7 @@ fn a_retire_withdraws_an_ordered_item_past_the_fiftieth_row() {
     std::fs::create_dir_all(&root).expect("the project root is created");
     let store = Bd::at_bin(&root, &bin);
 
-    let held = retire::held(&store, SEAT).expect("the board answers");
+    let held = retire::held(&store, &seat()).expect("the board answers");
     assert_eq!(
         ids_of(&held),
         vec![String::from("fx-row-51")],

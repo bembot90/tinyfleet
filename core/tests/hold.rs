@@ -25,7 +25,7 @@ use fleet_core::item::run;
 use fleet_core::item::{Change, Git, Project, Stop, ITEM_ENTRY};
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::store::bd::Bd;
-use fleet_core::store::{AssignedItem, Item, NewItem, Store, StoreError};
+use fleet_core::store::{Filter, Item, NewItem, Store, StoreError};
 use fleet_core::test_support::Board;
 
 const AT: &str = "2026-09-13T04:05:06Z";
@@ -144,12 +144,15 @@ struct Swallowing<'a> {
 }
 
 impl Store for Swallowing<'_> {
-    fn ready(&self) -> Result<Vec<String>, StoreError> {
-        self.inner.ready()
+    fn resolve(&self, id: &str) -> Result<fleet_core::store::ItemId, StoreError> {
+        self.inner.resolve(id)
     }
 
-    fn open_labelled(&self, label: &str) -> Result<Vec<String>, StoreError> {
-        self.inner.open_labelled(label)
+    fn list(
+        &self,
+        filter: &fleet_core::store::Filter,
+    ) -> Result<Vec<fleet_core::store::ItemSummary>, StoreError> {
+        self.inner.list(filter)
     }
 
     fn create(&self, item: &NewItem, by: &str) -> Result<String, StoreError> {
@@ -162,10 +165,6 @@ impl Store for Swallowing<'_> {
 
     fn show(&self, item: &str) -> Result<Item, StoreError> {
         self.inner.show(item)
-    }
-
-    fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
-        self.inner.assigned_to(seat)
     }
 
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
@@ -471,9 +470,9 @@ fn a_clean_hold_commits_the_whole_tree_raises_the_hold_and_parks() {
         holds.contains(spelled.trim_matches('"')),
         "and carries the question's whole text as its reason, options and all: {holds}"
     );
-    let ready = bd.ready().expect("the ready read answers");
+    let ready = bd.list(&Filter::Ready).expect("the ready read answers");
     assert!(
-        !ready.contains(&item),
+        !ready.iter().any(|row| row.id == item),
         "the hold takes the item off the ready set"
     );
 
@@ -1438,9 +1437,10 @@ fn a_clearance_writes_the_cleared_entry_clears_the_hold_and_announces_it() {
     assert!(
         scratch
             .store
-            .ready()
+            .list(&Filter::Ready)
             .expect("the ready read answers")
-            .contains(&item),
+            .iter()
+            .any(|row| row.id == item),
         "and the item is back in the ready set"
     );
     let wrote = scratch.store.wrote();

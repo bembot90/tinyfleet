@@ -25,7 +25,7 @@ use fleet_core::item::{
     control_token, run, Change, Git, Project, Ring, RingOutcome, Stop, ITEM_ENTRY, TRUNK,
 };
 use fleet_core::seat::actor::{Actor, ActorKind};
-use fleet_core::store::{AssignedItem, Item, ReadProof, Store, StoreError};
+use fleet_core::store::{Item, ReadProof, Store, StoreError};
 
 const REVIEWER: &str = "a-reviewer";
 const AT: &str = "2026-09-09T04:05:06Z";
@@ -151,12 +151,15 @@ struct Doctored<'a> {
 }
 
 impl Store for Doctored<'_> {
-    fn ready(&self) -> Result<Vec<String>, StoreError> {
-        self.inner.ready()
+    fn resolve(&self, id: &str) -> Result<fleet_core::store::ItemId, StoreError> {
+        self.inner.resolve(id)
     }
 
-    fn open_labelled(&self, label: &str) -> Result<Vec<String>, StoreError> {
-        self.inner.open_labelled(label)
+    fn list(
+        &self,
+        filter: &fleet_core::store::Filter,
+    ) -> Result<Vec<fleet_core::store::ItemSummary>, StoreError> {
+        self.inner.list(filter)
     }
 
     fn create(&self, item: &fleet_core::store::NewItem, by: &str) -> Result<String, StoreError> {
@@ -178,10 +181,6 @@ impl Store for Doctored<'_> {
             read.proof = ReadProof::of(format!("{}{extra}", read.proof.as_str()));
         }
         Ok(read)
-    }
-
-    fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
-        self.inner.assigned_to(seat)
     }
 
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {

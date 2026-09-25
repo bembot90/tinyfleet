@@ -55,7 +55,7 @@ use crate::policy;
 use crate::resolve::Layer;
 use crate::seat::actor::Actor;
 use crate::settings;
-use crate::store::{keys, Item, NewItem, RunRecord, Status, Store, StoreError};
+use crate::store::{keys, Filter, Item, NewItem, RunRecord, Status, Store, StoreError};
 
 /// Where the run directories go, under the machine directory.
 pub const RUNS: &str = "runs";
@@ -649,10 +649,13 @@ fn named_holds(holds: &[String]) -> String {
 /// started and not had closed for it is here — which is the set the cap is
 /// measured against and the set a refusal names.
 pub fn open_runs(wiring: &Wiring) -> Result<Vec<String>, Stop> {
-    let mut open = wiring
+    let mut open: Vec<String> = wiring
         .store
-        .open_labelled(LABEL)
-        .map_err(|e| Stop::could_not_tell(format!("the work graph could not be read: {e}")))?;
+        .list(&Filter::Label(LABEL.into()))
+        .map_err(|e| Stop::could_not_tell(format!("the work graph could not be read: {e}")))?
+        .into_iter()
+        .map(|row| row.id.to_string())
+        .collect();
     open.sort();
     Ok(open)
 }

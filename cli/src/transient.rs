@@ -277,9 +277,8 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
     // THE ROW'S ID, which is what the order was assigned to; the note and the
     // sentences name the seat by its machine name. The retire hands its
     // withdrawal the name it resolved, which is this same row.
-    let id = row.id.to_string();
     let withdrawal = |seat: &str| -> Result<Vec<String>, Refusal> {
-        let held = match seat::retire::held(&store, &id) {
+        let held = match seat::retire::held(&store, &row.id) {
             Ok(held) => held,
             // A BOARD THAT WILL NOT ANSWER IS A QUESTION wherever this fleet
             // gave this seat something, and the retire stops on it rather than
@@ -301,7 +300,7 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
         }
         seat::retire::withdraw(&store, &held, &row.id, &here.seats.label(&row.id), &by)
             .map_err(as_refusal)?;
-        Ok(held.into_iter().map(|row| row.id).collect())
+        Ok(held.into_iter().map(|row| row.id.to_string()).collect())
     };
 
     match transient::retire_with(&machine, &seat, args.dead, &withdrawal) {

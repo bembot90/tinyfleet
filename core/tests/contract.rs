@@ -32,7 +32,9 @@ use fleet_core::item::dispatch;
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
 use fleet_core::store::bd::Bd;
-use fleet_core::store::{keys, NewItem, Order, OrderState, RunRecord, Stamp, Store, StoreError};
+use fleet_core::store::{
+    keys, Filter, NewItem, Order, OrderState, RunRecord, Stamp, Store, StoreError,
+};
 use fleet_core::test_support::Board;
 
 const BY: &str = "the-contract";
@@ -75,6 +77,8 @@ type Check = fn(&dyn Store, &Path, &str);
 const CHECKS: &[(&str, Check)] = &[
     ("create then show", create_then_show),
     ("show by hash", show_by_hash),
+    ("resolve", resolve),
+    ("list", list),
     ("show of an absent item", show_of_an_absent_item),
     ("assign", assign),
     ("set_title", set_title),
@@ -143,6 +147,62 @@ fn show_by_hash(store: &dyn Store, _: &Path, which: &str) {
     let read = store.show(hash).expect("the item reads by its hash");
     assert_eq!(read.id, item, "{which}: the answer carries the full id");
     assert_eq!(read.title, "an item read by its hash", "{which}");
+}
+
+/// A fragment resolves as `show` resolves it, and the answer is the FULL id
+/// and nothing else: the item's hash alone names the item. An id no item
+/// carries is Missing, as `show`'s is.
+fn resolve(store: &dyn Store, _: &Path, which: &str) {
+    let item = filed(store, "an item resolved by its hash");
+    let (_, hash) = item
+        .split_once('-')
+        .expect("the store files under a prefix");
+
+    let resolved = store.resolve(hash).expect("the hash resolves");
+    assert_eq!(resolved, item, "{which}: the answer is the full id");
+
+    match store.resolve("fx-nobody-filed-this") {
+        Err(StoreError::Missing(_)) => {}
+        other => panic!("{which}: an absent id is Missing, and answered {other:?}"),
+    }
+}
+
+/// Each filter's listing answers the item it matches as one row, carrying the
+/// item's title, status, type, own labels and order — asked by MEMBERSHIP, as
+/// every check here asks, because the real half's board holds what the checks
+/// before it filed.
+fn list(store: &dyn Store, _: &Path, which: &str) {
+    let item = filed(store, "an item a listing answers");
+    let row_in = |filter: &Filter| {
+        store
+            .list(filter)
+            .unwrap_or_else(|e| panic!("{which}: the {filter:?} listing reads: {e}"))
+            .into_iter()
+            .find(|row| row.id == item)
+    };
+
+    let ready = row_in(&Filter::Ready)
+        .unwrap_or_else(|| panic!("{which}: a fresh item is in the ready set"));
+    assert_eq!(ready.title, "an item a listing answers", "{which}");
+    assert_eq!(ready.status, "open", "{which}");
+    assert_eq!(ready.item_type, "task", "{which}");
+    assert_eq!(ready.labels, ["a-label"], "{which}: the row's own labels");
+    assert_eq!(ready.order, OrderState::None, "{which}");
+
+    assert!(
+        row_in(&Filter::Label(String::from("a-label"))).is_some(),
+        "{which}: an open item is in its label's listing"
+    );
+    let seat = SeatId::parse(SEAT).expect("a seat id");
+    assert!(
+        row_in(&Filter::Assignee(seat)).is_none(),
+        "{which}: an item nobody holds is in no seat's listing"
+    );
+    store.assign(&item, SEAT, BY).expect("the assignment lands");
+    assert!(
+        row_in(&Filter::Assignee(seat)).is_some(),
+        "{which}: an item assigned to the seat is in the seat's listing"
+    );
 }
 
 fn show_of_an_absent_item(store: &dyn Store, _: &Path, which: &str) {
@@ -596,6 +656,16 @@ fn a_create_answers_an_id_the_next_read_answers_the_new_items_fields_for() {
 #[test]
 fn a_read_by_hash_answers_the_item_under_its_full_id() {
     in_memory("contract-hash", show_by_hash);
+}
+
+#[test]
+fn resolve_answers_the_full_id_for_a_fragment() {
+    in_memory("contract-resolve", resolve);
+}
+
+#[test]
+fn a_listing_answers_the_items_row_under_each_filter() {
+    in_memory("contract-list", list);
 }
 
 #[test]

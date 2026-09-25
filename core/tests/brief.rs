@@ -18,7 +18,7 @@ use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
 use fleet_core::seat::retire;
 use fleet_core::store::bd::Bd;
-use fleet_core::store::{self, AssignedItem, Item, OrderKind, OrderState, Stamp, Status, Store};
+use fleet_core::store::{self, Item, ItemSummary, OrderKind, OrderState, Stamp, Status, Store};
 use fleet_core::test_support::FakeStore;
 
 /// A policy file with one guard opted out, so the on/off line is read rather
@@ -689,10 +689,10 @@ fn a_withdrawn_order_is_refused_and_writes_nothing() {
         &Spawns(SpawnOutcome::Refused(String::new())),
     )
     .expect("the dispatch lands");
-    let row = AssignedItem {
-        id: ITEM.to_string(),
+    let row = ItemSummary {
+        id: ITEM.into(),
         status: Status::Open,
-        ..AssignedItem::default()
+        ..ItemSummary::default()
     };
     let orla = SeatId::parse(ORLA).expect("Orla's id parses");
     retire::withdraw(&retired, &[row], &orla, SEAT, &by()).expect("the retire withdraws");

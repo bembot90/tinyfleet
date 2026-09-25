@@ -4,7 +4,8 @@
 //! `bd list` answers its first 50 rows unless `-n 0` is passed — bd 1.3.0's own
 //! help: "-n, --limit int … (default 50, use 0 for unlimited)", which binds a
 //! terminal and, measured, a piped call only where the board sets `list.limit`
-//! — and a truncated list reads exactly like a whole one. A real board holding 51 rows
+//! — and a truncated list reads exactly like a whole one. `bd ready` answers
+//! its first 100 the same way, piped or not. A real board holding 51 rows
 //! against one seat costs a `create` per row to build; this answers the same
 //! listing off one file per row, so the row past the cap is cheap to hold.
 
@@ -23,10 +24,11 @@ pub struct Held<'a> {
 /// absolute path. Every call it is handed goes on one line of `log`, its
 /// arguments tab-separated.
 ///
-/// It answers the verbs a retire makes and no other:
+/// It answers the verbs a retire makes, and the ready listing:
 /// - `list` every row it holds, in id order, capped at 50 unless `-n` names
-///   another limit — the seat filter is not applied, because every row it holds
-///   is that seat's;
+///   another limit — neither the seat filter nor a label's is applied, because
+///   every row it holds is the one listing's answer;
+/// - `ready` the same rows, capped at 100 unless `-n` names another limit;
 /// - `show <id>` that row;
 /// - `update <id>` only as a withdrawal fenced on `seat` and the row's open
 ///   status (`--if-assignee <seat> --if-status open`, then `--assignee ''`
@@ -68,8 +70,8 @@ pub fn capped_bd(dir: &Fixture, seat: &str, rows: &[Held], log: &Path) -> PathBu
              shift 2\n\
              items='{items}'\n\
              case \"$1\" in\n\
-             list)\n\
-             \x20 cap=50; prev=\n\
+             list|ready)\n\
+             \x20 cap=50; [ \"$1\" = ready ] && cap=100; prev=\n\
              \x20 for a in \"$@\"; do [ \"$prev\" = -n ] && cap=$a; prev=$a; done\n\
              \x20 n=0; sep=\n\
              \x20 printf '['\n\
@@ -94,7 +96,7 @@ pub fn capped_bd(dir: &Fixture, seat: &str, rows: &[Held], log: &Path) -> PathBu
              \x20 else\n\
              \x20   printf '['; [ -f \"{comments}/$2.jsonl\" ] && paste -sd, \"{comments}/$2.jsonl\"; printf ']\\n'\n\
              \x20 fi ;;\n\
-             *) echo 'the fake answers list, show, update and comments only' >&2; exit 1 ;;\n\
+             *) echo 'the fake answers list, ready, show, update and comments only' >&2; exit 1 ;;\n\
              esac\n",
             log = log.display(),
             items = items.display(),

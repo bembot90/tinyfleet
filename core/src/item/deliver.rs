@@ -39,8 +39,8 @@ use crate::item::{
 };
 use crate::policy;
 use crate::seat::actor::{Actor, ActorKind};
-use crate::seat::identity::{Directory, SeatRef};
-use crate::store::{AssignedItem, Item, OrderState, Status, Store};
+use crate::seat::identity::{Directory, SeatId, SeatRef};
+use crate::store::{Filter, Item, ItemSummary, OrderState, Status, Store};
 
 /// What the ring carries: where to look and what to look at. The record is the
 /// item, as it is for every other ring this crate sends.
@@ -288,8 +288,8 @@ pub fn held_item(store: &dyn Store, by: &Actor, named: Option<&str>) -> Result<S
             "{by} is not a seat, so it holds nothing — pass --item <id>"
         )));
     };
-    let Holds { open, held, .. } = holds(store, &seat.to_string())?;
-    let mut held: Vec<String> = held.into_iter().map(|row| row.id).collect();
+    let Holds { open, held, .. } = holds(store, &seat)?;
+    let mut held: Vec<String> = held.into_iter().map(|row| row.id.to_string()).collect();
     match held.len() {
         1 => Ok(held.remove(0)),
         0 => Err(Stop::refused(format!(
@@ -358,12 +358,12 @@ fn holds_named(item: &Item, by: &Actor) -> Result<(), Stop> {
 /// What a seat is carrying, off ONE listing and no per-row read.
 pub(crate) struct Holds {
     /// Every open row assigned to the seat.
-    pub(crate) open: Vec<AssignedItem>,
+    pub(crate) open: Vec<ItemSummary>,
     /// Of those, every one that carries an order index, whatever its type:
     /// the orders standing against the seat.
-    pub(crate) ordered: Vec<AssignedItem>,
+    pub(crate) ordered: Vec<ItemSummary>,
     /// Of those, every one that is not an epic: what the seat HOLDS.
-    pub(crate) held: Vec<AssignedItem>,
+    pub(crate) held: Vec<ItemSummary>,
 }
 
 /// THE ONE READING of what a seat holds: an open item assigned to it that
@@ -380,17 +380,17 @@ pub(crate) struct Holds {
 /// Whether a row is ordered and whether it is an epic are both read off the
 /// row: the listing answers each row's metadata and type, so the whole reading
 /// is one call. `seat` is the seat's full id, which is what an assignee is.
-pub(crate) fn holds(store: &dyn Store, seat: &str) -> Result<Holds, Stop> {
+pub(crate) fn holds(store: &dyn Store, seat: &SeatId) -> Result<Holds, Stop> {
     let rows = store
-        .assigned_to(seat)?
+        .list(&Filter::Assignee(*seat))?
         .into_iter()
         .filter(open)
-        .collect::<Vec<AssignedItem>>();
+        .collect::<Vec<ItemSummary>>();
     let ordered = rows
         .iter()
         .filter(|row| !matches!(row.order, OrderState::None))
         .cloned()
-        .collect::<Vec<AssignedItem>>();
+        .collect::<Vec<ItemSummary>>();
     // An epic is never work a seat holds: it stays open while its children are
     // built, and an assignee left on it names whoever last touched it, not a
     // seat carrying it.
@@ -408,7 +408,7 @@ pub(crate) fn holds(store: &dyn Store, seat: &str) -> Result<Holds, Stop> {
 
 /// The statuses a seat is working under. `in_progress` is the same holding as
 /// `open`: a seat that claimed its item has not stopped holding it.
-fn open(row: &AssignedItem) -> bool {
+fn open(row: &ItemSummary) -> bool {
     matches!(row.status, Status::Open | Status::InProgress)
 }
 

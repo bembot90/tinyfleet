@@ -41,7 +41,7 @@ use fleet_core::item::{
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
 use fleet_core::store::bd::Bd;
-use fleet_core::store::{AssignedItem, Item, Store, StoreError};
+use fleet_core::store::{Item, Store, StoreError};
 use fleet_core::test_support::{Board, EXPORT_DIR, EXPORT_FILE};
 
 const REVIEWER: &str = "a-reviewer";
@@ -440,12 +440,15 @@ struct Doctored<'a> {
 }
 
 impl Store for Doctored<'_> {
-    fn ready(&self) -> Result<Vec<String>, StoreError> {
-        self.inner.ready()
+    fn resolve(&self, id: &str) -> Result<fleet_core::store::ItemId, StoreError> {
+        self.inner.resolve(id)
     }
 
-    fn open_labelled(&self, label: &str) -> Result<Vec<String>, StoreError> {
-        self.inner.open_labelled(label)
+    fn list(
+        &self,
+        filter: &fleet_core::store::Filter,
+    ) -> Result<Vec<fleet_core::store::ItemSummary>, StoreError> {
+        self.inner.list(filter)
     }
 
     fn create(&self, item: &fleet_core::store::NewItem, by: &str) -> Result<String, StoreError> {
@@ -458,10 +461,6 @@ impl Store for Doctored<'_> {
 
     fn show(&self, item: &str) -> Result<Item, StoreError> {
         self.inner.show(item)
-    }
-
-    fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
-        self.inner.assigned_to(seat)
     }
 
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {

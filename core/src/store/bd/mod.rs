@@ -24,7 +24,7 @@ use serde::Deserialize;
 
 use super::types::{Capabilities, ExportSpec};
 use super::{
-    first_value, holder_named, keys, validated, AssignedItem, Item, ItemId, NewItem, Order,
+    first_value, holder_named, keys, validated, Filter, Item, ItemId, ItemSummary, NewItem, Order,
     OrderState, ReadProof, RunRecord, Status, Store, StoreError, STORE_TIMEOUT,
 };
 use crate::entry::{self, Body, Entry};
@@ -251,6 +251,31 @@ impl Bd {
             return Err(self.refused(args, &out));
         }
         Ok(())
+    }
+}
+
+impl Bd {
+    /// The row `show` answered for the argument, before anything is decoded
+    /// out of it.
+    ///
+    /// THE JSON IS READ BEFORE THE STATUS, and this read stays off `answered`:
+    /// bd exits non-zero on an item it does not hold and prints the error
+    /// object, which is the record's answer and not a refusal.
+    fn shown_row(&self, item: &str) -> Result<serde_json::Value, StoreError> {
+        let args = ["show", item, "--json"];
+        let out = self.run(&args)?;
+        let Some(value) = self.json(&args, &out) else {
+            return Err(StoreError::Unreadable(format!(
+                "{} answered no JSON: {}",
+                self.named(&args),
+                tail(&out)
+            )));
+        };
+        let row = shown(item, value, &String::from_utf8_lossy(&out.stderr))?;
+        if !out.status.success() {
+            return Err(self.refused(&args, &out));
+        }
+        Ok(row)
     }
 }
 
@@ -483,54 +508,60 @@ fn blockers_of(entries: &[bd_wire::IssueWithDependencyMetadata]) -> Vec<ItemId> 
 }
 
 impl Store for Bd {
-    fn ready(&self) -> Result<Vec<String>, StoreError> {
-        // `-n 0` lifts the read's row cap. The verb answers its first 100 rows
-        // by default, piped or not — measured on 1.3.0, 100 of 112 — and a
-        // truncated list reads exactly like a whole one, so past a hundred
-        // ready rows a ready item would be refused as not ready.
-        Ok(self
-            .listed::<bd_wire::IssueWithCounts>(&["ready", "--json", "-n", "0"])?
-            .into_iter()
-            .filter_map(|row| row.id)
-            .collect())
-    }
-
     /// bd resolves a partial id itself — measured on 1.3.0, a whole id, then a
     /// whole hash, then a substring of one — and the answer's `id` is the full
     /// one.
     fn show(&self, item: &str) -> Result<Item, StoreError> {
-        // THE JSON IS READ BEFORE THE STATUS, and this read stays off
-        // `answered`: bd exits non-zero on an item it does not hold and prints
-        // the error object, which is the record's answer and not a refusal.
-        let args = ["show", item, "--json"];
-        let out = self.run(&args)?;
-        let Some(value) = self.json(&args, &out) else {
-            return Err(StoreError::Unreadable(format!(
-                "{} answered no JSON: {}",
-                self.named(&args),
-                tail(&out)
-            )));
-        };
-        let row = shown(item, value, &String::from_utf8_lossy(&out.stderr))?;
-        if !out.status.success() {
-            return Err(self.refused(&args, &out));
-        }
-        item_from(item, &row)
+        item_from(item, &self.shown_row(item)?)
     }
 
-    /// `-n 0` for the same reason the ready read carries it: this answer takes
-    /// a cap — measured on 1.3.0, none by default on a piped call (110 of 110)
-    /// and 50 on a terminal (20 in bd's agent mode), but a board's `list.limit`
-    /// binds a piped one too (5 of 110 with it set) — and a truncated list
-    /// reads exactly like a whole one, so past the cap a run would be started
-    /// past the `[core.run] max_open` cap it is measured against.
-    fn open_labelled(&self, label: &str) -> Result<Vec<String>, StoreError> {
-        Ok(self
-            .listed::<bd_wire::IssueWithCounts>(&[
+    /// The show call, answering only the row's `id`: nothing else of the row
+    /// is decoded, so an item whose run record this fleet does not read still
+    /// resolves.
+    fn resolve(&self, id: &str) -> Result<ItemId, StoreError> {
+        let row = self.shown_row(id)?;
+        row.get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(ItemId::from)
+            .ok_or_else(|| {
+                StoreError::Unreadable(format!(
+                    "{} answered a row naming no id",
+                    self.named(&["show", id, "--json"])
+                ))
+            })
+    }
+
+    /// One listing per filter, and every one carries `-n 0`, which lifts the
+    /// verb's row cap: a truncated list reads exactly like a whole one.
+    ///
+    /// `ready` answers its first 100 rows by default, piped or not — measured
+    /// on 1.3.0, 100 of 112 — so past a hundred ready rows a ready item would
+    /// be refused as not ready. `list` takes a cap too — measured on 1.3.0,
+    /// none by default on a piped call (110 of 110) and 50 on a terminal (20
+    /// in bd's agent mode), but a board's `list.limit` binds a piped one as
+    /// well (5 of 110 with it set) — so past it a run would be started past
+    /// the `[core.run] max_open` cap it is measured against, and a retire
+    /// would miss the orders beyond it, which the next seat of that name
+    /// inherits.
+    ///
+    /// A seat's items are held under its full id, which is what every
+    /// assignment writes.
+    fn list(&self, filter: &Filter) -> Result<Vec<ItemSummary>, StoreError> {
+        let seat;
+        let args: Vec<&str> = match filter {
+            Filter::Ready => vec!["ready", "--json", "-n", "0"],
+            Filter::Label(label) => vec![
                 "list", "--label", label, "--status", "open", "--json", "-n", "0",
-            ])?
+            ],
+            Filter::Assignee(held) => {
+                seat = held.to_string();
+                vec!["list", "-a", &seat, "--json", "-n", "0"]
+            }
+        };
+        Ok(self
+            .listed::<bd_wire::IssueWithCounts>(&args)?
             .into_iter()
-            .filter_map(|row| row.id)
+            .filter_map(summary_of)
             .collect())
     }
 
@@ -554,26 +585,6 @@ impl Store for Bd {
 
     fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError> {
         self.wrote(&["update", item, "--title", title, "--actor", by])
-    }
-
-    /// `-n 0` for the same reason the reads above carry it: this answer takes
-    /// the same cap as `open_labelled`'s, and a truncated list reads exactly
-    /// like a whole one, so past the cap a retire misses the orders beyond it
-    /// and the next seat of that name inherits them.
-    fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
-        Ok(self
-            .listed::<bd_wire::IssueWithCounts>(&["list", "-a", seat, "--json", "-n", "0"])?
-            .into_iter()
-            .filter_map(|row| {
-                Some(AssignedItem {
-                    order: order_of(row.metadata.as_ref()),
-                    id: row.id?,
-                    title: row.title.unwrap_or_default(),
-                    status: Status::from(row.status.unwrap_or_default()),
-                    item_type: row.issue_type.unwrap_or_default(),
-                })
-            })
-            .collect())
     }
 
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
@@ -900,6 +911,21 @@ pub fn item_from(id: &str, row: &serde_json::Value) -> Result<Item, StoreError> 
         blockers: blockers_of(wire.dependencies.as_deref().unwrap_or_default()),
         proof: ReadProof::of(row.to_string()),
         id: ItemId::from(id),
+    })
+}
+
+/// One listing row as the summary a listing answers, through the readers
+/// [`item_from`] reads a row with: the status and the labels as the store
+/// spells them, the order by [`order_of`], and the type off `issue_type`. A
+/// row naming no id is no row.
+fn summary_of(row: bd_wire::IssueWithCounts) -> Option<ItemSummary> {
+    Some(ItemSummary {
+        order: order_of(row.metadata.as_ref()),
+        id: ItemId::from(row.id?),
+        title: row.title.unwrap_or_default(),
+        status: Status::from(row.status.unwrap_or_default()),
+        item_type: row.issue_type.unwrap_or_default(),
+        labels: row.labels.unwrap_or_default(),
     })
 }
 

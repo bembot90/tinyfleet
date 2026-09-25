@@ -38,8 +38,9 @@ use common::{a_delivery, seat_actor, Fixture, A_COMMIT};
 use fleet_core::entry::{Body, OrderKind, Ordered};
 use fleet_core::item::{recorded, Stop, Unrecorded, COULD_NOT_TELL, REFUSED};
 use fleet_core::process::DRAIN_GRACE;
+use fleet_core::seat::identity::SeatId;
 use fleet_core::store::bd::{item_from, Bd};
-use fleet_core::store::{NewItem, OrderState, Store, StoreError};
+use fleet_core::store::{Filter, ItemSummary, NewItem, OrderState, Store, StoreError};
 
 /// Serialises every arm in this binary, because the seam they share is the
 /// process's `PATH` and there is one of those.
@@ -145,8 +146,8 @@ fn an_absolute_binary_runs_where_a_bare_name_cannot() {
 
     let (by_name, by_path) = with_path(SERVICE_PATH, || {
         (
-            Bd::at(&root).ready(),
-            Bd::at_bin(&root, &dir.path("bd")).ready(),
+            Bd::at(&root).list(&Filter::Ready),
+            Bd::at_bin(&root, &dir.path("bd")).list(&Filter::Ready),
         )
     });
 
@@ -158,7 +159,7 @@ fn an_absolute_binary_runs_where_a_bare_name_cannot() {
     );
     assert_eq!(
         by_path.expect("the shim answers a list"),
-        Vec::<String>::new()
+        Vec::<ItemSummary>::new()
     );
 
     let argv: Vec<String> = std::fs::read_to_string(&log)
@@ -174,44 +175,92 @@ fn an_absolute_binary_runs_where_a_bare_name_cannot() {
     );
 }
 
-/// The ready read lifts the row cap.
-///
-/// The shim records the argv rather than the row count, because the count is
-/// the thing that cannot be read: 100 rows is the honest answer for a pool of
-/// 100 and the silent one for a pool of 200. `-n 0` in the argv is the whole
-/// difference. A store big enough to show the loss directly costs about 110
-/// seconds to build, which is why it is not built here.
-#[test]
-fn ready_lifts_the_row_cap() {
+/// The seat the row-cap arms list, by its full id: what an assignment writes
+/// and what a seat's listing is asked by.
+const SEAT: &str = "018f6a2c-1d3e-7a4b-9c5d-00000c3a5e71";
+
+/// One listing, asked of a `bd` on `PATH` that holds `rows` rows and caps
+/// them as the real one does: the ids the fake holds, the ids the listing
+/// answered, the calls the fake was handed and the project root it ran
+/// under.
+fn listed_past_the_cap(
+    label: &str,
+    rows: usize,
+    filter: &Filter,
+) -> (Vec<String>, Vec<String>, Vec<Vec<String>>, PathBuf) {
     let _guard = path_lock();
-    let dir = Fixture::new("store-argv");
+    let dir = Fixture::new(label);
     let log = dir.path("argv");
-    shim(&dir, &log);
+    let ids: Vec<String> = (1..=rows).map(|n| format!("fx-row-{n:03}")).collect();
+    let held: Vec<Held> = ids.iter().map(|id| Held { id, ordered: false }).collect();
+    capped_bd(&dir, SEAT, &held, &log);
 
     let root = dir.path("project");
     std::fs::create_dir_all(&root).expect("the project root is created");
-    let answered = with_path_ahead(&dir.root, || Bd::at(&root).ready());
+    let answered = with_path_ahead(&dir.root, || Bd::at(&root).list(filter));
 
-    assert_eq!(
-        answered.expect("the shim answers a list"),
-        Vec::<String>::new()
-    );
-    let argv: Vec<String> = std::fs::read_to_string(&log)
-        .expect("the shim recorded its argv")
-        .lines()
-        .map(str::to_string)
+    let listed: Vec<String> = answered
+        .expect("the fake answers a list")
+        .into_iter()
+        .map(|row| row.id.to_string())
         .collect();
+    (ids, listed, calls(&log), root)
+}
+
+/// The ready listing lifts the row cap, and answers the row past it: 101
+/// ready rows, the 101st the one a capped read drops — `bd ready` answers its
+/// first 100 by default, piped or not, and past them a ready item would be
+/// refused as not ready.
+#[test]
+fn ready_lifts_the_row_cap() {
+    let (ids, listed, calls, root) = listed_past_the_cap("store-argv", 101, &Filter::Ready);
+
+    assert_eq!(listed, ids, "every ready row, the 101st included");
     assert_eq!(
-        argv,
-        vec![
+        calls,
+        vec![vec![
             String::from("-C"),
             root.display().to_string(),
             String::from("ready"),
             String::from("--json"),
             String::from("-n"),
             String::from("0"),
-        ],
-        "the ready read must carry `-n 0`, or it answers the first 100 rows only"
+        ]],
+        "the ready listing must carry `-n 0`, or it answers the first 100 rows only"
+    );
+}
+
+/// A label's listing lifts the row cap, and answers the row past it: 51 open
+/// rows under the run label, the 51st the one a capped read drops — and past
+/// the cap a run would be started past the `[core.run] max_open` it is
+/// measured against.
+#[test]
+fn a_label_listing_lifts_the_row_cap() {
+    let (ids, listed, calls, root) = listed_past_the_cap(
+        "store-argv-label",
+        51,
+        &Filter::Label(String::from("fleet:run")),
+    );
+
+    assert_eq!(
+        listed, ids,
+        "every open row under the label, the 51st included"
+    );
+    assert_eq!(
+        calls,
+        vec![vec![
+            String::from("-C"),
+            root.display().to_string(),
+            String::from("list"),
+            String::from("--label"),
+            String::from("fleet:run"),
+            String::from("--status"),
+            String::from("open"),
+            String::from("--json"),
+            String::from("-n"),
+            String::from("0"),
+        ]],
+        "the label's listing must carry `-n 0`, or it answers the first 50 rows only"
     );
 }
 
@@ -259,40 +308,26 @@ fn open_holds_lifts_the_row_cap() {
     );
 }
 
-/// A seat's listing lifts the row cap, and answers the row past it.
-///
-/// The one list read here proved by the COUNT as well as by the argv, because
-/// the fake that caps it is cheap: 51 non-closed rows against one seat, the
-/// 51st the one a capped read drops. A retire takes a seat's ordered items off
-/// this listing before its name goes back on the pile, so a row it cannot see
-/// is an order the next seat of that name inherits.
+/// A seat's listing lifts the row cap, and answers the row past it: 51
+/// non-closed rows against one seat, the 51st the one a capped read drops. A
+/// retire takes a seat's ordered items off this listing before its name goes
+/// back on the pile, so a row it cannot see is an order the next seat of that
+/// name inherits. The seat is asked by its full id.
 #[test]
 fn a_seat_listing_lifts_the_row_cap() {
-    let _guard = path_lock();
-    let dir = Fixture::new("store-argv-seat");
-    let log = dir.path("argv");
-    let ids: Vec<String> = (1..=51).map(|n| format!("fx-row-{n:02}")).collect();
-    let rows: Vec<Held> = ids.iter().map(|id| Held { id, ordered: false }).collect();
-    capped_bd(&dir, "agent-0c3a5e71", &rows, &log);
+    let seat = SeatId::parse(SEAT).expect("the seat's id parses");
+    let (ids, listed, calls, root) =
+        listed_past_the_cap("store-argv-seat", 51, &Filter::Assignee(seat));
 
-    let root = dir.path("project");
-    std::fs::create_dir_all(&root).expect("the project root is created");
-    let answered = with_path_ahead(&dir.root, || Bd::at(&root).assigned_to("agent-0c3a5e71"));
-
-    let held: Vec<String> = answered
-        .expect("the fake answers a list")
-        .into_iter()
-        .map(|row| row.id)
-        .collect();
-    assert_eq!(held, ids, "every row the seat holds, the 51st included");
+    assert_eq!(listed, ids, "every row the seat holds, the 51st included");
     assert_eq!(
-        calls(&log),
+        calls,
         vec![vec![
             String::from("-C"),
             root.display().to_string(),
             String::from("list"),
             String::from("-a"),
-            String::from("agent-0c3a5e71"),
+            String::from(SEAT),
             String::from("--json"),
             String::from("-n"),
             String::from("0"),
@@ -365,7 +400,7 @@ fn every_read_opens_the_envelope() {
     )
     .file(
         "answers/list.json",
-        r#"{"data": [{"id": "fx-listed", "title": "a listed item", "status": "open", "metadata": {"fleet.orders": {"v": 1, "by": "run:an-architect", "kind": "dispatch", "at": "2026-09-23T23:30:39Z"}}}], "schema_version": 1}"#,
+        r#"{"data": [{"id": "fx-listed", "title": "a listed item", "status": "open", "issue_type": "task", "labels": ["a"], "metadata": {"fleet.orders": {"v": 1, "by": "run:an-architect", "kind": "dispatch", "at": "2026-09-23T23:30:39Z"}}}], "schema_version": 1}"#,
     )
     .file(
         "answers/gate-list.json",
@@ -383,9 +418,12 @@ fn every_read_opens_the_envelope() {
     std::fs::create_dir_all(&root).expect("the project root is created");
     let store = Bd::at_bin(&root, &bin);
 
-    let ready = store.ready().expect("the ready answer decodes");
+    let ready = store
+        .list(&Filter::Ready)
+        .expect("the ready answer decodes");
     assert_eq!(ready.len(), 1, "one ready row: {ready:?}");
-    assert!(format!("{ready:?}").contains("fx-ready"), "{ready:?}");
+    assert_eq!(ready[0].id, "fx-ready");
+    assert_eq!(ready[0].labels, ["a"], "the row's own labels are read");
 
     let held = store.show("fx-held").expect("the show answer decodes");
     assert_eq!(held.id, "fx-held");
@@ -397,12 +435,14 @@ fn every_read_opens_the_envelope() {
         held.order
     );
 
-    assert_eq!(
-        store.open_labelled("a").expect("the list answer decodes"),
-        vec![String::from("fx-listed")]
-    );
+    let labelled = store
+        .list(&Filter::Label(String::from("a")))
+        .expect("the list answer decodes");
+    assert_eq!(labelled.len(), 1, "{labelled:?}");
+    assert_eq!(labelled[0].id, "fx-listed");
+    let seat = SeatId::parse(SEAT).expect("the seat's id parses");
     let rows = store
-        .assigned_to("a-seat")
+        .list(&Filter::Assignee(seat))
         .expect("the seat listing decodes");
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].id, "fx-listed");
@@ -410,6 +450,12 @@ fn every_read_opens_the_envelope() {
         rows[0].title, "a listed item",
         "the row's own title is read"
     );
+    assert_eq!(rows[0].status, "open", "the row's own status is read");
+    assert_eq!(
+        rows[0].item_type, "task",
+        "the row's type is read off issue_type"
+    );
+    assert_eq!(rows[0].labels, ["a"], "the row's own labels are read");
     assert!(
         matches!(rows[0].order, OrderState::Ordered(_)),
         "the row's own metadata is read: {:?}",
@@ -646,7 +692,9 @@ fn a_store_that_does_not_answer_is_unreadable_within_its_bound() {
     let bound = Duration::from_secs(1);
 
     let started = Instant::now();
-    let answer = Bd::at_bin(&root, &bin).with_timeout(bound).ready();
+    let answer = Bd::at_bin(&root, &bin)
+        .with_timeout(bound)
+        .list(&Filter::Ready);
     let took = started.elapsed();
 
     let Err(StoreError::Unreadable(why)) = answer else {

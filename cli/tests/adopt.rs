@@ -33,7 +33,9 @@ use common::hermetic::Hermetic;
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 const POLICY: &str = "[project]\nitem_prefix = \"fx\"\n";
-const SEAT: &str = "adopt-seat";
+/// The seat the fixture holds an item against, by its full id: the listing is
+/// asked by that id.
+const SEAT: &str = "01a0d1f1-0aec-765f-9abe-0000000ad0e7";
 
 fn defaults_into(machine: &Path) {
     let root = machine.join(fleet_core::defaults::DIR);

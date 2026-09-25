@@ -21,7 +21,9 @@ pub mod bd;
 pub mod keys;
 pub mod types;
 
-pub use types::{ItemId, Order, OrderKind, OrderState, ReadProof, RunRecord, Stamp, Status};
+pub use types::{
+    Filter, ItemId, ItemSummary, Order, OrderKind, OrderState, ReadProof, RunRecord, Stamp, Status,
+};
 
 /// One item as a read answers it, in the contract's own types field by field:
 /// [`types::Item`]'s fields and the description beside them.
@@ -76,23 +78,6 @@ pub struct NewItem<'a> {
     pub labels: &'a [&'a str],
 }
 
-/// One item assigned to a seat, as the seat's list answers it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AssignedItem {
-    pub id: String,
-    /// What a person calls this item, read off this row — the words a
-    /// session's start carries beside the id.
-    pub title: String,
-    pub status: Status,
-    /// The order index, read off THIS ROW and not off a second call: the
-    /// listing answers each row's metadata, so a caller asking which of a
-    /// seat's items are ordered pays one call and not one per row. The same
-    /// three answers [`Item::order`] carries.
-    pub order: OrderState,
-    /// The type, as the listing spells it (`issue_type`), read off this row.
-    pub item_type: String,
-}
-
 /// The ways a store call ends badly, which are different exits: an item that
 /// is not there, or not held by whom the write required, is the record's
 /// answer, and a store that will not answer is no reading at all.
@@ -118,18 +103,29 @@ impl std::fmt::Display for StoreError {
 }
 
 pub trait Store {
-    /// The items the store calls ready, by id: open and unblocked, in the
-    /// store's own order.
-    fn ready(&self) -> Result<Vec<String>, StoreError>;
-
     /// One item, which the argument may name by PART of its id: the store
     /// resolves a partial id itself, and the answer's `id` is the full one. So
     /// a verb taking an item resolves it here once, at its entry, and acts on
     /// [`Item::id`] from then on and never on the typed text.
     fn show(&self, item: &str) -> Result<Item, StoreError>;
 
-    /// The open items carrying this label, by id.
-    fn open_labelled(&self, label: &str) -> Result<Vec<String>, StoreError>;
+    /// The full id of the item the argument names, by the rule [`show`]
+    /// resolves one with, and nothing else of it: an id no item carries is
+    /// Missing, and an argument naming more than one item is too.
+    ///
+    /// [`show`]: Store::show
+    fn resolve(&self, id: &str) -> Result<ItemId, StoreError>;
+
+    /// The items a filter matches, in the store's own order, each as the row
+    /// the listing answered: ONE call, whatever the rows number. The store's
+    /// ready set is open and unblocked; a label's is the open items carrying
+    /// it; a seat's is the items held against its full id, which a caller
+    /// reads the status of off each row.
+    ///
+    /// A LISTING IS NEVER CAPPED. A store whose listing answers its first rows
+    /// by default is asked for all of them, because a truncated list reads
+    /// exactly like a whole one.
+    fn list(&self, filter: &Filter) -> Result<Vec<ItemSummary>, StoreError>;
 
     /// One item filed, answered as the id the store gave it.
     ///
@@ -140,9 +136,6 @@ pub trait Store {
     fn create(&self, item: &NewItem, by: &str) -> Result<String, StoreError>;
 
     fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError>;
-
-    /// Every item the store holds against this seat.
-    fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError>;
 
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError>;
 

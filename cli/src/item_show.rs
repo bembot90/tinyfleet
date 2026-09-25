@@ -1,5 +1,5 @@
 //! `fleet item show <id> [--json]` — one item and its timeline, read — and
-//! `fleet item list`, the items the store's set reads answer.
+//! `fleet item list`, the items the store's listings answer.
 //!
 //! The SDK's reads of the store: a workflow asks these verbs and never `bd`,
 //! so the store stays the adapter's. Neither writes anything.
@@ -10,14 +10,14 @@
 //! row, 1, and a store that will not answer — a malformed entry on the
 //! timeline among them — is could-not-tell, 3.
 //!
-//! THE LIST IS TRANSITIONAL (`fleet_core::item::list`): its three filters are
-//! the store's three set reads today, at least one named and several
-//! intersected, until fleet-0q4.5 gives the contract a `list(filter)`. A list
-//! naming none is usage, 2, said before the store is opened.
+//! THE LIST'S FILTERS ARE THE CONTRACT'S (`fleet_core::item::list`): the
+//! store's three listings, at least one named and several intersected. A list
+//! naming none, or naming a seat by anything but its full id, is usage, 2,
+//! said before the store is opened.
 
-use fleet_core::item::list::{self, Filter};
+use fleet_core::item::list::{self, Filter, Row};
 use fleet_core::item::{show, Stop};
-use fleet_core::store::{Item, Store};
+use fleet_core::store::Store;
 
 use crate::envelope;
 use crate::exit::Exit;
@@ -37,20 +37,22 @@ pub enum Verb {
         #[arg(long)]
         json: bool,
     },
-    /// list the items the store's set reads answer
+    /// list the items the store's listings answer
     #[command(long_about = "\
-list the items the store's set reads answer, one line each: its id, title,
-status, type, labels and assignee. Name at least one read; several are
+list the items the store's listings answer, one line each: its id, title,
+status, type, labels and assignee. Name at least one listing; several are
 intersected, in the first one's order.
 
-THE TRANSITIONAL LIST: the store reads no list of every item yet, so the
-filters are the three sets it does read, and each item they answer is then
-read whole. The contract's own list replaces them.
+The store answers no listing of every item, so the filters are the three it
+does answer: the ready set, the open items under a label and the items held
+against a seat. Each row is then read for its assignee and its run's record,
+which a listing's row does not carry.
 
 --json prints {\"items\": [...]}, each row item show's fields without the
 timeline, plus the run's record where the item carries one. It writes
-nothing. Exit 2 when no read is named, 3 when the store does not answer or
-an item carries a run record this fleet does not read.")]
+nothing. Exit 2 when no listing is named or --assignee is not a seat's full
+id, 3 when the store does not answer or an item carries a run record this
+fleet does not read.")]
     List {
         /// the store's ready set: open and unblocked
         #[arg(long)]
@@ -58,7 +60,7 @@ an item carries a run record this fleet does not read.")]
         /// the open items carrying this label
         #[arg(long, value_name = "LABEL")]
         label: Option<String>,
-        /// the items held against this assignee
+        /// the items held against this seat, by its full id
         #[arg(long, value_name = "SEAT")]
         assignee: Option<String>,
         /// print the items as one JSON document
@@ -116,8 +118,9 @@ fn refused(verb: &str, stop: &Stop, json: bool) -> Exit {
 }
 
 /// The filter checked before anything is resolved — a list naming no read is
-/// the call's own fault wherever it is typed — then the items, each read whole.
-fn listed(filter: &Filter) -> Result<Vec<Item>, Stop> {
+/// the call's own fault wherever it is typed — then the items, each row read for
+/// its assignee and its run's record.
+fn listed(filter: &Filter) -> Result<Vec<Row>, Stop> {
     filter.named()?;
     let here = resolve_at(None)?;
     let store = open_store(&here.project.root);

@@ -1799,8 +1799,15 @@ fn a_rerun_reads_the_settings_the_run_was_opened_with_and_not_the_edited_file() 
 struct Planted(fleet_core::store::bd::Bd);
 
 impl fleet_core::store::Store for Planted {
-    fn ready(&self) -> Result<Vec<String>, StoreError> {
-        self.0.ready()
+    fn resolve(&self, id: &str) -> Result<fleet_core::store::ItemId, StoreError> {
+        self.0.resolve(id)
+    }
+
+    fn list(
+        &self,
+        filter: &fleet_core::store::Filter,
+    ) -> Result<Vec<fleet_core::store::ItemSummary>, StoreError> {
+        self.0.list(filter)
     }
 
     fn show(&self, item: &str) -> Result<fleet_core::store::Item, StoreError> {
@@ -1813,20 +1820,12 @@ impl fleet_core::store::Store for Planted {
         Ok(read)
     }
 
-    fn open_labelled(&self, label: &str) -> Result<Vec<String>, StoreError> {
-        self.0.open_labelled(label)
-    }
-
     fn create(&self, item: &fleet_core::store::NewItem, by: &str) -> Result<String, StoreError> {
         self.0.create(item, by)
     }
 
     fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError> {
         self.0.set_title(item, title, by)
-    }
-
-    fn assigned_to(&self, seat: &str) -> Result<Vec<fleet_core::store::AssignedItem>, StoreError> {
-        self.0.assigned_to(seat)
     }
 
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {

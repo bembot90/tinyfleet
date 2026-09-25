@@ -18,8 +18,9 @@ use fleet_core::guard;
 use fleet_core::lock;
 use fleet_core::process::run_bounded;
 use fleet_core::resolve::{self, Layer};
+use fleet_core::seat::identity::SeatId;
 use fleet_core::store::bd::{Bd, PINNED_BD};
-use fleet_core::store::{Status, Store};
+use fleet_core::store::{Filter, Status, Store};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -85,7 +86,7 @@ pub fn command() -> Exit {
         // The items are held under the seat's full id, which is what every
         // dispatch assigns: a name moves, and the record is keyed by the seat.
         if let Some((seat, project_root)) = seat_here(&machine, &cwd) {
-            print_items(&project_root, &seat.id.to_string());
+            print_items(&project_root, &seat.id);
         }
     }
 
@@ -295,7 +296,7 @@ fn install_pointer() -> String {
     )
 }
 
-fn print_items(project_root: &Path, seat: &str) {
+fn print_items(project_root: &Path, seat: &SeatId) {
     match items(project_root, seat) {
         Ok(items) if items.is_empty() => println!("item: none"),
         Ok(items) => {
@@ -318,15 +319,15 @@ fn print_items(project_root: &Path, seat: &str) {
 /// the controller started carries a `PATH` a bare `bd` finds nothing on
 /// (lessons claude-code D1), so a tracker nothing resolves is this line's
 /// third answer.
-fn items(project_root: &Path, seat: &str) -> Result<Vec<(String, String)>, String> {
+fn items(project_root: &Path, seat: &SeatId) -> Result<Vec<(String, String)>, String> {
     let bin = resolve_bd()?;
     let store = Bd::at_bin(project_root, &bin).with_timeout(ITEMS_TIMEOUT);
     Ok(store
-        .assigned_to(seat)
+        .list(&Filter::Assignee(*seat))
         .map_err(|why| why.to_string())?
         .into_iter()
         .filter(|row| matches!(row.status, Status::Open | Status::InProgress))
-        .map(|row| (row.id, row.title))
+        .map(|row| (row.id.to_string(), row.title))
         .collect())
 }
 

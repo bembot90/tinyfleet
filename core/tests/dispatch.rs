@@ -26,7 +26,7 @@ use fleet_core::item::{
 };
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
-use fleet_core::store::{self, AssignedItem, Item, OrderState, ReadProof, Store, StoreError};
+use fleet_core::store::{self, Filter, Item, OrderState, ReadProof, Store, StoreError};
 
 const POLICY: &str = "[guards]\n";
 /// The builder's checks every arm's order hands over, as a workflow would.
@@ -116,12 +116,15 @@ struct Doctored<'a> {
 }
 
 impl Store for Doctored<'_> {
-    fn ready(&self) -> Result<Vec<String>, StoreError> {
-        self.inner.ready()
+    fn resolve(&self, id: &str) -> Result<fleet_core::store::ItemId, StoreError> {
+        self.inner.resolve(id)
     }
 
-    fn open_labelled(&self, label: &str) -> Result<Vec<String>, StoreError> {
-        self.inner.open_labelled(label)
+    fn list(
+        &self,
+        filter: &fleet_core::store::Filter,
+    ) -> Result<Vec<fleet_core::store::ItemSummary>, StoreError> {
+        self.inner.list(filter)
     }
 
     fn create(&self, item: &fleet_core::store::NewItem, by: &str) -> Result<String, StoreError> {
@@ -146,10 +149,6 @@ impl Store for Doctored<'_> {
             read.proof = ReadProof::of(format!("{}{extra}", read.proof.as_str()));
         }
         Ok(read)
-    }
-
-    fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
-        self.inner.assigned_to(seat)
     }
 
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
@@ -934,9 +933,10 @@ fn an_epic_is_refused_by_name_and_nothing_is_written() {
     assert!(
         rig.graph
             .store()
-            .ready()
+            .list(&Filter::Ready)
             .expect("the ready read answers")
-            .contains(&item),
+            .iter()
+            .any(|row| row.id == item),
         "the store calls the epic ready, so the ready check alone lets it through"
     );
 

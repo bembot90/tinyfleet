@@ -24,7 +24,7 @@ use crate::item::deliver::holds;
 use crate::item::{recorded, Stop, Unrecorded};
 use crate::seat::actor::Actor;
 use crate::seat::identity::SeatId;
-use crate::store::{AssignedItem, OrderState, Status, Store, StoreError};
+use crate::store::{ItemSummary, OrderState, Status, Store, StoreError};
 
 /// The words a retire says on stderr for each item it withdrew. The record's
 /// own half is the `order_withdrawn` entry, so an item whose seat was retired
@@ -45,7 +45,7 @@ pub const WITHDRAWN: &str = "ORDER WITHDRAWN at retire";
 /// existed.
 ///
 /// `seat` is the row's full id, which is what an order assigns to.
-pub fn held(store: &dyn Store, seat: &str) -> Result<Vec<AssignedItem>, Stop> {
+pub fn held(store: &dyn Store, seat: &SeatId) -> Result<Vec<ItemSummary>, Stop> {
     Ok(holds(store, seat)?.ordered)
 }
 
@@ -74,7 +74,7 @@ pub fn held(store: &dyn Store, seat: &str) -> Result<Vec<AssignedItem>, Stop> {
 /// what every other write carries.
 pub fn withdraw(
     store: &dyn Store,
-    items: &[AssignedItem],
+    items: &[ItemSummary],
     seat: &SeatId,
     label: &str,
     by: &Actor,

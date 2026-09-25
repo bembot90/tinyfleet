@@ -17,7 +17,7 @@ use crate::seat::actor::Actor;
 use crate::store::bd::{item_from, opened, order_of, shown, SCHEMA_VERSION};
 use crate::store::types::{Capabilities, ExportSpec};
 use crate::store::{
-    keys, AssignedItem, Item, ItemId, NewItem, Order, OrderState, Status, Store, StoreError,
+    keys, Filter, Item, ItemId, ItemSummary, NewItem, Order, OrderState, Status, Store, StoreError,
 };
 
 /// Where the fake's export goes, relative to the root it is handed: a file of
@@ -66,8 +66,9 @@ pub struct FakeStore {
     /// which is the polarity measured on bd 1.3.0 and pinned by an arm of the
     /// plan suite.
     pub metadata: Mutex<BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
-    /// Rows answered for a seat on top of the items assigned to it here.
-    pub held: BTreeMap<String, Vec<AssignedItem>>,
+    /// Rows answered for a seat, keyed by its full id, on top of the items
+    /// assigned to it here.
+    pub held: BTreeMap<String, Vec<ItemSummary>>,
     pub writes: Mutex<Vec<String>>,
     /// The holds raised, in the order they were raised: the item and the
     /// question. The nth hold's id is `hold-<n>`, so an entry naming one and
@@ -328,6 +329,158 @@ impl FakeStore {
             })
             .collect()
     }
+
+    /// One stored item as a listing's row answers it, its order read off the
+    /// METADATA this store would answer a read with, and not off the seeded
+    /// field, by the reading the real listing's rows take — so a row whose
+    /// index a write has removed answers here as the real listing does.
+    fn summary(&self, item: &Item) -> ItemSummary {
+        ItemSummary {
+            id: item.id.clone(),
+            title: item.title.clone(),
+            status: item.status.clone(),
+            item_type: item.item_type.clone(),
+            labels: item.labels.clone(),
+            order: order_of(Some(&serde_json::Value::Object(self.metadata_of(item)))),
+        }
+    }
+
+    /// Each id as the summary of the item stored under it, and an id-only
+    /// summary where nothing is: a seeded id names no item of its own.
+    fn summaries(&self, ids: Vec<String>) -> Vec<ItemSummary> {
+        let items = self.items.lock().expect("the items are not poisoned");
+        ids.into_iter()
+            .map(|id| match items.get(&id) {
+                Some(item) => self.summary(item),
+                None => ItemSummary {
+                    id: ItemId::from(id),
+                    ..ItemSummary::default()
+                },
+            })
+            .collect()
+    }
+
+    /// The seeded ids, plus every item this store holds that it calls ready:
+    /// open, with no dependency standing and no hold raised against it. A
+    /// store computes its own ready set and never holds a second copy of it.
+    ///
+    /// OPEN AND NOT MERELY UNCLOSED: `bd ready` leaves an `in_progress` item
+    /// out, measured on 1.3.0, and a fake that listed one would pass an arm
+    /// asserting a withdrawal put its item back in the ready set.
+    fn ready_ids(&self) -> Vec<String> {
+        let mut ids = self.ready.clone();
+        let on_hold = self.on_hold();
+        for item in self
+            .items
+            .lock()
+            .expect("the items are not poisoned")
+            .values()
+        {
+            let open = item.status == Status::Open;
+            let free = item.blockers.is_empty() && !on_hold.iter().any(|held| item.id == *held);
+            if open && free && !ids.iter().any(|id| item.id == *id) {
+                ids.push(item.id.to_string());
+            }
+        }
+        ids
+    }
+
+    /// The seeded list, plus every open item in this store carrying the label —
+    /// so an item labelled through a write is found by the same read.
+    fn labelled_ids(&self, label: &str) -> Vec<String> {
+        let mut found = self.labelled.get(label).cloned().unwrap_or_default();
+        for item in self
+            .items
+            .lock()
+            .expect("the items are not poisoned")
+            .values()
+        {
+            let carries = item.labels.iter().any(|held| held == label);
+            if carries && item.status != Status::Closed && !found.iter().any(|id| item.id == *id) {
+                found.push(item.id.to_string());
+            }
+        }
+        found
+    }
+
+    /// The seeded rows for the seat, plus every item this store holds assigned
+    /// to it, under the seat's full id.
+    fn assigned(&self, seat: &str) -> Vec<ItemSummary> {
+        let mut rows = self.held.get(seat).cloned().unwrap_or_default();
+        for item in self
+            .items
+            .lock()
+            .expect("the items are not poisoned")
+            .values()
+        {
+            let mine = item.assignee.as_deref() == Some(seat);
+            if mine && !rows.iter().any(|row| row.id == item.id) {
+                rows.push(self.summary(item));
+            }
+        }
+        rows
+    }
+
+    /// The answer `bd show --json` gives under the envelope — the row as an
+    /// array of one, or an error coded `not_found` as beads' contract spells
+    /// it — opened and read by the same functions the real store's `show` goes
+    /// through, so the fake cannot classify an answer the real store classifies
+    /// differently. bd 1.3.0's own error carries no code, and the real half of
+    /// the contract suite is what reads that one.
+    ///
+    /// THE ARGUMENT IS RESOLVED AS bd RESOLVES IT, by [`named`], and an
+    /// ambiguous one answers what bd 1.3.0 answers: the error with no code, and
+    /// the matches on stderr alone. Only a read resolves; every write here
+    /// takes a whole id, so a verb that wrote under the text it was typed is a
+    /// refusal on this board and never a write that quietly landed.
+    fn shown_row(&self, item: &str) -> Result<serde_json::Value, StoreError> {
+        let matches = {
+            let items = self.items.lock().expect("the items are not poisoned");
+            named(items.keys(), item)
+                .into_iter()
+                .filter_map(|id| items.get(&id).cloned())
+                .collect::<Vec<Item>>()
+        };
+        let (data, said) = match matches.as_slice() {
+            [held] => {
+                let metadata = self.metadata_of(held);
+                let reason = self.close_reason(&held.id);
+                (
+                    serde_json::json!([row_of(held, &metadata, reason.as_deref())]),
+                    String::new(),
+                )
+            }
+            [] => (
+                serde_json::json!({
+                    "error": "no issues found matching the provided IDs",
+                    "code": "not_found",
+                }),
+                format!(
+                    "Issue {item} not found\nHint: this ID may have never existed, or may \
+                     reference a deleted/purged record with no trace left in the live database \
+                     — try 'bd history {item}'\n"
+                ),
+            ),
+            many => (
+                serde_json::json!({ "error": "no issues found matching the provided IDs" }),
+                format!(
+                    "Error fetching {item}: ambiguous issue ID: \"{item}\" matches {} issues: \
+                     [{}]\nUse more characters to disambiguate\n",
+                    many.len(),
+                    many.iter()
+                        .map(|held| held.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ),
+            ),
+        };
+        let answer = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "data": data,
+        });
+        let answer = opened(answer, || String::from("the board held in memory"));
+        shown(item, answer, &said)
+    }
 }
 
 /// The metadata a seeded item carries in its own fields, as the object a read
@@ -457,53 +610,31 @@ fn named<'a>(ids: impl Iterator<Item = &'a String> + Clone, given: &str) -> Vec<
 }
 
 impl Store for FakeStore {
-    /// The seeded ids, plus every item this store holds that it calls ready:
-    /// open, with no dependency standing and no hold raised against it. A
-    /// store computes its own ready set and never holds a second copy of it.
-    ///
-    /// OPEN AND NOT MERELY UNCLOSED: `bd ready` leaves an `in_progress` item
-    /// out, measured on 1.3.0, and a fake that listed one would pass an arm
-    /// asserting a withdrawal put its item back in the ready set.
-    fn ready(&self) -> Result<Vec<String>, StoreError> {
+    /// The ready set and a label's items as the ids [`FakeStore::ready`] and
+    /// [`FakeStore::labelled`] seed, each the summary of the item stored under
+    /// it; a seat's items as its seeded rows and the items assigned to it.
+    fn list(&self, filter: &Filter) -> Result<Vec<ItemSummary>, StoreError> {
         if let Some(refused) = self.refuse() {
             return refused;
         }
-        let mut ids = self.ready.clone();
-        let on_hold = self.on_hold();
-        for item in self
-            .items
-            .lock()
-            .expect("the items are not poisoned")
-            .values()
-        {
-            let open = item.status == Status::Open;
-            let free = item.blockers.is_empty() && !on_hold.iter().any(|held| item.id == *held);
-            if open && free && !ids.iter().any(|id| item.id == *id) {
-                ids.push(item.id.to_string());
-            }
-        }
-        Ok(ids)
+        Ok(match filter {
+            Filter::Ready => self.summaries(self.ready_ids()),
+            Filter::Label(label) => self.summaries(self.labelled_ids(label)),
+            Filter::Assignee(seat) => self.assigned(&seat.to_string()),
+        })
     }
 
-    /// The seeded list, plus every open item in this store carrying the label —
-    /// so an item labelled through a write is found by the same read.
-    fn open_labelled(&self, label: &str) -> Result<Vec<String>, StoreError> {
+    /// The id `show` would answer, resolved by the same [`named`] and read
+    /// off the same row, and nothing else of it decoded.
+    fn resolve(&self, id: &str) -> Result<ItemId, StoreError> {
         if let Some(refused) = self.refuse() {
             return refused;
         }
-        let mut found = self.labelled.get(label).cloned().unwrap_or_default();
-        for item in self
-            .items
-            .lock()
-            .expect("the items are not poisoned")
-            .values()
-        {
-            let carries = item.labels.iter().any(|held| held == label);
-            if carries && item.status != Status::Closed && !found.iter().any(|id| item.id == *id) {
-                found.push(item.id.to_string());
-            }
-        }
-        Ok(found)
+        let row = self.shown_row(id)?;
+        row.get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(ItemId::from)
+            .ok_or_else(|| StoreError::Unreadable(format!("{id} answered a row naming no id")))
     }
 
     fn create(&self, item: &NewItem, by: &str) -> Result<String, StoreError> {
@@ -553,97 +684,13 @@ impl Store for FakeStore {
         self.moving(item, |held| held.title = title.to_string())
     }
 
-    /// The answer `bd show --json` gives under the envelope — the row as an
-    /// array of one, or an error coded `not_found` as beads' contract spells
-    /// it — opened and read by the same functions the real store's `show` goes
-    /// through, so the fake cannot classify an answer the real store classifies
-    /// differently. bd 1.3.0's own error carries no code, and the real half of
-    /// the contract suite is what reads that one.
-    ///
-    /// THE ARGUMENT IS RESOLVED AS bd RESOLVES IT, by [`named`], and an
-    /// ambiguous one answers what bd 1.3.0 answers: the error with no code, and
-    /// the matches on stderr alone. Only this read resolves; every write here
-    /// takes a whole id, so a verb that wrote under the text it was typed is a
-    /// refusal on this board and never a write that quietly landed.
+    /// The row [`FakeStore::shown_row`] answers, decoded as the real store's
+    /// `show` decodes it.
     fn show(&self, item: &str) -> Result<Item, StoreError> {
         if let Some(refused) = self.refuse() {
             return refused;
         }
-        let matches = {
-            let items = self.items.lock().expect("the items are not poisoned");
-            named(items.keys(), item)
-                .into_iter()
-                .filter_map(|id| items.get(&id).cloned())
-                .collect::<Vec<Item>>()
-        };
-        let (data, said) = match matches.as_slice() {
-            [held] => {
-                let metadata = self.metadata_of(held);
-                let reason = self.close_reason(&held.id);
-                (
-                    serde_json::json!([row_of(held, &metadata, reason.as_deref())]),
-                    String::new(),
-                )
-            }
-            [] => (
-                serde_json::json!({
-                    "error": "no issues found matching the provided IDs",
-                    "code": "not_found",
-                }),
-                format!(
-                    "Issue {item} not found\nHint: this ID may have never existed, or may \
-                     reference a deleted/purged record with no trace left in the live database \
-                     — try 'bd history {item}'\n"
-                ),
-            ),
-            many => (
-                serde_json::json!({ "error": "no issues found matching the provided IDs" }),
-                format!(
-                    "Error fetching {item}: ambiguous issue ID: \"{item}\" matches {} issues: \
-                     [{}]\nUse more characters to disambiguate\n",
-                    many.len(),
-                    many.iter()
-                        .map(|held| held.id.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                ),
-            ),
-        };
-        let answer = serde_json::json!({
-            "schema_version": SCHEMA_VERSION,
-            "data": data,
-        });
-        let answer = opened(answer, || String::from("the board held in memory"));
-        item_from(item, &shown(item, answer, &said)?)
-    }
-
-    fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
-        if let Some(refused) = self.refuse() {
-            return refused;
-        }
-        let mut rows = self.held.get(seat).cloned().unwrap_or_default();
-        for item in self
-            .items
-            .lock()
-            .expect("the items are not poisoned")
-            .values()
-        {
-            let mine = item.assignee.as_deref() == Some(seat);
-            if mine && !rows.iter().any(|row| item.id == row.id) {
-                rows.push(AssignedItem {
-                    id: item.id.to_string(),
-                    title: item.title.clone(),
-                    status: item.status.clone(),
-                    // Off the METADATA this store would answer a read with, and
-                    // not off the seeded field, and by the reading the real
-                    // listing's rows take — so a row whose index a write has
-                    // removed answers here as the real listing does.
-                    order: order_of(Some(&serde_json::Value::Object(self.metadata_of(item)))),
-                    item_type: item.item_type.clone(),
-                });
-            }
-        }
-        Ok(rows)
+        item_from(item, &self.shown_row(item)?)
     }
 
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
@@ -915,23 +962,20 @@ impl FakeStore {
 /// A seam that takes an owned `Box<dyn Store>` leaves an arm nothing to assert
 /// on once it has answered; a clone of one of these is the same store.
 impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
-    fn ready(&self) -> Result<Vec<String>, StoreError> {
-        (**self).ready()
-    }
     fn show(&self, item: &str) -> Result<Item, StoreError> {
         (**self).show(item)
     }
-    fn open_labelled(&self, label: &str) -> Result<Vec<String>, StoreError> {
-        (**self).open_labelled(label)
+    fn resolve(&self, id: &str) -> Result<ItemId, StoreError> {
+        (**self).resolve(id)
+    }
+    fn list(&self, filter: &Filter) -> Result<Vec<ItemSummary>, StoreError> {
+        (**self).list(filter)
     }
     fn create(&self, item: &NewItem, by: &str) -> Result<String, StoreError> {
         (**self).create(item, by)
     }
     fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError> {
         (**self).set_title(item, title, by)
-    }
-    fn assigned_to(&self, seat: &str) -> Result<Vec<AssignedItem>, StoreError> {
-        (**self).assigned_to(seat)
     }
     fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
         (**self).assign(item, seat, by)

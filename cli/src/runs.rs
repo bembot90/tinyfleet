@@ -285,12 +285,12 @@ fn withdrawn_from(
     label: &str,
     by: &Actor,
 ) -> Result<Vec<String>, Refusal> {
-    let held = seat::retire::held(store, &seat.to_string()).map_err(as_refusal)?;
+    let held = seat::retire::held(store, seat).map_err(as_refusal)?;
     if held.is_empty() {
         return Ok(Vec::new());
     }
     seat::retire::withdraw(store, &held, seat, label, by).map_err(as_refusal)?;
-    Ok(held.into_iter().map(|row| row.id).collect())
+    Ok(held.into_iter().map(|row| row.id.to_string()).collect())
 }
 
 /// The run seam's own half of the retire, which no end-to-end arm reaches: the
@@ -302,7 +302,7 @@ mod tests {
     use super::*;
     use fleet_core::entry::{Body, OrderWithdrawn, Withdrawal};
     use fleet_core::item::COULD_NOT_TELL;
-    use fleet_core::store::{Item, Order, OrderKind, OrderState, Stamp, Status};
+    use fleet_core::store::{Filter, Item, Order, OrderKind, OrderState, Stamp, Status};
     use fleet_core::test_support::FakeStore;
 
     /// The seat's full id, which the order was assigned to and the withdrawal
@@ -544,8 +544,11 @@ mod tests {
                 ("FLEET_BD_BIN", bd.as_os_str()),
             ]);
             (
-                Bd::at_bin(&root, Path::new(fleet_core::store::bd::BD)).ready(),
-                Engine::on(dir.join("machine")).stores.open(&root).ready(),
+                Bd::at_bin(&root, Path::new(fleet_core::store::bd::BD)).list(&Filter::Ready),
+                Engine::on(dir.join("machine"))
+                    .stores
+                    .open(&root)
+                    .list(&Filter::Ready),
             )
         };
 
