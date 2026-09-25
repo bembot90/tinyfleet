@@ -34,8 +34,9 @@ use super::types::{
     RefusalReason, Resolved, Scratched, Shown,
 };
 use super::{
-    first_value, tail, unchanged, validated, Filter, HoldId, Item, ItemId, ItemSummary, NewItem,
-    Order, ReadProof, RunRecord, Store, StoreError, Update, Version, STORE_TIMEOUT,
+    first_value, tail, unchanged, validated, validated_new, Filter, HoldId, Item, ItemId,
+    ItemSummary, NewItem, Order, ReadProof, RunRecord, Store, StoreError, Update, Version,
+    STORE_TIMEOUT,
 };
 use crate::entry::{self, Body, Entry};
 use crate::process::{deadline_cause, run_bounded_fed};
@@ -246,6 +247,7 @@ impl Store for Exec {
     }
 
     fn create(&self, item: &NewItem, by: &Actor) -> Result<ItemId, StoreError> {
+        validated_new(item)?;
         let (Created { id }, _) = self.call("create", fields(json!({ "item": item, "by": by })))?;
         Ok(id)
     }
@@ -819,6 +821,22 @@ mod tests {
         let why = unreadable(stub.exec().update(&id(), &Update::default(), &by()));
         assert!(why.starts_with("an update names neither"), "{why}");
         assert!(stub.verbs().is_empty(), "nothing was run");
+
+        let stub = Stub::new(
+            "priority",
+            &answers(r#"{"schema_version":1,"id":"fx-n"}"#, 0),
+        );
+        let item = NewItem {
+            title: String::from("t"),
+            item_type: String::from("task"),
+            priority: Some(5),
+            ..NewItem::default()
+        };
+        assert_eq!(
+            unreadable(stub.exec().create(&item, &by())),
+            "the item `t` does not validate: priority is 5; the range is 0 to 4 — nothing was written"
+        );
+        assert!(stub.verbs().is_empty(), "nothing was sent");
     }
 
     /// A timeline's entries read in the shape `fleet item show --json` prints

@@ -410,7 +410,8 @@ fn resolve_by_fragment(ctx: &Ctx) -> Answer {
 }
 
 /// An id no item carries is the record's answer — Refused — and never a store
-/// that could not tell.
+/// that could not tell: to a read, and to a write, which is the title's
+/// `update` because every store takes that one the same way.
 fn missing_is_refused(ctx: &Ctx) -> Answer {
     let resolved = ctx.store.resolve(NOBODY);
     ensure(matches!(resolved, Err(StoreError::Refused(_))), || {
@@ -424,6 +425,18 @@ fn missing_is_refused(ctx: &Ctx) -> Answer {
         format!(
             "show `{NOBODY}` answered {}, and an id no item carries is Refused",
             outcome(&shown)
+        )
+    })?;
+    let updated = ctx.store.update(
+        &ItemId::from(NOBODY),
+        &Update::title(String::from("a title for nobody")),
+        &by(),
+    );
+    ensure(matches!(updated, Err(StoreError::Refused(_))), || {
+        format!(
+            "an update of `{NOBODY}`'s title answered {}, and a write to an id no item \
+             carries is Refused",
+            outcome(&updated)
         )
     })?;
     Ok(Passed::Pass)

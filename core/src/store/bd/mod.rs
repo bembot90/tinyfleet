@@ -25,8 +25,8 @@ use serde::Deserialize;
 use super::types::{Capabilities, ExportSpec};
 use super::{
     already_cleared, already_closed, first_value, holder_named, not_a_seat, tail, unchanged,
-    validated, Filter, HoldId, Item, ItemId, ItemSummary, NewItem, Order, OrderState, ReadProof,
-    RunRecord, Status, Store, StoreError, Update, Version, STORE_TIMEOUT,
+    validated, validated_new, Filter, HoldId, Item, ItemId, ItemSummary, NewItem, Order,
+    OrderState, ReadProof, RunRecord, Status, Store, StoreError, Update, Version, STORE_TIMEOUT,
 };
 use crate::entry::{self, Body, Entry};
 use crate::process::{deadline_cause, run_bounded};
@@ -218,10 +218,40 @@ impl Bd {
             .collect()
     }
 
+    /// One write that has to succeed, its answer handed back whole.
+    fn written(&self, args: &[&str]) -> Result<Output, StoreError> {
+        let out = self.run(args)?;
+        if !out.status.success() {
+            return Err(self.not_written(args, &out));
+        }
+        Ok(out)
+    }
+
+    /// The refusal a write answers where bd did not take it: bd's word that
+    /// an item the write names is not there — [`missing`]'s reading — is the
+    /// record's answer, Refused, and anything else a store that did not
+    /// answer. The one place a write's failure is classified, so every write
+    /// reads a missing item alike.
+    fn not_written(&self, args: &[&str], out: &Output) -> StoreError {
+        let error = self.json(args, out).and_then(|answer| {
+            answer
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        });
+        let said = String::from_utf8_lossy(&out.stderr);
+        match missing(args, &said, error.as_deref()) {
+            Some((item, said)) => StoreError::Refused(format!(
+                "{item} is not in the store — nothing was written ({said})"
+            )),
+            None => self.refused(args, out),
+        }
+    }
+
     /// The id off a write's OWN answer. A second read for the newest item would
     /// name whatever else landed in the store between the two calls.
     fn created_id(&self, args: &[&str]) -> Result<String, StoreError> {
-        let out = self.answered(args)?;
+        let out = self.written(args)?;
         self.json(args, &out)
             .as_ref()
             .and_then(|value| value.get("id"))
@@ -237,7 +267,7 @@ impl Bd {
     }
 
     fn wrote(&self, args: &[&str]) -> Result<(), StoreError> {
-        self.answered(args).map(|_| ())
+        self.written(args).map(|_| ())
     }
 
     /// A write carrying `--if-assignee <holder>`, and `--if-status` beside it
@@ -254,7 +284,7 @@ impl Bd {
             )));
         }
         if !out.status.success() {
-            return Err(self.refused(args, &out));
+            return Err(self.not_written(args, &out));
         }
         Ok(())
     }
@@ -380,6 +410,43 @@ fn ambiguous(said: &str) -> Option<String> {
         .map(|(ids, _)| ids.split_whitespace().collect::<Vec<_>>().join(", "))
         .filter(|ids| !ids.is_empty());
     Some(listed.unwrap_or_else(|| line.trim().to_string()))
+}
+
+/// bd's word that a write named an item it does not hold: the argument it
+/// named, and the line of `said` (the call's stderr), or the `error` of its
+/// JSON answer, that names it as not found. `None` where neither does.
+///
+/// Measured on bd 1.3.0, on a scratch board, each write the adapter makes on
+/// an id the board does not hold exits 1, having written nothing:
+/// - `update <id> …`, with every set of flags the adapter sends, fenced or
+///   not: stderr `Error resolving <id>: no issue found matching "<id>"`, and
+///   nothing on stdout.
+/// - `close <id> …`: stderr `Error: resolving ID <id>: no issue found matching
+///   "<id>"`.
+/// - `comments add <id> … --json`: nothing on stderr, and the error `resolving
+///   <id>: no issue found matching "<id>"` as the JSON answer.
+/// - `gate create --blocks <id> … --json`: nothing on stderr, and the error
+///   `issue not found: <id>` as the JSON answer.
+/// - `gate resolve <hold> …`: stderr `Error: gate not found: <hold>`.
+///
+/// THE WORDS MUST NAME AN ARGUMENT THE CALL CARRIED — quoted, or ending the
+/// line — so an answer about any other id is not read as one this write named
+/// being missing. An ambiguous fragment is a different answer, `ambiguous
+/// issue ID: "<text>" matches N issues: […]` on the same `update`, and
+/// carries none of these words.
+fn missing(args: &[&str], said: &str, error: Option<&str>) -> Option<(String, String)> {
+    let lines: Vec<&str> = said.lines().chain(error).map(str::trim).collect();
+    args.iter().filter(|arg| !arg.is_empty()).find_map(|arg| {
+        let quoted = format!("no issue found matching \"{arg}\"");
+        let ending = [
+            format!("issue not found: {arg}"),
+            format!("gate not found: {arg}"),
+        ];
+        lines
+            .iter()
+            .find(|line| line.contains(&quoted) || ending.iter().any(|end| line.ends_with(end)))
+            .map(|line| (arg.to_string(), line.to_string()))
+    })
 }
 
 /// The one element a `show` answers about. The answer is an array of one; an
@@ -587,6 +654,7 @@ impl Store for Bd {
     /// `--priority` only where the item names one: bd files an item that
     /// names none at its own default.
     fn create(&self, item: &NewItem, by: &Actor) -> Result<ItemId, StoreError> {
+        validated_new(item)?;
         let labels = item.labels.join(",");
         let priority = item.priority.map(|n| n.to_string());
         let by = by.to_string();

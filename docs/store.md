@@ -248,6 +248,7 @@ An item to file. The store names it, so there is no id.
 ```
 
 `priority` runs from 0 to 4, and is left out where the item names none.
+fleet never sends one outside that range.
 
 ### Update
 
@@ -316,7 +317,8 @@ fields the ones beyond `schema_version`.
 
 - `by` is an actor, `order` an order and `run` a run record.
 - `show` resolves its `id` exactly as `resolve` does.
-- `update` with neither `title` nor `assignee` is usage, exit 2.
+- `update` with neither `title` nor `assignee` is could not tell, exit 3,
+  and writes nothing. fleet never sends one.
 - `append`'s `entry` is the entry fleet appends: one JSON object carrying
   `"fleet.entry": 1` and a `kind`. Each entry `timeline` answers carries the
   id and time the store gave it, the actor who appended it, and the entry fleet

@@ -125,6 +125,9 @@ pub trait Store {
     /// this returns — so the title in [`NewItem`] is what the record carries
     /// until the caller retitles it through [`update`](Store::update), and the
     /// caller's read-back is what says the second write landed.
+    ///
+    /// An item that does not validate — a priority past 4 — is Unreadable,
+    /// and nothing is sent: the store is never asked to file it.
     fn create(&self, item: &NewItem, by: &Actor) -> Result<ItemId, StoreError>;
 
     /// The item's title, its assignee or both moved in ONE write. A field the
@@ -541,6 +544,17 @@ pub(crate) fn validated(item: &str, body: &Body) -> Result<(), StoreError> {
         StoreError::Unreadable(format!(
             "the {} entry for {item} does not validate: {why} — nothing was written",
             body.kind()
+        ))
+    })
+}
+
+/// The item a create is handed, held to [`NewItem::validate`] before anything
+/// is sent — the one refusal both stores answer, word for word.
+pub(crate) fn validated_new(item: &NewItem) -> Result<(), StoreError> {
+    item.validate().map_err(|why| {
+        StoreError::Unreadable(format!(
+            "the item `{}` does not validate: {why} — nothing was written",
+            item.title
         ))
     })
 }

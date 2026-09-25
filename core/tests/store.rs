@@ -1062,6 +1062,193 @@ fn a_create_names_its_priority_only_where_the_item_does() {
     );
 }
 
+/// A create whose priority is past 4 is refused with the item's own reason,
+/// and bd is never asked to file it; the board held in memory refuses it in
+/// the same words.
+#[test]
+fn a_create_past_priority_four_is_refused_before_bd_is_asked() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-create-priority-five");
+    let log = dir.path("argv");
+    let bin = argv_bd(&dir, &log, r#"{"id": "fx-new"}"#);
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+    let item = NewItem {
+        title: String::from("t"),
+        description: String::from("d"),
+        item_type: String::from("task"),
+        labels: Vec::new(),
+        priority: Some(5),
+    };
+    let refusal = Err(StoreError::Unreadable(String::from(
+        "the item `t` does not validate: priority is 5; the range is 0 to 4 — nothing was written",
+    )));
+
+    assert_eq!(Bd::at_bin(&root, &bin).create(&item, &the_test()), refusal);
+    assert_eq!(argvs(&log, &root), Vec::<String>::new(), "bd was not asked");
+
+    let board = fleet_core::test_support::Board::new("store-fake-priority-five");
+    assert_eq!(board.store.create(&item, &the_test()), refusal);
+}
+
+/// A `bd` at an absolute path that records each call's argv as `argv_bd`'s
+/// does, and answers every call with `stdout`, `stderr` and exit `code`.
+fn answering_bd(dir: &Fixture, log: &Path, stdout: &str, stderr: &str, code: i32) -> PathBuf {
+    std::fs::write(dir.path("stdout"), stdout).expect("the answer is written");
+    std::fs::write(dir.path("stderr"), stderr).expect("the answer is written");
+    let bin = dir.path("bd");
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\n\
+             printf '[%s]' \"$@\" >> '{log}'\n\
+             printf '\\n' >> '{log}'\n\
+             cat '{out}'\n\
+             cat '{err}' >&2\n\
+             exit {code}\n",
+            log = log.display(),
+            out = dir.path("stdout").display(),
+            err = dir.path("stderr").display(),
+        ),
+    )
+    .expect("the shim is written");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+        .expect("the shim is executable");
+    bin
+}
+
+/// What bd 1.3.0 prints on stderr for an `update` of an item it does not
+/// hold — measured on a scratch board, the same three lines whatever flags the
+/// call carried.
+fn unheld_update(id: &str) -> String {
+    format!(
+        "Error resolving {id}: no issue found matching \"{id}\"\n\
+         Error: 1 of 1 issues failed to update\n  \
+         {id}: resolving issue: no issue found matching \"{id}\"\n"
+    )
+}
+
+/// A WRITE ON AN ITEM BD DOES NOT HOLD IS REFUSED, and nothing was written:
+/// the contract's `missing`, for every write the adapter makes, whichever of
+/// bd's three shapes of that answer it came in. An exit 1 naming another id,
+/// or saying anything else, is still a store that did not answer.
+#[test]
+fn a_write_on_an_item_bd_does_not_hold_is_refused() {
+    let _guard = path_lock();
+    let gone = "fx-zzzz";
+    let id = ItemId::from(gone);
+    let seat = SeatId::parse(SEAT).expect("the seat's id parses");
+    let run = RunRecord {
+        hash: String::from("h1"),
+        workflow: String::from("greet"),
+        pack: String::from("ts"),
+        entry: String::from("greet.ts"),
+        started_at: Stamp::parse("2026-09-25T10:00:00Z").expect("a stamp"),
+    };
+    type Write<'a> = Box<dyn Fn(&Bd) -> Result<(), StoreError> + 'a>;
+    let writes: Vec<(&str, Write)> = vec![
+        (
+            "update",
+            Box::new(|bd| bd.update(&id, &Update::title(String::from("t")), &the_test())),
+        ),
+        ("run.set", Box::new(|bd| bd.run_set(&id, &run, &the_test()))),
+        (
+            "order.withdraw",
+            Box::new(|bd| bd.order_withdraw(&id, &the_test())),
+        ),
+        ("reopen", Box::new(|bd| bd.reopen(gone, "run:the-test"))),
+        (
+            "hand_over",
+            Box::new(|bd| bd.hand_over(gone, SEAT, "", "run:the-test")),
+        ),
+        (
+            "order_withdraw_from",
+            Box::new(|bd| {
+                bd.order_withdraw_from(
+                    &id,
+                    &seat,
+                    &fleet_core::store::Status::InProgress,
+                    &the_test(),
+                )
+            }),
+        ),
+    ];
+    for (n, (verb, write)) in writes.iter().enumerate() {
+        let dir = Fixture::new(&format!("store-missing-write-{n}"));
+        let log = dir.path("argv");
+        let bin = answering_bd(&dir, &log, "", &unheld_update(gone), 1);
+        let root = dir.path("project");
+        std::fs::create_dir_all(&root).expect("the project root is created");
+        match write(&Bd::at_bin(&root, &bin)) {
+            Err(StoreError::Refused(why)) => assert_eq!(
+                why,
+                format!(
+                    "{gone} is not in the store — nothing was written (Error resolving {gone}: \
+                     no issue found matching \"{gone}\")"
+                ),
+                "{verb}"
+            ),
+            other => panic!("{verb} on an item bd does not hold is Refused: {other:?}"),
+        }
+    }
+
+    let answered = |label: &str, stdout: &str, stderr: &str| {
+        let dir = Fixture::new(label);
+        let log = dir.path("argv");
+        let bin = answering_bd(&dir, &log, stdout, stderr, 1);
+        let root = dir.path("project");
+        std::fs::create_dir_all(&root).expect("the project root is created");
+        (dir, Bd::at_bin(&root, &bin))
+    };
+    let (_dir, bd) = answered(
+        "store-missing-append",
+        &format!(
+            r#"{{"data":{{"error":"resolving {gone}: no issue found matching \"{gone}\""}},"schema_version":1}}"#
+        ),
+        "",
+    );
+    match bd.append(&id, &an_order(), &the_test()) {
+        Err(StoreError::Refused(why)) => assert!(
+            why.starts_with(&format!("{gone} is not in the store — nothing was written")),
+            "{why}"
+        ),
+        other => panic!("an append to an item bd does not hold is Refused: {other:?}"),
+    }
+    let (_dir, bd) = answered(
+        "store-missing-hold",
+        &format!(r#"{{"data":{{"error":"issue not found: {gone}"}},"schema_version":1}}"#),
+        "",
+    );
+    assert_eq!(
+        bd.hold_raise(&id, "why", &the_test()),
+        Err(StoreError::Refused(format!(
+            "{gone} is not in the store — nothing was written (issue not found: {gone})"
+        )))
+    );
+
+    for (label, said) in [
+        ("store-missing-other", unheld_update("fx-other")),
+        (
+            "store-missing-held",
+            format!("Error: cannot reassign {gone}: held by \"s1\" (in_progress)\n"),
+        ),
+        (
+            "store-missing-ambiguous",
+            String::from(
+                "Error resolving fx-z: ambiguous issue ID: \"fx-z\" matches 2 issues: \
+                 [fx-zzzz fx-zzza]\n",
+            ),
+        ),
+    ] {
+        let (_dir, bd) = answered(label, "", &said);
+        match bd.update(&id, &Update::title(String::from("t")), &the_test()) {
+            Err(StoreError::Unreadable(_)) => {}
+            other => panic!("{label}: an exit 1 that names {gone} as no missing item is could not tell: {other:?}"),
+        }
+    }
+}
+
 /// The version is `bd`, at the version the FIRST line `bd --version` prints
 /// names: its first token opening on a digit, bare of a leading `v`. A line
 /// naming none is answered whole and trimmed, so what bd said is still read.

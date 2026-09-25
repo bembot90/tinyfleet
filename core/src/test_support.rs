@@ -20,8 +20,8 @@ use crate::store::bd::{
 };
 use crate::store::types::{Capabilities, ExportSpec};
 use crate::store::{
-    already_cleared, already_closed, unchanged, Filter, HoldId, Item, ItemId, ItemSummary, NewItem,
-    Order, OrderState, RunRecord, Status, Store, StoreError, Update, Version,
+    already_cleared, already_closed, unchanged, validated_new, Filter, HoldId, Item, ItemId,
+    ItemSummary, NewItem, Order, OrderState, RunRecord, Status, Store, StoreError, Update, Version,
 };
 
 /// Where the fake's export goes, relative to the root it is handed: a file of
@@ -655,6 +655,7 @@ impl Store for FakeStore {
     }
 
     fn create(&self, item: &NewItem, by: &Actor) -> Result<ItemId, StoreError> {
+        validated_new(item)?;
         self.log(format!(
             "create {} {} {} [{}] {by}",
             item.title,
