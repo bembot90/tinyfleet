@@ -89,7 +89,7 @@ dependencies are the real blockers.
 | fleet-zlk.14 | the SDK reads the store through `fleet item show --json` — until, spawn and hold — and a wake names kinds and a strea… | fleet-zlk.4, fleet-zlk.5, fleet-zlk.7, fleet-zlk.9, fleet-zlk.11, fleet-zlk.12 | ☑ |
 | fleet-zlk.15 | item lines on the stream become wake signals {item, entry, kind}; the controller's crash-cap latch and the parked sta… | fleet-zlk.13, fleet-zlk.14 | ☑ |
 | fleet-zlk.16 | docs and the record-reading skills say the timeline is the record; preboard reads fleet.orders and runs, never notes | fleet-zlk.15 | ☑ |
-| fleet-zlk.17 | delete the marker grammar and the notes plumbing — fleet reads and writes no notes | fleet-zlk.16 | ☐ |
+| fleet-zlk.17 | delete the marker grammar and the notes plumbing — fleet reads and writes no notes | fleet-zlk.16 | ☑ |
 
 ## Flight 7 — the store contract (fleet-0q4, split) and adopting a board
 
