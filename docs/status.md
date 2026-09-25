@@ -31,9 +31,12 @@ three read files and write nothing.
   - `ts`: its stamp, in UTC, shaped `YYYY-MM-DDTHH:MM:SSZ`.
   - `type`: what happened, as `<subject>.<what>`, for example
     `controller.started`, `seat.woke` or `run.failed`.
-  - `actor`: who the line is from or about. On a seat's lines this is the
-    seat's name, on the controller's own lines it is `controller`, and on a
-    routine's lines it is the routine's name.
+  - `actor`: who the line is from or about, as an object `{"kind", "id"}`.
+    On a seat's lines the kind is `seat` and the id the seat's full id; on
+    the controller's own lines it is `controller` and this machine's
+    identity; on a run's lines `run` and the run's id; on a routine's lines
+    `routine` and the routine's name. See
+    [Items and the record](items.md#saying-who-acts).
   - `payload`: the event's details, as a JSON object.
 
 ## Reading the fleet's status
@@ -45,15 +48,15 @@ $ fleet status
 projection <stamp> — <age>s old — controller 0.1.0, agent 2.1.280
 
 roster
-  builder-1 (orla)  present  decision leave-alone, outcome none  project demo, worktree /work/demo/builder-1
-  reviewer  absent  decision leave-alone, outcome none  project demo, worktree /work/demo/reviewer
+  orla-10b55fd3  present  decision leave-alone, outcome none  project demo, worktree /work/demo-worktrees/orla-10b55fd3
+  rex-51df4f54  absent  decision leave-alone, outcome none  project demo, worktree /work/demo-worktrees/rex-51df4f54
 
 in flight  nothing
 effects  on
 
 context  (rest threshold 400000 tokens)
-  builder-1  120000 tokens, 30% of the threshold, 280000 left
-  reviewer  —
+  orla-10b55fd3  120000 tokens, 30% of the threshold, 280000 left
+  rex-51df4f54  —
 
 [[core.flight.rules]]
   type bug → review=none
@@ -101,21 +104,21 @@ Until that access is granted, the controller carries out no effects, and the
 $ fleet status
 projection <stale-stamp> — STALE, <stale-age>s old — controller 0.1.0, agent 2.1.261 (expected 2.1.280)
 
-GRANT PENDING — the listing of /work/demo/reviewer has not answered within 10s and is still outstanding
+GRANT PENDING — the listing of /work/demo-worktrees/rex-51df4f54 has not answered within 10s and is still outstanding
 
 roster
-  builder-1 (orla)  present  decision leave-alone, outcome none  project demo, worktree /work/demo/builder-1
-  reviewer  prompt-blocked, waiting for a permission dialog  decision halt, outcome halted  project demo, worktree /work/demo/reviewer  HALTED, 3 blind dispatch(es)
+  orla-10b55fd3  present  decision leave-alone, outcome none  project demo, worktree /work/demo-worktrees/orla-10b55fd3
+  rex-51df4f54  prompt-blocked, waiting for a permission dialog  decision halt, outcome halted  project demo, worktree /work/demo-worktrees/rex-51df4f54  HALTED, 3 blind dispatch(es)
 
-in flight  builder-1 — revive
-effects  off — the listing of /work/demo/reviewer has not answered within 10s and is still outstanding
+in flight  orla-10b55fd3 — revive
+effects  off — the listing of /work/demo-worktrees/rex-51df4f54 has not answered within 10s and is still outstanding
 ...
 ```
 
 ### The roster
 
-Each seat gets one row. The row starts with the seat's name, followed in
-parentheses by the name you chose for it, if you chose one. Then come its
+Each seat gets one row. The row starts with the seat's machine name,
+`<slug>-<short id>` (see [The controller and seats](seats.md)). Then come its
 roster state, the decision the controller reached for it on the last poll,
 what the controller did about that decision, and the seat's project and
 worktree. A dash stands for a project or worktree the projection does not
@@ -195,26 +198,34 @@ token count.
 
 ## Reading one seat
 
-`--seat <name>` prints two lines for one seat: its roster row and its context
-row. The name can be the seat's own name or the name you chose for it, and it
-must match exactly, including case:
+`--seat <seat>` prints two lines for one seat: its roster row and its context
+row. It takes a seat argument, resolved over the seat list in the machine
+directory: the seat's full id, eight or more hex digits of it, its name in
+any case, or its machine name:
 
 ```sh
-$ fleet status --seat orla
-builder-1 (orla)  present  decision leave-alone, outcome none  project demo, worktree /work/demo/builder-1
-builder-1  120000 tokens, 30% of the threshold, 280000 left
+$ fleet status --seat Orla
+orla-10b55fd3  present  decision leave-alone, outcome none  project demo, worktree /work/demo-worktrees/orla-10b55fd3
+orla-10b55fd3  120000 tokens, 30% of the threshold, 280000 left
 ```
 
 It exits 0. It reads the same files as the whole page, so a policy file or
 stream it cannot read still makes it exit 3, even though it prints neither the
-rules nor the runs.
+rules nor the runs. An argument that names no seat, or more than one, exits
+1 and lists the seats:
+
+```sh
+$ fleet status --seat 01a0d5ff
+fleet status: 01a0d5ff names 2 seats — orla-10b55fd3 (01a0d5ff-b143-7781-9967-5ccd10b55fd3), rex-51df4f54 (01a0d5ff-b14e-7d43-809e-43b851df4f54) — say more of the id
+```
 
 ## Printing the projection document
 
 `--json` prints the projection exactly as stored, byte for byte, and exits 0.
 Before printing, fleet parses the document, so a projection that the page
-would refuse is refused here too. `--json` and `--seat` cannot be used
-together.
+would refuse is refused here too. Each seat's row names its seat as an
+object, `"seat": {"id": …, "name": …, "kind": …}`, with no `name` where the
+seat has none. `--json` and `--seat` cannot be used together.
 
 ## Reading the stream
 
@@ -223,10 +234,10 @@ are stored, one per line on standard output:
 
 ```sh
 $ fleet event tail
-{"id":"<id-1>","seq":1,"ts":"<event-stamp>","type":"seat.woke","actor":"builder-1","payload":{}}
-{"id":"<id-2>","seq":2,"ts":"<event-stamp>","type":"seat.woke","actor":"reviewer","payload":{}}
-{"id":"<id-3>","seq":3,"ts":"<event-stamp>","type":"seat.handed_off","actor":"builder-1","payload":{}}
-{"id":"<id-4>","seq":4,"ts":"<event-stamp>","type":"seat.exited","actor":"builder-1","payload":{}}
+{"id":"<id-1>","seq":1,"ts":"<event-stamp>","type":"seat.woke","actor":{"kind":"seat","id":"01a0d5ff-b143-7781-9967-5ccd10b55fd3"},"payload":{}}
+{"id":"<id-2>","seq":2,"ts":"<event-stamp>","type":"seat.woke","actor":{"kind":"seat","id":"01a0d5ff-b14e-7d43-809e-43b851df4f54"},"payload":{}}
+{"id":"<id-3>","seq":3,"ts":"<event-stamp>","type":"seat.handed_off","actor":{"kind":"seat","id":"01a0d5ff-b143-7781-9967-5ccd10b55fd3"},"payload":{}}
+{"id":"<id-4>","seq":4,"ts":"<event-stamp>","type":"seat.exited","actor":{"kind":"seat","id":"01a0d5ff-b143-7781-9967-5ccd10b55fd3"},"payload":{}}
 ```
 
 It exits 0. It skips any line that does not parse as JSON or has no `seq`.
@@ -235,20 +246,41 @@ still exits 0.
 
 ### Filtering
 
-`--seat <name>` keeps only the lines whose `actor` is that name, and
-`--type <type>` keeps only the lines of that type. When you give both, a line
-must match both. The filters are applied before the last 50 lines are taken,
-so `--seat` on a busy stream still gives you 50 of that seat's lines:
+Three filters narrow the tail:
+
+- `--seat <seat>` keeps the lines whose actor is that seat. It takes a seat
+  argument — the seat's full id, eight or more hex digits of it, its name in
+  any case, or its machine name — resolved once, before anything is read,
+  over the seats the fleet lists: the `[seats]` table in `fleet.toml`, this
+  machine's transient seats and this machine's identity.
+- `--actor <kind>:<id>` keeps the lines whose actor is exactly that typed
+  actor: `seat:<id>` with a full seat id, `run:<id>`, `routine:<name>` or
+  `controller:<id>`.
+- `--type <type>` keeps the lines of that type.
+
+A line must match every filter you give. The filters are applied before the
+last 50 lines are taken, so `--seat` on a busy stream still gives you 50 of
+that seat's lines:
 
 ```sh
-$ fleet event tail --seat builder-1 --type seat.woke
-{"id":"<id-1>","seq":1,"ts":"<event-stamp>","type":"seat.woke","actor":"builder-1","payload":{}}
+$ fleet event tail --seat orla --type seat.woke
+{"id":"<id-1>","seq":1,"ts":"<event-stamp>","type":"seat.woke","actor":{"kind":"seat","id":"01a0d5ff-b143-7781-9967-5ccd10b55fd3"},"payload":{}}
 ```
 
-Both filters need an exact match. A filter that matches nothing prints
+`--actor` and `--type` need an exact match, kind and id both, so a run's
+lines never match a seat's filter. A filter that matches nothing prints
 nothing and exits 0. Types are spelled with underscores: the line
 `fleet event handed-off` writes has the type `seat.handed_off`, and
 `--type seat.handed-off` matches nothing.
+
+A `--seat` that names no seat, or more than one, is refused with exit 1 and
+the seats listed; an empty one is exit 2. An `--actor` that is not
+`<kind>:<id>` is exit 2:
+
+```sh
+$ fleet event tail --actor controller
+fleet event tail: --actor controller is not kind:id
+```
 
 ### Starting from a point
 
@@ -257,8 +289,8 @@ nothing and exits 0. Types are spelled with underscores: the line
 
 ```sh
 $ fleet event tail --since 2
-{"id":"<id-3>","seq":3,"ts":"<event-stamp>","type":"seat.handed_off","actor":"builder-1","payload":{}}
-{"id":"<id-4>","seq":4,"ts":"<event-stamp>","type":"seat.exited","actor":"builder-1","payload":{}}
+{"id":"<id-3>","seq":3,"ts":"<event-stamp>","type":"seat.handed_off","actor":{"kind":"seat","id":"01a0d5ff-b143-7781-9967-5ccd10b55fd3"},"payload":{}}
+{"id":"<id-4>","seq":4,"ts":"<event-stamp>","type":"seat.exited","actor":{"kind":"seat","id":"01a0d5ff-b143-7781-9967-5ccd10b55fd3"},"payload":{}}
 ```
 
 `--since` also takes a stamp of the form `YYYY-MM-DDTHH:MM:SSZ`. Fleet looks
@@ -269,7 +301,7 @@ resolved to:
 ```sh
 $ fleet event tail --since <event-stamp>
 --since <event-stamp> resolved to 1
-{"id":"<id-1>","seq":1,"ts":"<event-stamp>","type":"seat.woke","actor":"builder-1","payload":{}}
+{"id":"<id-1>","seq":1,"ts":"<event-stamp>","type":"seat.woke","actor":{"kind":"seat","id":"01a0d5ff-b143-7781-9967-5ccd10b55fd3"},"payload":{}}
 ...
 ```
 
@@ -291,7 +323,7 @@ at the start.
 
 ```sh
 $ fleet event tail --json --since 3
-{"ok":true,"verb":"event tail","data":{"actor":"builder-1","id":"<id-4>","kind":"seat.exited","payload":{},"seq":4,"ts":"<event-stamp>"}}
+{"ok":true,"verb":"event tail","data":{"actor":{"id":"01a0d5ff-b143-7781-9967-5ccd10b55fd3","kind":"seat"},"id":"<id-4>","kind":"seat.exited","payload":{},"seq":4,"ts":"<event-stamp>"}}
 ```
 
 `data` carries the event's six fields. The stored `type` is named `kind`
@@ -315,7 +347,10 @@ lines with its fields in alphabetical order:
 ```sh
 $ fleet event show <id-3>
 {
-  "actor": "builder-1",
+  "actor": {
+    "id": "01a0d5ff-b143-7781-9967-5ccd10b55fd3",
+    "kind": "seat"
+  },
   "id": "<id-3>",
   "payload": {},
   "seq": 3,
@@ -336,7 +371,12 @@ line, with `"verb":"event show"`, and refusals take the same form.
 | The projection is not valid JSON | 3 | `fleet status: the projection at <machine>/projection.json does not parse:` and the parser's reason | Start the controller, or let its next poll rewrite the file. |
 | The projection is a version this binary does not read | 3 | `fleet status: the projection at <machine>/projection.json is version 2, and this binary reads version 1 — a document half-read is worse than one refused` | Use the `fleet` binary that matches the running controller. |
 | The policy file or the stream cannot be read | 3 | The page, with the reason in the affected section, and the reason again on standard error | Fix the file the message names. |
-| `--seat` names no seat in the projection | 1 | ``fleet status: the projection carries no row for `<name>` — the collector is what makes a seat one of this fleet's`` | Check the name against the roster, including its case. |
+| `fleet status --seat` or `fleet event tail --seat` names no seat | 1 | `fleet status: <arg> names no seat — the seats are <machine-name> (<id>), …` (or `fleet event tail: --seat <arg> names no seat — …`) | Pick a seat from the list. |
+| `--seat` names more than one seat | 1 | `fleet status: <arg> names <n> seats — <machine-name> (<id>), … — say more of the id` | Give more of the id. |
+| `--seat` is empty | 2 | `fleet event tail: --seat names no seat — the argument is empty` (or `fleet status: names no seat — the argument is empty`) | Name a seat. |
+| `fleet status --seat` names a seat the projection has no row for | 1 | ``fleet status: the projection carries no row for `<machine-name>` — the collector is what makes a seat one of this fleet's`` | Wait for the controller's next poll, or check the seat list. |
+| `fleet status --seat` with a seat list that cannot be read | 3 | `fleet status: the seat list could not be read, so no seat can be named: <why>` | Run `fleet start` once, or fix `config.json`. |
+| `fleet event tail --actor` is not `<kind>:<id>` | 2 | `fleet event tail: --actor <value> is not kind:id`, or ``--actor `<value>` is a typed actor with a bad id — …`` | Give a typed actor, such as `seat:<id>`. |
 | `--seat` and `--json` given together | 2 | `error: the argument '--seat <NAME>' cannot be used with '--json'` and the usage line | Give one of the two. |
 | `fleet event tail` or `fleet event show` finds no stream | 5 | `fleet event tail: no event stream at <machine>/events.jsonl` (or `fleet event show:`) | Nothing has written to this machine's stream yet; start the controller. |
 | `--since` is neither a sequence nor a stamp | 2 | `fleet event tail: --since <value> is neither a sequence nor a stamp of the shape YYYY-MM-DDTHH:MM:SSZ` | Give a sequence number or a stamp of that shape. |

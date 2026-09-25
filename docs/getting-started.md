@@ -136,9 +136,10 @@ It exits 0.
 `fleet create` writes a project's fleet from inside the project's directory.
 It asks two questions, embedded or standalone and which agent, then writes the
 file for that mode into the directory you ran it in. It also writes the
-defaults into the machine directory and prints the edit that adds the first
-seat. It installs no pack and does not create or change the project's `bd`
-store: run `bd init` yourself. Everything it prints goes to standard error.
+defaults into the machine directory and lists you, whoever ran it, as the
+fleet's first seat: a human one, under this machine's identity. It installs
+no pack and does not create or change the project's `bd` store: run
+`bd init` yourself. Everything it prints goes to standard error.
 
 On a terminal, each question is a list you pick from, and Enter takes the
 first row: `embedded` and `claude_code`. Where standard input is not a
@@ -152,24 +153,29 @@ created embedded fleet — <project>/fleet.toml
 guards: shell-trap on, record on
 telemetry: off — nothing leaves this machine
 defaults: installed 0.1.0 — <machine>/defaults
-first seat: add this to <project>/fleet.toml, then make its worktree
-
-    [seats.a-seat]
-    model = "claude-opus-5"
-
-    [core]
-    reviewer = "a-seat"
-
-    git worktree add <project>-worktrees/a-seat <a branch>
-
+seat: you — human human-898452ce, listed as [seats.01a0d5ff-b115-7312-95cf-2472898452ce] — <project>/fleet.toml
+identity: minted — who acts here when no --by is given — <machine>/identity.toml
 next: fleet start — it installs the service on its first run and loads it
 ```
 
 It exits 0. The `fleet.toml` it writes opens with a comment naming the agent
 and the command that wrote it, then carries three tables: `[guards]` with
 `shell-trap.enabled = true` and `record.enabled = true`, `[telemetry]` with
-`enabled = false`, and an empty `[seats]`. A later `create` in a directory
-that already holds a `fleet.toml` refuses.
+`enabled = false`, and `[seats]`, under a comment showing what a seat's table
+looks like, with one table in it: yours.
+
+```toml
+[seats.01a0d5ff-b115-7312-95cf-2472898452ce]
+kind = "human"
+```
+
+The id is this machine's identity, kept in `<machine>/identity.toml`. The
+`identity:` line appears only when this call minted it; on a machine that
+already had one, `create` lists that one. A verb you run on this machine
+without `--by` acts as it. See
+[The controller and seats](seats.md#who-you-are-identitytoml).
+
+A later `create` in a directory that already holds a `fleet.toml` refuses.
 
 `create` writes into the directory you run it in and does not look above it.
 Run inside a subdirectory of an existing fleet, it writes a second
@@ -187,24 +193,23 @@ $ fleet create --standalone --agent claude_code --fleet <fleet>
 fleet: registered on this machine — <fleet>/fleet.toml — <machine>/config.json
 registered <name> at <project> — <machine>/projects.toml
 created standalone fleet — <project>/.fleet/project.toml
-defaults: already at 0.1.0 — <machine>/defaults
-first seat: add this to <fleet>/fleet.toml, then make its worktree
-
-    [seats.a-seat]
-    model = "claude-opus-5"
-
-    [core]
-    reviewer = "a-seat"
-
-    git worktree add <project>-worktrees/a-seat <a branch>
-
+defaults: installed 0.1.0 — <machine>/defaults
+seat: you — human human-8192af80, listed as [seats.01a0d60d-be71-70b3-a0cc-b6e78192af80] — <fleet>/fleet.toml
 next: fleet start — it installs the service on its first run and loads it
 ```
 
 It exits 0. `<name>` is the project directory's own name. The first line
 appears only when this call wrote `<machine>/config.json`. Once a fleet is
 registered on the machine, `--fleet` is not needed. Registering a project
-also writes a `project.registered` event to the stream.
+also writes a `project.registered` event to the stream, and that event mints
+this machine's identity where it has none, so a standalone `create` prints
+no `identity:` line.
+
+The `seat:` line lists you in the fleet's own `fleet.toml`, the one `--fleet`
+names. When you are already listed there it says `already listed`. When that
+file cannot take the table, the project is still declared and registered,
+the line says `not listed —` and why, and names `fleet seat add --human`,
+which lists you once the file is put right.
 
 `.fleet/project.toml` carries `[project]` with `name`, `primary` (the project
 directory) and `worktrees` (a sibling directory named after the project with
@@ -214,13 +219,23 @@ left commented out for you to fill in. Where a `.fleet/project.toml` is
 already there, `create --standalone` reads every key in it, writes nothing
 over it, and registers it.
 
-### The first seat
+### The first agent seat
 
-A fleet has no seat until you add one: `create` prints the edit and does not
-make it. Add the `[seats.<name>]` table and `[core] reviewer` it shows to the
-fleet's own `fleet.toml`, run `fleet start`, and cut the worktree with the
-`git worktree add` line it printed. See
-[The controller and seats](seats.md).
+A fleet has no agent seat until you add one. Run `fleet seat add --agent`
+inside the project; it writes the seat's table into the fleet's own
+`fleet.toml` and prints the `git worktree add` line for its worktree:
+
+```sh
+$ fleet seat add --agent --name Orla --model claude-opus-5
+added: agent orla-10b55fd3 — [seats.01a0d5ff-b143-7781-9967-5ccd10b55fd3] in <project>/fleet.toml
+next: git worktree add <project>-worktrees/orla-10b55fd3 <a branch>, then fleet start renders it
+01a0d5ff-b143-7781-9967-5ccd10b55fd3
+```
+
+Cut the worktree with that line, set `[core] reviewer` in `fleet.toml` to
+the seat deliveries go to (any seat argument: its name, its machine name or
+its id), and run `fleet start`. See
+[The controller and seats](seats.md#adding-seats).
 
 ## Adding the tiny pack
 
@@ -266,7 +281,8 @@ Then it does the first-run work, one line each on standard error, each line
 starting `first run:`. It makes the machine directory, and writes the seat
 list (`<machine>/config.json`) naming this fleet's `fleet.toml` where no seat
 list is there yet. When the directory resolves to a project, it renders the
-seats in `[seats]` into the seat list, keyed on that project. It writes the
+agent seats in `[seats]` into the seat list, keyed on that project; human
+seats, yours among them, are listed and never rendered. It writes the
 service file. It writes `[telemetry] enabled = false` into `fleet.toml` where
 the file does not say. The service file is:
 

@@ -16,9 +16,11 @@ work and the process table is kept in the type system rather than in discipline:
 Core depends on neither of the other members. The dependency that is allowed
 runs the other way: the controller depends on core, for the bounded runner
 (`fleet_core::process`), the Claude Code release it supports
-(`fleet_core::supported`) and a seat's identity (`fleet_core::seat::identity`:
-the id, the fleet.toml roster and the resolver), and nothing else, and the cli
-crate is where both meet.
+(`fleet_core::supported`), a seat's identity (`fleet_core::seat::identity`:
+the id, the fleet.toml roster and the resolver), the typed actor
+(`fleet_core::seat::actor::Actor`, `<kind>:<id>`) and the policy-file reader
+(`fleet_core::item::table_at`), and nothing else, and the cli crate is where
+both meet.
 
 The root manifest lists its members explicitly and never by glob, so a crate
 under this directory cannot be absorbed by a manifest that did not name it. That
@@ -73,8 +75,8 @@ ready = "10"
 ```
 
 Three lines say when and the rest say what: firing it calls `fleet run takeoff
---input ready=10 --by <routine>` in the routine's project root, so
-`run.started` names the routine as its actor and the run's `started` and
+--input ready=10 --by routine:<name>` in the routine's project root, so
+`run.started` names the routine as its actor, typed, and the run's `started` and
 `closed` sit inside the routine's `fired` and `completed` on the one stream.
 The input names are the workflow's own. `controller/tests/routines.rs` parses
 this exact block out of this file through the routine loader, so the example

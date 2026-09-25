@@ -38,7 +38,7 @@ carried on by the controller when the answer or the work arrives.
 You run a workflow from inside the project it works on:
 
 ```sh
-$ fleet run takeoff --by <name>
+$ fleet run takeoff
 <run> — <hash>
 <run> — failed
 ```
@@ -52,7 +52,7 @@ That run failed because takeoff was handed no items. A workflow of your own
 that finishes reads:
 
 ```sh
-$ fleet run hello --by <name> --input name=fleet
+$ fleet run hello --input name=fleet
 <run> — <hash>
 <run> — closed
 ```
@@ -69,9 +69,13 @@ the key from the value. A key given twice is refused, as is a pair with no
 
 ### Who ran it
 
-A run names who started it. `--by <name>` names them; without it fleet takes
-`FLEET_ACTOR`, then `BEADS_ACTOR`. With none of the three, `fleet run` refuses
-with exit 2.
+A run names who started it, as an actor. `--by` names them, as a seat
+argument or a typed actor; without it fleet takes `FLEET_ACTOR`, and without
+that, this machine's identity. The actor is pinned into the run as `by`, and
+`run.started` carries it. A routine that fires a run starts it as
+`routine:<name>`, and a run a workflow starts from inside another run is
+started as `run:<id>` of the run that started it. How the actor is read is in
+[Items and the record](items.md#saying-who-acts).
 
 ### Which file runs
 
@@ -201,7 +205,8 @@ A failed or closed run is finished: nothing executes it again.
 The process starts with a cleared environment. It gets:
 
 - the pinned inputs as one JSON document on standard input: `workflow`,
-  `entry`, `pack`, `by`, `started_at`, `inputs` and `config`;
+  `entry`, `pack`, `by` (who ran it, as `<kind>:<id>`), `started_at`,
+  `inputs` and `config`;
 - `FLEET_RUN_ID`, the run's id;
 - `FLEET_RUN_DIR`, the run directory, which is also its working directory;
 - `FLEET_STREAM`, the event stream's path, and `FLEET_STREAM_SEQ`, the
@@ -237,7 +242,7 @@ fleet observe: the run pass refused: <run>: <run directory> hashes <sha> and <ru
 ```
 
 Each execution writes its own `run.started` and its own ending event, with the
-controller as the actor.
+controller as the actor: `controller:<id>`, under this machine's identity.
 
 ### A run nothing could read
 
@@ -288,7 +293,7 @@ with the question and its lettered options, a hold in the work graph, and
 You clear it with `fleet clear`, naming the run as the item:
 
 ```sh
-$ fleet clear <run> A --by <name>
+$ fleet clear <run> A --by <reviewer-name>
 <run> answered A — <hold> cleared
 ```
 
@@ -298,8 +303,13 @@ letter you gave. See [Items and the record](items.md) for `fleet clear`.
 A run lands an item only on a cleared hold. When a workflow calls
 `fleet land` as the run, the landing acts as the seat `[core] reviewer` names,
 and it is refused unless the last hold on the run's record was cleared by
-that seat. Clear a run's hold with `--by <reviewer>` when its answer is what
-lets it land.
+that seat: the answer note must name it as `seat:<id>`. Clear a run's hold as
+the reviewer — `--by` with any seat argument that names it, or with no `--by`
+on the reviewer's own machine when the reviewer is that machine's identity —
+when its answer is what lets it land. Otherwise the landing refuses with exit
+1: ``run <run>'s last hold was cleared by `seat:<id>` and not by
+`<reviewer-name>` — a run lands as the `[core] reviewer` and on that seat's
+own answer``.
 
 ## Watching runs
 
@@ -423,8 +433,9 @@ The handle:
 | `run.until(items, state)` | waits until each item has an `item.<state>` event; returns each event's payload |
 | `run.start(name, inputs?)` | `fleet run <name>` as a child run, and waits for it to close |
 
-The verbs run the fleet binary from the project, with `--json` and
-`--by <run>`, so every act a run takes is on the record under the run's id. A
+The verbs run the fleet binary from the project with `--by run:<run>`, and
+all but `run.start`'s `fleet run` with `--json`, so every act a run takes is
+on the record under the run's id. A
 verb that refuses fails the run, with `{"verb", "code", "why"}` as its reason.
 A hold is raised once and a child run is started once, however often the run
 is executed again. `until` takes the states `dispatched`, `delivered`,
@@ -493,7 +504,8 @@ to the person.
 
 | Situation | Exit | What you see | What to do |
 | --- | --- | --- | --- |
-| No `--by`, and neither `FLEET_ACTOR` nor `BEADS_ACTOR` set | 2 | `fleet run: no runner — pass --by <name>, or set FLEET_ACTOR or BEADS_ACTOR. A run names who started it.` | Pass `--by <name>`. |
+| `--by` or `FLEET_ACTOR` names no seat, or more than one | 1 | `fleet run: --by <arg> names no seat — the seats are <machine-name> (<id>), …` (or `names <n> seats — …`) | Name one seat, or give a typed actor. |
+| `--by` is empty | 2 | `fleet run: --by names no seat — the argument is empty` | Name a seat, or leave `--by` out. |
 | An input without `=` | 2 | ``fleet run: `--input name` is not a pair — an input is written key=value`` | Write `key=value`. |
 | An input with no key | 2 | ``fleet run: `--input =x` names no key — an input is written key=value`` | Name the key. |
 | One key given twice | 2 | ``fleet run: `--input name=` is given twice — a run pins one value per key`` | Give each key once. |
