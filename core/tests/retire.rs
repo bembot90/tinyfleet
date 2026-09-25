@@ -11,19 +11,20 @@ mod common;
 
 use common::capped::{calls, capped_bd, Held};
 use common::Fixture;
+use fleet_core::entry::{Body, Entry, OrderWithdrawn, Withdrawal};
 use fleet_core::item::{COULD_NOT_TELL, REFUSED};
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
-use fleet_core::seat::retire::{self, WITHDRAWN};
+use fleet_core::seat::retire;
 use fleet_core::store::{AssignedItem, Bd, Item, Orders, Store};
 use fleet_core::test_support::FakeStore;
 
 /// A transient seat's full id, which is what an order assigns to: the incident
 /// was one retired while an item it was given stayed ordered to it.
 const SEAT: &str = "018f6a2c-1d3e-7a4b-9c5d-00000c3a5e71";
-/// That seat's machine name, which is how the withdrawal note names it.
+/// That seat's machine name, which is how every sentence names it.
 const LABEL: &str = "agent-0c3a5e71";
-/// Who retires it, in the typed form the note and every write carry.
+/// Who retires it, in the typed form the entry and every write carry.
 const BY: &str = "seat:018f6a2c-1d3e-7a4b-9c5d-0000a1b2c3d4";
 /// A seat the board holds nothing against.
 const NOBODY: &str = "018f6a2c-1d3e-7a4b-9c5d-00004a8c1e37";
@@ -77,6 +78,21 @@ fn read(store: &FakeStore, id: &str) -> Item {
     store.show(id).expect("the store answers about the item")
 }
 
+fn timeline(store: &dyn Store, id: &str) -> Vec<Entry> {
+    store
+        .timeline(id)
+        .expect("the store answers the item's timeline")
+}
+
+/// The entry a retire leaves on each item it withdraws.
+fn withdrawn_at_retire() -> Body {
+    Body::OrderWithdrawn(OrderWithdrawn {
+        why: Withdrawal::Retire,
+        seat: Some(seat()),
+        cause: None,
+    })
+}
+
 /// The ids of the rows `held` answered, in the order it answered them.
 fn ids_of(held: &[AssignedItem]) -> Vec<String> {
     held.iter().map(|row| row.id.clone()).collect()
@@ -107,12 +123,14 @@ fn a_retire_withdraws_every_open_ordered_item_the_seat_still_holds() {
         after.assignee
     );
     assert_eq!(after.status, "open", "the item stays open");
-    let notes = after.notes.unwrap_or_default();
+    assert_eq!(after.notes, None, "and nothing is noted");
+    let entries = timeline(&store, HELD);
     assert_eq!(
-        notes,
-        format!("{WITHDRAWN}: {LABEL} retired by {BY}; the item is open and unassigned"),
-        "one note, naming the seat and who retired it"
+        entries.iter().map(|entry| &entry.body).collect::<Vec<_>>(),
+        vec![&withdrawn_at_retire()],
+        "one entry, the withdrawal naming the seat"
     );
+    assert_eq!(entries[0].by, by(), "by the retiring actor");
 }
 
 /// fleet-3e6: AN ITEM THE SEAT MARKED `in_progress` GOES BACK TO OPEN. Left
@@ -184,7 +202,10 @@ fn a_retire_whose_item_was_closed_after_the_listing_is_refused_and_reopens_nothi
         "nothing was written: {}",
         after.document
     );
-    assert_eq!(after.notes, None, "and no withdrawal note either");
+    assert!(
+        timeline(&store, HELD).is_empty(),
+        "and no withdrawal entry either"
+    );
 }
 
 /// A ROW THE CALLER HANDS IN CLOSED is refused before any write: the fence
@@ -234,9 +255,8 @@ fn a_retire_leaves_what_the_seat_does_not_hold_under_an_open_order() {
             "{untouched} keeps its assignee"
         );
         assert!(
-            after.notes.is_none(),
-            "{untouched} carries no withdrawal note: {:?}",
-            after.notes
+            timeline(&store, untouched).is_empty(),
+            "{untouched} carries no withdrawal entry"
         );
     }
     assert!(
@@ -278,11 +298,7 @@ fn a_retire_leaves_another_writers_orders_key_untouched() {
         Some(SEAT),
         "{THEIRS} keeps its assignee"
     );
-    assert!(
-        theirs.notes.is_none(),
-        "and carries no note: {:?}",
-        theirs.notes
-    );
+    assert!(timeline(&store, THEIRS).is_empty(), "and carries no entry");
     assert!(
         !read(&store, HELD).has_orders_key,
         "fleet's own order is withdrawn"
@@ -350,10 +366,11 @@ fn a_retire_of_a_seat_holding_nothing_ordered_writes_nothing() {
 ///
 /// The reading is the write log plus the reads the query cannot make: `held`
 /// answers off ONE listing, so the only calls a withdrawal of one item makes
-/// are the combined update and the note — the read-back is `show`, which this
-/// log does not carry and which happens once per item written.
+/// are the combined update and the entry's append — the read-backs are the
+/// timeline and `show`, which this log does not carry and which happen once per
+/// item written.
 #[test]
-fn a_retire_withdrawing_one_item_makes_one_update_and_one_note() {
+fn a_retire_withdrawing_one_item_makes_one_update_and_one_append() {
     let store = board();
 
     let held = retire::held(&store, SEAT).expect("the board answers");
@@ -370,8 +387,8 @@ fn a_retire_withdrawing_one_item_makes_one_update_and_one_note() {
         "the assignee and the index move together: {wrote:?}"
     );
     assert!(
-        wrote[1].starts_with(&format!("note {HELD}")),
-        "then the one note: {wrote:?}"
+        wrote[1].starts_with(&format!("append {HELD} order_withdrawn")),
+        "then the one entry: {wrote:?}"
     );
 }
 
@@ -443,7 +460,10 @@ fn a_retire_whose_item_moved_to_another_seat_is_refused_and_writes_nothing() {
         "nothing was written: {}",
         after.document
     );
-    assert_eq!(after.notes, None, "and no withdrawal note either");
+    assert!(
+        timeline(&store, HELD).is_empty(),
+        "and no withdrawal entry either"
+    );
 }
 
 /// A board nobody could read is a QUESTION and never an empty hold: a retire
@@ -518,6 +538,14 @@ fn a_retire_withdraws_an_ordered_item_past_the_fiftieth_row() {
         !after.has_orders_key && after.assignee.is_none() && after.status == "open",
         "the item reads open, unassigned and unordered: {}",
         after.document
+    );
+    assert_eq!(
+        timeline(&store, "fx-row-51")
+            .iter()
+            .map(|entry| &entry.body)
+            .collect::<Vec<_>>(),
+        vec![&withdrawn_at_retire()],
+        "and carries the withdrawal"
     );
     let withdrawals: Vec<String> = calls(&log)
         .into_iter()

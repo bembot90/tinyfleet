@@ -276,13 +276,13 @@ fn withdrawn_from(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fleet_core::entry::{Body, OrderWithdrawn, Withdrawal};
     use fleet_core::item::COULD_NOT_TELL;
-    use fleet_core::seat::retire::WITHDRAWN;
     use fleet_core::store::{Item, Orders};
     use fleet_core::test_support::FakeStore;
 
-    /// The seat's full id, which the order was assigned to, and its machine
-    /// name, which the note says.
+    /// The seat's full id, which the order was assigned to and the withdrawal
+    /// names, and its machine name, which a sentence says.
     const SEAT: &str = "018f6a2c-1d3e-7a4b-9c5d-00000c3a5e71";
     const LABEL: &str = "agent-0c3a5e71";
     /// This machine's identity, which the controller acts under.
@@ -342,13 +342,25 @@ mod tests {
             after.document
         );
         assert_eq!(after.status, "open", "the work itself is still to be done");
+        assert_eq!(after.notes, None, "nothing is noted");
+        let entries = store
+            .timeline(PARKED)
+            .expect("the store answers the timeline");
         assert_eq!(
-            after.notes.unwrap_or_default(),
-            format!(
-                "{WITHDRAWN}: {LABEL} retired by controller:{MACHINE}; the item is open and \
-                 unassigned"
-            ),
-            "the withdrawal says who took it, and the cleanup is the controller"
+            entries
+                .iter()
+                .map(|entry| (&entry.body, &entry.by))
+                .collect::<Vec<_>>(),
+            vec![(
+                &Body::OrderWithdrawn(OrderWithdrawn {
+                    why: Withdrawal::Retire,
+                    seat: Some(seat()),
+                    cause: None,
+                }),
+                &controller(),
+            )],
+            "the withdrawal names the seat and says who took it, and the cleanup is the \
+             controller"
         );
         assert!(
             store

@@ -29,7 +29,7 @@ What each verb writes, so you know what to look for afterwards:
 
 | Verb | What it writes |
 | --- | --- |
-| `dispatch` | the order note on the item, its machine-read index, and the assignee |
+| `dispatch` | the ordered entry on the item, its fleet.orders index, and the assignee |
 | `brief` | nothing — it renders and prints |
 | `deliver` | the commit on the work branch, and the delivery note on the item |
 | `review` | the verdict note: accepted, or returned with numbered findings |

@@ -155,20 +155,10 @@ impl Project {
         value["id"].as_str().expect("an id").to_string()
     }
 
-    /// An item carrying an order as a dispatch leaves one: the note, and the
-    /// order index `brief` refuses to render without.
+    /// An item carrying the order index `brief` refuses to render without, and
+    /// renders its order from.
     fn ordered(&self, title: &str) -> String {
         let item = self.item(title);
-        assert!(self
-            .bd(&[
-                "note",
-                &item,
-                "dispatched by lead-1 — orders given",
-                "--actor",
-                "lead-1",
-            ])
-            .status
-            .success());
         assert!(self
             .bd(&[
                 "update",
@@ -196,8 +186,10 @@ impl Project {
         );
     }
 
-    /// The three fields a dispatch writes, read back off the store.
-    fn order_of(&self, item: &str) -> (Option<String>, String, serde_json::Value) {
+    /// The assignee and the index a dispatch writes, read back off the store,
+    /// with the item's `notes` beside them — `None` where `bd show --json`
+    /// carries no such key, which is what an item no verb noted answers.
+    fn order_of(&self, item: &str) -> (Option<String>, Option<String>, serde_json::Value) {
         let out = self.bd(&["-q", "show", item, "--json"]);
         let text = String::from_utf8_lossy(&out.stdout);
         let value: serde_json::Value =
@@ -207,10 +199,7 @@ impl Project {
             row.get("assignee")
                 .and_then(|a| a.as_str())
                 .map(str::to_string),
-            row.get("notes")
-                .and_then(|n| n.as_str())
-                .unwrap_or_default()
-                .to_string(),
+            row.get("notes").map(|notes| notes.to_string()),
             row.get("metadata")
                 .and_then(|m| m.get("fleet.orders"))
                 .cloned()
@@ -358,6 +347,34 @@ impl Rig {
     fn nudge_argv(&self) -> String {
         std::fs::read_to_string(&self.nudge_argv).unwrap_or_default()
     }
+
+    /// The item's timeline as `fleet item show --json` lists it: the reader's
+    /// own document, off the shipped binary. That verb renders from the store
+    /// alone, so it takes no `--packs-dir`.
+    fn timeline(&self, item: &str) -> Vec<serde_json::Value> {
+        let out = Command::new(env!("CARGO_BIN_EXE_fleet"))
+            .args(["item", "show", item, "--json"])
+            .current_dir(&Project::shared().root)
+            .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub))
+            .output()
+            .expect("the built binary runs");
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let document: serde_json::Value =
+            serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
+                .expect("item show answers one document");
+        document["data"]["timeline"]
+            .as_array()
+            .expect("the document carries a timeline")
+            .clone()
+    }
+}
+
+/// The kinds a timeline lists, in its order.
+fn kinds(timeline: &[serde_json::Value]) -> Vec<&str> {
+    timeline
+        .iter()
+        .map(|entry| entry["kind"].as_str().unwrap_or_default())
+        .collect()
 }
 
 impl Drop for Rig {
@@ -392,9 +409,15 @@ fn a_live_row_in_the_seats_worktree_is_rung_with_the_item_and_the_brief() {
         "make the-touched-gate",
     ]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let timeline = rig.timeline(&item);
+    assert_eq!(kinds(&timeline), ["ordered"], "{timeline:?}");
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        format!("dispatched by {} — orders given\n", lead())
+        format!(
+            "ordered {item} to {}-93b9739a — entry {}\n",
+            rig.seat,
+            timeline[0]["id"].as_str().expect("the entry's id")
+        )
     );
     // The builder's checks the call handed in are the ones the brief names.
     let brief = std::fs::read_to_string(rig.machine.join("briefs").join(format!("{item}.md")))
@@ -429,11 +452,53 @@ fn a_live_row_in_the_seats_worktree_is_rung_with_the_item_and_the_brief() {
         "the seat is addressed by the machine name its name resolved to:\n{argv}"
     );
 
-    // The record carries the seat's FULL ID, whatever name the `--to` said.
+    // The record carries the seat's FULL ID, whatever name the `--to` said: in
+    // the assignee, the index and the ordered entry.
     let (assignee, notes, orders) = project.order_of(&item);
     assert_eq!(assignee.as_deref(), Some(SEAT_ID));
-    assert!(notes.contains("orders given"), "{notes}");
+    assert_eq!(notes, None, "no note is written");
     assert_eq!(orders["seat"], serde_json::json!(SEAT_ID));
+    assert_eq!(timeline[0]["seat"], serde_json::json!(SEAT_ID));
+    assert_eq!(timeline[0]["order"], serde_json::json!("dispatch"));
+    assert_eq!(
+        timeline[0]["by"],
+        serde_json::json!({"kind": "seat", "id": LEAD_ID})
+    );
+}
+
+/// ACCEPTANCE 8 of fleet-zlk.5: the order is an entry, and the document says
+/// which. `dispatch --json` answers `data.entry`, the id of the one ordered
+/// entry `fleet item show --json` lists, and `bd show --json` carries no
+/// `notes` key at all — no verb here writes a note.
+#[test]
+fn a_dispatch_answers_the_ordered_entry_item_show_lists_and_writes_no_note() {
+    let project = Project::shared();
+    let rig = Rig::new("entry");
+    rig.live();
+    let item = project.item("a ready item whose order is an entry");
+
+    let out = rig.run(&[
+        "dispatch", &item, "--to", &rig.seat, "--by", "lead-1", "--json",
+    ]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let document: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
+            .expect("stdout is the one document");
+    let data = &document["data"];
+
+    let timeline = rig.timeline(&item);
+    assert_eq!(kinds(&timeline), ["ordered"], "{timeline:?}");
+    assert_eq!(data["entry"], timeline[0]["id"], "{data}");
+    assert!(data["entry"].is_string(), "{data}");
+
+    let shown = project.bd(&["-q", "show", &item, "--json"]);
+    let shown: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&shown.stdout).trim())
+            .expect("bd show answers JSON");
+    assert!(
+        shown[0].get("notes").is_none(),
+        "bd show carries no notes key: {shown}"
+    );
 }
 
 /// The ring addresses the session by the name its newest session row RECORDED
@@ -488,7 +553,7 @@ fn an_empty_roster_exits_four_and_the_three_writes_stand() {
     );
     assert!(
         out.stdout.is_empty(),
-        "the note line is stdout's on success only"
+        "the order line is stdout's on success only"
     );
     assert!(
         rig.nudge_argv().is_empty(),
@@ -497,7 +562,12 @@ fn an_empty_roster_exits_four_and_the_three_writes_stand() {
 
     let (assignee, notes, orders) = project.order_of(&item);
     assert_eq!(assignee.as_deref(), Some(SEAT_ID), "the assignment stands");
-    assert!(notes.contains("orders given"), "the note stands: {notes}");
+    assert_eq!(notes, None, "nothing was noted");
+    assert_eq!(
+        kinds(&rig.timeline(&item)),
+        ["ordered"],
+        "the ordered entry stands"
+    );
     assert_eq!(
         orders["kind"],
         serde_json::json!("dispatch"),
@@ -534,7 +604,8 @@ fn a_ring_the_provider_refuses_exits_one_and_the_three_writes_stand() {
 
     let (assignee, notes, orders) = project.order_of(&item);
     assert_eq!(assignee.as_deref(), Some(SEAT_ID));
-    assert!(notes.contains("orders given"), "{notes}");
+    assert_eq!(notes, None, "nothing was noted");
+    assert_eq!(kinds(&rig.timeline(&item)), ["ordered"]);
     assert_eq!(orders["by"], serde_json::json!(lead()));
 }
 
@@ -563,9 +634,22 @@ fn a_spawn_the_controller_refuses_withdraws_the_order() {
     let (assignee, notes, orders) = project.order_of(&item);
     assert_eq!(assignee, None, "nobody was ever assigned");
     assert_eq!(orders, serde_json::Value::Null, "no orders key survives");
+    assert_eq!(notes, None, "nothing was noted");
+    let timeline = rig.timeline(&item);
+    assert_eq!(
+        kinds(&timeline),
+        ["ordered", "order_withdrawn"],
+        "the withdrawal is on the record: {timeline:?}"
+    );
+    assert_eq!(timeline[1]["why"], serde_json::json!("spawn_refused"));
     assert!(
-        notes.contains("DISPATCH WITHDRAWN"),
-        "the withdrawal is on the record: {notes}"
+        timeline[1]["cause"].is_string(),
+        "it names the cause: {timeline:?}"
+    );
+    assert!(
+        stderr(&out).contains("withdrawn: DISPATCH WITHDRAWN — spawn refused: "),
+        "{}",
+        stderr(&out)
     );
 }
 
@@ -607,13 +691,16 @@ fn an_unresolvable_agent_binary_exits_three_and_the_order_stands() {
         serde_json::json!("dispatch"),
         "the order stands: {orders}"
     );
-    assert!(
-        notes.contains("DISPATCH COULD NOT TELL"),
-        "the could-not-tell is on the record: {notes}"
+    assert_eq!(notes, None, "nothing was noted");
+    assert_eq!(
+        kinds(&rig.timeline(&item)),
+        ["ordered"],
+        "the order and nothing after it: the cause is the exit's message"
     );
     assert!(
-        !notes.contains("DISPATCH WITHDRAWN"),
-        "and the withdrawal is not: {notes}"
+        stderr(&out).contains("could not tell: DISPATCH COULD NOT TELL"),
+        "the could-not-tell's words are stderr's: {}",
+        stderr(&out)
     );
 }
 
@@ -758,12 +845,17 @@ fn the_retired_actor_variable_is_not_read() {
         .output()
         .expect("the built binary runs");
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    let (_, notes, orders) = project.order_of(&item);
+    let (_, _, orders) = project.order_of(&item);
     assert_eq!(
         orders["by"],
         serde_json::json!(format!("seat:{}", identity_of(&rig)))
     );
-    assert!(!notes.contains("someone"), "{notes}");
+    let timeline = rig.timeline(&item);
+    assert_eq!(
+        timeline[0]["by"],
+        serde_json::json!({"kind": "seat", "id": identity_of(&rig)}),
+        "the entry's author is the identity too: {timeline:?}"
+    );
 }
 
 /// The grammar of `--by` and `FLEET_ACTOR`: a seat argument resolves over the

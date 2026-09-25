@@ -12,22 +12,17 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::guard;
-use crate::item::{dispatch, render, show, Project, Stop};
+use crate::item::{render, show, Project, Stop};
 use crate::resolve::{self, Layer, Resolution};
-use crate::store::Store;
+use crate::store::{Orders, Store};
 
 /// The four files this verb reads, all of them shadowable.
 pub const BRIEF: &str = "assets/brief.md";
-pub const DISPATCH_NOTE: &str = "assets/dispatch-note.md";
 pub const DELIVERY_NOTE: &str = "assets/delivery-note.md";
 pub const RULES: &str = "assets/rules.md";
 
 /// What `{seat}` reads as before a seat exists to name.
 pub const TRANSIENT: &str = "(transient)";
-
-/// The substring every recorded order form ends on, and how a dispatch finds
-/// the note it just wrote among the item's notes.
-pub const ORDER_MARK: &str = "orders given";
 
 /// The value `{touched}` takes where the dispatch was handed no builder's checks.
 ///
@@ -118,8 +113,7 @@ pub struct Subject<'a> {
     /// timeline, verbatim, so the seat reads what `fleet item show` prints and
     /// never the text the store keeps an entry as.
     pub text: &'a str,
-    /// The order, as the dispatch note's template renders it for whoever the
-    /// order index says gave it.
+    /// The order, as [`order_text`] renders it off the item's order index.
     pub order: &'a str,
     /// The machine name of the seat the order named, or [`TRANSIENT`]: the
     /// brief is read by a seat and a person, and the id the record carries is
@@ -131,20 +125,16 @@ pub struct Subject<'a> {
     pub touched: Option<&'a str>,
 }
 
-/// The order note among an item's notes: the last line carrying a recorded
-/// form.
-///
-/// IT IS A DISPATCH'S READ-BACK OF ITS OWN WRITE, and nothing decides from it.
-/// Notes are append-only, so a withdrawn order's line is still the last one
-/// carrying the form, and a person's note can carry it too: whether an item is
-/// ordered is its order index's answer, which is what every verb reads.
-pub fn order_line(notes: Option<&str>) -> Option<String> {
-    notes?
-        .lines()
-        .map(str::trim)
-        .filter(|line| line.contains(ORDER_MARK))
-        .next_back()
-        .map(str::to_string)
+/// The order as the brief prints it: who gave it and when, off the order
+/// index. `fleet brief` and a dispatch's own brief both render it here, so the
+/// two are one text.
+pub fn order_text(index: &Orders) -> String {
+    let field = |held: &Option<String>| held.clone().unwrap_or_else(|| String::from("(absent)"));
+    format!(
+        "dispatch ordered by {} at {}",
+        field(&index.by),
+        field(&index.at)
+    )
 }
 
 /// The brief, assembled whole.
@@ -202,12 +192,12 @@ pub fn print(
 /// The order INDEX is what decides — `metadata["fleet.orders"]`, the reading
 /// dispatch, deliver, review and retire all take: an item carrying none has not
 /// been given to anybody, and a brief for it would tell a seat it may begin
-/// when nothing said so. The notes are never searched for it, because a withdrawal
-/// unsets the index and leaves the order note standing.
+/// when nothing said so. The timeline is never searched for it, because a
+/// withdrawal unsets the index and leaves the ordered entry standing.
 ///
-/// The order the brief prints is rendered from the index, through the template
-/// the dispatch wrote its note with, so the brief `fleet brief` prints and the
-/// one a dispatch handed its seat are one text.
+/// The order the brief prints is rendered from the index by [`order_text`],
+/// which a dispatch renders its own brief's order with, so the brief `fleet
+/// brief` prints and the one a dispatch handed its seat are one text.
 #[allow(clippy::too_many_arguments)]
 pub fn for_item(
     out: &mut dyn Write,
@@ -236,13 +226,13 @@ pub fn for_item(
             )
         }));
     };
-    let Some(by) = index.by.as_deref() else {
+    if index.by.is_none() {
         return Err(Stop::refused(format!(
             "{item}'s order index names no dispatcher — the brief's order says who gave it, and \
              the record does not say who that is"
         )));
-    };
-    let order = dispatch::note_for(packs, by)?;
+    }
+    let order = order_text(index);
     let text = show::render(&record, &store.timeline(item)?);
     print(
         out,

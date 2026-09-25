@@ -9,6 +9,7 @@
 mod common;
 
 use common::{shared_store, Fixture, Scratch, StubEvents};
+use fleet_core::entry::{Body, Timeline, Withdrawal};
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
 use fleet_core::item::dispatch::{self, Order, Wiring};
 use fleet_core::item::{show, table_at, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner};
@@ -26,7 +27,9 @@ const POLICY: &str = "[guards]\nrecord = { enabled = false }\n";
 /// The builder's checks [`Rig::render`] hands the brief, as a dispatch would.
 const TOUCHED: &str = "make check";
 
-const ORDER: &str = "dispatched by run:lead-1 — orders given";
+/// The order as the brief prints it, rendered from the index [`ordered`] seeds
+/// and every dispatch here writes.
+const ORDER: &str = "dispatch ordered by run:lead-1 at 2026-09-23T10:00:00Z";
 /// Who gave [`ORDER`], and when, as the order index records it: a run, in the
 /// typed form every write carries.
 const BY: &str = "run:lead-1";
@@ -153,10 +156,10 @@ fn store_with(notes: Option<&str>) -> FakeStore {
     store
 }
 
-/// A store holding the item as a dispatch by `run:lead-1` leaves it: the order note
-/// and the order index beside it, which is the half the brief is gated on.
+/// A store holding the item as a dispatch by `run:lead-1` leaves its index,
+/// which is what the brief is gated on and what its order is rendered from.
 fn ordered() -> FakeStore {
-    let store = store_with(Some(ORDER));
+    let store = store_with(None);
     store.amend(ITEM, |item| {
         item.orders = Some(Orders {
             by: Some(BY.to_string()),
@@ -656,14 +659,15 @@ impl Rig {
     }
 }
 
-/// A WITHDRAWN order is refused (fleet-nv0). Both withdrawals leave the order
-/// note standing — notes are append-only — and unset the index, so a gate that
-/// searched the notes would still find "orders given" and hand a seat a brief
-/// for an item nobody holds.
+/// A WITHDRAWN order is refused (fleet-nv0). Both withdrawals leave the ordered
+/// entry standing — a timeline is append-only — and unset the index, so a gate
+/// that took the last ordered entry for an order would hand a seat a brief for
+/// an item nobody holds.
 ///
 /// The two withdrawals are the retire's and the refused spawn's, each written by
-/// its own verb rather than seeded, and each read first for the note it left
-/// behind: the arm is only a proof while that note is still there to mislead.
+/// its own verb rather than seeded, and each read first for the entries it left
+/// behind: the arm is only a proof while the ordered entry is still there to
+/// mislead.
 #[test]
 fn a_withdrawn_order_is_refused_and_writes_nothing() {
     let rig = Rig::new("withdrawn");
@@ -697,16 +701,27 @@ fn a_withdrawn_order_is_refused_and_writes_nothing() {
         .expect_err("a refused spawn refuses the dispatch");
     assert!(why.contains("withdrawn"), "{why}");
 
-    for (store, line) in [
-        (&retired, retire::WITHDRAWN),
-        (&refused, dispatch::WITHDRAWN),
+    for (store, line, why) in [
+        (&retired, "retire", Withdrawal::Retire),
+        (&refused, "spawn refused", Withdrawal::SpawnRefused),
     ] {
         let read = store.show(ITEM).expect("the item reads back");
-        let notes = read.notes.clone().unwrap_or_default();
+        let entries = store.timeline(ITEM).expect("the timeline reads back");
         assert!(
-            notes.contains(ORDER) && notes.contains(line),
-            "the order note stands under the withdrawal:\n{notes}"
+            matches!(
+                entries.first().map(|entry| &entry.body),
+                Some(Body::Ordered(_))
+            ),
+            "{line}: the ordered entry stands under the withdrawal: {entries:?}"
         );
+        assert!(
+            matches!(
+                entries.last().map(|entry| &entry.body),
+                Some(Body::OrderWithdrawn(withdrawn)) if withdrawn.why == why
+            ),
+            "{line}: and the withdrawal is the last entry: {entries:?}"
+        );
+        assert!(Timeline(&entries).current_order().is_none(), "{line}");
         assert!(
             !read.has_orders_key,
             "and the index is gone: {:?}",
@@ -779,6 +794,65 @@ fn a_dispatched_item_still_gets_its_brief() {
     );
 }
 
+/// THE ORDER IS THE INDEX'S, rendered: who gave it and when, off
+/// `fleet.orders`, with no template and no note behind it. The index here names
+/// a dispatcher and a time no other arm's does, so the block is read off this
+/// record and not off a constant.
+#[test]
+fn the_order_block_reads_who_gave_it_and_when_off_the_index() {
+    let rig = Rig::new("order-text");
+    let store = ordered();
+    store.amend(ITEM, |item| {
+        item.orders = Some(Orders {
+            by: Some(String::from("seat:01a0d1f1-0aec-765f-9abe-0000000000b1")),
+            kind: Some(dispatch::KIND.to_string()),
+            at: Some(String::from("2026-09-24T08:15:00Z")),
+            ..Orders::default()
+        });
+    });
+
+    let rendered = rig.render(&store, SEAT);
+    assert_eq!(rendered.code, None, "{}", rendered.why);
+    assert!(
+        rendered.body.contains(
+            "## Your order\n\n```\ndispatch ordered by \
+             seat:01a0d1f1-0aec-765f-9abe-0000000000b1 at 2026-09-24T08:15:00Z\n```"
+        ),
+        "the order block is the index's dispatcher and time:\n{}",
+        rendered.body
+    );
+    let index = store
+        .show(ITEM)
+        .expect("the item reads")
+        .orders
+        .expect("the index is an object");
+    assert_eq!(
+        brief::order_text(&index),
+        "dispatch ordered by seat:01a0d1f1-0aec-765f-9abe-0000000000b1 at 2026-09-24T08:15:00Z"
+    );
+}
+
+/// The dispatch note's template is retired with the note: the binary's own
+/// defaults carry no `assets/dispatch-note.md`, and the shadow registry — the
+/// list of paths a pack may replace — names no such slot.
+#[test]
+fn the_defaults_carry_no_dispatch_note_and_the_registry_no_row_for_one() {
+    assert!(
+        fleet_core::embedded::bytes("assets/dispatch-note.md").is_none(),
+        "the embedded defaults carry no dispatch note"
+    );
+    let registry = shipped("assets/shadow-registry.toml");
+    assert!(
+        !registry.contains("assets/dispatch-note.md"),
+        "the registry names no dispatch note:\n{registry}"
+    );
+    // The control: the registry is the one read, and it names its neighbours.
+    assert!(
+        registry.contains("path = \"assets/brief.md\""),
+        "{registry}"
+    );
+}
+
 /// An item named by its suffix gets the brief its full id gets, byte for byte:
 /// the verb resolves the argument once and reads the rendering, the order and
 /// the brief's own id off the id the store answered.
@@ -832,8 +906,6 @@ fn a_pack_on_top_shadows_the_brief_whole() {
 fn the_real_store_renders_the_same_brief_as_the_one_held_in_memory() {
     let scratch = shared_store("brief");
     let item = scratch.item("a ready item");
-    let out = scratch.bd(&["note", &item, ORDER, "--actor", BY]);
-    assert!(out.status.success(), "the order note is written");
     let index = dispatch::index(BY, dispatch::KIND, None, AT);
     let out = scratch.bd(&["update", &item, "--metadata", &index, "--actor", BY]);
     assert!(out.status.success(), "the order index is written");
@@ -868,11 +940,6 @@ fn the_real_store_renders_the_same_brief_as_the_one_held_in_memory() {
         record.orders.and_then(|index| index.by).as_deref(),
         Some(BY),
         "the order index bd stored is the one that was written"
-    );
-    assert_eq!(
-        brief::order_line(record.notes.as_deref()).as_deref(),
-        Some(ORDER),
-        "the order note bd stored is the one that was written"
     );
 }
 

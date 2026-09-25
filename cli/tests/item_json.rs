@@ -69,14 +69,8 @@ A. read it off the item, as the spec assumes
 B. take it from the pack instead
 ";
 
-/// AC3's fixture: what `dispatch` prints on stdout with no `--json`, captured by
-/// running the shipped binary at origin/main afaf9360e.
-///
-/// `dispatch` is the verb this arm reads because its rendering carries no value
-/// the rig varies — the note is the pack's own text with the dispatcher's name
-/// in it — so the fixture is bytes rather than a template with the ids put back.
-const TRUNK_DISPATCH_STDOUT: &str =
-    "dispatched by seat:01a0d1f1-0aec-765f-9abe-0000a2c417ec — orders given\n";
+/// The id the rig's first dispatch target is keyed by.
+const TARGET_ID: &str = "01a0d1f1-0aec-765f-9abe-5c21e8a04b17";
 
 fn defaults_into(machine: &Path) -> PathBuf {
     let root = machine.join(fleet_core::defaults::DIR);
@@ -212,7 +206,7 @@ impl Rig {
                 r#"{{"fleet_toml": {fleet_toml}, "children": [
                      {{"id": "{REVIEWER_ID}", "name": "{REVIEWER}",
                       "worktrees": {{"a-project": {worktree}}}}},
-                     {{"id": "01a0d1f1-0aec-765f-9abe-5c21e8a04b17", "name": "{target}",
+                     {{"id": "{TARGET_ID}", "name": "{target}",
                       "worktrees": {{"a-project": {target_worktree}}}}},
                      {{"id": "{OTHER_TARGET_ID}", "name": "{other_target}",
                       "worktrees": {{"a-project": {other_worktree}}}}}
@@ -418,14 +412,14 @@ impl Drop for Rig {
 // ---- AC1: one arm per verb, each reading a field only that verb knows; AC3,
 // ---- the human rendering byte for byte against the trunk's, rides dispatch --
 
-/// `dispatch --json`: the seat the order named, which no other verb's document
-/// carries — and on the same call the human rendering moved to stderr BYTE FOR
-/// BYTE, with stdout the document alone. A second item, dispatched without the
-/// flag, puts the trunk's bytes on stdout: that call names no `--json`, which
-/// is how the fixture was taken rather than derived from the code that prints
-/// it.
+/// `dispatch --json`: the seat the order named and the ordered entry that
+/// records it, which no other verb's document carries — and on the same call
+/// the human rendering moved to stderr BYTE FOR BYTE, with stdout the document
+/// alone. A second item, dispatched without the flag, puts the order line on
+/// stdout: the item, the seat by its machine name and the entry `item show`
+/// lists, each read off the record rather than off the code that prints them.
 ///
-/// The pair is what makes the fixture load-bearing: a flag that SUPPRESSED the
+/// The pair is what makes the line load-bearing: a flag that SUPPRESSED the
 /// rendering rather than moving it would pass the plain call and lose a person
 /// the page. Two items and two seats, because an item carries one order and a
 /// seat holds one item.
@@ -439,8 +433,8 @@ fn dispatch_prints_the_seat_it_named_and_the_trunks_bytes_on_the_stream_the_flag
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(
         stdout(&out),
-        TRUNK_DISPATCH_STDOUT,
-        "without the flag, the trunk's bytes on stdout, unchanged"
+        rig.order_line(&item, TARGET_ID, &rig.target),
+        "without the flag, the order line on stdout"
     );
 
     let item = rig.a_ready_item();
@@ -454,10 +448,11 @@ fn dispatch_prints_the_seat_it_named_and_the_trunks_bytes_on_the_stream_the_flag
         "--json",
     ]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let line = rig.order_line(&item, OTHER_TARGET_ID, &rig.other_target);
     assert_eq!(
         stderr(&out),
-        TRUNK_DISPATCH_STDOUT,
-        "under it, the same bytes on the other stream"
+        line,
+        "under it, the same line on the other stream"
     );
 
     // The seat the order named, as its object: the FULL ID its name resolved
@@ -477,6 +472,12 @@ fn dispatch_prints_the_seat_it_named_and_the_trunks_bytes_on_the_stream_the_flag
         "{data}"
     );
     assert_eq!(data["seat"]["kind"], serde_json::json!("agent"), "{data}");
+    assert!(
+        data["entry"]
+            .as_str()
+            .is_some_and(|entry| line.ends_with(&format!(" — entry {entry}\n"))),
+        "the entry the line names: {data}"
+    );
     assert_eq!(
         rig.item_json(&item)["assignee"],
         serde_json::json!(OTHER_TARGET_ID),
@@ -740,6 +741,28 @@ fn the_old_spellings_ask_and_answer_are_usage_naming_hold_and_clear() {
 // ---- `fleet item show`: the SDK's one read of the store ---------------------
 
 impl Rig {
+    /// The line a dispatch prints for `item`, ordered to the seat keyed by `id`
+    /// under `name`: its machine name, and the one entry `item show` lists.
+    fn order_line(&self, item: &str, id: &str, name: &str) -> String {
+        use fleet_core::seat::identity::{Kind, SeatId, SeatRef};
+
+        let out = self.item_show(&[item, "--json"]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let data = data_of(&out, "item show");
+        let timeline = data["timeline"].as_array().expect("a timeline");
+        assert_eq!(timeline.len(), 1, "the one ordered entry: {data}");
+        let seat = SeatRef {
+            id: SeatId::parse(id).expect("the rig's seat id parses"),
+            name: Some(name.to_string()),
+            kind: Kind::Agent,
+        };
+        format!(
+            "ordered {item} to {} — entry {}\n",
+            seat.machine_name(),
+            timeline[0]["id"].as_str().expect("the entry's id")
+        )
+    }
+
     /// `fleet item show`, which takes no `--packs-dir`: it renders from the
     /// store alone.
     fn item_show(&self, args: &[&str]) -> Output {

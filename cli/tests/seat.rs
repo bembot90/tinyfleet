@@ -272,6 +272,19 @@ impl Rig {
         value["id"].as_str().expect("an id").to_string()
     }
 
+    /// The item's timeline as `fleet item show --json` lists it.
+    fn timeline(&self, item: &str) -> Vec<serde_json::Value> {
+        let out = self.run(&["item", "show", item, "--json"]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let document: serde_json::Value =
+            serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
+                .expect("item show answers one document");
+        document["data"]["timeline"]
+            .as_array()
+            .expect("the document carries a timeline")
+            .clone()
+    }
+
     /// Every event the machine directory's stream holds, newest last.
     fn events(&self) -> Vec<serde_json::Value> {
         std::fs::read_to_string(self.machine.join("events.jsonl"))
@@ -282,7 +295,10 @@ impl Rig {
             .collect()
     }
 
-    fn order_of(&self, item: &str) -> (Option<String>, String, serde_json::Value) {
+    /// The assignee and the index, with the item's `notes` beside them —
+    /// `None` where `bd show --json` carries no such key, which is what an
+    /// item no verb noted answers.
+    fn order_of(&self, item: &str) -> (Option<String>, Option<String>, serde_json::Value) {
         let out = self.bd(&["-q", "show", item, "--json"]);
         let value: serde_json::Value =
             serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
@@ -292,10 +308,7 @@ impl Rig {
             row.get("assignee")
                 .and_then(|a| a.as_str())
                 .map(str::to_string),
-            row.get("notes")
-                .and_then(|n| n.as_str())
-                .unwrap_or_default()
-                .to_string(),
+            row.get("notes").map(|notes| notes.to_string()),
             row.get("metadata")
                 .and_then(|m| m.get("fleet.orders"))
                 .cloned()
@@ -1492,7 +1505,17 @@ fn dispatch_without_a_seat_spawns_through_the_real_spawner_and_assigns_the_name(
         serde_json::json!(id),
         "the index carries the id"
     );
-    assert!(notes.contains("orders given"), "{notes}");
+    assert_eq!(notes, None, "nothing was noted");
+    // The order before the spawn, to no seat, and the one naming the seat the
+    // spawn made.
+    let timeline = rig.timeline(&item);
+    let kinds: Vec<&str> = timeline
+        .iter()
+        .map(|entry| entry["kind"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(kinds, ["ordered", "ordered"], "{timeline:?}");
+    assert_eq!(timeline[0].get("seat"), None, "{timeline:?}");
+    assert_eq!(timeline[1]["seat"], serde_json::json!(id), "{timeline:?}");
     let worktree = rig.worktrees.join(&seat);
     assert!(worktree.is_dir());
 
@@ -1623,9 +1646,13 @@ fn a_dispatch_that_starts_nothing_prints_no_belt_legs() {
         &HELD,
     );
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let timeline = rig.timeline(&named);
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        format!("dispatched by {ARCHITECT} — orders given\n"),
+        format!(
+            "ordered {named} to s-cli-belts-93b9739a — entry {}\n",
+            timeline[0]["id"].as_str().expect("the entry's id")
+        ),
         "a dispatch that started nothing measured nothing, and says so by \
          printing nothing about it"
     );
@@ -1655,12 +1682,14 @@ fn a_dispatch_prints_the_belts_two_legs_and_the_stream_carries_its_readings() {
         &HELD,
     );
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let timeline = rig.timeline(&item);
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
         format!(
-            "dispatched by {ARCHITECT} — orders given\n\
+            "ordered {item} to a transient seat — entry {}\n\
              \x20 load average (5m)       : 3.75 (ceiling 4.00 = 4 cpu x 1.00)\n\
-             \x20 transient seats mid-turn: 0 (cap 3)\n"
+             \x20 transient seats mid-turn: 0 (cap 3)\n",
+            timeline[1]["id"].as_str().expect("the seated entry's id")
         ),
         "the order line, then the belt's two legs in `seat spawn`'s own words"
     );
@@ -1745,10 +1774,17 @@ fn dispatch_under_the_load_override_refuses_and_withdraws_the_order() {
     let (assignee, notes, orders) = rig.order_of(&item);
     assert_eq!(assignee, None, "nobody was ever assigned");
     assert_eq!(orders, serde_json::Value::Null, "no orders key survives");
-    assert!(
-        notes.contains("DISPATCH WITHDRAWN"),
-        "the withdrawal is on the record: {notes}"
+    assert_eq!(notes, None, "nothing was noted");
+    let timeline = rig.timeline(&item);
+    assert_eq!(
+        timeline
+            .iter()
+            .map(|entry| entry["kind"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        ["ordered", "order_withdrawn"],
+        "the withdrawal is on the record: {timeline:?}"
     );
+    assert_eq!(timeline[1]["why"], serde_json::json!("spawn_refused"));
 }
 
 // ---- the work branch a retire releases --------------------------------------
@@ -1950,7 +1986,7 @@ fn a_retire_leaves_a_branch_no_landing_called_safe() {
 /// The record's half of the retire, through the shipped binary and a real work
 /// graph: the seat is retired while the item it was dispatched is still OPEN,
 /// and that item reads unassigned, with no orders key, carrying the withdrawal
-/// note.
+/// entry.
 ///
 /// THE WORK IS WHY. Once the row comes off the seat list the seat no longer
 /// exists, so an order still standing against it is one nobody will deliver
@@ -1979,17 +2015,34 @@ fn a_retire_withdraws_the_order_the_seat_still_holds() {
         "the item reads unassigned: {assignee:?}"
     );
     assert!(orders.is_null(), "and carries no orders key: {orders}");
-    assert!(
-        notes.contains(&format!("ORDER WITHDRAWN at retire: {seat} retired by"))
-            && notes.contains("the item is open and unassigned"),
-        "the withdrawal is on the record: {notes}"
+    assert_eq!(notes, None, "nothing was noted");
+    withdrawn_at_retire(&rig, &item, &seat);
+}
+
+/// The timeline a retire leaves on an item a transient dispatch gave `seat`:
+/// the dispatch's two ordered entries still there under the withdrawal — the
+/// withdrawal APPENDS, and an item whose record was replaced would read as one
+/// nobody was ever given — and the withdrawal naming the seat the order did,
+/// by the retiring actor.
+fn withdrawn_at_retire(rig: &Rig, item: &str, seat: &str) {
+    let timeline = rig.timeline(item);
+    assert_eq!(
+        timeline
+            .iter()
+            .map(|entry| entry["kind"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        ["ordered", "ordered", "order_withdrawn"],
+        "the withdrawal is on the record, under the order it answers: {timeline:?}"
     );
-    // The dispatch's own order note is still there under it: the withdrawal
-    // APPENDS, and an item whose record was replaced would read as one nobody
-    // was ever given.
-    assert!(
-        notes.contains(&format!("dispatched by {ARCHITECT}")),
-        "the order note it answers stands: {notes}"
+    assert_eq!(timeline[2]["why"], serde_json::json!("retire"));
+    assert_eq!(
+        timeline[2]["seat"], timeline[1]["seat"],
+        "it names the seat the order did: {timeline:?}"
+    );
+    assert_eq!(
+        machine_name_of(timeline[2]["seat"].as_str().expect("a seat id")),
+        seat,
+        "the seat that was retired: {timeline:?}"
     );
 }
 
@@ -2020,10 +2073,8 @@ fn a_retire_withdraws_an_item_the_seat_marked_in_progress() {
         "the claimed item reads unassigned: {assignee:?}"
     );
     assert!(orders.is_null(), "and carries no orders key: {orders}");
-    assert!(
-        notes.contains(&format!("ORDER WITHDRAWN at retire: {seat} retired by")),
-        "the withdrawal is on the record: {notes}"
-    );
+    assert_eq!(notes, None, "nothing was noted");
+    withdrawn_at_retire(&rig, &item, &seat);
     // fleet-3e6: AND IT IS OPEN AGAIN. An item left `in_progress` with nobody
     // holding it is out of bd's ready set, so no dispatch would ever reach it
     // again without somebody reopening it by hand.

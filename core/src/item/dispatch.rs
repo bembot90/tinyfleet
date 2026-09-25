@@ -1,14 +1,15 @@
 //! `fleet dispatch <item> [--to <seat>]` — the one record that says a seat may
 //! begin.
 //!
-//! Three writes make an order: the assignee, the note and the index. The
-//! failure a multi-writer shape produces is an order written to one surface and
-//! not the other, which reads as clean on both — so the three are one act here,
-//! and the act ends by reading them back.
+//! Three writes make an order: the assignee, the ordered entry on the item's
+//! timeline and the index. The failure a multi-writer shape produces is an
+//! order written to one surface and not the other, which reads as clean on
+//! both — so the three are one act here, and the act ends by reading them back.
 //!
-//! WRITE ORDER is the record before the index. A crash between them leaves an
+//! WRITE ORDER is the entry before the index. A crash between them leaves an
 //! item ordered on the record and merely unindexed, never indexed with no order
-//! behind it.
+//! behind it. The index stays the current-order projection, written in the same
+//! act, and it is what every verb decides an item's order state on.
 //!
 //! THE READ-BACK COMPARES AGAINST THE ARGUMENTS, never against the payload:
 //! an expectation taken from the object we just built agrees with whatever that
@@ -18,11 +19,12 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::item::brief::{self, Packs, Subject, ORDER_MARK, TRANSIENT};
+use crate::entry::{Body, OrderKind, OrderWithdrawn, Ordered, Withdrawal};
+use crate::item::brief::{self, Packs, Subject, TRANSIENT};
 use crate::item::deliver::holds;
 use crate::item::{
-    control_token, render, show, Events, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner,
-    Stop, ITEM_DISPATCHED, NO_SESSION, REFUSED,
+    control_token, recorded, render, show, Events, Project, Ring, RingOutcome, Spawn, SpawnOutcome,
+    Spawner, Stop, Unrecorded, ITEM_DISPATCHED, NO_SESSION, REFUSED,
 };
 use crate::seat::actor::Actor;
 use crate::seat::identity::{Directory, Kind, SeatId, SeatRef};
@@ -43,20 +45,22 @@ pub const RING: &str = "{item} is yours. The order is on the item; your brief is
 /// children are the work, and each of them is dispatched on its own.
 pub const EPIC: &str = "epic";
 
-/// The line a withdrawal leaves, so an item a spawn refused reads as one
-/// nobody was ever given rather than as one whose seat vanished.
+/// The words a withdrawal says on stderr. The record's own half is the
+/// `order_withdrawn` entry, so an item a spawn refused reads as one nobody was
+/// ever given rather than as one whose seat vanished.
 pub const WITHDRAWN: &str = "DISPATCH WITHDRAWN — spawn refused";
 
-/// The line a spawn nobody could observe leaves. It is NOT a withdrawal: the
-/// order is still on the record under it, and the cause is what a retry acts on.
+/// The words a spawn nobody could observe says on stderr, and nowhere else. It
+/// is NOT a withdrawal: the order is still on the record, and the cause is what
+/// a retry acts on.
 pub const NOT_TOLD: &str = "DISPATCH COULD NOT TELL — the spawn could not be observed";
 
 /// The order, as its arguments.
 pub struct Order<'a> {
     pub item: &'a str,
     pub to: Option<&'a str>,
-    /// Who gives the order. Its string form is what the note, the index and
-    /// every write carry.
+    /// Who gives the order: the ordered entry's author, and its string form is
+    /// what the index and every other write carry.
     pub by: &'a Actor,
     /// The clock, taken by the caller: core reads none.
     pub at: &'a str,
@@ -65,7 +69,7 @@ pub struct Order<'a> {
     ///
     /// A caller that pinned a brief needs the seat to read that file and not a
     /// re-render of an item that has moved since. The order itself is
-    /// unchanged: the note and the index are written here either way, and the
+    /// unchanged: the entry and the index are written here either way, and the
     /// pinned brief says so rather than standing in for one.
     pub brief: Option<&'a Path>,
     /// The commit the spawned seat's worktree is cut from, where the caller
@@ -137,7 +141,9 @@ pub struct Given {
     /// The id the order was given under: the store's full one, whatever part
     /// of it the caller typed.
     pub item: String,
-    pub note: String,
+    /// The id the store gave the ordered entry that seated the order: the one
+    /// naming the seat, on either path.
+    pub entry: String,
     pub brief_path: PathBuf,
     /// The seat the order was given to: its full id, as the assignee and the
     /// index carry it, with its name and its kind.
@@ -154,8 +160,6 @@ pub fn dispatch(
     order: &Order,
     wiring: &Wiring,
 ) -> Result<Given, Refused> {
-    let note = note_text(wiring.packs, &order.by.to_string()).map_err(Refused::stopped)?;
-
     // Before the first write: the brief refuses on the same reading, and an
     // order written ahead of a brief that cannot render is one nobody reads.
     wiring.project.refuse_moved().map_err(Refused::stopped)?;
@@ -172,21 +176,34 @@ pub fn dispatch(
     let named = refuse_unless_dispatchable(order, &item, wiring).map_err(Refused::stopped)?;
 
     let given = match named {
-        Some(seat) => to_named_seat(err, order, wiring, &note, seat).map_err(Refused::stopped)?,
-        None => to_a_transient_seat(err, order, wiring, &note)?,
+        Some(seat) => to_named_seat(err, order, wiring, seat).map_err(Refused::stopped)?,
+        None => to_a_transient_seat(err, order, wiring)?,
     };
 
     // THE ORDER LINE FIRST AND THE BELT UNDER IT, on the same stream: a person
     // reading a dispatch's own output reads what the machine was measured at
     // beside the order it gave, in the words `fleet seat spawn` prints. A
-    // dispatch to a named seat starts nothing and prints nothing here.
+    // dispatch to a named seat starts nothing and prints nothing here. The seat
+    // is named as a sentence names it, and the entry by the store's id.
+    let line = match named {
+        Some(seat) => format!(
+            "ordered {} to {} — entry {}",
+            given.item,
+            seat.machine_name(),
+            given.entry
+        ),
+        None => format!(
+            "ordered {} to a transient seat — entry {}",
+            given.item, given.entry
+        ),
+    };
     let said = match &given.belt {
-        Some(belt) => format!("{}\n{belt}\n", given.note),
-        None => format!("{}\n", given.note),
+        Some(belt) => format!("{line}\n{belt}\n"),
+        None => format!("{line}\n"),
     };
     out.write_all(said.as_bytes()).map_err(|e| {
         Refused::stopped(Stop::could_not_tell(format!(
-            "the note line could not be written: {e}"
+            "the order line could not be written: {e}"
         )))
     })?;
     Ok(given)
@@ -271,7 +288,7 @@ pub(crate) fn refuse_an_epic(item: &Item) -> Result<(), Stop> {
     Ok(())
 }
 
-/// The named path: assign, note, index, read back, brief, ring.
+/// The named path: assign, entry, index, read back, brief, ring.
 ///
 /// Every write, the event and the ring carry the seat's full id; the brief and
 /// every sentence name it by its machine name.
@@ -279,7 +296,6 @@ fn to_named_seat(
     err: &mut dyn Write,
     order: &Order,
     wiring: &Wiring,
-    note: &str,
     named: &SeatRef,
 ) -> Result<Given, Stop> {
     let id = named.id.to_string();
@@ -289,15 +305,15 @@ fn to_named_seat(
         .store
         .assign(order.item, seat, &order.by.to_string())
         .map_err(|e| wrote_nothing(order.item, "the assignee", &e))?;
-    write_order(order, wiring, note, Some(seat), true)?;
-    read_back(order, wiring, note, Some(seat), Some(seat))?;
+    let entry = write_order(order, wiring, Some(&named.id), true)?;
+    read_back(order, wiring, Some(seat), Some(seat))?;
     // A NAMED SEAT WRITES NO BASE: no worktree was cut for this order, so there
     // is no commit the seat started from that this verb could read.
     announce(order, wiring, named, None)?;
 
     let brief_path = match order.brief {
         Some(pinned) => pinned.to_path_buf(),
-        None => write_brief(wiring, order, note, &named.machine_name())?,
+        None => write_brief(wiring, order, &named.machine_name())?,
     };
     let text = render(
         RING,
@@ -313,7 +329,7 @@ fn to_named_seat(
     match wiring.ring.ring(seat, &text) {
         RingOutcome::Delivered => Ok(Given {
             item: order.item.to_string(),
-            note: note.to_string(),
+            entry,
             brief_path,
             seat: Some(named.clone()),
             belt: None,
@@ -340,27 +356,29 @@ fn to_named_seat(
 
 /// The transient path: the order first, then the seat that will hold it.
 ///
-/// The note precedes the spawn because the brief IS the first turn and a seat
-/// started before the order exists would read an item nobody had given it. A
+/// The ordered entry precedes the spawn, naming no seat, because the brief IS
+/// the first turn and a seat started before the order exists would read an
+/// item nobody had given it. A second ordered entry names the seat once the
+/// spawn has made one, so the timeline's current order is the seated one. A
 /// spawn that refuses therefore withdraws the order in the same act, so a
 /// refusal never leaves an ordered item nobody holds.
 ///
 /// A SPAWN THAT COULD NOT BE OBSERVED IS NOT A REFUSAL and withdraws nothing:
-/// the order stands with one note naming the cause, so the retry that could
-/// still succeed has an order to succeed under.
+/// the order stands with nothing written after it, and the cause is the exit's
+/// message, so the retry that could still succeed has an order to succeed
+/// under.
 fn to_a_transient_seat(
     err: &mut dyn Write,
     order: &Order,
     wiring: &Wiring,
-    note: &str,
 ) -> Result<Given, Refused> {
-    write_order(order, wiring, note, None, true).map_err(Refused::stopped)?;
-    read_back(order, wiring, note, None, None).map_err(Refused::stopped)?;
+    write_order(order, wiring, None, true).map_err(Refused::stopped)?;
+    read_back(order, wiring, None, None).map_err(Refused::stopped)?;
 
     let pinned = order.brief.map(Path::to_path_buf);
     let brief_path = match &pinned {
         Some(path) => path.clone(),
-        None => write_brief(wiring, order, note, TRANSIENT).map_err(Refused::stopped)?,
+        None => write_brief(wiring, order, TRANSIENT).map_err(Refused::stopped)?,
     };
 
     match wiring.spawner.spawn(&Spawn {
@@ -399,8 +417,9 @@ fn to_a_transient_seat(
                         order.item
                     )))
                 })?;
-            write_order(order, wiring, note, Some(&seat), false).map_err(Refused::stopped)?;
-            read_back(order, wiring, note, Some(&seat), Some(&seat)).map_err(Refused::stopped)?;
+            let entry =
+                write_order(order, wiring, Some(&spawned.id), false).map_err(Refused::stopped)?;
+            read_back(order, wiring, Some(&seat), Some(&seat)).map_err(Refused::stopped)?;
             announce(order, wiring, &spawned, base.as_deref()).map_err(Refused::stopped)?;
             // The item's own rendering moved under the brief: the assignment
             // and the seat in the index are both in it. Rendered again over the
@@ -413,11 +432,11 @@ fn to_a_transient_seat(
             // covers those bytes, so a second write over them would be a pinned
             // input this verb moved.
             if pinned.is_none() {
-                write_brief(wiring, order, note, TRANSIENT).map_err(Refused::stopped)?;
+                write_brief(wiring, order, TRANSIENT).map_err(Refused::stopped)?;
             }
             Ok(Given {
                 item: order.item.to_string(),
-                note: note.to_string(),
+                entry,
                 brief_path,
                 seat: Some(spawned),
                 belt,
@@ -451,7 +470,7 @@ fn to_a_transient_seat(
 
 /// The one event this verb writes.
 ///
-/// AFTER THE READ-BACK AND BEFORE THE EXIT, always in that order: the note is
+/// AFTER THE READ-BACK AND BEFORE THE EXIT, always in that order: the entry is
 /// the order and the event is the fold's copy of it, so a crash between them
 /// leaves an order nothing announced — which the fold reads as the record says
 /// — and never an announcement no order stands behind.
@@ -489,23 +508,27 @@ fn announce(
         })
 }
 
-/// The order withdrawn: the index unset, one note saying so, and the
-/// withdrawal read back.
+/// The order withdrawn: the index unset, one `order_withdrawn` entry naming
+/// the spawner's cause, and the withdrawal read back.
 fn withdraw(err: &mut dyn Write, order: &Order, wiring: &Wiring, cause: &str) -> Result<(), Stop> {
-    let line = format!("{WITHDRAWN}: {cause}");
     wiring
         .store
         .unset_orders(order.item, &order.by.to_string())
         .map_err(|e| stands(order.item, &format!("the index could not be unset: {e}")))?;
-    wiring
-        .store
-        .note(order.item, &line, &order.by.to_string())
-        .map_err(|e| {
-            stands(
+    let withdrawn = Body::OrderWithdrawn(OrderWithdrawn {
+        why: Withdrawal::SpawnRefused,
+        seat: None,
+        cause: Some(cause.to_string()),
+    });
+    recorded(wiring.store, order.item, &withdrawn, order.by).map_err(
+        |unrecorded| match unrecorded {
+            Unrecorded::NotWritten(e) => stands(
                 order.item,
-                &format!("the withdrawal note did not land: {e}"),
-            )
-        })?;
+                &format!("the order_withdrawn entry did not land: {e}"),
+            ),
+            Unrecorded::Unconfirmed(why) => stands(order.item, &why),
+        },
+    )?;
     let item = read(wiring.store, order.item)?;
     if item.has_orders_key {
         return Err(stands(
@@ -513,26 +536,17 @@ fn withdraw(err: &mut dyn Write, order: &Order, wiring: &Wiring, cause: &str) ->
             "the index still carries a fleet.orders key after the withdrawal",
         ));
     }
-    let _ = writeln!(err, "withdrawn: {line}");
+    let _ = writeln!(err, "withdrawn: {WITHDRAWN}: {cause}");
     Ok(())
 }
 
-/// The order LEFT STANDING, with one note saying what could not be observed.
+/// The order LEFT STANDING, with nothing written: what could not be observed is
+/// the exit's message and stderr's line, and no entry on the record.
 ///
 /// The mirror of [`withdraw`] and it reads the index back the opposite way: the
 /// key has to STILL be there. An order this path quietly took away would be the
 /// rounding the third outcome exists to stop, arriving by the other side.
 fn not_told(err: &mut dyn Write, order: &Order, wiring: &Wiring, cause: &str) -> Result<(), Stop> {
-    let line = format!("{NOT_TOLD}: {cause}");
-    wiring
-        .store
-        .note(order.item, &line, &order.by.to_string())
-        .map_err(|e| {
-            stands(
-                order.item,
-                &format!("the could-not-tell note did not land: {e}"),
-            )
-        })?;
     let item = read(wiring.store, order.item)?;
     if !item.has_orders_key {
         return Err(stands(
@@ -540,28 +554,42 @@ fn not_told(err: &mut dyn Write, order: &Order, wiring: &Wiring, cause: &str) ->
             "the index carries no fleet.orders key after a spawn that could not be told",
         ));
     }
-    let _ = writeln!(err, "could not tell: {line}");
+    let _ = writeln!(err, "could not tell: {NOT_TOLD}: {cause}");
     Ok(())
 }
 
-/// The index, written as one object that replaces the key whole.
+/// The ordered entry, appended and read back, then the index, written as one
+/// object that replaces the key whole. Answers the entry's id.
+///
+/// Both passes append: the first names the seat where one was named and no
+/// seat on the transient path, and the transient path's second names the seat
+/// the spawn made, so the timeline's current order is the seated one. What the
+/// pass changes is what a failed append leaves: before the first nothing is
+/// ordered, and before the second the first order already stands.
 fn write_order(
     order: &Order,
     wiring: &Wiring,
-    note: &str,
-    seat: Option<&str>,
+    seat: Option<&SeatId>,
     first: bool,
-) -> Result<(), Stop> {
-    // The note before the index, and only on the first pass: the second index
-    // write of a transient dispatch adds the seat to an order already on the
-    // record, and a second note would say the same thing twice.
-    if first {
-        wiring
-            .store
-            .note(order.item, note, &order.by.to_string())
-            .map_err(|e| wrote_nothing(order.item, "the order note", &e))?;
-    }
-    let payload = index_payload(order, seat);
+) -> Result<String, Stop> {
+    let ordered = Body::Ordered(Ordered {
+        order: OrderKind::Dispatch,
+        seat: seat.copied(),
+    });
+    let entry = recorded(wiring.store, order.item, &ordered, order.by).map_err(|unrecorded| {
+        match unrecorded {
+            Unrecorded::NotWritten(e) if first => {
+                wrote_nothing(order.item, "the ordered entry", &e)
+            }
+            Unrecorded::NotWritten(e) => stands(
+                order.item,
+                &format!("the ordered entry naming the seat did not land: {e}"),
+            ),
+            Unrecorded::Unconfirmed(why) => stands(order.item, &why),
+        }
+    })?;
+    let seat = seat.map(SeatId::to_string);
+    let payload = index_payload(order, seat.as_deref());
     wiring
         .store
         .set_orders(order.item, &payload, &order.by.to_string())
@@ -570,7 +598,8 @@ fn write_order(
                 order.item,
                 &format!("the index did not land: {e}\n  RERUN: bd update {} --metadata '{payload}' --actor {}", order.item, order.by),
             )
-        })
+        })?;
+    Ok(entry)
 }
 
 /// The index as JSON, with the seat present only where one was named. A
@@ -593,19 +622,12 @@ pub fn index(by: &str, kind: &str, seat: Option<&str>, at: &str) -> String {
     keys::stamped(keys::ORDERS, index).to_string()
 }
 
-/// The order note the pack's template renders, for a caller that writes its own
-/// order rather than calling [`dispatch`] — and for `fleet brief`, which renders
-/// the order it prints from the index's `by` rather than reading the note back.
-pub fn note_for(packs: &Packs, by: &str) -> Result<String, Stop> {
-    note_text(packs, by)
-}
-
-/// One read, asserting the assignee, the note and the four index fields against
-/// the ARGUMENTS — plus a token nothing wrote.
+/// One read, asserting the assignee and the four index fields against the
+/// ARGUMENTS — plus a token nothing wrote. The entry is not asked about here:
+/// [`recorded`] read it back when it was appended.
 fn read_back(
     order: &Order,
     wiring: &Wiring,
-    note: &str,
     assignee: Option<&str>,
     seat: Option<&str>,
 ) -> Result<(), Stop> {
@@ -651,32 +673,6 @@ fn read_back(
         }
     }
 
-    // The note half of the same read. A record carrying no notes field at all
-    // is a third answer and not a disagreement: it is said, and not judged.
-    match item.notes.as_deref() {
-        Some(notes) => {
-            let seen = brief::order_line(Some(notes));
-            if seen.as_deref().map(normalised) != Some(normalised(note)) {
-                return Err(disagrees(
-                    order.item,
-                    "the last order note",
-                    note,
-                    seen.as_deref(),
-                    &index_repair(order, seat),
-                ));
-            }
-        }
-        None => {
-            return Err(disagrees(
-                order.item,
-                "the notes",
-                note,
-                None,
-                &index_repair(order, seat),
-            ))
-        }
-    }
-
     let control = control_token();
     if item.document.contains(control) {
         return Err(Stop::could_not_tell(format!(
@@ -688,47 +684,29 @@ fn read_back(
     Ok(())
 }
 
-/// Whitespace normalised to single spaces, because the store keeps a note with
-/// the wrapping it was written with and the comparison is about the words.
-fn normalised(line: &str) -> String {
-    line.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// The dispatch note, rendered from the pack's template rather than composed.
-fn note_text(packs: &Packs, by: &str) -> Result<String, Stop> {
-    let template = packs.read(brief::DISPATCH_NOTE)?;
-    let line = render(&template, &[("by", by)]).map_err(|name| {
-        Stop::could_not_tell(format!(
-            "`{}` writes `{{{name}}}`, which is not a placeholder this verb resolves",
-            brief::DISPATCH_NOTE
-        ))
-    })?;
-    let line = line.trim().to_string();
-    if !line.contains(ORDER_MARK) {
-        return Err(Stop::could_not_tell(format!(
-            "`{}` renders `{line}`, which carries no `{ORDER_MARK}` — a note no reader can find \
-             is not an order",
-            brief::DISPATCH_NOTE
-        )));
-    }
-    Ok(line)
-}
-
 /// The brief, rendered from the item as it now reads and written to the briefs
 /// directory as the file a spawn hands its seat. The item is read with its
-/// timeline and rendered by [`show::render`], the text `fleet brief` prints.
-fn write_brief(wiring: &Wiring, order: &Order, note: &str, seat: &str) -> Result<PathBuf, Stop> {
+/// timeline and rendered by [`show::render`], and the order by
+/// [`brief::order_text`] off the index just written: the text `fleet brief`
+/// prints.
+fn write_brief(wiring: &Wiring, order: &Order, seat: &str) -> Result<PathBuf, Stop> {
     let unread = |e: StoreError| stands(order.item, &format!("the item could not be read: {e}"));
     let record = wiring.store.show(order.item).map_err(unread)?;
     let timeline = wiring.store.timeline(&record.id).map_err(unread)?;
     let text = show::render(&record, &timeline);
+    let Some(index) = record.orders.as_ref() else {
+        return Err(stands(
+            order.item,
+            "the index read back and then was gone from under the brief",
+        ));
+    };
     let body = brief::text(
         wiring.packs,
         wiring.project,
         &Subject {
             id: order.item,
             text: &text,
-            order: note,
+            order: &brief::order_text(index),
             seat,
             touched: order.touched,
         },
@@ -796,7 +774,7 @@ fn wrote_nothing(item: &str, what: &str, e: &StoreError) -> Stop {
 /// happened" would dispatch the item twice.
 fn stands(item: &str, why: &str) -> Stop {
     Stop::could_not_tell(format!(
-        "{why}\n  the order note on {item} STANDS and the order is real"
+        "{why}\n  the ordered entry on {item} STANDS and the order is real"
     ))
 }
 

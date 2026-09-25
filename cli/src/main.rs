@@ -145,9 +145,9 @@ woke, rest, handed-off and exited are said under `fleet event`.")]
     // arm here and one function in the family's own module.
     /// give a ready item to a seat
     #[command(long_about = "\
-give a ready item to a seat: the order note, its machine-read index and the
-assignee, then the brief and the ring. Without --to, a transient seat is asked
-for.")]
+give a ready item to a seat: the ordered entry on the item, its fleet.orders
+index and the assignee, then the brief and the ring. Without --to, a transient
+seat is asked for.")]
     Dispatch(item::DispatchArgs),
 
     /// render the first turn a dispatched seat reads

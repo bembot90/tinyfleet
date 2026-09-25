@@ -18,14 +18,15 @@ use std::sync::Mutex;
 use common::{
     agent, full, keys_agree, seat_id, sweep_dead_stores, Fixture, Graph, Rooted, StubEvents,
 };
+use fleet_core::entry::{Body, Entry, OrderKind, OrderWithdrawn, Ordered, Timeline, Withdrawal};
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
 use fleet_core::item::dispatch::{self, Order, Wiring, NOT_TOLD, WITHDRAWN};
 use fleet_core::item::{
-    control_token, render, table_at, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner,
+    control_token, table_at, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner,
     ITEM_DISPATCHED,
 };
 use fleet_core::seat::actor::Actor;
-use fleet_core::seat::identity::{Directory, Kind, SeatRef};
+use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
 use fleet_core::store::{AssignedItem, Item, Store, StoreError};
 
 const POLICY: &str = "[guards]\n";
@@ -225,6 +226,7 @@ struct Answer {
     code: Option<u8>,
     why: String,
     out: String,
+    err: String,
 }
 
 impl Rig {
@@ -330,6 +332,7 @@ impl Rig {
                 .map(|refused| refused.stop.message.clone())
                 .unwrap_or_default(),
             out: String::from_utf8(out).expect("stdout is utf-8"),
+            err: String::from_utf8(err).expect("stderr is utf-8"),
         }
     }
 }
@@ -337,8 +340,8 @@ impl Rig {
 /// THE STORE IS HANDED THE TYPED ACTOR. A dispatch by `seat:<id>` leaves bd's
 /// own audit actor `seat:<id>` on every mutation it makes of the item — read
 /// off bd's events journal, the only reader bd 1.3.0 gives that names who made
-/// an update — and the index and the note read back through `bd show --json`
-/// carry the same string.
+/// an update — the index read back through `bd show --json` carries the same
+/// string, and the ordered entry's author is the same actor.
 #[test]
 fn a_dispatch_by_a_seat_leaves_bd_the_seats_typed_actor() {
     let rig = Rig::ringed("audit");
@@ -370,11 +373,11 @@ fn a_dispatch_by_a_seat_leaves_bd_the_seats_typed_actor() {
         serde_json::json!(BY),
         "the index read back through bd show --json: {shown}"
     );
-    assert!(
-        shown["notes"]
-            .as_str()
-            .is_some_and(|notes| notes.contains(&note_for(&rig, BY))),
-        "the order note names the typed actor: {shown}"
+    let entries = timeline_of(&rig, &item);
+    assert_eq!(
+        entries.iter().map(|entry| &entry.by).collect::<Vec<_>>(),
+        vec![&by()],
+        "the ordered entry is the typed actor's: {entries:?}"
     );
 
     let exported = scratch.bd(&["events", "export"]);
@@ -390,8 +393,8 @@ fn a_dispatch_by_a_seat_leaves_bd_the_seats_typed_actor() {
         .map(|row| row["actor"].as_str().unwrap_or_default().to_string())
         .collect();
     assert!(
-        actors.len() >= 3,
-        "the assignee, the note and the index are each a mutation: {actors:?}"
+        actors.len() >= 2,
+        "the assignee and the index are each a mutation: {actors:?}"
     );
     assert!(
         actors.iter().all(|actor| actor == BY),
@@ -399,17 +402,29 @@ fn a_dispatch_by_a_seat_leaves_bd_the_seats_typed_actor() {
     );
 }
 
-/// The note the rig's own copy of the template renders for this dispatcher.
-fn note_for(rig: &Rig, by: &str) -> String {
-    let path = rig
-        .fixture
-        .path(fleet_core::defaults::DIR)
-        .join(brief::DISPATCH_NOTE);
-    let template = std::fs::read_to_string(&path).expect("the rig's dispatch note is readable");
-    render(&template, &[("by", by)])
-        .expect("the dispatch note renders")
-        .trim()
-        .to_string()
+/// The item's entries, read back through the store the arm dispatched into.
+fn timeline_of(rig: &Rig, item: &str) -> Vec<Entry> {
+    rig.graph
+        .store()
+        .timeline(item)
+        .expect("the timeline reads back")
+}
+
+/// The entry a dispatch appends: the order, to `seat` or to no seat yet.
+fn ordered_to(seat: Option<SeatId>) -> Body {
+    Body::Ordered(Ordered {
+        order: OrderKind::Dispatch,
+        seat,
+    })
+}
+
+/// The line a dispatch prints on success, for an order to the seat a sentence
+/// names `seat` or — `None` — to a transient one, under the entry recording it.
+fn order_line(item: &str, seat: Option<&str>, entry: &str) -> String {
+    match seat {
+        Some(seat) => format!("ordered {item} to {seat} — entry {entry}"),
+        None => format!("ordered {item} to a transient seat — entry {entry}"),
+    }
 }
 
 fn index_of(rig: &Rig, item: &str) -> fleet_core::store::Orders {
@@ -422,10 +437,10 @@ fn index_of(rig: &Rig, item: &str) -> fleet_core::store::Orders {
 }
 
 #[test]
-fn a_named_dispatch_writes_the_assignee_the_note_and_the_index() {
+fn a_named_dispatch_writes_the_assignee_the_ordered_entry_and_the_index() {
     // THE INTEGRATION RING of this suite, and the one arm here that dispatches
-    // through `bd`: the assignee, the note and the four index fields written
-    // and read back through the store the verb actually talks to.
+    // through `bd`: the assignee, the ordered entry and the four index fields
+    // written and read back through the store the verb actually talks to.
     //
     // THE ORDER NAMES THE SEAT BY ITS ID. `--to orla` is how a person names
     // Orla, and the assignee, the index's seat, the event and the ring all
@@ -446,16 +461,25 @@ fn a_named_dispatch_writes_the_assignee_the_note_and_the_index() {
         &spawner,
     );
     assert_eq!(answer.code, None, "{}", answer.why);
-    assert_eq!(answer.out, format!("{}\n", note_for(&rig, BY)));
     let seat = orla;
+
+    // ONE ENTRY, THE ORDER, by the dispatcher and naming her id.
+    let entries = timeline_of(&rig, &item);
+    assert_eq!(entries.len(), 1, "one entry: {entries:?}");
+    assert_eq!(entries[0].body, ordered_to(Some(seat_id("Orla"))));
+    assert_eq!(entries[0].by, by());
+    assert_eq!(
+        answer.out,
+        format!(
+            "{}\n",
+            order_line(&item, Some(&agent("Orla").machine_name()), &entries[0].id)
+        ),
+        "stdout names the item, the seat as a sentence does, and the entry"
+    );
 
     let read = rig.graph.store().show(&item).expect("the item reads back");
     assert_eq!(read.assignee.as_deref(), Some(seat.as_str()));
-    assert_eq!(
-        brief::order_line(read.notes.as_deref()).as_deref(),
-        Some(note_for(&rig, BY).as_str()),
-        "the note is the template's line, byte for byte"
-    );
+    assert_eq!(read.notes, None, "no verb here writes a note");
     let index = read.orders.expect("the index is an object");
     assert_eq!(index.by.as_deref(), Some(BY));
     assert_eq!(index.kind.as_deref(), Some("dispatch"));
@@ -560,26 +584,21 @@ fn a_person_and_an_ambiguous_name_are_refused_before_any_write() {
     assert_eq!(rig.events.count(), 0, "a refusal appends nothing");
 }
 
-/// The rig's copy of the template is rewritten, so the note is measured against
-/// the file and never against a line that happens to match the shipped one.
+/// The named dispatch, counted in writes: the assignee, ONE ordered entry and
+/// the index, and not a note among them — the order is the entry, and the
+/// index beside it is the projection every verb decides on.
 #[test]
-fn a_named_dispatch_writes_the_note_the_pack_file_renders() {
-    let rig = Rig::new("variant");
-    rig.fixture.file(
-        &format!("{}/{}", fleet_core::defaults::DIR, brief::DISPATCH_NOTE),
-        "a variant order from {by} — orders given\n",
-    );
-    let wanted = note_for(&rig, BY);
-    assert_eq!(
-        wanted,
-        format!("a variant order from {BY} — orders given"),
-        "the rig reads the rewritten file"
-    );
-
-    let item = rig.graph.item("a ready item under a variant note");
-    let seat = String::from("s-variant");
+fn a_named_dispatch_appends_one_ordered_entry_and_writes_no_note() {
+    let rig = Rig::new("entry");
+    let Graph::Memory(board) = &rig.graph else {
+        unreachable!("the rig is in memory");
+    };
+    let item = rig.graph.item("a ready item whose order is an entry");
+    board.forget_writes();
+    let seat = String::from("s-entry");
     let ring = StubRing::answering(RingOutcome::Delivered);
     let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
+
     let answer = rig.run(
         &item,
         Some(&seat),
@@ -589,14 +608,82 @@ fn a_named_dispatch_writes_the_note_the_pack_file_renders() {
         &spawner,
     );
     assert_eq!(answer.code, None, "{}", answer.why);
-    assert_eq!(answer.out, format!("{wanted}\n"));
 
-    let read = rig.graph.store().show(&item).expect("the item reads back");
+    let entries = timeline_of(&rig, &item);
     assert_eq!(
-        brief::order_line(read.notes.as_deref()).as_deref(),
-        Some(wanted.as_str()),
-        "the note is the rewritten template's line, byte for byte"
+        entries.iter().map(|entry| &entry.body).collect::<Vec<_>>(),
+        vec![&ordered_to(Some(seat_id(&seat)))],
+        "the timeline is the one order, naming the seat's id"
     );
+    assert_eq!(entries[0].by, by(), "by the dispatcher's actor");
+    let index = index_of(&rig, &item);
+    assert_eq!(index.by.as_deref(), Some(BY));
+    assert_eq!(index.kind.as_deref(), Some("dispatch"));
+    assert_eq!(index.seat.as_deref(), Some(full(&seat).as_str()));
+    assert_eq!(index.at.as_deref(), Some(AT));
+
+    let wrote = board.store.wrote();
+    assert!(
+        !wrote.iter().any(|line| line.starts_with("note ")),
+        "no note is written: {wrote:?}"
+    );
+    let verbs: Vec<&str> = wrote
+        .iter()
+        .filter_map(|line| line.split(' ').next())
+        .collect();
+    assert_eq!(
+        verbs,
+        ["assign", "append", "set_orders"],
+        "the assignee, then the entry, then the index: {wrote:?}"
+    );
+    assert_eq!(
+        answer.out,
+        format!(
+            "{}\n",
+            order_line(&item, Some(&agent(&seat).machine_name()), &entries[0].id)
+        )
+    );
+}
+
+/// A store that takes the append and does not keep it: the entry's own
+/// read-back is what catches it, and the stop names the entry it could not
+/// find. Without that read-back the dispatch would go on to the index and read
+/// back a disagreement about something else.
+#[test]
+fn an_ordered_entry_the_store_does_not_keep_exits_three_naming_it() {
+    let rig = Rig::new("unkept");
+    let Graph::Memory(board) = &rig.graph else {
+        unreachable!("the rig is in memory");
+    };
+    let item = rig
+        .graph
+        .item("a ready item whose store forgets its writes");
+    board.store.ignore_writes();
+    let seat = String::from("s-unkept");
+    let ring = StubRing::answering(RingOutcome::Delivered);
+    let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
+
+    let answer = rig.run(
+        &item,
+        Some(&seat),
+        std::slice::from_ref(&seat),
+        rig.graph.store(),
+        &ring,
+        &spawner,
+    );
+    assert_eq!(answer.code, Some(3), "{}", answer.why);
+    assert!(
+        answer.why.contains("does not hold the ordered entry"),
+        "the stop names the ordered entry the timeline does not hold: {}",
+        answer.why
+    );
+    assert!(
+        !answer.why.contains("fleet.orders"),
+        "and it stops at the entry, before the index: {}",
+        answer.why
+    );
+    assert!(ring.calls().is_empty(), "nobody is rung");
+    assert_eq!(rig.events.count(), 0, "and nothing is announced");
 }
 
 #[test]
@@ -1143,7 +1230,7 @@ fn a_ring_that_finds_no_live_session_leaves_the_order_standing() {
     assert_eq!(
         answer.out.len(),
         0,
-        "the note line is stdout's on success only"
+        "the order line is stdout's on success only"
     );
 
     let read = rig.graph.store().show(&item).expect("the item reads back");
@@ -1184,16 +1271,19 @@ fn a_suffix_is_dispatched_under_the_full_id_it_resolves_to() {
     let read = rig.graph.store().show(&item).expect("the item reads back");
     assert_eq!(read.assignee.as_deref(), Some(full(&seat).as_str()));
     assert_eq!(
-        brief::order_line(read.notes.as_deref()).as_deref(),
-        Some(note_for(&rig, BY).as_str()),
-        "the order note is on the full id's item"
+        timeline_of(&rig, &item)
+            .iter()
+            .map(|entry| &entry.body)
+            .collect::<Vec<_>>(),
+        vec![&ordered_to(Some(seat_id(&seat)))],
+        "the ordered entry is on the full id's item"
     );
     let index = read.orders.expect("the index is an object");
     assert_eq!(index.seat.as_deref(), Some(full(&seat).as_str()));
     assert_eq!(index.at.as_deref(), Some(AT));
 
     let wrote = board.store.wrote();
-    for verb in ["assign", "note", "set_orders"] {
+    for verb in ["assign", "append", "set_orders"] {
         assert!(
             wrote
                 .iter()
@@ -1413,9 +1503,31 @@ mod transient {
 
         let answer = rig.run(&item, None, &[], rig.graph.store(), &ring, &spawner);
         assert_eq!(answer.code, None, "{}", answer.why);
+
+        // TWO ORDERED ENTRIES: the order before the spawn, to no seat — the
+        // brief is the first turn — and the one naming the seat the spawn made.
+        let entries = timeline_of(&rig, &item);
+        assert_eq!(
+            entries.iter().map(|entry| &entry.body).collect::<Vec<_>>(),
+            vec![&ordered_to(None), &ordered_to(Some(seat_id("t1")))],
+            "the order, then the seat that holds it"
+        );
+        assert!(entries.iter().all(|entry| entry.by == by()));
+        let (_, current) = Timeline(&entries)
+            .current_order()
+            .expect("the order stands");
+        assert_eq!(
+            current.seat,
+            Some(seat_id("t1")),
+            "the current order's seat"
+        );
         // THE NEGATIVE HALF of the belt pair below: this spawner read no belt,
-        // and stdout is the order line and nothing under it.
-        assert_eq!(answer.out, format!("{}\n", note_for(&rig, BY)));
+        // and stdout is the order line and nothing under it, naming the entry
+        // that seated the order.
+        assert_eq!(
+            answer.out,
+            format!("{}\n", order_line(&item, None, &entries[1].id))
+        );
 
         let read = rig.graph.store().show(&item).expect("the item reads back");
         assert_eq!(read.assignee.as_deref(), Some(full("t1").as_str()));
@@ -1504,15 +1616,29 @@ mod transient {
             read.orders
         );
         assert_eq!(read.assignee, None, "nobody was ever assigned");
-        let notes = read.notes.unwrap_or_default();
+        assert_eq!(read.notes, None, "and nothing was noted");
+        // The order stays as history, and the withdrawal after it says why.
+        let entries = timeline_of(&rig, &item);
         assert_eq!(
-            notes.matches(WITHDRAWN).count(),
-            1,
-            "one withdrawal note, not two:\n{notes}"
+            entries.iter().map(|entry| &entry.body).collect::<Vec<_>>(),
+            vec![
+                &ordered_to(None),
+                &Body::OrderWithdrawn(OrderWithdrawn {
+                    why: Withdrawal::SpawnRefused,
+                    seat: None,
+                    cause: Some(String::from(
+                        "fleet seat spawn is not built (controller slice 5)"
+                    )),
+                }),
+            ],
+            "the order, then its withdrawal naming the cause"
         );
-        assert!(
-            notes.contains(&note_for(&rig, BY)),
-            "the order note stays as history:\n{notes}"
+        assert!(entries.iter().all(|entry| entry.by == by()));
+        assert!(Timeline(&entries).current_order().is_none());
+        assert_eq!(
+            answer.err,
+            format!("withdrawn: {WITHDRAWN}: fleet seat spawn is not built (controller slice 5)\n"),
+            "the withdrawal's words are stderr's"
         );
         assert_eq!(
             rig.events.count(),
@@ -1574,28 +1700,23 @@ mod transient {
 
         let read = rig.graph.store().show(&item).expect("the item reads back");
         assert!(read.has_orders_key, "the order stands: {:?}", read.orders);
-        let notes = read.notes.unwrap_or_default();
+        assert_eq!(read.notes, None, "nothing was noted");
+        // THE ORDER AND NOTHING AFTER IT: no withdrawal, and no entry for what
+        // could not be observed — the cause is the exit's message.
         assert_eq!(
-            notes.matches(NOT_TOLD).count(),
-            1,
-            "one could-not-tell note, naming the cause:\n{notes}"
-        );
-        assert!(
-            notes.contains(
-                "DISPATCH COULD NOT TELL — the spawn could not be observed: the agent \
-                            binary does not resolve"
-            ),
-            "the note names the cause:\n{notes}"
+            timeline_of(&rig, &item)
+                .iter()
+                .map(|entry| &entry.body)
+                .collect::<Vec<_>>(),
+            vec![&ordered_to(None)],
+            "the order stands alone"
         );
         assert_eq!(
-            notes.matches(WITHDRAWN).count(),
-            0,
-            "nothing was withdrawn:\n{notes}"
+            answer.err,
+            format!("could not tell: {NOT_TOLD}: the agent binary does not resolve\n"),
+            "the could-not-tell's words are stderr's"
         );
-        assert!(
-            notes.contains(&note_for(&rig, BY)),
-            "the order note stands:\n{notes}"
-        );
+        assert!(!answer.err.contains(WITHDRAWN), "{}", answer.err);
         assert_eq!(
             rig.events.count(),
             0,
@@ -1629,9 +1750,10 @@ mod transient {
 
         let answer = rig.run(&item, None, &[], rig.graph.store(), &ring, &spawner);
         assert_eq!(answer.code, None, "{}", answer.why);
+        let entries = timeline_of(&rig, &item);
         assert_eq!(
             answer.out,
-            format!("{}\n{read}\n", note_for(&rig, BY)),
+            format!("{}\n{read}\n", order_line(&item, None, &entries[1].id)),
             "the order line, then both legs, on the verb's own stdout"
         );
     }
@@ -1700,7 +1822,7 @@ mod transient {
         let read = rig.graph.store().show(&item).expect("the item reads back");
         assert!(
             read.has_orders_key,
-            "the order is on the record: the note precedes the event"
+            "the order is on the record: the entry and the index precede the event"
         );
     }
 }

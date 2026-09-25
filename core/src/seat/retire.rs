@@ -14,18 +14,21 @@
 //!
 //! IT IS COUNTED IN STORE CALLS, because every retire pays it and a fleet
 //! retires a seat per dispatched item: ONE call to read the board, then one
-//! `update` carrying every write, one note and one read-back PER ITEM
-//! WITHDRAWN. A seat holding nothing ordered — which is most of them — makes
-//! the one read and stops.
+//! `update` carrying every write, one `order_withdrawn` entry with its
+//! timeline read-back, and one read-back of the item PER ITEM WITHDRAWN. A
+//! seat holding nothing ordered — which is most of them — makes the one read
+//! and stops.
 
+use crate::entry::{Body, OrderWithdrawn, Withdrawal};
 use crate::item::deliver::holds;
-use crate::item::Stop;
+use crate::item::{recorded, Stop, Unrecorded};
 use crate::seat::actor::Actor;
 use crate::seat::identity::SeatId;
 use crate::store::{AssignedItem, Store, StoreError};
 
-/// The line a withdrawal leaves, so an item whose seat was retired reads as one
-/// nobody holds rather than as one whose holder vanished.
+/// The words a retire says on stderr for each item it withdrew. The record's
+/// own half is the `order_withdrawn` entry, so an item whose seat was retired
+/// reads as one nobody holds rather than as one whose holder vanished.
 pub const WITHDRAWN: &str = "ORDER WITHDRAWN at retire";
 
 /// The open ordered items this seat holds, as the listing's rows, in ONE store
@@ -47,8 +50,8 @@ pub fn held(store: &dyn Store, seat: &str) -> Result<Vec<AssignedItem>, Stop> {
 }
 
 /// Every one of them released: the item reopened, the assignee cleared and the
-/// order index unset in one write, one note saying so, and the record read back
-/// against all three.
+/// order index unset in one write, one `order_withdrawn` entry naming the seat,
+/// and the record read back against all three.
 ///
 /// THE ITEM GOES BACK TO OPEN, and so back in the ready set where nothing
 /// blocks it: one the seat marked `in_progress` would otherwise sit there with
@@ -66,9 +69,9 @@ pub fn held(store: &dyn Store, seat: &str) -> Result<Vec<AssignedItem>, Stop> {
 /// written must not become an order held by a seat that no longer exists.
 ///
 /// `seat` is the row's id, which the write is fenced on because it is the
-/// assignee; `label` is how the note and every sentence name the seat; `by`
-/// is who retires it, and its string form is what the note and every write
-/// carry.
+/// assignee and which the entry names; `label` is how every sentence names the
+/// seat; `by` is who retires it: the entry's author, and its string form is
+/// what every other write carries.
 pub fn withdraw(
     store: &dyn Store,
     items: &[AssignedItem],
@@ -76,9 +79,13 @@ pub fn withdraw(
     label: &str,
     by: &Actor,
 ) -> Result<(), Stop> {
-    let line = format!("{WITHDRAWN}: {label} retired by {by}; the item is open and unassigned");
+    let withdrawn = Body::OrderWithdrawn(OrderWithdrawn {
+        why: Withdrawal::Retire,
+        seat: Some(*seat),
+        cause: None,
+    });
     let seat = seat.to_string();
-    let by = by.to_string();
+    let writer = by.to_string();
     for row in items {
         let item = row.id.as_str();
         if row.status != "open" && row.status != "in_progress" {
@@ -91,14 +98,18 @@ pub fn withdraw(
             ));
         }
         store
-            .withdraw_order(item, &seat, &row.status, &by)
+            .withdraw_order(item, &seat, &row.status, &writer)
             .map_err(|e| match e {
                 StoreError::Moved(why) => moved_on(item, label, &why),
                 other => nothing_written(item, &other.to_string()),
             })?;
-        store
-            .note(item, &line, &by)
-            .map_err(|e| halfway(item, &e.to_string()))?;
+        recorded(store, item, &withdrawn, by).map_err(|unrecorded| match unrecorded {
+            Unrecorded::NotWritten(e) => halfway(
+                item,
+                &format!("the order_withdrawn entry did not land: {e}"),
+            ),
+            Unrecorded::Unconfirmed(why) => halfway(item, &why),
+        })?;
         let read = store.show(item)?;
         if read.has_orders_key {
             return Err(halfway(item, "it still carries a fleet.orders key"));

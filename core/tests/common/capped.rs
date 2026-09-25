@@ -23,7 +23,7 @@ pub struct Held<'a> {
 /// absolute path. Every call it is handed goes on one line of `log`, its
 /// arguments tab-separated.
 ///
-/// It answers the four verbs a retire makes and no other:
+/// It answers the verbs a retire makes and no other:
 /// - `list` every row it holds, in id order, capped at 50 unless `-n` names
 ///   another limit — the seat filter is not applied, because every row it holds
 ///   is that seat's;
@@ -32,10 +32,14 @@ pub struct Held<'a> {
 ///   status (`--if-assignee <seat> --if-status open`, then `--assignee ''`
 ///   with `--unset-metadata fleet.orders` and `--status open`), which leaves
 ///   the row open, unassigned and unordered;
-/// - `note` as a write it accepts and does not keep.
+/// - `comments add <id> <text> --actor <by> --json` kept as one row per call,
+///   answering the row's id, and `comments <id> --json` those rows in the
+///   order they were added — the withdrawal's entry and its read-back.
 pub fn capped_bd(dir: &Fixture, seat: &str, rows: &[Held], log: &Path) -> PathBuf {
     let items = dir.path("items");
     std::fs::create_dir_all(&items).expect("the fake's rows directory is created");
+    let comments = dir.path("comments");
+    std::fs::create_dir_all(&comments).expect("the fake's comments directory is created");
     for row in rows {
         let orders = if row.ordered {
             format!(
@@ -79,11 +83,22 @@ pub fn capped_bd(dir: &Fixture, seat: &str, rows: &[Held], log: &Path) -> PathBu
              update)\n\
              \x20 case \" $* \" in *' --if-assignee {seat} --if-status open --assignee  --unset-metadata {orders_key} --status open '*) ;; *) exit 1 ;; esac\n\
              \x20 printf '{{\"id\":\"%s\",\"status\":\"open\"}}' \"$2\" > \"$items/$2.json\" ;;\n\
-             note) ;;\n\
-             *) echo 'the fake answers list, show, update and note only' >&2; exit 1 ;;\n\
+             comments)\n\
+             \x20 if [ \"$2\" = add ]; then\n\
+             \x20   n=$(( $(cat '{comments}/count' 2>/dev/null || echo 0) + 1 ))\n\
+             \x20   echo \"$n\" > '{comments}/count'\n\
+             \x20   text=$(printf '%s' \"$4\" | sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g')\n\
+             \x20   printf '{{\"id\":\"c-%s\",\"author\":\"%s\",\"text\":\"%s\",\"created_at\":\"2026-09-14T10:41:%02dZ\"}}\\n' \
+                      \"$n\" \"$6\" \"$text\" \"$n\" >> \"{comments}/$3.jsonl\"\n\
+             \x20   printf '{{\"id\":\"c-%s\"}}\\n' \"$n\"\n\
+             \x20 else\n\
+             \x20   printf '['; [ -f \"{comments}/$2.jsonl\" ] && paste -sd, \"{comments}/$2.jsonl\"; printf ']\\n'\n\
+             \x20 fi ;;\n\
+             *) echo 'the fake answers list, show, update and comments only' >&2; exit 1 ;;\n\
              esac\n",
             log = log.display(),
             items = items.display(),
+            comments = comments.display(),
             orders_key = fleet_core::store::keys::ORDERS,
         ),
     )

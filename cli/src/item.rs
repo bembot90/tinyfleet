@@ -639,6 +639,7 @@ pub fn dispatch_command(args: &DispatchArgs) -> Exit {
                 "item": given.item,
                 "state": state(ITEM_DISPATCHED),
                 "seat": given.seat,
+                "entry": given.entry,
             }),
             args.json,
         ),

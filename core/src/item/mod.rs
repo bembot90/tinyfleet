@@ -741,7 +741,7 @@ pub enum Unrecorded {
 /// [`control_token`], which nothing writes. A read that answered yes to
 /// everything would pass the first three.
 ///
-/// No verb calls this yet; each maps [`Unrecorded`] to its own wording.
+/// Each verb that calls it maps [`Unrecorded`] to its own wording.
 pub fn recorded(
     store: &dyn Store,
     item: &str,
