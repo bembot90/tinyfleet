@@ -15,14 +15,14 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use common::{fleet_of, full, keys_agree, seat_actor, Graph, Rooted, StubEvents};
+use common::{fleet_of, full, keys_agree, seat_actor, signal, Graph, Rooted, StubEvents};
 use fleet_core::entry::{Body, Entry, Timeline};
 use fleet_core::input::{DeliveryInput, DELIVERY_SCHEMA};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::deliver::{self, Delivered, Delivery, Wiring};
 use fleet_core::item::review::{self, Mode, Verdict};
 use fleet_core::item::{
-    control_token, run, Change, Git, Project, Ring, RingOutcome, Stop, ITEM_DELIVERED, TRUNK,
+    control_token, run, Change, Git, Project, Ring, RingOutcome, Stop, ITEM_ENTRY, TRUNK,
 };
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::store::{AssignedItem, Item, Store, StoreError};
@@ -461,20 +461,18 @@ fn a_clean_delivery_commits_reassigns_and_writes_the_delivered_entry() {
         "the commit subject names the item by its full id: {:?}",
         git.calls()
     );
-    // The one event, carrying the three values the entry's own machine fields
-    // do.
-    assert_eq!(events.count(), 1, "exactly one event");
-    let (actor, payload) = events.one(ITEM_DELIVERED);
+    // The one event: the delivered entry's signal, by the seat delivering,
+    // naming the entry the timeline holds. The commit is the entry's.
     assert_eq!(
-        actor,
-        seat_actor(seat).to_string(),
-        "the actor is the seat delivering, typed"
+        events.all(),
+        vec![(
+            ITEM_ENTRY.to_string(),
+            seat_actor(seat).to_string(),
+            signal(&item, &last.id, "delivered"),
+        )],
+        "exactly one event, the entry's signal"
     );
-    keys_agree(ITEM_DELIVERED, &payload, &[]);
-    assert_eq!(payload["item"], serde_json::json!(item));
-    assert_eq!(payload["commit"], serde_json::json!(SHA));
-    assert_eq!(payload["branch"], serde_json::json!(BRANCH));
-    assert_eq!(payload["base"], serde_json::json!(TRUNK_SHA));
+    keys_agree(ITEM_ENTRY, &events.all()[0].2, &[]);
 
     let rung = ring.calls();
     assert_eq!(rung.len(), 1);
@@ -483,6 +481,24 @@ fn a_clean_delivery_commits_reassigns_and_writes_the_delivered_entry() {
         rung[0].1.contains(&item) && rung[0].1.contains(SHA),
         "{:?}",
         rung
+    );
+}
+
+/// RED-PROOF of the key check every verb suite's signal goes through: a signal
+/// that carried the commit beside its three keys — a copy of the entry on the
+/// stream, which [ASSUMES D2] rules out — is refused by it.
+#[test]
+#[should_panic(expected = "item.entry's payload keys")]
+fn a_signal_carrying_the_commit_fails_the_key_check() {
+    keys_agree(
+        ITEM_ENTRY,
+        &serde_json::json!({
+            "item": "fx-item",
+            "entry": "fx-entry",
+            "kind": "delivered",
+            "commit": SHA,
+        }),
+        &[],
     );
 }
 
@@ -713,8 +729,8 @@ fn a_clean_tree_ahead_of_the_base_delivers_head_and_commits_nothing() {
         Some(full(REVIEWER).as_str()),
         "the handoff is recorded"
     );
-    let (_, payload) = events.one(ITEM_DELIVERED);
-    assert_eq!(payload["commit"], serde_json::json!(was));
+    let (_, payload) = events.one(ITEM_ENTRY);
+    assert_eq!(payload, signal(&item, &entry.id, "delivered"));
     assert!(
         String::from_utf8_lossy(&out).contains(deliver::AS_IS),
         "the seat is told nothing was committed: {}",
@@ -1644,7 +1660,7 @@ fn an_item_named_by_its_suffix_is_delivered_under_its_full_id() {
         "the commit subject names the full id: {:?}",
         git.calls()
     );
-    let (_, payload) = events.one(ITEM_DELIVERED);
+    let (_, payload) = events.one(ITEM_ENTRY);
     assert_eq!(payload["item"], serde_json::json!(item));
     let rung = ring.calls();
     assert!(

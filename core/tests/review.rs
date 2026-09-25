@@ -15,7 +15,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use common::{
-    agent, fleet_of, full, keys_agree, seat_actor, shared_store, Rooted, Scratch, StubEvents,
+    agent, fleet_of, full, keys_agree, seat_actor, shared_store, signal, Rooted, Scratch,
+    StubEvents,
 };
 use fleet_core::entry::{
     Body, CheckResult, Decision, Delivered, Entry, Finding, NotProven, Ran, Reviewed, Ruling,
@@ -24,9 +25,7 @@ use fleet_core::entry::{
 use fleet_core::item::brief::Packs;
 use fleet_core::item::review::{self, Mode, Verdict, Wiring};
 use fleet_core::item::show::entry_lines;
-use fleet_core::item::{
-    Change, Git, Project, Ring, RingOutcome, ITEM_RETURNED, ITEM_REVIEWED, VERDICT_ACCEPTED,
-};
+use fleet_core::item::{Change, Git, Project, Ring, RingOutcome, ITEM_ENTRY};
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::store::{AssignedItem, Bd, Item, Store, StoreError};
 use fleet_core::test_support::Board;
@@ -695,16 +694,18 @@ fn land_appends_the_accept_walking_every_call_the_delivery_numbered() {
         "the line printed is the same measurement"
     );
 
-    // The one event, its counts the walk's own.
-    assert_eq!(events.count(), 1, "exactly one event");
-    let (actor, payload) = events.one(ITEM_REVIEWED);
-    assert_eq!(actor, seat_actor(REVIEWER).to_string());
-    keys_agree(ITEM_REVIEWED, &payload, &[]);
-    assert_eq!(payload["item"], serde_json::json!(item));
-    assert_eq!(payload["commit"], serde_json::json!(SHA));
-    assert_eq!(payload["verdict"], serde_json::json!(VERDICT_ACCEPTED));
-    assert_eq!(payload["accepted"], serde_json::json!(2));
-    assert_eq!(payload["overruled"], serde_json::json!(0));
+    // The one event: the reviewed entry's signal, by the reviewer. The verdict
+    // and the walk are the entry's.
+    assert_eq!(
+        events.all(),
+        vec![(
+            ITEM_ENTRY.to_string(),
+            seat_actor(REVIEWER).to_string(),
+            signal(&item, &last.id, "reviewed"),
+        )],
+        "exactly one event, the entry's signal"
+    );
+    keys_agree(ITEM_ENTRY, &events.all()[0].2, &[]);
 }
 
 /// A STORE THAT TAKES THE VERDICT AND DOES NOT KEEP IT is caught by the entry's
@@ -812,20 +813,20 @@ fn a_return_appends_the_findings_and_hands_the_item_back() {
     );
     assert_eq!(code, 0, "{}", said.err);
 
-    assert_eq!(events.count(), 1, "exactly one event");
-    let (actor, payload) = events.one(ITEM_RETURNED);
-    assert_eq!(actor, seat_actor(REVIEWER).to_string());
-    keys_agree(ITEM_RETURNED, &payload, &[]);
-    assert_eq!(payload["item"], serde_json::json!(item));
-    assert_eq!(payload["commit"], serde_json::json!(SHA));
-    assert_eq!(
-        payload["findings"],
-        serde_json::json!(2),
-        "the count of the findings the entry carries"
-    );
-
     let entries = bd.timeline(&item).expect("the timeline reads");
     let last = entries.last().expect("the timeline carries entries");
+    // The one event: the return is the same entry kind as the accept, and its
+    // signal says no more than the accept's does.
+    assert_eq!(
+        events.all(),
+        vec![(
+            ITEM_ENTRY.to_string(),
+            seat_actor(REVIEWER).to_string(),
+            signal(&item, &last.id, "reviewed"),
+        )],
+        "exactly one event, the entry's signal"
+    );
+    keys_agree(ITEM_ENTRY, &events.all()[0].2, &[]);
     assert_eq!(
         last.body,
         Body::Reviewed(Reviewed {

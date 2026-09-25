@@ -1,6 +1,7 @@
 //! The run seam, filled: the three acts the controller's run pass needs and
 //! that crate cannot make — re-run a run's bundle, hold a run at its crash
-//! cap, and retire the seats a finished run spawned.
+//! cap, and retire the seats a finished run spawned — and the one read, whether
+//! a run's record already carries that hold.
 //!
 //! WHY THE ACTS ARE HERE AND NOT IN CORE OR THE CONTROLLER. core depends on no
 //! other member, and the controller takes nothing from core but its bounded
@@ -15,9 +16,10 @@
 
 use std::path::{Path, PathBuf};
 
-use fleet_controller::runs::Runs;
+use fleet_controller::runs::{CapHold, Runs};
 use fleet_controller::transient::Refusal;
 use fleet_controller::{clock, config, platform, transient};
+use fleet_core::entry::{Body, HoldReason};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::hold;
 use fleet_core::item::run as workflow_run;
@@ -188,8 +190,8 @@ impl Runs for Engine {
     }
 
     /// THE PARK AND NOT THE BARE HOLD: the held entry beside the hold is
-    /// what `fleet clear` clears it through.
-    fn hold(&self, run: &str, reason: &str) -> Result<String, String> {
+    /// what `fleet clear` clears it through, and what the pass's signal names.
+    fn hold(&self, run: &str, reason: &str) -> Result<(String, String), String> {
         let here = self.project_holding(run)?;
         let by = self.controller()?;
         let store = self.stores.open(&here.project.root);
@@ -204,6 +206,30 @@ impl Runs for Engine {
             store.as_ref(),
         )
         .map_err(|stop| stop.message)
+    }
+
+    /// The LAST held entry of reason `max_crashes` on the run's timeline, and
+    /// whether the store still lists its hold open. The run's own asks are
+    /// held entries too, and none of them is the park.
+    fn capped(&self, run: &str) -> Result<Option<CapHold>, String> {
+        let here = self.project_holding(run)?;
+        let store = self.stores.open(&here.project.root);
+        let entries = store
+            .timeline(run)
+            .map_err(|e| format!("{run}'s timeline could not be read: {e}"))?;
+        let Some(hold) = entries.iter().rev().find_map(|entry| match &entry.body {
+            Body::Held(held) if held.reason == HoldReason::MaxCrashes => Some(held.hold.clone()),
+            _ => None,
+        }) else {
+            return Ok(None);
+        };
+        let open = store
+            .open_holds()
+            .map_err(|e| format!("the store's open holds could not be read for {run}: {e}"))?;
+        Ok(Some(CapHold {
+            cleared: !open.contains(&hold),
+            hold,
+        }))
     }
 
     fn retire(&self, seat: &str, run: &str) -> Result<(), String> {

@@ -498,7 +498,6 @@ impl Spawner for TransientSpawner<'_> {
             // and writes into the index: the record is keyed by the seat.
             Ok(spawned) => SpawnOutcome::Spawned {
                 seat: spawned.id.to_string(),
-                base: spawned.base,
                 // The same two lines `seat spawn` prints, from the same render:
                 // the two verbs run one belt and a person reading either reads
                 // the same words about it.

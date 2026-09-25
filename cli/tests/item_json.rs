@@ -453,7 +453,11 @@ fn dispatch_prints_the_seat_it_named_and_the_trunks_bytes_on_the_stream_the_flag
     // and its kind.
     let data = data_of(&out, "dispatch");
     assert_eq!(data["item"], serde_json::json!(item), "{data}");
-    assert_eq!(data["state"], serde_json::json!("dispatched"), "{data}");
+    assert_eq!(
+        data["state"],
+        serde_json::json!("ordered"),
+        "the kind of the entry the verb wrote: {data}"
+    );
     assert_eq!(
         data["seat"]["id"],
         serde_json::json!(OTHER_TARGET_ID),
@@ -480,9 +484,9 @@ fn dispatch_prints_the_seat_it_named_and_the_trunks_bytes_on_the_stream_the_flag
 
 /// `deliver --json`: the commit the delivery made, which only this verb
 /// produces, and the delivered entry it wrote, by its id. Then `review --json`
-/// on that delivery: the state the verdict moved the item to — and the
-/// `--show` that moves it nowhere, whose state is null rather than a fourth
-/// word.
+/// on that delivery: the entry kind the verdict wrote and which verdict it was
+/// — and the `--show` that writes nothing, whose state and verdict are null
+/// rather than a fourth word.
 #[test]
 fn deliver_prints_the_commit_it_made_and_review_the_state_its_verdict_moved_the_item_to() {
     let rig = Rig::new("review");
@@ -530,8 +534,13 @@ fn deliver_prints_the_commit_it_made_and_review_the_state_its_verdict_moved_the_
     let data = data_of(&out, "review");
     assert_eq!(data["item"], serde_json::json!(item), "{data}");
     assert!(
-        data["state"].is_null() && data["entry"].is_null(),
+        data["state"].is_null() && data["verdict"].is_null() && data["entry"].is_null(),
         "a --show writes no verdict and moves the item nowhere: {data}"
+    );
+    assert!(
+        data.as_object()
+            .is_some_and(|data| data.contains_key("verdict")),
+        "the key is there, null: {data}"
     );
     assert!(
         stderr(&out).contains("size: 1 file(s), +1, -0"),
@@ -543,6 +552,7 @@ fn deliver_prints_the_commit_it_made_and_review_the_state_its_verdict_moved_the_
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let data = data_of(&out, "review");
     assert_eq!(data["state"], serde_json::json!("reviewed"), "{data}");
+    assert_eq!(data["verdict"], serde_json::json!("accepted"), "{data}");
     // The verdict on the record, by the id `item show` lists it under.
     let shown = rig.item_show(&[&item, "--json"]);
     assert_eq!(shown.status.code(), Some(0), "{}", stderr(&shown));

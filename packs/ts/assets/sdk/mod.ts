@@ -154,17 +154,20 @@ export interface Seat {
   kind: "agent" | "human";
 }
 
-/** `fleet dispatch --json`'s data. */
+/** `fleet dispatch --json`'s data. Each verb's `state` is the kind of the
+ * entry it wrote: `ordered` here. */
 export interface Dispatched {
   item: string;
   state: string;
   seat: Seat;
 }
 
-/** `fleet review --json`'s data. */
+/** `fleet review --json`'s data: the one entry kind either verdict writes,
+ * `reviewed`, and which verdict it was. */
 export interface Reviewed {
   item: string;
   state: string;
+  verdict: "accepted" | "returned";
 }
 
 /** `fleet land --json`'s data. */

@@ -17,6 +17,7 @@ import {
   KINDS_OF,
   replay,
   RETAKEN,
+  type Reviewed,
   type Run,
   type Seat,
   Waiting,
@@ -145,12 +146,12 @@ Deno.test("AC1 spawn — fleet dispatch <item> --by <run> --json, the seat in th
   const s = await scratch();
   // The seat is its object, typed: a name where the object belongs is a type
   // error, which the directive below asserts at check time.
-  const data: Dispatched = { item: "it-1", state: "dispatched", seat: SPAWNED };
+  const data: Dispatched = { item: "it-1", state: "ordered", seat: SPAWNED };
   const seat: Seat = data.seat;
   assertEquals(seat.kind, "agent");
   assertEquals(seat.name, undefined, "a spawned seat carries no name");
   // @ts-expect-error — a seat is `{id, name?, kind}` and never a bare name.
-  const named: Dispatched = { item: "it-1", state: "dispatched", seat: "tr-1" };
+  const named: Dispatched = { item: "it-1", state: "ordered", seat: "tr-1" };
   assertEquals(typeof named.seat, "string");
   await plant(s, "it-1");
   await can(s, "dispatch", { stdout: envelope("dispatch", data) });
@@ -218,7 +219,7 @@ Deno.test("spawn — an item whose standing delivery no landing followed is carr
 });
 
 Deno.test("spawn — a delivery a verdict returned, or a landing closed, is not carried: an item delivered then returned is dispatched, and so is one delivered then landed", async () => {
-  const data: Dispatched = { item: "it-1", state: "dispatched", seat: SPAWNED };
+  const data: Dispatched = { item: "it-1", state: "ordered", seat: SPAWNED };
   for (
     const after of [
       reviewed("returned", "aaa1111"),
@@ -307,39 +308,50 @@ Deno.test("until held — an item with no open hold waits on its held entries, a
   });
 });
 
-/** Core's entry kinds as `core/src/entry.rs` spells them, and the rows of the
- * controller's transitional table as `controller/src/runs.rs` spells them:
- * the SDK reaches neither crate but through the binary, so its suite reads
- * their source. */
+/** Core's entry kinds as `core/src/entry.rs` spells them, the kinds a wake may
+ * name as `controller/src/runs.rs` spells them, and the kinds core's verbs
+ * signal, off each `signal(…, "<kind>")` call in `core/src/item`: the SDK
+ * reaches neither crate but through the binary, so its suite reads their
+ * source. */
 async function rustTables(): Promise<{
   kinds: string[];
-  lines: Map<string, string[]>;
+  wakeable: string[];
+  signalled: Set<string>;
 }> {
   const workspace = `${here}/../../../..`;
+  const listed = (text: string, name: string, file: string): string[] => {
+    const declared = new RegExp(
+      `pub const ${name}: \\[&str; \\d+\\] = \\[([^\\]]*)\\];`,
+    ).exec(text);
+    assert(declared !== null, `${file} declares ${name}`);
+    return [...declared[1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+  };
   const entry = await Deno.readTextFile(`${workspace}/core/src/entry.rs`);
-  const declared = /pub const KINDS: \[&str; \d+\] = \[([^\]]*)\];/.exec(entry);
-  assert(declared !== null, "core/src/entry.rs declares KINDS");
-  const kinds = [...declared[1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+  const kinds = listed(entry, "KINDS", "core/src/entry.rs");
   const runs = await Deno.readTextFile(`${workspace}/controller/src/runs.rs`);
-  const table = /pub const LINES_OF: [^=]+= \[([\s\S]*?)\n\];/.exec(runs);
-  assert(table !== null, "controller/src/runs.rs declares LINES_OF");
-  const lines = new Map<string, string[]>();
-  for (const row of table[1].matchAll(/\("([a-z_]+)", &\[([^\]]*)\]\)/g)) {
-    lines.set(
-      row[1],
-      row[2].split(",").map((l) => l.trim()).filter((l) => l !== ""),
+  const wakeable = listed(runs, "ENTRY_KINDS", "controller/src/runs.rs");
+  const signalled = new Set<string>();
+  for (
+    const verb of ["dispatch", "deliver", "review", "hold", "run", "land"]
+  ) {
+    const source = await Deno.readTextFile(
+      `${workspace}/core/src/item/${verb}.rs`,
     );
+    for (const call of source.matchAll(/signal\([^;]*?"([a-z_]+)",?\s*\)/g)) {
+      signalled.add(call[1]);
+    }
   }
-  return { kinds, lines };
+  return { kinds, wakeable, signalled };
 }
 
-Deno.test("KINDS_OF — every state waits on entry kinds core defines, each of which the controller wakes on some line for, and so does a hold's clearance", async () => {
-  const { kinds, lines } = await rustTables();
+Deno.test("KINDS_OF — every state waits on entry kinds core defines, the controller's wake reads and a verb signals, and so does a hold's clearance", async () => {
+  const { kinds, wakeable, signalled } = await rustTables();
   assertEquals(kinds.length, 7, `core's seven entry kinds: ${kinds}`);
+  assertEquals(wakeable, kinds, "the controller reads core's entry kinds");
   assertEquals(
-    [...lines.keys()],
-    kinds,
-    "the controller's table is keyed by the entry kinds",
+    [...signalled].sort(),
+    ["cleared", "delivered", "held", "landed", "ordered", "reviewed"],
+    "the six kinds the verbs signal: a withdrawn order is signalled by none",
   );
   const states = Object.keys(KINDS_OF);
   assertEquals(states.length, 6, `every state has a row: ${states}`);
@@ -352,8 +364,8 @@ Deno.test("KINDS_OF — every state waits on entry kinds core defines, each of w
     for (const kind of named) {
       assert(kinds.includes(kind), `${state} waits on ${kind}, no entry kind`);
       assert(
-        (lines.get(kind) ?? []).length > 0,
-        `${state} waits on ${kind}, and no line wakes it`,
+        signalled.has(kind),
+        `${state} waits on ${kind}, and no verb signals it`,
       );
     }
   }
@@ -380,9 +392,13 @@ Deno.test("a read the store refuses — item show on an item with no record — 
   assertEquals(await calls(s), []);
 });
 
-Deno.test("AC1 review — accepted is --land and { returned } is --return <file>, each the state its verdict moved the item to", async () => {
+Deno.test("AC1 review — accepted is --land and { returned } is --return <file>, each the reviewed entry it wrote and its verdict", async () => {
   const s = await scratch();
-  const accepted = { item: "it-1", state: "reviewed" };
+  const accepted: Reviewed = {
+    item: "it-1",
+    state: "reviewed",
+    verdict: "accepted",
+  };
   await can(s, "review", { stdout: envelope("review", accepted) });
   await oneStep(
     s,
@@ -400,7 +416,11 @@ Deno.test("AC1 review — accepted is --land and { returned } is --return <file>
   ]);
 
   const t = await scratch();
-  const returned = { item: "it-2", state: "returned" };
+  const returned: Reviewed = {
+    item: "it-2",
+    state: "reviewed",
+    verdict: "returned",
+  };
   await can(t, "review", { stdout: envelope("review", returned) });
   const findings = `${t.env.runDir}/findings.md`;
   await oneStep(
@@ -570,18 +590,18 @@ Deno.test("hold — the k-th hold is the k-th ask this run wrote on its record: 
   );
 });
 
-Deno.test('hold — a cancel\'s clearance answers "cancelled" and not the string "null": the cleared entry says how it was cleared, where the stream\'s line carries a null letter', async () => {
+Deno.test('hold — a cancel\'s clearance answers "cancelled" and not the string "null": the cleared entry says how it was cleared, where the stream\'s line only names it', async () => {
   const s = await scratch();
   const runId = s.env.runId;
   await plant(s, runId);
   await asks(s, "hold-9");
   // What `fleet cancel` leaves behind: the clearance on the record, and the
-  // stream's line for it, whose letter is null.
-  await enter(s, runId, cleared("hold-9"), A_PERSON);
-  await append(s.env.stream, "hold.cleared", A_PERSON, {
+  // stream's signal for it, which names the entry and carries no letter.
+  const clearance = await enter(s, runId, cleared("hold-9"), A_PERSON);
+  await append(s.env.stream, "item.entry", A_PERSON, {
     item: runId,
-    hold: "hold-9",
-    letter: null,
+    entry: clearance.id,
+    kind: "cleared",
   });
   let got: string | undefined;
   assertEquals(
@@ -930,7 +950,7 @@ async function fromTheRunDirectory(
 
 Deno.test("a verb runs from the project root under a run-directory cwd: the fake binary, canned to refuse any other cwd, answers dispatch from FLEET_PROJECT while the wrapper's own cwd is the run directory", async () => {
   const s = await scratch();
-  const data: Dispatched = { item: "it-1", state: "dispatched", seat: SPAWNED };
+  const data: Dispatched = { item: "it-1", state: "ordered", seat: SPAWNED };
   await plant(s, "it-1");
   await can(s, "dispatch", {
     stdout: envelope("dispatch", data),

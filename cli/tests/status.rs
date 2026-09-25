@@ -645,14 +645,26 @@ fn started(ts: &str, run: &str) -> (String, &'static str, serde_json::Value) {
     )
 }
 
-/// `item.held` for one item, as a park writes it.
-fn held(ts: &str, item: &str, hold: &str) -> (String, &'static str, serde_json::Value) {
+/// `run.could_not_tell` for one run: an execution nothing could classify.
+fn crashed(ts: &str, run: &str) -> (String, &'static str, serde_json::Value) {
     line(
         ts,
-        fleet_core::item::ITEM_HELD,
-        serde_json::json!({
-            "item": item, "reason": "a question", "branch": null, "commit": null, "hold": hold,
-        }),
+        fleet_core::item::RUN_COULD_NOT_TELL,
+        serde_json::json!({ "run": run, "exit": 7, "read": "nothing to see" }),
+    )
+}
+
+/// One entry's signal, as every writer of one writes it.
+fn signalled(
+    ts: &str,
+    item: &str,
+    entry: &str,
+    kind: &str,
+) -> (String, &'static str, serde_json::Value) {
+    line(
+        ts,
+        fleet_core::item::ITEM_ENTRY,
+        serde_json::json!({ "item": item, "entry": entry, "kind": kind }),
     )
 }
 
@@ -681,10 +693,10 @@ fn row_of(section: &str, run: &str) -> String {
 /// open run — and the two the section leaves out: the closed run, and the
 /// failure before the window, which is counted and not listed.
 ///
-/// THE HOLDS ARE THE STORE'S and this machine registers no project, so no
-/// store holds any hold the stream names open: each park reads cleared, and
-/// the count is zero whatever `item.held` and `hold.cleared` lines the stream
-/// carries. The arms under "the holds" below put a board behind them.
+/// THE PARKS ARE THE RECORDS'. Each run whose last line is `run.could_not_tell`
+/// is a record on a registered board, and the two held carry the crash cap's
+/// park, one of them cleared by hand — so the page says cleared on the one the
+/// store no longer lists open, and the stream carries no park line at all.
 #[test]
 fn the_runs_section_reads_every_standing_off_the_stream() {
     let rig = Rig::new("runs");
@@ -693,6 +705,8 @@ fn the_runs_section_reads_every_standing_off_the_stream() {
         &fleet_controller::clock::now_stamp(),
         vec![seat("builder-1")],
     ));
+    rig.a_registered_board();
+    let [crash, park, heard] = [rig.a_run_record(), rig.a_run_record(), rig.a_run_record()];
     let now = fleet_controller::clock::now_stamp();
     let now = now.as_str();
     stream(
@@ -705,30 +719,15 @@ fn the_runs_section_reads_every_standing_off_the_stream() {
                 fleet_core::item::RUN_WAITING,
                 serde_json::json!({ "run": "fx-wait", "wake": { "for": "a delivery" }, "seq": 2 }),
             ),
-            started(now, "fx-crash"),
+            started(now, &crash),
+            crashed(now, &crash),
+            started(now, &park),
+            crashed(now, &park),
+            started(now, &heard),
             line(
                 now,
                 fleet_core::item::RUN_COULD_NOT_TELL,
-                serde_json::json!({ "run": "fx-crash", "exit": 7, "read": "nothing to see" }),
-            ),
-            started(now, "fx-park"),
-            line(
-                now,
-                fleet_core::item::RUN_COULD_NOT_TELL,
-                serde_json::json!({ "run": "fx-park", "exit": 7, "read": "nothing to see" }),
-            ),
-            held(now, "fx-park", "fx-hold-run"),
-            started(now, "fx-heard"),
-            line(
-                now,
-                fleet_core::item::RUN_COULD_NOT_TELL,
-                serde_json::json!({ "run": "fx-heard", "exit": null, "read": null }),
-            ),
-            held(now, "fx-heard", "fx-hold-heard"),
-            line(
-                now,
-                fleet_core::item::HOLD_CLEARED,
-                serde_json::json!({ "item": "fx-heard", "hold": "fx-hold-heard", "letter": "b" }),
+                serde_json::json!({ "run": heard, "exit": null, "read": null }),
             ),
             started(now, "fx-fail"),
             line(
@@ -748,17 +747,12 @@ fn the_runs_section_reads_every_standing_off_the_stream() {
                 fleet_core::item::RUN_CLOSED,
                 serde_json::json!({ "run": "fx-done" }),
             ),
-            held(now, "fx-item", "fx-hold-item"),
-            held(now, "fx-answered", "fx-hold-answered"),
-            line(
-                now,
-                fleet_core::item::HOLD_CLEARED,
-                serde_json::json!({
-                    "item": "fx-answered", "hold": "fx-hold-answered", "letter": "a",
-                }),
-            ),
         ],
     );
+    let park_hold = rig.parked_at_the_cap(&park);
+    let heard_hold = rig.parked_at_the_cap(&heard);
+    let out = rig.bd(&["gate", "resolve", &heard_hold]);
+    assert!(out.status.success(), "bd gate resolve: {}", stderr(&out));
 
     let out = rig.run(&["status"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -777,18 +771,19 @@ fn the_runs_section_reads_every_standing_off_the_stream() {
         failed.contains(r#"{"why":"fleet land refused"}"#),
         "the reason is the workflow's own: {failed}"
     );
-    let park = row_of(&section, "fx-park");
-    assert!(park.contains("HELD at "), "{park}");
+    let parked = row_of(&section, &park);
+    assert!(parked.contains("HELD at "), "{parked}");
     assert!(
-        park.contains("on hold fx-hold-run, cleared — "),
-        "a hold no store holds open, though no `hold.cleared` names it: {park}"
+        parked.contains(&format!("on hold {park_hold} — ")),
+        "the park the record carries, on its hold, which the store holds open: {parked}"
     );
-    let heard = row_of(&section, "fx-heard");
+    let cleared = row_of(&section, &heard);
     assert!(
-        heard.contains("on hold fx-hold-heard, cleared — "),
-        "a park whose hold was cleared still stands, and says so: {heard}"
+        cleared.contains(&format!("on hold {heard_hold}, cleared — ")),
+        "a park whose hold was cleared still stands, and says so: {cleared}"
     );
-    let crash = row_of(&section, "fx-crash");
+    let crash_run = crash;
+    let crash = row_of(&section, &crash_run);
     assert!(crash.contains("could not tell at "), "{crash}");
     assert!(
         crash.contains(r#"exit 7, read "nothing to see""#),
@@ -806,9 +801,9 @@ fn the_runs_section_reads_every_standing_off_the_stream() {
             .find(&format!("  {run} "))
             .expect("the row is there")
     };
-    assert!(at("fx-fail") < at("fx-park"), "{section}");
-    assert!(at("fx-park") < at("fx-crash"), "{section}");
-    assert!(at("fx-crash") < at("fx-wait"), "{section}");
+    assert!(at("fx-fail") < at(&park), "{section}");
+    assert!(at(&park) < at(&crash_run), "{section}");
+    assert!(at(&crash_run) < at("fx-wait"), "{section}");
     assert!(at("fx-wait") < at("fx-open"), "{section}");
 
     assert!(
@@ -824,7 +819,13 @@ fn the_runs_section_reads_every_standing_off_the_stream() {
         "and it is counted: {section}"
     );
 
-    assert!(page.contains("\nholds  0 open\n"), "{page}");
+    assert!(page.contains("\nholds  1 open\n"), "{page}");
+    let lines =
+        std::fs::read_to_string(rig.machine.join("events.jsonl")).expect("the stream is there");
+    assert!(
+        !lines.contains(fleet_core::item::ITEM_ENTRY),
+        "the stream carries no park line at all: {lines}"
+    );
 }
 
 /// A failure and a wait the SDK printed read as text on the page: the reason as
@@ -855,7 +856,7 @@ fn a_failure_and_a_wait_the_sdk_printed_read_as_text_on_the_page() {
                 serde_json::json!({ "run": "fx-fail", "reason": "takeoff: no `items` input" }),
             ),
             started(now, "fx-wait"),
-            held(now, "fx-wait", "fx-hold"),
+            signalled(now, "fx-wait", "fx-held", "held"),
             line(
                 now,
                 fleet_core::item::RUN_WAITING,
@@ -879,9 +880,10 @@ fn a_failure_and_a_wait_the_sdk_printed_read_as_text_on_the_page() {
 /// A run held at the crash cap and then cancelled is off the page: it is not
 /// listed as held, and the hold the cancel cleared is not counted.
 ///
-/// THE LINES ARE THE ONES `fleet cancel` WRITES: `run.cancelled`, then one
-/// `hold.cleared` per hold it cleared, carrying no letter because nobody
-/// chose one.
+/// THE LINES ARE THE ONES THE PARK AND `fleet cancel` WRITE: the held entry's
+/// signal, `run.cancelled`, then one cleared entry's signal per hold it
+/// cleared. A cancelled run is not asked whether it is parked, so no store is
+/// behind this one and the page still reads whole.
 #[test]
 fn a_cancelled_run_is_neither_listed_held_nor_counted_as_owed_a_clearance() {
     let rig = Rig::new("runs-cancelled");
@@ -901,17 +903,13 @@ fn a_cancelled_run_is_neither_listed_held_nor_counted_as_owed_a_clearance() {
                 fleet_core::item::RUN_COULD_NOT_TELL,
                 serde_json::json!({ "run": "fx-gone", "exit": 7, "read": null }),
             ),
-            held(now, "fx-gone", "fx-hold-gone"),
+            signalled(now, "fx-gone", "fx-held", "held"),
             line(
                 now,
                 fleet_core::item::RUN_CANCELLED,
                 serde_json::json!({ "run": "fx-gone" }),
             ),
-            line(
-                now,
-                fleet_core::item::HOLD_CLEARED,
-                serde_json::json!({ "item": "fx-gone", "hold": "fx-hold-gone", "letter": null }),
-            ),
+            signalled(now, "fx-gone", "fx-cleared", "cleared"),
         ],
     );
 
@@ -1126,13 +1124,35 @@ impl Rig {
             .unwrap_or_else(|| panic!("the hold `hold` raised: {document}"))
             .to_string()
     }
+
+    /// The run's record parked at `[core.run] max_crashes`, as the run pass's
+    /// hold makes the park — the hold and the `max_crashes` held entry, by the
+    /// controller — and the hold it raised. The pass's signal is not written:
+    /// the page reads the record.
+    fn parked_at_the_cap(&self, run: &str) -> String {
+        use fleet_core::seat::actor::{Actor, ActorKind};
+        let controller = Actor {
+            kind: ActorKind::Controller,
+            id: String::from("01a0d1f1-0aec-765f-9abe-00000000c0de"),
+        };
+        let (hold, _) = fleet_core::item::hold::park_at_the_cap(
+            &fleet_core::item::hold::Capped {
+                run,
+                reason: "executed 3 time(s) and nothing could classify the last one",
+                directory: &self.machine.join("runs").join(run),
+                by: &controller,
+            },
+            &fleet_core::store::Bd::at(&self.project),
+        )
+        .unwrap_or_else(|stop| panic!("the park is made: {}", stop.message));
+        hold
+    }
 }
 
-/// Two runs parked through `fleet hold` on a registered board, and the FIRST
-/// one's hold cleared by hand with bd's own verb — which writes no line on the
-/// stream, so the stream still says both holds stand. Each run's own
-/// `run.started` and `run.could_not_tell` go on first, so the park lands on a
-/// run the fold holds.
+/// Two runs parked at the crash cap on a registered board, and the FIRST one's
+/// hold cleared by hand with bd's own verb — which writes no line on the
+/// stream. Each run's own `run.started` and `run.could_not_tell` go on first,
+/// so the park lands on a run the fold holds.
 ///
 /// Answers the page and the two `(run, hold)` pairs, the cleared one first.
 fn two_parks_one_cleared_by_hand(rig: &Rig) -> (String, [(String, String); 2]) {
@@ -1144,24 +1164,17 @@ fn two_parks_one_cleared_by_hand(rig: &Rig) -> (String, [(String, String); 2]) {
     rig.a_registered_board();
     let runs = [rig.a_run_record(), rig.a_run_record()];
     let now = fleet_controller::clock::now_stamp();
-    let crashed = |run: &str| {
-        line(
-            &now,
-            fleet_core::item::RUN_COULD_NOT_TELL,
-            serde_json::json!({ "run": run, "exit": 7, "read": null }),
-        )
-    };
     stream(
         rig,
         &[
             started(&now, &runs[0]),
-            crashed(&runs[0]),
+            crashed(&now, &runs[0]),
             started(&now, &runs[1]),
-            crashed(&runs[1]),
+            crashed(&now, &runs[1]),
         ],
     );
     let parks = runs.map(|run| {
-        let hold = rig.held_by_its_run(&run);
+        let hold = rig.parked_at_the_cap(&run);
         (run, hold)
     });
 
@@ -1170,13 +1183,8 @@ fn two_parks_one_cleared_by_hand(rig: &Rig) -> (String, [(String, String); 2]) {
     let lines =
         std::fs::read_to_string(rig.machine.join("events.jsonl")).expect("the stream is there");
     assert!(
-        !lines.contains(fleet_core::item::HOLD_CLEARED),
-        "the hand clear wrote no line on the stream: {lines}"
-    );
-    assert_eq!(
-        lines.matches(fleet_core::item::ITEM_HELD).count(),
-        2,
-        "and the stream carries both parks: {lines}"
+        !lines.contains(fleet_core::item::ITEM_ENTRY),
+        "neither park nor the hand clear wrote a line on the stream: {lines}"
     );
 
     let out = rig.run(&["status"]);
@@ -1185,9 +1193,9 @@ fn two_parks_one_cleared_by_hand(rig: &Rig) -> (String, [(String, String); 2]) {
 }
 
 /// AC1: the hold count is the STORE's open holds, off every project the
-/// machine registers — two raised through `fleet hold` and one of them cleared
-/// by hand with `bd gate resolve` is one open. RED-PROOF: the stream's fold
-/// counted two, because the stream never saw the hand clear.
+/// machine registers — two raised at the cap and one of them cleared by hand
+/// with `bd gate resolve` is one open. RED-PROOF: the stream's fold counted
+/// two, because the stream never saw the hand clear.
 #[test]
 fn the_hold_count_is_the_stores_and_sees_a_hold_cleared_by_hand() {
     let rig = Rig::new("holds-count");
@@ -1215,6 +1223,81 @@ fn a_parked_run_whose_hold_was_cleared_by_hand_reads_cleared() {
         row.contains(&format!("on hold {standing_hold} — ")),
         "the hold the store holds open does not: {row}"
     );
+}
+
+/// fleet-z4w on the page: a run whose record carries only its OWN ask — raised
+/// through `fleet hold` by the run, its held entry signalled on the stream —
+/// is not parked, and reads as the could-not-tell it is. The ask's hold is
+/// still counted open: it is a hold the store holds.
+///
+/// RED-PROOF: the page read the stream's park line naming the run as its park,
+/// and printed it held on the ask.
+#[test]
+fn a_run_whose_record_carries_only_its_own_ask_reads_could_not_tell() {
+    let rig = Rig::new("holds-ask");
+    rig.publish(&document(
+        &rig.policy_file(),
+        &fleet_controller::clock::now_stamp(),
+        vec![seat("builder-1")],
+    ));
+    rig.a_registered_board();
+    let run = rig.a_run_record();
+    let now = fleet_controller::clock::now_stamp();
+    stream(&rig, &[started(&now, &run), crashed(&now, &run)]);
+    let ask = rig.held_by_its_run(&run);
+    let lines =
+        std::fs::read_to_string(rig.machine.join("events.jsonl")).expect("the stream is there");
+    assert!(
+        lines.contains(&format!("\"item\":\"{run}\"")) && lines.contains("\"kind\":\"held\""),
+        "the ask is signalled on the stream: {lines}"
+    );
+
+    let out = rig.run(&["status"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let page = stdout(&out);
+    let section = runs_section(&page);
+    assert!(
+        section.contains(", 0 held, 1 could not tell, "),
+        "{section}"
+    );
+    let row = row_of(&section, &run);
+    assert!(row.contains("could not tell at "), "{row}");
+    assert!(!row.contains(&ask), "the ask is no park: {row}");
+    assert!(page.contains("\nholds  1 open\n"), "{page}");
+}
+
+/// A run at could-not-tell whose record no registered project holds cannot be
+/// asked whether it is parked: the runs section says it is not all read,
+/// naming the run, stderr says the same, and the exit is could-not-tell, 3 —
+/// the page around it still prints.
+#[test]
+fn a_run_whose_park_cannot_be_read_leaves_the_runs_not_all_read_at_exit_3() {
+    let rig = Rig::new("runs-unread");
+    rig.publish(&document(
+        &rig.policy_file(),
+        &fleet_controller::clock::now_stamp(),
+        vec![seat("builder-1")],
+    ));
+    let now = fleet_controller::clock::now_stamp();
+    stream(&rig, &[started(&now, "fx-lost"), crashed(&now, "fx-lost")]);
+
+    let out = rig.run(&["status"]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    let page = stdout(&out);
+    let section = runs_section(&page);
+    let why = "the runs were not all read — whether fx-lost is held could not be read: no \
+               project registered with this machine holds a record for fx-lost";
+    assert!(section.contains(&format!("\n  {why}\n")), "{section}");
+    assert!(
+        stderr(&out).contains(&format!("fleet status: {why}")),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        row_of(&section, "fx-lost").contains("could not tell at "),
+        "the run is listed where the stream puts it: {section}"
+    );
+    assert!(page.contains("\nholds  0 open\n"), "{page}");
 }
 
 /// AC2: a registered project whose bd cannot run leaves the holds uncounted,

@@ -16,14 +16,13 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use common::{
-    agent, full, keys_agree, seat_id, sweep_dead_stores, Fixture, Graph, Rooted, StubEvents,
+    agent, full, keys_agree, seat_id, signal, sweep_dead_stores, Fixture, Graph, Rooted, StubEvents,
 };
 use fleet_core::entry::{Body, Entry, OrderKind, OrderWithdrawn, Ordered, Timeline, Withdrawal};
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
 use fleet_core::item::dispatch::{self, Order, Wiring, NOT_TOLD, WITHDRAWN};
 use fleet_core::item::{
-    control_token, table_at, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner,
-    ITEM_DISPATCHED,
+    control_token, table_at, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner, ITEM_ENTRY,
 };
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
@@ -486,19 +485,18 @@ fn a_named_dispatch_writes_the_assignee_the_ordered_entry_and_the_index() {
     assert_eq!(index.seat.as_deref(), Some(seat.as_str()));
     assert_eq!(index.at.as_deref(), Some(AT));
 
-    // The one event. A NAMED SEAT CARRIES NO BASE: no worktree was cut, so
-    // there is no commit this order started from.
-    assert_eq!(rig.events.count(), 1, "exactly one event");
-    let (actor, payload) = rig.events.one(ITEM_DISPATCHED);
-    assert_eq!(actor, BY);
-    keys_agree(ITEM_DISPATCHED, &payload, &["base", "role", "reason"]);
-    assert_eq!(payload["item"], serde_json::json!(item));
-    // The seat as the object every document carries: her id, her name and her
-    // kind, off the directory entry `--to` resolved to.
+    // The one event: the ordered entry's signal, by the dispatcher, naming the
+    // entry the timeline holds. The seat is the entry's and the index's.
     assert_eq!(
-        payload["seat"],
-        serde_json::json!({ "id": seat, "name": "Orla", "kind": "agent" })
+        rig.events.all(),
+        vec![(
+            ITEM_ENTRY.to_string(),
+            BY.to_string(),
+            signal(&item, &entries[0].id, "ordered"),
+        )],
+        "exactly one event, the entry's signal"
     );
+    keys_agree(ITEM_ENTRY, &rig.events.all()[0].2, &[]);
 
     let calls = ring.calls();
     assert_eq!(calls.len(), 1, "one ring, to the seat that was named");
@@ -1298,7 +1296,7 @@ fn a_suffix_is_dispatched_under_the_full_id_it_resolves_to() {
         "no write names the suffix: {wrote:?}"
     );
 
-    let (_, payload) = rig.events.one(ITEM_DISPATCHED);
+    let (_, payload) = rig.events.one(ITEM_ENTRY);
     assert_eq!(payload["item"], serde_json::json!(item));
     let calls = ring.calls();
     assert_eq!(calls.len(), 1);
@@ -1497,7 +1495,6 @@ mod transient {
         let ring = StubRing::answering(RingOutcome::Delivered);
         let spawner = StubSpawner::answering(SpawnOutcome::Spawned {
             seat: full("t1"),
-            base: Some(String::from("0123456789abcdef0123456789abcdef01234567")),
             belt: None,
         });
 
@@ -1556,23 +1553,19 @@ mod transient {
             spawner.touched.lock().expect("not poisoned").as_slice(),
             &[Some(TOUCHED.to_string())]
         );
-        // The one event, and the base the SPAWNER answered — the commit the
-        // seat's own worktree was cut at (decision D1).
-        assert_eq!(rig.events.count(), 1, "exactly one event");
-        let (actor, payload) = rig.events.one(ITEM_DISPATCHED);
-        assert_eq!(actor, BY, "the actor is the verb's own `by`");
-        keys_agree(ITEM_DISPATCHED, &payload, &["role", "reason"]);
-        assert_eq!(payload["item"], serde_json::json!(item));
-        // The spawned seat: an agent, and nameless, so the object carries no
-        // name key at all.
+        // The one event: the signal of the ordered entry that SEATED the
+        // order, the second, by the verb's own `by` — and none for the first,
+        // which named no seat.
         assert_eq!(
-            payload["seat"],
-            serde_json::json!({ "id": full("t1"), "kind": "agent" })
+            rig.events.all(),
+            vec![(
+                ITEM_ENTRY.to_string(),
+                BY.to_string(),
+                signal(&item, &entries[1].id, "ordered"),
+            )],
+            "exactly one event, the seated order's signal"
         );
-        assert_eq!(
-            payload["base"],
-            serde_json::json!("0123456789abcdef0123456789abcdef01234567")
-        );
+        keys_agree(ITEM_ENTRY, &rig.events.all()[0].2, &[]);
 
         let written = std::fs::read(&path).expect("the brief is on disk");
         let mut printed: Vec<u8> = Vec::new();
@@ -1657,7 +1650,6 @@ mod transient {
         let ring = StubRing::answering(RingOutcome::Delivered);
         let spawner = StubSpawner::answering(SpawnOutcome::Spawned {
             seat: String::from("agent-1d0e4f58"),
-            base: None,
             belt: None,
         });
 
@@ -1744,7 +1736,6 @@ mod transient {
                     transient seats mid-turn: 0 (cap 3)";
         let spawner = StubSpawner::answering(SpawnOutcome::Spawned {
             seat: full("t4"),
-            base: None,
             belt: Some(read.to_string()),
         });
 
@@ -1759,32 +1750,12 @@ mod transient {
     }
 
     #[test]
-    fn a_spawner_that_read_no_base_writes_the_key_absent_rather_than_a_guess() {
-        let rig = Rig::new("baseless");
-        let item = rig
-            .graph
-            .item("a ready item whose worktree would not answer");
-        let ring = StubRing::answering(RingOutcome::Delivered);
-        let spawner = StubSpawner::answering(SpawnOutcome::Spawned {
-            seat: full("t2"),
-            base: None,
-            belt: None,
-        });
-
-        let answer = rig.run(&item, None, &[], rig.graph.store(), &ring, &spawner);
-        assert_eq!(answer.code, None, "{}", answer.why);
-        let (_, payload) = rig.events.one(ITEM_DISPATCHED);
-        keys_agree(ITEM_DISPATCHED, &payload, &["base", "role", "reason"]);
-    }
-
-    #[test]
     fn a_stream_that_refuses_leaves_the_order_standing_and_exits_3() {
         let rig = Rig::new("streamless");
         let item = rig.graph.item("a ready item the stream will not take");
         let ring = StubRing::answering(RingOutcome::Delivered);
         let spawner = StubSpawner::answering(SpawnOutcome::Spawned {
             seat: full("t3"),
-            base: None,
             belt: None,
         });
 

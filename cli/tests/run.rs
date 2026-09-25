@@ -1893,7 +1893,7 @@ fn a_cancelled_waiting_run_is_closed_announced_and_never_executed_again() {
         fleet_core::item::payload_keys(fleet_core::item::RUN_CANCELLED),
         "the payload carries the keys its kind declares"
     );
-    none_of(&rig, from, fleet_core::item::HOLD_CLEARED);
+    none_of(&rig, from, fleet_core::item::ITEM_ENTRY);
 
     let from = rig.stream_length();
     let stop = rerun_in_this_process(&rig, &id).expect_err("a closed run is not executed");
@@ -1977,6 +1977,7 @@ fn a_run_held_at_the_cap(rig: &Rig, entered: bool) -> (String, String) {
             &store,
         )
         .unwrap_or_else(|stop| panic!("the park is made: {}", stop.message))
+        .0
     } else {
         store
             .hold(&id, "a hold nothing on the record names", "controller")
@@ -2001,18 +2002,20 @@ fn a_run_held_at_the_crash_cap_clears_through_fleet_clear() {
     let from = rig.stream_length();
     let out = rig.run(&["clear", &id, "B", "--by", PERSON]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    let cleared = only(&rig, from, fleet_core::item::HOLD_CLEARED);
-    assert_eq!(cleared["payload"]["item"].as_str(), Some(id.as_str()));
-    assert_eq!(cleared["payload"]["hold"].as_str(), Some(hold.as_str()));
     assert!(!open_holds(&rig).contains(&hold), "the hold is cleared");
 
     // The record: one held entry at the cap, by the controller, and the
-    // person's clearance of it.
+    // person's clearance of it — which the stream's one signal names.
     use fleet_core::store::Store;
     let entries = fleet_core::store::Bd::at(&rig.project)
         .timeline(&id)
         .expect("the record's timeline reads");
     assert_eq!(entries.len(), 2, "{entries:?}");
+    let cleared = only(&rig, from, fleet_core::item::ITEM_ENTRY);
+    assert_eq!(
+        cleared["payload"],
+        serde_json::json!({ "item": id, "entry": entries[1].id, "kind": "cleared" })
+    );
     assert!(
         matches!(
             &entries[0].body,
@@ -2064,19 +2067,13 @@ fn a_cancel_clears_the_hold_on_a_held_runs_record_and_closes_it() {
     );
     assert!(!is_open(&rig, &id), "and the record is closed");
     only(&rig, from, fleet_core::item::RUN_CANCELLED);
-    let cleared = only(&rig, from, fleet_core::item::HOLD_CLEARED);
-    assert_eq!(cleared["payload"]["item"].as_str(), Some(id.as_str()));
-    assert_eq!(cleared["payload"]["hold"].as_str(), Some(bare.as_str()));
-    assert!(
-        cleared["payload"]["letter"].is_null(),
-        "nobody chose a letter: {cleared}"
-    );
 
     // THE RECORD SAYS CANCELLED, and never a letter nobody chose: one cleared
-    // entry for the hold, by whoever cancelled, carrying no letter and no text.
+    // entry for the hold, by whoever cancelled, carrying no letter and no text
+    // — and one signal on the stream naming it, after the cancel.
     //
     // RED-PROOF: before the cleared entry, the only record of this was the
-    // stream's line above, its letter null.
+    // stream's line, its letter null.
     use fleet_core::store::Store;
     let entries = fleet_core::store::Bd::at(&rig.project)
         .timeline(&id)
@@ -2086,6 +2083,27 @@ fn a_cancel_clears_the_hold_on_a_held_runs_record_and_closes_it() {
         .filter(|entry| matches!(entry.body, fleet_core::entry::Body::Cleared(_)))
         .collect();
     assert_eq!(clearances.len(), 1, "one per hold: {entries:?}");
+    let cleared = only(&rig, from, fleet_core::item::ITEM_ENTRY);
+    assert_eq!(
+        cleared["payload"],
+        serde_json::json!({ "item": id, "entry": clearances[0].id, "kind": "cleared" })
+    );
+    assert_eq!(
+        cleared["actor"],
+        serde_json::json!({ "kind": "seat", "id": &PERSON["seat:".len()..] }),
+        "by who cancelled"
+    );
+    let events = rig.events();
+    let at = |kind: &str| {
+        events
+            .iter()
+            .skip(from)
+            .position(|event| event["type"].as_str() == Some(kind))
+    };
+    assert!(
+        at(fleet_core::item::RUN_CANCELLED) < at(fleet_core::item::ITEM_ENTRY),
+        "the cancel precedes the clearance's signal: {events:?}"
+    );
     assert_eq!(
         clearances[0].body,
         fleet_core::entry::Body::Cleared(fleet_core::entry::Cleared {

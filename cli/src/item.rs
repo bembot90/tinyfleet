@@ -24,8 +24,7 @@ use fleet_core::item::land::{self, LandGit, Landed, Landing, Progress, Pushed, S
 use fleet_core::item::run as workflow_run;
 use fleet_core::item::{
     deliver, numstat_line, project_name, review, table_at, Change, Events, Git, Project, Ring,
-    RingOutcome, Stop, HOLD_CLEARED, ITEM_DELIVERED, ITEM_DISPATCHED, ITEM_HELD, ITEM_LANDED,
-    ITEM_RETURNED, ITEM_REVIEWED, TRUNK,
+    RingOutcome, Stop, TRUNK,
 };
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::{identity_or_mint, roster, Directory, IDENTITY};
@@ -365,7 +364,7 @@ pub fn land_command(ui: &Ui, args: &LandArgs) -> Exit {
             "land",
             serde_json::json!({
                 "item": landed.item,
-                "state": state(ITEM_LANDED),
+                "state": "landed",
                 "sha": landed.sha,
                 "entry": landed.entry,
             }),
@@ -434,7 +433,7 @@ pub fn deliver_command(args: &DeliverArgs) -> Exit {
             "deliver",
             serde_json::json!({
                 "item": made.item,
-                "state": state(ITEM_DELIVERED),
+                "state": "delivered",
                 "commit": made.commit,
                 "entry": made.entry,
             }),
@@ -451,7 +450,7 @@ pub fn hold_command(args: &HoldArgs) -> Exit {
             "hold",
             serde_json::json!({
                 "item": held.item,
-                "state": state(ITEM_HELD),
+                "state": "held",
                 "hold": held.hold,
                 "entry": held.entry,
             }),
@@ -468,7 +467,7 @@ pub fn clear_command(args: &ClearArgs) -> Exit {
             "clear",
             serde_json::json!({
                 "item": cleared.item,
-                "state": state(HOLD_CLEARED),
+                "state": "cleared",
                 "hold": cleared.hold,
                 "entry": cleared.entry,
             }),
@@ -547,22 +546,27 @@ pub fn review_command(args: &ReviewArgs) -> Exit {
     let mut err = std::io::stderr();
     let mut human = Human::under(args.json);
     match run_review(args, &mut human, &mut err) {
-        // `--show` writes no verdict and moves the item nowhere, so its state
-        // and its entry are null: the absent value and not a fourth word for
-        // "it did not move".
-        Ok(read) => answered(
-            "review",
-            serde_json::json!({
-                "item": read.item,
-                "state": match (&args.returned, args.land) {
-                    (Some(_), _) => Some(state(ITEM_RETURNED)),
-                    (None, true) => Some(state(ITEM_REVIEWED)),
-                    (None, false) => None,
-                },
-                "entry": read.entry,
-            }),
-            args.json,
-        ),
+        // Either verdict is the one entry kind, `reviewed`, and which verdict
+        // it was rides beside it. `--show` writes no verdict and moves the
+        // item nowhere, so its state, its verdict and its entry are null: the
+        // absent value and not a fourth word for "it did not move".
+        Ok(read) => {
+            let verdict = match (&args.returned, args.land) {
+                (Some(_), _) => Some("returned"),
+                (None, true) => Some("accepted"),
+                (None, false) => None,
+            };
+            answered(
+                "review",
+                serde_json::json!({
+                    "item": read.item,
+                    "state": verdict.map(|_| "reviewed"),
+                    "verdict": verdict,
+                    "entry": read.entry,
+                }),
+                args.json,
+            )
+        }
         Err(stop) => refused("review", stop_exit(stop.code), &stop.message, args.json),
     }
 }
@@ -674,7 +678,7 @@ pub fn dispatch_command(args: &DispatchArgs) -> Exit {
             "dispatch",
             serde_json::json!({
                 "item": given.item,
-                "state": state(ITEM_DISPATCHED),
+                "state": "ordered",
                 "seat": given.seat,
                 "entry": given.entry,
             }),
@@ -755,13 +759,6 @@ pub(crate) fn refused(verb: &str, exit: Exit, why: &str, json: bool) -> Exit {
         println!("{}", envelope::refusal(verb, exit, why));
     }
     exit
-}
-
-/// The state a verb moved the item to: the stream kind the verb writes, without
-/// its `item.`/`hold.` prefix. Derived rather than spelled a second time, so a
-/// document and the flight fold cannot become two vocabularies.
-fn state(kind: &str) -> &str {
-    kind.split_once('.').map_or(kind, |(_, state)| state)
 }
 
 fn run_dispatch(

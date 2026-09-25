@@ -771,6 +771,27 @@ pub fn keys_agree(kind: &str, payload: &serde_json::Value, absent: &[&str]) {
     assert_eq!(written, wanted, "{kind}'s payload keys");
 }
 
+/// The entry signals the verb appended, in order, as `(actor, payload)`: every
+/// one of them `item.entry`, carrying the table's keys and nothing else.
+pub fn signals(events: &StubEvents) -> Vec<(String, serde_json::Value)> {
+    let signals: Vec<(String, serde_json::Value)> = events
+        .all()
+        .into_iter()
+        .filter(|(kind, _, _)| kind == fleet_core::item::ITEM_ENTRY)
+        .map(|(_, actor, payload)| (actor, payload))
+        .collect();
+    for (_, payload) in &signals {
+        keys_agree(fleet_core::item::ITEM_ENTRY, payload, &[]);
+    }
+    signals
+}
+
+/// The one signal an entry's writer appends: `item.entry` by `by`, naming the
+/// item, the entry the timeline holds and its kind.
+pub fn signal(item: &str, entry: &str, kind: &str) -> serde_json::Value {
+    serde_json::json!({ "item": item, "entry": entry, "kind": kind })
+}
+
 // ---- seats --------------------------------------------------------------------
 
 /// The id an arm's seat is keyed by, derived from its name alone: FNV-1a over

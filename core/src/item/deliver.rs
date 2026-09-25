@@ -34,8 +34,8 @@ use crate::input::{self, DeliveryInput, DELIVERY_SCHEMA};
 use crate::item::brief::Packs;
 use crate::item::dispatch::EPIC;
 use crate::item::{
-    control_token, recorded, run, Events, Git, Project, Ring, RingOutcome, Stop, Unrecorded,
-    ITEM_DELIVERED, TRUNK, TRUNK_BRANCH,
+    control_token, recorded, run, signal, Events, Git, Project, Ring, RingOutcome, Stop,
+    Unrecorded, ITEM_ENTRY, TRUNK, TRUNK_BRANCH,
 };
 use crate::policy;
 use crate::seat::actor::{Actor, ActorKind};
@@ -190,7 +190,7 @@ pub fn deliver(
         }
     })?;
     read_back(&item, &reviewer, wiring)?;
-    announce(&item, &commit, &branch, &base, delivery, wiring)?;
+    announce(&item, &entry, &commit, delivery, wiring)?;
 
     if as_is {
         let _ = writeln!(
@@ -208,39 +208,25 @@ pub fn deliver(
     })
 }
 
-/// The one event this verb writes.
+/// The one event this verb writes: the delivered entry's signal.
 ///
 /// AFTER THE READ-BACK AND BEFORE THE DOORBELL: the entry is written and read
-/// back first, so a crash between the two leaves a delivery nothing announced
-/// and never an announcement with no delivery behind it. The three values are
-/// the three machine fields the entry carries, taken from the same variables
-/// that filled them rather than read back out of the entry.
+/// back first, so a crash between the two leaves a delivery nothing signalled
+/// and never a signal with no delivery behind it. The commit, the branch and
+/// the base are the entry's, and a reader reads them there.
 fn announce(
     item: &str,
+    entry: &str,
     commit: &str,
-    branch: &str,
-    base: &str,
     delivery: &Delivery,
     wiring: &Wiring,
 ) -> Result<(), Stop> {
-    wiring
-        .events
-        .append(
-            ITEM_DELIVERED,
-            delivery.by,
-            serde_json::json!({
-                "item": item,
-                "commit": commit,
-                "branch": branch,
-                "base": base,
-            }),
-        )
-        .map_err(|e| {
-            Stop::could_not_tell(format!(
-                "{ITEM_DELIVERED} did not reach the stream: {e}\n  the delivery on {item} STANDS \
-                 and the commit {commit} is on the work branch"
-            ))
-        })
+    signal(wiring.events, delivery.by, item, entry, "delivered").map_err(|e| {
+        Stop::could_not_tell(format!(
+            "{ITEM_ENTRY} did not reach the stream: {e}\n  the delivery on {item} STANDS and the \
+             commit {commit} is on the work branch"
+        ))
+    })
 }
 
 /// The reviewer, and the doorbell. Every outcome is exit 0: the writes landed,

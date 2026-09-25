@@ -46,8 +46,8 @@ use crate::item::brief::Packs;
 use crate::item::doctor::{self, Invocation, Verdict, DOCTOR_TOML, RUNTIME_VERSION, SLOT};
 use crate::item::pins;
 use crate::item::{
-    control_token, read_table, recorded, Events, Project, Stop, Unrecorded, HOLD_CLEARED,
-    RUN_CANCELLED, RUN_CLOSED, RUN_COULD_NOT_TELL, RUN_FAILED, RUN_STARTED, RUN_WAITING,
+    control_token, read_table, recorded, signal, Events, Project, Stop, Unrecorded, RUN_CANCELLED,
+    RUN_CLOSED, RUN_COULD_NOT_TELL, RUN_FAILED, RUN_STARTED, RUN_WAITING,
 };
 use crate::lock;
 use crate::pack::{self, Runtime};
@@ -513,8 +513,8 @@ pub struct Cancelled {
 
 /// A run ended by hand: every hold standing on its record cleared — a
 /// `cleared` entry of how `cancel` on the record, then the store's hold — the
-/// record closed as cancelled, then [`RUN_CANCELLED`] and one [`HOLD_CLEARED`]
-/// per hold on the stream.
+/// record closed as cancelled, then [`RUN_CANCELLED`] and one `cleared` signal
+/// per cleared entry on the stream.
 ///
 /// THE WAY OUT FOR A RUN NOTHING ELSE ENDS. A run whose process died before it
 /// wrote a row of the exit table, one held at `[core.run] max_crashes`, one
@@ -579,6 +579,7 @@ pub fn cancel(
         .collect();
     // ONE CLEARED ENTRY PER HOLD, before the store's hold is cleared: the
     // record says the hold was cancelled, never that somebody chose no letter.
+    let mut entries: Vec<String> = Vec::with_capacity(holds.len());
     for hold in &holds {
         let cancelled = Body::Cleared(entry::Cleared {
             hold: hold.clone(),
@@ -586,7 +587,7 @@ pub fn cancel(
             letter: None,
             text: None,
         });
-        recorded(store, run, &cancelled, cancel.by).map_err(|unrecorded| {
+        let entry = recorded(store, run, &cancelled, cancel.by).map_err(|unrecorded| {
             let why = match unrecorded {
                 Unrecorded::NotWritten(e) => {
                     format!("the cleared entry for {hold} did not land on {run}: {e}")
@@ -600,6 +601,7 @@ pub fn cancel(
                 "{hold} on {run} was not cleared: {e}\n  {run} is NOT cancelled"
             ))
         })?;
+        entries.push(entry);
     }
 
     store.close(run, "the run cancelled", &by).map_err(|e| {
@@ -623,14 +625,8 @@ pub fn cancel(
     events
         .append(RUN_CANCELLED, cancel.by, serde_json::json!({ "run": run }))
         .map_err(written)?;
-    for hold in &holds {
-        events
-            .append(
-                HOLD_CLEARED,
-                cancel.by,
-                serde_json::json!({ "item": run, "hold": hold, "letter": serde_json::Value::Null }),
-            )
-            .map_err(written)?;
+    for entry in &entries {
+        signal(events, cancel.by, run, entry, "cleared").map_err(written)?;
     }
 
     let line = if holds.is_empty() {

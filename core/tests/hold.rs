@@ -17,12 +17,12 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use common::holding::{holding_bd, standing, LEFT_BEHIND};
-use common::{full, keys_agree, seat_actor, shared_store, Rooted, Scratch, StubEvents};
+use common::{full, keys_agree, seat_actor, shared_store, signal, Rooted, Scratch, StubEvents};
 use fleet_core::entry::{self, Body, Choice, Entry, HoldReason, Timeline};
 use fleet_core::input::{Checked, QuestionInput, QUESTION_SCHEMA};
 use fleet_core::item::hold::{self, Clearance, Question, Wiring};
 use fleet_core::item::run;
-use fleet_core::item::{Change, Git, Project, Stop, HOLD_CLEARED, ITEM_HELD};
+use fleet_core::item::{Change, Git, Project, Stop, ITEM_ENTRY};
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::store::{AssignedItem, Bd, Item, NewItem, Store, StoreError};
 use fleet_core::test_support::Board;
@@ -513,20 +513,18 @@ fn a_clean_hold_commits_the_whole_tree_raises_the_hold_and_parks() {
         notes_of(bd, &item)
     );
 
-    // (d) THE ONE EVENT, with the five keys the table names.
-    assert_eq!(events.count(), 1, "exactly one event");
-    let (actor, payload) = events.one(ITEM_HELD);
+    // (d) THE ONE EVENT: the held entry's signal, by the seat that asked,
+    // typed. The reason, the branch, the commit and the hold are the entry's.
     assert_eq!(
-        actor,
-        seat_actor(seat).to_string(),
-        "the actor is the seat that asked, typed"
+        events.all(),
+        vec![(
+            ITEM_ENTRY.to_string(),
+            seat_actor(seat).to_string(),
+            signal(&item, &entry.id, "held"),
+        )],
+        "exactly one event, the entry's signal"
     );
-    keys_agree(ITEM_HELD, &payload, &[]);
-    assert_eq!(payload["item"], serde_json::json!(item));
-    assert_eq!(payload["reason"], serde_json::json!("ask"));
-    assert_eq!(payload["branch"], serde_json::json!(BRANCH));
-    assert_eq!(payload["commit"], serde_json::json!(SHA));
-    assert_eq!(payload["hold"], serde_json::json!(held.hold));
+    keys_agree(ITEM_ENTRY, &events.all()[0].2, &[]);
 }
 
 /// `--item` naming its item by a suffix parks under the full id: the verb
@@ -584,8 +582,8 @@ fn an_item_named_by_its_suffix_is_held_under_its_full_id() {
         Timeline(&entries).held(&held.hold).is_some(),
         "the held entry is on {item}: {entries:?}"
     );
-    let (_, payload) = events.one(ITEM_HELD);
-    assert_eq!(payload["item"], serde_json::json!(item));
+    let (_, payload) = events.one(ITEM_ENTRY);
+    assert_eq!(payload, signal(&item, &held.entry, "held"));
 }
 
 #[test]
@@ -736,17 +734,18 @@ fn a_runs_record_parks_off_the_trunk_and_performs_no_git_act() {
         })
     );
 
-    // (c) THE EVENT the SDK's hold step reads, reaching the stream exactly as a
-    // seat's does.
-    assert_eq!(events.count(), 1, "exactly one event");
-    let (actor, payload) = events.one(ITEM_HELD);
-    assert_eq!(actor, its_run.to_string());
-    keys_agree(ITEM_HELD, &payload, &[]);
-    assert_eq!(payload["item"], serde_json::json!(item));
-    assert_eq!(payload["reason"], serde_json::json!("ask"));
-    assert_eq!(payload["branch"], serde_json::json!(hold::RUN_BRANCH));
-    assert_eq!(payload["commit"], serde_json::json!(RUN_HASH));
-    assert_eq!(payload["hold"], serde_json::json!(held.hold));
+    // (c) THE SIGNAL, reaching the stream exactly as a seat's does, by the
+    // run.
+    assert_eq!(
+        events.all(),
+        vec![(
+            ITEM_ENTRY.to_string(),
+            its_run.to_string(),
+            signal(&item, &held.entry, "held"),
+        )],
+        "exactly one event, the entry's signal"
+    );
+    keys_agree(ITEM_ENTRY, &events.all()[0].2, &[]);
 
     // A SEAT naming the same record is refused before anything: the record is
     // its own run's to hold (fleet-pl6 (a)).
@@ -1476,13 +1475,18 @@ fn a_clearance_writes_the_cleared_entry_clears_the_hold_and_announces_it() {
         "the entry is appended before the store's hold is cleared: {wrote:?}"
     );
 
-    assert_eq!(events.count(), 1, "exactly one event");
-    let (actor, payload) = events.one(HOLD_CLEARED);
-    assert_eq!(actor, seat_actor("a-person").to_string());
-    keys_agree(HOLD_CLEARED, &payload, &[]);
-    assert_eq!(payload["item"], serde_json::json!(item));
-    assert_eq!(payload["hold"], serde_json::json!(hold_id));
-    assert_eq!(payload["letter"], serde_json::json!("A"));
+    // The cleared entry's signal, by the clearer. The hold and the letter are
+    // the entry's.
+    assert_eq!(
+        events.all(),
+        vec![(
+            ITEM_ENTRY.to_string(),
+            seat_actor("a-person").to_string(),
+            signal(&item, &cleared.entry, "cleared"),
+        )],
+        "exactly one event, the entry's signal"
+    );
+    keys_agree(ITEM_ENTRY, &events.all()[0].2, &[]);
     assert!(
         String::from_utf8(out)
             .expect("stdout is utf-8")
@@ -1722,8 +1726,9 @@ fn a_runs_record(scratch: &Board, title: &str) -> String {
 /// raised and the record is no longer blocked by it.
 ///
 /// ONE ENTRY WHERE THERE WERE TWO DISAGREEING RECORDS: the park note said
-/// `max_crashes` where the controller's `item.held` said the pass's reason,
-/// and the entry is now the record of the park.
+/// `max_crashes` where the controller's line said the pass's reason, and the
+/// entry is now the record of the park. The park answers the entry's id beside
+/// the hold's, which the controller's signal names.
 #[test]
 fn a_run_held_at_the_crash_cap_is_cleared_like_any_other_park() {
     let scratch = &store();
@@ -1740,12 +1745,15 @@ fn a_run_held_at_the_crash_cap_is_cleared_like_any_other_park() {
         directory: &directory,
         by: &controller,
     };
-    let hold_id = hold::park_at_the_cap(&capped, &scratch.store).expect("the park is made");
+    let (hold_id, entry_id) =
+        hold::park_at_the_cap(&capped, &scratch.store).expect("the park is made");
 
-    // (a) THE ONE HELD ENTRY, by the controller, and no note.
+    // (a) THE ONE HELD ENTRY, by the controller, under the id the park
+    // answered, and no note.
     let cap = hold::cap_question(&capped);
     let entries = timeline_of(&scratch.store, &run);
     assert_eq!(entries.len(), 1, "exactly one entry: {entries:?}");
+    assert_eq!(entries[0].id, entry_id, "the entry the park answered");
     assert_eq!(entries[0].by, controller);
     assert_eq!(
         entries[0].body,
@@ -1794,8 +1802,8 @@ fn a_run_held_at_the_crash_cap_is_cleared_like_any_other_park() {
             .contains(&hold_id),
         "and the store lists it open no longer"
     );
-    let (_, payload) = events.one(HOLD_CLEARED);
-    assert_eq!(payload["item"], serde_json::json!(run));
+    let (_, payload) = events.one(ITEM_ENTRY);
+    assert_eq!(payload, signal(&run, &cleared.entry, "cleared"));
 
     // (c) THE QUESTION IS A QUESTION INPUT, read by the rules a seat's is held
     // to, and the hold's reason is its whole text, options and all.

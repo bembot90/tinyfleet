@@ -498,28 +498,27 @@ fn a_live_reviewer_is_rung_with_the_item_and_the_commit_the_delivery_made() {
         "and the rest is the seat's JSON: {delivered}"
     );
 
-    // The event, off the stream the binary wrote, carrying the same three values
-    // the entry's machine fields do.
+    // The event, off the stream the binary wrote: the delivered entry's
+    // signal, naming the entry that carries the commit.
     let last = rig
         .events()
         .last()
         .cloned()
         .expect("the stream carries the delivery");
-    assert_eq!(last["type"].as_str(), Some("item.delivered"), "{last}");
+    assert_eq!(
+        last["type"].as_str(),
+        Some(fleet_core::item::ITEM_ENTRY),
+        "{last}"
+    );
     // The seat named itself by name; the cli hands the verb its id, typed.
     assert_eq!(
         last["actor"],
         serde_json::json!({ "kind": "seat", "id": rig.seat_id().to_string() })
     );
-    assert_eq!(last["payload"]["item"].as_str(), Some(item.as_str()));
-    assert_eq!(last["payload"]["commit"].as_str(), Some(head.as_str()));
     assert_eq!(
-        last["payload"]["branch"].as_str(),
-        Some("a-seat/feat/the-work")
-    );
-    assert_eq!(
-        last["payload"]["base"], delivered["base"],
-        "the event's base is the entry's own: {last}\n{delivered}"
+        last["payload"],
+        serde_json::json!({ "item": item, "entry": delivered["id"], "kind": "delivered" }),
+        "{last}\n{delivered}"
     );
 
     let argv = rig.nudge_argv();
@@ -671,7 +670,7 @@ fn the_old_note_flag_is_usage_naming_the_delivery_flag() {
 
 /// `review --land` through the same binary: the accept on the record, as the
 /// reviewed entry `fleet item show` reads and `--json` names by its id, and the
-/// one event on the stream carrying the walk's own counts.
+/// one signal on the stream naming it.
 #[test]
 fn review_land_writes_the_accept_on_the_record_and_the_event_on_the_stream() {
     let rig = Rig::new("review-land");
@@ -717,25 +716,26 @@ fn review_land_writes_the_accept_on_the_record_and_the_event_on_the_stream() {
         .last()
         .cloned()
         .expect("the stream carries the verdict");
-    assert_eq!(last["type"].as_str(), Some("item.reviewed"), "{last}");
+    assert_eq!(
+        last["type"].as_str(),
+        Some(fleet_core::item::ITEM_ENTRY),
+        "{last}"
+    );
     assert_eq!(
         last["actor"],
         serde_json::json!({ "kind": "seat", "id": REVIEWER_ID })
     );
-    assert_eq!(last["payload"]["item"].as_str(), Some(item.as_str()));
-    assert_eq!(last["payload"]["commit"].as_str(), Some(head.as_str()));
-    assert_eq!(last["payload"]["verdict"].as_str(), Some("accepted"));
     assert_eq!(
-        last["payload"]["overruled"],
-        serde_json::json!(0),
-        "an accept overrules nothing: {last}"
+        last["payload"],
+        serde_json::json!({ "item": item, "entry": accept["id"], "kind": "reviewed" }),
+        "the signal names the accept, which carries the walk: {last}"
+    );
+    assert_eq!(
+        document["data"]["verdict"],
+        serde_json::json!("accepted"),
+        "{document}"
     );
     let walk = accept["walk"].as_array().expect("the walk is a list");
-    assert_eq!(
-        last["payload"]["accepted"],
-        serde_json::json!(walk.len()),
-        "the event's count is the walk's own: {last}\n{accept}"
-    );
     assert!(
         !walk.is_empty()
             && walk.iter().enumerate().all(|(k, ruling)| {
@@ -805,8 +805,21 @@ fn review_return_takes_the_findings_file_takeoff_writes_on_b() {
         &takeoff.display().to_string(),
         "--by",
         REVIEWER,
+        "--json",
     ]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    // The state is the entry kind a return writes, and the verdict rides
+    // beside it.
+    let document: serde_json::Value =
+        serde_json::from_str(stdout(&out).trim()).expect("review --json answers one document");
+    assert_eq!(
+        (&document["data"]["state"], &document["data"]["verdict"]),
+        (
+            &serde_json::json!("reviewed"),
+            &serde_json::json!("returned")
+        ),
+        "{document}"
+    );
 
     assert_eq!(
         rig.item_json(&item)["assignee"],
@@ -837,8 +850,17 @@ fn review_return_takes_the_findings_file_takeoff_writes_on_b() {
         .last()
         .cloned()
         .expect("the stream carries the return");
-    assert_eq!(last["type"].as_str(), Some("item.returned"), "{last}");
-    assert_eq!(last["payload"]["findings"], serde_json::json!(1), "{last}");
+    assert_eq!(
+        last["type"].as_str(),
+        Some(fleet_core::item::ITEM_ENTRY),
+        "{last}"
+    );
+    assert_eq!(
+        last["payload"],
+        serde_json::json!({ "item": item, "entry": returned["id"], "kind": "reviewed" }),
+        "{last}"
+    );
+    assert_eq!(document["data"]["entry"], returned["id"], "{document}");
 }
 
 /// The size line's counts over the rows `git diff --numstat` printed.

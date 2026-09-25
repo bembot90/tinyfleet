@@ -32,8 +32,8 @@ use crate::item::deliver::{named, reviewer_of};
 use crate::item::land::run_record;
 use crate::item::show::entry_lines;
 use crate::item::{
-    control_token, recorded, render, Change, Events, Git, Project, Ring, RingOutcome, Stop,
-    Unrecorded, ITEM_RETURNED, ITEM_REVIEWED, VERDICT_ACCEPTED,
+    control_token, recorded, render, signal, Change, Events, Git, Project, Ring, RingOutcome, Stop,
+    Unrecorded, ITEM_ENTRY,
 };
 use crate::seat::actor::{Actor, ActorKind};
 use crate::seat::identity::Directory;
@@ -327,47 +327,22 @@ fn accept(
         findings: Vec::new(),
     });
     let id = write_verdict(&item.id, &reviewed, None, verdict, wiring)?;
-    // The walk is the accept, so every call it found is accepted and none is
-    // overruled: a `--land` that would overrule one is a return instead.
-    announce(
-        &item.id,
-        ITEM_REVIEWED,
-        verdict,
-        wiring,
-        serde_json::json!({
-            "item": item.id,
-            "commit": commit,
-            "verdict": VERDICT_ACCEPTED,
-            "accepted": delivered.decisions.len(),
-            "overruled": 0,
-        }),
-    )?;
+    announce(&item.id, &id, verdict, wiring)?;
     Ok(id)
 }
 
-/// The one event either writing mode appends.
+/// The one event either writing mode appends: the reviewed entry's signal, an
+/// accept's and a return's alike. Which verdict it was is the entry's.
 ///
 /// AFTER THE VERDICT IS WRITTEN AND READ BACK, and before the exit: a crash
-/// between the two leaves a verdict nothing announced, which the fold reads as
-/// the record says, and never the reverse.
-///
-/// WHICH RETURN THIS IS IS NOT WRITTEN (decision D2): the fold counts the
-/// returns it reads.
-fn announce(
-    item: &str,
-    kind: &str,
-    verdict: &Verdict,
-    wiring: &Wiring,
-    payload: serde_json::Value,
-) -> Result<(), Stop> {
-    wiring
-        .events
-        .append(kind, verdict.by, payload)
-        .map_err(|e| {
-            Stop::could_not_tell(format!(
-                "{kind} did not reach the stream: {e}\n  the verdict on {item} STANDS"
-            ))
-        })
+/// between the two leaves a verdict nothing signalled, which a reader of the
+/// record reads as the record says, and never the reverse.
+fn announce(item: &str, entry: &str, verdict: &Verdict, wiring: &Wiring) -> Result<(), Stop> {
+    signal(wiring.events, verdict.by, item, entry, "reviewed").map_err(|e| {
+        Stop::could_not_tell(format!(
+            "{ITEM_ENTRY} did not reach the stream: {e}\n  the verdict on {item} STANDS"
+        ))
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -418,17 +393,7 @@ fn retur(
         &verdict.by.to_string(),
     )?;
     let id = write_verdict(&item.id, &reviewed, Some(&builder), verdict, wiring)?;
-    announce(
-        &item.id,
-        ITEM_RETURNED,
-        verdict,
-        wiring,
-        serde_json::json!({
-            "item": item.id,
-            "commit": commit,
-            "findings": count,
-        }),
-    )?;
+    announce(&item.id, &id, verdict, wiring)?;
 
     let text = render(
         RING,

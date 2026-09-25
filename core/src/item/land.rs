@@ -20,7 +20,7 @@
 //! `deliver` hands every item to the `[core] reviewer`, so on a workflow's
 //! landing the holder is always that seat and the caller is always the run. A
 //! landing called by a run therefore closes AS the reviewer: the holder check
-//! reads that seat, the close and `item.landed` carry it with the run named
+//! reads that seat, the close and the landed entry carry it with the run named
 //! beside it, and what licenses the act is the reviewer's own answer to the
 //! hold this run raised. A seat's own landing acts as itself, by its id. Which
 //! of the two a landing is, is the actor's KIND; a routine or the controller
@@ -48,7 +48,8 @@ use crate::item::deliver::{named, reviewer_of};
 use crate::item::lane;
 use crate::item::run;
 use crate::item::{
-    recorded, Events, Git, Project, Stop, Unrecorded, CHECK_READ, ITEM_LANDED, TRUNK, TRUNK_BRANCH,
+    recorded, signal, Events, Git, Project, Stop, Unrecorded, CHECK_READ, ITEM_ENTRY, TRUNK,
+    TRUNK_BRANCH,
 };
 use crate::policy;
 use crate::seat::actor::{Actor, ActorKind};
@@ -973,10 +974,11 @@ fn run(
         ))
     })?;
 
-    // (k2) THE TWO EVENTS, after the entry has been written and read back and
-    // before anything else — so a crash between them leaves a landed entry the
-    // stream does not carry, and never a stream that carries a landing no
-    // entry stands behind. The reading precedes the landing, as it did in time.
+    // (k2) THE READINGS AND THE SIGNAL, after the entry has been written and
+    // read back and before anything else — so a crash between them leaves a
+    // landed entry the stream does not carry, and never a stream that signals a
+    // landing no entry stands behind. The reading precedes the landing's signal,
+    // as it did in time.
     // ONE `check.read` PER READING, in the order they were taken. A landing
     // that needed no rerun writes the one it always did.
     if readings.is_empty() {
@@ -1008,28 +1010,15 @@ fn run(
             reading.payload(&item.id, suite_command.as_deref()),
         )?;
     }
-    announce(
-        &item.id,
-        ITEM_LANDED,
-        &acting,
-        wiring,
-        serde_json::json!({
-            "item": item.id,
-            "sha": sha,
-            "base": old,
-            "squash_of": commit,
-            // WHAT CARRIED THIS LANDING, beside the actor whose act it is, and
-            // `null` where a seat landed it in its own name: an absent key and
-            // a landing no run carried are not the same fact.
-            "run": by_run.as_ref().map_or(serde_json::Value::Null, |record| {
-                serde_json::Value::String(record.id.clone())
-            }),
-            // WHAT TESTED IT: the command that ran green on the tree this
-            // pushed, or `null` for a landing handed none — the stream's own
-            // NOT TESTED, readable without the entry.
-            "test": suite_command,
-        }),
-    )?;
+    // The landed entry's signal. What carried the landing, what tested it and
+    // the sha it pushed are the entry's, and a reader reads them there.
+    signal(wiring.events, &acting, &item.id, &entry, "landed").map_err(|e| {
+        Stop::could_not_tell(format!(
+            "{ITEM_ENTRY} did not reach the stream: {e}\n  the landing on {} STANDS and its \
+             landed entry is on the record",
+            item.id
+        ))
+    })?;
 
     // (l) THE CLOSE, with the landed sha in its reason and the run that carried
     // it beside the sha, where one did.

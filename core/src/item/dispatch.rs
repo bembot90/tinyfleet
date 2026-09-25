@@ -23,8 +23,8 @@ use crate::entry::{Body, OrderKind, OrderWithdrawn, Ordered, Withdrawal};
 use crate::item::brief::{self, Packs, Subject, TRANSIENT};
 use crate::item::deliver::holds;
 use crate::item::{
-    control_token, recorded, render, show, Events, Project, Ring, RingOutcome, Spawn, SpawnOutcome,
-    Spawner, Stop, Unrecorded, ITEM_DISPATCHED, NO_SESSION, REFUSED,
+    control_token, recorded, render, show, signal, Events, Project, Ring, RingOutcome, Spawn,
+    SpawnOutcome, Spawner, Stop, Unrecorded, ITEM_ENTRY, NO_SESSION, REFUSED,
 };
 use crate::seat::actor::Actor;
 use crate::seat::identity::{Directory, Kind, SeatId, SeatRef};
@@ -307,9 +307,7 @@ fn to_named_seat(
         .map_err(|e| wrote_nothing(order.item, "the assignee", &e))?;
     let entry = write_order(order, wiring, Some(&named.id), true)?;
     read_back(order, wiring, Some(seat), Some(seat))?;
-    // A NAMED SEAT WRITES NO BASE: no worktree was cut for this order, so there
-    // is no commit the seat started from that this verb could read.
-    announce(order, wiring, named, None)?;
+    announce(order, wiring, &entry)?;
 
     let brief_path = match order.brief {
         Some(pinned) => pinned.to_path_buf(),
@@ -390,7 +388,7 @@ fn to_a_transient_seat(
     }) {
         // `seat` is the spawned seat's full id, which is what the assignee and
         // the index carry: a transient seat has no name to be found by.
-        SpawnOutcome::Spawned { seat, base, belt } => {
+        SpawnOutcome::Spawned { seat, belt } => {
             // THE SEAT THE SPAWN MADE: an agent, and nameless. An answer that
             // is no seat id is one no record can key on, so it is a question
             // asked before the first write that would carry it.
@@ -420,7 +418,7 @@ fn to_a_transient_seat(
             let entry =
                 write_order(order, wiring, Some(&spawned.id), false).map_err(Refused::stopped)?;
             read_back(order, wiring, Some(&seat), Some(&seat)).map_err(Refused::stopped)?;
-            announce(order, wiring, &spawned, base.as_deref()).map_err(Refused::stopped)?;
+            announce(order, wiring, &entry).map_err(Refused::stopped)?;
             // The item's own rendering moved under the brief: the assignment
             // and the seat in the index are both in it. Rendered again over the
             // same path, so the file a reader opens is the item as it stands
@@ -468,44 +466,24 @@ fn to_a_transient_seat(
     }
 }
 
-/// The one event this verb writes.
+/// The one event this verb writes: the signal of the ordered entry that
+/// seated the order.
 ///
 /// AFTER THE READ-BACK AND BEFORE THE EXIT, always in that order: the entry is
-/// the order and the event is the fold's copy of it, so a crash between them
-/// leaves an order nothing announced — which the fold reads as the record says
-/// — and never an announcement no order stands behind.
+/// the order and the line only says it was written, so a crash between them
+/// leaves an order nothing signalled — which a reader of the record reads as
+/// the record says — and never a signal no order stands behind.
 ///
-/// WHICH DISPATCH THIS IS IS NOT WRITTEN (decision D2). The fold counts the
-/// dispatches it reads; a verb that wrote a count would have to read the stream
-/// to take one, which is the fold's own answer arriving by a second route.
-///
-/// THE SEAT IS THE OBJECT `{id, name?, kind}`, off the directory entry the
-/// order resolved to: a reader keys on the id and reads the name beside it.
-fn announce(
-    order: &Order,
-    wiring: &Wiring,
-    seat: &SeatRef,
-    base: Option<&str>,
-) -> Result<(), Stop> {
-    let mut payload = serde_json::Map::new();
-    payload.insert("item".into(), order.item.into());
-    payload.insert("seat".into(), serde_json::json!(seat));
-    if let Some(base) = base {
-        payload.insert("base".into(), base.into());
-    }
-    wiring
-        .events
-        .append(
-            ITEM_DISPATCHED,
-            order.by,
-            serde_json::Value::Object(payload),
+/// THE SEAT AND THE BASE ARE NOT ON IT [ASSUMES D2]. The seat is the entry's
+/// and the index's; a reader that wants either reads the record the signal
+/// names.
+fn announce(order: &Order, wiring: &Wiring, entry: &str) -> Result<(), Stop> {
+    signal(wiring.events, order.by, order.item, entry, "ordered").map_err(|e| {
+        stands(
+            order.item,
+            &format!("{ITEM_ENTRY} did not reach the stream: {e}"),
         )
-        .map_err(|e| {
-            stands(
-                order.item,
-                &format!("{ITEM_DISPATCHED} did not reach the stream: {e}"),
-            )
-        })
+    })
 }
 
 /// The order withdrawn: the index unset, one `order_withdrawn` entry naming

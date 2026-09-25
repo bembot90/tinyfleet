@@ -16,11 +16,13 @@
 //! cap, and the stream is this crate's own file — so it lives here, where a poll
 //! can be driven against a file and a stub.
 //!
-//! THE STREAM IS THE STATE. Nothing is held between passes: which runs are
-//! waiting, how many times each has been executed, which seats a run spawned and
-//! whether its cleanup has already happened are all read back off the stream
-//! every pass. A run opened between two passes is picked up by the second with
-//! no registration of any kind.
+//! THE STREAM IS THE STATE, BUT FOR THE PARK. Nothing is held between passes:
+//! which runs are waiting, how many times each has been executed, which seats a
+//! run spawned and whether its cleanup has already happened are all read back
+//! off the stream every pass. A run opened between two passes is picked up by
+//! the second with no registration of any kind. Whether a run at the cap is
+//! parked is its record's to say — a held entry of reason `max_crashes` — and
+//! the pass asks it through the same seam, [`Runs::capped`].
 //!
 //! A REFUSAL NEVER STOPS THE LOOP: the poll's other work
 //! is what a fleet's seats depend on, and one run that cannot be advanced is one
@@ -50,33 +52,32 @@ pub const RUN_COULD_NOT_TELL: &str = "run.could_not_tell";
 pub const RUN_CANCELLED: &str = "run.cancelled";
 pub const RUN_CLEANED: &str = "run.cleaned";
 
-/// The kind a park announces on, spelled here beside the six above.
-pub const ITEM_HELD: &str = "item.held";
-
-/// The kind a hold's clearance announces on: what a run waiting on the SDK's
-/// `hold` is woken by. Spelled here for the same reason.
-pub const HOLD_CLEARED: &str = "hold.cleared";
-
-/// The stream kinds each entry kind is announced on, one row per entry kind in
-/// the order `fleet_core::entry::KINDS` spells them: what a `run.waiting` whose
-/// wake names entry kinds is woken by. The SDK's `until` and `hold` read the
-/// store and name the entries that could satisfy them; the stream is only the
-/// signal that something was written.
+/// The one line every entry on an item's timeline is signalled on,
+/// `{item, entry, kind}`: what a `run.waiting` whose wake names entry kinds is
+/// woken by, and what the park writes for the `held` entry it raised. Spelled
+/// here for the same reason the six above are, and pinned to core's in the
+/// same place.
 ///
-/// TRANSITIONAL, AND ONE TABLE: the verbs announce an entry on the stream kinds
-/// they wrote before the store kept entries, so a kind maps to the lines its
-/// writer puts there — a verdict to both `item.reviewed` and `item.returned`,
-/// and a withdrawn order to none, since nothing announces one. fleet-zlk.15
-/// replaces this table with lines that name the entry.
-pub const LINES_OF: [(&str, &[&str]); 7] = [
-    ("ordered", &["item.dispatched"]),
-    ("order_withdrawn", &[]),
-    ("delivered", &["item.delivered"]),
-    ("reviewed", &["item.reviewed", "item.returned"]),
-    ("held", &[ITEM_HELD]),
-    ("cleared", &[HOLD_CLEARED]),
-    ("landed", &["item.landed"]),
+/// A SIGNAL AND NOT THE RECORD. The SDK's `until` and `hold` read the store
+/// and name the entries that could satisfy them; the line says only that one
+/// was written, and the re-run reads the record for itself.
+pub const ITEM_ENTRY: &str = "item.entry";
+
+/// Every kind an entry is, as `fleet_core::entry::KINDS` spells them and in
+/// its order: the kinds a wake may name. Spelled here for the same reason, and
+/// pinned to core's in the same place.
+pub const ENTRY_KINDS: [&str; 7] = [
+    "ordered",
+    "order_withdrawn",
+    "delivered",
+    "reviewed",
+    "held",
+    "cleared",
+    "landed",
 ];
+
+/// The entry kind the park signals.
+const HELD: &str = "held";
 
 /// The line the loop prints for a pass that refused.
 pub const REFUSED: &str = "fleet observe: the run pass refused";
@@ -94,7 +95,7 @@ pub fn of_this_process() -> Option<String> {
 }
 
 /// What the pass asks of whatever can act on a run — the three acts this crate
-/// cannot make itself.
+/// cannot make itself, and the one read of a run's record it cannot either.
 ///
 /// Each answers `Err` with the cause as prose. None of them writes the pass's
 /// own event: `run.cleaned` is the pass's line, because the count it carries is
@@ -107,14 +108,32 @@ pub trait Runs {
     fn rerun(&self, run: &str) -> Result<(), String>;
 
     /// Raise a hold on the run's record and say why, answering with the hold's
-    /// own id — with the held entry beside it that `fleet clear` clears the
-    /// hold through, or the hold is one nobody can clear.
-    fn hold(&self, run: &str, reason: &str) -> Result<String, String>;
+    /// own id and the id of the held entry beside it — the entry `fleet clear`
+    /// clears the hold through, or the hold is one nobody can clear, and the
+    /// entry the park's signal names.
+    fn hold(&self, run: &str, reason: &str) -> Result<(String, String), String>;
+
+    /// The crash-cap hold the run's record carries: its last held entry of
+    /// reason `max_crashes`, and whether the store still holds that hold open.
+    /// `None` is a record that carries none — a seat's or the run's own ask is
+    /// not one.
+    ///
+    /// THE PARK'S LATCH AND THE PARKED STANDING, both: the record is where a
+    /// park is, and a line on the stream naming the run is not.
+    fn capped(&self, run: &str) -> Result<Option<CapHold>, String>;
 
     /// Retire one seat the run spawned, through the transient retire path. The
     /// run is passed so the retire's own line can name what the seat was working
     /// for.
     fn retire(&self, seat: &str, run: &str) -> Result<(), String>;
+}
+
+/// A run's crash-cap hold, as its record carries it: the hold's id, and
+/// whether a clearance has closed it since.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapHold {
+    pub hold: String,
+    pub cleared: bool,
 }
 
 /// What the pass acts through and writes to.
@@ -148,13 +167,7 @@ struct Folded {
     /// Whether a `run.cleaned` already stands for this run — the latch that
     /// makes the cleanup once per run rather than once per poll.
     cleaned: bool,
-    /// Whether an `item.held` already stands for this run. A SECOND LATCH AND
-    /// NOT THE ONE ABOVE: the run's last event stays `run.could_not_tell` after
-    /// the park — nothing writes a further row of the exit table for a run
-    /// nobody is executing — so a pass reading the cap alone raises a hold on
-    /// every poll for as long as the record stands.
-    held: bool,
-    /// Whether a `run.cancelled` stands for this run. A THIRD LATCH: a cancel
+    /// Whether a `run.cancelled` stands for this run. A SECOND LATCH: a cancel
     /// stops no process, so an execution under way when it landed still writes
     /// its row of the exit table after it — and a pass reading the last line
     /// alone would take that row for the run's standing and execute it again.
@@ -169,8 +182,6 @@ struct Folded {
     /// failure, the wake on a wait, what was read on a could-not-tell.
     stamp: String,
     said: serde_json::Value,
-    /// The hold the park raised, as `item.held` carried it.
-    hold: Option<String>,
 }
 
 /// One pass over every run this machine's stream knows about.
@@ -210,9 +221,23 @@ pub fn tick(pass: &mut Pass) -> Result<(), String> {
             // AT THE CAP: the hold, the park, and then the same cleanup an
             // ending gets. A run a person has to look at holds no seats while
             // they do.
+            //
+            // THE LATCH IS THE RECORD'S. The run's last event stays
+            // `run.could_not_tell` after the park — nothing writes a further
+            // row of the exit table for a run nobody is executing — so the pass
+            // asks the record whether it already carries a `max_crashes` hold.
+            // A line on the stream naming the run is not that answer: the run's
+            // own ask is a held entry too (fleet-z4w), and it is not the park.
             RUN_COULD_NOT_TELL => {
-                if !state.held {
-                    if let Err(why) = park(pass, run, state) {
+                match pass.runs.capped(run) {
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        if let Err(why) = park(pass, run, state) {
+                            refusals.push(format!("{run}: {why}"));
+                            continue;
+                        }
+                    }
+                    Err(why) => {
                         refusals.push(format!("{run}: {why}"));
                         continue;
                     }
@@ -278,15 +303,6 @@ fn fold(stream: &[Record]) -> BTreeMap<String, Folded> {
                     runs.entry(id).or_default().cleaned = true;
                 }
             }
-            // The park's latch. The kind ties a record to a list by `item`,
-            // which for a run is the run's own id.
-            ITEM_HELD => {
-                if let Some(id) = payload_str(record, "item") {
-                    let state = runs.entry(id).or_default();
-                    state.held = true;
-                    state.hold = payload_str(record, "hold");
-                }
-            }
             // The seat is the line's ACTOR on both of the arms below — a seat,
             // by its id — which is what lets a spawn and a retirement of one
             // seat be read as the same subject; a line by any other kind names
@@ -315,7 +331,8 @@ fn fold(stream: &[Record]) -> BTreeMap<String, Folded> {
     runs
 }
 
-/// Where one run stands, read off its last lifecycle line and the park's latch.
+/// Where one run stands, read off its last lifecycle line and, for a run
+/// nothing could classify, whether its record carries the park.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Standing {
     /// `run.started` is the last line: an execution is under way, or its
@@ -326,8 +343,8 @@ pub enum Standing {
     /// `run.could_not_tell` with no park behind it: the pass executes it again
     /// while it is under `[core.run] max_crashes`, and parks it at the cap.
     CouldNotTell,
-    /// `run.could_not_tell` with the park's latch standing: a hold on the
-    /// record, and nothing executes it until a person clears it.
+    /// `run.could_not_tell` with a `max_crashes` hold on the record: nothing
+    /// executes it again, whether or not a person has cleared the hold since.
     Held,
     Failed,
     Closed,
@@ -351,6 +368,8 @@ pub struct Reading {
     pub crashes: u64,
     /// The hold the park raised, where it is held.
     pub hold: Option<String>,
+    /// Whether that hold is cleared, where it is held.
+    pub cleared: bool,
 }
 
 /// Every run the stream holds a lifecycle line for, in id order.
@@ -358,23 +377,26 @@ pub struct Reading {
 /// THE PASS'S OWN FOLD, and not a second reading of the same lines: a page that
 /// called a run held by some rule of its own could disagree with the pass
 /// that is deciding whether to execute it, and the page is the one a person
-/// believes. The run's record in the store is not read — the stream is what the
-/// pass decides on, and the record's open or closed carries no row of the exit
-/// table.
-pub fn readings(stream: &[Record]) -> Vec<Reading> {
+/// believes. The record's open or closed carries no row of the exit table, so
+/// the standing is the stream's — except the park, which is the record's:
+/// `capped` is what [`Runs::capped`] answered for each run it holds, and a run
+/// whose last line is `run.could_not_tell` reads held where it holds one.
+pub fn readings(stream: &[Record], capped: &BTreeMap<String, CapHold>) -> Vec<Reading> {
     fold(stream)
         .into_iter()
         .filter_map(|(run, state)| {
             let (kind, _) = state.last?;
+            let park = capped.get(&run);
             let standing = match kind.as_str() {
                 _ if state.cancelled => Standing::Cancelled,
                 RUN_STARTED => Standing::Open,
                 RUN_WAITING => Standing::Waiting,
-                RUN_COULD_NOT_TELL if state.held => Standing::Held,
+                RUN_COULD_NOT_TELL if park.is_some() => Standing::Held,
                 RUN_COULD_NOT_TELL => Standing::CouldNotTell,
                 RUN_FAILED => Standing::Failed,
                 _ => Standing::Closed,
             };
+            let park = park.filter(|_| standing == Standing::Held);
             Some(Reading {
                 run,
                 workflow: state.workflow,
@@ -382,7 +404,8 @@ pub fn readings(stream: &[Record]) -> Vec<Reading> {
                 stamp: state.stamp,
                 said: state.said,
                 crashes: state.crashes,
-                hold: state.hold.filter(|_| standing == Standing::Held),
+                hold: park.map(|park| park.hold.clone()),
+                cleared: park.is_some_and(|park| park.cleared),
             })
         })
         .collect()
@@ -411,7 +434,7 @@ enum Wake {
 
 /// The wake a `run.waiting` carries, as a [`Wake`]: `{items, kinds, since}`
 /// with at least one item, at least one kind, every kind an entry kind
-/// ([`LINES_OF`]'s) and `since` a position, is [`Wake::Items`]; a non-empty
+/// ([`ENTRY_KINDS`]) and `since` a position, is [`Wake::Items`]; a non-empty
 /// string is [`Wake::Id`]; everything else is [`Wake::Any`].
 ///
 /// EVERY SHAPE THE MATCH DOES NOT KNOW IS `Any` AND NOT A REFUSAL — a wake a
@@ -445,7 +468,7 @@ fn items_of(wake: &serde_json::Value) -> Option<Wake> {
     };
     let items = strings("items")?;
     let kinds = strings("kinds")?;
-    let known = |kind: &String| LINES_OF.iter().any(|(entry, _)| entry == kind);
+    let known = |kind: &String| ENTRY_KINDS.contains(&kind.as_str());
     if !kinds.iter().all(known) {
         return None;
     }
@@ -455,14 +478,6 @@ fn items_of(wake: &serde_json::Value) -> Option<Wake> {
         kinds,
         since,
     })
-}
-
-/// Whether a stream kind announces one of the entry kinds named.
-fn announces(kinds: &[String], line: &str) -> bool {
-    LINES_OF
-        .iter()
-        .filter(|(entry, _)| kinds.iter().any(|kind| kind == entry))
-        .any(|(_, lines)| lines.contains(&line))
 }
 
 /// Whether the waiting run is to be executed again: `at` is the sequence its
@@ -480,8 +495,8 @@ fn announces(kinds: &[String], line: &str) -> bool {
 /// steps — costs one child execution of the whole workflow that ends waiting in
 /// the same place.
 ///
-/// AN ITEMS WAKE IS WOKEN BY A LINE ABOVE ITS `since`, for one of its items, of
-/// a kind [`LINES_OF`] maps one of its entry kinds to — wherever that line sits
+/// AN ITEMS WAKE IS WOKEN BY AN [`ITEM_ENTRY`] ABOVE ITS `since`, for one of its
+/// items, signalling an entry of one of its kinds — wherever that line sits
 /// against the recorded position, and with no move needed past it. The
 /// recorded position is read when the process exits, after `until` or `hold`
 /// read the store and threw, so a delivery or a clearance written in between
@@ -510,9 +525,10 @@ fn could_wake(stream: &[Record], head: u64, at: u64, state: &Folded) -> bool {
             kinds,
             since,
         } => stream.iter().any(|record| {
-            record.seq > *since
-                && announces(kinds, &record.kind)
+            record.kind == ITEM_ENTRY
                 && payload_str(record, "item").is_some_and(|item| items.contains(&item))
+                && payload_str(record, "kind").is_some_and(|kind| kinds.contains(&kind))
+                && record.seq > *since
         }),
         Wake::Id(id) => {
             let names = |record: &Record| payload_str(record, "run").as_ref() == Some(id);
@@ -532,36 +548,25 @@ fn could_wake(stream: &[Record], head: u64, at: u64, state: &Folded) -> bool {
     }
 }
 
-/// The hold on the run's record and the `item.held` that announces it.
+/// The hold on the run's record, and the signal of the held entry beside it.
 ///
-/// THE HOLD COMES FIRST AND THE EVENT SECOND, as every other park's does: a hold
-/// nobody announced is a person's question still standing, where an announcement
-/// with no hold behind it is a run a reader believes is held and which the store
-/// will hand straight back.
+/// THE HOLD COMES FIRST AND THE SIGNAL SECOND, as every other park's does: a
+/// hold nobody signalled is a person's question still standing, where a signal
+/// with no hold behind it names an entry the record does not carry.
 fn park(pass: &mut Pass, run: &str, state: &Folded) -> Result<(), String> {
     let reason = format!(
         "{run} has been executed {} time(s) and nothing could classify the last one — \
          `[core.run] max_crashes` is {}",
         state.crashes, pass.max_crashes
     );
-    let hold = pass.runs.hold(run, &reason)?;
+    let (_, entry) = pass.runs.hold(run, &reason)?;
     pass.events
         .append(
-            ITEM_HELD,
+            ITEM_ENTRY,
             pass.controller,
-            serde_json::json!({
-                "item": run,
-                "reason": reason,
-                // A run holds neither: what it is pinned to is its directory's
-                // hash, which `run.started` already carries. The keys are
-                // present carrying null rather than dropped, so a fold meets a
-                // field it reads as absent and not a shape that varies.
-                "branch": serde_json::Value::Null,
-                "commit": serde_json::Value::Null,
-                "hold": hold,
-            }),
+            serde_json::json!({ "item": run, "entry": entry, "kind": HELD }),
         )
-        .map_err(|e| format!("{run} is held and {ITEM_HELD} did not reach the stream: {e}"))
+        .map_err(|e| format!("{run} is held and {ITEM_ENTRY} did not reach the stream: {e}"))
 }
 
 /// Every seat the run spawned, retired, and one `run.cleaned` with the count.

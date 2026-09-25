@@ -25,7 +25,7 @@ use fleet_controller::adapter::{DaemonRead, RosterRead};
 use fleet_controller::clock::Clock;
 use fleet_controller::platform::{self, Grant};
 use fleet_controller::run::{self, Options, Seams, StopHandler};
-use fleet_controller::runs::Runs;
+use fleet_controller::runs::{CapHold, Runs};
 use fleet_controller::test_support::{Answers, FakeClock, StubAgent};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -159,9 +159,9 @@ impl Rig {
         );
         append(
             &rig.stream_path(),
-            "hold.cleared",
+            "item.entry",
             serde_json::json!({"kind": "seat", "id": "a-seat"}),
-            serde_json::json!({"item": RUN, "letter": "A"}),
+            serde_json::json!({"item": RUN, "entry": "an-entry", "kind": "cleared"}),
         );
 
         common::hermetic::export(common::hermetic::vars(&rig.root, &rig.machine, None));
@@ -278,8 +278,8 @@ fn append(path: &Path, kind: &str, actor: serde_json::Value, payload: serde_json
 /// The run as the loop acts on it: one execution that occupies the polling
 /// thread for the land step and then fails, exactly as core's `run` child does.
 ///
-/// The hold and the retire answer refusals and are asserted never to have been
-/// called: this run spawned no seat, so the cleanup that follows its failure
+/// The hold, the record's read and the retire answer refusals and are asserted
+/// never to have been called: this run spawned no seat, so the cleanup that follows its failure
 /// walks an empty set and its `run.cleaned` carries a count of zero — which is
 /// what the live stream carried on all three of the incident's runs.
 struct ALandStepOnThePollingThread<'a> {
@@ -309,12 +309,20 @@ impl Runs for ALandStepOnThePollingThread<'_> {
         Ok(())
     }
 
-    fn hold(&self, run: &str, _reason: &str) -> Result<String, String> {
+    fn hold(&self, run: &str, _reason: &str) -> Result<(String, String), String> {
         self.calls
             .lock()
             .expect("the run stub's own lock")
             .push(format!("hold {run}"));
         Err("this rig raises no hold".to_string())
+    }
+
+    fn capped(&self, run: &str) -> Result<Option<CapHold>, String> {
+        self.calls
+            .lock()
+            .expect("the run stub's own lock")
+            .push(format!("capped {run}"));
+        Err("this rig reads no record".to_string())
     }
 
     fn retire(&self, seat: &str, run: &str) -> Result<(), String> {

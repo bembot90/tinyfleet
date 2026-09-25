@@ -175,7 +175,7 @@ raise a hold from inside a seat's worktree, asking a person the question
 --question names: everything the tree holds is committed on the work branch,
 the store's own hold is raised carrying the question and its lettered options,
 the park is written on the item with the branch, the commit and the hold, and
-`item.held` reaches the stream.
+its `item.entry` signal reaches the stream.
 
 The question is a JSON file of the shape assets/question.schema.json, which
 the brief shows.
@@ -192,8 +192,8 @@ does not match its shape — all three before anything is committed.")]
     /// give a hold its clearance: answer the question an item is held on
     #[command(long_about = "\
 give a hold its clearance, answering the question an item is held on: the
-answer written on the item, the store's hold cleared and `hold.cleared` on the
-stream, one act.
+answer written on the item, the store's hold cleared and its `item.entry`
+signal on the stream, one act.
 
 The letter names one of the question's options; `--text` says what was decided
 where the options did not carry it, and is what makes a letter outside them an
@@ -279,7 +279,7 @@ on the record; a waiting one stays open.")]
     /// cancel a run: clear its holds, close its record, let its seats go
     #[command(long_about = "\
 cancel a run: every hold standing on its record cleared, the record closed as
-cancelled, and run.cancelled on the stream, with one hold.cleared per hold —
+cancelled, and run.cancelled on the stream, with one item.entry per hold —
 one act, for a run nothing else will end: held at [core.run] max_crashes,
 waiting on a wake that will not come, or gone without a row of the exit
 table. The record is what [core.run] max_open counts, so a cancel frees its

@@ -1017,9 +1017,14 @@ fn a_green_landing_moves_the_bare_and_closes_the_item() {
         .collect();
     assert_eq!(
         kinds,
-        vec!["item.reviewed", "check.read", "item.landed"],
-        "the accept, the reading, the landing: {events:?}"
+        vec![
+            fleet_core::item::ITEM_ENTRY,
+            fleet_core::item::CHECK_READ,
+            fleet_core::item::ITEM_ENTRY
+        ],
+        "the accept's signal, the reading, the landing's signal: {events:?}"
     );
+    assert_eq!(events[0]["payload"]["kind"], serde_json::json!("reviewed"));
     let reading = &events[1]["payload"];
     let landing = &events[2]["payload"];
     assert_eq!(reading["item"].as_str(), Some(rig.item.as_str()));
@@ -1032,18 +1037,12 @@ fn a_green_landing_moves_the_bare_and_closes_the_item() {
         serde_json::json!({ "kind": "seat", "id": REVIEWER_ID }),
         "the landing is the reviewer's act, typed"
     );
-    assert_eq!(landing["sha"].as_str(), Some(landed.as_str()));
+    // The landing's signal names the landed entry above, which carries the
+    // shas.
     assert_eq!(
-        landing["squash_of"].as_str(),
-        Some(rig.commit.as_str()),
-        "the reviewed commit, and not the one the trunk now carries: {events:?}"
-    );
-    // The old side is the range line's own, which git prints ABBREVIATED and
-    // the landing resolves whole.
-    assert_eq!(
-        landing["base"].as_str(),
-        Some(before.as_str()),
-        "and the old side of the push's own range line, whole: {events:?}"
+        *landing,
+        serde_json::json!({ "item": rig.item, "entry": entry["id"], "kind": "landed" }),
+        "{events:?}"
     );
 
     // The work branch, gone from both sides on SAFE.

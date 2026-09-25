@@ -68,7 +68,7 @@ interface Faked extends Scratch {
 /** What the canned dispatch answers. */
 const DISPATCHED = {
   item: "x",
-  state: "dispatched",
+  state: "ordered",
   seat: {
     id: "01a0d1f1-0aec-765f-9abe-00007e3fa2c0",
     kind: "agent",
@@ -96,7 +96,7 @@ async function scratch(): Promise<Faked> {
   const t = { ...s, fake, env: { ...s.env, bin: script } };
   for (const item of [t.env.runId, "it-1", "it-2"]) await plant(t, item);
   await can(t, "dispatch", DISPATCHED);
-  await can(t, "review", { item: "x", state: "reviewed" });
+  await can(t, "review", { item: "x", state: "reviewed", verdict: "accepted" });
   await can(t, "land", { item: "x", state: "landed", sha: "fedcba9" });
   return t;
 }

@@ -1,9 +1,9 @@
 //! `fleet hold` and `fleet clear` — the seat's blocking question, raised as a
 //! hold over the store's own object, and the clearance that settles it.
 //!
-//! ONE OBJECT AND ONE EVENT. A park is the store's hold on the item plus
-//! `item.held`, whoever raised it, so one listing shows everything owed and
-//! one verb clears any of it. Neither verb here rings anybody: `hold` leaves a
+//! ONE OBJECT AND ONE ENTRY. A park is the store's hold on the item plus the
+//! `held` entry naming it, whoever raised it, so one listing shows everything
+//! owed and one verb clears any of it. Neither verb here rings anybody: `hold` leaves a
 //! seat about to be retired, and `clear` dispatches nothing.
 //!
 //! THE REFUSALS COME BEFORE THE COMMIT, as they do in `deliver`. Everything
@@ -40,22 +40,19 @@ use crate::item::deliver::held_item;
 use crate::item::dispatch::refuse_an_epic;
 use crate::item::run;
 use crate::item::{
-    recorded, Events, Git, Project, Stop, Unrecorded, HOLD_CLEARED, ITEM_HELD, TRUNK_BRANCH,
+    recorded, signal, Events, Git, Project, Stop, Unrecorded, ITEM_ENTRY, TRUNK_BRANCH,
 };
 use crate::seat::actor::Actor;
 use crate::store::{Item, Store, BD};
 
-/// What `item.held` names as a run's branch, where a seat's names its work
-/// branch: a run's record has no branch at all, and a reader of the stream
+/// What a run's park answers as its branch, where a seat's answers its work
+/// branch: a run's record has no branch at all, and a caller printing the park
 /// must meet that as a value and not as a missing one.
 pub const RUN_BRANCH: &str = "(run)";
 
 /// The key the run's own hash sits under in the record's `run` object, written
 /// by [`run::run`] at the open.
 const HASH: &str = "hash";
-
-/// What `item.held` names as the reason for a seat's own question.
-pub const ASK: &str = "ask";
 
 // ---- the question ------------------------------------------------------------
 
@@ -190,28 +187,15 @@ pub fn hold(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result
         held(&item, &commit, &hold, &why)
     })?;
 
-    // (d) THE EVENT, after the entry and its read-back.
-    wiring
-        .events
-        .append(
-            ITEM_HELD,
-            question.by,
-            serde_json::json!({
-                "item": item,
-                "reason": ASK,
-                "branch": branch,
-                "commit": commit,
-                "hold": hold,
-            }),
+    // (d) THE HELD ENTRY'S SIGNAL, after the entry and its read-back.
+    signal(wiring.events, question.by, &item, &entry, "held").map_err(|e| {
+        held(
+            &item,
+            &commit,
+            &hold,
+            &format!("{ITEM_ENTRY} did not reach the stream: {e}"),
         )
-        .map_err(|e| {
-            held(
-                &item,
-                &commit,
-                &hold,
-                &format!("{ITEM_HELD} did not reach the stream: {e}"),
-            )
-        })?;
+    })?;
 
     let _ = writeln!(out, "{hold}");
     Ok(Held {
@@ -269,7 +253,7 @@ pub struct Capped<'a> {
 }
 
 /// The hold on a run's record at `[core.run] max_crashes` and the held entry
-/// that names it, answered as the hold's own id.
+/// that names it, answered as the hold's own id and the entry's.
 ///
 /// THE SAME PARK `hold` MAKES ON A RUN'S RECORD, with the question written
 /// here rather than by a seat: the hold carries the whole question as its
@@ -279,14 +263,16 @@ pub struct Capped<'a> {
 /// open hold blocks the record's close too, so the run it stopped would hold
 /// a `[core.run] max_open` slot until it is cancelled.
 ///
-/// NO EVENT. `item.held` is the controller's own line and its latch: the
-/// pass writes it once this answers, so a park that stopped half way here is
-/// asked for again on the next poll rather than announced.
+/// NO EVENT. The entry's signal is the controller's own line: the pass writes
+/// it once this answers, by the entry's id. The latch is the entry itself —
+/// the pass asks the record whether it carries a `max_crashes` hold before it
+/// parks — so a park that stopped before its entry is asked for again on the
+/// next poll, and one whose signal did not land is not parked twice.
 ///
 /// A FAILURE AFTER THE HOLD WITHDRAWS IT. The next poll raises a hold of its
 /// own, and one left behind with no entry naming it is exactly the hold this
 /// park exists not to leave.
-pub fn park_at_the_cap(capped: &Capped, store: &dyn Store) -> Result<String, Stop> {
+pub fn park_at_the_cap(capped: &Capped, store: &dyn Store) -> Result<(String, String), Stop> {
     let record = store.show(capped.run)?;
     let question = cap_question(capped);
     let by = capped.by.to_string();
@@ -306,7 +292,7 @@ pub fn park_at_the_cap(capped: &Capped, store: &dyn Store) -> Result<String, Sto
         },
     ));
     recorded(store, capped.run, &entry, capped.by)
-        .map(|_| hold.clone())
+        .map(|entry| (hold.clone(), entry))
         .map_err(|unrecorded| {
             let why = match unrecorded {
                 Unrecorded::NotWritten(e) => format!("the held entry did not land: {e}"),
@@ -470,24 +456,20 @@ pub fn clear(out: &mut dyn Write, clearance: &Clearance, wiring: &Wiring) -> Res
         )));
     }
 
-    wiring
-        .events
-        .append(
-            HOLD_CLEARED,
-            clearance.by,
-            serde_json::json!({
-                "item": clearance.item,
-                "hold": hold,
-                "letter": letter.to_string(),
-            }),
-        )
-        .map_err(|e| {
-            Stop::could_not_tell(format!(
-                "{HOLD_CLEARED} did not reach the stream: {e}\n  the answer on {} STANDS and \
-                 {hold} is cleared",
-                clearance.item
-            ))
-        })?;
+    signal(
+        wiring.events,
+        clearance.by,
+        clearance.item,
+        &entry,
+        "cleared",
+    )
+    .map_err(|e| {
+        Stop::could_not_tell(format!(
+            "{ITEM_ENTRY} did not reach the stream: {e}\n  the answer on {} STANDS and {hold} is \
+             cleared",
+            clearance.item
+        ))
+    })?;
 
     let _ = writeln!(out, "{} answered {letter} — {hold} cleared", clearance.item);
     Ok(Cleared {

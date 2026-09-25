@@ -170,8 +170,7 @@ fn the_run_vocabulary_is_one_string_in_both_crates() {
         (runs::RUN_COULD_NOT_TELL, item::RUN_COULD_NOT_TELL),
         (runs::RUN_CANCELLED, item::RUN_CANCELLED),
         (runs::RUN_CLEANED, item::RUN_CLEANED),
-        (runs::ITEM_HELD, item::ITEM_HELD),
-        (runs::HOLD_CLEARED, item::HOLD_CLEARED),
+        (runs::ITEM_ENTRY, item::ITEM_ENTRY),
         (runs::ENV_RUN_ID, item::run::ENV_RUN_ID),
     ] {
         assert_eq!(
@@ -181,29 +180,75 @@ fn the_run_vocabulary_is_one_string_in_both_crates() {
     }
 }
 
-/// The table a wake's entry kinds are woken through is keyed by core's entry
-/// kinds, in core's order, and every line it maps one to is a kind core
-/// writes — so a wake the SDK throws naming a kind is readable, and no kind
-/// waits on a line nothing writes.
+/// The kinds a wake may name are core's entry kinds, in core's order: a wake
+/// the SDK throws naming a kind is readable, and none waits on a kind no
+/// signal carries.
 #[test]
-fn the_wake_table_is_keyed_by_core_s_entry_kinds_and_maps_to_core_s_lines() {
-    use fleet_controller::runs::LINES_OF;
-    use fleet_core::{entry, item};
-
-    let keys: Vec<&str> = LINES_OF.iter().map(|(kind, _)| *kind).collect();
+fn the_kinds_a_wake_names_are_core_s_entry_kinds() {
     assert_eq!(
-        keys,
-        entry::KINDS,
-        "one row per entry kind, in core's order"
+        fleet_controller::runs::ENTRY_KINDS,
+        fleet_core::entry::KINDS,
+        "the controller's spelling and core's are one list"
     );
-    for (kind, lines) in LINES_OF {
-        for line in lines {
-            assert!(
-                item::ITEM_KINDS.contains(line),
-                "{kind} maps to {line}, which is no kind core writes"
-            );
+}
+
+/// The stream kinds the verbs wrote before every entry was one signal —
+/// retired, and spelled nowhere a writer or a reader of the stream lives: no
+/// string literal in core, the binary or the controller, and none in the SDK a
+/// workflow runs on. A line of one of them now would be a kind nothing reads.
+#[test]
+fn no_source_spells_a_retired_item_kind() {
+    const RETIRED: [&str; 7] = [
+        "item.delivered",
+        "item.reviewed",
+        "item.returned",
+        "item.landed",
+        "item.dispatched",
+        "item.held",
+        "hold.cleared",
+    ];
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the cli crate sits inside the workspace");
+    let grep = |needle: &str, paths: &[&str]| -> Vec<String> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["grep", "-n", "-F", "-e", needle, "--"])
+            .args(paths)
+            .output()
+            .expect("git grep runs");
+        // 0 is found and 1 is found nothing; anything else is git failing,
+        // which would read as a clean tree.
+        assert!(
+            matches!(out.status.code(), Some(0 | 1)),
+            "git grep answers: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect()
+    };
+    let rust = ["core/src", "cli/src", "controller/src"];
+    let sdk = ["packs/ts/assets/sdk/mod.ts"];
+
+    // THE CONTROL: the kind that replaced them is found, as a literal, by the
+    // same search — so an empty answer below is the tree's and not the
+    // search's.
+    assert!(
+        !grep("\"item.entry\"", &rust).is_empty(),
+        "core and the controller spell item.entry"
+    );
+
+    let mut found: Vec<String> = Vec::new();
+    for kind in RETIRED {
+        found.extend(grep(&format!("\"{kind}\""), &rust));
+        for quote in ['"', '\'', '`'] {
+            found.extend(grep(&format!("{quote}{kind}{quote}"), &sdk));
         }
     }
+    assert!(found.is_empty(), "retired kinds spelled: {found:#?}");
 }
 
 /// And the run's crash cap has one default, for the same reason: the controller

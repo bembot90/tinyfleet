@@ -12,7 +12,7 @@
 //! table's could-not-tell at the end — a page that stopped at its second
 //! section would hide the ones that had answers.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -20,7 +20,7 @@ use fleet_controller::events;
 use fleet_controller::policy::{self as controller_policy, Policy};
 use fleet_controller::projection::{self, Projection, SeatRow};
 use fleet_controller::routines::RoutineRow;
-use fleet_controller::runs::{self, Reading, Standing};
+use fleet_controller::runs::{self, CapHold, Reading, Runs, Standing};
 use fleet_controller::seat::COLLECTOR_STALE_POLLS;
 use fleet_controller::{clock, config, platform};
 use fleet_core::item::{rules, Stop};
@@ -29,7 +29,7 @@ use fleet_core::store::Store;
 
 use crate::exit::Exit;
 use crate::item::{open_store, resolve_from};
-use crate::runs::registered_roots;
+use crate::runs::{registered_roots, Engine};
 
 /// The published document, under the machine directory.
 const PROJECTION: &str = "projection.json";
@@ -184,6 +184,10 @@ impl Read {
             self.runs
                 .as_ref()
                 .ok()
+                .and_then(|runs| runs.capped.as_ref().err()),
+            self.runs
+                .as_ref()
+                .ok()
                 .and_then(|runs| runs.holds.as_ref().err()),
         ]
         .into_iter()
@@ -279,14 +283,20 @@ fn string_of(value: Option<&core_policy::Value>) -> Option<String> {
     value?.as_str().map(str::to_string)
 }
 
-/// Every run the stream holds, and the holds the stores still call open.
+/// Every run the stream holds, whether each one at could-not-tell is parked,
+/// and the holds the stores still call open.
 ///
 /// THE RUNS ARE THE STREAM'S AND NOT THE RUN'S RECORD OR ITS DIRECTORY. The
 /// directory holds the pins and the logs and never how the run ended; the
 /// record is open or closed, which cannot tell a failure from a close or a
 /// wait from a crash. The stream carries one row of the exit table per
-/// execution and the park's latch, and it is what the run pass decides every
-/// re-run and every park on — so the page and the pass read one fold.
+/// execution, and it is what the run pass decides every re-run on — so the
+/// page and the pass read one fold.
+///
+/// THE PARK IS THE RECORD'S, as the pass reads it: a run whose last line is
+/// `run.could_not_tell` is asked through the pass's own seam whether its record
+/// carries a `max_crashes` hold, and whether that hold is cleared. A run that
+/// could not be asked leaves the section not all read.
 ///
 /// THE HOLDS ARE THE STORES' AND NOT THE STREAM'S. A hold raised or cleared on
 /// another machine, or by hand with `bd`, writes no line here, and a fold of
@@ -294,6 +304,8 @@ fn string_of(value: Option<&core_policy::Value>) -> Option<String> {
 /// open or is not.
 struct RunsRead {
     readings: Vec<Reading>,
+    /// Why a run at could-not-tell could not be asked whether it is parked.
+    capped: Result<(), String>,
     holds: Result<BTreeSet<String>, String>,
 }
 
@@ -310,10 +322,47 @@ fn read_runs(path: &Path, machine_dir: &Path) -> Result<RunsRead, String> {
         })?;
     }
     let stream = events::read_after(path, 0);
+    let (capped, unread) = capped_on(machine_dir, &stream);
     Ok(RunsRead {
-        readings: runs::readings(&stream),
+        readings: runs::readings(&stream, &capped),
+        capped: unread,
         holds: open_holds_on(machine_dir),
     })
+}
+
+/// Every run whose last lifecycle line is `run.could_not_tell`, asked whether
+/// its record carries the park — the stream's fold with no park read in names
+/// exactly those — and the runs that could not be asked, as one sentence.
+fn capped_on(
+    machine_dir: &Path,
+    stream: &[events::Record],
+) -> (BTreeMap<String, CapHold>, Result<(), String>) {
+    let engine = Engine::on(machine_dir.to_path_buf());
+    let mut capped = BTreeMap::new();
+    let mut unread: Vec<String> = Vec::new();
+    for reading in runs::readings(stream, &BTreeMap::new()) {
+        if reading.standing != Standing::CouldNotTell {
+            continue;
+        }
+        match engine.capped(&reading.run) {
+            Ok(Some(park)) => {
+                capped.insert(reading.run, park);
+            }
+            Ok(None) => {}
+            Err(why) => unread.push(format!(
+                "whether {} is held could not be read: {why}",
+                reading.run
+            )),
+        }
+    }
+    let unread = match unread.is_empty() {
+        true => Ok(()),
+        false => Err(format!(
+            "the runs were not all read — {}",
+            unread.join("; ")
+        )),
+    };
+    (capped, unread)
 }
 
 /// Every hold the store of each project this machine registers still calls
@@ -574,7 +623,7 @@ fn runs_section(out: &mut dyn Write, read: &Result<RunsRead, String>) -> std::io
         open.len()
     )?;
     for reading in [listed, held, unread, waiting, open].concat() {
-        writeln!(out, "  {}", run_row(reading, read.holds.as_ref().ok()))?;
+        writeln!(out, "  {}", run_row(reading))?;
     }
     match earlier {
         0 => {}
@@ -588,16 +637,20 @@ fn runs_section(out: &mut dyn Write, read: &Result<RunsRead, String>) -> std::io
              them"
         )?,
     }
+    // A run nobody could ask about its park is counted where the stream puts
+    // it, and the section says it is not all read.
+    if let Err(why) = &read.capped {
+        writeln!(out, "  {why}")?;
+    }
     match &read.holds {
         Ok(open) => writeln!(out, "\nholds  {} open", open.len()),
         Err(why) => writeln!(out, "\nholds  not counted — {why}"),
     }
 }
 
-/// A parked run's hold reads cleared where the stores' open set does not hold
-/// it. A set that was not read says nothing either way, and the holds line
-/// names why.
-fn run_row(reading: &Reading, open: Option<&BTreeSet<String>>) -> String {
+/// A parked run's hold reads cleared where its record's store no longer lists
+/// it open, as the pass's own read answered.
+fn run_row(reading: &Reading) -> String {
     let said = |key: &str| said_of(reading.said.get(key));
     let what = match reading.standing {
         Standing::Failed => format!("FAILED at {} — {}", reading.stamp, said("reason")),
@@ -605,10 +658,7 @@ fn run_row(reading: &Reading, open: Option<&BTreeSet<String>>) -> String {
             "HELD at {} on hold {}{} — nothing could classify {} execution(s)",
             reading.stamp,
             reading.hold.as_deref().unwrap_or("—"),
-            match (&reading.hold, open) {
-                (Some(hold), Some(open)) if !open.contains(hold) => ", cleared",
-                _ => "",
-            },
+            if reading.cleared { ", cleared" } else { "" },
             reading.crashes
         ),
         // The last line quoted, as it stood: it is what could not be read, and

@@ -145,65 +145,55 @@ pub const RUN_CANCELLED: &str = "run.cancelled";
 /// machine and not about the workflow.
 pub const RUN_CLEANED: &str = "run.cleaned";
 
-/// The item vocabulary.
+/// The one line every entry on an item's timeline is signalled on: the item,
+/// the id the store gave the entry, and the entry's kind, and nothing else
+/// [ASSUMES D2].
 ///
-/// Five of these and [`CHECK_READ`] are the verbs' own: each writes exactly
-/// one, after its note has been written and read back. [`ITEM_HELD`] is
-/// written by `hold` here and by the controller at a run's crash cap, and is
-/// named here because a fold over the stream reads it and a kind spelled twice
-/// is two kinds.
-pub const ITEM_DISPATCHED: &str = "item.dispatched";
-pub const ITEM_DELIVERED: &str = "item.delivered";
-pub const ITEM_REVIEWED: &str = "item.reviewed";
-pub const ITEM_RETURNED: &str = "item.returned";
-pub const ITEM_LANDED: &str = "item.landed";
-pub const ITEM_HELD: &str = "item.held";
+/// A SIGNAL AND NOT A COPY. What the entry says is the record's, read off the
+/// timeline; a payload that carried the commit or the verdict would be a second
+/// record a reader could believe over the first. The line says only that the
+/// entry was written, which is what a waiting run is woken by.
+///
+/// Every verb writes one per entry, after the entry is read back, through
+/// [`signal`]. The controller writes it too, for the `held` entry its crash
+/// cap's park writes, and spells it again on its own side of the seam.
+pub const ITEM_ENTRY: &str = "item.entry";
+
+/// The one a landing's suite reading writes: a fact about the machine that
+/// ran the suite, and not an entry's signal [ASSUMES D3].
 pub const CHECK_READ: &str = "check.read";
 
-/// The one a person's clearance writes. It is the hold's own kind and not an
-/// item's: what it says is that the object a park raised is cleared, and the
-/// item it names is how a fold ties it to a list.
-pub const HOLD_CLEARED: &str = "hold.cleared";
+/// One entry's signal, by the entry's own author: `entry` is the id
+/// [`recorded`] answered, and `kind` the entry's kind as
+/// [`crate::entry::KINDS`] spells it.
+///
+/// The stream's refusal is answered as prose, and each verb words it as its
+/// own STANDS line: what stands is the entry, and the verb is what knows it.
+pub fn signal(
+    events: &dyn Events,
+    by: &Actor,
+    item: &str,
+    entry: &str,
+    kind: &str,
+) -> Result<(), String> {
+    events.append(
+        ITEM_ENTRY,
+        by,
+        serde_json::json!({ "item": item, "entry": entry, "kind": kind }),
+    )
+}
 
-/// The value `item.reviewed` carries under `verdict`. The accept is the only
-/// verdict that kind names: a return is `item.returned` and not a second
-/// verdict value.
-pub const VERDICT_ACCEPTED: &str = "accepted";
-
-/// Every item, check and hold kind, in the order the events table lists them.
-pub const ITEM_KINDS: [&str; 8] = [
-    ITEM_DISPATCHED,
-    ITEM_DELIVERED,
-    ITEM_REVIEWED,
-    ITEM_RETURNED,
-    ITEM_LANDED,
-    ITEM_HELD,
-    CHECK_READ,
-    HOLD_CLEARED,
-];
-
-/// The payload keys one item, check or hold kind carries — and
-/// [`RUN_STARTED`], which is none of them and is here for the same reason — or
+/// The payload keys the entry signal and the suite reading carry — and
+/// [`RUN_STARTED`], which is neither and is here for the same reason — or
 /// `None` for every other kind.
 ///
 /// The table is HERE and not in each verb, so the writer and the fold cannot
 /// disagree about what a kind carries: every writer asserts its payload against
-/// this and the fold reads the same names. `item` is first on every one of them
-/// — it is the key the fold ties a record to a list by.
+/// this and the fold reads the same names. `item` is first on both item rows —
+/// it is the key a reader ties a line to a record by.
 pub fn payload_keys(kind: &str) -> Option<&'static [&'static str]> {
     Some(match kind {
-        ITEM_DISPATCHED => &["item", "seat", "base", "role", "reason"],
-        ITEM_DELIVERED => &["item", "commit", "branch", "base"],
-        ITEM_REVIEWED => &["item", "commit", "verdict", "accepted", "overruled"],
-        ITEM_RETURNED => &["item", "commit", "findings"],
-        // `run` is the run whose record carried the landing, `null` where a
-        // seat landed it in its own name. The actor is the reviewer either way
-        // — a run lands AS the `[core] reviewer` — so this is the key that says
-        // what carried the act. `test` is the command the landing ran on the
-        // tree it pushed, `null` where it was handed none and landed NOT
-        // TESTED: an absent key and an untested landing are not the same fact.
-        ITEM_LANDED => &["item", "sha", "base", "squash_of", "run", "test"],
-        ITEM_HELD => &["item", "reason", "branch", "commit", "hold"],
+        ITEM_ENTRY => &["item", "entry", "kind"],
         // `log` is where the reading it carries can be read back. It is on the
         // kind and not only on the rerun's: a pair of readings a person is
         // asked to judge names two files, and one of them is the first.
@@ -211,11 +201,7 @@ pub fn payload_keys(kind: &str) -> Option<&'static [&'static str]> {
         // that failed on the diff and one that failed because it could not find
         // its tools are told apart from the stream alone.
         CHECK_READ => &["item", "suite", "rc", "verdict", "reading", "log", "path"],
-        // `letter` is the answer itself and rides the kind, because the one
-        // thing a reader of the stream wants to know about a cleared hold is
-        // which way it went.
-        HOLD_CLEARED => &["item", "hold", "letter"],
-        // `run` first, as `item` is first on every row above: it is the key a
+        // `run` first, as `item` is first on both rows above: it is the key a
         // reader of the stream ties a hash and a workflow name to.
         RUN_STARTED => &["run", "hash", "workflow"],
         // The close carries the id alone: everything else about the run was
@@ -233,8 +219,8 @@ pub fn payload_keys(kind: &str) -> Option<&'static [&'static str]> {
         // no other row fitted.
         RUN_COULD_NOT_TELL => &["run", "exit", "read"],
         // The id alone, as the close's: the holds the cancel cleared each
-        // have a `hold.cleared` of their own, and a list here would be a
-        // second copy of them.
+        // have a `cleared` entry and its signal of their own, and a list here
+        // would be a second copy of them.
         RUN_CANCELLED => &["run"],
         // `count` is how many seats were retired, and it is the whole payload
         // beside the id: which seats they were is on each one's own
@@ -380,11 +366,6 @@ pub fn numstat_line(line: &str) -> Option<Change> {
 /// `seat` is the spawned seat's full id, which is what dispatch assigns the
 /// item to and writes into its index.
 ///
-/// `base` is the commit the seat's worktree was cut from, read by the spawner
-/// from that worktree's own HEAD: the fact is answered by the tree it
-/// describes. `None` where the spawner could not read it, which the event then
-/// carries absent rather than as a guess.
-///
 /// `belt` is both readings the spawn was let through on, rendered by the
 /// spawner into the lines a person reads. Core measures no machine and knows
 /// nothing of the belt's shape, so the text rides the answer rather than the
@@ -395,11 +376,7 @@ pub fn numstat_line(line: &str) -> Option<Change> {
 /// nobody could observe is never recorded as a spawn that was declined.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpawnOutcome {
-    Spawned {
-        seat: String,
-        base: Option<String>,
-        belt: Option<String>,
-    },
+    Spawned { seat: String, belt: Option<String> },
     Refused(String),
     CouldNotTell(String),
 }

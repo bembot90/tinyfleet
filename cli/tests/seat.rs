@@ -1520,29 +1520,28 @@ fn dispatch_without_a_seat_spawns_through_the_real_spawner_and_assigns_the_name(
     let worktree = rig.worktrees.join(&seat);
     assert!(worktree.is_dir());
 
-    // THE EVENT, off the stream the binary wrote, and its base read by this arm
-    // from the worktree's OWN HEAD — the commit the seat starts from, and the
-    // one fact a ref the spawn named could already have moved past.
+    // THE EVENT, off the stream the binary wrote: the signal of the ordered
+    // entry that seated the order, the second.
     let events = rig.events();
     let last = events.last().expect("the stream carries the dispatch");
-    assert_eq!(last["type"].as_str(), Some("item.dispatched"), "{last}");
+    assert_eq!(
+        last["type"].as_str(),
+        Some(fleet_core::item::ITEM_ENTRY),
+        "{last}"
+    );
     assert_eq!(
         last["actor"],
         serde_json::json!({ "kind": "seat", "id": &ARCHITECT["seat:".len()..] })
     );
-    assert_eq!(last["payload"]["item"].as_str(), Some(item.as_str()));
     assert_eq!(
-        last["payload"]["seat"],
-        serde_json::json!({ "id": id, "kind": "agent" }),
-        "the spawned seat, nameless: {last}"
+        last["payload"],
+        serde_json::json!({ "item": item, "entry": timeline[1]["id"], "kind": "ordered" }),
+        "{last}"
     );
+    // The worktree's OWN HEAD is the commit the seat starts from: the trunk
+    // the primary carried at the spawn.
     let head = seen(&worktree, &["rev-parse", "HEAD"]);
     assert_eq!(head.len(), 40, "a commit is 40 hex: {head}");
-    assert_eq!(
-        last["payload"]["base"].as_str(),
-        Some(head.as_str()),
-        "the base is the worktree's own HEAD: {last}"
-    );
     assert_eq!(
         head,
         seen(&rig.project, &["rev-parse", "refs/remotes/origin/main"]),
@@ -1550,10 +1549,10 @@ fn dispatch_without_a_seat_spawns_through_the_real_spawner_and_assigns_the_name(
     );
 }
 
-/// A dispatch to a NAMED seat writes the same event with no base at all: no
-/// worktree was cut, so there is no commit this order started from.
+/// A dispatch to a NAMED seat signals its one ordered entry the same way,
+/// whatever the ring then finds.
 #[test]
-fn a_named_dispatch_writes_the_event_with_no_base() {
+fn a_named_dispatch_signals_the_ordered_entry_naming_the_seat() {
     let rig = Rig::new("dispatch-named", true);
     rig.init_store();
     let item = rig.item("a ready item for a seat that already exists");
@@ -1592,15 +1591,24 @@ fn a_named_dispatch_writes_the_event_with_no_base() {
         .last()
         .cloned()
         .expect("the stream carries the dispatch");
-    assert_eq!(last["type"].as_str(), Some("item.dispatched"), "{last}");
     assert_eq!(
-        last["payload"]["seat"],
-        serde_json::json!({ "id": NAMED_ID, "name": "s-cli-named", "kind": "agent" }),
-        "`--to s-cli-named` is written as the seat it resolved to"
+        last["type"].as_str(),
+        Some(fleet_core::item::ITEM_ENTRY),
+        "{last}"
     );
-    assert!(
-        last["payload"].get("base").is_none(),
-        "a named dispatch carries no base: {last}"
+    // `--to s-cli-named` is written as the seat it resolved to, on the entry
+    // the signal names.
+    let timeline = rig.timeline(&item);
+    assert_eq!(timeline.len(), 1, "{timeline:?}");
+    assert_eq!(
+        timeline[0]["seat"],
+        serde_json::json!(NAMED_ID),
+        "{timeline:?}"
+    );
+    assert_eq!(
+        last["payload"],
+        serde_json::json!({ "item": item, "entry": timeline[0]["id"], "kind": "ordered" }),
+        "{last}"
     );
 }
 

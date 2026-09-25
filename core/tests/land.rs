@@ -20,7 +20,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use common::{agent, full, keys_agree, seat_actor, shared_store, Rooted, Scratch, StubEvents};
+use common::{
+    agent, full, keys_agree, seat_actor, shared_store, signal, signals, Rooted, Scratch, StubEvents,
+};
 use fleet_core::entry::Landed as LandedEntry;
 use fleet_core::entry::{
     Body, CheckResult, CheckRow, Classification, Delivered, Entry, Finding, NotProven, NotTested,
@@ -35,7 +37,7 @@ use fleet_core::item::lane;
 use fleet_core::item::show::entry_lines;
 use fleet_core::item::{
     control_token, last_delivery, Change, Git, Project, Stop, CHECK_READ, DELIVERY_MARKERS,
-    ITEM_LANDED, LANDING_MARKERS, TRUNK, TRUNK_BRANCH, VERDICT_MARKERS,
+    ITEM_ENTRY, LANDING_MARKERS, TRUNK, TRUNK_BRANCH, VERDICT_MARKERS,
 };
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
@@ -1012,10 +1014,10 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_landed_entry_and_close
     });
 
     // THE TWO EVENTS, in the order they happened: the reading, then the
-    // landing. Both carry the push's own range line and never a rev-parse.
-    assert_eq!(events.count(), 2, "one reading and one landing");
+    // landed entry's signal.
+    assert_eq!(events.count(), 2, "one reading and one signal");
     let kinds: Vec<String> = events.all().into_iter().map(|(kind, _, _)| kind).collect();
-    assert_eq!(kinds, vec![CHECK_READ.to_string(), ITEM_LANDED.to_string()]);
+    assert_eq!(kinds, vec![CHECK_READ.to_string(), ITEM_ENTRY.to_string()]);
     let (actor, reading) = events.one(CHECK_READ);
     assert_eq!(
         actor,
@@ -1028,13 +1030,15 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_landed_entry_and_close
     assert_eq!(reading["rc"], serde_json::json!(0));
     assert_eq!(reading["verdict"], serde_json::json!("green"));
     assert_eq!(reading["reading"], serde_json::json!(1));
-    let (actor, landing) = events.one(ITEM_LANDED);
-    assert_eq!(actor, format!("seat:{REVIEWER_ID}"));
-    keys_agree(ITEM_LANDED, &landing, &[]);
-    assert_eq!(landing["item"], serde_json::json!(item));
-    assert_eq!(landing["sha"], serde_json::json!(LANDED));
-    assert_eq!(landing["base"], serde_json::json!(OLD));
-    assert_eq!(landing["squash_of"], serde_json::json!(SHA));
+    // The signal names the landed entry, by the reviewer; the sha, the base
+    // and the squashed commit are the entry's.
+    assert_eq!(
+        signals(&events),
+        vec![(
+            format!("seat:{REVIEWER_ID}"),
+            signal(&item, &landed.entry, "landed"),
+        )]
+    );
     // The stub's own HEAD answers a DIFFERENT sha, so this equality can only
     // have come from the push's own range line.
     assert_ne!(COMMITTED, LANDED);
@@ -1349,12 +1353,12 @@ fn a_landing_handed_no_test_lands_and_says_not_tested() {
     assert_eq!(reading["suite"], serde_json::Value::Null);
     assert_eq!(reading["rc"], serde_json::Value::Null);
     assert_eq!(reading["verdict"], serde_json::json!("none"));
-    let (_, landing) = events.one(ITEM_LANDED);
-    keys_agree(ITEM_LANDED, &landing, &[]);
+    let (_, landing) = events.one(ITEM_ENTRY);
+    keys_agree(ITEM_ENTRY, &landing, &[]);
     assert_eq!(
-        landing["test"],
-        serde_json::Value::Null,
-        "item.landed records that no test ran"
+        landing,
+        signal(&item, &landed.entry, "landed"),
+        "the signal names the landed entry, which is what records that no test ran"
     );
     let (_, landing) = landing_of(bd, &item);
     assert_eq!(
@@ -1469,8 +1473,8 @@ fn a_landing_handed_a_green_test_lands_and_records_the_command_and_rc_0() {
     let (_, reading) = events.one(CHECK_READ);
     assert_eq!(reading["suite"], serde_json::json!("exit 0"));
     assert_eq!(reading["rc"], serde_json::json!(0));
-    let (_, landing) = events.one(ITEM_LANDED);
-    assert_eq!(landing["test"], serde_json::json!("exit 0"));
+    let (_, landing) = events.one(ITEM_ENTRY);
+    assert_eq!(landing, signal(&item, &landed.entry, "landed"));
 
     // The test ran BETWEEN the commit on the land branch and the push: what it
     // read is the tree that landed.
@@ -1550,7 +1554,7 @@ fn a_landing_handed_a_red_test_refuses_with_nothing_moved() {
         events
             .all()
             .iter()
-            .all(|(kind, _, _)| kind.as_str() != ITEM_LANDED),
+            .all(|(kind, _, _)| kind.as_str() != ITEM_ENTRY),
         "and no landing reached the stream"
     );
 }
@@ -3132,9 +3136,12 @@ fn a_push_that_prints_abbreviated_shas_lands_every_sha_whole() {
         Some(format!("landed {LANDED}")),
         "the close reason is whole"
     );
-    let (_, landing) = events.one(ITEM_LANDED);
-    assert_eq!(landing["sha"], serde_json::json!(LANDED), "{landing}");
-    assert_eq!(landing["base"], serde_json::json!(OLD), "{landing}");
+    let (_, landing) = events.one(ITEM_ENTRY);
+    assert_eq!(
+        landing,
+        signal(&item, &landed.entry, "landed"),
+        "the signal names the entry that carries the shas"
+    );
 }
 
 /// fleet-56e, the other half: a range end this checkout cannot resolve is an
@@ -4940,19 +4947,22 @@ fn a_run_lands_as_the_reviewer_and_names_the_run_beside_it() {
     });
     assert_eq!(landed.sha, LANDED, "the push's own range line");
 
-    // `item.landed`: the reviewer is the actor whose act it is, and `run` is
-    // what carried it. The stub's caller is neither name by accident — the run
-    // is what was handed in, and the reviewer is what came back.
+    // The signal: the reviewer is the actor whose act it is, and the entry it
+    // names is what says the run carried it. The stub's caller is neither name
+    // by accident — the run is what was handed in, and the reviewer is what
+    // came back.
     assert_ne!(run, REVIEWER_ID);
-    let (actor, landing) = events.one(ITEM_LANDED);
     assert_eq!(
-        actor,
-        format!("seat:{REVIEWER_ID}"),
+        signals(&events),
+        vec![(
+            format!("seat:{REVIEWER_ID}"),
+            signal(&item, &landed.entry, "landed"),
+        )],
         "the landing is the reviewer's act, by its typed id"
     );
-    keys_agree(ITEM_LANDED, &landing, &[]);
-    assert_eq!(landing["run"], serde_json::json!(run));
-    assert_eq!(landing["sha"], serde_json::json!(LANDED));
+    let (_, landing) = landing_of(&scratch.store, &item);
+    assert_eq!(landing.run.as_deref(), Some(run.as_str()));
+    assert_eq!(landing.sha, LANDED);
 
     // The close: written by the reviewer, with the run named beside the sha.
     let wrote = scratch.store.wrote();
@@ -5298,7 +5308,14 @@ fn a_clearance_of_a_flight_wide_hold_licenses_each_item_it_names() {
         panic!("the flight's licence lands the item: {}", stop.message);
     });
     assert_eq!(landed.sha, LANDED);
-    assert_eq!(events.one(ITEM_LANDED).1["run"], serde_json::json!(run));
+    assert_eq!(
+        events.one(ITEM_ENTRY).1,
+        signal(&item, &landed.entry, "landed")
+    );
+    assert_eq!(
+        landing_of(&scratch.store, &item).1.run.as_deref(),
+        Some(run.as_str())
+    );
 }
 
 /// A LANDING IS A SEAT'S OR A RUN'S, BY KIND. A routine and the controller are
@@ -5368,5 +5385,5 @@ fn a_routine_or_the_controller_is_refused_by_kind() {
         &events,
     );
     assert!(ran.landed.is_ok(), "the reviewer's seat: {}", ran.why());
-    assert_eq!(events.one(ITEM_LANDED).0, format!("seat:{REVIEWER_ID}"));
+    assert_eq!(events.one(ITEM_ENTRY).0, format!("seat:{REVIEWER_ID}"));
 }

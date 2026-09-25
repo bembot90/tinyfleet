@@ -1,10 +1,12 @@
 //! The run lifecycle's controller half.
 //!
 //! Every arm here drives the pass against a real stream file in a temporary
-//! directory and a stub for the three acts. The stub WRITES WHAT THE REAL ACT
-//! WOULD WRITE — `run.started` and one row of the exit table for a re-run,
-//! `session.retired` for a retire — because what these arms measure is the
-//! DECISION, and a decision is only visible in what the stream says afterwards.
+//! directory and a stub for the three acts and the one read. The stub WRITES
+//! WHAT THE REAL ACT WOULD WRITE — `run.started` and one row of the exit table
+//! for a re-run, `session.retired` for a retire, the crash-cap hold on the
+//! run's record for a hold — because what these arms measure is the DECISION,
+//! and a decision is only visible in what the stream and the record say
+//! afterwards.
 //!
 //! WHY A STUB AND NOT A SCRATCH WORKFLOW. The three acts each resolve a project:
 //! its store, its packs, its policy file, its primary checkout. That resolution
@@ -13,9 +15,9 @@
 //! measuring the binary's wiring through a crate that does not have it.
 
 use fleet_controller::events::{self, ActorRef, EventLog};
-use fleet_controller::runs::{self, Pass, Runs, Standing};
+use fleet_controller::runs::{self, CapHold, Pass, Runs, Standing};
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 // ---- the rig -----------------------------------------------------------------
@@ -62,7 +64,8 @@ enum Ends {
     CouldNotTell,
 }
 
-/// The three acts, recorded, writing what the real ones write.
+/// The three acts and the one read, recorded, writing what the real ones
+/// write.
 struct Stub {
     stream: PathBuf,
     /// One entry per execution the stub will be asked for, in order. An empty
@@ -72,6 +75,13 @@ struct Stub {
     reruns: RefCell<Vec<String>>,
     holds: RefCell<Vec<(String, String)>>,
     retires: RefCell<Vec<(String, String)>>,
+    /// The crash-cap holds the runs' records carry, as `capped` answers them.
+    /// The stub's `hold` writes one, as the real park writes its held entry,
+    /// and nothing else does: an ask on the record is not one.
+    records: RefCell<BTreeMap<String, CapHold>>,
+    /// Answered by `capped` instead of the record, where an arm is about a
+    /// store that will not answer.
+    unreadable: Option<String>,
 }
 
 impl Stub {
@@ -82,11 +92,19 @@ impl Stub {
             reruns: RefCell::new(Vec::new()),
             holds: RefCell::new(Vec::new()),
             retires: RefCell::new(Vec::new()),
+            records: RefCell::new(BTreeMap::new()),
+            unreadable: None,
         }
     }
 
     fn log(&self) -> EventLog {
         EventLog::open(&self.stream)
+    }
+
+    /// The map a reader outside the pass hands [`runs::readings`]: what
+    /// `capped` answers, run by run.
+    fn capped_map(&self) -> BTreeMap<String, CapHold> {
+        self.records.borrow().clone()
     }
 }
 
@@ -137,11 +155,26 @@ impl Runs for Stub {
         Ok(())
     }
 
-    fn hold(&self, run: &str, reason: &str) -> Result<String, String> {
+    fn hold(&self, run: &str, reason: &str) -> Result<(String, String), String> {
         self.holds
             .borrow_mut()
             .push((run.to_string(), reason.to_string()));
-        Ok(format!("hold-for-{run}"))
+        let hold = format!("hold-for-{run}");
+        self.records.borrow_mut().insert(
+            run.to_string(),
+            CapHold {
+                hold: hold.clone(),
+                cleared: false,
+            },
+        );
+        Ok((hold, format!("entry-for-{run}")))
+    }
+
+    fn capped(&self, run: &str) -> Result<Option<CapHold>, String> {
+        if let Some(why) = &self.unreadable {
+            return Err(why.clone());
+        }
+        Ok(self.records.borrow().get(run).cloned())
     }
 
     fn retire(&self, seat: &str, run: &str) -> Result<(), String> {
@@ -194,6 +227,14 @@ fn of_kind(stream: &Path, kind: &str) -> Vec<events::Record> {
     events::read_after(stream, 0)
         .into_iter()
         .filter(|record| record.kind == kind)
+        .collect()
+}
+
+/// Every held entry's signal on the stream: the park's, and any run's own ask.
+fn parks(stream: &Path) -> Vec<events::Record> {
+    of_kind(stream, runs::ITEM_ENTRY)
+        .into_iter()
+        .filter(|record| record.payload["kind"] == "held")
         .collect()
 }
 
@@ -260,38 +301,47 @@ fn a_run_waiting_with(stream: &Path, run: &str, wake: serde_json::Value) {
     .expect("the wait lands");
 }
 
-/// One item's state, announced by whoever moved it.
+/// One entry written on an item, signalled as every verb signals one: the
+/// item, the entry's id and its kind, by whoever wrote it.
+fn an_entry_signalled(stream: &Path, by: &ActorRef, item: &str, entry: &str, kind: &str) {
+    EventLog::open(stream)
+        .append(
+            runs::ITEM_ENTRY,
+            by,
+            serde_json::json!({ "item": item, "entry": entry, "kind": kind }),
+        )
+        .expect("the signal lands");
+}
+
+/// One item's state, signalled by the seat that moved it: an entry of `kind`.
 fn an_item_moved(stream: &Path, kind: &str, item: &str) {
-    EventLog::open(stream)
-        .append(kind, &a_seat("s1"), serde_json::json!({ "item": item }))
-        .expect("the line lands");
+    let entry = format!("{item}-{kind}-{}", at(stream) + 1);
+    an_entry_signalled(stream, &a_seat("s1"), item, &entry, kind);
 }
 
-/// A hold raised on a run's own record, announced as `fleet hold` announces it:
-/// `item.held` naming the run as the item and the hold it raised. The SDK's
-/// `hold` raises first and waits after, so the raise is on the stream below the
-/// wait on the run's record.
+/// A hold raised on a run's own record, signalled as `fleet hold` signals it:
+/// the held entry, on the run as the item, by the run. The SDK's `hold` raises
+/// first and waits after, so the raise is on the stream below the wait on the
+/// run's record.
 fn a_hold_raised(stream: &Path, run: &str, hold: &str) {
-    EventLog::open(stream)
-        .append(
-            runs::ITEM_HELD,
-            &ActorRef::new(events::RUN, run),
-            serde_json::json!({
-                "item": run, "reason": "ask", "branch": null, "commit": null, "hold": hold,
-            }),
-        )
-        .expect("the hold lands");
+    an_entry_signalled(
+        stream,
+        &ActorRef::new(events::RUN, run),
+        run,
+        &format!("held-{hold}"),
+        "held",
+    );
 }
 
-/// A person's clearance of a hold.
+/// A person's clearance of a hold: the cleared entry's signal.
 fn a_hold_cleared(stream: &Path, item: &str, hold: &str) {
-    EventLog::open(stream)
-        .append(
-            runs::HOLD_CLEARED,
-            &a_seat("alberto"),
-            serde_json::json!({ "item": item, "hold": hold, "letter": "a" }),
-        )
-        .expect("the clearance lands");
+    an_entry_signalled(
+        stream,
+        &a_seat("alberto"),
+        item,
+        &format!("cleared-{hold}"),
+        "cleared",
+    );
 }
 
 /// One lifecycle line of a run nobody is waiting on, or of a child.
@@ -409,9 +459,10 @@ fn a_re_run_that_waits_again_is_not_woken_by_its_own_line() {
 /// that woke on its dispatch would re-read a record that still answers
 /// nothing.
 ///
-/// A KIND IS WOKEN BY EVERY LINE THE TRANSITIONAL TABLE MAPS IT TO: a wait on
-/// `reviewed` is a wait on the verdict, and a return is `item.returned` on the
-/// stream.
+/// AN ENTRY'S SIGNAL AND NOTHING ELSE: the line is `item.entry`, and the kind
+/// it carries is the entry's — a return is a `reviewed` entry, so a wait on
+/// `reviewed` wakes on it. A line of the vocabulary the verbs wrote before
+/// they signalled entries names the item and wakes nothing.
 #[test]
 fn a_waiting_run_is_woken_only_by_a_line_for_an_item_and_a_kind_its_wake_names() {
     let scratch = Scratch::new("wake-match");
@@ -426,33 +477,40 @@ fn a_waiting_run_is_woken_only_by_a_line_for_an_item_and_a_kind_its_wake_names()
 
     a_line_from_elsewhere(&stream);
     pass(&stub, &stream, 2).expect("the pass runs");
-    an_item_moved(&stream, "item.delivered", "y");
+    an_item_moved(&stream, "delivered", "y");
     pass(&stub, &stream, 2).expect("the pass runs");
-    an_item_moved(&stream, "item.dispatched", "x");
-    an_item_moved(&stream, "item.delivered", "w");
+    an_item_moved(&stream, "ordered", "x");
+    an_item_moved(&stream, "delivered", "w");
+    EventLog::open(&stream)
+        .append(
+            "item.delivered",
+            &a_seat("s1"),
+            serde_json::json!({ "item": "x" }),
+        )
+        .expect("the retired line lands");
     pass(&stub, &stream, 2).expect("the pass runs");
     assert!(
         stub.reruns.borrow().is_empty(),
-        "a seat's line, another item's delivery and the named item's other states are not \
-         what either is waiting for: {:?}",
+        "a seat's line, another item's delivery, the named item's order and a line that is \
+         no entry's signal are not what either is waiting for: {:?}",
         stub.reruns.borrow()
     );
     assert_eq!(count(&stream, runs::RUN_STARTED), 2);
 
-    an_item_moved(&stream, "item.delivered", "x");
+    an_item_moved(&stream, "delivered", "x");
     pass(&stub, &stream, 2).expect("the pass runs");
     assert_eq!(
         *stub.reruns.borrow(),
         vec!["r1".to_string()],
-        "the item it named reached the kind it named, so it ran again"
+        "the item it named signalled an entry of the kind it named, so it ran again"
     );
 
-    an_item_moved(&stream, "item.returned", "w");
+    an_item_moved(&stream, "reviewed", "w");
     pass(&stub, &stream, 2).expect("the pass runs");
     assert_eq!(
         *stub.reruns.borrow(),
         vec!["r1".to_string(), "r2".to_string()],
-        "a return is a line for `reviewed`"
+        "a verdict is a `reviewed` entry, whichever way it went"
     );
     assert_eq!(count(&stream, runs::RUN_STARTED), 4);
 }
@@ -477,7 +535,7 @@ fn a_line_above_the_wait_s_start_wakes_it_though_it_sits_below_the_recorded_posi
     for _ in 0..5 {
         a_line_from_elsewhere(&stream);
     }
-    an_item_moved(&stream, "item.delivered", "x");
+    an_item_moved(&stream, "delivered", "x");
     assert_eq!(at(&stream), 6, "the delivery is at seq 6");
     a_run_waiting_after(&stream, "r1", a_wake_on(&["x"], &["delivered"], 5), |_| {});
     assert_eq!(at(&stream), 8, "the wait is at seq 8");
@@ -496,7 +554,7 @@ fn a_line_above_the_wait_s_start_wakes_it_though_it_sits_below_the_recorded_posi
     for _ in 0..3 {
         a_line_from_elsewhere(&stream);
     }
-    an_item_moved(&stream, "item.delivered", "x");
+    an_item_moved(&stream, "delivered", "x");
     assert_eq!(at(&stream), 4, "the delivery is at seq 4");
     a_line_from_elsewhere(&stream);
     a_line_from_elsewhere(&stream);
@@ -593,7 +651,7 @@ fn a_run_waiting_on_a_hold_is_woken_only_by_a_clearance_on_its_own_record() {
     let stub = Stub::with(&stream, &[Ends::Closed]);
 
     a_line_from_elsewhere(&stream);
-    an_item_moved(&stream, "item.delivered", "r1");
+    an_item_moved(&stream, "delivered", "r1");
     a_hold_raised(&stream, "r1", "g5");
     a_hold_cleared(&stream, "it-9", "g9");
     let passed = pass(&stub, &stream, 2);
@@ -877,16 +935,132 @@ fn a_run_nothing_can_classify_runs_to_the_cap_then_parks() {
         "the hold's reason carries the last reading: {}",
         holds[0].1
     );
-    let held = of_kind(&stream, runs::ITEM_HELD);
+    // The park's signal: the held entry the hold answered, by the controller.
+    let held = parks(&stream);
     assert_eq!(held.len(), 1, "one park, and not one per poll");
-    assert_eq!(held[0].payload["item"], "r2");
-    assert_eq!(held[0].payload["hold"], "hold-for-r2");
+    assert_eq!(
+        held[0].payload,
+        serde_json::json!({ "item": "r2", "entry": "entry-for-r2", "kind": "held" })
+    );
+    assert_eq!(held[0].actor.kind, events::CONTROLLER);
 
     // And no further execution, however far the stream then moves.
     a_line_from_elsewhere(&stream);
     pass(&stub, &stream, 2).expect("the pass runs");
     assert_eq!(count(&stream, runs::RUN_STARTED), 3);
-    assert_eq!(count(&stream, runs::ITEM_HELD), 1);
+    assert_eq!(parks(&stream).len(), 1);
+}
+
+/// fleet-z4w: a run whose record carries its OWN ask — the SDK's `hold`,
+/// signalled on the stream as a held entry naming the run — is not parked by
+/// it. Reaching the cap, the pass asks the record, which carries no
+/// `max_crashes` hold, and parks: the hold is raised once and its signal
+/// written once.
+///
+/// RED-PROOF: the pass latched on any park line naming the run, so the run's
+/// own ask read as the park and none was raised.
+#[test]
+fn a_run_whose_record_carries_its_own_ask_is_still_parked_at_the_cap() {
+    let scratch = Scratch::new("z4w");
+    let stream = scratch.stream();
+    a_run_line(&stream, runs::RUN_STARTED, "r2");
+    a_hold_raised(&stream, "r2", "g-ask");
+    EventLog::open(&stream)
+        .append(
+            runs::RUN_COULD_NOT_TELL,
+            &the_runner(),
+            serde_json::json!({ "run": "r2", "exit": 7, "read": serde_json::Value::Null }),
+        )
+        .expect("the reading lands");
+    // The stub's record carries no crash-cap hold: the ask is not one.
+    let stub = Stub::with(&stream, &[]);
+    assert_eq!(stub.capped("r2"), Ok(None));
+
+    for _ in 0..3 {
+        pass(&stub, &stream, 0).expect("the pass runs");
+    }
+
+    assert_eq!(
+        stub.holds.borrow().len(),
+        1,
+        "one hold, raised at the cap though an ask stood on the record"
+    );
+    let held = parks(&stream);
+    assert_eq!(
+        held.iter()
+            .map(|record| (record.actor.kind.as_str(), record.payload["entry"].clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (events::RUN, serde_json::json!("held-g-ask")),
+            (events::CONTROLLER, serde_json::json!("entry-for-r2")),
+        ],
+        "the run's own ask, then the park's signal, once"
+    );
+}
+
+/// The control for the arm above: a record that already carries the crash-cap
+/// hold is not parked again, however many polls read the run at the cap — and
+/// its seats are still let go.
+#[test]
+fn a_run_whose_record_carries_the_cap_hold_is_not_parked_again() {
+    let scratch = Scratch::new("z4w-control");
+    let stream = scratch.stream();
+    a_run_line(&stream, runs::RUN_STARTED, "r2");
+    EventLog::open(&stream)
+        .append(
+            runs::RUN_COULD_NOT_TELL,
+            &the_runner(),
+            serde_json::json!({ "run": "r2", "exit": 7, "read": serde_json::Value::Null }),
+        )
+        .expect("the reading lands");
+    let stub = Stub::with(&stream, &[]);
+    stub.records.borrow_mut().insert(
+        "r2".to_string(),
+        CapHold {
+            hold: "g-cap".to_string(),
+            cleared: false,
+        },
+    );
+
+    for _ in 0..3 {
+        pass(&stub, &stream, 0).expect("the pass runs");
+    }
+
+    assert!(stub.holds.borrow().is_empty(), "no hold is raised");
+    assert!(parks(&stream).is_empty(), "and no park is signalled");
+    assert_eq!(count(&stream, runs::RUN_CLEANED), 1, "the run is cleaned");
+}
+
+/// A record the store will not answer about is not parked on a guess and not
+/// cleaned: the pass reports it, names the run, and asks again next poll.
+#[test]
+fn a_run_at_the_cap_whose_record_will_not_answer_is_refused_and_not_parked() {
+    let scratch = Scratch::new("z4w-unread");
+    let stream = scratch.stream();
+    EventLog::open(&stream)
+        .append(
+            runs::RUN_COULD_NOT_TELL,
+            &the_runner(),
+            serde_json::json!({ "run": "r2", "exit": 7, "read": serde_json::Value::Null }),
+        )
+        .expect("the reading lands");
+    let stub = Stub {
+        unreadable: Some(String::from("bd is not on this path")),
+        ..Stub::with(&stream, &[])
+    };
+
+    let refused = pass(&stub, &stream, 0).expect_err("the pass reports the record");
+    assert!(
+        refused.contains("r2") && refused.contains("bd is not on this path"),
+        "{refused}"
+    );
+    assert!(stub.holds.borrow().is_empty(), "no hold is raised");
+    assert!(parks(&stream).is_empty(), "no park is signalled");
+    assert_eq!(
+        count(&stream, runs::RUN_CLEANED),
+        0,
+        "and nothing is cleaned"
+    );
 }
 
 /// What a reader outside the pass is told is the pass's own fold: a run the
@@ -919,7 +1093,9 @@ fn the_readings_follow_the_pass_from_could_not_tell_to_held() {
         log.append(kind, &the_runner(), payload)
             .expect("the line lands");
     }
-    let read = || runs::readings(&events::read_after(&stream, 0));
+    // A cap of zero re-runs: the one could-not-tell already stands at it.
+    let stub = Stub::with(&stream, &[]);
+    let read = || runs::readings(&events::read_after(&stream, 0), &stub.capped_map());
 
     let before = read();
     assert_eq!(before.len(), 2, "{before:?}");
@@ -933,13 +1109,38 @@ fn the_readings_follow_the_pass_from_could_not_tell_to_held() {
     assert_eq!(before[1].said["reason"]["why"], "refused");
     assert!(!before[1].stamp.is_empty(), "the line's stamp is carried");
 
-    // A cap of zero re-runs: the one could-not-tell already stands at it.
-    let stub = Stub::with(&stream, &[]);
     pass(&stub, &stream, 0).expect("the pass runs");
     let after = read();
     assert_eq!(after[0].standing, Standing::Held);
     assert_eq!(after[0].hold.as_deref(), Some("hold-for-r3"));
+    assert!(!after[0].cleared, "the hold the pass raised is open");
     assert_eq!(after[1].standing, Standing::Failed);
+
+    // A person clears it: the run still reads held — nothing executes it
+    // again — and says the hold is cleared.
+    stub.records
+        .borrow_mut()
+        .get_mut("r3")
+        .expect("the record carries the park")
+        .cleared = true;
+    let cleared = read();
+    assert_eq!(cleared[0].standing, Standing::Held);
+    assert!(cleared[0].cleared, "{cleared:?}");
+
+    // A failed run the map names is not read as held: the park is read only
+    // where the last line is could-not-tell.
+    let failed = runs::readings(
+        &events::read_after(&stream, 0),
+        &BTreeMap::from([(
+            "r4".to_string(),
+            CapHold {
+                hold: "g-x".to_string(),
+                cleared: false,
+            },
+        )]),
+    );
+    assert_eq!(failed[1].standing, Standing::Failed);
+    assert_eq!(failed[1].hold, None);
 }
 
 /// The cap is READ and not a constant this pass carries: a fleet that names one
@@ -961,7 +1162,7 @@ fn the_cap_the_pass_is_handed_is_the_one_it_counts_against() {
         pass(&stub, &stream, 1).expect("the pass runs");
     }
     assert_eq!(stub.reruns.borrow().len(), 1, "one re-run under a cap of 1");
-    assert_eq!(count(&stream, runs::ITEM_HELD), 1);
+    assert_eq!(parks(&stream).len(), 1);
 }
 
 // ---- AC3: the cleanup ----------------------------------------------------------
@@ -1142,7 +1343,7 @@ fn the_park_retires_the_runs_seats_as_an_ending_does() {
     // A cap of zero parks on the first reading nothing could classify.
     pass(&stub, &stream, 0).expect("the pass runs");
 
-    assert_eq!(count(&stream, runs::ITEM_HELD), 1);
+    assert_eq!(parks(&stream).len(), 1);
     assert_eq!(
         *stub.retires.borrow(),
         vec![("s3".to_string(), "r6".to_string())]
