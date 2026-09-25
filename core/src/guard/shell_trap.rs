@@ -85,11 +85,12 @@ fn reads_status(body: &str) -> bool {
     body.contains("$?") || body.contains("${?}")
 }
 
-pub fn judge(command: &str) -> Option<Denial> {
+/// `cli` is the store's command word, [`super::Policy::cli`].
+pub fn judge(command: &str, cli: Option<&str>) -> Option<Denial> {
     // Unreadable text allows: this class has no raw-text fallback, and prose
     // about these traps quotes every one of them by construction.
     let tokens = lex(command).ok()?;
-    record_backtick(&tokens)
+    record_backtick(&tokens, cli)
         .or_else(|| modifier(&tokens))
         .or_else(|| unsplit_variable(&tokens))
         .or_else(|| pipe_rc(&tokens))
@@ -120,10 +121,10 @@ fn deny(
 // table both classes share: the same argument a suffix has to be resolvable in
 // is the one a backtick must not run in.
 
-fn record_backtick(tokens: &[Token]) -> Option<Denial> {
+fn record_backtick(tokens: &[Token], cli: Option<&str>) -> Option<Denial> {
     for (words, _) in statements(tokens) {
         let current = command_words(&words);
-        for token in super::text_arguments(&current) {
+        for token in super::text_arguments(&current, cli) {
             // An argument holding a substitution is skipped WHOLE: the stored
             // form is a quoted heredoc inside `"$(cat <file>)"`, whose body
             // carries parens and quotes of its own, and reading past them turns

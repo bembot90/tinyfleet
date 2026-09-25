@@ -172,12 +172,23 @@ pub struct Policy {
     /// the judgment depend on something the text cannot show.
     pub cwd_app: Option<String>,
     pub active_project: Option<String>,
+    /// The command word a seat types to reach the project's store, as the
+    /// store's capabilities declare it: the calls the record class judges,
+    /// and whose text the shell-trap class reads, are this word's, by that
+    /// name or by a path ending in it. `None` is a store that declares no
+    /// command, and every check that reads one refuses nothing.
+    ///
+    /// THE DEFAULT IS THE BUILT-IN STORE'S WORD, and a caller that cannot
+    /// read the declaration keeps it: a guard that cannot tell polices that
+    /// command, and is never turned off by a store that did not answer.
+    pub cli: Option<String>,
 }
 
 impl Default for Policy {
     fn default() -> Self {
         Policy {
             enabled: true,
+            cli: Some(crate::store::bd::BD.to_string()),
             item_prefix: None,
             release_ref_glob: None,
             prod_buckets: Vec::new(),
@@ -243,7 +254,7 @@ pub fn judge(class: Class, command: &str, policy: &Policy) -> Verdict {
             if leading_escape(command, ESCAPE_TRAP) {
                 None
             } else {
-                shell_trap::judge(command)
+                shell_trap::judge(command, policy.cli.as_deref())
             }
         }
         Class::Record => record::judge(command, policy),
@@ -470,18 +481,23 @@ pub const SURFACES: [Surface; 5] = [
     },
 ];
 
-/// The command word every guarded call is made through: the work graph's.
-///
-/// The guard polices the CLI a seat types in its shell, which is bd's whatever
-/// store fleet itself reads through (fleet-0q4 D7); it is the one place outside
-/// the store adapter that names bd.
-pub const WORK_GRAPH: &str = "bd";
+/// Whether any check could read [`Policy::cli`] for this text: whether it
+/// carries a subcommand word a check reads a store call by. A text carrying
+/// none is judged the same whatever the store declares, so a caller that pays
+/// for the declaration pays only for a text this answers yes to.
+pub fn reads_the_cli(command: &str) -> bool {
+    SURFACES
+        .iter()
+        .map(|surface| surface.subcommand)
+        .chain(["sql", "comments"])
+        .any(|word| command.contains(word))
+}
 
-/// The work graph's subcommand for this statement, or `None` where the
-/// statement invokes something else.
-pub fn subcommand_of(current: &[&lex::Token]) -> Option<String> {
+/// The store command's subcommand for this statement, or `None` where the
+/// statement invokes something else or the store declares no command.
+pub fn subcommand_of(current: &[&lex::Token], cli: Option<&str>) -> Option<String> {
     let head = current.first()?;
-    if lex::basename(&head.text) != WORK_GRAPH {
+    if Some(lex::basename(&head.text)) != cli {
         return None;
     }
     current[1..]
@@ -492,8 +508,8 @@ pub fn subcommand_of(current: &[&lex::Token]) -> Option<String> {
 
 /// The stored-text arguments of one statement, as the words they were typed
 /// as: the record class reads their value, the shell-trap class their quoting.
-pub fn text_arguments<'t>(current: &[&'t lex::Token]) -> Vec<&'t lex::Token> {
-    let Some(subcommand) = subcommand_of(current) else {
+pub fn text_arguments<'t>(current: &[&'t lex::Token], cli: Option<&str>) -> Vec<&'t lex::Token> {
+    let Some(subcommand) = subcommand_of(current, cli) else {
         return Vec::new();
     };
     let Some(surface) = SURFACES.iter().find(|s| s.subcommand == subcommand) else {

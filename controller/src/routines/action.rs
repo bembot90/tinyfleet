@@ -317,7 +317,8 @@ fn create_request(routine: &Routine, filed: &NewItem) -> String {
 /// failed before the store is asked anything. The store is then OPENED AS
 /// EVERY VERB OPENS IT, out of the project's own file, strictly on the
 /// constructed child path and under the routine's own bound. The dedupe is
-/// the store's label listing, every row of it; the item is created, then
+/// the store's label listing, every row of it; the item is then held to the
+/// types and priorities the store's capabilities declare, created, and
 /// handed to the seat the load resolved its assignee to. The routine's actor
 /// is the item's author on the record, so no note says so again [ASSUMES D9].
 fn file_item(routine: &Routine, item: &Item, machine: &Machine) -> Done {
@@ -373,6 +374,22 @@ fn file_item(routine: &Routine, item: &Item, machine: &Machine) -> Done {
                 };
             }
             Ok(_) => {}
+        }
+    }
+
+    // Asked after the dedupe, so a firing the dedupe answers asks nothing
+    // more of the store.
+    match store.capabilities() {
+        Err(why) => {
+            return Done::plain(
+                Outcome::CouldNotTell,
+                format!("the store's capabilities could not be read: {why}"),
+            )
+        }
+        Ok(declared) => {
+            if let Err(why) = declared.items.takes(&filed) {
+                return Done::plain(Outcome::Failed, format!("the item was not filed: {why}"));
+            }
         }
     }
 

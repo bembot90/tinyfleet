@@ -8,6 +8,7 @@
 
 use super::trigger::Trigger;
 use fleet_core::seat::identity::{resolve, Directory, SeatId, SeatRef};
+use fleet_core::store::types::PRIORITY_MAX;
 use std::path::{Path, PathBuf};
 
 /// Where a routine was loaded from, as it is published and printed.
@@ -158,9 +159,6 @@ pub const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
 pub const DEFAULT_CHECK_TIMEOUT_SECONDS: u64 = 60;
 /// How often a condition's check runs when the file names no `poll`.
 pub const DEFAULT_POLL_SECONDS: u64 = 600;
-
-/// The item types the work graph takes.
-pub const ITEM_TYPES: [&str; 6] = ["bug", "feature", "task", "epic", "chore", "decision"];
 
 /// The keys `[order]` carries, and the trigger each trigger parameter belongs
 /// to. A key outside this table is a defect; a key under the wrong trigger is
@@ -603,11 +601,14 @@ fn read_item(reasons: &mut Vec<String>, table: &toml::Table, seats: &Directory) 
         }
         None => None,
     };
+    // The contract's range and a word, and no more, at load: the types and
+    // the range inside this one that the project's store takes are its own
+    // declaration, read where the item is filed.
     let priority = match table.get("priority") {
-        Some(toml::Value::Integer(n)) if (0..=4).contains(n) => Some(*n),
+        Some(toml::Value::Integer(n)) if (0..=i64::from(PRIORITY_MAX)).contains(n) => Some(*n),
         Some(other) => {
             reasons.push(format!(
-                "[action.item] priority is {}; the range is 0 to 4",
+                "[action.item] priority is {}; the range is 0 to {PRIORITY_MAX}",
                 shown(other)
             ));
             None
@@ -615,14 +616,11 @@ fn read_item(reasons: &mut Vec<String>, table: &toml::Table, seats: &Directory) 
         None => None,
     };
     let kind = match table.get("type") {
-        Some(toml::Value::String(word)) if ITEM_TYPES.contains(&word.as_str()) => {
-            Some(word.clone())
-        }
+        Some(toml::Value::String(word)) if !word.is_empty() => Some(word.clone()),
         Some(other) => {
             reasons.push(format!(
-                "[action.item] type is {}; the six are {}",
-                shown(other),
-                ITEM_TYPES.join(", ")
+                "[action.item] type is {}; a type is a word the project's store declares",
+                shown(other)
             ));
             None
         }

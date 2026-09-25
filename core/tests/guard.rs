@@ -52,6 +52,7 @@ fn policy() -> Policy {
         // path alone, and the pair gets its own arm with both answers.
         cwd_app: None,
         active_project: None,
+        cli: Some(String::from("bd")),
     }
 }
 
@@ -1461,6 +1462,121 @@ fn the_bare_id_check_refuses_nothing_until_its_target_is_configured() {
             None,
             "{check} has no target and is always configured"
         );
+    }
+}
+
+/// The store's command is the one policed: a store declaring `tk` has `tk`'s
+/// calls judged and its rewrite printed in `tk`'s word, and `bd` is then a
+/// command like any other. A store declaring none has no call judged by the
+/// checks that read one, and the checks that read none still refuse.
+///
+/// RED-PROOF: with the command word fixed at `bd`, the `tk` rows below are
+/// let through and the `bd` rows refused.
+#[test]
+fn the_command_the_store_declares_is_the_one_policed_and_a_store_declaring_none_has_none() {
+    let tk = Policy {
+        cli: Some(String::from("tk")),
+        ..policy()
+    };
+    for (command, check) in [
+        ("tk update x-1 --notes n", "notes-replace"),
+        ("/opt/tk/bin/tk update x-1 --notes n", "notes-replace"),
+        ("tk sql \"UPDATE issues SET a = 1\"", "sql-write"),
+        ("tk note x-1 \"see a1b2\"", "bare-id"),
+        (
+            "tk comment x-1 '{\"fleet.entry\":1,\"kind\":\"landed\"}'",
+            "entry-forge",
+        ),
+    ] {
+        let Verdict::Refused(denial) = guard::judge(Class::Record, command, &tk) else {
+            panic!("{command} is a call of the store's own command, and refused");
+        };
+        assert_eq!(denial.check, check, "{command}");
+    }
+    let Verdict::Refused(denial) = guard::judge(Class::Record, "tk update x-1 --notes n", &tk)
+    else {
+        panic!("the notes flag is refused");
+    };
+    assert!(
+        denial
+            .rewrite
+            .contains("`tk note <id> <text>`, or `tk update <id> --append-notes <text>`"),
+        "the rewrite is in the store's own word: {}",
+        denial.rewrite
+    );
+    assert!(
+        matches!(
+            guard::judge(Class::ShellTrap, "tk note x-1 \"a `b` c\"", &tk),
+            Verdict::Refused(_)
+        ),
+        "the backtick is read in the store's own command's text"
+    );
+    for (class, command) in [
+        (Class::Record, "bd update x-1 --notes n"),
+        (Class::Record, "bd sql \"UPDATE issues SET a = 1\""),
+        (Class::ShellTrap, "bd note x-1 \"a `b` c\""),
+    ] {
+        assert_eq!(
+            guard::judge(class, command, &tk),
+            Verdict::Silent,
+            "{command} calls no command the store declares"
+        );
+    }
+
+    let none = Policy {
+        cli: None,
+        ..policy()
+    };
+    for (class, command) in [
+        (Class::Record, "bd update x-1 --notes n"),
+        (Class::Record, "bd sql \"UPDATE issues SET a = 1\""),
+        (Class::Record, "bd note x-1 \"see a1b2\""),
+        (Class::Record, "bd update x-1 --notes \"unclosed"),
+        (Class::ShellTrap, "bd note x-1 \"a `b` c\""),
+    ] {
+        assert_eq!(
+            guard::judge(class, command, &none),
+            Verdict::Silent,
+            "{command}: a store declaring no command has no call judged"
+        );
+    }
+    // THE CONTROL: a check that reads no store call still refuses.
+    assert!(matches!(
+        guard::judge(Class::ShellTrap, "git show \"$S:tools/land\"", &none),
+        Verdict::Refused(_)
+    ));
+
+    // THE DEFAULT is the built-in store's command, which a caller that cannot
+    // read the declaration keeps.
+    assert_eq!(Policy::default().cli.as_deref(), Some("bd"));
+}
+
+/// A text with no subcommand word any check reads a store call by is judged
+/// the same whatever the store declares, so a caller asks the store only for
+/// the text this answers yes to.
+#[test]
+fn a_text_naming_no_store_subcommand_needs_no_declaration() {
+    for command in [
+        "bd update x-1 --notes n",
+        "tk sql \"SELECT 1\"",
+        "bd note x-1 t",
+        "bd comments add x-1 t",
+        "bd create --title t",
+        "bd close x-1",
+    ] {
+        assert!(guard::reads_the_cli(command), "{command}");
+    }
+    for command in ["cargo build", "git status", "bd show x-1", "ls -la"] {
+        assert!(!guard::reads_the_cli(command), "{command}");
+        for cli in [None, Some("bd"), Some("tk")] {
+            for class in [Class::Record, Class::ShellTrap] {
+                let asked = Policy {
+                    cli: cli.map(str::to_string),
+                    ..policy()
+                };
+                assert_eq!(guard::judge(class, command, &asked), Verdict::Silent);
+            }
+        }
     }
 }
 

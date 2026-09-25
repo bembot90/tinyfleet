@@ -25,7 +25,7 @@ use fleet_core::entry::{Body, Entry};
 use fleet_core::seat::actor::Actor;
 use fleet_core::store::bd::Bd;
 use fleet_core::store::conformance::{self, AnotherWriter, Ctx, Passed, CHECKS};
-use fleet_core::store::types::Capabilities;
+use fleet_core::store::types::{Capabilities, Priorities, Vocabulary};
 use fleet_core::store::{
     Filter, HoldId, Item, ItemId, ItemSummary, NewItem, Order, RunRecord, Store, StoreError,
     Update, Version,
@@ -184,6 +184,49 @@ fn version_names_the_store_and_its_version() {
 #[test]
 fn a_declared_export_validates() {
     in_memory("capabilities");
+}
+
+/// The capabilities check holds what a store declares about its items to the
+/// contract: a store declaring no type, or a range upside down, fails it by
+/// name, and the store declaring its own types in range passes.
+#[test]
+fn declared_items_with_no_type_or_a_range_upside_down_fail_the_capabilities_check() {
+    let check = CHECKS
+        .iter()
+        .find(|(named, _)| *named == "capabilities")
+        .map(|(_, check)| *check)
+        .expect("capabilities is a check on the table");
+    let absent = FakeStore::default();
+    let root = Gone::empty("contract-declared-items");
+    let asked = |types: &[&str], min: u8, max: u8| {
+        let store = FakeStore {
+            vocabulary: Vocabulary {
+                types: types.iter().map(|word| word.to_string()).collect(),
+                priority: Priorities { min, max },
+            },
+            ..FakeStore::default()
+        };
+        check(&Ctx {
+            store: &store,
+            root: &root.0,
+            absent: &absent,
+            another_writer: None,
+        })
+    };
+    assert_eq!(
+        asked(&[], 0, 4),
+        Err(String::from(
+            "what the store declares does not validate: items types is empty — a store takes \
+             at least one"
+        ))
+    );
+    assert_eq!(
+        asked(&["story"], 3, 1),
+        Err(String::from(
+            "what the store declares does not validate: items priority min 3 is above max 1"
+        ))
+    );
+    assert_eq!(asked(&["story"], 1, 3), Ok(Passed::Pass));
 }
 
 #[test]

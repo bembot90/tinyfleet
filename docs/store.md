@@ -278,7 +278,9 @@ An item to file. The store names it, so there is no id.
 ```
 
 `priority` runs from 0 to 4, and is left out where the item names none.
-fleet never sends one outside that range.
+fleet never sends one outside that range. A routine's item is held to the
+types and the range the store declares too (see
+[Capabilities](#capabilities)).
 
 ### Update
 
@@ -321,22 +323,41 @@ of an item its seat holds in progress, reopening it:
 ### Capabilities
 
 What a store does beyond the verbs every store answers: an export file fleet
-commits, scratch stores for a suite, and the prefix its ids carry. A store
-that exports `.beads/issues.jsonl`, makes scratch stores and mints ids such as
-`fx-a1b2` answers:
+commits, scratch stores for a suite, the prefix its ids carry, the command a
+seat types to reach it, and the types and priorities its items take. A store
+that exports `.beads/issues.jsonl`, makes scratch stores, mints ids such as
+`fx-a1b2`, is reached from a shell as `tracker`, and files items of type
+`task` and `bug` at priorities 0 to 4 answers:
 
 ```json
-{"export":{"file":".beads/issues.jsonl","dir":".beads/"},"scratch":true,"item_prefix":"fx"}
+{"export":{"file":".beads/issues.jsonl","dir":".beads/"},"scratch":true,"item_prefix":"fx","cli":"tracker","items":{"types":["task","bug"],"priority":{"min":0,"max":4}}}
 ```
 
 `export` is `null` for a store with no export. Its `file` and `dir` are
 relative to the project root, `/`-separated and without a `..` segment;
-`dir` ends in `/`, and `file` is under `dir`. An answer of `{}` reads as a
-store that declares nothing:
+`dir` ends in `/`, and `file` is under `dir`.
+
+`cli` is the command a seat types in its shell against the store: one word,
+with no `/` and no space. The [guards](guards.md) police that command's
+calls. It is `null` for a store no seat reaches from a shell.
+
+`items` names at least one type, none of them empty, and a `priority` range
+whose `min` is not above its `max` and whose `max` is not above 4. A
+routine files an item only of a type the store names, at a
+priority inside its range, and a routine whose item does not fit is failed
+without a create being sent. A `types` left out is the six types below, and a
+`priority` left out is 0 to 4.
+
+bd declares the command `bd`, the types `bug`, `feature`, `task`, `epic`,
+`chore`, `decision`, `spike`, `story` and `milestone`, and priorities 0 to 4.
+
+An answer of `{}` reads as a store that declares nothing:
 
 ```json
-{"export":null,"scratch":false,"item_prefix":null}
+{"export":null,"scratch":false,"item_prefix":null,"cli":null,"items":{"types":["bug","feature","task","epic","chore","decision"],"priority":{"min":0,"max":4}}}
 ```
+
+A declaration that breaks one of these rules is could not tell.
 
 ### Version
 
@@ -354,7 +375,7 @@ fields the ones beyond `schema_version`.
 | Verb | Request | Response | Exit 1 |
 | --- | --- | --- | --- |
 | `version` | `{}` | `{name, version}` | — |
-| `capabilities` | `{}` | `{export, scratch, item_prefix}` | — |
+| `capabilities` | `{}` | `{export, scratch, item_prefix, cli, items}` | — |
 | `resolve` | `{id: text}` | `{id}` | `missing`, `ambiguous` with `candidates` |
 | `show` | `{id: text}` | `{item}` | `missing`, `ambiguous` |
 | `list` | `{filter}` | `{items: [item summary]}` | — |

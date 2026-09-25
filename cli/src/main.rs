@@ -1287,7 +1287,21 @@ fn with_targets(policy: Policy, targets: guard::Targets) -> Policy {
 /// could possibly need it. That filter is deliberately crude and one-directional:
 /// it can only leave the reading UNTAKEN, which is the silent direction the
 /// class already fails in.
+///
+/// The shell-trap and record classes read a third: the command the project's
+/// store declares, which an adapter answers as a process. It is asked only for
+/// a text [`guard::reads_the_cli`] says a declaration could change the verdict
+/// on, and a store that does not answer leaves the built-in store's command
+/// policed rather than none.
 fn caller_readings(class: Class, command: &str, cwd: Option<&Path>, policy: &mut Policy) {
+    if matches!(class, Class::ShellTrap | Class::Record) {
+        if guard::reads_the_cli(command) {
+            if let Some(declared) = store_cli(cwd) {
+                policy.cli = declared;
+            }
+        }
+        return;
+    }
     if class != Class::ProductionWrite {
         return;
     }
@@ -1332,6 +1346,45 @@ fn configured_project() -> Option<String> {
     } else {
         Some(value)
     }
+}
+
+/// How long the store is given to declare its command. The built-in store
+/// answers with no call; an adapter's answer is a process, and one that will
+/// not answer costs the reading and never the shell call behind the hook.
+const STORE_CLI_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The command the project's store declares, through the opener every verb
+/// takes: `Some(None)` for a store declaring none, and `None` where it could
+/// not be read — no project above the caller, a store that will not open or
+/// will not answer — which leaves the policy's default in place.
+///
+/// NOT STRICT, as the verbs are not: the store read is the one a verb run here
+/// opens, so a binary the constructed child PATH does not resolve is its bare
+/// name.
+fn store_cli(cwd: Option<&Path>) -> Option<Option<String>> {
+    let start = cwd
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())?;
+    let root = match walk_up_config(&start)? {
+        Found::Embedded(file) => file.parent()?.to_path_buf(),
+        Found::Declared(file) => file.parent()?.parent()?.to_path_buf(),
+    };
+    let policy = fleet_core::store::project_policy(&root).ok()?;
+    let machine_dir = platform::machine_dir();
+    let store = fleet_core::store::open(&fleet_core::store::Opening {
+        root: &root,
+        policy: &policy,
+        source: fleet_core::store::AdapterSource::Setting,
+        search_path: &platform::child_path(&platform::home_dir()),
+        strict: false,
+        timeout: STORE_CLI_TIMEOUT,
+        packs: Some(fleet_core::store::PackDirs {
+            packs_dir: &machine_dir.join("packs"),
+            defaults_dir: &machine_dir.join(defaults::DIR),
+        }),
+    })
+    .ok()?;
+    Some(store.capabilities().ok()?.cli)
 }
 
 /// What the nearest directory above the caller that says anything says it is.

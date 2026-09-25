@@ -140,13 +140,16 @@ checks, in the order it runs them:
 
 | Check | Refuses | Write instead |
 | --- | --- | --- |
-| `record-backtick` | a backtick inside double quotes in text a `bd` command stores (see below) | the text in a file written through a quoted heredoc (`<<'EOF'`), passed as `"$(cat <file>)"` |
+| `record-backtick` | a backtick inside double quotes in text the store's command stores (see below) | the text in a file written through a quoted heredoc (`<<'EOF'`), passed as `"$(cat <file>)"` |
 | `modifier` | `$NAME:` followed by one of `a c e h l q r s t u A P Q &`, unbraced | `"${NAME}:..."` |
 | `unsplit-variable` | a lone `$LIST` as the whole list of a `for ... in`, as an argument to `xargs` or `kill`, or after a bare `--` | explicit arguments, a `while read` loop, or `"${LIST}"` where one argument is meant |
 | `pipe-rc` | reading `$?` right after a pipeline whose last stage only formats | the command without the pipe, output to a file, then its own `$?` |
 | `false-alternative` | `A && B \|\| C` where C only reports (`echo`, `printf`, `true`, `:`, `print`) and A has a third answer | `if A; then B; else ...; exit 1; fi` |
 
-The stored text `record-backtick` reads is the text argument of `bd note`
+The store's command is `bd` for the built-in store, and another store's is
+the one it declares (see
+[The store's command](#the-stores-command)). With `bd`, the stored text
+`record-backtick` reads is the text argument of `bd note`
 and `bd comment`, the title and `--description`, `-d`, `--notes` and
 `--append-notes` of `bd create`, `--reason` and `-r` of `bd close`, and
 `--title`, `--description`, `-d`, `--acceptance`, `--design` and
@@ -168,8 +171,10 @@ let through.
 ## The record class
 
 Record refuses writes to items that destroy text, skip the audit row, or
-leave an id a later reader cannot resolve. It reads `bd` commands only, by
-that name or by a path ending in it. Its three checks, in order, each with
+leave an id a later reader cannot resolve. It reads calls of the store's
+command only, by that name or by a path ending in it (see
+[The store's command](#the-stores-command)). The examples on this page use
+`bd`, the built-in store's command. Its three checks, in order, each with
 its own escape:
 
 | Check | Refuses | Write instead | Escape |
@@ -200,6 +205,26 @@ acme-c3d4.1`.
 For a command it cannot read, `notes-replace` and `sql-write` refuse any
 `bd update` carrying `--notes`, and any `bd sql` carrying a write keyword, by
 plain text match. `bare-id` lets it through.
+
+### The store's command
+
+The store's command is the command a seat types in its shell to reach the
+project's store, as the store's capabilities declare it (see
+[The store contract](store.md#capabilities)). For the built-in store it is
+`bd`. A store that declares `tracker` has `tracker update <item> --notes n`
+refused and `bd update <item> --notes n` let through, and each rewrite names
+`tracker`.
+
+A store that declares no command has no command read: record refuses
+nothing, and neither does shell-trap's `record-backtick`. Shell-trap's other
+checks still refuse.
+
+fleet asks the project's store for its command only when the command being
+judged carries `note`, `comment`, `create`, `close`, `update` or `sql`
+somewhere in its text. A project file that does not read, a store that
+cannot be opened, and a store that does not answer readably within 2 seconds
+each leave `bd` as the command read. So does a directory with no project
+above it.
 
 ## The release-ref class
 

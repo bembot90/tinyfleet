@@ -380,15 +380,15 @@ fn version(ctx: &Ctx) -> Answer {
     Ok(Passed::Pass)
 }
 
-/// An export the store declares is one a landing can commit: both paths
-/// relative and under the project root, the file in the directory.
+/// What the store declares holds the contract's rules: an export a landing
+/// can commit, both paths relative and under the project root and the file
+/// in the directory; a command that is one word; and items with at least one
+/// type and a priority range inside 0 to 4 that is not upside down.
 fn capabilities(ctx: &Ctx) -> Answer {
     let declared = answered("capabilities", ctx.store.capabilities())?;
-    if let Some(export) = &declared.export {
-        export
-            .validate()
-            .map_err(|why| format!("the export the store declares does not validate: {why}"))?;
-    }
+    declared
+        .validate()
+        .map_err(|why| format!("what the store declares does not validate: {why}"))?;
     Ok(Passed::Pass)
 }
 

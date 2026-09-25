@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use super::types::{Capabilities, ExportSpec};
+use super::types::{Capabilities, ExportSpec, Priorities, Vocabulary};
 use super::{
     already_cleared, already_closed, first_value, held_text, holder_named, not_a_seat, tail,
     validated, validated_new, writable, Filter, HoldId, Item, ItemId, ItemSummary, NewItem, Order,
@@ -65,6 +65,24 @@ pub const DIR: &str = ".beads/";
 /// The store's own config, relative to the project root: where the prefix its
 /// ids carry is named, when a project names one.
 pub const CONFIG: &str = ".beads/config.yaml";
+
+/// The types `bd create --type` names as its own — measured on 1.3.0, whose
+/// help lists these nine and which files each. It files `event`, `gate`,
+/// `molecule` and `message` too, which are its own bookkeeping and not an
+/// item a person files. A project's `types.custom` is kept in the database
+/// and not in [`CONFIG`], so reading it is a bd call, which a declaration
+/// answered without one does not make: a custom type is not declared.
+pub const TYPES: [&str; 9] = [
+    "bug",
+    "feature",
+    "task",
+    "epic",
+    "chore",
+    "decision",
+    "spike",
+    "story",
+    "milestone",
+];
 
 /// The newest `schema_version` this binary reads — the one bd 1.3.0 answers on
 /// every JSON call, enveloped or not. A higher one is warned about once and
@@ -1069,6 +1087,11 @@ impl Store for Bd {
     /// none is `None`, which is a prefix nobody named and never one guessed.
     /// `bd init --prefix` leaves that key commented — measured on 1.3.0 — so a
     /// board a person made without naming it again answers `None`.
+    ///
+    /// The command a seat types is [`BD`], whichever binary this store runs:
+    /// a seat's shell resolves the name on its own `PATH`. The priorities are
+    /// the 0 to 4 `bd create --priority` takes, and 5 it refuses — measured on
+    /// 1.3.0.
     fn capabilities(&self) -> Result<Capabilities, StoreError> {
         Ok(Capabilities {
             export: Some(ExportSpec {
@@ -1079,6 +1102,11 @@ impl Store for Bd {
             item_prefix: std::fs::read_to_string(self.root.join(CONFIG))
                 .ok()
                 .and_then(|config| item_prefix_in(&config)),
+            cli: Some(BD.to_string()),
+            items: Vocabulary {
+                types: TYPES.iter().map(|word| word.to_string()).collect(),
+                priority: Priorities { min: 0, max: 4 },
+            },
         })
     }
 

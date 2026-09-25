@@ -392,6 +392,108 @@ fn a_payload_with_nothing_to_judge_prints_nothing_and_exits_zero() {
     }
 }
 
+// ---- the command the project's store declares ---------------------------------
+
+/// The project's `[store] adapter` as an executable that logs each verb it is
+/// asked on `asked` and answers `capabilities` with the shell given.
+fn a_store_declaring(scratch: &Scratch, capabilities: &str) {
+    let adapter = scratch.root.join("adapter");
+    std::fs::write(
+        &adapter,
+        format!(
+            "#!/bin/sh\necho \"$1\" >> '{asked}'\ncase \"$1\" in\n\
+             capabilities) {capabilities} ;;\n*) exit 2 ;;\nesac\n",
+            asked = scratch.root.join("asked").display()
+        ),
+    )
+    .expect("the adapter is written");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755))
+        .expect("the adapter is executable");
+    scratch.write(
+        "fleet.toml",
+        &format!(
+            "[project]\nitem_prefix = \"acme\"\n\n[store]\nadapter = \"{}\"\n",
+            adapter.display()
+        ),
+    );
+}
+
+/// THE STORE'S COMMAND IS THE ONE POLICED. A project whose store declares
+/// `tk` has `tk`'s calls refused and `bd`'s let through; one whose store
+/// declares no command has neither refused by the checks that read one; and a
+/// store that will not answer leaves `bd` policed, never nothing. A text no
+/// check reads a store call by is judged without asking the store at all.
+///
+/// RED-PROOF: with the command fixed at `bd`, the `tk` project refuses `bd`
+/// and lets `tk` through, and the project declaring none refuses `bd`.
+#[test]
+fn the_command_the_projects_store_declares_is_the_one_the_guards_police() {
+    let tk_notes = "tk update x-1 --notes n";
+    let tk_backtick = "tk note acme-x1 \"a `b` c\"";
+    let bd_backtick = "bd note acme-x1 \"a `b` c\"";
+
+    let scratch = Scratch::new("store-cli-tk");
+    a_store_declaring(&scratch, r#"echo '{"schema_version":1,"cli":"tk"}'"#);
+    let text = refused("record", tk_notes, &scratch).expect("tk's notes flag is refused");
+    let reason = decision_of(&text)["permissionDecisionReason"]
+        .as_str()
+        .expect("the reason is text")
+        .to_string();
+    assert!(
+        reason.contains("`tk note <id> <text>`, or `tk update <id> --append-notes <text>`"),
+        "{reason}"
+    );
+    assert!(refused("shell-trap", tk_backtick, &scratch).is_some());
+    assert!(
+        refused("record", REPLACE, &scratch).is_none(),
+        "bd is a command like any other here"
+    );
+    assert!(refused("shell-trap", bd_backtick, &scratch).is_none());
+
+    let scratch = Scratch::new("store-cli-none");
+    a_store_declaring(&scratch, r#"echo '{"schema_version":1}'"#);
+    for (class, command) in [
+        ("record", REPLACE),
+        ("record", SQL),
+        ("record", BARE),
+        ("shell-trap", bd_backtick),
+    ] {
+        assert!(
+            refused(class, command, &scratch).is_none(),
+            "{command}: a store declaring no command has no call refused"
+        );
+    }
+    assert!(
+        refused("shell-trap", TRAP, &scratch).is_some(),
+        "a check that reads no store call still refuses"
+    );
+
+    let scratch = Scratch::new("store-cli-unanswered");
+    a_store_declaring(&scratch, "echo 'the index is locked' >&2; exit 3");
+    assert!(
+        refused("record", REPLACE, &scratch).is_some(),
+        "a store that does not answer leaves the built-in store's command policed"
+    );
+    assert!(refused("shell-trap", bd_backtick, &scratch).is_some());
+
+    let scratch = Scratch::new("store-cli-unasked");
+    a_store_declaring(&scratch, r#"echo '{"schema_version":1,"cli":"tk"}'"#);
+    for class in ["shell-trap", "record"] {
+        assert!(refused(class, "cargo build --workspace", &scratch).is_none());
+    }
+    assert!(
+        !scratch.root.join("asked").exists(),
+        "a text no check reads a store call by never asks the store"
+    );
+    assert!(refused("record", tk_notes, &scratch).is_some());
+    assert_eq!(
+        std::fs::read_to_string(scratch.root.join("asked")).expect("the store was asked"),
+        "capabilities\n",
+        "a text naming a store subcommand asks for the declaration, and nothing else"
+    );
+}
+
 // ---- --check, and the doctor entry that runs it -----------------------------
 
 fn check(class: &str, scratch: &Scratch) -> Output {

@@ -19,7 +19,7 @@ use crate::store::bd::{
     foreign_of, item_from, keys, opened, order_metadata, order_of, run_metadata, shown,
     SCHEMA_VERSION,
 };
-use crate::store::types::{Capabilities, ExportSpec};
+use crate::store::types::{Capabilities, ExportSpec, Vocabulary};
 use crate::store::{
     already_cleared, already_closed, validated_new, writable, Filter, HoldId, Item, ItemId,
     ItemSummary, NewItem, Order, OrderState, RunRecord, Status, Store, StoreError, Update, Version,
@@ -95,6 +95,9 @@ pub struct FakeStore {
     /// Whether this store declares no export at all: its capabilities answer
     /// none, and an export asked of it anyway is refused. Off by default.
     pub no_export: bool,
+    /// The item types and priorities its capabilities declare: the contract's
+    /// own unless an arm declares others.
+    pub vocabulary: Vocabulary,
     /// While set, a write is recorded and NOT applied — the disagreement a real
     /// store will not produce on demand. Off until an arm asks for it, through
     /// [`FakeStore::ignore_writes`] and never by hand.
@@ -994,7 +997,8 @@ impl Store for FakeStore {
     }
 
     /// [`EXPORT_FILE`] in [`EXPORT_DIR`], or no export at all where
-    /// [`FakeStore::no_export`] is set.
+    /// [`FakeStore::no_export`] is set. No seat types a command at a store
+    /// held in memory, so it declares none.
     fn capabilities(&self) -> Result<Capabilities, StoreError> {
         Ok(Capabilities {
             export: (!self.no_export).then(|| ExportSpec {
@@ -1003,6 +1007,8 @@ impl Store for FakeStore {
             }),
             scratch: true,
             item_prefix: None,
+            cli: None,
+            items: self.vocabulary.clone(),
         })
     }
 

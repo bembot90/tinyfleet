@@ -308,7 +308,9 @@ pub trait Store {
     /// What the store keeps beside the graph, answered without a call to the
     /// store: the export a landing commits and the directory it sits in —
     /// `None` for a store that keeps none, which a landing lands without —
-    /// whether it is a scratch board, and the prefix its ids carry.
+    /// whether it is a scratch board, the prefix its ids carry, the command
+    /// a seat types against it, which the guards police, and the types and
+    /// priorities its items take, which a routine's item is held to.
     fn capabilities(&self) -> Result<Capabilities, StoreError>;
 
     /// Which store answered, and at which version of itself.

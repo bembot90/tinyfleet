@@ -498,12 +498,16 @@ fn an_item_assignee_resolves_at_load_to_the_full_id() {
 const FILED_FX_9: &str = r#"echo '{"schema_version":1,"id":"fx-9"}'"#;
 /// What it answers a write that landed.
 const ANSWERED: &str = r#"echo '{"schema_version":1}'"#;
+/// What it answers `capabilities` where an arm declares nothing: the
+/// contract's own item types and priorities.
+const DECLARES_NOTHING: &str = r#"echo '{"schema_version":1}'"#;
 
 /// An adapter executable that records what it is asked, named by `[store]
 /// adapter` in the own `fleet.toml` of a project at `<root>/project`, which is
 /// answered. Each call goes on `<root>/requests` as a `--- <verb>` line and the
 /// request on the next; each verb runs the shell `answers` gives it, and a verb
-/// it names nothing for exits 2.
+/// it names nothing for exits 2 — bar `capabilities`, which declares nothing
+/// where `answers` does not name it.
 fn a_store_that_records(root: &Path, answers: &[(&str, &str)]) -> PathBuf {
     let project = root.join("project");
     std::fs::create_dir_all(&project).unwrap();
@@ -511,6 +515,7 @@ fn a_store_that_records(root: &Path, answers: &[(&str, &str)]) -> PathBuf {
     let cases: String = answers
         .iter()
         .map(|(verb, answer)| format!("{verb}) {answer} ;;\n"))
+        .chain([format!("capabilities) {DECLARES_NOTHING} ;;\n")])
         .collect();
     std::fs::write(
         &adapter,
@@ -607,10 +612,10 @@ fn a_routine_files_its_item_through_the_store_as_routine_colon_its_name() {
     let calls = requests(&root);
     assert_eq!(
         verbs(&calls),
-        vec!["create", "update"],
-        "the create, then the assignee, and no note: {calls:?}"
+        vec!["capabilities", "create", "update"],
+        "the declaration, the create, then the assignee, and no note: {calls:?}"
     );
-    let (create, update) = (&calls[0].1, &calls[1].1);
+    let (create, update) = (&calls[1].1, &calls[2].1);
     assert_eq!(create["by"], "routine:a-routine");
     assert_eq!(create["root"], project.display().to_string());
     assert_eq!(
@@ -651,7 +656,11 @@ fn an_assignee_naming_no_seat_is_failed_and_the_item_stands_unassigned() {
         "the routine's assignee nobody names no seat of this fleet — fx-9 was filed unassigned"
     );
     assert_eq!(done.extra, vec![("item".to_string(), "fx-9".into())]);
-    assert_eq!(verbs(&requests(&root)), vec!["create"], "nothing assigned");
+    assert_eq!(
+        verbs(&requests(&root)),
+        vec!["capabilities", "create"],
+        "nothing assigned"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -808,13 +817,105 @@ fn an_unopened_store_or_a_refused_item_files_nothing() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// THE ITEM IS HELD TO WHAT THE PROJECT'S STORE DECLARES, not to one store's
+/// list. A routine naming `story` loads whatever store it files into; a store
+/// declaring `story` files it, one declaring the contract's own six fails it
+/// naming them, one declaring a narrower range fails a priority outside it,
+/// and a store whose capabilities do not answer is could-not-tell. None of
+/// the three that fail is sent a create.
+///
+/// RED-PROOF: with the load holding a type to the six, the file naming
+/// `story` is refused at load and never reaches a store.
+#[test]
+fn a_routines_item_is_held_to_the_types_and_priorities_its_store_declares() {
+    use fleet_controller::policy;
+    use fleet_controller::routines::{action, Outcome};
+
+    let policy = policy::parse("").expect("the empty policy is the defaults");
+    let declaring = |label: &str, capabilities: &str| {
+        let root = scratch(label);
+        let project = a_store_that_records(
+            &root,
+            &[("capabilities", capabilities), ("create", FILED_FX_9)],
+        );
+        (root, project)
+    };
+
+    let (root, project) = declaring(
+        "item-declared-story",
+        r#"echo '{"schema_version":1,"items":{"types":["story"],"priority":{"min":1,"max":3}}}'"#,
+    );
+    let routine = an_item_routine(&project, "type = \"story\"\npriority = 2\n");
+    let done = action::run(&routine, &an_item_machine(&root, &policy));
+    assert_eq!(done.outcome, Outcome::Filed, "{}", done.detail);
+    let calls = requests(&root);
+    assert_eq!(verbs(&calls), vec!["capabilities", "create"]);
+    assert_eq!(calls[1].1["item"]["type"], "story");
+    let _ = std::fs::remove_dir_all(&root);
+
+    let (root, project) = declaring(
+        "item-declared-narrow",
+        r#"echo '{"schema_version":1,"items":{"types":["story"],"priority":{"min":1,"max":3}}}'"#,
+    );
+    let routine = an_item_routine(&project, "type = \"story\"\npriority = 4\n");
+    let done = action::run(&routine, &an_item_machine(&root, &policy));
+    assert_eq!(done.outcome, Outcome::Failed, "{}", done.detail);
+    assert_eq!(
+        done.detail,
+        "the item was not filed: priority is 4; the store takes 1 to 3"
+    );
+    assert_eq!(
+        verbs(&requests(&root)),
+        vec!["capabilities"],
+        "nothing filed"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    let (root, project) = declaring("item-declared-nothing", DECLARES_NOTHING);
+    let routine = an_item_routine(&project, "type = \"story\"\n");
+    let done = action::run(&routine, &an_item_machine(&root, &policy));
+    assert_eq!(done.outcome, Outcome::Failed, "{}", done.detail);
+    assert_eq!(
+        done.detail,
+        "the item was not filed: type is `story`; the store takes bug, feature, task, epic, \
+         chore, decision"
+    );
+    assert_eq!(
+        verbs(&requests(&root)),
+        vec!["capabilities"],
+        "nothing filed"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    let (root, project) = declaring(
+        "item-declared-unread",
+        "echo 'the index is locked' >&2; exit 3",
+    );
+    let routine = an_item_routine(&project, "type = \"story\"\n");
+    let done = action::run(&routine, &an_item_machine(&root, &policy));
+    assert_eq!(done.outcome, Outcome::CouldNotTell, "{}", done.detail);
+    assert!(
+        done.detail
+            .starts_with("the store's capabilities could not be read: "),
+        "{}",
+        done.detail
+    );
+    assert_eq!(
+        verbs(&requests(&root)),
+        vec!["capabilities"],
+        "nothing filed"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// The item table's own vocabulary, each value refused by name.
 #[test]
 fn an_item_refuses_a_priority_a_type_a_when_and_a_dedupe_it_does_not_know() {
     let head = "[order]\ndescription = \"d\"\ntrigger = \"cron\"\nschedule = \"* * * * *\"\n\
                 [action.item]\ntitle = \"t\"\n";
     assert!(refusal(&format!("{head}priority = 5\n")).contains("priority is `5`"));
-    assert!(refusal(&format!("{head}type = \"story\"\n")).contains("type is `story`"));
+    assert!(refusal(&format!("{head}type = \"\"\n")).contains("type is ``"));
+    assert!(refusal(&format!("{head}type = 3\n")).contains("type is `3`"));
     assert!(refusal(&format!("{head}when = \"sometimes\"\n")).contains("when is `sometimes`"));
     assert!(refusal(&format!("{head}dedupe = \"all\"\n")).contains("dedupe is `all`"));
     assert!(refusal(&format!("{head}labels = \"one\"\n")).contains("labels is a string"));

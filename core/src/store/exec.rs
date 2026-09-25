@@ -378,18 +378,17 @@ impl Store for Exec {
             .collect()
     }
 
-    /// An export the adapter declares is held to the contract's rules for
-    /// one, because a landing commits what it names.
+    /// What the adapter declares is held to the contract's rules for it,
+    /// because a landing commits the export it names, the guards police the
+    /// command it names, and a routine's item is held to its items.
     fn capabilities(&self) -> Result<Capabilities, StoreError> {
         let (declared, _) = self.call::<Capabilities>("capabilities", Map::new())?;
-        if let Some(export) = &declared.export {
-            export.validate().map_err(|why| {
-                StoreError::Unreadable(format!(
-                    "{} capabilities answered no readable response: {why}",
-                    self.adapter.display()
-                ))
-            })?;
-        }
+        declared.validate().map_err(|why| {
+            StoreError::Unreadable(format!(
+                "{} capabilities answered no readable response: {why}",
+                self.adapter.display()
+            ))
+        })?;
         Ok(declared)
     }
 
@@ -1117,5 +1116,39 @@ esac"#,
         assert_eq!(stub.request()["filter"], "ready");
         let foreign: Vec<&[String]> = rows.iter().map(|row| row.foreign.as_slice()).collect();
         assert_eq!(foreign, [&[String::from("sprint")][..], &[][..]]);
+    }
+
+    /// The command and the items an adapter declares are read as it answers
+    /// them, and a declaration that breaks the contract's rules is no reading
+    /// at all.
+    #[test]
+    fn a_declared_cli_and_items_are_read_and_a_broken_one_is_refused() {
+        let stub = Stub::new(
+            "declared",
+            &answers(
+                r#"{"schema_version":1,"cli":"tk","items":{"types":["story"],"priority":{"min":1,"max":3}}}"#,
+                0,
+            ),
+        );
+        let declared = stub.exec().capabilities().expect("the declaration reads");
+        assert_eq!(declared.cli.as_deref(), Some("tk"));
+        assert_eq!(declared.items.types, ["story"]);
+        assert_eq!(declared.items.priority.min, 1);
+        assert_eq!(declared.items.priority.max, 3);
+
+        let stub = Stub::new(
+            "upside-down",
+            &answers(
+                r#"{"schema_version":1,"items":{"types":["story"],"priority":{"min":3,"max":1}}}"#,
+                0,
+            ),
+        );
+        let why = unreadable(stub.exec().capabilities());
+        assert!(
+            why.ends_with(
+                "capabilities answered no readable response: items priority min 3 is above max 1"
+            ),
+            "{why}"
+        );
     }
 }

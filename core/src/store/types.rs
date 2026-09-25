@@ -446,12 +446,19 @@ pub struct NewItem {
     pub priority: Option<u8>,
 }
 
+/// The highest priority the contract carries. A store declares its own range
+/// inside 0 to this, so no store is sent a priority past it.
+pub const PRIORITY_MAX: u8 = 4;
+
 impl NewItem {
-    /// The item, or the reason a store must not file it: a priority outside
-    /// 0 to 4.
+    /// The item, or the reason no store may be sent it: a priority outside
+    /// the contract's 0 to 4. A type, and a priority inside the range one
+    /// store takes, are that store's to answer: [`Vocabulary::takes`].
     pub fn validate(&self) -> Result<(), String> {
         match self.priority {
-            Some(n) if n > 4 => Err(format!("priority is {n}; the range is 0 to 4")),
+            Some(n) if n > PRIORITY_MAX => {
+                Err(format!("priority is {n}; the range is 0 to {PRIORITY_MAX}"))
+            }
             _ => Ok(()),
         }
     }
@@ -572,8 +579,9 @@ pub struct WithdrawFence {
 // ---- what a store can do --------------------------------------------------------
 
 /// What a store says it can do beyond the verbs every store answers: an
-/// export fleet commits, a scratch board for a suite, and the prefix its ids
-/// carry.
+/// export fleet commits, a scratch board for a suite, the prefix its ids
+/// carry, the command a seat types against it, and the types and priorities
+/// its items take.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capabilities {
     #[serde(default)]
@@ -582,6 +590,122 @@ pub struct Capabilities {
     pub scratch: bool,
     #[serde(default)]
     pub item_prefix: Option<String>,
+    /// The first word of the command a seat types in its shell to reach this
+    /// store, which the guards police: `None` for a store no seat reaches
+    /// from a shell.
+    #[serde(default)]
+    pub cli: Option<String>,
+    /// Absent, the contract's own [`Vocabulary::default`].
+    #[serde(default)]
+    pub items: Vocabulary,
+}
+
+impl Capabilities {
+    /// The declaration, or the field and value that break it: the export
+    /// [`ExportSpec::validate`] holds, a `cli` that is one word with no path
+    /// in it, and the items [`Vocabulary::validate`] holds.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(export) = &self.export {
+            export.validate()?;
+        }
+        if let Some(cli) = &self.cli {
+            if cli.is_empty() || cli.contains('/') || cli.chars().any(char::is_whitespace) {
+                return Err(format!(
+                    "cli `{cli}` is not one word — it is the name a seat types, with no path"
+                ));
+            }
+        }
+        self.items.validate()
+    }
+}
+
+/// The types a store files an item under and the priorities it takes: what a
+/// routine's item is held to before the store is sent it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Vocabulary {
+    #[serde(default = "default_types")]
+    pub types: Vec<String>,
+    #[serde(default)]
+    pub priority: Priorities,
+}
+
+/// The lowest and the highest priority a store takes, both inclusive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Priorities {
+    pub min: u8,
+    pub max: u8,
+}
+
+/// The types of a store that declares none: an adapter that answers no
+/// `items` is sent a routine's item of one of these six and of no other.
+pub const DEFAULT_TYPES: [&str; 6] = ["bug", "feature", "task", "epic", "chore", "decision"];
+
+fn default_types() -> Vec<String> {
+    DEFAULT_TYPES.iter().map(|word| word.to_string()).collect()
+}
+
+impl Default for Vocabulary {
+    fn default() -> Self {
+        Vocabulary {
+            types: default_types(),
+            priority: Priorities::default(),
+        }
+    }
+}
+
+/// The contract's whole range, 0 to [`PRIORITY_MAX`].
+impl Default for Priorities {
+    fn default() -> Self {
+        Priorities {
+            min: 0,
+            max: PRIORITY_MAX,
+        }
+    }
+}
+
+impl Vocabulary {
+    /// The vocabulary, or the field and value that break it: at least one
+    /// type and none empty, and a priority range that is not upside down and
+    /// ends inside the contract's 0 to 4.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.types.is_empty() {
+            return Err(String::from(
+                "items types is empty — a store takes at least one",
+            ));
+        }
+        if self.types.iter().any(String::is_empty) {
+            return Err(String::from("items types carries an empty type"));
+        }
+        let Priorities { min, max } = self.priority;
+        if min > max {
+            return Err(format!("items priority min {min} is above max {max}"));
+        }
+        if max > PRIORITY_MAX {
+            return Err(format!(
+                "items priority max {max} is past {PRIORITY_MAX}, the contract's highest"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The item, or why this store must not be sent it: a type it does not
+    /// declare, or a priority outside its range.
+    pub fn takes(&self, item: &NewItem) -> Result<(), String> {
+        if !self.types.contains(&item.item_type) {
+            return Err(format!(
+                "type is `{}`; the store takes {}",
+                item.item_type,
+                self.types.join(", ")
+            ));
+        }
+        match item.priority {
+            Some(n) if n < self.priority.min || n > self.priority.max => Err(format!(
+                "priority is {n}; the store takes {} to {}",
+                self.priority.min, self.priority.max
+            )),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// Where a store's export lands, relative to the project root: the file, and
@@ -1239,6 +1363,98 @@ mod tests {
     fn capabilities_read_as_none_where_a_store_says_nothing() {
         let read: Capabilities = serde_json::from_str("{}").unwrap();
         assert_eq!(read, Capabilities::default());
+        assert_eq!(read.cli, None);
+        assert_eq!(read.items.types, DEFAULT_TYPES);
+        assert_eq!(read.items.priority, Priorities { min: 0, max: 4 });
+        assert_eq!(read.validate(), Ok(()));
+
+        // An adapter answering neither `cli` nor `items` reads as the
+        // contract's vocabulary, and one naming its types alone
+        // takes the contract's whole range.
+        let before: Capabilities =
+            serde_json::from_str(r#"{"export":null,"scratch":true,"item_prefix":"fx"}"#).unwrap();
+        assert_eq!(before.items, Vocabulary::default());
+        let typed: Capabilities = serde_json::from_str(r#"{"items":{"types":["story"]}}"#).unwrap();
+        assert_eq!(typed.items.types, ["story"]);
+        assert_eq!(typed.items.priority, Priorities::default());
+    }
+
+    #[test]
+    fn a_declaration_with_no_types_an_upside_down_range_or_a_path_for_a_cli_is_refused() {
+        let items = |types: &[&str], min, max| Capabilities {
+            items: Vocabulary {
+                types: types.iter().map(|word| word.to_string()).collect(),
+                priority: Priorities { min, max },
+            },
+            ..Capabilities::default()
+        };
+        let cli = |word: &str| Capabilities {
+            cli: Some(word.to_string()),
+            ..Capabilities::default()
+        };
+        for (refused, names) in [
+            (items(&[], 0, 4), "items types is empty"),
+            (
+                items(&["task", ""], 0, 4),
+                "items types carries an empty type",
+            ),
+            (
+                items(&["task"], 3, 1),
+                "items priority min 3 is above max 1",
+            ),
+            (items(&["task"], 0, 5), "items priority max 5 is past 4"),
+            (cli(""), "cli `` is not one word"),
+            (
+                cli("/usr/local/bin/tk"),
+                "cli `/usr/local/bin/tk` is not one word",
+            ),
+            (cli("tk item"), "cli `tk item` is not one word"),
+            (
+                Capabilities {
+                    export: Some(ExportSpec {
+                        file: String::from("/abs/x"),
+                        dir: String::from("/abs/"),
+                    }),
+                    ..Capabilities::default()
+                },
+                "export file `/abs/x` is absolute",
+            ),
+        ] {
+            let why = refused.validate().unwrap_err();
+            assert!(why.starts_with(names), "{why}");
+        }
+
+        // THE CONTROLS: one type, a range of one, and a bare word are kept.
+        assert_eq!(items(&["story"], 2, 2).validate(), Ok(()));
+        assert_eq!(cli("tk").validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_store_takes_the_types_it_declares_and_the_priorities_in_its_range() {
+        let declared = Vocabulary {
+            types: vec![String::from("story"), String::from("task")],
+            priority: Priorities { min: 1, max: 3 },
+        };
+        let item = |item_type: &str, priority| NewItem {
+            title: String::from("t"),
+            item_type: item_type.to_string(),
+            priority,
+            ..NewItem::default()
+        };
+        assert_eq!(declared.takes(&item("story", Some(1))), Ok(()));
+        assert_eq!(declared.takes(&item("task", None)), Ok(()));
+        assert_eq!(
+            declared.takes(&item("bug", None)),
+            Err(String::from("type is `bug`; the store takes story, task"))
+        );
+        assert_eq!(
+            declared.takes(&item("story", Some(0))),
+            Err(String::from("priority is 0; the store takes 1 to 3"))
+        );
+        assert_eq!(
+            declared.takes(&item("story", Some(4))),
+            Err(String::from("priority is 4; the store takes 1 to 3"))
+        );
     }
 
     // ---- 9: the store's documentation ----
@@ -1292,6 +1508,11 @@ mod tests {
             }),
             scratch: true,
             item_prefix: Some(String::from("fx")),
+            cli: Some(String::from("tracker")),
+            items: Vocabulary {
+                types: vec![String::from("task"), String::from("bug")],
+                priority: Priorities { min: 0, max: 4 },
+            },
         };
         let review = Order {
             kind: OrderKind::Review,
@@ -1376,12 +1597,9 @@ mod tests {
         );
         examples.push(answered.to_string());
 
-        // THE CONTROLS: the capability example's export keeps the rules the
-        // doc states, and `{}` reads as the store that declares nothing.
-        assert_eq!(
-            exporting.export.as_ref().map(ExportSpec::validate),
-            Some(Ok(()))
-        );
+        // THE CONTROLS: the capability example keeps the rules the doc
+        // states, and `{}` reads as the store that declares nothing.
+        assert_eq!(exporting.validate(), Ok(()));
         assert_eq!(
             serde_json::from_str::<Capabilities>("{}").unwrap(),
             Capabilities::default()
