@@ -40,7 +40,10 @@ use fleet_core::item::{recorded, Stop, Unrecorded, COULD_NOT_TELL, REFUSED};
 use fleet_core::process::DRAIN_GRACE;
 use fleet_core::seat::identity::SeatId;
 use fleet_core::store::bd::{item_from, Bd};
-use fleet_core::store::{Filter, ItemSummary, NewItem, OrderState, Store, StoreError};
+use fleet_core::store::{
+    Filter, ItemId, ItemSummary, NewItem, OrderState, Store, StoreError, Update,
+};
+use fleet_core::test_support::the_test;
 
 /// Serialises every arm in this binary, because the seam they share is the
 /// process's `PATH` and there is one of those.
@@ -469,12 +472,12 @@ fn every_read_opens_the_envelope() {
     let filed = store
         .create(
             &NewItem {
-                title: "t",
-                description: "d",
-                item_type: "task",
-                labels: &[],
+                title: String::from("t"),
+                description: String::from("d"),
+                item_type: String::from("task"),
+                ..NewItem::default()
             },
-            "the-test",
+            &the_test(),
         )
         .expect("the create answer decodes");
     assert_eq!(filed, "fx-new");
@@ -552,7 +555,7 @@ fn a_show_error_is_classified_by_its_code() {
     for item in ["fx-uncoded", "fx-coded"] {
         let answer = store.show(item).expect_err("the store holds no such item");
         assert!(
-            matches!(answer, StoreError::Missing(_)),
+            matches!(answer, StoreError::Refused(_)),
             "{item}: {answer:?}"
         );
         assert_eq!(Stop::from(answer).code, REFUSED, "{item}");
@@ -605,7 +608,7 @@ fn an_ambiguous_show_is_missing_and_names_the_matches_off_stderr() {
             .expect_err("an ambiguous id is no one item");
         assert_eq!(
             answer,
-            StoreError::Missing(format!(
+            StoreError::Refused(format!(
                 "`{id}` matches more than one item — fx-{id}h, fx-{id}u — and more of the id \
                  says which one this is"
             ))
@@ -731,21 +734,169 @@ fn a_write_that_does_not_answer_says_its_effect_cannot_be_told() {
     let root = dir.path("project");
     std::fs::create_dir_all(&root).expect("the project root is created");
 
+    let seat = SeatId::parse(SEAT).expect("the seat's id parses");
     let answer = Bd::at_bin(&root, &bin)
         .with_timeout(Duration::from_millis(200))
-        .assign("fx-1", "a-seat", "the-test");
+        .update(&ItemId::from("fx-1"), &Update::assignee(seat), &the_test());
 
     let Err(StoreError::Unreadable(why)) = answer else {
         panic!("a write that never answers is Unreadable: {answer:?}");
     };
     assert!(
         why.starts_with(&format!(
-            "`{} update fx-1 --assignee a-seat --actor the-test` did not answer within 200ms — \
-             the write's effect cannot be told",
+            "`{} update fx-1 --assignee {SEAT} --actor run:the-test` did not answer within 200ms \
+             — the write's effect cannot be told",
             bin.display()
         )),
         "{why}"
     );
+}
+
+/// A `bd` at an absolute path that records each call's argv as ONE line, each
+/// argument in brackets, and answers every call with `answer`.
+fn argv_bd(dir: &Fixture, log: &Path, answer: &str) -> PathBuf {
+    let bin = dir.path("bd");
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\n\
+             printf '[%s]' \"$@\" >> '{log}'\n\
+             printf '\\n' >> '{log}'\n\
+             printf '%s\\n' '{answer}'\n",
+            log = log.display(),
+        ),
+    )
+    .expect("the shim is written");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+        .expect("the shim is executable");
+    bin
+}
+
+/// Each call the shim was handed, its argv after `-C <root>` in brackets.
+fn argvs(log: &Path, root: &Path) -> Vec<String> {
+    let lead = format!("[-C][{}]", root.display());
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| line.strip_prefix(&lead).unwrap_or(line).to_string())
+        .collect()
+}
+
+/// An update is ONE call naming each field the change moves: the title, the
+/// assignee as the seat's full id, both on one call, and a cleared assignee as
+/// the empty string, which is what bd clears the field with.
+#[test]
+fn an_update_is_one_call_naming_each_field_it_moves() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-update-argv");
+    let log = dir.path("argv");
+    let bin = argv_bd(&dir, &log, "");
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+    let store = Bd::at_bin(&root, &bin);
+    let id = ItemId::from("fx-1");
+    let seat = SeatId::parse(SEAT).expect("the seat's id parses");
+
+    for change in [
+        Update::title(String::from("a new title")),
+        Update::assignee(seat),
+        Update {
+            title: Some(String::from("both")),
+            assignee: Some(Some(seat)),
+        },
+        Update::unassigned(),
+    ] {
+        store
+            .update(&id, &change, &the_test())
+            .unwrap_or_else(|e| panic!("{change:?} lands: {e}"));
+    }
+    assert_eq!(
+        argvs(&log, &root),
+        [
+            String::from("[update][fx-1][--title][a new title][--actor][run:the-test]"),
+            format!("[update][fx-1][--assignee][{SEAT}][--actor][run:the-test]"),
+            format!("[update][fx-1][--title][both][--assignee][{SEAT}][--actor][run:the-test]"),
+            String::from("[update][fx-1][--assignee][][--actor][run:the-test]"),
+        ]
+    );
+}
+
+/// An update naming neither field is refused before the binary is asked.
+#[test]
+fn an_update_naming_nothing_runs_nothing() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-update-nothing");
+    let log = dir.path("argv");
+    let bin = argv_bd(&dir, &log, "");
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+
+    let answer =
+        Bd::at_bin(&root, &bin).update(&ItemId::from("fx-1"), &Update::default(), &the_test());
+    assert_eq!(
+        answer,
+        Err(StoreError::Unreadable(String::from(
+            "an update names neither a title nor an assignee — nothing was written"
+        )))
+    );
+    assert_eq!(argvs(&log, &root), Vec::<String>::new(), "bd was not asked");
+}
+
+/// A create carries `--priority` where the item names one, and no such flag
+/// where it names none.
+#[test]
+fn a_create_names_its_priority_only_where_the_item_does() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-create-priority");
+    let log = dir.path("argv");
+    let bin = argv_bd(&dir, &log, r#"{"id": "fx-new"}"#);
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+    let store = Bd::at_bin(&root, &bin);
+
+    for priority in [Some(0), None] {
+        let filed = store
+            .create(
+                &NewItem {
+                    title: String::from("t"),
+                    description: String::from("d"),
+                    item_type: String::from("task"),
+                    labels: vec![String::from("a"), String::from("b")],
+                    priority,
+                },
+                &the_test(),
+            )
+            .expect("the create answer decodes");
+        assert_eq!(filed, "fx-new");
+    }
+    assert_eq!(
+        argvs(&log, &root),
+        [
+            "[create][--title][t][--description][d][--type][task][--labels][a,b][--priority][0]\
+             [--actor][run:the-test][--json]",
+            "[create][--title][t][--description][d][--type][task][--labels][a,b]\
+             [--actor][run:the-test][--json]",
+        ]
+    );
+}
+
+/// The version is `bd`, at the FIRST line `bd --version` prints, trimmed.
+#[test]
+fn the_version_is_the_first_line_bd_prints_trimmed() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-version");
+    let log = dir.path("argv");
+    let bin = argv_bd(&dir, &log, "  bd version 9.9.9 (a stub)  ");
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+
+    let answered = Bd::at_bin(&root, &bin)
+        .version()
+        .expect("the version reads");
+    assert_eq!(answered.name, "bd");
+    assert_eq!(answered.version, "bd version 9.9.9 (a stub)");
+    assert_eq!(argvs(&log, &root), ["[--version]"]);
 }
 
 /// A `show` row in the shape bd 1.3.0 answers, holding one dependency on an
@@ -838,7 +989,7 @@ fn the_fake_leaves_a_persons_comment_out_and_refuses_a_malformed_entry() {
 }
 
 /// The fake keeps bd's refusal word for word: a body that breaks its kind's
-/// rules is never written, and an item it does not hold is Missing.
+/// rules is never written, and an item it does not hold is Refused.
 #[test]
 fn the_fake_refuses_an_entry_that_does_not_validate_and_an_item_it_does_not_hold() {
     let board = fleet_core::test_support::Board::new("store-fake-refusals");
@@ -861,8 +1012,8 @@ fn the_fake_refuses_an_entry_that_does_not_validate_and_an_item_it_does_not_hold
     );
 
     match board.store.append("fx-nobody-filed-this", &an_order(), &by) {
-        Err(StoreError::Missing(_)) => {}
-        other => panic!("an append to an item nobody filed is Missing: {other:?}"),
+        Err(StoreError::Refused(_)) => {}
+        other => panic!("an append to an item nobody filed is Refused: {other:?}"),
     }
 }
 

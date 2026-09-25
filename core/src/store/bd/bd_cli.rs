@@ -265,7 +265,7 @@ mod tests {
             let row = serde_json::json!({ "error": "no issue fx-1", "code": code });
             let answer = shown("fx-1", row, "");
             assert!(
-                matches!(&answer, Err(StoreError::Missing(why)) if why == "fx-1: no issue fx-1"),
+                matches!(&answer, Err(StoreError::Refused(why)) if why == "fx-1: no issue fx-1"),
                 "code {code}: {answer:?}"
             );
         }
@@ -287,7 +287,7 @@ mod tests {
     fn a_recorded_missing_id_is_the_records_answer() {
         let answer = shown("fx-nothere", answer(SHOW_MISSING), "");
         assert!(
-            matches!(&answer, Err(StoreError::Missing(why)) if why.starts_with("fx-nothere: no issues found")),
+            matches!(&answer, Err(StoreError::Refused(why)) if why.starts_with("fx-nothere: no issues found")),
             "{answer:?}"
         );
     }

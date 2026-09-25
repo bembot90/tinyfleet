@@ -55,7 +55,9 @@ use crate::policy;
 use crate::resolve::Layer;
 use crate::seat::actor::Actor;
 use crate::settings;
-use crate::store::{keys, Filter, Item, NewItem, RunRecord, Status, Store, StoreError};
+use crate::store::{
+    keys, Filter, Item, ItemId, NewItem, RunRecord, Status, Store, StoreError, Update,
+};
 
 /// Where the run directories go, under the machine directory.
 pub const RUNS: &str = "runs";
@@ -530,7 +532,7 @@ pub fn cancel(
     // The string form every write and every line carries.
     let by = cancel.by.to_string();
     let record = store.show(run).map_err(|e| match e {
-        StoreError::Missing(why) => Stop::refused(format!(
+        StoreError::Refused(why) => Stop::refused(format!(
             "{run} is not an item this project's store holds — {why}"
         )),
         // A read never answers `Moved`, which only a fenced write does.
@@ -589,12 +591,14 @@ pub fn cancel(
         entries.push(entry);
     }
 
-    store.close(run, "the run cancelled", &by).map_err(|e| {
-        Stop::could_not_tell(format!(
-            "{run}'s record did not close: {e}\n  {} cleared and {run} is NOT cancelled",
-            named_holds(&holds)
-        ))
-    })?;
+    store
+        .close(&record.id, "the run cancelled", &by)
+        .map_err(|e| {
+            Stop::could_not_tell(format!(
+                "{run}'s record did not close: {e}\n  {} cleared and {run} is NOT cancelled",
+                named_holds(&holds)
+            ))
+        })?;
     let read_back = read(store, run)?;
     if read_back.status != Status::Closed {
         return Err(disagrees(
@@ -1152,12 +1156,13 @@ fn file_the_record(order: &Order, resolved: &Resolved, wiring: &Wiring) -> Resul
         .store
         .create(
             &NewItem {
-                title: UNTITLED,
-                description: &description,
-                item_type: RECORD_TYPE,
-                labels: &[LABEL],
+                title: UNTITLED.to_string(),
+                description,
+                item_type: RECORD_TYPE.to_string(),
+                labels: vec![LABEL.to_string()],
+                priority: None,
             },
-            &order.by.to_string(),
+            order.by,
         )
         .map_err(|e| {
             Stop::could_not_tell(format!(
@@ -1166,13 +1171,13 @@ fn file_the_record(order: &Order, resolved: &Resolved, wiring: &Wiring) -> Resul
         })?;
     wiring
         .store
-        .set_title(&id, &id, &order.by.to_string())
+        .update(&id, &Update::title(id.to_string()), order.by)
         .map_err(|e| {
             Stop::could_not_tell(format!(
                 "{id} is filed and the title did not land: {e}\n  the record STANDS"
             ))
         })?;
-    Ok(id)
+    Ok(id.to_string())
 }
 
 /// The hash and the run's own object onto the record, read back.
@@ -1288,10 +1293,11 @@ fn pin_and_bundle(pinning: Pinning, order: &Order, wiring: &Wiring) -> Result<St
 /// over a record still open would announce an end the store does not hold. The
 /// refusal keeps its own exit, because what went wrong is still what it says.
 fn never_started(id: &str, stop: Stop, by: &Actor, wiring: &Wiring) -> Stop {
-    let fate = match wiring
-        .store
-        .close(id, "the run failed before it started", &by.to_string())
-    {
+    let fate = match wiring.store.close(
+        &ItemId::from(id),
+        "the run failed before it started",
+        &by.to_string(),
+    ) {
         Err(e) => format!(
             "the record {id} filed for this run STANDS open, and its close did not land: {e} — \
              `fleet cancel {id}` closes it"
@@ -1480,7 +1486,7 @@ fn execute(
         wiring
             .store
             .close(
-                &started.run,
+                &ItemId::from(started.run.as_str()),
                 &format!("the run {}", ended.word()),
                 &order.by.to_string(),
             )

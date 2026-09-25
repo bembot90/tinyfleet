@@ -43,6 +43,9 @@ fn by() -> Actor {
 }
 
 const HELD: &str = "fx-held";
+
+/// The seat that takes the held item after the listing, by its full id.
+const TAKER: &str = "018f6a2c-1d3e-7a4b-9c5d-00009d2b4f60";
 const UNORDERED: &str = "fx-unordered";
 const CLOSED: &str = "fx-closed";
 const ANOTHER: &str = "fx-another-seat";
@@ -200,7 +203,7 @@ fn a_retire_whose_item_was_closed_after_the_listing_is_refused_and_reopens_nothi
     store.seed(item(HELD, "in_progress", SEAT, true));
     let held = retire::held(&store, &seat()).expect("the board answers");
     store
-        .close(HELD, "landed", SEAT)
+        .close(&fleet_core::store::ItemId::from(HELD), "landed", SEAT)
         .expect("the seat lands its item after the listing");
 
     let stop =
@@ -455,7 +458,13 @@ fn a_retire_whose_item_moved_to_another_seat_is_refused_and_writes_nothing() {
     let store = board();
     let held = retire::held(&store, &seat()).expect("the board answers");
     store
-        .assign(HELD, "agent-9d2b4f60", "the-test")
+        .update(
+            &fleet_core::store::ItemId::from(HELD),
+            &fleet_core::store::Update::assignee(
+                SeatId::parse(TAKER).expect("the other seat's id parses"),
+            ),
+            &fleet_core::test_support::the_test(),
+        )
         .expect("another seat takes the item after the listing");
 
     let stop =
@@ -471,13 +480,13 @@ fn a_retire_whose_item_moved_to_another_seat_is_refused_and_writes_nothing() {
             && stop
                 .message
                 .contains(&format!("`{LABEL}` no longer holds it"))
-            && stop.message.contains("`agent-9d2b4f60`"),
+            && stop.message.contains(&format!("`{TAKER}`")),
         "the refusal names the item, the retiring seat and the holder now: {}",
         stop.message
     );
     let after = read(&store, HELD);
     assert!(
-        ordered(&after) && after.assignee.as_deref() == Some("agent-9d2b4f60"),
+        ordered(&after) && after.assignee.as_deref() == Some(TAKER),
         "nothing was written: {}",
         after.proof.as_str()
     );

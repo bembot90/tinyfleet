@@ -21,7 +21,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use common::{
-    agent, full, keys_agree, seat_actor, shared_store, signal, signals, Rooted, Scratch, StubEvents,
+    agent, full, keys_agree, seat_actor, seat_id, shared_store, signal, signals, Rooted, Scratch,
+    StubEvents,
 };
 use fleet_core::entry::Landed as LandedEntry;
 use fleet_core::entry::{
@@ -451,20 +452,25 @@ impl Store for Doctored<'_> {
         self.inner.list(filter)
     }
 
-    fn create(&self, item: &fleet_core::store::NewItem, by: &str) -> Result<String, StoreError> {
+    fn create(
+        &self,
+        item: &fleet_core::store::NewItem,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<fleet_core::store::ItemId, StoreError> {
         self.inner.create(item, by)
-    }
-
-    fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.set_title(item, title, by)
     }
 
     fn show(&self, item: &str) -> Result<Item, StoreError> {
         self.inner.show(item)
     }
 
-    fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.assign(item, seat, by)
+    fn update(
+        &self,
+        id: &fleet_core::store::ItemId,
+        change: &fleet_core::store::Update,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.update(id, change, by)
     }
 
     fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
@@ -495,8 +501,13 @@ impl Store for Doctored<'_> {
         self.inner.clear_hold(hold, by)
     }
 
-    fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.close(item, reason, by)
+    fn close(
+        &self,
+        id: &fleet_core::store::ItemId,
+        reason: &str,
+        by: &str,
+    ) -> Result<(), StoreError> {
+        self.inner.close(id, reason, by)
     }
 
     fn append(
@@ -521,6 +532,10 @@ impl Store for Doctored<'_> {
 
     fn capabilities(&self) -> Result<fleet_core::store::types::Capabilities, StoreError> {
         self.inner.capabilities()
+    }
+
+    fn version(&self) -> Result<fleet_core::store::Version, StoreError> {
+        self.inner.version()
     }
 
     fn export(&self, into: &std::path::Path) -> Result<std::path::PathBuf, StoreError> {
@@ -751,16 +766,22 @@ fn an_item_delivered_by(
     let item = store
         .create(
             &fleet_core::store::NewItem {
-                title,
-                description: "an item to land",
-                item_type: "task",
-                labels: &[],
+                title: title.to_string(),
+                description: String::from("an item to land"),
+                item_type: String::from("task"),
+                labels: Vec::new(),
+                priority: None,
             },
-            BUILDER,
+            &seat_actor(BUILDER),
         )
-        .expect("the item is filed");
+        .expect("the item is filed")
+        .to_string();
     store
-        .assign(&item, REVIEWER_ID, REVIEWER)
+        .update(
+            &fleet_core::store::ItemId::from(item.as_str()),
+            &fleet_core::store::Update::assignee(reviewer().id),
+            &seat_actor(REVIEWER),
+        )
         .expect("the reviewer holds it");
     store
         .append(&item, &Body::Delivered(delivery), by)
@@ -1276,17 +1297,23 @@ fn an_accepted_item_delivered_only_as_prose_is_refused() {
         .store
         .create(
             &fleet_core::store::NewItem {
-                title: "an item delivered as prose",
-                description: "an item to land",
-                item_type: "task",
-                labels: &[],
+                title: String::from("an item delivered as prose"),
+                description: String::from("an item to land"),
+                item_type: String::from("task"),
+                labels: Vec::new(),
+                priority: None,
             },
-            BUILDER,
+            &seat_actor(BUILDER),
         )
-        .expect("the item is filed");
+        .expect("the item is filed")
+        .to_string();
     scratch
         .store
-        .assign(&item, REVIEWER_ID, REVIEWER)
+        .update(
+            &fleet_core::store::ItemId::from(item.as_str()),
+            &fleet_core::store::Update::assignee(reviewer().id),
+            &seat_actor(REVIEWER),
+        )
         .expect("the reviewer holds it");
     let prose = format!(
         "DELIVERED {SHA} — {}\ncommit:  {SHA}\nbranch:  {WORK}\nbase:    {TRUNK} at {OLD}",
@@ -2644,7 +2671,7 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
         "an item held by another seat",
         Some(("ACCEPTED", SHA)),
     );
-    scratch.assign(&other, &full(BUILDER));
+    scratch.hand_to(&other, &full(BUILDER));
     let before_other = scratch.json(&other);
     let git = StubGit::clean();
     let ran = run(scratch, bd, &git, &other, SHA);
@@ -2712,7 +2739,11 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
     // A closed item.
     scratch
         .store
-        .close(&elsewhere, "closed by hand", REVIEWER)
+        .close(
+            &fleet_core::store::ItemId::from(elsewhere.as_str()),
+            "closed by hand",
+            REVIEWER,
+        )
         .expect("it closes");
     let before_closed = scratch.json(&elsewhere);
     let git = StubGit::clean();
@@ -4894,14 +4925,16 @@ fn a_run_holding(store: &dyn Store, about: fleet_core::entry::About) -> String {
     let run = store
         .create(
             &fleet_core::store::NewItem {
-                title: "a run of takeoff",
-                description: "a run's record",
-                item_type: "task",
-                labels: &[fleet_core::item::run::LABEL],
+                title: String::from("a run of takeoff"),
+                description: String::from("a run's record"),
+                item_type: String::from("task"),
+                labels: vec![fleet_core::item::run::LABEL.to_string()],
+                priority: None,
             },
-            &as_reviewer().to_string(),
+            &as_reviewer(),
         )
-        .expect("the run's record is filed");
+        .expect("the run's record is filed")
+        .to_string();
     let option = |letter: &str, text: &str| fleet_core::entry::Choice {
         letter: letter.to_string(),
         text: text.to_string(),
@@ -5118,7 +5151,11 @@ fn a_runs_landing_is_refused_an_item_another_seat_holds() {
     );
     scratch
         .store
-        .assign(&item, &full(BUILDER), REVIEWER)
+        .update(
+            &fleet_core::store::ItemId::from(item.as_str()),
+            &fleet_core::store::Update::assignee(seat_id(BUILDER)),
+            &seat_actor(REVIEWER),
+        )
         .expect("the builder holds it");
     let run = a_licensed_run(&scratch.store, &item);
 
@@ -5177,14 +5214,16 @@ fn a_runs_landing_is_refused_each_piece_of_its_licence_that_is_missing() {
         .store
         .create(
             &fleet_core::store::NewItem {
-                title: "a run that asked nothing",
-                description: "a run's record",
-                item_type: "task",
-                labels: &[fleet_core::item::run::LABEL],
+                title: String::from("a run that asked nothing"),
+                description: String::from("a run's record"),
+                item_type: String::from("task"),
+                labels: vec![fleet_core::item::run::LABEL.to_string()],
+                priority: None,
             },
-            REVIEWER,
+            &seat_actor(REVIEWER),
         )
-        .expect("the run's record is filed");
+        .expect("the run's record is filed")
+        .to_string();
     let elsewhere = a_run_holding(&scratch.store, about(&[&other], None));
     cleared(&scratch.store, &elsewhere, &as_reviewer(), Some("A"));
     let at_other = a_run_holding(&scratch.store, about(&[&item], Some(OTHER)));

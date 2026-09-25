@@ -40,7 +40,7 @@ use crate::item::{
 use crate::policy;
 use crate::seat::actor::{Actor, ActorKind};
 use crate::seat::identity::{Directory, SeatId, SeatRef};
-use crate::store::{Filter, Item, ItemSummary, OrderState, Status, Store};
+use crate::store::{Filter, Item, ItemId, ItemSummary, OrderState, Status, Store, Update};
 
 /// What the ring carries: where to look and what to look at. The record is the
 /// item, as it is for every other ring this crate sends.
@@ -149,11 +149,9 @@ pub fn deliver(
     let input = input::read::<DeliveryInput>(delivery.delivery, "delivery", DELIVERY_SCHEMA)?;
 
     let item = held_item(wiring.store, delivery.by, delivery.item)?;
-    let reviewer = reviewer_of(wiring.project, wiring.seats)?;
-    let reviewer = reviewer.id.to_string();
+    let reviewer_id = reviewer_of(wiring.project, wiring.seats)?.id;
+    let reviewer = reviewer_id.to_string();
 
-    // The string form every write and the event carry.
-    let by = delivery.by.to_string();
     let as_is = standing.is_some();
     let commit = match standing {
         Some(head) => head,
@@ -166,13 +164,20 @@ pub fn deliver(
     let delivered =
         Body::Delivered(input.into_delivered(commit.clone(), branch.clone(), base.clone()));
 
-    wiring.store.assign(&item, &reviewer, &by).map_err(|e| {
-        committed(
-            &item,
-            &commit,
-            &format!("the reassignment did not land: {e}"),
+    wiring
+        .store
+        .update(
+            &ItemId::from(item.as_str()),
+            &Update::assignee(reviewer_id),
+            delivery.by,
         )
-    })?;
+        .map_err(|e| {
+            committed(
+                &item,
+                &commit,
+                &format!("the reassignment did not land: {e}"),
+            )
+        })?;
     // THE ENTRY IS APPENDED AND READ BACK in the one helper every entry
     // writer goes through: the id it answers is the one the timeline holds,
     // carrying the body and the actor written.

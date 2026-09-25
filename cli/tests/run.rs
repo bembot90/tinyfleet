@@ -1820,16 +1820,21 @@ impl fleet_core::store::Store for Planted {
         Ok(read)
     }
 
-    fn create(&self, item: &fleet_core::store::NewItem, by: &str) -> Result<String, StoreError> {
+    fn create(
+        &self,
+        item: &fleet_core::store::NewItem,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<fleet_core::store::ItemId, StoreError> {
         self.0.create(item, by)
     }
 
-    fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError> {
-        self.0.set_title(item, title, by)
-    }
-
-    fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
-        self.0.assign(item, seat, by)
+    fn update(
+        &self,
+        id: &fleet_core::store::ItemId,
+        change: &fleet_core::store::Update,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.0.update(id, change, by)
     }
 
     fn hand_over(&self, item: &str, from: &str, to: &str, by: &str) -> Result<(), StoreError> {
@@ -1874,8 +1879,13 @@ impl fleet_core::store::Store for Planted {
         self.0.clear_hold(hold, by)
     }
 
-    fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
-        self.0.close(item, reason, by)
+    fn close(
+        &self,
+        id: &fleet_core::store::ItemId,
+        reason: &str,
+        by: &str,
+    ) -> Result<(), StoreError> {
+        self.0.close(id, reason, by)
     }
 
     fn append(
@@ -1893,6 +1903,10 @@ impl fleet_core::store::Store for Planted {
 
     fn capabilities(&self) -> Result<fleet_core::store::types::Capabilities, StoreError> {
         self.0.capabilities()
+    }
+
+    fn version(&self) -> Result<fleet_core::store::Version, StoreError> {
+        self.0.version()
     }
 
     fn export(&self, into: &Path) -> Result<PathBuf, StoreError> {

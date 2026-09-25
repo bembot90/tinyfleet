@@ -24,8 +24,9 @@ use serde::Deserialize;
 
 use super::types::{Capabilities, ExportSpec};
 use super::{
-    first_value, holder_named, keys, validated, Filter, Item, ItemId, ItemSummary, NewItem, Order,
-    OrderState, ReadProof, RunRecord, Status, Store, StoreError, STORE_TIMEOUT,
+    already_closed, first_value, holder_named, keys, unchanged, validated, Filter, Item, ItemId,
+    ItemSummary, NewItem, Order, OrderState, ReadProof, RunRecord, Status, Store, StoreError,
+    Update, Version, STORE_TIMEOUT,
 };
 use crate::entry::{self, Body, Entry};
 use crate::process::{deadline_cause, run_bounded};
@@ -354,11 +355,11 @@ pub fn shown(
     said: &str,
 ) -> Result<serde_json::Value, StoreError> {
     let Some(row) = sole(value) else {
-        return Err(StoreError::Missing(format!("{item} is not in the store")));
+        return Err(StoreError::Refused(format!("{item} is not in the store")));
     };
     if let Ok(bd_cli::CliError { error, code }) = bd_cli::CliError::deserialize(&row) {
         return match code.as_deref() {
-            None | Some("not_found") => Err(StoreError::Missing(match ambiguous(said) {
+            None | Some("not_found") => Err(StoreError::Refused(match ambiguous(said) {
                 Some(matches) => format!(
                     "`{item}` matches more than one item — {matches} — and more of the id says \
                      which one this is"
@@ -565,30 +566,53 @@ impl Store for Bd {
             .collect())
     }
 
-    fn create(&self, item: &NewItem, by: &str) -> Result<String, StoreError> {
+    /// `--priority` only where the item names one: bd files an item that
+    /// names none at its own default.
+    fn create(&self, item: &NewItem, by: &Actor) -> Result<ItemId, StoreError> {
         let labels = item.labels.join(",");
+        let priority = item.priority.map(|n| n.to_string());
+        let by = by.to_string();
         let mut args = vec![
             "create",
             "--title",
-            item.title,
+            &item.title,
             "--description",
-            item.description,
+            &item.description,
             "--type",
-            item.item_type,
+            &item.item_type,
         ];
         if !labels.is_empty() {
             args.extend(["--labels", labels.as_str()]);
         }
-        args.extend(["--actor", by, "--json"]);
-        self.created_id(&args)
+        if let Some(priority) = &priority {
+            args.extend(["--priority", priority.as_str()]);
+        }
+        args.extend(["--actor", &by, "--json"]);
+        self.created_id(&args).map(ItemId::from)
     }
 
-    fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&["update", item, "--title", title, "--actor", by])
-    }
-
-    fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&["update", item, "--assignee", seat, "--actor", by])
+    /// ONE `update` carrying every field the change names: bd takes `--title`
+    /// and `--assignee` on one call — measured on 1.3.0, where one call moved
+    /// both — and the empty assignee is what clears the field, measured too:
+    /// the item read back with no `assignee` at all.
+    fn update(&self, id: &ItemId, change: &Update, by: &Actor) -> Result<(), StoreError> {
+        if change.is_empty() {
+            return Err(unchanged());
+        }
+        let assignee = change
+            .assignee
+            .as_ref()
+            .map(|seat| seat.map(|seat| seat.to_string()).unwrap_or_default());
+        let by = by.to_string();
+        let mut args = vec!["update", id.as_str()];
+        if let Some(title) = &change.title {
+            args.extend(["--title", title.as_str()]);
+        }
+        if let Some(assignee) = &assignee {
+            args.extend(["--assignee", assignee.as_str()]);
+        }
+        args.extend(["--actor", &by]);
+        self.wrote(&args)
     }
 
     /// bd 1.3.0 refuses a plain `--assignee` from anyone but the holder on an
@@ -726,8 +750,24 @@ impl Store for Bd {
     /// assignee — measured, `cannot close X: assignee is "<id>", actor is
     /// "seat:<id>"` — which is why a landing closes under the holder's own
     /// assignee string.
-    fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&["close", item, "--reason", reason, "--actor", by])
+    ///
+    /// A CLOSE OF A CLOSED ITEM IS READ FIRST, because bd does not refuse one.
+    /// Measured on 1.3.0, on a scratch board: a second `bd close` of a closed
+    /// item exits 0 — printing `✓ Closed <id> — <title>: <reason>`, or with
+    /// `--json` the item's row — and writes nothing: the item reads back with
+    /// the first close's `close_reason`, `closed_at` and `updated_at`. So the
+    /// item's own row is read before the call, its status alone, and a closed
+    /// one is Refused with nothing run: the act is already done. The read is
+    /// also what refuses an item that is not there, which bd's own close
+    /// answers with exit 1 and an error that carries no code. A close landing
+    /// between the read and the call is not caught: bd answers the second
+    /// close as a close.
+    fn close(&self, id: &ItemId, reason: &str, by: &str) -> Result<(), StoreError> {
+        let row = self.shown_row(id)?;
+        if row.get("status").and_then(serde_json::Value::as_str) == Some(Status::Closed.as_str()) {
+            return Err(already_closed(id));
+        }
+        self.wrote(&["close", id.as_str(), "--reason", reason, "--actor", by])
     }
 
     /// Each entry is ONE COMMENT whose text is [`entry::encode`]'s. Measured on
@@ -786,7 +826,7 @@ impl Store for Bd {
                     .as_str()
                     .map(str::to_string)
                     .unwrap_or_else(|| error.to_string());
-                return Err(StoreError::Missing(format!("{item}: {error}")));
+                return Err(StoreError::Refused(format!("{item}: {error}")));
             }
             _ if !out.status.success() => return Err(self.refused(&args, &out)),
             Some(serde_json::Value::Array(rows)) => rows,
@@ -839,6 +879,27 @@ impl Store for Bd {
             }),
             scratch: false,
             item_prefix: None,
+        })
+    }
+
+    /// The first line of `bd --version`, trimmed — `bd version 1.3.0
+    /// (Homebrew)` on this box — as bd prints it: the version a person
+    /// installed is named the way bd names it, and nothing here parses it.
+    fn version(&self) -> Result<Version, StoreError> {
+        let args = ["--version"];
+        let out = self.answered(&args)?;
+        let said = String::from_utf8_lossy(&out.stdout);
+        let first = said.lines().next().unwrap_or_default().trim();
+        if first.is_empty() {
+            return Err(StoreError::Unreadable(format!(
+                "{} answered no version: {}",
+                self.named(&args),
+                tail(&out)
+            )));
+        }
+        Ok(Version {
+            name: String::from("bd"),
+            version: first.to_string(),
         })
     }
 

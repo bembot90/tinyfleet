@@ -933,10 +933,17 @@ impl Graph {
         }
     }
 
-    pub fn assign(&self, item: &str, seat: &str) {
+    /// The item handed to a seat, by its full id, as a rig's own setup.
+    pub fn hand_to(&self, item: &str, seat: &str) {
+        let seat = fleet_core::seat::identity::SeatId::parse(seat)
+            .unwrap_or_else(|e| panic!("a rig hands {item} to a seat: {e}"));
         self.store()
-            .assign(item, seat, "the-test")
-            .unwrap_or_else(|e| panic!("assign {item}: {e}"));
+            .update(
+                &fleet_core::store::ItemId::from(item),
+                &fleet_core::store::Update::assignee(seat),
+                &fleet_core::test_support::the_test(),
+            )
+            .unwrap_or_else(|e| panic!("hand {item} to {seat}: {e}"));
     }
 
     /// The label the open-flight read finds a record by. The trait carries no

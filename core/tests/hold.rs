@@ -155,20 +155,25 @@ impl Store for Swallowing<'_> {
         self.inner.list(filter)
     }
 
-    fn create(&self, item: &NewItem, by: &str) -> Result<String, StoreError> {
+    fn create(
+        &self,
+        item: &fleet_core::store::NewItem,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<fleet_core::store::ItemId, StoreError> {
         self.inner.create(item, by)
-    }
-
-    fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.set_title(item, title, by)
     }
 
     fn show(&self, item: &str) -> Result<Item, StoreError> {
         self.inner.show(item)
     }
 
-    fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.assign(item, seat, by)
+    fn update(
+        &self,
+        id: &fleet_core::store::ItemId,
+        change: &fleet_core::store::Update,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.update(id, change, by)
     }
 
     fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
@@ -199,8 +204,13 @@ impl Store for Swallowing<'_> {
         self.inner.clear_hold(hold, by)
     }
 
-    fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.close(item, reason, by)
+    fn close(
+        &self,
+        id: &fleet_core::store::ItemId,
+        reason: &str,
+        by: &str,
+    ) -> Result<(), StoreError> {
+        self.inner.close(id, reason, by)
     }
 
     fn append(
@@ -218,6 +228,10 @@ impl Store for Swallowing<'_> {
 
     fn capabilities(&self) -> Result<fleet_core::store::types::Capabilities, StoreError> {
         self.inner.capabilities()
+    }
+
+    fn version(&self) -> Result<fleet_core::store::Version, StoreError> {
+        self.inner.version()
     }
 
     fn export(&self, into: &std::path::Path) -> Result<std::path::PathBuf, StoreError> {
@@ -259,7 +273,13 @@ fn an_ordered_item(store: &dyn Store, title: &str, seat: &str) -> String {
     let item = an_item(store, title);
     let seat = full(seat);
     store
-        .assign(&item, &seat, "a-flight")
+        .update(
+            &fleet_core::store::ItemId::from(item.as_str()),
+            &fleet_core::store::Update::assignee(
+                fleet_core::seat::identity::SeatId::parse(&seat).expect("an arm's seat id parses"),
+            ),
+            &fleet_core::test_support::the_test(),
+        )
         .expect("the seat holds it");
     store
         .set_orders(
@@ -278,14 +298,16 @@ fn an_item(store: &dyn Store, title: &str) -> String {
     store
         .create(
             &fleet_core::store::NewItem {
-                title,
-                description: "an item to park",
-                item_type: "task",
-                labels: &[],
+                title: title.to_string(),
+                description: String::from("an item to park"),
+                item_type: String::from("task"),
+                labels: Vec::new(),
+                priority: None,
             },
-            "a-flight",
+            &fleet_core::test_support::the_test(),
         )
         .expect("the item is filed")
+        .to_string()
 }
 
 fn a_question(scratch: &dyn Rooted, label: &str, body: &str) -> PathBuf {
@@ -847,7 +869,7 @@ fn a_seat_holding_no_ordered_item_is_refused() {
     let seat = "g-unordered";
     // Assigned and NOT ordered: the row is held and the order index is absent.
     let item = an_item(&scratch.store, "an item nobody ordered");
-    scratch.assign(&item, &full(seat));
+    scratch.hand_to(&item, &full(seat));
     let question = a_question(scratch, "unordered", QUESTION);
     let before = scratch.json(&item);
     let git = StubGit::holding_work();
@@ -1162,15 +1184,17 @@ fn an_epic_is_refused_before_the_commit_and_nothing_is_written() {
         .store
         .create(
             &NewItem {
-                title: "an epic somebody asked about",
-                description: "an epic",
-                item_type: "epic",
-                labels: &[],
+                title: String::from("an epic somebody asked about"),
+                description: String::from("an epic"),
+                item_type: String::from("epic"),
+                labels: Vec::new(),
+                priority: None,
             },
-            "a-flight",
+            &fleet_core::test_support::the_test(),
         )
-        .expect("the epic is filed");
-    scratch.assign(&item, &full(seat));
+        .expect("the epic is filed")
+        .to_string();
+    scratch.hand_to(&item, &full(seat));
     let question = a_question(scratch, "epic", QUESTION);
     let before = scratch.json(&item);
     let wrote = scratch.store.wrote();

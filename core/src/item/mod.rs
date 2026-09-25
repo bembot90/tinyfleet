@@ -78,7 +78,7 @@ impl Stop {
 impl From<StoreError> for Stop {
     fn from(e: StoreError) -> Stop {
         match e {
-            StoreError::Missing(why) | StoreError::Moved(why) => Stop::refused(why),
+            StoreError::Refused(why) | StoreError::Moved(why) => Stop::refused(why),
             StoreError::Unreadable(why) => Stop::could_not_tell(why),
         }
     }

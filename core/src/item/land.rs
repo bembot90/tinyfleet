@@ -1793,7 +1793,7 @@ pub(crate) fn run_record(store: &dyn Store, by: &Actor) -> Result<Item, Stop> {
     let named_no_run = || Stop::refused(format!("{by} names no run record"));
     match store.show(&by.id) {
         Ok(record) if record.labels.iter().any(|label| label == run::LABEL) => Ok(record),
-        Ok(_) | Err(StoreError::Missing(_)) => Err(named_no_run()),
+        Ok(_) | Err(StoreError::Refused(_)) => Err(named_no_run()),
         // A read never answers `Moved`, which only a fenced write does.
         Err(StoreError::Unreadable(why) | StoreError::Moved(why)) => {
             Err(Stop::could_not_tell(format!(

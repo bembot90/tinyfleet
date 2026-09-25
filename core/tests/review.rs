@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use common::{
-    agent, fleet_of, full, keys_agree, seat_actor, shared_store, signal, Rooted, Scratch,
+    agent, fleet_of, full, keys_agree, seat_actor, seat_id, shared_store, signal, Rooted, Scratch,
     StubEvents,
 };
 use fleet_core::entry::{
@@ -240,12 +240,12 @@ impl Store for Doctored<'_> {
         self.inner.list(filter)
     }
 
-    fn create(&self, item: &fleet_core::store::NewItem, by: &str) -> Result<String, StoreError> {
+    fn create(
+        &self,
+        item: &fleet_core::store::NewItem,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<fleet_core::store::ItemId, StoreError> {
         self.inner.create(item, by)
-    }
-
-    fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.set_title(item, title, by)
     }
 
     fn show(&self, item: &str) -> Result<Item, StoreError> {
@@ -261,10 +261,17 @@ impl Store for Doctored<'_> {
         Ok(read)
     }
 
-    fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
-        self.assigned
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        self.inner.assign(item, seat, by)
+    fn update(
+        &self,
+        id: &fleet_core::store::ItemId,
+        change: &fleet_core::store::Update,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        if change.assignee.is_some() {
+            self.assigned
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.inner.update(id, change, by)
     }
 
     fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
@@ -295,8 +302,13 @@ impl Store for Doctored<'_> {
         self.inner.clear_hold(hold, by)
     }
 
-    fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.close(item, reason, by)
+    fn close(
+        &self,
+        id: &fleet_core::store::ItemId,
+        reason: &str,
+        by: &str,
+    ) -> Result<(), StoreError> {
+        self.inner.close(id, reason, by)
     }
 
     fn append(
@@ -314,6 +326,10 @@ impl Store for Doctored<'_> {
 
     fn capabilities(&self) -> Result<fleet_core::store::types::Capabilities, StoreError> {
         self.inner.capabilities()
+    }
+
+    fn version(&self) -> Result<fleet_core::store::Version, StoreError> {
+        self.inner.version()
     }
 
     fn export(&self, into: &std::path::Path) -> Result<std::path::PathBuf, StoreError> {
@@ -357,7 +373,11 @@ fn a_delivered_item(store: &dyn Store, title: &str, builder: &str) -> String {
     let item = an_item(store, title);
     let seat = full(builder);
     store
-        .assign(&item, &full(REVIEWER), "an-architect")
+        .update(
+            &fleet_core::store::ItemId::from(item.as_str()),
+            &fleet_core::store::Update::assignee(seat_id(REVIEWER)),
+            &fleet_core::test_support::the_test(),
+        )
         .expect("the reviewer holds it");
     store
         .set_orders(
@@ -388,14 +408,16 @@ fn an_item(store: &dyn Store, title: &str) -> String {
     store
         .create(
             &fleet_core::store::NewItem {
-                title,
-                description: "an item to review",
-                item_type: "task",
-                labels: &[],
+                title: title.to_string(),
+                description: String::from("an item to review"),
+                item_type: String::from("task"),
+                labels: Vec::new(),
+                priority: None,
             },
-            "an-architect",
+            &fleet_core::test_support::the_test(),
         )
         .expect("the item is filed")
+        .to_string()
 }
 
 fn file(scratch: &dyn Rooted, label: &str, body: &str) -> PathBuf {
@@ -422,7 +444,11 @@ fn findings(scratch: &dyn Rooted, label: &str, texts: &[&str]) -> PathBuf {
 fn an_item_delivering(store: &dyn Store, title: &str, delivery: Delivered) -> String {
     let item = an_item(store, title);
     store
-        .assign(&item, &full(REVIEWER), "an-architect")
+        .update(
+            &fleet_core::store::ItemId::from(item.as_str()),
+            &fleet_core::store::Update::assignee(seat_id(REVIEWER)),
+            &fleet_core::test_support::the_test(),
+        )
         .expect("the reviewer holds it");
     store
         .append(&item, &Body::Delivered(delivery), &seat_actor("s-header"))
@@ -600,7 +626,7 @@ fn show_prints_the_size_line_then_the_delivered_entry_and_writes_nothing() {
 fn a_prose_delivery_with_no_delivered_entry_carries_no_delivery() {
     let scratch = &store();
     let item = an_item(&scratch.store, "an item delivered as prose");
-    scratch.assign(&item, &full(REVIEWER));
+    scratch.hand_to(&item, &full(REVIEWER));
     scratch
         .store
         .comment(&item, &full("s-prose"), &a_prose_delivery());
@@ -1379,14 +1405,16 @@ fn a_run_record(store: &dyn Store) -> String {
     store
         .create(
             &fleet_core::store::NewItem {
-                title: "a run of takeoff",
-                description: "a run's record",
-                item_type: "task",
-                labels: &[fleet_core::item::run::LABEL],
+                title: String::from("a run of takeoff"),
+                description: String::from("a run's record"),
+                item_type: String::from("task"),
+                labels: vec![fleet_core::item::run::LABEL.to_string()],
+                priority: None,
             },
-            "an-architect",
+            &fleet_core::test_support::the_test(),
         )
         .expect("the run's record is filed")
+        .to_string()
 }
 
 fn the_run(record: &str) -> Actor {
@@ -1426,7 +1454,7 @@ fn a_run_reviews_as_the_core_reviewer_and_only_what_that_seat_holds() {
     assert_eq!(entry.by, run, "the entry is the run's");
 
     let other = a_delivered_item(&scratch.store, "an item another seat holds", "s-run-held");
-    scratch.assign(&other, &full("s-run-held"));
+    scratch.hand_to(&other, &full("s-run-held"));
     let before = timeline(&scratch.store, &other);
     let (said, code) = run_as(
         &scratch.store,

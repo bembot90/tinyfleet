@@ -33,16 +33,27 @@ use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
 use fleet_core::store::bd::Bd;
 use fleet_core::store::{
-    keys, Filter, NewItem, Order, OrderState, RunRecord, Stamp, Store, StoreError,
+    keys, Filter, ItemId, NewItem, Order, OrderState, RunRecord, Stamp, Store, StoreError, Update,
 };
 use fleet_core::test_support::Board;
 
+/// Who the writes still taking text are made by.
 const BY: &str = "the-contract";
+
+/// Who the typed writes are made by: the same writer, as the actor it is.
+fn by() -> Actor {
+    Actor::typed("run:the-contract")
+        .expect("typed")
+        .expect("a run")
+}
 
 /// Who an order index here names as its dispatcher, the seat it names — the
 /// full id, a string the store carries and never reads — and when.
 const ORDERED_BY: &str = "run:an-architect";
 const SEAT: &str = "01a0d1f1-0aec-765f-9abe-00000000a5ea";
+
+/// A second seat, which an update hands an item on to.
+const ANOTHER_SEAT: &str = "01a0d1f1-0aec-765f-9abe-00000000a5eb";
 const AT: &str = "2026-09-13T00:00:00Z";
 
 /// The order the index [`dispatch::index`] writes over those three reads as.
@@ -80,14 +91,17 @@ const CHECKS: &[(&str, Check)] = &[
     ("resolve", resolve),
     ("list", list),
     ("show of an absent item", show_of_an_absent_item),
-    ("assign", assign),
-    ("set_title", set_title),
+    ("update's title and assignee", update),
+    ("update's cleared assignee", cleared),
+    ("update naming nothing", unchanged),
     ("set_orders then unset_orders", orders),
     ("hand_over and withdraw_order's fences", fenced),
     ("set_metadata's merge", metadata_merge),
     ("fleet.orders and fleet.run keep each other", fleet_keys),
     ("hold, open_holds, clear_hold", holds),
     ("close", close),
+    ("close of a closed item", close_of_closed),
+    ("version", version),
     ("export", export),
     ("append then timeline", append_then_timeline),
     ("timeline of an absent item", timeline_of_an_absent_item),
@@ -103,14 +117,27 @@ fn filed(store: &dyn Store, title: &str) -> String {
     store
         .create(
             &NewItem {
-                title,
-                description: "an item the contract suite filed",
-                item_type: "task",
-                labels: &["a-label"],
+                title: title.to_string(),
+                description: String::from("an item the contract suite filed"),
+                item_type: String::from("task"),
+                labels: vec![String::from("a-label")],
+                priority: None,
             },
-            BY,
+            &by(),
         )
         .expect("the item is filed")
+        .to_string()
+}
+
+/// The item handed to `seat`, which is a seat's full id.
+fn hand_to(store: &dyn Store, item: &str, seat: &str) {
+    store
+        .update(
+            &ItemId::from(item),
+            &Update::assignee(SeatId::parse(seat).expect("a seat id")),
+            &by(),
+        )
+        .expect("the assignment lands");
 }
 
 // ---- the checks --------------------------------------------------------------
@@ -151,7 +178,7 @@ fn show_by_hash(store: &dyn Store, _: &Path, which: &str) {
 
 /// A fragment resolves as `show` resolves it, and the answer is the FULL id
 /// and nothing else: the item's hash alone names the item. An id no item
-/// carries is Missing, as `show`'s is.
+/// carries is Refused, as `show`'s is.
 fn resolve(store: &dyn Store, _: &Path, which: &str) {
     let item = filed(store, "an item resolved by its hash");
     let (_, hash) = item
@@ -162,8 +189,8 @@ fn resolve(store: &dyn Store, _: &Path, which: &str) {
     assert_eq!(resolved, item, "{which}: the answer is the full id");
 
     match store.resolve("fx-nobody-filed-this") {
-        Err(StoreError::Missing(_)) => {}
-        other => panic!("{which}: an absent id is Missing, and answered {other:?}"),
+        Err(StoreError::Refused(_)) => {}
+        other => panic!("{which}: an absent id is Refused, and answered {other:?}"),
     }
 }
 
@@ -198,7 +225,7 @@ fn list(store: &dyn Store, _: &Path, which: &str) {
         row_in(&Filter::Assignee(seat)).is_none(),
         "{which}: an item nobody holds is in no seat's listing"
     );
-    store.assign(&item, SEAT, BY).expect("the assignment lands");
+    hand_to(store, &item, SEAT);
     assert!(
         row_in(&Filter::Assignee(seat)).is_some(),
         "{which}: an item assigned to the seat is in the seat's listing"
@@ -207,50 +234,91 @@ fn list(store: &dyn Store, _: &Path, which: &str) {
 
 fn show_of_an_absent_item(store: &dyn Store, _: &Path, which: &str) {
     match store.show("fx-nobody-filed-this") {
-        Err(fleet_core::store::StoreError::Missing(_)) => {}
-        other => panic!("{which}: an absent item is Missing, and answered {other:?}"),
+        Err(fleet_core::store::StoreError::Refused(_)) => {}
+        other => panic!("{which}: an absent item is Refused, and answered {other:?}"),
     }
 }
 
-fn assign(store: &dyn Store, _: &Path, which: &str) {
-    let item = filed(store, "an item to hand over");
+/// The title alone, the assignee alone and both in one update: each moves the
+/// field it names, and the read beside it answers the move and leaves the
+/// other field as it was.
+fn update(store: &dyn Store, _: &Path, which: &str) {
+    let item = filed(store, "the title it was filed under");
+    let id = ItemId::from(item.as_str());
+    let read = |store: &dyn Store| store.show(&item).expect("the item reads");
+
     store
-        .assign(&item, "a-seat", BY)
-        .expect("the assignment lands");
+        .update(
+            &id,
+            &Update::title(String::from("the title it carries now")),
+            &by(),
+        )
+        .expect("the title lands");
+    let now = read(store);
+    assert_eq!(now.title, "the title it carries now", "{which}");
     assert_eq!(
-        store
-            .show(&item)
-            .expect("the item reads")
-            .assignee
-            .as_deref(),
-        Some("a-seat"),
-        "{which}"
+        now.assignee, None,
+        "{which}: a title alone leaves the assignee absent"
+    );
+
+    hand_to(store, &item, SEAT);
+    let now = read(store);
+    assert_eq!(now.assignee.as_deref(), Some(SEAT), "{which}");
+    assert_eq!(
+        now.title, "the title it carries now",
+        "{which}: an assignee alone leaves the title"
     );
 
     store
-        .assign(&item, "another-seat", BY)
-        .expect("the second assignment lands");
+        .update(
+            &id,
+            &Update {
+                title: Some(String::from("the title and the holder both moved")),
+                assignee: Some(Some(SeatId::parse(ANOTHER_SEAT).expect("a seat id"))),
+            },
+            &by(),
+        )
+        .expect("the one update lands");
+    let now = read(store);
+    assert_eq!(now.title, "the title and the holder both moved", "{which}");
     assert_eq!(
-        store
-            .show(&item)
-            .expect("the item reads")
-            .assignee
-            .as_deref(),
-        Some("another-seat"),
+        now.assignee.as_deref(),
+        Some(ANOTHER_SEAT),
         "{which}: the last write is what the read answers"
     );
 }
 
-fn set_title(store: &dyn Store, _: &Path, which: &str) {
-    let item = filed(store, "the title it was filed under");
+/// An assignee handed to nobody reads ABSENT, as an item nobody ever held
+/// does, and never as an empty holder.
+fn cleared(store: &dyn Store, _: &Path, which: &str) {
+    let item = filed(store, "an item handed to nobody");
+    hand_to(store, &item, SEAT);
     store
-        .set_title(&item, "the title it carries now", BY)
-        .expect("the title lands");
+        .update(&ItemId::from(item.as_str()), &Update::unassigned(), &by())
+        .expect("the clearing lands");
+    let read = store.show(&item).expect("the item reads");
+    assert_eq!(read.assignee, None, "{which}: {}", read.proof.as_str());
     assert_eq!(
-        store.show(&item).expect("the item reads").title,
-        "the title it carries now",
-        "{which}"
+        read.title, "an item handed to nobody",
+        "{which}: and the title stands"
     );
+}
+
+/// An update naming neither field is Unreadable, word for word, and nothing
+/// moves.
+fn unchanged(store: &dyn Store, _: &Path, which: &str) {
+    let item = filed(store, "an item an empty update reaches");
+    hand_to(store, &item, SEAT);
+    match store.update(&ItemId::from(item.as_str()), &Update::default(), &by()) {
+        Err(StoreError::Unreadable(why)) => assert_eq!(
+            why, "an update names neither a title nor an assignee — nothing was written",
+            "{which}"
+        ),
+        other => panic!("{which}: an update naming nothing: {other:?}"),
+    }
+    let read = store.show(&item).expect("the item reads");
+    assert_eq!(read.title, "an item an empty update reaches", "{which}");
+    assert_eq!(read.assignee.as_deref(), Some(SEAT), "{which}");
 }
 
 fn orders(store: &dyn Store, _: &Path, which: &str) {
@@ -288,9 +356,7 @@ fn orders(store: &dyn Store, _: &Path, which: &str) {
 /// reopened by one, and the one that lands leaves the item open.
 fn fenced(store: &dyn Store, _: &Path, which: &str) {
     let item = filed(store, "an item a fenced write reaches");
-    store
-        .assign(&item, "a-seat", BY)
-        .expect("the seat holds it");
+    hand_to(store, &item, SEAT);
     store
         .set_orders(&item, r#"{"fleet.orders":{"v":1,"seat":"a-seat"}}"#, BY)
         .expect("the order index lands");
@@ -298,7 +364,7 @@ fn fenced(store: &dyn Store, _: &Path, which: &str) {
         let read = store.show(&item).expect("the item reads");
         assert_eq!(
             read.assignee.as_deref(),
-            Some("a-seat"),
+            Some(SEAT),
             "{which}: {what} — nothing was written, the holder stands"
         );
         assert_ne!(
@@ -318,7 +384,7 @@ fn fenced(store: &dyn Store, _: &Path, which: &str) {
     }
     untouched(store, "open", "another seat named");
 
-    match store.withdraw_order(&item, "a-seat", "in_progress", BY) {
+    match store.withdraw_order(&item, SEAT, "in_progress", BY) {
         Err(StoreError::Moved(why)) => assert!(
             why.contains(&item) && why.contains("in_progress"),
             "{which}: the refusal names the item and the status it expected: {why}"
@@ -328,9 +394,9 @@ fn fenced(store: &dyn Store, _: &Path, which: &str) {
     untouched(store, "open", "another status named");
 
     store
-        .close(&item, "landed by its seat", "a-seat")
+        .close(&ItemId::from(item.as_str()), "landed by its seat", SEAT)
         .expect("the holder closes it");
-    match store.withdraw_order(&item, "a-seat", "open", BY) {
+    match store.withdraw_order(&item, SEAT, "open", BY) {
         Err(StoreError::Moved(why)) => assert!(
             why.contains(&item) && why.contains("closed"),
             "{which}: the refusal names the item and the status it reads: {why}"
@@ -343,7 +409,7 @@ fn fenced(store: &dyn Store, _: &Path, which: &str) {
     untouched(store, "open", "a reopen");
 
     store
-        .withdraw_order(&item, "a-seat", "open", BY)
+        .withdraw_order(&item, SEAT, "open", BY)
         .expect("the holder's withdraw lands");
     let read = store.show(&item).expect("the item reads");
     assert!(
@@ -354,7 +420,7 @@ fn fenced(store: &dyn Store, _: &Path, which: &str) {
     assert_eq!(read.order, OrderState::None, "{which}: and the order unset");
     assert_eq!(read.status, "open", "{which}: and the item open");
 
-    match store.hand_over(&item, "a-seat", "the-builder", BY) {
+    match store.hand_over(&item, SEAT, "the-builder", BY) {
         Err(StoreError::Moved(_)) => {}
         other => panic!("{which}: a hand-over from a seat that no longer holds it: {other:?}"),
     }
@@ -486,11 +552,9 @@ fn fleet_keys(store: &dyn Store, _: &Path, which: &str) {
         read.proof.as_str()
     );
 
+    hand_to(store, &item, SEAT);
     store
-        .assign(&item, "a-seat", BY)
-        .expect("the seat holds it");
-    store
-        .withdraw_order(&item, "a-seat", "open", BY)
+        .withdraw_order(&item, SEAT, "open", BY)
         .expect("the holder's withdraw lands");
     let read = store.show(&item).expect("the item reads");
     assert_eq!(
@@ -544,13 +608,48 @@ fn close(store: &dyn Store, _: &Path, which: &str) {
     );
 
     store
-        .close(&item, "closed by the contract suite", BY)
+        .close(
+            &ItemId::from(item.as_str()),
+            "closed by the contract suite",
+            BY,
+        )
         .expect("the close lands");
     assert_eq!(
         store.show(&item).expect("the item reads").status,
         "closed",
         "{which}: the close is what the read answers"
     );
+}
+
+/// A close of an item already closed is Refused, naming the item — the act is
+/// already done — and the first close's reason is the one the item keeps.
+fn close_of_closed(store: &dyn Store, _: &Path, which: &str) {
+    let item = filed(store, "an item closed twice");
+    let id = ItemId::from(item.as_str());
+    store
+        .close(&id, "the first close's reason", BY)
+        .expect("the first close lands");
+    match store.close(&id, "the second close's reason", BY) {
+        Err(StoreError::Refused(why)) => {
+            assert_eq!(why, format!("{item} is already closed"), "{which}")
+        }
+        other => panic!("{which}: a close of a closed item: {other:?}"),
+    }
+    let read = store.show(&item).expect("the item reads");
+    assert_eq!(read.status, "closed", "{which}");
+    assert!(
+        read.proof.carries("the first close's reason")
+            && !read.proof.carries("the second close's reason"),
+        "{which}: the first close's reason stands: {}",
+        read.proof.as_str()
+    );
+}
+
+/// The store names itself and the version it is at, neither of them empty.
+fn version(store: &dyn Store, _: &Path, which: &str) {
+    let answered = store.version().expect("the version reads");
+    assert!(!answered.name.is_empty(), "{which}: {answered:?}");
+    assert!(!answered.version.is_empty(), "{which}: {answered:?}");
 }
 
 /// The export lands at the file the store's own capabilities declare, under
@@ -641,8 +740,8 @@ fn append_then_timeline(store: &dyn Store, _: &Path, which: &str) {
 
 fn timeline_of_an_absent_item(store: &dyn Store, _: &Path, which: &str) {
     match store.timeline("fx-nobody-filed-this") {
-        Err(StoreError::Missing(_)) => {}
-        other => panic!("{which}: an absent item's timeline is Missing, and answered {other:?}"),
+        Err(StoreError::Refused(_)) => {}
+        other => panic!("{which}: an absent item's timeline is Refused, and answered {other:?}"),
     }
 }
 
@@ -674,13 +773,18 @@ fn a_read_of_an_item_nobody_filed_is_missing_and_not_unreadable() {
 }
 
 #[test]
-fn an_assign_moves_the_assignee_the_next_read_answers() {
-    in_memory("contract-assign", assign);
+fn update_title_and_assignee_move_what_show_answers() {
+    in_memory("contract-update", update);
 }
 
 #[test]
-fn a_set_title_moves_the_title_the_next_read_answers() {
-    in_memory("contract-title", set_title);
+fn an_assignee_cleared_by_update_reads_absent() {
+    in_memory("contract-cleared", cleared);
+}
+
+#[test]
+fn an_update_naming_nothing_is_unreadable_and_moves_nothing() {
+    in_memory("contract-unchanged", unchanged);
 }
 
 #[test]
@@ -711,6 +815,16 @@ fn a_hold_is_on_the_open_listing_until_it_is_cleared() {
 #[test]
 fn a_close_moves_the_status_the_next_read_answers() {
     in_memory("contract-close", close);
+}
+
+#[test]
+fn closing_a_closed_item_is_refused() {
+    in_memory("contract-close-closed", close_of_closed);
+}
+
+#[test]
+fn version_names_the_store_and_its_version() {
+    in_memory("contract-version", version);
 }
 
 #[test]
@@ -750,6 +864,26 @@ fn every_check_holds_against_bd_too() {
     for (name, check) in CHECKS {
         check(&bd, &scratch.root, &format!("bd — {name}"));
     }
+}
+
+/// bd names itself `bd`, and its version is the first line `bd --version`
+/// prints, trimmed — asked of the binary beside it, so the arm holds on
+/// whatever bd this box has.
+#[test]
+fn bds_version_is_the_first_line_it_prints() {
+    let scratch = shared_store("contract");
+    let answered = Bd::at(&scratch.root).version().expect("bd's version reads");
+    let printed = scratch.bd(&["--version"]);
+    assert!(printed.status.success(), "bd --version runs");
+    let first = String::from_utf8_lossy(&printed.stdout)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    assert!(!first.is_empty(), "bd --version prints a line");
+    assert_eq!(answered.name, "bd");
+    assert_eq!(answered.version, first);
 }
 
 /// The JSON a call to the binary answered, opened out of its envelope where it

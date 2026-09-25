@@ -127,12 +127,12 @@ impl Store for Doctored<'_> {
         self.inner.list(filter)
     }
 
-    fn create(&self, item: &fleet_core::store::NewItem, by: &str) -> Result<String, StoreError> {
+    fn create(
+        &self,
+        item: &fleet_core::store::NewItem,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<fleet_core::store::ItemId, StoreError> {
         self.inner.create(item, by)
-    }
-
-    fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.set_title(item, title, by)
     }
 
     fn show(&self, item: &str) -> Result<Item, StoreError> {
@@ -151,8 +151,13 @@ impl Store for Doctored<'_> {
         Ok(read)
     }
 
-    fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.assign(item, seat, by)
+    fn update(
+        &self,
+        id: &fleet_core::store::ItemId,
+        change: &fleet_core::store::Update,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.update(id, change, by)
     }
 
     fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
@@ -183,8 +188,13 @@ impl Store for Doctored<'_> {
         self.inner.clear_hold(hold, by)
     }
 
-    fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.close(item, reason, by)
+    fn close(
+        &self,
+        id: &fleet_core::store::ItemId,
+        reason: &str,
+        by: &str,
+    ) -> Result<(), StoreError> {
+        self.inner.close(id, reason, by)
     }
 
     fn append(
@@ -202,6 +212,10 @@ impl Store for Doctored<'_> {
 
     fn capabilities(&self) -> Result<fleet_core::store::types::Capabilities, StoreError> {
         self.inner.capabilities()
+    }
+
+    fn version(&self) -> Result<fleet_core::store::Version, StoreError> {
+        self.inner.version()
     }
 
     fn export(&self, into: &std::path::Path) -> Result<std::path::PathBuf, StoreError> {
@@ -636,7 +650,7 @@ fn a_named_dispatch_appends_one_ordered_entry_and_writes_no_note() {
         .collect();
     assert_eq!(
         verbs,
-        ["assign", "append", "set_orders"],
+        ["update", "append", "set_orders"],
         "the assignee, then the entry, then the index: {wrote:?}"
     );
     assert_eq!(
@@ -922,14 +936,16 @@ fn an_epic_is_refused_by_name_and_nothing_is_written() {
         .store()
         .create(
             &fleet_core::store::NewItem {
-                title: "an epic whose children are the work",
-                description: "an epic",
-                item_type: "epic",
-                labels: &[],
+                title: String::from("an epic whose children are the work"),
+                description: String::from("an epic"),
+                item_type: String::from("epic"),
+                labels: Vec::new(),
+                priority: None,
             },
-            "the-test",
+            &fleet_core::test_support::the_test(),
         )
-        .expect("the epic is filed");
+        .expect("the epic is filed")
+        .to_string();
     assert!(
         rig.graph
             .store()
@@ -1016,16 +1032,16 @@ fn a_seat_already_holding_an_item_is_refused() {
     let rig = Rig::new("busy");
     let seat = String::from("s-busy");
     let claimed = rig.graph.item("the item this seat is already on");
-    rig.graph.assign(&claimed, &full(&seat));
+    rig.graph.hand_to(&claimed, &full(&seat));
     ordered(&rig, &claimed, &full(&seat));
     rig.graph.status(&claimed, "in_progress");
     let given = rig
         .graph
         .item("a second item it was given and has not started");
-    rig.graph.assign(&given, &full(&seat));
+    rig.graph.hand_to(&given, &full(&seat));
     ordered(&rig, &given, &full(&seat));
     let stale = rig.graph.item("an item assigned to it that nobody ordered");
-    rig.graph.assign(&stale, &full(&seat));
+    rig.graph.hand_to(&stale, &full(&seat));
 
     let item = rig.graph.item("a third item nobody may give it");
     let before = rig.graph.json(&item);
@@ -1069,12 +1085,12 @@ fn a_seat_assigned_only_unordered_work_and_an_epic_is_dispatched() {
     let bug = rig
         .graph
         .item("a bug assigned a month ago and never ordered");
-    rig.graph.assign(&bug, &full(&seat));
+    rig.graph.hand_to(&bug, &full(&seat));
     let epic = rig
         .graph
         .item("an epic still carrying the seat as assignee");
     rig.graph.item_type(&epic, "epic");
-    rig.graph.assign(&epic, &full(&seat));
+    rig.graph.hand_to(&epic, &full(&seat));
     ordered(&rig, &epic, &full(&seat));
 
     let item = rig.graph.item("the item the seat is given now");
@@ -1337,7 +1353,7 @@ fn a_suffix_is_dispatched_under_the_full_id_it_resolves_to() {
     assert_eq!(ordered_index(read), wanted_index(Some(&seat)));
 
     let wrote = board.store.wrote();
-    for verb in ["assign", "append", "set_orders"] {
+    for verb in ["update", "append", "set_orders"] {
         assert!(
             wrote
                 .iter()

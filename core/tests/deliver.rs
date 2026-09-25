@@ -162,12 +162,12 @@ impl Store for Doctored<'_> {
         self.inner.list(filter)
     }
 
-    fn create(&self, item: &fleet_core::store::NewItem, by: &str) -> Result<String, StoreError> {
+    fn create(
+        &self,
+        item: &fleet_core::store::NewItem,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<fleet_core::store::ItemId, StoreError> {
         self.inner.create(item, by)
-    }
-
-    fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.set_title(item, title, by)
     }
 
     fn show(&self, item: &str) -> Result<Item, StoreError> {
@@ -183,8 +183,13 @@ impl Store for Doctored<'_> {
         Ok(read)
     }
 
-    fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.assign(item, seat, by)
+    fn update(
+        &self,
+        id: &fleet_core::store::ItemId,
+        change: &fleet_core::store::Update,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.update(id, change, by)
     }
 
     fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
@@ -215,8 +220,13 @@ impl Store for Doctored<'_> {
         self.inner.clear_hold(hold, by)
     }
 
-    fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.close(item, reason, by)
+    fn close(
+        &self,
+        id: &fleet_core::store::ItemId,
+        reason: &str,
+        by: &str,
+    ) -> Result<(), StoreError> {
+        self.inner.close(id, reason, by)
     }
 
     fn append(
@@ -237,6 +247,10 @@ impl Store for Doctored<'_> {
 
     fn capabilities(&self) -> Result<fleet_core::store::types::Capabilities, StoreError> {
         self.inner.capabilities()
+    }
+
+    fn version(&self) -> Result<fleet_core::store::Version, StoreError> {
+        self.inner.version()
     }
 
     fn export(&self, into: &std::path::Path) -> Result<std::path::PathBuf, StoreError> {
@@ -275,7 +289,7 @@ fn project(scratch: &dyn Rooted) -> Project {
 fn an_ordered_item(graph: &Graph, title: &str, seat: &str) -> String {
     let item = graph.item(title);
     let seat = full(seat);
-    graph.assign(&item, &seat);
+    graph.hand_to(&item, &seat);
     graph
         .store()
         .set_orders(
@@ -505,7 +519,7 @@ fn another_writers_orders_key_and_run_label_ride_through_a_delivery() {
     let seat = "s-foreign";
     let item = an_ordered_item(scratch, "an item another tool indexes too", seat);
     let theirs = scratch.item("an item only another tool ordered");
-    scratch.assign(&theirs, &full(seat));
+    scratch.hand_to(&theirs, &full(seat));
     for held in [&item, &theirs] {
         scratch
             .store()
@@ -890,7 +904,11 @@ fn a_delivery_appends_one_delivered_entry_and_writes_no_note() {
     assert_eq!(
         wrote,
         vec![
-            format!("assign {item} {} {}", full(REVIEWER), seat_actor(seat)),
+            format!(
+                "update {item} assignee {} {}",
+                full(REVIEWER),
+                seat_actor(seat)
+            ),
             format!("append {item} delivered {}", seat_actor(seat)),
         ],
         "the reassignment and the entry, and nothing else"
@@ -1336,7 +1354,7 @@ fn a_seat_holding_no_ordered_item_is_refused_and_two_are_named() {
     let seat = "s-count";
     let delivery = a_delivery(scratch, "count", &whole());
     let unordered = scratch.item("an item with no order on it");
-    scratch.assign(&unordered, &full(seat));
+    scratch.hand_to(&unordered, &full(seat));
 
     let stop = deliver_with(
         None,
@@ -1560,7 +1578,7 @@ fn an_item_named_by_a_seat_that_does_not_hold_it_is_refused_naming_both() {
 
     // Assigned to Bram and never ordered: assigned is not held.
     let unordered = scratch.item("an item assigned to Bram and never ordered");
-    scratch.assign(&unordered, &full("Bram"));
+    scratch.hand_to(&unordered, &full("Bram"));
     refused(&seat_actor("Bram"), &unordered, &full("Bram"));
 
     // An ordered epic assigned to Bram: an epic is never work a seat holds.
@@ -1628,7 +1646,7 @@ fn an_item_named_by_its_suffix_is_delivered_under_its_full_id() {
 
     assert_eq!(delivered.item, item);
     let wrote = board.store.wrote();
-    for verb in ["assign", "append"] {
+    for verb in ["update", "append"] {
         assert!(
             wrote
                 .iter()

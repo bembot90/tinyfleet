@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use crate::entry::{Body, Entry};
 use crate::seat::actor::Actor;
+use crate::seat::identity::SeatId;
 use types::Capabilities;
 
 pub mod bd;
@@ -22,7 +23,8 @@ pub mod keys;
 pub mod types;
 
 pub use types::{
-    Filter, ItemId, ItemSummary, Order, OrderKind, OrderState, ReadProof, RunRecord, Stamp, Status,
+    Filter, ItemId, ItemSummary, NewItem, Order, OrderKind, OrderState, ReadProof, RunRecord,
+    Stamp, Status, Update, Version,
 };
 
 /// One item as a read answers it, in the contract's own types field by field:
@@ -66,25 +68,15 @@ pub struct Item {
     pub proof: ReadProof,
 }
 
-/// A new item, as the arguments a `create` takes.
-///
-/// There is no id here: the store names what it files, which is why [`Store`]'s
-/// `create` answers one.
-pub struct NewItem<'a> {
-    pub title: &'a str,
-    pub description: &'a str,
-    /// The store's own spelling — `task` for a run's record.
-    pub item_type: &'a str,
-    pub labels: &'a [&'a str],
-}
-
-/// The ways a store call ends badly, which are different exits: an item that
-/// is not there, or not held by whom the write required, is the record's
-/// answer, and a store that will not answer is no reading at all.
+/// The ways a store call ends badly, which are different exits: an act the
+/// record refuses, or an item not held by whom the write required, is the
+/// record's answer, and a store that will not answer is no reading at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
-    /// The store answered, and its answer is that there is no such item.
-    Missing(String),
+    /// The store answered, and its answer is that the act cannot be done as
+    /// asked: no such item, text naming more than one, or an act already done
+    /// — a close of a closed item is one.
+    Refused(String),
     /// The store answered, and its answer is that the item is held by someone
     /// other than the holder a fenced write named — so NOTHING was written.
     Moved(String),
@@ -95,7 +87,7 @@ pub enum StoreError {
 impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            StoreError::Missing(why) => write!(f, "{why}"),
+            StoreError::Refused(why) => write!(f, "{why}"),
             StoreError::Moved(why) => write!(f, "{why}"),
             StoreError::Unreadable(why) => write!(f, "{why}"),
         }
@@ -111,7 +103,7 @@ pub trait Store {
 
     /// The full id of the item the argument names, by the rule [`show`]
     /// resolves one with, and nothing else of it: an id no item carries is
-    /// Missing, and an argument naming more than one item is too.
+    /// Refused, and an argument naming more than one item is too.
     ///
     /// [`show`]: Store::show
     fn resolve(&self, id: &str) -> Result<ItemId, StoreError>;
@@ -131,26 +123,56 @@ pub trait Store {
     ///
     /// A run's record is titled by its own id, which nothing knows until
     /// this returns — so the title in [`NewItem`] is what the record carries
-    /// until the caller retitles it, and the caller's read-back is what says
-    /// the second write landed.
-    fn create(&self, item: &NewItem, by: &str) -> Result<String, StoreError>;
+    /// until the caller retitles it through [`update`](Store::update), and the
+    /// caller's read-back is what says the second write landed.
+    fn create(&self, item: &NewItem, by: &Actor) -> Result<ItemId, StoreError>;
 
-    fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError>;
-
-    fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError>;
+    /// The item's title, its assignee or both moved in ONE write. A field the
+    /// change leaves out is left alone, and an assignee of `None` is the item
+    /// handed to nobody.
+    ///
+    /// A change naming neither is Unreadable, and nothing is written: it is a
+    /// caller's mistake, and never a write that quietly did nothing.
+    fn update(&self, id: &ItemId, change: &Update, by: &Actor) -> Result<(), StoreError>;
 
     /// The item handed from `from` to `to`, and only while `from` still holds
     /// it — `""` for an item nobody holds. Anyone else holding it is
     /// [`StoreError::Moved`], and nothing is written.
     ///
     /// For a write whose actor is NOT the holder. The DEFAULT reads the holder
-    /// and then assigns, for a store with no fence of its own.
+    /// and then updates the assignee, for a store with no fence of its own.
+    ///
+    /// The seat and the actor are text here, and an update takes both typed:
+    /// a `to` that is no seat id, or a `by` that is no typed actor, is
+    /// Unreadable with nothing written, and never a reading guessed at.
     fn hand_over(&self, item: &str, from: &str, to: &str, by: &str) -> Result<(), StoreError> {
+        let change = match to {
+            "" => Update::unassigned(),
+            seat => Update::assignee(SeatId::parse(seat).map_err(|why| {
+                StoreError::Unreadable(format!(
+                    "{item} is not handed over: {why} — nothing was written"
+                ))
+            })?),
+        };
+        let actor = match Actor::typed(by) {
+            Some(Ok(actor)) => actor,
+            Some(Err(why)) => {
+                return Err(StoreError::Unreadable(format!(
+                    "{why} — nothing was written"
+                )))
+            }
+            None => {
+                return Err(StoreError::Unreadable(format!(
+                    "`{by}` is not a typed actor, and a hand-over of {item} is written under one \
+                     — nothing was written"
+                )))
+            }
+        };
         let held = self.show(item)?.assignee.unwrap_or_default();
         if held != from {
             return Err(moved(item, from, &held));
         }
-        self.assign(item, to, by)
+        self.update(&ItemId::from(item), &change, &actor)
     }
 
     /// `metadata["fleet.orders"]`, written as one object that replaces the key
@@ -229,7 +251,16 @@ pub trait Store {
     fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError>;
 
     /// The item closed, with the reason a reader gets instead of the act.
-    fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError>;
+    ///
+    /// AN ITEM ALREADY CLOSED IS REFUSED, and its first close's reason
+    /// stands: the act is already done, which is the record's answer.
+    ///
+    /// `by` IS TEXT AND NOT AN [`Actor`], the one write here that keeps it: a
+    /// landing closes under the holder's own assignee string, because a store
+    /// may close an assigned item only for an actor equal to its assignee —
+    /// the adapter's `close` says where that was measured. Whether that
+    /// string becomes a typed actor is ruled with the order writes.
+    fn close(&self, id: &ItemId, reason: &str, by: &str) -> Result<(), StoreError>;
 
     /// One entry appended to the item's timeline, answered as the entry's id.
     ///
@@ -243,7 +274,7 @@ pub trait Store {
     /// does not read — or whose author is not a typed actor — is Unreadable
     /// and refuses the whole read, naming the comment, because a timeline with
     /// a hole in it answers every question wrong. An item the store does not
-    /// hold is Missing.
+    /// hold is Refused.
     fn timeline(&self, item: &str) -> Result<Vec<Entry>, StoreError>;
 
     /// What the store keeps beside the graph, answered without a call to the
@@ -251,6 +282,9 @@ pub trait Store {
     /// `None` for a store that keeps none, which a landing lands without —
     /// whether it is a scratch board, and the prefix its ids carry.
     fn capabilities(&self) -> Result<Capabilities, StoreError>;
+
+    /// Which store answered, and at which version of itself.
+    fn version(&self) -> Result<Version, StoreError>;
 
     /// The store's own export, written under the root the CALLER names at the
     /// file [`capabilities`](Store::capabilities) declares, and answered as
@@ -301,6 +335,19 @@ pub(crate) fn validated(item: &str, body: &Body) -> Result<(), StoreError> {
             body.kind()
         ))
     })
+}
+
+/// The refusal an update naming neither a title nor an assignee answers — the
+/// one both stores answer, word for word, before anything is run.
+pub(crate) fn unchanged() -> StoreError {
+    StoreError::Unreadable(String::from(
+        "an update names neither a title nor an assignee — nothing was written",
+    ))
+}
+
+/// The refusal a close of an item already closed answers.
+pub(crate) fn already_closed(id: &ItemId) -> StoreError {
+    StoreError::Refused(format!("{id} is already closed"))
 }
 
 /// A holder as a refusal names one: the seat, or nobody for `""`.

@@ -28,7 +28,9 @@ use crate::item::{
 };
 use crate::seat::actor::Actor;
 use crate::seat::identity::{Directory, Kind, SeatId, SeatRef};
-use crate::store::{self, keys, Filter, Item, OrderState, Stamp, Status, Store, StoreError};
+use crate::store::{
+    self, keys, Filter, Item, ItemId, OrderState, Stamp, Status, Store, StoreError, Update,
+};
 
 /// The kind of order this verb writes. The reference's other two grammars —
 /// a run's feed, a spawn's own line — are that repository's; here there is one
@@ -310,7 +312,11 @@ fn to_named_seat(
     let label = wiring.seats.label(&named.id);
     wiring
         .store
-        .assign(order.item, seat, &order.by.to_string())
+        .update(
+            &ItemId::from(order.item),
+            &Update::assignee(named.id),
+            order.by,
+        )
         .map_err(|e| wrote_nothing(order.item, "the assignee", &e))?;
     let entry = write_order(order, wiring, Some(&named.id), true)?;
     read_back(order, wiring, Some(seat), Some(&named.id))?;
@@ -414,7 +420,11 @@ fn to_a_transient_seat(
                 })?;
             wiring
                 .store
-                .assign(order.item, &seat, &order.by.to_string())
+                .update(
+                    &ItemId::from(order.item),
+                    &Update::assignee(spawned.id),
+                    order.by,
+                )
                 .map_err(|e| {
                     Refused::stopped(Stop::could_not_tell(format!(
                         "{} was ordered and `{seat}` was spawned, and the assignment did not \

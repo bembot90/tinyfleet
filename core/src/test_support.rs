@@ -17,7 +17,8 @@ use crate::seat::actor::Actor;
 use crate::store::bd::{item_from, opened, order_of, shown, SCHEMA_VERSION};
 use crate::store::types::{Capabilities, ExportSpec};
 use crate::store::{
-    keys, Filter, Item, ItemId, ItemSummary, NewItem, Order, OrderState, Status, Store, StoreError,
+    already_closed, keys, unchanged, Filter, Item, ItemId, ItemSummary, NewItem, Order, OrderState,
+    Status, Store, StoreError, Update, Version,
 };
 
 /// Where the fake's export goes, relative to the root it is handed: a file of
@@ -227,7 +228,7 @@ impl FakeStore {
         let mut items = self.items.lock().expect("the items are not poisoned");
         let held = items
             .get_mut(item)
-            .ok_or_else(|| StoreError::Missing(format!("{item} is not here")))?;
+            .ok_or_else(|| StoreError::Refused(format!("{item} is not here")))?;
         change(held);
         Ok(())
     }
@@ -239,7 +240,7 @@ impl FakeStore {
         let items = self.items.lock().expect("the items are not poisoned");
         let held = items
             .get(item)
-            .ok_or_else(|| StoreError::Missing(format!("{item} is not here")))?;
+            .ok_or_else(|| StoreError::Refused(format!("{item} is not here")))?;
         let now = held.assignee.as_deref().unwrap_or_default();
         if now != holder {
             return Err(crate::store::moved(item, holder, now));
@@ -254,7 +255,7 @@ impl FakeStore {
         let items = self.items.lock().expect("the items are not poisoned");
         let held = items
             .get(item)
-            .ok_or_else(|| StoreError::Missing(format!("{item} is not here")))?;
+            .ok_or_else(|| StoreError::Refused(format!("{item} is not here")))?;
         if held.status != status {
             return Err(crate::store::restatused(item, status, held.status.as_str()));
         }
@@ -306,7 +307,7 @@ impl FakeStore {
             let items = self.items.lock().expect("the items are not poisoned");
             let held = items
                 .get(item)
-                .ok_or_else(|| StoreError::Missing(format!("{item} is not here")))?;
+                .ok_or_else(|| StoreError::Refused(format!("{item} is not here")))?;
             seeded_metadata(held)
         };
         let mut all = self.metadata.lock().expect("the metadata is not poisoned");
@@ -637,7 +638,7 @@ impl Store for FakeStore {
             .ok_or_else(|| StoreError::Unreadable(format!("{id} answered a row naming no id")))
     }
 
-    fn create(&self, item: &NewItem, by: &str) -> Result<String, StoreError> {
+    fn create(&self, item: &NewItem, by: &Actor) -> Result<ItemId, StoreError> {
         self.log(format!(
             "create {} {} {} [{}] {by}",
             item.title,
@@ -655,7 +656,7 @@ impl Store for FakeStore {
             }
         };
         if self.deaf() {
-            return Ok(id);
+            return Ok(ItemId::from(id));
         }
         self.items
             .lock()
@@ -664,11 +665,11 @@ impl Store for FakeStore {
                 id.clone(),
                 Item {
                     id: ItemId::from(id.as_str()),
-                    title: item.title.to_string(),
-                    description: item.description.to_string(),
+                    title: item.title.clone(),
+                    description: item.description.clone(),
                     status: Status::Open,
-                    item_type: item.item_type.to_string(),
-                    labels: item.labels.iter().map(|l| l.to_string()).collect(),
+                    item_type: item.item_type.clone(),
+                    labels: item.labels.clone(),
                     ..Item::default()
                 },
             );
@@ -676,12 +677,35 @@ impl Store for FakeStore {
             .lock()
             .expect("the metadata is not poisoned")
             .remove(&id);
-        Ok(id)
+        Ok(ItemId::from(id))
     }
 
-    fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError> {
-        self.log(format!("set_title {item} {title} {by}"))?;
-        self.moving(item, |held| held.title = title.to_string())
+    /// One log line naming each field the change moves — `title <t>`,
+    /// `assignee <seat>` or `assignee nobody` — and the moves themselves. An
+    /// assignee handed to nobody is ABSENT, as bd answers one it cleared.
+    fn update(&self, id: &ItemId, change: &Update, by: &Actor) -> Result<(), StoreError> {
+        if change.is_empty() {
+            return Err(unchanged());
+        }
+        let mut line = format!("update {id}");
+        if let Some(title) = &change.title {
+            line.push_str(&format!(" title {title}"));
+        }
+        if let Some(assignee) = &change.assignee {
+            match assignee {
+                Some(seat) => line.push_str(&format!(" assignee {seat}")),
+                None => line.push_str(" assignee nobody"),
+            }
+        }
+        self.log(format!("{line} {by}"))?;
+        self.moving(id, |held| {
+            if let Some(title) = &change.title {
+                held.title = title.clone();
+            }
+            if let Some(assignee) = &change.assignee {
+                held.assignee = assignee.map(|seat| seat.to_string());
+            }
+        })
     }
 
     /// The row [`FakeStore::shown_row`] answers, decoded as the real store's
@@ -691,11 +715,6 @@ impl Store for FakeStore {
             return refused;
         }
         item_from(item, &self.shown_row(item)?)
-    }
-
-    fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
-        self.log(format!("assign {item} {seat} {by}"))?;
-        self.moving(item, |held| held.assignee = Some(seat.to_string()))
     }
 
     /// One log line, and the assignment only while `from` holds the item.
@@ -791,14 +810,26 @@ impl Store for FakeStore {
 
     /// The reason goes to the log and not onto the item: the real store holds
     /// it in a field of its own that no read here decodes.
-    fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
-        self.log(format!("close {item} {reason} {by}"))?;
-        self.moving(item, |held| held.status = Status::Closed)?;
+    ///
+    /// An item already closed is Refused and its first reason stands, which is
+    /// what bd's adapter answers after its own read.
+    fn close(&self, id: &ItemId, reason: &str, by: &str) -> Result<(), StoreError> {
+        self.log(format!("close {id} {reason} {by}"))?;
+        let closed = self
+            .items
+            .lock()
+            .expect("the items are not poisoned")
+            .get(id.as_str())
+            .is_some_and(|held| held.status == Status::Closed);
+        if closed {
+            return Err(already_closed(id));
+        }
+        self.moving(id, |held| held.status = Status::Closed)?;
         if !self.deaf() {
             self.closed
                 .lock()
                 .expect("the reasons are not poisoned")
-                .insert(item.to_string(), reason.to_string());
+                .insert(id.to_string(), reason.to_string());
         }
         Ok(())
     }
@@ -816,7 +847,7 @@ impl Store for FakeStore {
             .expect("the items are not poisoned")
             .contains_key(item)
         {
-            return Err(StoreError::Missing(format!("{item} is not here")));
+            return Err(StoreError::Refused(format!("{item} is not here")));
         }
         let comment = self.minted(&by.to_string(), &entry::encode(body));
         let id = comment.id.clone();
@@ -844,7 +875,7 @@ impl Store for FakeStore {
             .expect("the items are not poisoned")
             .contains_key(item)
         {
-            return Err(StoreError::Missing(format!("{item} is not here")));
+            return Err(StoreError::Refused(format!("{item} is not here")));
         }
         let comments = self.comments.lock().expect("the comments are not poisoned");
         let mut entries = Vec::new();
@@ -872,6 +903,13 @@ impl Store for FakeStore {
             }),
             scratch: false,
             item_prefix: None,
+        })
+    }
+
+    fn version(&self) -> Result<Version, StoreError> {
+        Ok(Version {
+            name: String::from("fake"),
+            version: String::from("0"),
         })
     }
 
@@ -971,14 +1009,11 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     fn list(&self, filter: &Filter) -> Result<Vec<ItemSummary>, StoreError> {
         (**self).list(filter)
     }
-    fn create(&self, item: &NewItem, by: &str) -> Result<String, StoreError> {
+    fn create(&self, item: &NewItem, by: &Actor) -> Result<ItemId, StoreError> {
         (**self).create(item, by)
     }
-    fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError> {
-        (**self).set_title(item, title, by)
-    }
-    fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
-        (**self).assign(item, seat, by)
+    fn update(&self, id: &ItemId, change: &Update, by: &Actor) -> Result<(), StoreError> {
+        (**self).update(id, change, by)
     }
     fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
         (**self).set_orders(item, payload, by)
@@ -1013,8 +1048,8 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError> {
         (**self).clear_hold(hold, by)
     }
-    fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
-        (**self).close(item, reason, by)
+    fn close(&self, id: &ItemId, reason: &str, by: &str) -> Result<(), StoreError> {
+        (**self).close(id, reason, by)
     }
     fn append(&self, item: &str, body: &Body, by: &Actor) -> Result<String, StoreError> {
         (**self).append(item, body, by)
@@ -1024,6 +1059,9 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     }
     fn capabilities(&self) -> Result<Capabilities, StoreError> {
         (**self).capabilities()
+    }
+    fn version(&self) -> Result<Version, StoreError> {
+        (**self).version()
     }
     fn export(&self, into: &Path) -> Result<PathBuf, StoreError> {
         (**self).export(into)
@@ -1083,14 +1121,15 @@ impl Board {
         self.store
             .create(
                 &NewItem {
-                    title,
-                    description: "a board item",
-                    item_type: "task",
-                    labels: &[],
+                    title: title.to_string(),
+                    description: String::from("a board item"),
+                    item_type: String::from("task"),
+                    ..NewItem::default()
                 },
-                "the-test",
+                &the_test(),
             )
             .expect("the item is filed")
+            .to_string()
     }
 
     /// The whole document, as text: what an arm compares before and after.
@@ -1104,11 +1143,14 @@ impl Board {
     }
 
     /// The writes a rig makes for its own setup, as the store's own calls: a
-    /// rig is putting an item in a state, not asserting on the write.
-    pub fn assign(&self, item: &str, seat: &str) {
+    /// rig is putting an item in a state, not asserting on the write. The
+    /// seat is a seat's full id, which is what an assignment writes.
+    pub fn hand_to(&self, item: &str, seat: &str) {
+        let seat = crate::seat::identity::SeatId::parse(seat)
+            .unwrap_or_else(|e| panic!("a rig hands {item} to a seat: {e}"));
         self.store
-            .assign(item, seat, "the-test")
-            .unwrap_or_else(|e| panic!("assign {item}: {e}"));
+            .update(&ItemId::from(item), &Update::assignee(seat), &the_test())
+            .unwrap_or_else(|e| panic!("hand {item} to {seat}: {e}"));
     }
 
     pub fn set_metadata(&self, item: &str, payload: &str) {
@@ -1151,6 +1193,14 @@ impl Drop for Board {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+/// The actor a rig's own setup writes under: a run, because the setup is no
+/// seat's act.
+pub fn the_test() -> Actor {
+    Actor::typed("run:the-test")
+        .expect("a typed actor")
+        .expect("with a run's id")
 }
 
 pub fn copy_tree(from: &Path, to: &Path) {
