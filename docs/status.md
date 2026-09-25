@@ -67,16 +67,18 @@ routines
 
 runs  0 failed in the last 24 hours, 0 held, 0 could not tell, 0 waiting, 0 open
 
-holds  0 raised by a park and not cleared
+holds  0 open
 ```
 
 It exits 0.
 
 The page is built from the projection, the policy file that the projection
-names, `config.json` in the machine directory, and the event stream. It reads
-the policy file as that file is when you run the command. It does not look for running processes, so the
-projection's age is the only sign of whether the controller is still running.
-It writes nothing, not even to the machine directory.
+names, `config.json` in the machine directory, the event stream, and the work
+graph of every project on this machine: the fleet's own, and each one
+`fleet create --standalone` declared to it. It reads the policy file as that
+file is when you run the command. It does not look for running processes, so
+the projection's age is the only sign of whether the controller is still
+running. It writes nothing, not even to the machine directory.
 
 ### The first line
 
@@ -183,18 +185,33 @@ yet. With no routines loaded, the section says `no routine is loaded`.
 
 The `runs` line counts runs by state: failed in the last 24 hours, held,
 could not tell, waiting and open. Every run counted there gets its own row
-below the line. The `holds` line counts holds that a park raised and
-nobody has cleared yet. Both come from the event stream, so a machine with no
-stream shows every count at zero. The rows are explained in
-[Runs and workflows](runs.md).
+below the line. The runs come from the event stream, so a machine with no
+stream counts none. A run whose last line is `could not tell` counts as held
+when its record carries the hold the controller raises at the crash cap. The
+rows are explained in [Runs and workflows](runs.md).
+
+The `holds` line counts the holds the work graphs of this machine's projects
+still list open, a run's and an item's alike:
+
+```text
+holds  1 open
+```
+
+A hold stops counting once its store no longer lists it open, whoever
+cleared it: `fleet clear`, `fleet cancel`, or a person with `bd`. When one of
+those work graphs does not answer, the line reads `holds  not counted —` and
+the reason, and when the stream cannot be read it reads
+`holds  not counted — the stream did not read`.
 
 ### When a section cannot be read
 
-If the policy file or the event stream cannot be read, the page still prints.
-The section that needed the file shows the reason in place of its contents,
-and the same reason appears on standard error, prefixed `fleet status:`. The
-command then exits 3. Without the policy file, the context rows show only the
-token count.
+If the policy file, the event stream or a project's work graph cannot be
+read, the page still prints. The section that needed it shows the reason in
+place of its contents, and the same reason appears on standard error,
+prefixed `fleet status:`. The command then exits 3. Without the policy file,
+the context rows show only the token count. A run at `could not tell` whose
+record cannot be asked whether it is held leaves a line in the runs section,
+`the runs were not all read —` and the run, and exits 3 the same way.
 
 ## Reading one seat
 
@@ -234,10 +251,10 @@ are stored, one per line on standard output:
 
 ```sh
 $ fleet event tail
-{"id":"<id-1>","seq":1,"ts":"<event-stamp>","type":"seat.woke","actor":{"kind":"seat","id":"01a0d5ff-b143-7781-9967-5ccd10b55fd3"},"payload":{}}
-{"id":"<id-2>","seq":2,"ts":"<event-stamp>","type":"seat.woke","actor":{"kind":"seat","id":"01a0d5ff-b14e-7d43-809e-43b851df4f54"},"payload":{}}
-{"id":"<id-3>","seq":3,"ts":"<event-stamp>","type":"seat.handed_off","actor":{"kind":"seat","id":"01a0d5ff-b143-7781-9967-5ccd10b55fd3"},"payload":{}}
-{"id":"<id-4>","seq":4,"ts":"<event-stamp>","type":"seat.exited","actor":{"kind":"seat","id":"01a0d5ff-b143-7781-9967-5ccd10b55fd3"},"payload":{}}
+{"id":"<id-1>","seq":1,"ts":"<event-stamp>","type":"seat.woke","actor":{"kind":"seat","id":"<you>"},"payload":{}}
+{"id":"<id-2>","seq":2,"ts":"<event-stamp>","type":"seat.woke","actor":{"kind":"seat","id":"<seat>"},"payload":{}}
+{"id":"<id-3>","seq":3,"ts":"<event-stamp>","type":"seat.handed_off","actor":{"kind":"seat","id":"<you>"},"payload":{}}
+{"id":"<id-4>","seq":4,"ts":"<event-stamp>","type":"seat.exited","actor":{"kind":"seat","id":"<you>"},"payload":{}}
 ```
 
 It exits 0. It skips any line that does not parse as JSON or has no `seq`.
@@ -264,7 +281,7 @@ that seat's lines:
 
 ```sh
 $ fleet event tail --seat orla --type seat.woke
-{"id":"<id-1>","seq":1,"ts":"<event-stamp>","type":"seat.woke","actor":{"kind":"seat","id":"01a0d5ff-b143-7781-9967-5ccd10b55fd3"},"payload":{}}
+{"id":"<id-1>","seq":1,"ts":"<event-stamp>","type":"seat.woke","actor":{"kind":"seat","id":"<you>"},"payload":{}}
 ```
 
 `--actor` and `--type` need an exact match, kind and id both, so a run's
@@ -282,6 +299,24 @@ $ fleet event tail --actor controller
 fleet event tail: --actor controller is not kind:id
 ```
 
+### Item lines
+
+An entry on an item's timeline is signalled on the stream by one
+`item.entry` line, whose payload names the `item`, the `entry` and the
+entry's `kind` and nothing else. Every delivered, reviewed, held, cleared and
+landed entry gets one, and so does the ordered entry that gives an item to its
+seat; a withdrawn order gets none. What the entry says is on the item: read it
+with `fleet item show` (see
+[Items and the record](items.md#reading-the-record)). A landing also writes
+one `check.read` line per suite reading, or one with `verdict` `none` when it
+was handed no `--test`.
+
+```sh
+$ fleet event tail --type item.entry
+{"id":"<id-5>","seq":5,"ts":"<event-stamp>","type":"item.entry","actor":{"kind":"seat","id":"<you>"},"payload":{"entry":"<entry-1>","item":"<item>","kind":"ordered"}}
+{"id":"<id-6>","seq":6,"ts":"<event-stamp>","type":"item.entry","actor":{"kind":"seat","id":"<seat>"},"payload":{"entry":"<entry-2>","item":"<item>","kind":"held"}}
+```
+
 ### Starting from a point
 
 `--since <seq>` prints every line with a sequence above `<seq>`, and lifts the
@@ -289,8 +324,8 @@ fleet event tail: --actor controller is not kind:id
 
 ```sh
 $ fleet event tail --since 2
-{"id":"<id-3>","seq":3,"ts":"<event-stamp>","type":"seat.handed_off","actor":{"kind":"seat","id":"01a0d5ff-b143-7781-9967-5ccd10b55fd3"},"payload":{}}
-{"id":"<id-4>","seq":4,"ts":"<event-stamp>","type":"seat.exited","actor":{"kind":"seat","id":"01a0d5ff-b143-7781-9967-5ccd10b55fd3"},"payload":{}}
+{"id":"<id-3>","seq":3,"ts":"<event-stamp>","type":"seat.handed_off","actor":{"kind":"seat","id":"<you>"},"payload":{}}
+{"id":"<id-4>","seq":4,"ts":"<event-stamp>","type":"seat.exited","actor":{"kind":"seat","id":"<you>"},"payload":{}}
 ```
 
 `--since` also takes a stamp of the form `YYYY-MM-DDTHH:MM:SSZ`. Fleet looks
@@ -301,7 +336,7 @@ resolved to:
 ```sh
 $ fleet event tail --since <event-stamp>
 --since <event-stamp> resolved to 1
-{"id":"<id-1>","seq":1,"ts":"<event-stamp>","type":"seat.woke","actor":{"kind":"seat","id":"01a0d5ff-b143-7781-9967-5ccd10b55fd3"},"payload":{}}
+{"id":"<id-1>","seq":1,"ts":"<event-stamp>","type":"seat.woke","actor":{"kind":"seat","id":"<you>"},"payload":{}}
 ...
 ```
 
@@ -388,8 +423,8 @@ line, with `"verb":"event show"`, and refusals take the same form.
 - [The controller and seats](seats.md): the controller that publishes the
   projection, and the seats on its roster.
 - [Runs and workflows](runs.md): the rows of the runs section.
-- [Items and the record](items.md): the verbs that write item events to the
-  stream, and the questions a seat parks on.
+- [Items and the record](items.md): the entries the `item.entry` lines
+  signal, and the holds a seat raises.
 - [Exit codes and conventions](conventions.md): the exit table every command
   shares.
 - [Getting started](getting-started.md): starting the controller that

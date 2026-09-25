@@ -29,9 +29,9 @@ What it holds today:
   the run directory with its sha256 on the event. A `Waiting` thrown from a
   step is exit 2 with its condition, as JSON, on stdout's last line; any
   other throw is exit 1 with its reason there the same way; a name mismatch
-  at n is exit 1 with `replay diverged at step n`. Under `assets/` for the reason this file is.
-  Its suite is `assets/sdk/mod_test.ts`, under Deno's own runner: `make
-  fleet-ts-test`, a test-tools row of its own beside fleet-test.
+  at n is exit 1 with `replay diverged at step n`. Under `assets/` for the
+  reason this file is. Its suites are the `*_test.ts` files beside it, under
+  Deno's own runner: `deno test -A assets/sdk/` from this pack's root.
 
 ## The verbs
 
@@ -80,7 +80,8 @@ k-th `hold`, and the k-th `run.started` it raised on the stream its k-th
 
 - `review(item, verdict)` — `fleet review <item> --json` with `--land` for
   `"accepted"` or `--return <file>` for `{ returned: file }`; the result's
-  `state` is the one the verdict moved the item to. The findings file is JSON
+  `state` is `reviewed`, the entry kind the verb wrote, and its `verdict` is
+  `accepted` or `returned`. The findings file is JSON
   of the shape core's `assets/findings.schema.json` gives, one entry per
   finding, written under the run directory; the verb numbers them `F1`, `F2`,
   and refuses a file that does not read with exit 2 before it writes anything.
@@ -99,8 +100,8 @@ k-th `hold`, and the k-th `run.started` it raised on the stream its k-th
   --json`; the result carries the landed sha, read by the verb from the push's
   own range line. `test` is the command the landing runs on the rebased tree
   under its lock, before the push; without one the landing runs nothing and
-  its note says NOT TESTED. A project's policy names no test command: the
-  workflow hands it in.
+  its `landed` entry's `test` says NOT TESTED. A project's policy names no
+  test command: the workflow hands it in.
 
   ```ts
   const { sha } = await run.land("item-12", "0123abc", { test: "make check" });
@@ -125,10 +126,12 @@ k-th `hold`, and the k-th `run.started` it raised on the stream its k-th
 - `until(items, state)` — reads each item's record and throws Waiting whose
   `items` are exactly the outstanding ones, in the order given; once every
   item's record answers it returns each item's answering entry. The states
-  are `dispatched` (the current order), `delivered` (the latest delivery no
-  return followed; a landing does not withdraw it), `reviewed` and `returned`
-  (the last verdict, where it is that one and no delivery followed it),
-  `landed` (the last landing) and `held` (the open hold).
+  are `dispatched` (the last `ordered` entry, where no `order_withdrawn`
+  followed it), `delivered` (the latest `delivered` entry no return followed;
+  a landing does not withdraw it), `reviewed` (the last `reviewed` entry,
+  where it is an accept and no delivery followed it), `returned` (the same,
+  where it is a return), `landed` (the last `landed` entry) and `held` (the
+  last `held` entry no `cleared` entry naming its hold followed).
 
   ```ts
   const landed = await run.until(["item-12", "item-13"], "landed");

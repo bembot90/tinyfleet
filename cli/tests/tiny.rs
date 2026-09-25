@@ -222,6 +222,53 @@ fn the_pack_teaches_the_question_file_and_never_the_note_flag() {
     }
 }
 
+/// THE PACK TEACHES THE TIMELINE AS THE RECORD: no line of any document hands
+/// a seat or a person a prose record to read — a flight marker, a parked
+/// region, a delivery note, a marker line at column zero, or an order key that
+/// is not `fleet.orders`. What happened to an item is the entries `fleet item
+/// show` renders, and a skill that reads for one of these reads for nothing.
+#[test]
+fn no_pack_text_teaches_a_prose_record() {
+    const FORBIDDEN: [&str; 6] = [
+        "On flight",
+        "LEFT FLIGHT",
+        "PARKED region",
+        "delivery note",
+        "QUESTION` at column zero",
+        "an orders key",
+    ];
+
+    // The control: a line carrying one phrase is found by the same scan the
+    // sweep below uses, and a line carrying none is not.
+    let found = |line: &str| FORBIDDEN.iter().find(|phrase| line.contains(*phrase));
+    assert_eq!(
+        found("an `On flight` note with no `LEFT FLIGHT` after it"),
+        Some(&"On flight")
+    );
+    assert_eq!(found("the delivered entry, the diff at its commit"), None);
+
+    let mut lines = 0;
+    let mut taught = Vec::new();
+    for (path, text) in pack_files() {
+        for (n, line) in text.lines().enumerate() {
+            lines += 1;
+            if let Some(phrase) = found(line) {
+                taught.push(format!("{path}:{} `{phrase}`: {line}", n + 1));
+            }
+        }
+    }
+    assert!(
+        lines > 0,
+        "the pack's documents were read line by line — a sweep that read none \
+         would pass whatever they said"
+    );
+    assert!(
+        taught.is_empty(),
+        "these lines teach a prose record:\n{}",
+        taught.join("\n")
+    );
+}
+
 // ---- the slots the pack fills -----------------------------------------------
 
 /// The pack's own directory, checked by the verb that validates one.

@@ -4,8 +4,8 @@ Five things no verb guesses, each one a lesson somebody already paid for:
    branch tip that moved after the review is excluded, not swept in.
 2. **Status read directly.** Every check reads its own command's exit. Nothing
    is read through a pipe, and nothing is read off the tail of some output.
-3. **The record before the act's end.** No verb says done until the note it
-   wrote has been read back off the item.
+3. **The record before the act's end.** No verb says done until the entry it
+   appended has been read back off the item's timeline.
 4. **Absence is graceful.** A ring that finds no live session sends nothing and
    moves on: the assignment already recorded the handoff.
 5. **Your checks are the suites your diff touches.** The project's whole
@@ -31,7 +31,7 @@ What each verb writes, so you know what to look for afterwards:
 | --- | --- |
 | `dispatch` | the ordered entry on the item, its fleet.orders index, and the assignee |
 | `brief` | nothing — it renders and prints |
-| `deliver` | the commit on the work branch, and the delivery note on the item, rendered from the JSON file `--delivery` names |
+| `deliver` | the commit on the work branch, the delivered entry on the item, from the JSON file `--delivery` names, and the item reassigned to its reviewer |
 | `review` | the reviewed entry: accepted, or returned with its findings |
 | `land` | the squashed commit on the trunk, the landed entry on the item, and the closed item |
 | `hold` | everything the tree holds, committed on the work branch; the hold, carrying the question from the JSON file `--question` names; the held entry on the item |

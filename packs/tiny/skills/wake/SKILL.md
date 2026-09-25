@@ -114,9 +114,9 @@ with the open flights and the backlog under it, the roster, and the context
 section with this seat's reading against the rest threshold.
 
 From the store: what is ready, and what is assigned to this seat. **For each
-item assigned to you, read whether it carries an order.** A dispatch note on
-the item is the order form; an item merely assigned, or merely ready, is
-assigned-but-unordered and is reported as such.
+item assigned to you, read whether it carries an order.** `fleet item show
+<id>` reading `order dispatch by …` is the order; an item merely assigned, or
+merely ready, is assigned-but-unordered and is reported as such.
 
 ### 5. Write the woke event
 

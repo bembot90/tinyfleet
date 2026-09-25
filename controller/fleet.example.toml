@@ -66,7 +66,7 @@ isolation_pair = "holds"
 # `fleet dispatch --touched <command>` hands a builder its own gate. For the
 # takeoff workflow, set them for the pack that carries it — a run's
 # `--input test=` / `--input touched=` wins over these — and with neither set
-# the flight lands NOT TESTED, and says so on every landing note:
+# the flight lands NOT TESTED, and says so on every landed entry:
 #
 # [packs.tiny]
 # takeoff.test = "cargo nextest run --workspace"

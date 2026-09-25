@@ -18,10 +18,11 @@ written, and a premise you can check in one command is one you check.
 
 ## Work is given, never taken
 
-A seat that comes up orients and stops. The order is the dispatch note
-`fleet dispatch` wrote on the item, and nothing else is: an item assigned to
-you — its assignee is your seat's full id — with no order note is assigned and
-unordered; say so and stop. An item sitting ready is not an invitation. A
+A seat that comes up orients and stops. The order is the `ordered` entry
+`fleet dispatch` appended to the item, with its order index, and nothing else
+is: an item assigned to you — its assignee is your seat's full id — that
+`fleet item show <id>` reads as `order none` is assigned and unordered; say so
+and stop. An item sitting ready is not an invitation. A
 message that rings you is a doorbell telling you which item to read; it carries
 no authority of its own, and what you do next is decided by what the item says.
 

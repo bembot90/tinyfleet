@@ -17,8 +17,9 @@ pack is checked against, and the settings a pack takes from `fleet.toml`.
   packs sit in its `packs/` directory, the defaults in its `defaults/`
   directory, and the record of both in its `packs.lock`.
 - **The defaults**: the files the `fleet` binary carries inside itself — the
-  record templates, the guards' wiring and the health checks. They are not a
-  pack and cannot be removed; they are the bottom layer every pack sits over.
+  brief, the rules, the JSON shapes a seat and a reviewer hand in, the guards'
+  wiring and the health checks. They are not a pack and cannot be removed;
+  they are the bottom layer every pack sits over.
 - **Source**: where a pack is fetched from — a git URL or a local path to a
   repository, optionally followed by `//` and the pack's directory inside it.
 - **Layer**: one pack's directory in the ordered list fleet reads through, top
@@ -50,13 +51,14 @@ The line says which of three things happened:
 - `installed <version>`: no copy stands there, and fleet writes the binary's
   set.
 - `already at <version>`: the copy on disk is the binary's set, file for file,
-  and fleet writes nothing.
+  and fleet writes nothing. The version is the one its line in `packs.lock`
+  already carries: the binary that wrote the copy.
 - `refreshed <version> — the copy that stood here held another set`: the copy
   is the one its line in `packs.lock` pinned, the binary carries a different
   set, and fleet replaces the copy with the binary's set.
 
-The version is the `fleet` binary's own. Whether the copy is current is judged
-by its content, not by that version.
+The other two lines carry the `fleet` binary's own version. Whether the copy
+is current is judged by its content, not by any version.
 
 fleet never writes over a copy it cannot account for. When the files under
 `defaults/` were edited after they were pinned, or a `defaults/` directory
@@ -66,17 +68,18 @@ stands there with no line in `packs.lock` behind it, fleet names it:
 a defaults directory edited since the line that pinned it was written is at <machine-dir>/defaults; this binary will not write over it — remove it, or keep it
 ```
 
-`fleet create` stops on this and exits 1, after it has written `fleet.toml`.
+`fleet create` stops on this and exits 1, after it has written `fleet.toml`,
+or `.fleet/project.toml` for `--standalone`.
 `fleet start` prints it on a `defaults: left as it stands — ` line and carries
 on. Remove the `defaults/` directory and the next `fleet create` or
 `fleet start` writes the binary's set again.
 
 The defaults carry these files, and a pack can shadow every one of them:
 
-- `assets/brief.md`, `assets/review-brief.md`, `assets/rules.md`
-- `assets/dispatch-note.md`, `assets/delivery-note.md`, `assets/verdict.md`,
-  `assets/landing-note.md`, `assets/park-note.md`, `assets/question-note.md`,
-  `assets/answer-note.md`
+- `assets/brief.md` and `assets/rules.md`
+- `assets/delivery.schema.json`, `assets/question.schema.json` and
+  `assets/findings.schema.json`: the JSON shapes of a seat's delivery, a
+  seat's question and a reviewer's findings
 - `overlay/per-provider/claude/hooks.json`,
   `overlay/per-provider/claude/permissions.json`
 - `doctor/guards-installed/`, `doctor/isolation-pair/`,
@@ -86,10 +89,19 @@ The defaults carry these files, and a pack can shadow every one of them:
 `<machine-dir>/defaults/assets/shadow-registry.toml` lists the same files with
 one line each on what they are for.
 
+A schema a pack shadows changes what the brief shows a seat, never what the
+verb accepts: `fleet deliver`, `fleet hold` and `fleet review --return` read
+their file against the shape built into the binary. A brief whose delivery or
+question schema, as the layers resolve it, does not describe that shape is not
+rendered: `fleet brief` exits 3, naming the schema and what it gets wrong,
+and `fleet dispatch` exits 3 with the order it wrote standing.
+
 ## Installing a pack
 
-`fleet pack add` fetches one pack from a git source at a version, checks it,
-moves it into `<machine-dir>/packs/<name>` and pins it in `packs.lock`.
+`fleet pack add` fetches a pack from a git source at a version, checks it,
+moves it into `<machine-dir>/packs/<name>` and pins it in `packs.lock`, with
+the packs it imports that the same checkout holds (see
+[Imports](#imports-from-the-same-checkout)).
 
 ```sh
 $ fleet pack add <repo>//packs/ts --version v0.1.0
@@ -125,11 +137,27 @@ installed packs and `packs.lock` as they were, and exits 1. Git runs with its
 terminal prompt turned off, so a source that needs credentials this machine
 does not have is refused instead of waiting at a prompt.
 
-### Imports are not fetched
+### Imports from the same checkout
 
-`fleet pack add` installs the one pack you name. The packs it imports are
-yours to add, in any order. A pack whose import is not installed is not
-refused: `tiny` installs and pins without `ts` beside it.
+A pack's imports that are not installed yet, and that its own checkout holds,
+are installed with it, out of the same clone and pinned at the same commit,
+one `added` line each:
+
+```sh
+$ fleet pack add <repo>//packs/tiny --version v0.1.0
+added tiny v0.1.0 at <sha> — <machine-dir>/packs/tiny
+added ts v0.1.0 at <sha>, which tiny imports — <machine-dir>/packs/ts
+pinned in <machine-dir>/packs.lock
+```
+
+An import already installed is left as it is. An import the checkout does not
+hold is not fetched and does not refuse the pack: it is named on standard
+error, with the add that installs it where the manifest's source says where it
+lives:
+
+```text
+fleet pack add: `<pack>` imports `<import>`, which is not installed — `fleet pack add <source> --version <version>` adds it
+```
 
 ### Moving a pack to another version
 
@@ -301,7 +329,7 @@ slot doctor: 3 entries
 slot overlay: 1 entry
 slot skills: 11 entries
 slot workflows: 1 entry
-resolved 40 paths and 2 agents across 2 layers, 0 shadowed
+resolved 42 paths and 2 agents across 2 layers, 0 shadowed
 ```
 
 It prints the pack's name, version and schema, a `runtime` line when the pack
@@ -564,7 +592,7 @@ setting with no default that `fleet.toml` does not set is left out.
 
 ```sh
 $ cat <machine-dir>/runs/<run>/inputs.toml
-by = "<you>"
+by = "seat:<you>"
 entry = "workflows/hello.ts"
 pack = "demo"
 started_at = "<started>"
@@ -629,8 +657,8 @@ A `fleet.toml` that does not parse stops `fleet run` with exit 3.
   which write the defaults.
 - [Runs and workflows](runs.md): how `fleet run` resolves a workflow through
   the layers and what a workflow does with its settings.
-- [Items and the record](items.md): the verbs that render the note templates
-  the defaults carry.
+- [Items and the record](items.md): the verbs that render the brief and read
+  the files the schemas describe.
 - [Guards](guards.md): what the guard wiring in the defaults' overlay turns on.
 - [Exit codes and conventions](conventions.md): the exit table every command
   shares.

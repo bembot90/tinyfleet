@@ -631,7 +631,7 @@ fn run(
         wiring,
         "PASS",
         format!(
-            "{accepted} — the last ACCEPTED verdict on {} names it",
+            "{accepted} — the last verdict on {} accepts it, by this landing's own reviewer",
             item.id
         ),
     );

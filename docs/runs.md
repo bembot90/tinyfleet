@@ -28,10 +28,10 @@ carried on by the controller when the answer or the work arrives.
   stream as a `step.started` and `step.closed` pair.
 - **wait**: a run that cannot go on yet exits waiting and names what it is
   waiting for. The controller executes it again when that could have arrived.
-- **hold**: a question on the run's record for a person to answer. The
-  record is **held** while the hold stands, and a person's answer clears it.
-  The same object a seat raises with `fleet hold`; see
-  [Items and the record](items.md).
+- **hold**: a question on the run's record for a person to answer, with a
+  `held` entry on the record's timeline. The record is **held** while the
+  hold stands, and a person's clearance clears it. The same object a seat
+  raises with `fleet hold`; see [Items and the record](items.md).
 
 ## Running a workflow
 
@@ -133,9 +133,16 @@ the run record is closed if the run closed or failed, with the reason
 A refused run files no record and makes no directory: every refusal comes
 before step 1, except a bundle command that fails. The bundle command runs
 after steps 1 and 2, and when it fails `fleet run` exits 1 with the command
-and its error output, leaving the record open and the directory in place,
-with no event on the stream. That record counts against `max_open` until it
-is closed.
+and its error output, closes the record with the reason
+`the run failed before it started`, and writes `run.failed` carrying the
+refusal as its `reason`. The directory stays in place.
+
+```sh
+$ fleet run brittle
+fleet run: the bundle command of `broken` exited 7 — `echo the bundler would not bundle >&2; exit 7`
+  the bundler would not bundle
+  the record <run> filed for this run is closed as failed
+```
 
 ### Settings a run reads
 
@@ -223,14 +230,22 @@ Nothing else from your environment reaches it.
 ## Waiting runs and the controller
 
 A run that exits waiting stays open, and the controller carries it on. On
-each poll it executes a waiting run again when the stream has moved past where
-the run stopped, and:
+each poll it reads the `wake` the run's `run.waiting` carries and executes the
+run again when that could have arrived:
 
-- if the run is waiting on items (the SDK's `until`), only when a line about
-  one of those items has arrived since: `item.dispatched`, `item.delivered`,
-  `item.reviewed`, `item.returned`, `item.landed` or `item.held`;
-- if it is waiting on anything else, such as a hold or a child run, when any
-  line has arrived.
+- a wake of the form `{"items": [...], "kinds": [...], "since": <n>}` — what
+  the SDK's `until` and `hold` wait on — when the stream carries an
+  `item.entry` line above position `n` for one of those items, signalling an
+  entry of one of those kinds (see
+  [Items and the record](items.md#reading-the-record)). `n` is the stream's
+  position when the waiting execution started, so an entry written while it
+  ran wakes it too;
+- a wake that is one run's id — what the SDK's `start` waits on — when that
+  run's `run.closed`, `run.failed` or `run.cancelled` is on the stream;
+- any other wake, or none, when any line has arrived after the run's
+  `run.waiting`.
+
+A cancelled run is not executed again.
 
 Executing a run again uses the bundle already in its run directory; the
 pack's bundle command does not run again. The controller first recomputes the
@@ -248,26 +263,30 @@ controller as the actor: `controller:<id>`, under this machine's identity.
 
 A run that ends `could not tell` is also executed again by the controller, up
 to `[core.run] max_crashes` more times, two when it is not set. Past that, the
-controller raises a hold on the run's record and writes `item.held` naming
-it, with the reason:
+controller holds the run: it raises a hold on the run's record, appends a
+`held` entry to the record's timeline as `controller:<id>`, and writes the
+entry's `item.entry` line. The question reads:
 
 ```text
-<run> has been executed 3 time(s) and nothing could classify the last one — `[core.run] max_crashes` is 2
+<run> has been executed 3 time(s) and nothing could classify the last one — `[core.run] max_crashes` is 2 — nothing executes it again.
+Its stdout.log and stderr.log are in <run directory>.
+A. cancel it: fleet cancel <run> closes its record and clears this hold, with or without an answer
+B. keep it for now: this answer clears the hold, and the record stays open, holding a [core.run] max_open slot, until it is cancelled
 ```
 
 With `max_crashes = 0` the first `could not tell` holds the run. A run held
-this way is not executed again. Its record stays open, so it keeps counting
-against `max_open`, and `fleet clear` on it refuses with exit 1:
-
-```text
-fleet clear: <run> carries no park — a clearance settles a question somebody asked, and this item has none
-```
+this way is not executed again, whatever the hold's answer. `fleet clear`
+clears its hold like any other (see *Questions a run asks*); the record stays
+open, counting against `max_open`, until `fleet cancel` closes it (see
+*Cancelling a run*).
 
 ### Seats a run spawned
 
-When a run closes, fails or is held, the controller retires every transient
-seat the run spawned, releases the items those seats still held, and writes
-`run.cleaned` with the count, once per run and also when the count is zero.
+When a run closes, fails, is cancelled or is held at the crash cap, the
+controller retires every transient seat the run spawned, releases the items
+those seats still held, and writes `run.cleaned` with the count, once per run
+and also when the count is zero. A run waiting on its own question keeps its
+seats.
 
 Each seat it retires gets a `session.retired` line on the stream beside the
 retire's own `session.stopped`, carrying what the seat cost:
@@ -286,9 +305,28 @@ and the seat is retired all the same.
 ## Questions a run asks
 
 A workflow asks a person a question with a hold on its own run record (the
-SDK's `hold`). The record is held the way a seat's item is: a `PARKED` note
-with the question and its lettered options, a hold in the work graph, and
-`item.held` on the stream. The run exits waiting on the hold.
+SDK's `hold`). The record is held the way a seat's item is: a hold in the
+work graph carrying the question and its lettered options, a `held` entry on
+the record's timeline, and that entry's `item.entry` line on the stream. The
+run exits waiting on the record's `cleared` entries. `fleet item show <run>`
+prints the question:
+
+```sh
+$ fleet item show <run>
+<run> · <run>  [open]
+type task · labels fleet:run · assignee none
+order none
+blocked by <hold>
+
+A run of `takeoff` from the pack `tiny` on <project>.
+
+timeline (1 entries)
+<time>  run:<run>  held <hold> — ask: Land what this flight's review accepts? <item>
+    A. land each accepted delivery
+    B. land nothing — end the flight
+    on the run's hash <hash>
+    about <item>; A licenses a landing
+```
 
 You clear it with `fleet clear`, naming the run as the item:
 
@@ -300,16 +338,49 @@ $ fleet clear <run> A --by <reviewer-name>
 The controller's next poll executes the run again, and the workflow reads the
 letter you gave. See [Items and the record](items.md) for `fleet clear`.
 
-A run lands an item only on a cleared hold. When a workflow calls
-`fleet land` as the run, the landing acts as the seat `[core] reviewer` names,
-and it is refused unless the last hold on the run's record was cleared by
-that seat: the answer note must name it as `seat:<id>`. Clear a run's hold as
-the reviewer — `--by` with any seat argument that names it, or with no `--by`
-on the reviewer's own machine when the reviewer is that machine's identity —
-when its answer is what lets it land. Otherwise the landing refuses with exit
-1: ``run <run>'s last hold was cleared by `seat:<id>` and not by
-`<reviewer-name>` — a run lands as the `[core] reviewer` and on that seat's
-own answer``.
+### What licenses a run's landing
+
+A run lands an item only on a cleared hold about it. A hold is about an item
+when the question names it among the items it licenses, as the line
+`about <item>; A licenses a landing` above says; a hold about an item may
+name one commit, and then it is about that commit alone. When a workflow
+calls `fleet land` as the run, the landing acts as the seat `[core] reviewer`
+names, and reads the run's record: the last hold about the item must be
+cleared, by that seat, with the letter the hold says licenses a landing. Clear
+a run's hold as the reviewer — `--by` with any seat argument that names it,
+or with no `--by` on the reviewer's own machine when the reviewer is that
+machine's identity — when its answer is what lets it land.
+
+Otherwise the landing refuses with exit 1, naming what is missing:
+
+- `run <run> raised no hold about <item> — a run lands what <reviewer-name> cleared, and nobody was asked about this item`
+- `run <run>'s hold <hold> about <item> is not cleared yet`
+- `run <run>'s hold <hold> about <item> was cancelled, and a cancel licenses nothing`
+- `run <run>'s hold <hold> was cleared by seat:<you> and not by <reviewer-name> — a run lands as the [core] reviewer and on that seat's own clearance`
+- `run <run>'s hold <hold> was cleared B, and A is the letter that licenses a landing`
+
+A landing a run made names the run on its `landed` entry and in the item's
+close reason, `landed <sha> through run <run>`.
+
+## Cancelling a run
+
+`fleet cancel` ends a run nothing else ends: one held at
+`[core.run] max_crashes`, one waiting on a wake that does not come, or one
+whose process ended without writing how.
+
+```sh
+$ fleet cancel <run>
+<run> — cancelled, hold <hold> cleared
+```
+
+It exits 0. For each hold standing on the run's record it appends a
+`cleared` entry that says the hold was cancelled, and clears the hold; then it
+closes the record with the reason `the run cancelled`, and writes
+`run.cancelled` and one `item.entry` line per `cleared` entry. A run with no
+hold standing prints `<run> — cancelled`. The record no longer counts against
+`max_open`, and the controller's next poll retires the seats the run spawned
+and never executes it again. A cancel stops no process: an execution under way
+runs to its end, and nothing acts on what it writes.
 
 ## Watching runs
 
@@ -324,24 +395,30 @@ placeholders per row:
 ```sh
 $ fleet status
 ...
-runs  6 failed in the last 24 hours, 1 held, 0 could not tell, 2 waiting, 0 open
+runs  4 failed in the last 24 hours, 0 held, 1 could not tell, 2 waiting, 0 open
+  <run-a>  fails  FAILED at <time-a> — fails: this workflow fails on purpose
 ...
-  <run-a>  fails  FAILED at <time-a> — {"reason":"fails: this workflow fails on purpose"}
-  <run-b>  takeoff  FAILED at <time-b> — {"reason":"takeoff: no `items` input — the flight has nothing to fly"}
-  <run-c>  crashes  HELD at <time-c> on hold <hold-c> — nothing could classify 3 execution(s)
-  <run-d>  waits  waiting since <time-d> for {"waiting":["<item>"]}
-  <run-e>  asks  waiting since <time-e> for {"waiting":"<hold-e>"}
+  <run-b>  takeoff  FAILED at <time-b> — takeoff: no `items` input — the flight has nothing to fly
+  <run-c>  takeoff  FAILED at <time-c> — {"code":"refused","verb":"dispatch","why":"<item> is not ready — its status is `closed`"}
+  <run-d>  crashes  could not tell at <time-d>, 1 execution(s) so far — exit 5, read "oops"
+  <run-e>  takeoff  waiting since <time-e> for {"items":["<run-e>"],"kinds":["cleared"],"since":<n-e>}
+  <run-f>  takeoff  waiting since <time-f> for {"items":["<run-f>"],"kinds":["cleared"],"since":<n-f>}
 
-holds  2 raised by a park and not cleared
+holds  1 open
 ```
+
+It exits 0.
 
 The first line counts the runs in each standing; the rows follow in the same
 order, and inside each standing by run id. Each row is the run, its workflow,
 and:
 
 - `FAILED at` the time it failed, with the reason its workflow gave;
-- `HELD at` the time of its last execution, on the hold raised for it, with
-  `, cleared` after the hold once the hold is cleared;
+- `HELD at` the time of its last execution, for a run held at
+  `[core.run] max_crashes`, `on hold <hold>`, with `, cleared` after the hold
+  once the store no longer lists it open, and how many executions nothing
+  could classify: `HELD at <time> on hold <hold>, cleared — nothing could
+  classify 3 execution(s)`;
 - `could not tell at` the time, the executions so far, the exit and the line
   that could not be read;
 - `waiting since` the time, and what it is waiting for;
@@ -351,8 +428,13 @@ and:
 Closed runs are not listed. A run that failed more than 24 hours ago is left
 out of the first line's count and of the rows; a line under the rows says how
 many were left out, and `fleet event tail --type run.failed` lists them. The
-last line counts the holds raised by a park, a run's or an item's, that no
-`hold.cleared` has cleared.
+last line counts the holds the store of every project this machine registers
+lists open, a run's and an item's alike. A store that does not answer leaves
+them uncounted: the line reads `holds  not counted — ` and the reason, the
+reason is also on standard error, and `fleet status` exits 3. A run at
+`could not tell` whose record cannot be asked whether it is held leaves
+`the runs were not all read — whether <run> is held could not be read:` and
+the reason under the rows and on standard error, with the same exit.
 
 ## Writing a workflow
 
@@ -397,10 +479,10 @@ if (import.meta.main) await workflow(hello);
 
 `workflow` reads the environment and the pinned document, runs the function,
 and exits by the table in *How a run ends*: 0 when the function returns, 2
-with `{"waiting": <condition>}` as the last line when a step is waiting, and
-1 with `{"reason": <why>}` as the last line when anything else is thrown.
-That last line is what the event carries, so a failed run's `reason` and a
-waiting run's `wake` hold the whole object, as the status rows above show.
+with the step's condition as the last line when a step is waiting, and 1 with
+the reason as the last line when anything else is thrown — the error's
+message, or, for a verb that refused, `{"code", "verb", "why"}`. That last
+line is what the event carries whole, as the status rows above show.
 
 ### Steps and replay
 
@@ -425,22 +507,42 @@ The handle:
 | `run.input(key)` | one pinned input, or `null` where none was pinned; a step |
 | `run.config(key)` | one pinned setting of the pack that carries the workflow, or `undefined`; not a step |
 | `run.now()`, `run.random()` | the time and a random number, as steps, so a replay sees the same values |
-| `run.spawn({ role: "builder", item, touched? })` | `fleet dispatch <item>`, with `--touched` when given |
-| `run.deliver(item, note)` | `fleet deliver --item <item> --note <note>` |
+| `run.spawn({ role: "builder", item, touched? })` | `fleet dispatch <item>`, with `--touched` when given, which gives the item to a transient seat; an item whose last delivery no return and no landing followed is not dispatched again, and the step answers `already delivered at <commit>` |
 | `run.review(item, "accepted")` or `run.review(item, { returned: file })` | `fleet review <item> --land`, or `--return <file>` |
 | `run.land(item, sha, { test? })` | `fleet land <item> <sha>`, with `--test` when given |
-| `run.hold(question, options)` | asks on the run's record and waits for the answer; returns the letter |
-| `run.until(items, state)` | waits until each item has an `item.<state>` event; returns each event's payload |
+| `run.hold(question, options, about?)` | `fleet hold --item <run> --question <file>` on the run's own record, then waits for the hold's clearance; returns the letter it was cleared with, or `cancelled` where it was cancelled |
+| `run.until(items, state)` | waits until each item's timeline answers `state`; returns each item's answering entry as `fleet item show --json` prints it |
 | `run.start(name, inputs?)` | `fleet run <name>` as a child run, and waits for it to close |
 
 The verbs run the fleet binary from the project with `--by run:<run>`, and
 all but `run.start`'s `fleet run` with `--json`, so every act a run takes is
-on the record under the run's id. A
-verb that refuses fails the run, with `{"verb", "code", "why"}` as its reason.
-A hold is raised once and a child run is started once, however often the run
-is executed again. `until` takes the states `dispatched`, `delivered`,
-`reviewed`, `returned`, `landed` and `held`. `spawn` takes the
+on the record under the run's id. A verb that refuses fails the run, with
+`{"code", "verb", "why"}` as its reason. A hold is raised once and a child run
+is started once, however often the run is executed again. `spawn` takes the
 one role `builder`, and refuses a `model`.
+
+`spawn`, `until` and `hold` read an item through `fleet item show <item>
+--json` and never off the stream (see
+[Items and the record](items.md#reading-the-record)). `hold` takes each option
+as `<letter>. <text>`, writes the question as JSON to `holds/<n>.json` in the
+run directory, and passes `about` — `{ items, commit?, licenses }`, the items
+the answer licenses, the one commit where it names one, and the licensing
+letter — into the question (see *What licenses a run's landing*). `until`
+takes six states, each answered by an entry on the item's timeline:
+
+| State | Answered by |
+| --- | --- |
+| `dispatched` | the last `ordered` entry, where no `order_withdrawn` followed it |
+| `delivered` | the last `delivered` entry no return followed |
+| `reviewed` | the last `reviewed` entry, where it accepts and no delivery followed it |
+| `returned` | the last `reviewed` entry, where it returns and no delivery followed it |
+| `held` | the last `held` entry no `cleared` entry for its hold followed |
+| `landed` | the last `landed` entry |
+
+A step that cannot answer yet waits on
+`{"items": [...], "kinds": [...], "since": <n>}`: the items still
+outstanding, the entry kinds that could answer it, and the stream's position
+when the execution started (see *Waiting runs and the controller*).
 
 ## The takeoff workflow
 
@@ -457,9 +559,10 @@ Its inputs:
 - `items`: the items to fly, in order, comma- or space-separated or as a JSON
   array. Required, and an item listed twice fails the run.
 - `policy`: comma-separated pairs. `review=hold` (the default) asks the person
-  for every verdict at a hold; `review=accept` accepts every delivery
-  unasked. `width=<n>` is how many items are in the air at once, 1 by
-  default. Any other pair fails the run.
+  for every verdict at a hold; `review=accept` asks once, before anything is
+  spawned, whether to land every delivery the review accepts. `width=<n>` is
+  how many items are in the air at once, 1 by default. Any other pair fails
+  the run.
 - `test`: the command each landing runs on its rebased tree before the push,
   handed to `fleet land --test`. Without it, `takeoff.test` under
   `[packs.tiny]` in `fleet.toml`; the input wins.
@@ -468,20 +571,35 @@ Its inputs:
   under `[packs.tiny]`; the input wins.
 
 A blank test command counts as none. With no test command, the flight still
-flies: each landing runs nothing and says NOT TESTED on its note (see
-[Items and the record](items.md)), and the report's first line reads:
+flies: each landing runs nothing and says NOT TESTED on its `landed` entry
+(see [Items and the record](items.md)), and the report's first line reads:
 
 ```text
 NOT TESTED — this flight was handed no test command, so every landing ran nothing and stands on the review alone. Set `takeoff.test` under [packs.tiny] in fleet.toml, or pass `--input test=<command>`.
 ```
 
+Each builder is a transient seat, given its item by `fleet dispatch`.
+
 Under `review=hold` each delivered item raises a hold on the run,
 `Accept <item> at <commit>?` with `A. accept and land` and
-`B. return to the builder`. `A` accepts and lands it; any other letter
+`B. return to the builder`, about that item at that commit, with `A` as the
+letter that licenses its landing. `A` accepts and lands it; any other letter
 returns it to the builder with a findings file under `findings/` in the run
-directory. Under `review=accept` the run raises no hold, and a run's landing
-is refused where no hold was cleared (see *Questions a run asks*), so the
-run fails at its first landing.
+directory.
+
+Under `review=accept` the run raises one hold before it spawns anything,
+about every item it flies:
+`Land what this flight's review accepts? <item-1>, <item-2>` with
+`A. land each accepted delivery` and `B. land nothing — end the flight`. `A`
+licenses the landing of each delivery, and every delivery is then accepted
+and landed unasked. Any other letter fails the run with
+`takeoff: the person declined to license this flight's landings (answered B)`,
+and a cancel fails it with
+`takeoff: the flight's licence hold was cancelled`, both with nothing
+reviewed.
+
+Either hold licenses a landing only when the `[core] reviewer` clears it (see
+*What licenses a run's landing*), so clear them as that seat.
 
 When every item is settled, the run writes two files to its run directory and
 closes: `report.md`, with the decisions answered at holds, each item's outcome
@@ -516,7 +634,8 @@ to the person.
 | No pack carries the workflow | 1 | ``fleet run: no workflow named `nosuch` — no installed pack carries `workflows/nosuch.<ext>` `` | Check the name, or install the pack. |
 | Two files answer to one name | 1 | ``fleet run: `hello` names 2 files and a run takes one — workflows/hello.sh, workflows/hello.ts`` | Remove or rename one. |
 | The workflow is `preboard` | 1 | ``fleet run: no workflow named `preboard` — no installed pack carries `workflows/preboard.<ext>` `` | Use tiny's preboard skill; it is not a workflow. |
-| Neither the carrying pack nor its imports declare `[runtime]` | 1 | ``fleet run: `tiny` carries `workflows/takeoff.ts` and declares no [runtime] table, and no pack it imports declares one — core knows one thing about a workflow's language and that table is it, so there is no command to bundle this file with`` | Install the pack that declares it (ts, for tiny). |
+| Neither the carrying pack nor its imports declare `[runtime]` | 1 | ``fleet run: `tiny` carries `workflows/takeoff.ts` and declares no [runtime] table, and no pack it imports declares one — that table is the one thing fleet reads about a workflow's language, so there is no command to bundle this file with`` | Install the pack that declares it (ts, for tiny). |
+| The carrying pack imports a pack that is not installed, and declares no `[runtime]` | 1 | ``fleet run: `tiny` carries `workflows/takeoff.ts` and declares no [runtime] table, and no installed pack it imports declares one: `tiny` imports `ts`, which is not installed — `` and either the `fleet pack add` line that adds it, read off `packs.lock`, or `its manifest names the source <source>` | Install the pack it names. |
 | Two imports each declare `[runtime]` | 1 | the two packs named | Declare `[runtime]` in the carrying pack. |
 | The runtime check is red | 1 | ``fleet run: `<pack>`'s runtime check is red, so `<workflow>` is not opened — `` and the check's lines | Install the pinned runtime version. |
 | `[packs.<pack>]` names a pack that is not installed | 1 | ``fleet run: `<workflow>` is not opened — fleet.toml has a [packs.nosuch] section and no pack named `nosuch` is installed — the installed packs are tiny, ts, <pack>`` | Remove the section, or install the pack. |
@@ -524,17 +643,23 @@ to the person.
 | `[packs.<pack>]` sets a value of the wrong type | 1 | ``fleet run: `<workflow>` is not opened — [packs.<pack>] sets `greeting` to an integer, and the pack `<pack>` declares it string`` | Write the declared type. |
 | `fleet.toml` does not parse | 3 | ``fleet run: the policy in force at <path> does not parse, so the settings its [packs] table sets cannot be read:`` and the parse error | Fix the file. |
 | The work graph cannot be read | 3 | ``fleet run: the work graph could not be read:`` and the reason | Make `bd` reachable. |
-| The pack's bundle command fails | 1 | ``fleet run: the bundle command of `<pack>` exited 1 — `` the command, and its error output | Fix the workflow. The run's record stays open. |
-| `fleet clear` on a run held by the controller | 1 | ``fleet clear: <run> carries no park — a clearance settles a question somebody asked, and this item has none`` | Nothing in fleet resumes it; read its `stdout.log` and `stderr.log`. |
+| The pack's bundle command fails | 1 | ``fleet run: the bundle command of `<pack>` exited <rc> — `` the command, its error output, and `the record <run> filed for this run is closed as failed` | Fix the workflow, and run it again. |
+| `fleet cancel` of an item that is not a run's record | 1 | ``fleet cancel: <item> is not a run's record — it carries no `fleet:run` label, and `fleet cancel` ends runs and nothing else`` | Name the run's id. |
+| `fleet cancel` of a run already closed | 1 | `fleet cancel: <run> is closed already — the run has ended and there is nothing to cancel` | Nothing to do. |
+| A run's landing, with no hold on the run about the item | 1 | `fleet land: run <run> raised no hold about <item> — a run lands what <reviewer-name> cleared, and nobody was asked about this item` | Ask about the item in the workflow, and clear it as the reviewer. |
+| A run's landing, with the hold about the item not cleared | 1 | `fleet land: run <run>'s hold <hold> about <item> is not cleared yet` | Clear the hold as the reviewer. |
+| A run's landing, with the hold about the item cancelled | 1 | `fleet land: run <run>'s hold <hold> about <item> was cancelled, and a cancel licenses nothing` | The run cannot land it; review and land it by hand as the reviewer. |
+| A run's landing, with the hold cleared by another seat | 1 | `fleet land: run <run>'s hold <hold> was cleared by seat:<id> and not by <reviewer-name> — a run lands as the [core] reviewer and on that seat's own clearance` | Clear the run's holds as the reviewer. |
+| A run's landing, with the hold cleared on another letter | 1 | `fleet land: run <run>'s hold <hold> was cleared B, and A is the letter that licenses a landing` | Nothing licenses it; the answer said not to land. |
 
-Every refusal above is made before the run record is filed, except the last
-two: a failed bundle leaves its record open, and the last is
-`fleet clear`'s.
+Every `fleet run` refusal above is made before the run record is filed, except
+a failed bundle, which closes the record it filed as failed.
 
 ## See also
 
 - [Items and the record](items.md): `dispatch`, `deliver`, `review`, `land`,
-  `hold` and `clear`, the verbs a workflow calls, and the notes they write.
+  `hold` and `clear`, the verbs a workflow calls, the entries they append, and
+  `fleet item show`, which the SDK reads an item through.
 - [Packs](packs.md): installing the tiny and ts packs, how layers resolve a
   workflow's file, and pack settings in `fleet.toml`.
 - [Status and the event stream](status.md): the rest of `fleet status`, and

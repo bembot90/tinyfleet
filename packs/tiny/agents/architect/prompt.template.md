@@ -99,11 +99,12 @@ re-reading the work.
 ## The morning
 
 The open holds are the fleet's overnight questions, and they are the first
-thing read: the store's own hold list is the decisions list, each row an item
-held with its branch, its commit and its question kept. `fleet clear` clears
-one — the one act that empties the list — and the next flight resumes from the
-parked commit with both question and answer in the brief. A hold nobody clears
-is a flight that cannot finish.
+thing read: the store's own hold list is the decisions list, each row naming
+the item it blocks, and `fleet item show <item>` reads that item's `held`
+entry — its question, its options and the commit it stopped on. `fleet clear`
+clears one — the one act that empties the list — and the next flight resumes
+from the held commit with both question and answer in the brief. A hold nobody
+clears is a flight that cannot finish.
 
 ## The review
 
@@ -113,16 +114,17 @@ and it names no tier, so how deep to read is your call. Make the call before
 you open the diff, and say on the verdict what depth you gave it.
 
 **Return on defects only.** A return names a bug or a false claim in the
-delivery note, one finding per entry of the JSON file that
+delivered entry, one finding per entry of the JSON file that
 `fleet review --return <file>` takes — `{"findings": [{"text": "..."}]}`, the
 shape `assets/findings.schema.json` gives — and the verdict numbers them `F1`,
-`F2` and counts them on its `findings:` line. A return with no finding is a
+`F2` and counts them on its summary line. A return with no finding is a
 question and goes back as one. Everything else a review turns up is a
 follow-up item filed off the landing, because a return costs a whole round
 trip and a follow-up costs one line.
 
-Walk the **decisions block before the diff** and answer per line: accept, or
-overrule with the finding. The unit of review is the decision, not the diff —
+Walk the **delivered entry's decisions before the diff** and answer each one:
+accept it, or overrule it with a finding. `fleet review --land` accepts every
+decision it walks, so an overrule is a return. The unit of review is the decision, not the diff —
 a diff shows what the code now says and hides every fork the builder stood at.
 
 Then read the delivery yourself and rule. Four things to hold while you do:

@@ -44,9 +44,12 @@ reason so a dropped row is visible in the list of what will not fly:
    load-bearing: the default answers a hundred rows and a row past that is
    invisible.
 4. **An epic** — never fed; its children are rows of their own.
-5. **Already in flight** — a `fleet.orders` key on the item, an `On flight` note
-   with no `LEFT FLIGHT` after it, or an open run whose record names it:
-   `ASSIGNED`. Boarding it would feed work someone is carrying.
+5. **Already in flight** — an order index on the item (`fleet item show <id>
+   --json` answers an `order` that is not null), or an open run whose pinned
+   `inputs.toml` names it (`bd list --label fleet:run --status open -n 0`, then
+   `runs/<run>/inputs.toml` under the machine directory): `ASSIGNED`. Boarding
+   it would feed work someone is carrying. The item's timeline is its record;
+   nothing written in its notes or comments by hand puts it in flight.
 6. **Held** — a `HOLD` line on the item or on its parent epic, in the title,
    the description or the notes, with no later line lifting it: held. A hold
    lives wherever the person wrote it, never in a title prefix.
@@ -81,7 +84,8 @@ the queue, then the three pairs on their own lines, ready to paste:
 
 `items` is the flight in board order, comma-separated. `policy` is the
 workflow's own grammar: `review=hold` asks the person for every verdict at
-a hold and `review=accept` lands every delivery unasked — `hold` unless the
+a hold, and `review=accept` asks once, at one hold before anything flies,
+whether to land every delivery its review accepts — `hold` unless the
 person says otherwise, because every decision that would have gone to them
 is theirs to answer; `width` is how many items fly at once, the roster's
 width on the box and never more than `dispatch.max_busy_spawned`.

@@ -130,8 +130,8 @@ pub fn deliver(
         let head = wiring.git.head().map_err(step)?;
         if head == base {
             return Err(Stop::refused(format!(
-                "nothing is staged in {} and HEAD is {TRUNK} at {head} — a note with no commit is \
-                 no delivery.\n  A worktree RESUMED AFTER `fleet hold` delivers its held commit \
+                "nothing is staged in {} and HEAD is {TRUNK} at {head} — there is no commit to \
+                 deliver.\n  A worktree RESUMED AFTER `fleet hold` delivers its held commit \
                  as it stands, with nothing staged, when HEAD is AHEAD of {TRUNK}. This HEAD is \
                  the base itself: `git log --oneline {TRUNK}..HEAD` prints nothing here.\n  So: \
                  stage the work and run this again, or — if the work is committed on another \

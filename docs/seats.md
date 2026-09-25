@@ -726,22 +726,24 @@ seat's id goes with it: the next spawn mints a new one.
 
 Before it drops the row, it takes back every `open` or `in_progress` item on
 the project's board assigned to the seat with a dispatch on it: the item goes
-back to `open`, unassigned and with no dispatch on it, with the note
-`ORDER WITHDRAWN at retire: <machine-name> retired by <actor>; the item is
-open and unassigned`. `<actor>` is who retires it: `--by`, else
-`FLEET_ACTOR`, else this machine's identity, written as a typed actor such
-as `seat:<id>` (see [Items and the record](items.md)). An item nothing blocks
-is back in the store's ready
-set, so `fleet dispatch` can give it to another seat. A closed item is never
-reopened: when an item was closed, or taken by another seat, after the retire
-read the board, the retire writes nothing to it and refuses (exit 1). The
-session and the worktree are gone by then and the seat's row stands, so read
-the item and retire again. When the board cannot be read and the seat was
-dispatched nothing, it says so on standard error and retires the seat anyway.
+back to `open`, unassigned and with its order index removed, and an
+`order_withdrawn` entry naming the seat is appended to its timeline (see
+[Items and the record](items.md#reading-the-record)). Standard error says
+`ORDER WITHDRAWN at retire: <item> — it is open and unassigned` for each one.
+The entry is written by whoever retires the seat: `--by`, else
+`FLEET_ACTOR`, else this machine's identity. An item nothing blocks is back
+in the store's ready set, so `fleet dispatch` can give it to another seat.
+A closed item is never reopened: when an item was closed, or taken by another
+seat, after the retire read the board, the retire writes nothing to it and
+refuses (exit 1). The session and the worktree are gone by then and the seat's
+row stands, so read the item and retire again. When the board cannot be read
+and the seat was dispatched nothing, it says so on standard error and retires
+the seat anyway.
 
-It deletes the seat's work branch only when the last landing on the seat's
-item marks that same branch `SAFE`; otherwise it prints `work branch kept —
-<why>`, or nothing when the worktree stood on no branch.
+It deletes the seat's work branch only when the last `landed` entry on the
+seat's item classifies that same branch `SAFE`, and then prints
+`work branch <branch>: SAFE on the landing — deleted`. Otherwise it prints
+`work branch kept — <why>`, or nothing when the worktree stood on no branch.
 
 A seat whose session is already gone retires the same way, with `no live
 session to stop` in place of the pid. `--dead` says you expect that: it adds
@@ -806,7 +808,7 @@ branch.
   the events this area writes.
 - [Items and the record](items.md): `fleet dispatch`, which spawns a
   transient seat when given no `--to`, and `--by`, `FLEET_ACTOR` and the
-  actor every note names.
+  actor every entry names.
 - [Runs and workflows](runs.md): workflows that spawn, feed and retire seats.
 - [Packs](packs.md): the defaults, and the permission rules a spawned seat
   gets.

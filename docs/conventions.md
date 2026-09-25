@@ -201,8 +201,8 @@ and `FLEET_ACTOR` are read is in
 
 `--json` asks for the outcome as one JSON document on standard output. These
 verbs take it: `fleet dispatch`, `deliver`, `hold`, `clear`, `review` and
-`land`; `fleet seat add`, `spawn`, `feed` and `retire`; `fleet doctor`; and
-`fleet event tail` and `fleet event show`.
+`land`; `fleet item show`; `fleet seat add`, `spawn`, `feed` and `retire`;
+`fleet doctor`; and `fleet event tail` and `fleet event show`.
 
 A success is `ok`, then `verb`, then `data`:
 
@@ -340,8 +340,8 @@ suffix, and how to run a command past it, are in [Guards](guards.md).
 
 ## See also
 
-- [Items and the record](items.md): the verbs that take an item id, and what
-  each writes on it.
+- [Items and the record](items.md): the verbs that take an item id, and the
+  entry each appends to its timeline.
 - [Guards](guards.md): the record guard's bare-id check in full.
 - [Runs and workflows](runs.md): how a workflow's exit becomes `fleet run`'s.
 - [Status and the event stream](status.md): `fleet status` and the event

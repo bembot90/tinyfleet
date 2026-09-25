@@ -34,18 +34,18 @@ flight.
 
 ### 1. The open holds, and the runs that stopped
 
-A hold is the store's own object: `bd gate list --json` on this fleet's store.
+A hold is the store's own object: `bd gate list --json -n 0` lists the open
+ones, each naming the item it blocks (`Ad-hoc gate blocking <item>`).
 **A failed run raises no hold**, and one nothing could classify re-runs until
 it parks: read both with `fleet event tail --json --since <stamp> --type
 run.failed` and `--type run.could_not_tell`, and list each unanswered with
 its `reason`, or its `exit` and `read`. `fleet status` shows them under `runs`.
 
-Each hold names the item it blocks. Read that item's **last `PARKED` region**
-— the marker at column zero, then its `branch:`, `commit:` and `hold:` lines,
-with the question and its lettered options under them. The whole question is
-carried there and in the hold's own reason, so you need no other source. Take
-the **last** region: an item parked, answered and parked again carries more
-than one, and only the last is open.
+Read each blocked item with `fleet item show <item>`. Its open hold is the
+last `held` entry on its timeline with no `cleared` entry naming that hold
+after it: the question, its context, its lettered options, and the work it
+stopped on. That entry is the whole question; an item held, cleared and held
+again carries more than one, and only the last is open.
 
 ### 2. Answer what the record settles
 
@@ -55,20 +55,20 @@ fleet clear <item> <letter> --text "<what the record says, and where>"
 
 The letter names one of the question's own options. `--text` is what was
 decided where the options did not carry it, and it is what makes a letter
-outside them an answer rather than a typo. The verb writes the answer on the
-item, clears the hold and writes `hold.cleared`; the item leaves the
+outside them an answer rather than a typo. The verb appends the `cleared`
+entry to the item's timeline and clears the hold; the item leaves the
 blocked set and **nothing is dispatched** — the next flight that lists it is
 what resumes the work.
 
 Quote the ruling you answered from, in the `--text`, every time. An answer
 whose grounds are not on the record is indistinguishable from a guess.
 
-### 3. The parks at the return cap, and the red suites
+### 3. The runs parked at the crash cap
 
-Same reading, same rule. An item parked at the return cap asks whether to keep
-going, and the record rarely settles that — it usually belongs on the person's
-list with the returns quoted. A hold a red suite raised carries its reading and
-its log; answering it means reading the log, not the summary.
+Same reading, same rule. A run the controller parked at `[core.run]
+max_crashes` carries a `held` entry whose reason is `max_crashes`: cancel it,
+or keep it. The record rarely settles that — it belongs on the person's list,
+with the run's `stdout.log` and `stderr.log` read, not summarised.
 
 ### 4. Escapes
 

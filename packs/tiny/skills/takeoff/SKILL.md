@@ -32,7 +32,7 @@ If you are not the architect and you reached this file, stop and say so.
   running thing, release refs, and anything the charters reserve to the
   person. The workflow asks; it never answers for them.
 - **The review bar does not move.** The verdict at a hold is read to the
-  normal standard: the delivery note, the diff at its commit, the suite it
+  normal standard: the delivered entry, the diff at its commit, the suite it
   claims.
 - **A decision with no clear recommendation is a hold, not a guess.** The
   workflow parks on it and the run waits; a coin-flip dressed as a

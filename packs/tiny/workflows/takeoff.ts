@@ -117,7 +117,7 @@ export const TICK = "board-tick.md";
 export const FINDINGS_DIR = "findings";
 
 /** The report's first line where the flight was handed no test command: every
- * landing it made ran nothing, and says so on its own note too. */
+ * landing it made ran nothing, and says so on its own landed entry too. */
 export const NOT_TESTED =
   "NOT TESTED — this flight was handed no test command, so every landing ran nothing and stands on the review alone. Set `takeoff.test` under [packs.tiny] in fleet.toml, or pass `--input test=<command>`.";
 

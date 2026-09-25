@@ -131,10 +131,11 @@ each carrying its own `template.html`.
 
 ### The defaults and the packs
 
-`core/defaults/` is what every fleet gets: the record templates, the guards'
-wiring and their health checks, with no opinion about the work. It is not a
-pack — `core/build.rs` walks it into the executable, and `fleet create` and
-every `fleet start` materialize it into the machine directory's `defaults/`,
+`core/defaults/` is what every fleet gets: the brief, the every-turn rules,
+the JSON schemas of a delivery, a question and a return's findings, the
+guards' wiring and their health checks, with no opinion about the work. It is
+not a pack — `core/build.rs` walks it into the executable, and `fleet create`
+and every `fleet start` materialize it into the machine directory's `defaults/`,
 a sibling of `packs/`, pinned by content hash. Every verb reads those files
 by path unless an installed pack shadows the path. `packs/tiny` is the
 opinion — the role documents, the builder manual, the values and the
@@ -198,8 +199,9 @@ lists) sit under `[guards.targets]`.
   <command>` is handed. The landing runs it on the rebased land branch, under
   the lane's lock and before the push, so what is tested is what lands; a red
   reading is rerun once and a second red refuses with nothing pushed. Without
-  `--test` the landing runs nothing, and says so: its note's first line and its
-  suite row read `NOT TESTED`, and `item.landed` carries `test: null`.
+  `--test` the landing runs nothing, and says so: its suite row and the `test`
+  of its `landed` entry read `NOT TESTED`, and its one `check.read` line
+  carries `suite: null` and `verdict: "none"`.
 - **The builder's checks** are what `fleet dispatch <item> --touched
   <command>` is handed; the brief names them under "Your checks", or names
   the absence where none was handed.

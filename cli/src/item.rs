@@ -173,10 +173,10 @@ pub struct ReviewArgs {
     /// print the delivery and the size line; write nothing
     #[arg(long, conflicts_with_all = ["land", "returned"])]
     pub show: bool,
-    /// append the ACCEPTED verdict; it lands nothing
+    /// append the accepted verdict; it lands nothing
     #[arg(long, conflicts_with = "returned")]
     pub land: bool,
-    /// append the RETURNED verdict with these findings
+    /// append the returned verdict with these findings
     ///
     /// the findings, a JSON file of the shape assets/findings.schema.json
     #[arg(long = "return", value_name = "FILE")]

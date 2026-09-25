@@ -6,22 +6,24 @@ the project. Seven verbs move it: `fleet dispatch` gives it to a seat,
 work over, `fleet hold` stops it on a question and `fleet clear` answers the
 question, `fleet review` reads the delivery and writes a verdict, and
 `fleet land` puts the reviewed commit on the trunk and closes the item. Every
-verb that writes, writes a note on the item and reads it back before it exits
-0, so the item's notes, in order, are its record.
+verb that writes appends a typed entry to the item's timeline and reads it
+back before it exits 0, so the item's timeline, in the store's order, is its
+record. `fleet item show` renders it.
 
 ## Terms
 
 - **Item**: one entry in the project's bd store, named by its id.
-- **Note**: one entry in an item's notes. The order note ends in
-  `orders given`; every other note opens on a marker word at column zero —
-  `DELIVERED`, `ACCEPTED`, `LANDED` and the rest — and runs to the next
-  marker of another kind.
-- **The record**: the item's notes in order, plus its assignee and its order
-  index.
-- **Order**: the note `dispatch` writes, ending in `orders given`, together
-  with a machine-read copy of it in the item's metadata under `fleet.orders`,
-  an object carrying `"v": 1`. An item with no order note has not been given
-  to anybody. fleet reads no other key for the copy: an `orders` key another
+- **Entry**: one typed fact on an item: who wrote it, when, and what it
+  says. Its kind is one of `ordered`, `order_withdrawn`, `delivered`,
+  `reviewed`, `held`, `cleared` and `landed`. The store keeps each entry as
+  one JSON comment on the item.
+- **Timeline**: the item's entries in the store's order. A comment a person
+  writes on the item by hand is theirs and is not on the timeline.
+- **The record**: the item's timeline, plus its assignee and its order index.
+- **Order**: the `ordered` entry `dispatch` appends, together with the
+  item's order index: an object in the item's metadata under `fleet.orders`,
+  carrying `"v": 1`. An item with no order index has not been given to
+  anybody. fleet reads no other key for the index: an `orders` key another
   tool wrote is not an order, whatever it holds, and fleet leaves it as it
   is.
 - **Brief**: the first turn a dispatched seat reads, rendered from the item.
@@ -35,13 +37,13 @@ verb that writes, writes a note on the item and reads it back before it exits
   fleet lists, an agent's or a person's. A delivery is assigned to its id.
 - **Actor**: who a verb acts as, written `<kind>:<id>`. See
   [Saying who acts](#saying-who-acts).
-- **Verdict**: the note `review` writes: `ACCEPTED`, or
-  `RETURNED WITH FINDINGS`.
+- **Verdict**: the `reviewed` entry `review` appends: an accept, or a return
+  with findings.
 - **Hold**: the store's own object `fleet hold` raises on an item, carrying
   the question. A hold blocks the item until someone clears it with an
-  answer. An item with an open hold is **held**, and the note `fleet hold`
-  writes on it is its **park** note. [Runs and workflows](runs.md) covers how
-  a workflow resumes a held item.
+  answer. An item with an open hold is **held**, and the `held` entry
+  `fleet hold` appends is its **park**. [Runs and workflows](runs.md) covers
+  how a workflow resumes a held item.
 - **Checks**: the automated pass/fail readings a verb takes. The **builder's
   checks** are the command a dispatch names for the seat to run over its own
   diff; a landing's **check rows** are the rows `fleet land` prints, one per
@@ -50,7 +52,7 @@ verb that writes, writes a note on the item and reads it back before it exits
 
 ## Saying who acts
 
-Every note names who wrote it, and so does every line a verb writes to the
+Every entry names who wrote it, and so does every line a verb writes to the
 event stream. That is the verb's actor, one of four kinds, written
 `<kind>:<id>`:
 
@@ -86,7 +88,8 @@ the others — is exit 1:
 A `FLEET_ACTOR` of nothing but spaces is read as unset.
 
 `fleet review` acts in every mode, `--show` included, although `--show`
-writes nothing. `fleet brief` writes nothing and takes no `--by`.
+writes nothing. `fleet brief` and `fleet item show` write nothing and take
+no `--by`.
 
 The examples below act as three seats: you, a person, as `seat:<you>`; the
 builder, an agent seat named `<seat-name>`, as `seat:<seat>`; and the
@@ -100,10 +103,12 @@ closes an assigned item only for an actor equal to its assignee.
 
 The seat verbs (`deliver`, `hold`) use the actor to find the item: it is the
 one item assigned to that seat's id, open or in progress, that carries an
-order. A seat holding two names one with `--item <id>`. Given `--item`, the
-verb acts on that item without checking who holds it. An actor that is not a
-seat holds nothing, and without `--item` is refused with exit 1:
-`run:<run> is not a seat, so it holds nothing — pass --item <id>`.
+order index and is not an epic. A seat holding two names one with
+`--item <id>`, which names an item the acting seat holds and is refused
+otherwise: `<item> is held by <assignee> and not by seat:<seat> — --item names
+an item the acting seat holds`. A run's record is its own run's to name. An
+actor that is not a seat holds nothing, and without `--item` is refused with
+exit 1: `run:<run> is not a seat, so it holds nothing — pass --item <id>`.
 
 Run the verbs from inside the project or a seat's worktree of it. They find
 the fleet by walking up from the current directory to the nearest
@@ -123,25 +128,27 @@ directory name, and the brief and the lane carry that name.
 ## Dispatching an item
 
 `fleet dispatch` gives a ready item to a seat. The item must be in the
-store's ready set (open, and blocked by nothing) and must carry no order yet.
-`--to` takes a seat argument, resolved over the seats this machine runs: the
-agent seats in its seat list, and never a person.
+store's ready set (open, and blocked by nothing), must not be an epic, and
+must carry no order yet. `--to` takes a seat argument, resolved over the
+seats this machine runs: the agent seats in its seat list, and never a
+person.
 
 ```sh
 $ fleet dispatch <item> --to <seat-name>
-dispatched by seat:<you> — orders given
+ordered <item> to <seat-name> — entry <entry>
 ```
 
 It exits 0. In one act it writes three things and reads all three back:
 
 - the assignee: the seat's full id, `<seat>`;
-- the order note on the item: `dispatched by seat:<you> — orders given`;
+- the `ordered` entry on the item's timeline, naming the seat by its full
+  id; `<entry>` is the entry's id;
 - the order index in the item's metadata, `fleet.orders`: `by` (the actor,
   `seat:<you>`), `kind` (`dispatch`), `seat` (the full id), `at` and `v`
   (`1`).
 
-Then it writes `item.dispatched` to the event stream, naming the item and the
-seat, and the brief to `<fleet-dir>/briefs/<item>.md`. Last, it rings the
+Then it writes one `item.entry` line to the event stream for the `ordered`
+entry, and the brief to `<fleet-dir>/briefs/<item>.md`. Last, it rings the
 seat: one message to the seat's live session saying the item is theirs and
 where the brief is.
 
@@ -162,17 +169,21 @@ dispatching it again refuses, because it carries an order.
 
 ### Without `--to`
 
-With no `--to`, fleet writes the order first and then asks for a transient
-seat to hold it, under an id minted for it. The brief names the seat
-`(transient)`. When the seat starts, the item is assigned to its id, the id
-joins the order index, and the output is the order line followed by the two
-lines `fleet seat spawn` prints: the machine's load average and the
-transient seats mid-turn. When
-the spawn is refused, fleet withdraws the order: it removes the order index,
-adds the note `DISPATCH WITHDRAWN — spawn refused: <cause>`, and exits 1.
-When fleet cannot tell whether the seat started, the order stands under the
-note `DISPATCH COULD NOT TELL — the spawn could not be observed: <cause>`, and
-the exit is 3. [The controller and seats](seats.md) covers transient seats.
+With no `--to`, fleet appends an `ordered` entry naming no seat and writes
+the order index first, and then asks for a transient seat to hold it. The
+brief names the seat `(transient)`. When the seat starts, the item is
+assigned to its id, a second `ordered` entry names it, the id joins the
+order index, and the output is `ordered <item> to a transient seat — entry
+<entry>` followed by the two lines `fleet seat spawn` prints: the machine's
+load average and the transient seats mid-turn. When the spawn is refused,
+fleet withdraws the order: it removes the order index, appends an
+`order_withdrawn` entry carrying the cause, prints
+`withdrawn: DISPATCH WITHDRAWN — spawn refused: <cause>` on standard error,
+and exits 1. When fleet cannot tell whether the seat started, the order
+stands with nothing written after it, standard error carries
+`could not tell: DISPATCH COULD NOT TELL — the spawn could not be observed: <cause>`,
+and the exit is 3. [The controller and seats](seats.md) covers transient
+seats.
 
 ### `--touched`
 
@@ -200,26 +211,30 @@ names the seat by its machine name. Without `--to`, the seat reads
 `(transient)`. `--touched <command>` fills the checks
 section as it does on `dispatch`.
 
-The brief carries the order note, the item as `bd show` prints it, the
+The brief carries the order, the item as `fleet item show` renders it, the
 builder's checks, one line per guard class saying `on` or `off`, the rules
-every seat works under, and the delivery-note grammar. It is rendered whole
-or not at all: a template that cannot render prints nothing and exits 3. An
-item with no order note is refused with exit 1.
+every seat works under, and the two JSON shapes a seat hands in: the
+delivery's and the question's. It is rendered whole or not at all: a template
+that cannot render prints nothing and exits 3. An item with no order index is
+refused with exit 1.
 
-The brief and every note's shape come from template files in the pack
-layers, so an installed pack can replace any of them; see [Packs](packs.md).
-Every item verb takes `--packs-dir <dir>` to read the packs from another
-directory, and then reads the defaults from the `defaults` directory beside
-it.
+The brief, the rules and the three JSON shapes come from files in the pack
+layers, so an installed pack can replace them; see [Packs](packs.md). The
+verbs read a delivery and a question against their own shape whatever the
+layers say, so a replaced delivery or question schema that does not describe
+it makes the brief exit 3: `assets/delivery.schema.json as the layers resolve
+it does not describe what fleet deliver reads: <why>`. The seven verbs
+take `--packs-dir <dir>` to read the packs from another directory, and then
+read the defaults from the `defaults` directory beside it.
 
 ## Delivering work
 
 `fleet deliver` hands the work over from inside the seat's worktree. The
 delivery is the staged set: stage what you are handing over, write the
-delivery note, and run it.
+delivery file, and run it.
 
 ```sh
-$ fleet deliver --note <note-file>
+$ fleet deliver --delivery <delivery-file>
 DELIVERED, NOT RUNG: no live session for <reviewer-name>; <item> is theirs and their successor reads it at wake
 ```
 
@@ -232,64 +247,84 @@ In order, it:
 
 1. commits the staged set on the work branch, with the message
    `<item>: delivered by seat:<seat>`;
-2. fills the note's first line and its `commit:`, `branch:` and `base:` lines;
-3. reassigns the item to the reviewer's full id, adds the note, and reads
-   both back;
-4. writes `item.delivered` to the event stream;
+2. reassigns the item to the reviewer's full id;
+3. appends the `delivered` entry — your file's fields, with the commit, the
+   branch and the base filled in — and reads it back, and the assignee;
+4. writes one `item.entry` line to the event stream for it;
 5. rings the reviewer.
 
-The note on the item reads:
+`fleet item show` renders the entry:
 
 ```text
-DELIVERED <commit> — seat:<seat>
-commit: <commit>
-branch: <work-branch>
-base: origin/main at <base>, read at <time>
-files:   GREETING
-...
+<time>  seat:<seat>  delivered <commit> on <work-branch>, base <base>
+    files: GREETING
+    checks:
+      - GREETING holds one line: PASS: wc -l GREETING printed 1
+    suite: test -f GREETING, rc 0
+    spec corrections: none
+    not proven:
+      - the greeting's wording — a person reading it
+    decisions:
+      D1 plain text; not taken: markdown; because the item says a line
+    covers: none
 ```
 
-`base:` is `origin/main` as your checkout last fetched it. `deliver` does not
-fetch.
+The commit and the base are whole 40-character shas. The base is
+`origin/main` as your checkout last fetched it. `deliver` does not fetch.
 
-### The note
+### The delivery file
 
-The note is a file you write. Its first non-blank line opens on `DELIVERED`,
-or on `RE-DELIVERED` for a delivery after a return. It carries every label
-the delivery-note template names, each at column zero. The defaults' template
-names these:
+The delivery is a JSON file of the shape `assets/delivery.schema.json` gives,
+which the brief shows whole. It carries what only the seat knows; the
+commit, the branch, the base and the time are the verb's. Every key is
+required, and no string is empty:
 
-```text
-DELIVERED
-commit:
-branch:
-base:
-files:   <the paths this delivery touched>
-checks:  <each acceptance check, with its result>
-suite:   <the suite that ran, and its exit>
-spec corrections: <N, or none>
-not proven: <what this delivery does not establish>
-decisions: <N, or none>
-  D1 <the call made>; not taken: <the alternative>; because <why>
-covers: <requirements covered, or none>
+```json
+{
+  "files": ["GREETING"],
+  "checks": [{"check": "GREETING holds one line", "result": "PASS: wc -l GREETING printed 1"}],
+  "suite": {"command": "test -f GREETING", "rc": 0},
+  "spec_corrections": [],
+  "not_proven": [{"surface": "the greeting's wording", "command": "a person reading it"}],
+  "decisions": [{"call": "plain text", "not_taken": "markdown", "because": "the item says a line"}],
+  "covers": []
+}
 ```
 
-`deliver` replaces the first line and whatever `commit:`, `branch:` and
-`base:` hold, keeping the spaces after each colon, or one space where there
-are none. Everything else reaches the item as you wrote it. `fleet review
---land` checks the `decisions:` count against the indented `D<n>` lines under
-it.
+- `files`: every path the delivery touched; never empty.
+- `checks`: each acceptance check, with its result.
+- `suite`: the suite that ran, as `command` and `rc`, or
+  `{"not_tested": "<why>"}` where none ran.
+- `spec_corrections`: each premise the item got wrong, as `premise` and
+  `refuted_by`.
+- `not_proven`: what the delivery does not establish, as `surface` and the
+  `command` that would measure it; never empty.
+- `decisions`: the calls the item left to the seat, as `call`, `not_taken`
+  and `because`. The first is `D1`, and the review walks them by number.
+- `covers`: the requirements the delivery covers.
 
-### A parked commit
+A file that does not read, or is not that shape, is refused with exit 2 before
+anything is committed, naming the first thing wrong:
 
-A worktree resumed after `fleet hold` holds its work in the parked commit and
+```sh
+$ fleet deliver --delivery <bad-file>
+fleet deliver: the delivery at <bad-file> is not the shape assets/delivery.schema.json gives: missing field `checks` at line 1 column 13 — the brief shows that schema
+```
+
+`--note` is refused with exit 2 whatever it names:
+`--note is gone: a delivery is a JSON file — fleet deliver --delivery <file>; its shape is assets/delivery.schema.json, which the brief shows`.
+
+### A held commit
+
+A worktree resumed after `fleet hold` holds its work in the held commit and
 has nothing to stage. With nothing staged and HEAD at any commit other than
 the tip of `origin/main`, `deliver` delivers HEAD as it stands and commits
 nothing:
 
 ```sh
-$ fleet deliver --note <note-file>
-DELIVERED AS-IS: nothing was staged and HEAD <parked-commit> is ahead of origin/main at <trunk-tip> — the delivery on <held-item> is that commit and this verb committed nothing
+$ fleet deliver --delivery <delivery-file>
+DELIVERED AS-IS: nothing was staged and HEAD <held-commit> is ahead of origin/main at <trunk-tip> — the delivery on <held-item> is that commit and this verb committed nothing
+DELIVERED, NOT RUNG: no live session for <reviewer-name>; <held-item> is theirs and their successor reads it at wake
 ```
 
 The line says "ahead" whatever HEAD's relation to `origin/main`: a HEAD
@@ -301,30 +336,37 @@ over and it refuses.
 
 These are all read before anything is written, so a refusal leaves the
 worktree as it stood: the trunk branch, a changed or untracked file outside
-the staged set, nothing staged at the base, a note it cannot read, a note
-that opens on another word or drops a label, a seat holding no ordered item
-or more than one, and a fleet with no `[core] reviewer`. The table under
-[When it refuses](#when-it-refuses) gives each message.
+the staged set, nothing staged at the base, a delivery file that does not
+read or is not its shape, a seat holding no ordered item or more than one, an
+`--item` the actor does not hold, and a fleet with no `[core] reviewer`. The
+table under [When it refuses](#when-it-refuses) gives each message.
 
 ## Holding an item on a question
 
-`fleet hold` stops the work on a question for a person. Write the question in
-a file: `QUESTION` and the question on the first line, then one option per
-line as a capital letter, a period and the text. Anything else in the file
-travels with the question.
+`fleet hold` stops the work on a question for a person. Write the question as
+a JSON file of the shape `assets/question.schema.json` gives, which the brief
+shows whole: `question`, one line; `context`, optional; and `options`, each a
+capital `letter` and its `text`, no letter twice.
 
-```text
-QUESTION Should the second item print to stdout or to a file?
-A. stdout, one line
-B. a file named OUT
-
-Context: the item does not say.
+```json
+{
+  "question": "Should the second line print to stdout or to a file?",
+  "context": "The item does not say.",
+  "options": [
+    {"letter": "A", "text": "stdout, one line"},
+    {"letter": "B", "text": "a file named OUT"}
+  ]
+}
 ```
+
+An optional `about` names the items the answer licenses — `items`, a
+`commit` where the question names one, and `licenses`, the letter that
+licenses them. A workflow's hold uses it; see [Runs and workflows](runs.md).
 
 Run it from the seat's worktree:
 
 ```sh
-$ fleet hold --note <question-file>
+$ fleet hold --question <question-file>
 <hold>
 ```
 
@@ -334,32 +376,29 @@ It prints the hold's id and exits 0. In order, it:
    modified and untracked alike — with the message
    `<held-item>: held — seat:<seat> asked a question at <time>`; a tree with
    nothing to commit parks on HEAD;
-2. raises a hold in the store blocking the item, with the whole note as its
-   reason;
-3. writes the park note on the item and reads it back;
-4. writes `item.held` to the event stream.
+2. raises a hold in the store blocking the item, carrying the question, its
+   context and one `<letter>. <text>` line per option as its reason;
+3. appends the `held` entry and reads it back;
+4. writes one `item.entry` line to the event stream for it.
 
-The park note carries the question moved two spaces in, so no line of it can
-end the note:
+`fleet item show` renders the entry:
 
 ```text
-PARKED <held-item> — ask
-branch:  <work-branch>
-commit:  <parked-commit>
-hold:    <hold>
-  QUESTION Should the second item print to stdout or to a file?
-  A. stdout, one line
-  B. a file named OUT
-
-  Context: the item does not say.
+<time>  seat:<seat>  held <hold> — ask: Should the second line print to stdout or to a file?
+    The item does not say.
+    A. stdout, one line
+    B. a file named OUT
+    on <work-branch> at <held-commit>
 ```
 
 The item leaves the store's ready set while the hold is open. `hold` rings
 nobody and dispatches nothing; the item stays assigned to the seat and keeps
 its order.
 
-It refuses the trunk branch, a seat holding no ordered item, and a note that
-does not open on `QUESTION` or names no option, all before it commits.
+It refuses the trunk branch, a seat holding no ordered item, and a question
+file that does not read or is not its shape, all before it commits.
+`--note` is refused with exit 2:
+`--note is gone: a question is a JSON file — fleet hold --question <file>; its shape is assets/question.schema.json, which the brief shows`.
 
 ## Clearing a hold
 
@@ -371,34 +410,34 @@ $ fleet clear <held-item> b --text "a file, but name it OUT.txt"
 <held-item> answered B — <hold> cleared
 ```
 
-It exits 0. The letter is read without regard to case. It writes the answer
-note, reads it back, clears the hold, checks that the store's list of open
-holds does not carry it, and writes `hold.cleared` to the event stream:
+It exits 0. The letter is read without regard to case. The hold it clears is
+the item's open one: the last `held` entry with no `cleared` entry naming its
+hold after it. It appends the `cleared` entry and reads it back, clears the
+hold, checks that the store's list of open holds does not carry it, and
+writes one `item.entry` line to the event stream:
 
 ```text
-ANSWERED <hold> — seat:<you>
-letter:  B
-text:    a file, but name it OUT.txt
+<time>  seat:<you>  cleared <hold> — answered B: a file, but name it OUT.txt
 ```
 
-`--text` says what you decided beyond the option. Without it, `text:` reads
-`(none)`. A letter the question does not offer is an answer only with
-`--text`; without it, `clear` exits 2 and lists the letters on offer.
+`--text` says what you decided beyond the option. A letter the question does
+not offer is an answer only with `--text`; without it, `clear` exits 2 and
+lists the letters on offer.
 
 Clearing returns the item to the store's ready set and dispatches nothing.
 The item still carries its order and its assignee, so `fleet dispatch`
 refuses it; the seat that resumes it delivers it (see
-[A parked commit](#a-parked-commit)).
+[A held commit](#a-held-commit)).
 
-It refuses an item with no park, a park whose hold the store does not list
-open, and an argument that is not a single letter.
+It refuses an item with no open hold, a hold the store does not list open,
+and an argument that is not a single letter.
 
 ## Reviewing a delivery
 
-`fleet review <item>` reads the item's last delivery. It takes one of three
-modes: `--show` (the default), `--land`, or `--return <file>`. Every mode
-first prints the size line, measured from the delivery's recorded base to
-its commit:
+`fleet review <item>` reads the item's last delivery: the last `delivered`
+entry on its timeline. It takes one of three modes: `--show` (the default),
+`--land`, or `--return <file>`. Every mode first prints the size line,
+measured from the delivery's base to its commit:
 
 ```text
 size: 1 file(s), +1, -0 — tests: no, executable: no
@@ -406,31 +445,37 @@ size: 1 file(s), +1, -0 — tests: no, executable: no
 
 `tests:` is `yes` when a changed path sits under a `test` or `tests`
 directory or is named as a test file. `executable:` is `yes` when a changed
-file is executable in your working tree. A delivery whose `base:` names no
-commit is measured against `<commit>^`, and the line says so.
+file is executable in your working tree.
 
-`fleet review` does not check who holds the item: any actor can write a
-verdict.
+`--land` and `--return` write a verdict, and a verdict is the holder's: they
+refuse a seat that does not hold the item before the delivery is read. A
+delivered item's holder is its reviewer. A run writes one as the
+`[core] reviewer`; a routine or the controller writes none. `--show` writes
+nothing and anyone can run it.
 
 ### Reading it
 
 ```sh
 $ fleet review <item> --show --by <reviewer-name>
 size: 1 file(s), +1, -0 — tests: no, executable: no
-DELIVERED <commit> — seat:<seat>
-commit: <commit>
+
+<time>  seat:<seat>  delivered <commit> on <work-branch>, base <base>
+    files: GREETING
 ...
-decisions: 1
-  D1 plain text; not taken: markdown; because the item says a line
+    decisions:
+      D1 plain text; not taken: markdown; because the item says a line
+    covers: none
 ```
 
-After the size line come the delivery note and then its `decisions:` block
-again on its own. It writes nothing and exits 0.
+After the size line and a blank line comes the `delivered` entry, as
+`fleet item show` renders it. It writes nothing and exits 0.
 
 ### Returning it
 
-Write the findings in a file, one per line, each starting `F1`, `F2` and so
-on. Then:
+Write the findings as a JSON file of the shape
+`assets/findings.schema.json` gives: `{"findings": [{"text": "…"}]}`, one
+object per finding, never empty. The verb numbers them `F1`, `F2` and so on
+in the file's order. Then:
 
 ```sh
 $ fleet review <item> --return <findings-file> --by <reviewer-name>
@@ -439,23 +484,20 @@ RETURNED, NOT RUNG: no live session for <seat-name>; the return stands and their
 ```
 
 It exits 0. It reassigns the item to the seat its order index names, by that
-seat's full id, writes the verdict and reads both back, writes
-`item.returned` to the event stream, and rings that seat. The second line
-above appears only when the seat has no live session; a ring that fails puts
-`RETURNED, NOT RUNG: <cause>; the return stands` on standard error. The
-verdict carries the findings moved two spaces in:
+seat's full id, appends the `reviewed` entry with the findings and reads both
+back, writes one `item.entry` line to the event stream, and rings that seat.
+The second line above appears only when the seat has no live session; a ring
+that fails puts `RETURNED, NOT RUNG: <cause>; the return stands` on standard
+error. The entry reads:
 
 ```text
-RETURNED WITH FINDINGS <commit> — seat:<reviewer>
-findings: 1
-item:    <item>
-size: 1 file(s), +1, -0 — tests: no, executable: no
-  F1 the greeting ends without a period
+<time>  seat:<reviewer>  returned <commit> with 1 finding(s)
+    size: 1 file(s), +1, -0 — tests: no, executable: no, against <base>
+    F1 the greeting ends without a period
 ```
 
-A findings file that numbers no finding exits 2, after the size line is
-printed. The builder's next delivery opens its note on `RE-DELIVERED`;
-`deliver` takes either marker.
+A findings file that does not read, is not its shape, or lists no finding
+exits 2, after the size line is printed and before anything is written.
 
 ### Accepting it
 
@@ -464,22 +506,19 @@ $ fleet review <item> --land --by <reviewer-name>
 size: 1 file(s), +1, -0 — tests: no, executable: no
 ```
 
-It exits 0. `--land` lands nothing: it writes the `ACCEPTED` verdict that
-`fleet land` reads, and `item.reviewed` on the event stream. It walks the
-delivery's decisions and accepts each one:
+It exits 0. `--land` lands nothing: it appends the accepting `reviewed`
+entry that `fleet land` reads, and one `item.entry` line on the event
+stream. It walks the delivery's decisions and accepts each one; a decision
+the reviewer will not take is a finding, and the delivery goes back with it.
 
 ```text
-ACCEPTED <redelivered> — seat:<reviewer>
-item:    <item>
-size: 1 file(s), +1, -0 — tests: no, executable: no
-decisions: D1 ACCEPT
-  1 accepted, 0 overruled
+<time>  seat:<reviewer>  accepted <redelivered>
+    size: 1 file(s), +1, -0 — tests: no, executable: no, against <base>
+    walk: D1 accept
 ```
 
-`--land` refuses, with exit 1, a delivery with no `decisions:` line at column
-zero, a count that is neither a number nor `none`, and a count that differs
-from the `D<n>` lines under it. `--land` and `--return` together are a usage
-error.
+`--show` with either of the others, and `--land` with `--return`, is a usage
+error, exit 2.
 
 ## Landing an item
 
@@ -494,7 +533,7 @@ reviewer's worktree for this project, as the machine's seat list names it.
 
 ```sh
 $ fleet land <item> <redelivered> --test "test -f GREETING" --reason "greeting added" --by <reviewer-name>
-1. reviewed commit  PASS       <redelivered> — the last ACCEPTED verdict on <item> names it
+1. reviewed commit  PASS       <redelivered> — the last verdict on <item> accepts it, by this landing's own reviewer
 2. staged set       PASS       1 path(s) outside .beads/, equal to the delivery's own set; .beads/issues.jsonl regenerated by the store's own export
 3. CI marker        NONE       no [landing] ci_marker in this project — no marker is appended
 4. suite            PASS       `test -f GREETING` rc 0 in <took>, read from the child's own exit; log <fleet-dir>/land/<item>/suite.log
@@ -505,15 +544,17 @@ LANDED <landed>
 ```
 
 It exits 0. Each row prints as it is read. The last line is `LANDED` and the
-landed sha as the push printed it, abbreviated.
+landed sha, whole.
 
 In order, it:
 
 1. takes the project's lane, and prints `waiting on the lane:` with the
    holder's item and time when another landing holds it;
 2. checks the worktree holds no changed file but the ones `--also` names;
-3. checks the item is open and held by you, and that its last verdict is an
-   `ACCEPTED` naming this commit;
+3. checks the item is open and held by you; for a run, that the
+   `[core] reviewer` cleared a hold about the item (see
+   [Runs and workflows](runs.md)); and that the last `reviewed` entry is an
+   accept of this commit, written by the landing's own reviewer;
 4. fetches `origin`, cuts `land/<item>` at `origin/main`, and squashes the
    commit onto it;
 5. regenerates the store's export and checks the staged set equals the
@@ -527,10 +568,10 @@ In order, it:
 8. runs the `--test` command on the land branch;
 9. fetches again, counts how far `origin/main` has moved, and pushes to
    `main` only where it has not;
-10. writes the landing note and reads it back, writes one `check.read` per
-    suite reading and then `item.landed` to the event stream, and closes the
-    item with the reason `landed <landed>`, followed by ` — ` and `--reason`
-    where you gave one;
+10. appends the `landed` entry and reads it back, writes one `check.read`
+    per suite reading and then one `item.entry` line to the event stream,
+    and closes the item with the reason `landed <landed>`, followed by
+    ` — ` and `--reason` where you gave one;
 11. deletes the work branch, locally and on `origin`, only where the row
     says `SAFE`, puts the worktree back on `origin/main`, and deletes
     `land/<item>`.
@@ -539,23 +580,25 @@ The landing's own files sit in `<fleet-dir>/land/<item>/`: the commit
 message, `suite.log` where a suite ran, `suite.2.log` on a rerun, and
 `push.out` once the push has run.
 
-The landing note's first line carries everything a script needs; the rows
-and a block of commands that re-run each verdict follow it:
+The `landed` entry carries the landed sha and the trunk commit it moved
+from, the squashed commit, what tested it, every check row, the work
+branch's classification, and a block of commands that re-run each verdict:
 
 ```text
-LANDED <landed> on main by <reviewer-name> (<reviewer>) (range <old>..<landed>; squash of <redelivered>; implemented by <seat>) — suite: test -f GREETING, rc 0
-1. reviewed commit  PASS       <redelivered> — the last ACCEPTED verdict on <item> names it
+<time>  seat:<reviewer>  landed <landed> (range <old>..<landed>; squash of <redelivered>)
+    test: test -f GREETING, rc 0
+    1. reviewed commit  PASS       <redelivered> — the last verdict on <item> accepts it, by this landing's own reviewer
 ...
-## Commands — every verdict above, re-runnable
-git merge-base origin/main <redelivered>
+    work branch: <work-branch> — safe
+    commands:
+      git merge-base origin/main <redelivered>
 ...
 ```
 
-The lander is named by machine name and full id, and the builder by full
-id. A landing a run made reads `by <reviewer-name> (<reviewer>) through run
-<run>`, and its close reason `landed <landed> through run <run>`. Where the
-delivery's base is not the base it lands on, the first line adds
-`; rebased from <base>` after the squashed commit.
+Every sha on it is whole. The entry is by the seat that landed; the builder
+is the actor on the `delivered` entry. A landing a run made reads
+`; through run <run>` after the squashed commit, and its close reason
+`landed <landed> through run <run>`.
 
 ### The lane
 
@@ -601,10 +644,11 @@ fleet land: the suite `echo failing; exit 3` exited 3 and, rerun once, 3 — the
 ```
 
 It exits 1. A landing handed no `--test` runs nothing and lands on the review
-alone. Its suite row reads `NOT TESTED`, and so does the note's first line:
+alone. Its suite row reads `NOT TESTED`, and so does the `landed` entry's
+`test:` line:
 
 ```text
-LANDED <landed2> on main by <reviewer-name> (<reviewer>) (range <landed>..<landed2>; squash of <parked-commit>; implemented by <seat>) — NOT TESTED: no test command was handed to this landing (`fleet land --test <command>`), so nothing ran and it stands on the review alone
+    test: NOT TESTED — no test command was handed to this landing (`fleet land --test <command>`), so nothing ran and it stands on the review alone
 ```
 
 ### `--also`
@@ -621,7 +665,7 @@ the branches deleted. Each side reports on standard error when it cannot be
 deleted, and the exit stays 0:
 
 ```text
-work branch <work-branch>: SAFE, local kept — `git branch -D` exited 1: error: cannot delete branch '<work-branch>' used by worktree at '<seat-worktree>'; `fleet seat retire` deletes it off this note when the seat holding it goes
+work branch <work-branch>: SAFE, local kept — `git branch -D` exited 1: error: cannot delete branch '<work-branch>' used by worktree at '<seat-worktree>'; `fleet seat retire` deletes it off the landed entry when the seat holding it goes
 work branch <work-branch>: SAFE, origin kept — origin carries no refs/heads/<work-branch>
 ```
 
@@ -635,78 +679,91 @@ worktree, detaches it onto `origin/main` and deletes `land/<item>`; any
 `RETURN FOR REBASE` and the conflicted paths. A trunk that moved prints
 `REBASE NEEDED: origin/main moved (<n>)`. Both exit 1.
 
-A landing that refuses before the push writes no note on the item and puts
-no hold on it: the item stays open, held by you, with its verdict standing.
-You run `fleet land` again, or return the item, as the table under
+A landing that refuses before the push appends no entry and puts no hold on
+the item: the item stays open, held by you, with its verdict standing. You
+run `fleet land` again, or return the item, as the table under
 [When it refuses](#when-it-refuses) says.
 
 Once the push has run, nothing is put back, whether or not the push
 succeeded. A rejected push prints what the remote said, exits 1, and leaves
 the worktree on `land/<item>`; the remote's output is kept in `push.out`. A
-failure after a push that landed names the step that failed and says the
-landing stands on `main`.
+failure after a push that landed — the landed entry, a line on the stream,
+or the close — names the step that failed and says the landing stands on
+`main`.
 
 ## Reading the record
 
-`bd show <item>` prints the notes. After a full pass they read, top to
-bottom:
+`fleet item show <item>` prints the item and its timeline: the item's
+fields, its description, then one block per entry in the store's order, each
+opening on its time, its actor and a summary. After a full pass it reads:
 
-```text
-dispatched by seat:<you> — orders given
-DELIVERED <commit> — seat:<seat>
+```sh
+$ fleet item show <item>
+<item> · Add a greeting  [closed]
+type task · labels none · assignee <reviewer>
+order dispatch by seat:<you> at <time>, seat <seat>
+
+Write GREETING with one line.
+
+timeline (6 entries)
+<time>  seat:<you>  ordered dispatch → <seat>
+<time>  seat:<seat>  delivered <commit> on <work-branch>, base <base>
 ...
-RETURNED WITH FINDINGS <commit> — seat:<reviewer>
+<time>  seat:<reviewer>  returned <commit> with 1 finding(s)
 ...
-RE-DELIVERED <redelivered> — seat:<seat>
+<time>  seat:<seat>  delivered <redelivered> on <work-branch>, base <base>
 ...
-ACCEPTED <redelivered> — seat:<reviewer>
+<time>  seat:<reviewer>  accepted <redelivered>
 ...
-LANDED <landed> on main by <reviewer-name> (<reviewer>) (...)
+<time>  seat:<reviewer>  landed <landed> (range <old>..<landed>; squash of <redelivered>)
 ...
 ```
 
-The item's assignee is always a seat's full id.
+It writes nothing and exits 0. `order` reads `none` on an item with no order
+index, and `unreadable` where `fleet.orders` is not an object at `v` 1. The
+item's assignee is always a seat's full id. `held` and `cleared` entries sit
+where a question stopped the work; an `order_withdrawn` entry follows an
+order a refused spawn or a retired seat took back.
 
-`PARKED` and `ANSWERED` notes sit where a question stopped the work. Each
-verb also writes to the event stream, which
-[Status and the event stream](status.md) covers:
+`--json` prints one document: `id`, `title`, `description`, `status`,
+`type`, `labels`, `assignee`, `order` (the index's `by`, `kind`, `seat` and
+`at`, `{"unreadable": true}`, or `null`), `blockers`, and `timeline`, one
+object per entry carrying its `id`, `at`, `by` (as `{"kind", "id"}`), `kind`
+and the kind's own fields.
 
-| Verb | Event |
+An item the store does not hold is exit 1:
+`fleet item show: <item>: no issues found matching the provided IDs`. A
+comment on the item that carries fleet's entry key and does not read as an
+entry makes the whole read exit 3, naming the comment — every verb that
+reads the timeline refuses the same way:
+`fleet item show: <item>'s comment <comment> carries fleet.entry and does not read: missing field `hold``.
+
+### What each verb writes to the stream
+
+Each verb signals the entry it wrote on the event stream, after the entry
+has been read back, by one line of one kind, `item.entry`, which
+[Status and the event stream](status.md) covers. Its `actor` is the entry's,
+as an object: `seat:<you>` is `{"kind":"seat","id":"<you>"}`, and on a line
+the controller writes it is `{"kind":"controller","id":"<identity>"}`,
+`<identity>` being this machine's identity. Its payload is `item`, `entry`
+(the entry's id) and `kind`, and nothing else; what the entry says is read
+off the record.
+
+| Verb | Lines |
 | --- | --- |
-| `dispatch` | `item.dispatched` |
-| `deliver` | `item.delivered` |
-| `review --land` | `item.reviewed` |
-| `review --return` | `item.returned` |
-| `land` | `check.read` per suite reading, or one reading `none` without `--test`, then `item.landed` |
-| `hold` | `item.held` |
-| `clear` | `hold.cleared` |
+| `dispatch` | `item.entry` for the `ordered` entry that names the seat; nothing for a refused spawn's `order_withdrawn` |
+| `deliver` | `item.entry` for `delivered` |
+| `review --land`, `review --return` | `item.entry` for `reviewed` |
+| `hold` | `item.entry` for `held` |
+| `clear` | `item.entry` for `cleared` |
+| `land` | `check.read` per suite reading, or one reading `none` without `--test`, then `item.entry` for `landed` |
 
-### What each event carries
-
-An item's events carry the item under `item`. Their `actor` is the one the
-verb acted as, as an object: `seat:<you>` is
-`{"kind":"seat","id":"<you>"}`. On a line the controller writes it is
-`{"kind":"controller","id":"<identity>"}`, `<identity>` being this machine's
-identity. A seat in a payload is an object too, `{"id", "kind", "name"}`,
-with no `name` where the seat has none.
-
-| Event | Written by | Payload |
-| --- | --- | --- |
-| `item.dispatched` | `dispatch` | `item`, `seat` (the seat object), and, where the dispatch spawned the seat, `base`: the commit the seat's worktree was cut from |
-| `item.delivered` | `deliver` | `item`, `commit`, `branch`, `base` |
-| `item.reviewed` | `review --land` | `item`, `commit`, `verdict` (`accepted`), `accepted` (how many decisions the delivery lists), `overruled` (0) |
-| `item.returned` | `review --return` | `item`, `commit`, `findings` (how many findings the return numbers) |
-| `check.read` | `land` | `item`; `suite`, the `--test` command; `rc`, what it exited; `verdict`, `green` or `red`; `reading`, 1 or 2; `log`, the reading's log file; `path`, the search path the command ran under |
-| `item.landed` | `land` | `item`; `sha` and `base`, the landed commit and the trunk commit it landed on, as the push printed them; `squash_of`, the accepted commit; `run`, the run whose record carried the landing; `test`, the `--test` command |
-| `item.held` | `hold`, and the controller when it holds a run | `item`, `reason`, `branch`, `commit`, and `hold`, the hold's id |
-| `hold.cleared` | `clear`, and `fleet cancel` once for each hold it clears | `item`, `hold`, and `letter`, the option chosen |
-
-A landing handed no `--test` writes one `check.read` with `suite`, `rc`,
-`log` and `path` null and `verdict` `none`, and its `item.landed` carries
-`test` null. `run` is null on a landing a seat made in its own name. `rc` is
-null where the command was killed by a signal. `fleet hold` writes `reason`
-as `ask`; the controller writes its reason for the hold, with `branch` and
-`commit` null. `fleet cancel` writes `letter` null.
+`check.read` carries `item`; `suite`, the `--test` command; `rc`, what it
+exited; `verdict`, `green` or `red`; `reading`, 1 or 2; `log`, the reading's
+log file; and `path`, the search path the command ran under. A landing
+handed no `--test` writes one `check.read` with `suite`, `rc`, `log` and
+`path` null and `verdict` `none`. `rc` is null where the command was killed
+by a signal.
 
 ### `--json`
 
@@ -715,15 +772,17 @@ Standard output then carries one document and nothing else; the human lines
 move to standard error, and the exit is unchanged:
 
 ```sh
-$ fleet deliver --note <note-file> --json
-{"ok":true,"verb":"deliver","data":{"commit":"<redelivered>","item":"<item>","state":"delivered"}}
+$ fleet deliver --delivery <delivery-file> --json
+{"ok":true,"verb":"deliver","data":{"commit":"<redelivered>","entry":"<entry>","item":"<item>","state":"delivered"}}
 ```
 
-`data` carries the item and its `state`: `dispatched`, `delivered`,
-`held`, `cleared`, `reviewed`, `returned` or `landed`, and `null` for
-`review --show`. Beside them, `dispatch` gives the `seat` as its object,
-`deliver` the `commit`, `hold` and `clear` the `hold`, and `land` the `sha`.
-A refusal is
+`data` carries the item, its `state` — the kind of the entry the verb wrote:
+`ordered`, `delivered`, `held`, `cleared`, `reviewed` or `landed` — and
+`entry`, that entry's id. `review` adds `verdict`, `accepted` or `returned`;
+`review --show` writes no entry, and its `state`, `verdict` and `entry` are
+`null`. Beside them, `dispatch` gives the `seat` as its object, `deliver`
+the `commit`, `hold` and `clear` the `hold`, and `land` the `sha`. A refusal
+is
 `{"ok":false,"verb":"<verb>","refusal":{"code":"<code>","why":"<message>"}}`,
 where the code names the exit. An order that stands unrung is a refusal
 document too: with the code `no_session` when the seat has no live session,
@@ -744,8 +803,11 @@ Exits follow the table every command shares; see
 | No fleet above the current directory | 3 | ``no `fleet.toml` and no `.fleet/project.toml` above <dir> — `fleet create` writes one`` | Run from inside the project |
 | The policy file sets `[gates] suite` or `[gates] touched` | 1 | `[gates] suite is not project policy, and nothing reads it — a test command is the workflow's: set …, and delete the key`, and the `[gates]` line below | Delete the key and the `[gates]` table; pass `--test` or `--touched` |
 | The policy file carries a `[gates]` table, even an empty one | 1 | ``[gates] is not a policy table, and nothing reads it — its keys are set by purpose: `ci_marker` under [landing], `tool_commands` under [permissions], and `release_ref_glob` and the `prod_*` lists under [guards.targets]; move each one there, and delete the table`` | Move each key to the table named, and delete `[gates]` |
+| A comment on the item carries `fleet.entry` and does not read | 3 | `<item>'s comment <comment> carries fleet.entry and does not read: <why>` | Read the comment; fleet will not answer from a record with a hole in it |
+| `item show` of an item not in the store | 1 | `<item>: no issues found matching the provided IDs` | Check the id |
 | `dispatch` of an item that is blocked | 1 | `<item> is not ready — it is blocked by <other>` | Finish the blocker |
 | `dispatch` of an item that is not open | 1 | ``<item> is not ready — its status is `<status>` `` | Pick a ready item |
+| `dispatch` of an epic | 1 | `<item> is an epic, and an epic is never dispatched — its children are` | Dispatch its children |
 | `dispatch` of an item not in the store | 1 | `<item>: no issues found matching the provided IDs` | Check the id |
 | `dispatch` of an item already ordered | 1 | `<item> already carries an order — kind=dispatch by=seat:<you> at=<time>` | Nothing: it is given |
 | `dispatch` of an item whose `fleet.orders` is not an object at `v` 1 | 3 | ``<item> carries a `fleet.orders` this fleet cannot read — it is not an object at v 1 — and a dispatch will not guess whether it is an order`` | Read the key; dispatch with the fleet that wrote it |
@@ -756,36 +818,40 @@ Exits follow the table every command shares; see
 | `dispatch` ring failed | 1 | `ORDERED, NOT RUNG: <cause>` | Nothing: the order stands |
 | `dispatch` spawn refused | 1 | `<item> was not dispatched — <cause>; the order was withdrawn` | Retry later |
 | `dispatch` spawn could not be observed | 3 | `<item> may or may not have been dispatched — <cause>; the order stands` | Check the seat, then retry |
-| `brief` of an item with no order | 1 | `<item> carries no order note — a brief for an unordered item would tell a seat it may begin when nothing said so` | Dispatch it first |
+| `brief` of an item with no order | 1 | `<item> carries no order index — a brief for an unordered item would tell a seat it may begin when nothing said so` | Dispatch it first |
 | `deliver` on `main` | 1 | `` the worktree is on `main` — a delivery is a handoff of a work branch … `` | Work on a work branch |
 | `deliver` with a file outside the staged set | 1 | `` `<path>` is changed in the working tree and not staged — … `` | Stage it or put it back |
-| `deliver` with nothing staged at the base | 1 | `nothing is staged in <worktree> and HEAD is origin/main at <sha> — a note with no commit is no delivery. …` | Stage the work |
-| `deliver` or `hold` with an unreadable note | 2 | `the note at <file> could not be read: …` | Fix the path |
-| `deliver` note opens on another word | 2 | `` the note opens on `<line>` — it opens on `DELIVERED` at column zero, or no reader can anchor on it `` | Open on `DELIVERED` |
-| `deliver` note drops a label | 2 | `` the note carries no `<label>:` line, which `assets/delivery-note.md` names — … `` | Add the line |
+| `deliver` with nothing staged at the base | 1 | `nothing is staged in <worktree> and HEAD is origin/main at <sha> — there is no commit to deliver. …` | Stage the work |
+| `deliver --note` or `hold --note` | 2 | `--note is gone: a delivery is a JSON file — fleet deliver --delivery <file>; …` (or `a question is a JSON file — fleet hold --question <file>; …`) | Write the JSON file the brief shows |
+| `deliver`, `hold` or `review --return` with a file that cannot be read | 2 | `the <delivery, question or findings> at <file> could not be read: …` | Fix the path |
+| `deliver`, `hold` or `review --return` with a file that is not its shape | 2 | `the <delivery, question or findings> at <file> is not the shape assets/<name>.schema.json gives: <what> — the brief shows that schema` | Match the schema |
 | `deliver` or `hold` by a seat holding no ordered item | 1 | `` `seat:<seat>` holds no open ordered item — … `` | Check `--by` or `FLEET_ACTOR` |
 | `deliver` or `hold` by a seat holding two | 1 | `` `seat:<seat>` holds 2 ordered items — <ids> — and `--item <id>` says which one this is `` | Pass `--item` |
 | `deliver` or `hold` by an actor that is not a seat, with no `--item` | 1 | `<kind>:<id> is not a seat, so it holds nothing — pass --item <id>` | Pass `--item` |
+| `deliver` or `hold` with an `--item` the actor does not hold | 1 | `<item> is held by <assignee> and not by <actor> — --item names an item the acting seat holds` | Name your own item |
 | `deliver` with no reviewer in the policy | 1 | ``no `[core] reviewer` in this fleet's policy — a delivery has nowhere to go without one`` | Set `[core] reviewer` |
 | `deliver` or `land` with a `[core] reviewer` that names no listed seat, or more than one | 1 | `[core] reviewer = "<value>" <value> names no seat — the seats are …` (or `names <n> seats — …`) | Set it to one seat's name, machine name or id |
 | `hold` on `main` | 1 | `` the worktree at <dir> is on `main` — a park records the branch the work is on … `` | Work on a work branch |
-| `hold` note with no option | 2 | `the note names no lettered option — …` and the template's example | Add `A.`, `B.` lines |
-| `clear` of an item with no park | 1 | `<item> carries no park — a clearance settles a question somebody asked, and this item has none` | Check the id |
-| `clear` of a hold already cleared | 1 | ``<item>'s hold <hold> is not one the store lists open — it has been cleared already, by `fleet clear` or by hand`` | Nothing to do |
-| `clear` with a letter not offered | 2 | `` the question on <item> names no option `<L>` — its options are A, B, … `` | Pick a letter, or add `--text` |
+| `clear` of an item with no open hold | 1 | `<item> carries no open hold — a clearance settles a question somebody asked, and this item has none` | Check the id |
+| `clear` of a hold already cleared | 1 | `<item>'s hold <hold> is not one the store lists open — it has been cleared already, or by hand` | Nothing to do |
+| `clear` with a letter not offered | 2 | `` the question on <item> names no option `<L>` — its options are A, B, and a letter outside them needs `--text <text>` saying what was decided `` | Pick a letter, or add `--text` |
 | `clear` with more than one letter | 2 | `` `<arg>` is not a letter — … `` | Give one letter |
 | `review` of an item with no delivery | 1 | `<item> carries no delivery — a review reads one and there is none to read` | Wait for the delivery |
-| `review --return` with no numbered finding | 2 | `<file> numbers no finding — a return that numbers nothing is a question and goes back as one` | Number them `F1`, `F2` |
+| `review --land` or `--return` by a seat not holding the item | 1 | `<item> is held by <assignee> and not by seat:<you> — a verdict is the holder's, and a delivered item's holder is its reviewer` | Review as the holder |
+| `review --land` or `--return` by a routine or the controller | 1 | `a <kind> writes no verdict` | Review as the holder |
+| `review --return` with a findings file that lists none | 2 | `the findings at <file> (read against assets/findings.schema.json) numbers no finding — a return that numbers nothing is a question` | Name a finding, or ask the question |
 | `review --return` with no seat in the order | 1 | `<item>'s order index names no seat — …` | Reassign by hand |
-| `review --land` with a mismatched count | 1 | `` <item>'s delivery says `decisions: <n>` and the walk found <m> — … `` | Return it |
+| `review` with two modes | 2 | ``the argument '--land' cannot be used with '--return <FILE>'`` | Pick one mode |
 | `land` given a branch name | 2 | `` `<name>` is not a commit — a commit is 7 to 40 hex characters, … `` | Pass the commit |
 | `land` given a commit this checkout lacks | 2 | `` `<sha>` resolves to no commit in this checkout `` | Fetch, then retry |
 | `land` with a changed file in the worktree | 1 | `` `<path>` is changed in the working tree — … `--also <path>` is how a path of the reviewer's own is admitted `` | Clean it, or pass `--also` |
 | `land` of a closed item | 1 | `<item> is closed — a landing closes an item and cannot close one twice` | Nothing to do |
 | `land` by a seat not holding the item | 1 | `` <item> is held by `<holder-name>` and not by `<your-name>` — whoever closes an item lands its work ``, each seat by its machine name | Land as the holder |
 | `land` by a routine or the controller | 1 | `fleet land acts as a seat or as a run — <kind>:<id> is neither` | Land as the holder |
-| `land` with no verdict, or a return last | 1 | `<item> carries no verdict — …` or `` the last verdict on <item> is `RETURNED WITH FINDINGS` — … `` | Review it |
+| `land` by a run with no licence | 1 | `run <run> raised no hold about <item> — …`, or why the hold does not license it | See [Runs and workflows](runs.md) |
+| `land` with no verdict, or a return last | 1 | `<item> carries no verdict — …` or `the last verdict on <item> is a return — …` | Review it |
 | `land` of a commit the verdict does not name | 1 | `the last verdict on <item> accepts <sha> and this landing was given <sha> — a landing lands the commit the review read` | Land the accepted commit |
+| `land` of an accept another actor wrote | 1 | `the last verdict on <item> was written by <actor>, and this landing closes as <actor> — a landing lands its own reviewer's accept` | Review it as the lander |
 | `land` from the primary with no reviewer row | 1 | `` [core] reviewer is `<reviewer-name>` (<reviewer>), and <fleet-dir>/config.json carries no row for it — … `` | Run from the reviewer's worktree |
 | `land` from the primary with no reviewer worktree | 1 | `` `<reviewer-name>` carries no `<project>` worktree in <fleet-dir>/config.json — … `` | Run from the reviewer's worktree |
 | `land` squash conflicts | 1 | `RETURN FOR REBASE`, the paths, and `the squash of <sha> conflicts with origin/main — return the item: …` | Return the item |
@@ -793,16 +859,17 @@ Exits follow the table every command shares; see
 | `land` suite red twice | 1 | both log tails, and ``the suite `<command>` exited <rc> and, rerun once, <rc> — …`` | Read the logs |
 | `land` trunk moved | 1 | `REBASE NEEDED: origin/main moved (<n>)` | Rebase the work, then land |
 | `land` push rejected | 1 | the push's output, and `the push to origin/main exited <rc> — nothing after it ran: …` | Read `push.out` |
-| A write that did not read back | 3 | what the record holds, what the verb wanted, and, from `dispatch`, `deliver`, `review` and `land`, a `RERUN:` line | Run the `RERUN:` line, or write the note by hand |
+| A write that did not read back | 3 | what the record holds against what the verb wrote, and what STANDS; for an assignee, an order index or a close, a `RERUN:` line | Run the `RERUN:` line, and read the item with `fleet item show` |
 
 ## See also
 
-- [Runs and workflows](runs.md): how a workflow calls these verbs, and how a
-  held item resumes.
+- [Runs and workflows](runs.md): how a workflow calls these verbs, how a
+  held item resumes, and what licenses a run's landing.
 - [The controller and seats](seats.md): named and transient seats, and the
   sessions a ring reaches.
-- [Packs](packs.md): the templates behind the brief and every note.
-- [Status and the event stream](status.md): reading the events these verbs
+- [Packs](packs.md): the files behind the brief, the rules and the three
+  JSON shapes.
+- [Status and the event stream](status.md): reading the lines these verbs
   write.
 - [Exit codes and conventions](conventions.md): the exit table and full item
   ids.

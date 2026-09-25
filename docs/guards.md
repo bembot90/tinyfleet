@@ -59,10 +59,21 @@ to a plain text match for it, described under each class, and say so in the
 refusal: `(this command could not be read, so the conservative text match
 applied)`.
 
-The plugin runs the binary through its own `bin/fleet`. When that finds no
-built binary, it prints `fleet: no built binary under <root>/target — run
-cargo build --release in <root>, or set FLEET_BIN` on standard error and
-exits 127, and no class judges the command.
+The plugin runs the binary through its own `bin/fleet`, or through
+`FLEET_BIN` when that names an absolute path to an executable. When neither
+gives it a binary, a guard hook blocks the command: it prints three lines on
+standard error and exits 2.
+
+```text
+fleet: this Bash command is blocked: the `fleet guard <class>` hook has no fleet binary to judge it with, and a guard that cannot judge refuses rather than letting a command run unjudged.
+fleet: no built binary under <root>/target, and FLEET_BIN is not set.
+fleet: every Bash command in this session is blocked until one is found, so supply it from a terminal outside the session: run `cargo build --release` in <root>, or start the session with FLEET_BIN set to the absolute path of a fleet binary.
+```
+
+Every other command through `bin/fleet`, `fleet guard <class> --check`
+included, prints the second line and
+``fleet: to supply one, run `cargo build --release` in <root>, or set FLEET_BIN to the absolute path of a fleet binary.``
+and exits 127.
 
 ## Where a guard reads its settings
 
@@ -248,14 +259,17 @@ refuses, so a download from a listed bucket is refused too, with the label
   `get-config`, `info`, `version`, `help`, `print-access-token`,
   `print-identity-token`), a verb fleet does not recognise included;
 - `gcloud config set project <listed id>`;
+- `gcloud storage service-agent`;
 - `firebase deploy`, `firebase hosting:channel:deploy` and
   `firebase functions:delete`.
 
 The project is the one named by `--project` (or `-p` for `gcloud`, `-P` for
 `firebase`). When a command that mentions `gcloud` names none, fleet asks
 `gcloud config get-value project`, waits up to five seconds, and refuses when
-the answer is listed. When that cannot answer, the command is let through, and
-so is a `firebase` command with no project flag.
+the answer is listed; a `firebase` command in that same command line with no
+project flag is judged against that answer too. When that cannot answer, the
+command is let through, and so is a `firebase` command with no project flag in
+a command line that does not mention `gcloud`.
 
 ### app
 
@@ -335,7 +349,8 @@ non-zero status among them. `fleet doctor` runs it (see
 | `fleet guard` with no class | 2 | `error: the following required arguments were not provided:` and `<CLASS>` | name one of the four classes |
 | `fleet guard` with a class it does not know | 2 | ``error: invalid value 'shell' for '<CLASS>': unknown class `shell` — one of shell-trap, record, release-ref, production-write`` | use one of the names it lists |
 | `--check` finds a target not set | 1 | `<class> <check>: not configured — <key>` | set the key the line names, or leave it unset if the check does not apply to you |
-| The plugin finds no built binary | 127 | `fleet: no built binary under <root>/target — run cargo build --release in <root>, or set FLEET_BIN` | build fleet, or set `FLEET_BIN` to the binary's absolute path |
+| A guard hook finds no fleet binary | 2 | ``fleet: this Bash command is blocked: the `fleet guard <class>` hook has no fleet binary to judge it with, …`` and the two lines under it | build fleet, or start the session with `FLEET_BIN` set to the binary's absolute path |
+| Any other command through `bin/fleet` finds no fleet binary | 127 | `fleet: no built binary under <root>/target, and FLEET_BIN is not set.` | build fleet, or set `FLEET_BIN` to the binary's absolute path |
 
 ## See also
 
@@ -343,8 +358,8 @@ non-zero status among them. `fleet doctor` runs it (see
   plugin that wires the guards into a session.
 - [Packs](packs.md): the defaults and the tiny pack, which carry the
   `guards-installed` doctor entry, and how one pack's file shadows another's.
-- [Items and the record](items.md): the notes and fields the record class
-  protects.
+- [Items and the record](items.md): the items whose fields the record class
+  guards, and the timeline fleet's own verbs write on them.
 - [The controller and seats](seats.md): the sessions the controller starts,
   and the plugin they load.
 - [Exit codes and conventions](conventions.md): the exit table, and why items

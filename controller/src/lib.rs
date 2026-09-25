@@ -39,7 +39,7 @@
 //! list, and the pid it read before the stop. It prints the reclaim and writes
 //! `session.stopped`. It deletes no branch of its own accord: it answers which
 //! one that worktree stood on, and the cli releases it through
-//! `transient::delete_branch` only where the item's landing note already
+//! `transient::delete_branch` only where the item's landed entry already
 //! classified that same branch SAFE.
 //!
 //! ## A spawned seat's own configuration directory
