@@ -87,28 +87,6 @@ impl Engine {
         }
     }
 
-    /// The projects this machine holds.
-    ///
-    /// The register is the standalone fleets'; an embedded fleet's policy file
-    /// sits at its project's own root, so that file's directory is the project.
-    /// A standalone fleet's policy is under the machine directory, which is why
-    /// the machine directory itself is never taken for a project.
-    fn projects(&self) -> Vec<PathBuf> {
-        let mut roots: Vec<PathBuf> = fleet_controller::lifecycle::registered(&self.machine_dir)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|project| PathBuf::from(project.root))
-            .collect();
-        if let Ok(machine) = config::read(&self.machine_dir.join("config.json")) {
-            if let Some(root) = machine.fleet_toml.parent() {
-                if root != self.machine_dir && !roots.iter().any(|held| held == root) {
-                    roots.push(root.to_path_buf());
-                }
-            }
-        }
-        roots
-    }
-
     /// Who the pass's acts are made by [ASSUMES D8]: the controller, under this
     /// machine's own identity — minted here where the machine has none yet, as
     /// a verb run on it with no actor would mint it. Every write the three acts
@@ -129,7 +107,7 @@ impl Engine {
     /// will not resolve is skipped rather than refused — the run may be in the
     /// next one, and a machine is not broken because one of its roots moved.
     fn project_holding(&self, run: &str) -> Result<Here, String> {
-        for root in self.projects() {
+        for root in registered_roots(&self.machine_dir) {
             let Ok(here) = resolve_from(&root, self.machine_dir.clone(), None) else {
                 continue;
             };
@@ -141,6 +119,29 @@ impl Engine {
             "no project registered with this machine holds a record for {run}"
         ))
     }
+}
+
+/// The projects this machine holds: what the run pass looks a run's record up
+/// across, and what `fleet status` counts the open holds over.
+///
+/// The register is the standalone fleets'; an embedded fleet's policy file
+/// sits at its project's own root, so that file's directory is the project.
+/// A standalone fleet's policy is under the machine directory, which is why
+/// the machine directory itself is never taken for a project.
+pub(crate) fn registered_roots(machine_dir: &Path) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = fleet_controller::lifecycle::registered(machine_dir)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|project| PathBuf::from(project.root))
+        .collect();
+    if let Ok(machine) = config::read(&machine_dir.join("config.json")) {
+        if let Some(root) = machine.fleet_toml.parent() {
+            if root != machine_dir && !roots.iter().any(|held| held == root) {
+                roots.push(root.to_path_buf());
+            }
+        }
+    }
+    roots
 }
 
 /// The controller decides which runs move — a fold of the machine's own stream

@@ -1,21 +1,22 @@
 //! `fleet status` — the projection printed.
 //!
-//! IT READS FILES AND WRITES NOTHING. The projection the controller published,
-//! the policy in force and the event stream the runs are read off are the three
-//! instruments; the process table is not one of them, because a running process
-//! is not what makes a seat one of this fleet's.
+//! IT READS, AND IT WRITES NOTHING. The projection the controller published,
+//! the policy in force, the event stream the runs are read off and the store of
+//! every project this machine registers, which the open holds are read off, are
+//! the four instruments; the process table is not one of them, because a
+//! running process is not what makes a seat one of this fleet's.
 //!
 //! THE PROJECTION IS THE ONE INSTRUMENT THIS VERB REFUSES WITHOUT (exit 5).
-//! The policy and the stream print what they could not read in their own
-//! sections and the page around them still prints, with the exit table's
-//! could-not-tell at the end — a page that stopped at its second section would
-//! hide the ones that had answers.
+//! The policy, the stream and the stores print what they could not read in
+//! their own sections and the page around them still prints, with the exit
+//! table's could-not-tell at the end — a page that stopped at its second
+//! section would hide the ones that had answers.
 
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use fleet_controller::events::{self, Record};
+use fleet_controller::events;
 use fleet_controller::policy::{self as controller_policy, Policy};
 use fleet_controller::projection::{self, Projection, SeatRow};
 use fleet_controller::routines::RoutineRow;
@@ -24,8 +25,11 @@ use fleet_controller::seat::COLLECTOR_STALE_POLLS;
 use fleet_controller::{clock, config, platform};
 use fleet_core::item::{rules, Stop};
 use fleet_core::policy as core_policy;
+use fleet_core::store::Store;
 
 use crate::exit::Exit;
+use crate::item::{open_store, resolve_from};
+use crate::runs::registered_roots;
 
 /// The published document, under the machine directory.
 const PROJECTION: &str = "projection.json";
@@ -166,7 +170,7 @@ impl Read {
             stale,
             policy: effective_policy(&policy_file, machine_dir),
             rules: read_rules(&policy_file),
-            runs: read_runs(&machine_dir.join(STREAM)),
+            runs: read_runs(&machine_dir.join(STREAM), machine_dir),
         }
     }
 
@@ -177,6 +181,10 @@ impl Read {
             self.policy.as_ref().err(),
             self.rules.as_ref().err(),
             self.runs.as_ref().err(),
+            self.runs
+                .as_ref()
+                .ok()
+                .and_then(|runs| runs.holds.as_ref().err()),
         ]
         .into_iter()
         .flatten()
@@ -271,21 +279,25 @@ fn string_of(value: Option<&core_policy::Value>) -> Option<String> {
     value?.as_str().map(str::to_string)
 }
 
-/// Every run the stream holds, and the holds standing on it.
+/// Every run the stream holds, and the holds the stores still call open.
 ///
-/// THE STREAM AND NOT THE RUN'S RECORD OR ITS DIRECTORY. The directory holds
-/// the pins and the logs and never how the run ended; the record is open or
-/// closed, which cannot tell a failure from a close or a wait from a crash, and
-/// reading it is a store this verb does not open. The stream carries one row of
-/// the exit table per execution and the park's latch, and it is what the run
-/// pass decides every re-run and every park on — so the page and the pass read
-/// one fold.
+/// THE RUNS ARE THE STREAM'S AND NOT THE RUN'S RECORD OR ITS DIRECTORY. The
+/// directory holds the pins and the logs and never how the run ended; the
+/// record is open or closed, which cannot tell a failure from a close or a
+/// wait from a crash. The stream carries one row of the exit table per
+/// execution and the park's latch, and it is what the run pass decides every
+/// re-run and every park on — so the page and the pass read one fold.
+///
+/// THE HOLDS ARE THE STORES' AND NOT THE STREAM'S. A hold raised or cleared on
+/// another machine, or by hand with `bd`, writes no line here, and a fold of
+/// the park and clearance lines counts it wrong; the store is where a hold is
+/// open or is not.
 struct RunsRead {
     readings: Vec<Reading>,
-    holds: BTreeSet<String>,
+    holds: Result<BTreeSet<String>, String>,
 }
 
-fn read_runs(path: &Path) -> Result<RunsRead, String> {
+fn read_runs(path: &Path, machine_dir: &Path) -> Result<RunsRead, String> {
     // A stream that is not there is a machine nobody has run anything on, and
     // every count is zero. One that is there and will not open is not that, and
     // the fold's reader would answer it as empty all the same.
@@ -300,32 +312,34 @@ fn read_runs(path: &Path) -> Result<RunsRead, String> {
     let stream = events::read_after(path, 0);
     Ok(RunsRead {
         readings: runs::readings(&stream),
-        holds: standing_holds(&stream),
+        holds: open_holds_on(machine_dir),
     })
 }
 
-/// Every hold a park announced that no `hold.cleared` has cleared since.
+/// Every hold the store of each project this machine registers still calls
+/// open, as one set.
 ///
-/// The stream's count and not the store's: a hold raised or cleared by hand
-/// with `bd` wrote no line here, and `bd gate list` is the listing that sees
-/// those.
-fn standing_holds(stream: &[Record]) -> BTreeSet<String> {
-    let mut standing = BTreeSet::new();
-    for record in stream {
-        let Some(hold) = record.payload.get("hold").and_then(|hold| hold.as_str()) else {
+/// MACHINE-LEVEL, because the runs are: a machine's runs span its projects, so
+/// every registered project is asked, over the roots the run pass looks a
+/// run's record up across. A root that will not resolve is skipped, as the
+/// pass skips it — a machine is not broken because one of its roots moved. A
+/// store that will not answer is not skipped: a count without it is a count
+/// of some of the holds, printed as all of them.
+fn open_holds_on(machine_dir: &Path) -> Result<BTreeSet<String>, String> {
+    let mut open = BTreeSet::new();
+    for root in registered_roots(machine_dir) {
+        let Ok(here) = resolve_from(&root, machine_dir.to_path_buf(), None) else {
             continue;
         };
-        match record.kind.as_str() {
-            runs::ITEM_HELD => {
-                standing.insert(hold.to_string());
-            }
-            fleet_core::item::HOLD_CLEARED => {
-                standing.remove(hold);
-            }
-            _ => {}
-        }
+        let holds = open_store(&here.project.root).open_holds().map_err(|e| {
+            format!(
+                "the holds were not counted — {}'s store did not answer: {e}",
+                root.display()
+            )
+        })?;
+        open.extend(holds);
     }
-    standing
+    Ok(open)
 }
 
 // ---- the page ----------------------------------------------------------------
@@ -517,9 +531,9 @@ fn routines_section(out: &mut dyn Write, routines: &[RoutineRow]) -> std::io::Re
 /// failures inside the window, the parks, the executions nothing could
 /// classify, the waits, and the runs still executing. A closed run is not
 /// listed, nor a cancelled one, which a person ended themselves; a failure
-/// before the window is counted and not listed. Then the
-/// holds standing on the stream, runs' and items' alike, because a park is
-/// what the morning's first read is of.
+/// before the window is counted and not listed. Then the holds the stores
+/// still call open, runs' and items' alike, because a park is what the
+/// morning's first read is of.
 fn runs_section(out: &mut dyn Write, read: &Result<RunsRead, String>) -> std::io::Result<()> {
     let read = match read {
         Ok(read) => read,
@@ -560,7 +574,7 @@ fn runs_section(out: &mut dyn Write, read: &Result<RunsRead, String>) -> std::io
         open.len()
     )?;
     for reading in [listed, held, unread, waiting, open].concat() {
-        writeln!(out, "  {}", run_row(reading, &read.holds))?;
+        writeln!(out, "  {}", run_row(reading, read.holds.as_ref().ok()))?;
     }
     match earlier {
         0 => {}
@@ -574,14 +588,16 @@ fn runs_section(out: &mut dyn Write, read: &Result<RunsRead, String>) -> std::io
              them"
         )?,
     }
-    writeln!(
-        out,
-        "\nholds  {} raised by a park and not cleared",
-        read.holds.len()
-    )
+    match &read.holds {
+        Ok(open) => writeln!(out, "\nholds  {} open", open.len()),
+        Err(why) => writeln!(out, "\nholds  not counted — {why}"),
+    }
 }
 
-fn run_row(reading: &Reading, holds: &BTreeSet<String>) -> String {
+/// A parked run's hold reads cleared where the stores' open set does not hold
+/// it. A set that was not read says nothing either way, and the holds line
+/// names why.
+fn run_row(reading: &Reading, open: Option<&BTreeSet<String>>) -> String {
     let said = |key: &str| said_of(reading.said.get(key));
     let what = match reading.standing {
         Standing::Failed => format!("FAILED at {} — {}", reading.stamp, said("reason")),
@@ -589,8 +605,8 @@ fn run_row(reading: &Reading, holds: &BTreeSet<String>) -> String {
             "HELD at {} on hold {}{} — nothing could classify {} execution(s)",
             reading.stamp,
             reading.hold.as_deref().unwrap_or("—"),
-            match &reading.hold {
-                Some(hold) if !holds.contains(hold) => ", cleared",
+            match (&reading.hold, open) {
+                (Some(hold), Some(open)) if !open.contains(hold) => ", cleared",
                 _ => "",
             },
             reading.crashes

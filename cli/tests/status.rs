@@ -110,14 +110,18 @@ impl Rig {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_fleet"))
+        self.command(args).output().expect("the built binary runs")
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fleet"));
+        command
             .args(args)
             .current_dir(&self.project)
             .hermetic(&self.root.join("home"), &self.machine, None)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_SYSTEM", "/dev/null")
-            .output()
-            .expect("the built binary runs")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null");
+        command
     }
 
     /// The machine directory as a listing plus a checksum per file, which is
@@ -673,12 +677,14 @@ fn row_of(section: &str, run: &str) -> String {
 
 /// AC1: every standing a run can be in, read off the stream the run pass
 /// decides on — the failure in the window with its reason, the park with its
-/// hold and the park whose hold was cleared, the could-not-tell with what was
-/// read, the wait with its wake, the open run — and the two the section leaves
-/// out: the closed run, and the
-/// failure before the window, which is counted and not listed. The hold count
-/// is every park the stream holds that no `hold.cleared` cleared, a run's or
-/// an item's.
+/// hold, the could-not-tell with what was read, the wait with its wake, the
+/// open run — and the two the section leaves out: the closed run, and the
+/// failure before the window, which is counted and not listed.
+///
+/// THE HOLDS ARE THE STORE'S and this machine registers no project, so no
+/// store holds any hold the stream names open: each park reads cleared, and
+/// the count is zero whatever `item.held` and `hold.cleared` lines the stream
+/// carries. The arms under "the holds" below put a board behind them.
 #[test]
 fn the_runs_section_reads_every_standing_off_the_stream() {
     let rig = Rig::new("runs");
@@ -774,8 +780,8 @@ fn the_runs_section_reads_every_standing_off_the_stream() {
     let park = row_of(&section, "fx-park");
     assert!(park.contains("HELD at "), "{park}");
     assert!(
-        park.contains("on hold fx-hold-run — "),
-        "a hold nobody cleared: {park}"
+        park.contains("on hold fx-hold-run, cleared — "),
+        "a hold no store holds open, though no `hold.cleared` names it: {park}"
     );
     let heard = row_of(&section, "fx-heard");
     assert!(
@@ -818,10 +824,7 @@ fn the_runs_section_reads_every_standing_off_the_stream() {
         "and it is counted: {section}"
     );
 
-    assert!(
-        page.contains("\nholds  2 raised by a park and not cleared\n"),
-        "{page}"
-    );
+    assert!(page.contains("\nholds  0 open\n"), "{page}");
 }
 
 /// A failure and a wait the SDK printed read as text on the page: the reason as
@@ -874,9 +877,7 @@ fn a_failure_and_a_wait_the_sdk_printed_read_as_text_on_the_page() {
 }
 
 /// A run held at the crash cap and then cancelled is off the page: it is not
-/// listed as held, and the hold the cancel cleared is not counted among the
-/// ones a park raised and nobody cleared — the count is of holds a person
-/// still owes a clearance, and a cancelled run is owed none.
+/// listed as held, and the hold the cancel cleared is not counted.
 ///
 /// THE LINES ARE THE ONES `fleet cancel` WRITES: `run.cancelled`, then one
 /// `hold.cleared` per hold it cleared, carrying no letter because nobody
@@ -928,10 +929,7 @@ fn a_cancelled_run_is_neither_listed_held_nor_counted_as_owed_a_clearance() {
         !section.contains("fx-gone"),
         "a cancelled run is not listed: {section}"
     );
-    assert!(
-        page.contains("\nholds  0 raised by a park and not cleared\n"),
-        "{page}"
-    );
+    assert!(page.contains("\nholds  0 open\n"), "{page}");
 }
 
 /// AC1, the quiet page: no stream at all is a fleet nobody has run anything on,
@@ -954,10 +952,7 @@ fn a_machine_with_no_stream_prints_every_count_at_zero() {
         ),
         "{page}"
     );
-    assert!(
-        page.contains("\nholds  0 raised by a park and not cleared\n"),
-        "{page}"
-    );
+    assert!(page.contains("\nholds  0 open\n"), "{page}");
 }
 
 /// AC2: a real `fleet run` whose workflow exits 1 — the row a takeoff whose
@@ -1050,6 +1045,218 @@ fn a_run_that_exits_one_is_on_the_page() {
     let row = row_of(&section, &run);
     assert!(row.contains("status-fails  FAILED at "), "{row}");
     assert!(row.contains(r#"{"why":"fleet land refused"}"#), "{row}");
+}
+
+// ---- the holds: every registered project's store -----------------------------
+
+/// The question a hold hands in, of the shape `assets/question.schema.json`
+/// gives.
+const QUESTION: &str = r#"{
+  "question": "Ship?",
+  "options": [{"letter": "A", "text": "yes"}, {"letter": "B", "text": "no"}]
+}"#;
+
+impl Rig {
+    /// A board at the project, registered on the rig's machine as `fleet
+    /// create --standalone` registers one: the store status asks for the open
+    /// holds.
+    ///
+    /// ITS OWN `bd init` AND NOT THE RUN'S SHARED BOARD: the count is of every
+    /// hold the board holds open, so a neighbour's hold would move it.
+    fn a_registered_board(&self) {
+        common::take_a_board_alone(&self.project, "status-holds");
+        self.registered();
+    }
+
+    fn registered(&self) {
+        fleet_controller::lifecycle::register(&self.machine, &self.project, "demo")
+            .expect("the project is registered on the machine");
+    }
+
+    fn bd(&self, args: &[&str]) -> Output {
+        Command::new("bd")
+            .arg("-C")
+            .arg(&self.project)
+            .args(args)
+            .output()
+            .expect("bd runs")
+    }
+
+    /// A run's record on the board: an item carrying the run label, which a
+    /// hold parks without touching git.
+    fn a_run_record(&self) -> String {
+        let out = self.bd(&[
+            "create",
+            "--title",
+            "a run's record",
+            "--type",
+            "task",
+            "--labels",
+            fleet_core::item::run::LABEL,
+            "--json",
+        ]);
+        assert!(out.status.success(), "bd create: {}", stderr(&out));
+        let value: serde_json::Value =
+            serde_json::from_str(stdout(&out).trim()).expect("bd create answers JSON");
+        value["id"].as_str().expect("an id").to_string()
+    }
+
+    /// The run's record held through `fleet hold`, by the run itself, and the
+    /// hold it raised.
+    fn held_by_its_run(&self, run: &str) -> String {
+        let question = self.root.join("question.json");
+        std::fs::write(&question, QUESTION).expect("the question is written");
+        let by = format!("run:{run}");
+        let question = question.display().to_string();
+        let out = self.run(&[
+            "hold",
+            "--question",
+            &question,
+            "--item",
+            run,
+            "--by",
+            &by,
+            "--json",
+        ]);
+        assert_eq!(out.status.code(), Some(0), "fleet hold: {}", stderr(&out));
+        let document: serde_json::Value =
+            serde_json::from_str(stdout(&out).trim()).expect("hold --json answers a document");
+        document["data"]["hold"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the hold `hold` raised: {document}"))
+            .to_string()
+    }
+}
+
+/// Two runs parked through `fleet hold` on a registered board, and the FIRST
+/// one's hold cleared by hand with bd's own verb — which writes no line on the
+/// stream, so the stream still says both holds stand. Each run's own
+/// `run.started` and `run.could_not_tell` go on first, so the park lands on a
+/// run the fold holds.
+///
+/// Answers the page and the two `(run, hold)` pairs, the cleared one first.
+fn two_parks_one_cleared_by_hand(rig: &Rig) -> (String, [(String, String); 2]) {
+    rig.publish(&document(
+        &rig.policy_file(),
+        &fleet_controller::clock::now_stamp(),
+        vec![seat("builder-1")],
+    ));
+    rig.a_registered_board();
+    let runs = [rig.a_run_record(), rig.a_run_record()];
+    let now = fleet_controller::clock::now_stamp();
+    let crashed = |run: &str| {
+        line(
+            &now,
+            fleet_core::item::RUN_COULD_NOT_TELL,
+            serde_json::json!({ "run": run, "exit": 7, "read": null }),
+        )
+    };
+    stream(
+        rig,
+        &[
+            started(&now, &runs[0]),
+            crashed(&runs[0]),
+            started(&now, &runs[1]),
+            crashed(&runs[1]),
+        ],
+    );
+    let parks = runs.map(|run| {
+        let hold = rig.held_by_its_run(&run);
+        (run, hold)
+    });
+
+    let out = rig.bd(&["gate", "resolve", &parks[0].1]);
+    assert!(out.status.success(), "bd gate resolve: {}", stderr(&out));
+    let lines =
+        std::fs::read_to_string(rig.machine.join("events.jsonl")).expect("the stream is there");
+    assert!(
+        !lines.contains(fleet_core::item::HOLD_CLEARED),
+        "the hand clear wrote no line on the stream: {lines}"
+    );
+    assert_eq!(
+        lines.matches(fleet_core::item::ITEM_HELD).count(),
+        2,
+        "and the stream carries both parks: {lines}"
+    );
+
+    let out = rig.run(&["status"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    (stdout(&out), parks)
+}
+
+/// AC1: the hold count is the STORE's open holds, off every project the
+/// machine registers — two raised through `fleet hold` and one of them cleared
+/// by hand with `bd gate resolve` is one open. RED-PROOF: the stream's fold
+/// counted two, because the stream never saw the hand clear.
+#[test]
+fn the_hold_count_is_the_stores_and_sees_a_hold_cleared_by_hand() {
+    let rig = Rig::new("holds-count");
+    let (page, _) = two_parks_one_cleared_by_hand(&rig);
+    assert!(page.contains("\nholds  1 open\n"), "{page}");
+}
+
+/// AC3: a parked run whose hold was cleared by hand reads ", cleared", and the
+/// one whose hold the store still holds open does not.
+#[test]
+fn a_parked_run_whose_hold_was_cleared_by_hand_reads_cleared() {
+    let rig = Rig::new("holds-row");
+    let (page, [(heard, heard_hold), (standing, standing_hold)]) =
+        two_parks_one_cleared_by_hand(&rig);
+    let section = runs_section(&page);
+    assert!(section.contains(", 2 held, "), "{section}");
+    let row = row_of(&section, &heard);
+    assert!(row.contains("HELD at "), "{row}");
+    assert!(
+        row.contains(&format!("on hold {heard_hold}, cleared — ")),
+        "the hold cleared by hand reads cleared: {row}"
+    );
+    let row = row_of(&section, &standing);
+    assert!(
+        row.contains(&format!("on hold {standing_hold} — ")),
+        "the hold the store holds open does not: {row}"
+    );
+}
+
+/// AC2: a registered project whose bd cannot run leaves the holds uncounted,
+/// named on the page and on stderr, and the exit is could-not-tell, 3 — the
+/// page around it still prints.
+#[test]
+fn a_registered_project_whose_bd_cannot_run_leaves_the_holds_uncounted_at_exit_3() {
+    let rig = Rig::new("holds-unread");
+    rig.publish(&document(
+        &rig.policy_file(),
+        &fleet_controller::clock::now_stamp(),
+        vec![seat("builder-1")],
+    ));
+    rig.registered();
+    let bd = rig.root.join("stubs/bd");
+    written(&bd, "#!/bin/sh\necho 'this bd cannot run' >&2\nexit 1\n");
+    executable(&bd);
+
+    let out = rig
+        .command(&["status"])
+        .env("FLEET_BD_BIN", &bd)
+        .output()
+        .expect("the built binary runs");
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    let page = stdout(&out);
+    let why = format!(
+        "the holds were not counted — {}'s store did not answer: ",
+        rig.project.display()
+    );
+    assert!(
+        page.contains(&format!("\nholds  not counted — {why}")),
+        "{page}"
+    );
+    assert!(
+        stderr(&out).contains(&format!("fleet status: {why}")),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        page.contains("\nruns  0 failed in the last 24 hours,"),
+        "the page around it still prints: {page}"
+    );
 }
 
 fn written(path: &Path, body: &str) {
