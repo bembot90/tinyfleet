@@ -20,12 +20,12 @@ written by hand; the item's own dependencies are the real blockers.
 | ☑ | fleet-pjl | The contract's actor is one string everywhere: the timeline entry's wire shape is pinned, and close takes an actor | — |
 | ☑ | fleet-b47 | Adapter and doc agree on missing writes, the empty update and NewItem::validate | — |
 | ☑ | fleet-urp | The contract's Item and list rows carry the store's foreign keys, and the adopt-board check reads class 2 off them | fleet-run |
-| ☐ | fleet-2tp | ItemSummary carries the assignee and the run record, so a listing needs no show per row | fleet-run |
+| ☑ | fleet-2tp | ItemSummary carries the assignee and the run record, so a listing needs no show per row | fleet-run |
 | ☑ | fleet-xpc | Capabilities declares the CLI the guard polices and the item vocabulary routines check | — |
 | ☑ | fleet-z5m | The store contract's fragment rule is a prefix rule, as bd 1.3.0 resolves | — |
 | ☑ | fleet-vqre | Two OrderKind types exist: entry.rs's {Dispatch} and the contract's {Dispatch, Review} | — |
 | ☑ | fleet-4qpq | fleet store check names [store] adapter for a bad --adapter and prints nothing for ~50 s | — |
-| ☐ | fleet-wpf0.4 | The trait slims onto the fences: hand_over, reopen and order_withdraw_from go, order_withdraw takes a WithdrawFence | fleet-wpf0.1 |
+| ☑ | fleet-wpf0.4 | The trait slims onto the fences: hand_over, reopen and order_withdraw_from go, order_withdraw takes a WithdrawFence | fleet-wpf0.1 |
 | ☐ | fleet-wpf0.5 | fleet store schema prints the contract as JSON Schema generated from the Rust types, committed with a drift test | fleet-wpf0.1, fleet-pjl |
 | ☐ | fleet-wpf0.6 | The fake store decodes the contract's own JSON and nothing of bd's | fleet-run, fleet-urp |
 | ☐ | fleet-wpf0.7 | fleet-store-stub: a test-only adapter executable answering the contract from the fake, its state in a file | fleet-wpf0.4, fleet-wpf0.6 |
