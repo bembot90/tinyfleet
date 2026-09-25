@@ -367,6 +367,7 @@ pub fn land_command(ui: &Ui, args: &LandArgs) -> Exit {
                 "item": landed.item,
                 "state": state(ITEM_LANDED),
                 "sha": landed.sha,
+                "entry": landed.entry,
             }),
             args.json,
         ),
@@ -383,11 +384,10 @@ fn run_land(
     let here = resolve_at(parsed.packs_dir.clone())?;
     let by = acting("land", parsed.by.as_deref(), &here)?;
     let store = open_store(&here.project.root);
-    let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let git = RealGit {
         root: here.project.root.clone(),
     };
-    // The bar is bounded by the rows the note renders, because that count is
+    // The bar is bounded by the rows the landing reads, because that count is
     // known before the first check is read and does not change with what they
     // say.
     let progress = Bar::over(ui, land::CRITERIA.len() as u64, "landing");
@@ -416,7 +416,6 @@ fn run_land(
         &land::Wiring {
             store: &store,
             git: &git,
-            packs: &packs,
             project: &here.project,
             progress: &progress,
             events: &events,
@@ -1654,7 +1653,7 @@ impl LandGit for RealGit {
         ))
     }
 
-    /// `--` before the name, because the name comes off a note: a value
+    /// `--` before the name, because the name comes off the record: a value
     /// beginning with `-` would otherwise be read as an option by a call whose
     /// whole job is to delete something.
     fn delete_branch(&self, branch: &str) -> Result<(), String> {

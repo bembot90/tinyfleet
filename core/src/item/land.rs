@@ -43,27 +43,21 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::entry::{Body, Clearance, Timeline, Verdict};
-use crate::item::brief::Packs;
+use crate::entry::{self, Body, CheckRow, Clearance, Entry, SuiteRun, Timeline, Verdict};
 use crate::item::deliver::{named, reviewer_of};
 use crate::item::lane;
 use crate::item::run;
 use crate::item::{
-    control_token, last_landing, marker_block, render, Events, Git, Project, Stop, CHECK_READ,
-    ITEM_LANDED, LANDING_MARKERS, TRUNK, TRUNK_BRANCH,
+    recorded, Events, Git, Project, Stop, Unrecorded, CHECK_READ, ITEM_LANDED, TRUNK, TRUNK_BRANCH,
 };
 use crate::policy;
 use crate::seat::actor::{Actor, ActorKind};
 use crate::seat::identity::{Directory, SeatId};
 use crate::store::{Item, Store, StoreError, EXPORT};
 
-/// The landing-note grammar, in core's pack and shadowable like every other
-/// asset.
-pub const LANDING_NOTE: &str = "assets/landing-note.md";
-
-/// The criteria the note carries, in the order the checks are READ — which is
-/// the order they are printed in, so the page a person watches and the note a
-/// reader finds afterwards carry the same rows in the same places.
+/// The criteria a landing reads, in the order the checks are READ — which is
+/// the order they are printed in, so the page a person watches and the landed
+/// entry a reader finds afterwards carry the same rows in the same places.
 pub const CRITERIA: [&str; 7] = [
     "reviewed commit",
     "staged set",
@@ -74,13 +68,9 @@ pub const CRITERIA: [&str; 7] = [
     "tree clean after",
 ];
 
-/// Which of [`CRITERIA`] names the work branch, so the row [`release`] reads is
-/// named by the same value the landing wrote it under.
-pub const WORK_BRANCH: usize = 5;
-
 /// The verdict a work-branch row carries when the branch holds nothing the
 /// trunk does not. Written once, for the landing that prints it and the retire
-/// that reads it back off the note.
+/// that names it when it finishes the delete.
 pub const SAFE: &str = "SAFE";
 
 /// Which side of the work branch a delete line is about.
@@ -89,7 +79,7 @@ const LOCAL: &str = "local";
 /// What the local line gains where the ref is still held: the act that can
 /// finish the delete, named where a person meets the exit-1.
 const RETIRE_DELETES: &str =
-    "; `fleet seat retire` deletes it off this note when the seat holding it goes";
+    "; `fleet seat retire` deletes it off the landed entry when the seat holding it goes";
 
 /// The criterion the suite's SECOND reading is printed under. It is not one of
 /// [`CRITERIA`]: a landing that needed no rerun carries no such row, so the
@@ -99,13 +89,14 @@ pub const SUITE_RERUN: &str = "suite rerun";
 /// The line a landing ends on, which is also the one a caller greps for.
 pub const LANDED: &str = "LANDED";
 
-/// What a landing handed no test command says, on its suite row and on its
-/// note's first line. Loud on purpose: a landing that ran nothing is allowed
-/// and is never allowed to read like one that ran something.
+/// What a landing handed no test command says, on its suite row. Loud on
+/// purpose: a landing that ran nothing is allowed and is never allowed to read
+/// like one that ran something.
 pub const NOT_TESTED: &str = "NOT TESTED";
 
-/// What follows [`NOT_TESTED`] on the note's first line and on the row.
-const UNTESTED: &str =
+/// What follows [`NOT_TESTED`] on the row, and what the landed entry's `test`
+/// says where nothing ran.
+pub const UNTESTED: &str =
     "no test command was handed to this landing (`fleet land --test <command>`), so nothing ran \
      and it stands on the review alone";
 
@@ -286,7 +277,6 @@ pub struct Landing<'a> {
 pub struct Wiring<'a> {
     pub store: &'a dyn Store,
     pub git: &'a dyn LandGit,
-    pub packs: &'a Packs,
     pub project: &'a Project,
     pub progress: &'a dyn Progress,
     pub events: &'a dyn Events,
@@ -308,9 +298,11 @@ pub struct Wiring<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Landed {
     pub item: String,
-    /// The sha the push's own range line named.
+    /// The sha the push's own range line named, resolved whole in the tree
+    /// that pushed it.
     pub sha: String,
-    pub note: String,
+    /// The landed entry's id, as the store answered it.
+    pub entry: String,
 }
 
 // ---- the verb ----------------------------------------------------------------
@@ -360,7 +352,6 @@ pub fn land(
         &Wiring {
             store: wiring.store,
             git: git.as_ref(),
-            packs: wiring.packs,
             project: &project,
             progress: wiring.progress,
             events: wiring.events,
@@ -539,8 +530,9 @@ fn run(
     // the whole licence to squash anything.
     //
     // THE ITEM IS RESOLVED HERE, ONCE, and the landing names the id the store
-    // answered from this line on: the note, the events, the land branch and
-    // the close all carry the full id, whatever part of it was typed.
+    // answered from this line on: the landed entry, the events, the land
+    // branch and the close all carry the full id, whatever part of it was
+    // typed.
     let item = read(wiring.store, landing.item)?;
     let resolved = item.id.clone();
     let landing = &Landing {
@@ -569,12 +561,11 @@ fn run(
         },
         ActorKind::Routine | ActorKind::Controller => return Err(neither(landing.by)),
     };
-    // The closer's id, which the holder is compared with, the trailer and the
-    // note name and the close is made under; and the actor the note and the
+    // The closer's id, which the holder is compared with, the trailer names
+    // and the close is made under; and the actor the landed entry and the
     // events are written by — the closer, in its typed form.
     let closer_id = closer.to_string();
     let acting = Actor::seat(closer);
-    let actor = acting.to_string();
     let closer_named = wiring.seats.label(&closer);
     match item.assignee.as_deref() {
         Some(seat) if seat == closer_id => {}
@@ -608,12 +599,6 @@ fn run(
             wiring.seats,
         )?;
     }
-    // The name the landing is written under wherever one is asked for and two
-    // are the fact: the seat a person reads and the id a script can pass.
-    let landed_by = match &by_run {
-        Some(record) => format!("{closer_named} ({closer_id}) through run {}", record.id),
-        None => format!("{closer_named} ({closer_id})"),
-    };
     // THE VERDICT IS THE TIMELINE'S LAST REVIEWED ENTRY, and the delivery its
     // last delivered one. A prose note is neither: the record has no grammar
     // left to read one by.
@@ -633,7 +618,6 @@ fn run(
         )));
     };
     let work_branch = Some(delivery.branch.clone()).filter(|b| !b.is_empty());
-    let delivered_base = delivery.base.clone();
     // The builder is the actor the delivered entry is by: a seat by its full
     // id, and any other kind — a run's delivery is the run's — in its string
     // form.
@@ -851,7 +835,6 @@ fn run(
         &acting,
         wiring,
     )?;
-    let suite_rc = readings.last().map(|reading| reading.rc);
 
     // (i) THE CURRENT-TRUNK CHECK AND THE PUSH, in one act. Split into two they
     // are a race: the trunk can move between the count and the push, and the
@@ -900,16 +883,16 @@ fn run(
     if pushed.code != Some(0) {
         let _ = writeln!(out, "{}", pushed.output.trim_end());
         return Err(Stop::refused(format!(
-            "the push to {}/{TRUNK_BRANCH} exited {} — nothing after it ran: no note, no close, no \
-             branch touched; {kept}",
+            "the push to {}/{TRUNK_BRANCH} exited {} — nothing after it ran: no entry, no close, \
+             no branch touched; {kept}",
             remote(),
             rc_word(pushed.code)
         )));
     }
 
     // (j) THE RANGE LINE. The landed sha comes from the push's own output and
-    // from nowhere else: a rev-parse answers the local tip, which is what a
-    // push that did nothing leaves behind.
+    // from nowhere else: a rev-parse of HEAD answers the local tip, which is
+    // what a push that did nothing leaves behind.
     let Some((old, sha)) = range(&pushed.output) else {
         let _ = writeln!(out, "{}", pushed.output.trim_end());
         return Err(Stop::could_not_tell(format!(
@@ -917,9 +900,15 @@ fn run(
              written and no ref deleted; {kept}"
         )));
     };
+    // THE RANGE'S ENDS, WHOLE. The push prints both abbreviated, and an
+    // abbreviation stops being unique as a history grows, so every sha this
+    // landing writes — the entry, the event, the close and the LANDED line —
+    // is the one each end resolves to here, where the push was made.
+    let old = full(&old, &item.id, wiring)?;
+    let sha = full(&sha, &item.id, wiring)?;
 
-    // The two rows the note carries about the state a landing ends in, read
-    // before the note renders them and acted on after it.
+    // The two rows the landed entry carries about the state a landing ends in,
+    // read before the entry is written and acted on after it.
     let classification = classify(
         commit,
         &sha,
@@ -946,43 +935,48 @@ fn run(
         },
     );
 
-    // (k) THE LANDING NOTE, written through the store and read back. The
-    // landing stands on the trunk whatever this step says.
-    let rebased = rebased_from(&delivered_base, &old);
-    let tested = match (&suite_command, suite_rc) {
-        (Some(command), Some(rc)) => format!("suite: {command}, rc {}", rc_word(rc)),
-        _ => format!("{NOT_TESTED}: {UNTESTED}"),
+    // (k) THE LANDED ENTRY, appended by the closer and read back. The landing
+    // stands on the trunk whatever this step says. What tested it is the last
+    // reading's command and exit — the one the landing stood on — or the
+    // sentence saying nothing ran.
+    let test = match (
+        &suite_command,
+        readings.last().and_then(|reading| reading.rc),
+    ) {
+        (Some(command), Some(rc)) => SuiteRun::Ran(entry::Ran {
+            command: command.clone(),
+            rc,
+        }),
+        _ => SuiteRun::NotTested(entry::NotTested {
+            not_tested: UNTESTED.to_string(),
+        }),
     };
-    let note = render(
-        &block(&wiring.packs.read(LANDING_NOTE)?)?,
-        &[
-            ("sha", &sha),
-            ("rebased", &rebased),
-            ("trunk", TRUNK_BRANCH),
-            ("actor", &landed_by),
-            ("old", &old),
-            ("new", &sha),
-            ("commit", commit),
-            ("builder", &builder),
-            ("tested", &tested),
-            (
-                "checks",
-                &rows.rendered(commit, &sha, work_branch.as_deref()),
-            ),
-        ],
-    )
-    .map_err(|name| {
+    let landed = Body::Landed(entry::Landed {
+        sha: sha.clone(),
+        old: old.clone(),
+        squash_of: commit.to_string(),
+        run: by_run.as_ref().map(|record| record.id.clone()),
+        test,
+        checks: rows.rows(),
+        work_branch: entry::WorkBranch {
+            branch: work_branch.clone(),
+            classification: classification.recorded(),
+        },
+    });
+    let entry = recorded(wiring.store, &item.id, &landed, &acting).map_err(|unrecorded| {
+        let why = match unrecorded {
+            Unrecorded::NotWritten(e) => format!("the landed entry was not written: {e}"),
+            Unrecorded::Unconfirmed(why) => why,
+        };
         Stop::could_not_tell(format!(
-            "`{LANDING_NOTE}` writes `{{{name}}}`, which is not a placeholder this verb resolves"
+            "{why}\n  the landing {sha} STANDS on {TRUNK_BRANCH}"
         ))
     })?;
-    wiring.store.note(&item.id, &note, &actor)?;
-    read_back(&item.id, &note, wiring)?;
 
-    // (k2) THE TWO EVENTS, after the note has been written and read back and
-    // before anything else — so a crash between them leaves a landing note the
-    // stream does not carry, and never a stream that carries a landing no note
-    // stands behind. The reading precedes the landing, as it did in time.
+    // (k2) THE TWO EVENTS, after the entry has been written and read back and
+    // before anything else — so a crash between them leaves a landed entry the
+    // stream does not carry, and never a stream that carries a landing no
+    // entry stands behind. The reading precedes the landing, as it did in time.
     // ONE `check.read` PER READING, in the order they were taken. A landing
     // that needed no rerun writes the one it always did.
     if readings.is_empty() {
@@ -1032,7 +1026,7 @@ fn run(
             }),
             // WHAT TESTED IT: the command that ran green on the tree this
             // pushed, or `null` for a landing handed none — the stream's own
-            // NOT TESTED, readable without the note.
+            // NOT TESTED, readable without the entry.
             "test": suite_command,
         }),
     )?;
@@ -1125,7 +1119,7 @@ fn run(
     Ok(Landed {
         item: item.id,
         sha,
-        note,
+        entry,
     })
 }
 
@@ -1137,7 +1131,7 @@ const FIRST_READING: u64 = 1;
 const SECOND_READING: u64 = 2;
 
 /// The three words a `check.read` carries under `verdict`, which are the three
-/// the landing note's own suite rows print. `RED` reaches the stream only on a
+/// the landed entry's own suite rows carry. `RED` reaches the stream only on a
 /// reading the landing did NOT stand on — a first red that a green rerun
 /// followed, or the pair a second red refuses with.
 const GREEN: &str = "green";
@@ -1172,7 +1166,7 @@ impl Reading {
         }
     }
 
-    /// The row's evidence, which is also what the note carries.
+    /// The row's evidence, which is also what the landed entry carries.
     fn evidence(&self, command: &str) -> String {
         let head = format!(
             "`{command}` rc {} in {}, read from the child's own exit; log {}",
@@ -1273,7 +1267,7 @@ fn suite_check(
     // BOTH READINGS REACH THE STREAM BEFORE THE REFUSAL, and this is the one
     // place this verb writes an event on a path that lands nothing: both
     // readings are owed to the record, and a second red never gets as far as the
-    // note the other events wait behind.
+    // entry the other events wait behind.
     for reading in [&first, &second] {
         announce(
             landing.item,
@@ -1329,7 +1323,7 @@ fn read_once(
     })
 }
 
-/// One event this verb writes. The landing is on the trunk and the note is on
+/// One event this verb writes. The landing is on the trunk and its entry is on
 /// the item whatever this says, which is why the failure names both rather than
 /// reading as a landing that did not happen.
 fn announce(
@@ -1341,8 +1335,8 @@ fn announce(
 ) -> Result<(), Stop> {
     wiring.events.append(kind, closer, payload).map_err(|e| {
         Stop::could_not_tell(format!(
-            "{kind} did not reach the stream: {e}\n  the landing on {item} STANDS and its note is \
-             on the record"
+            "{kind} did not reach the stream: {e}\n  the landing on {item} STANDS and its landed \
+             entry is on the record"
         ))
     })
 }
@@ -1435,7 +1429,7 @@ impl Tree {
 
 // ---- the rows ----------------------------------------------------------------
 
-/// The check rows, printed as each is read and rendered again into the note.
+/// The check rows, printed as each is read and kept for the landed entry.
 ///
 /// A row carries its own criterion NAME rather than taking it from its
 /// position, because the rerun adds a row in the middle and a positional name
@@ -1443,7 +1437,7 @@ impl Tree {
 /// positional count is kept apart for that reason: [`Rows::read`] consumes the
 /// next name in [`CRITERIA`], [`Rows::read_named`] consumes none.
 struct Rows {
-    read: Vec<(&'static str, String, String)>,
+    read: Vec<CheckRow>,
     /// How many of [`CRITERIA`] have been used.
     positional: usize,
 }
@@ -1457,7 +1451,7 @@ impl Rows {
     }
 
     /// One criterion read: its row on stdout, one step of the bar, and the
-    /// reading kept for the note.
+    /// reading kept for the entry.
     fn read(
         &mut self,
         out: &mut dyn Write,
@@ -1483,38 +1477,25 @@ impl Rows {
         let evidence = evidence.into();
         let n = self.read.len();
         let _ = writeln!(out, "{}", row(n + 1, named, verdict, &evidence));
-        self.read.push((named, verdict.to_string(), evidence));
+        self.read.push(CheckRow {
+            check: named.to_string(),
+            verdict: verdict.to_string(),
+            evidence,
+        });
         wiring.progress.row();
     }
 
-    /// The rows the note carries, and the commands that re-run each verdict.
-    fn rendered(&self, commit: &str, sha: &str, branch: Option<&str>) -> String {
-        let mut lines: Vec<String> = self
-            .read
-            .iter()
-            .enumerate()
-            .map(|(n, (named, verdict, evidence))| row(n + 1, named, verdict, evidence))
-            .collect();
-        lines.push(String::new());
-        lines.push("## Commands — every verdict above, re-runnable".to_string());
-        lines.push(format!("git merge-base {TRUNK} {commit}"));
-        lines.push(format!(
-            "git diff --name-only $(git merge-base {TRUNK} {commit}) {commit}"
-        ));
-        lines.push(format!("git show --stat {sha}"));
-        lines.push(format!("git rev-list --count {sha}..{TRUNK}"));
-        if let Some(branch) = branch {
-            lines.push(format!("git rev-parse {branch}"));
-            lines.push(format!("git diff {commit} {sha} --"));
-        }
-        lines.push("git status --porcelain".to_string());
-        lines.join("\n")
+    /// The rows the landed entry carries: one per check read, in the order
+    /// they were read.
+    fn rows(&self) -> Vec<CheckRow> {
+        self.read.clone()
     }
 }
 
-/// One criterion row. The leading `<n>. ` is what a read-back counts, so a row
-/// is a number at the start of a line and nothing else is. `fleet item show`
-/// prints a landing entry's check rows through this same line.
+/// One criterion row: its number, the criterion, the verdict and the evidence.
+/// `fleet item show` prints a landing entry's check rows through this same
+/// line, so the page a person watched and the record read afterwards are one
+/// text.
 pub(crate) fn row(n: usize, criterion: &str, verdict: &str, evidence: &str) -> String {
     format!("{n}. {criterion:<16} {verdict:<10} {evidence}")
 }
@@ -1554,6 +1535,18 @@ impl Classification {
         }
     }
 
+    /// The classification as the landed entry records it: the reading's kind,
+    /// without the count or the path its row's evidence already names.
+    fn recorded(&self) -> entry::Classification {
+        match self {
+            Classification::Safe => entry::Classification::Safe,
+            Classification::Ahead(_) => entry::Classification::CarriesUnlandedWork,
+            Classification::Carries(_) => entry::Classification::Carries,
+            Classification::CouldNotTell(_) => entry::Classification::CouldNotTell,
+            Classification::NotGiven => entry::Classification::NotGiven,
+        }
+    }
+
     fn evidence(&self, branch: Option<&str>) -> String {
         let named = branch.unwrap_or("(none)");
         match self {
@@ -1579,7 +1572,7 @@ impl Classification {
 
 /// The names a delete may never be aimed at, and the reason if this is one.
 ///
-/// The branch comes off the record — a delivery's entry, or the landing note a
+/// The branch comes off the record — a delivery's entry, or the landed entry a
 /// retire reads — which is text somebody wrote, and SAFE ends in `git branch
 /// -D` and `git push --delete`. Three refs would take a trunk or this act's own
 /// working branch with them, and a leading `-` is a name git would read as an
@@ -1599,9 +1592,9 @@ fn unsafe_to_delete(branch: &str, land_branch: &str) -> Option<String> {
     }
 }
 
-// ---- what a retire reads back off the note ----------------------------------
+// ---- what a retire reads back off the landed entry ---------------------------
 
-/// What a landing's own note leaves a later act to do with the work branch.
+/// What a landing's own entry leaves a later act to do with the work branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Release {
     /// The landing classified this branch [`SAFE`] and the seat that is going
@@ -1612,87 +1605,60 @@ pub enum Release {
 }
 
 /// What is to be done with `held` — the branch the retiring seat's worktree is
-/// on — given that seat's item's notes.
+/// on — given that seat's item's timeline.
 ///
 /// A landing runs while the seat that delivered still holds its worktree, so a
 /// SAFE branch's LOCAL delete exits 1 there and the ref outlives the landing.
 /// The retire that takes that worktree is the act that can finish it, and this
-/// is what it reads: the classification the landing ALREADY MADE, off the note
-/// it wrote. Nothing here re-derives one — a second classifier would be a second
-/// thing that can say SAFE where the first said CARRIES.
+/// is what it reads: the classification the landing ALREADY MADE, off the
+/// timeline's last landed entry. Nothing here re-derives one — a second
+/// classifier would be a second thing that can say SAFE where the first said
+/// CARRIES.
 ///
 /// EVERY ANSWER BUT ONE IS `Keep`, and that is the shape rather than the mood.
-/// The single delete needs all of: a landing on the record, a work-branch row
-/// inside it, [`SAFE`] as that row's verdict, a branch name in that row's
-/// evidence, that name passing the same refusal list the landing's own delete
-/// passes, and the going seat's worktree standing on exactly that name. A
-/// reading that is absent, unparsable or disagrees keeps the branch, because an
-/// over-eager delete here takes work nobody can get back.
-pub fn release(notes: &str, held: Option<&str>) -> Release {
+/// The single delete needs all of: a landing on the record, its work branch
+/// classified safe, a branch named beside that classification, that name
+/// passing the same refusal list the landing's own delete passes, and the
+/// going seat's worktree standing on exactly that name. A reading that is
+/// absent or disagrees keeps the branch, because an over-eager delete here
+/// takes work nobody can get back.
+pub fn release(timeline: &[Entry], held: Option<&str>) -> Release {
     let Some(held) = held.map(str::trim).filter(|name| !name.is_empty()) else {
         return Release::Keep("the retiring seat's worktree is on no branch".to_string());
     };
-    let Some(landing) = last_landing(notes) else {
+    let Some((_, landing)) = Timeline(timeline).last_landing() else {
         return Release::Keep(format!("`{held}` — the item carries no landing"));
     };
-    let Some(row) = work_branch_row(&landing) else {
+    let classified = &landing.work_branch;
+    if classified.classification != entry::Classification::Safe {
         return Release::Keep(format!(
-            "`{held}` — the landing carries no `{}` row",
-            CRITERIA[WORK_BRANCH]
+            "`{held}` — the landing reads `{}`",
+            word(&classified.classification)
         ));
-    };
-    // THE VERDICT IS THE ROW'S FIRST FIELD and [`SAFE`] is the only one this
-    // acts on, so the strip is the check: what follows it is the evidence, which
-    // opens with the branch the landing classified. A row that does not open
-    // with SAFE is reported back whole, verdict and all — the words a person
-    // needs here are the ones the landing itself wrote.
-    let Some(evidence) = row.strip_prefix(SAFE).filter(|rest| rest.starts_with(' ')) else {
-        return Release::Keep(format!("`{held}` — the landing reads `{}`", clause(&row)));
-    };
-    let named = clause(evidence);
+    }
+    let named = classified.branch.as_deref().unwrap_or_default();
     if named != held {
         return Release::Keep(format!(
             "`{held}` — the landing's {SAFE} row names `{named}`, which is another branch"
         ));
     }
     // THE SAME REFUSAL LIST THE LANDING'S OWN DELETE PASSES, asked again here
-    // because this reads a note rather than the value the landing classified:
-    // there is no land branch at a retire, and no ordinary work branch is named
-    // by the empty string.
+    // because this reads the record rather than the value the landing
+    // classified: there is no land branch at a retire, and no ordinary work
+    // branch is named by the empty string.
     if let Some(why) = unsafe_to_delete(named, "") {
         return Release::Keep(format!("`{held}` — {why}"));
     }
     Release::Delete(named.to_string())
 }
 
-/// The landing's own work-branch row, from its verdict on: a row is a number at
-/// the start of a line and nothing else is, which is what [`row`] writes.
-///
-/// NOTHING IS SPLIT ON WHITESPACE PAST THE CRITERION. The verdicts run to one,
-/// two, three and four words — `SAFE`, `COULD NOT TELL`, `CARRIES UNLANDED
-/// WORK` — so a reader that took a field here would need a second copy of the
-/// list [`Classification::verdict`] writes, and a list that fell behind would
-/// read the wrong text as a branch name.
-fn work_branch_row(landing: &str) -> Option<String> {
-    let criterion = CRITERIA[WORK_BRANCH];
-    landing.lines().find_map(|line| {
-        let (n, rest) = line.split_once(". ")?;
-        if n.is_empty() || !n.chars().all(|c| c.is_ascii_digit()) {
-            return None;
-        }
-        let rest = rest.strip_prefix(criterion)?;
-        if !rest.starts_with(' ') {
-            return None;
-        }
-        Some(rest.trim_start().to_string())
-    })
-}
-
-/// What a row says before its first em dash: the evidence's own subject, which
-/// on a SAFE row is the branch and on every other is the verdict and the branch
-/// together.
-fn clause(text: &str) -> &str {
-    text.split(" — ").next().unwrap_or_default().trim()
+/// A classification as the entry's own text spells it, so the retire's line
+/// and `fleet item show` say one word for one thing.
+fn word(classification: &entry::Classification) -> String {
+    match serde_json::to_value(classification) {
+        Ok(serde_json::Value::String(word)) => word,
+        other => format!("{other:?}"),
+    }
 }
 
 /// SAFE is two readings and not one: the tip has not moved past what was
@@ -1709,7 +1675,7 @@ fn classify(
     let Some(branch) = branch else {
         return Classification::NotGiven;
     };
-    // THE NAME IS NOTE TEXT, and SAFE ends in two destructive git calls. A
+    // THE NAME IS RECORD TEXT, and SAFE ends in two destructive git calls. A
     // value that names the trunk, HEAD or this act's own land branch is
     // refused here rather than classified, and one that could parse as an
     // option is refused for the same reason the calls below pass `--`.
@@ -1787,27 +1753,6 @@ fn accepted(
         )));
     }
     Ok(reviewed.commit.clone())
-}
-
-/// The clause the landing note's first line gains when the delivery was BEHIND
-/// the trunk it landed on.
-///
-/// Under `advance` the squash onto a land branch cut at the fresh trunk tip IS
-/// the rebase — the landed sha is the rebased commit — so what is owed
-/// beyond what already happens is the RECORD: the base the delivery was cut
-/// from, beside the base it landed on, whenever the two differ. Equal bases are
-/// a delivery that was current, and the clause is empty there rather than
-/// saying so twice.
-///
-/// The delivery's base is a whole sha, which the delivered entry cannot be
-/// written without. The comparison is still by prefix either way, because the
-/// sha it is compared with is read off the push's own range line, which git
-/// abbreviates — until the landing records that one whole too.
-fn rebased_from(base: &str, landed_on: &str) -> String {
-    if landed_on.starts_with(base) || base.starts_with(landed_on) {
-        return String::new();
-    }
-    format!("; rebased from {base}")
 }
 
 /// The record of the run that called this landing.
@@ -1916,29 +1861,6 @@ fn message(item: &Item, marker: &str, closer: &str, builder: &str) -> String {
         format!("{}: {} {marker}", item.id, item.title)
     };
     format!("{subject}\n\nSeat: {closer}\nImplemented-by: {builder}\n")
-}
-
-/// One read, asserting the landing region against the text this verb rendered —
-/// plus a token nothing wrote.
-fn read_back(item: &str, note: &str, wiring: &Wiring) -> Result<(), Stop> {
-    let read = read(wiring.store, item)?;
-    let seen = read.notes.as_deref().and_then(last_landing);
-    if seen.as_deref().map(normalised) != Some(normalised(note)) {
-        return Err(Stop::could_not_tell(format!(
-            "{item} read back with its last landing ==\n{}\n  wanted:\n{note}\n  the landing \
-             STANDS on {TRUNK_BRANCH}\n  RERUN: bd note {item} \"<the note, as it is printed \
-             above>\"",
-            seen.as_deref().unwrap_or("(absent)")
-        )));
-    }
-    let control = control_token();
-    if read.document.contains(control) {
-        return Err(Stop::could_not_tell(format!(
-            "the read-back on {item} carries {control}, which nothing wrote — the read is not \
-             reading this item"
-        )));
-    }
-    Ok(())
 }
 
 fn rerun(item: &str, sha: &str, why: &str) -> Stop {
@@ -2103,6 +2025,23 @@ fn range(output: &str) -> Option<(String, String)> {
     })
 }
 
+/// One end of the push's range line, whole: what it resolves to in the tree
+/// that pushed it. The push abbreviates, and every sha this landing writes is
+/// the resolved one.
+///
+/// A name this checkout cannot resolve is could-not-tell, AFTER the push: the
+/// work is on the trunk, and the sentence says what stands and what was not
+/// written.
+fn full(short: &str, item: &str, wiring: &Wiring) -> Result<String, Stop> {
+    match wiring.git.rev(short) {
+        Ok(Some(sha)) => Ok(sha),
+        Ok(None) | Err(_) => Err(Stop::could_not_tell(format!(
+            "the push named {short}, which resolves to no commit in this checkout — the landing \
+             STANDS on {TRUNK_BRANCH} and {item} carries no landed entry and is not closed"
+        ))),
+    }
+}
+
 fn is_hex(text: &str) -> bool {
     !text.is_empty()
         && text
@@ -2247,20 +2186,6 @@ fn rc_word(code: Option<i32>) -> String {
         Some(code) => code.to_string(),
         None => "on a signal".to_string(),
     }
-}
-
-/// The template's note block, in this verb's own words.
-fn block(template: &str) -> Result<String, Stop> {
-    marker_block(template, LANDING_MARKERS[0]).ok_or_else(|| {
-        Stop::could_not_tell(format!(
-            "`{LANDING_NOTE}` carries no `{}` block — the pack's landing grammar names one",
-            LANDING_MARKERS[0]
-        ))
-    })
-}
-
-fn normalised(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn read(store: &dyn Store, item: &str) -> Result<Item, Stop> {

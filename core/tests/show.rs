@@ -213,7 +213,8 @@ fn a_timeline() -> Vec<Entry> {
 /// The spec's lines, whole: the fields, the blocked-by line, the description
 /// as it is, the count, and one block per kind with its details four spaces
 /// in, each list's rows two further, and every continuation line two under the
-/// line it starts on.
+/// line it starts on. A landing ends on the commands that re-run its verdicts,
+/// over the commit it squashed, the sha it landed and the branch it classified.
 #[test]
 fn an_item_with_one_entry_of_each_kind_renders_the_golden_text() {
     let golden = format!(
@@ -258,7 +259,15 @@ timeline (7 entries)
     test: NOT TESTED — no --test was handed in
     1. verdict          PASS       ACCEPTED on the commit
       read off the timeline
-    work branch: work/orla-4a5b — carries_unlanded_work"
+    work branch: work/orla-4a5b — carries_unlanded_work
+    commands:
+      git merge-base origin/main {C1}
+      git diff --name-only $(git merge-base origin/main {C1}) {C1}
+      git show --stat {C3}
+      git rev-list --count {C3}..origin/main
+      git rev-parse work/orla-4a5b
+      git diff {C1} {C3} --
+      git status --porcelain"
     );
     let rendered = render(&an_item(), &a_timeline());
     assert_eq!(
@@ -271,7 +280,7 @@ timeline (7 entries)
 /// retire's withdrawal naming nothing else, a delivery with every list empty
 /// and no suite run, an acceptance with its walk and one with none, a hold on a
 /// run about nothing, a bare answer and a cancel, and a landing that ran its
-/// test with no run and no branch.
+/// test with no run and no branch — whose commands name no branch to re-read.
 #[test]
 fn the_other_form_of_each_kind_renders_its_own_line() {
     let cases: Vec<(Body, String)> = vec![
@@ -443,7 +452,13 @@ fn the_other_form_of_each_kind_renders_its_own_line() {
     test: make test, rc 0
     1. verdict          PASS       ACCEPTED
     2. trunk            PASS       not moved
-    work branch: (none) — not_given"
+    work branch: (none) — not_given
+    commands:
+      git merge-base origin/main {C1}
+      git diff --name-only $(git merge-base origin/main {C1}) {C1}
+      git show --stat {C3}
+      git rev-list --count {C3}..origin/main
+      git status --porcelain"
             ),
         ),
     ];

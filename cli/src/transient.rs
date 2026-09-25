@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use fleet_controller::adapter::claude_code::ClaudeCode;
 use fleet_controller::transient::{self, Machine, Refusal};
 use fleet_controller::{clock, config, platform, policy as controller, sessions};
+use fleet_core::entry::Entry;
 use fleet_core::item::brief::Packs;
 use fleet_core::item::land::{self, Release};
 use fleet_core::item::{render, Spawn, SpawnOutcome, Spawner, Stop, COULD_NOT_TELL};
@@ -258,14 +259,14 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
     };
     let machine = machine_of(&here, &at, &agent, &policy);
 
-    // THE ITEM THIS SEAT WAS DISPATCHED, and the notes that answer for it, read
-    // BEFORE the retire drops the row that names it. Neither is a reading this
-    // verb refuses over: a seat nobody can name an item for retires exactly as
-    // it always did and keeps its branch.
+    // THE ITEM THIS SEAT WAS DISPATCHED, and the timeline that answers for it,
+    // read BEFORE the retire drops the row that names it. Neither is a reading
+    // this verb refuses over: a seat nobody can name an item for retires
+    // exactly as it always did and keeps its branch.
     let dispatched = held_item(&here, &row.id);
-    let notes = dispatched
+    let timeline = dispatched
         .as_deref()
-        .and_then(|item| notes_of(&here, item))
+        .and_then(|item| timeline_of(&here, item))
         .unwrap_or_default();
 
     // THE RECORD'S HALF OF THE RETIRE, which the controller reaches no work
@@ -335,7 +336,7 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
                 );
             }
             let branch =
-                release_the_branch(&machine, &notes, reclaimed.branch.as_deref(), args.json);
+                release_the_branch(&machine, &timeline, reclaimed.branch.as_deref(), args.json);
             if args.json {
                 println!(
                     "{}",
@@ -365,11 +366,11 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
 /// person runs again against a seat that is not there.
 fn release_the_branch(
     machine: &Machine,
-    notes: &str,
+    timeline: &[Entry],
     held: Option<&str>,
     json: bool,
 ) -> serde_json::Value {
-    match land::release(notes, held) {
+    match land::release(timeline, held) {
         Release::Delete(branch) => match transient::delete_branch(machine, &branch) {
             Ok(()) => {
                 if !json {
@@ -429,10 +430,10 @@ fn held_item(here: &Here, seat: &SeatId) -> Option<String> {
         .clone()
 }
 
-/// That item's notes. A store that will not answer reads as no notes, which is
-/// the answer that keeps the branch.
-fn notes_of(here: &Here, item: &str) -> Option<String> {
-    open_store(&here.project.root).show(item).ok()?.notes
+/// That item's timeline. A store that will not answer reads as no entries,
+/// which is the answer that keeps the branch.
+fn timeline_of(here: &Here, item: &str) -> Option<Vec<Entry>> {
+    open_store(&here.project.root).timeline(item).ok()
 }
 
 // ---- the spawner seam -------------------------------------------------------

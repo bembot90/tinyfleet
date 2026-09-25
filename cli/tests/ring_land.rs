@@ -55,9 +55,6 @@ const BUILDER: &str = "a-builder";
 /// them.
 const REVIEWER_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
 const BUILDER_ID: &str = "01a0d1f1-0aec-765f-9abe-bfbf2ac3ce32";
-/// How a landing names the reviewer that closed it: its machine name, then
-/// its id.
-const CLOSER: &str = "a-reviewer-93b9739a (01a0d1f1-0aec-765f-9abe-d4f993b9739a)";
 const WORK: &str = "a-builder/feat/the-work";
 /// The second item's branch, for the arm that asks for two landings at once.
 const OTHER: &str = "a-builder/feat/the-other";
@@ -668,11 +665,28 @@ impl Rig {
         value[0].clone()
     }
 
-    fn notes(&self) -> String {
-        self.item_json()["notes"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string()
+    /// The item's last landed entry, off the timeline the shipped `fleet item
+    /// show --json` prints — the reading the SDK takes — or `None` where the
+    /// item carries none.
+    fn landing(&self, item: &str) -> Option<serde_json::Value> {
+        spawned(&format!("fleet [\"item\", \"show\", {item:?}, \"--json\"]"));
+        let out = Command::new(env!("CARGO_BIN_EXE_fleet"))
+            .args(["item", "show", item, "--json"])
+            .current_dir(&self.reviewer)
+            .hermetic(&self.root.join("home"), &self.machine, None)
+            .env(SEAM, &self.root)
+            .output()
+            .expect("the built binary runs");
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let document: serde_json::Value =
+            serde_json::from_str(stdout(&out).trim()).expect("item show --json is one document");
+        document["data"]["timeline"]
+            .as_array()
+            .expect("the document carries a timeline")
+            .iter()
+            .rev()
+            .find(|entry| entry["kind"] == "landed")
+            .cloned()
     }
 
     /// Every event the machine directory's stream holds, newest last.
@@ -890,9 +904,9 @@ fn git(dir: &Path, args: &[&str]) -> String {
 
 // ---- the green landing -------------------------------------------------------
 
-/// The whole live path: the range line read from a real push, the bare's own
-/// `main` moved to it, the note and the close on the item, and the work branch
-/// gone from both sides.
+/// The whole live path: the range line read from a real push and resolved
+/// whole, the bare's own `main` moved to it, the landed entry and the close on
+/// the item, and the work branch gone from both sides.
 #[test]
 fn a_green_landing_moves_the_bare_and_closes_the_item() {
     let rig = Rig::new("green");
@@ -909,19 +923,16 @@ fn a_green_landing_moves_the_bare_and_closes_the_item() {
         .rev()
         .find_map(|line| line.strip_prefix("LANDED ").map(str::to_string))
         .expect("the last line names the landed sha");
-    // git's own push line prints the range ABBREVIATED, and this sha is read
-    // off that line and nowhere else — so it is asked to resolve rather than
-    // asserted forty characters long.
-    assert!(
-        (7..=40).contains(&landed.len()),
-        "the landed sha is git's own abbreviation: {landed}"
-    );
+    // git's own push line prints the range ABBREVIATED, and the landing
+    // resolves both ends in the tree that pushed (fleet-56e): what reaches the
+    // record is the whole sha, which IS what the bare now calls main.
     assert_ne!(rig.bare_main(), before, "the trunk moved");
     assert_eq!(
-        git(&rig.bare, &["rev-parse", &landed]),
+        landed,
         rig.bare_main(),
-        "and it resolves, on the bare, to what the bare now calls main"
+        "the landed sha is whole, and is the bare's main"
     );
+    assert_eq!(landed.len(), 40, "forty hex: {landed}");
 
     // The squash: one commit on the trunk, carrying the delivery's file and the
     // subject, the marker and the two trailers.
@@ -950,25 +961,50 @@ fn a_green_landing_moves_the_bare_and_closes_the_item() {
         "both trailers, each a seat id: {body}"
     );
 
-    // The record.
-    let notes = rig.notes();
-    assert!(
-        notes.contains(&format!("LANDED {landed} on main by {CLOSER}")),
-        "the note's first line is on the item:\n{notes}"
+    // The record: the landed entry, every sha whole, by the reviewer.
+    let entry = rig
+        .landing(&rig.item)
+        .expect("the item carries a landed entry");
+    assert_eq!(entry["sha"], serde_json::json!(landed), "{entry}");
+    assert_eq!(
+        entry["old"],
+        serde_json::json!(before),
+        "the trunk it moved from, whole: {entry}"
     );
-    assert!(
-        !notes.lines().any(|line| line.starts_with("ACCEPTED")),
-        "the accept it landed is an entry, and no note opens on one:\n{notes}"
+    assert_eq!(entry["squash_of"], serde_json::json!(rig.commit), "{entry}");
+    assert_eq!(
+        entry["by"],
+        serde_json::json!({ "kind": "seat", "id": REVIEWER_ID }),
+        "{entry}"
     );
+    assert_eq!(
+        entry["test"],
+        serde_json::json!({ "command": SUITE, "rc": 0 }),
+        "and it names the command the landing was handed: {entry}"
+    );
+    assert_eq!(
+        entry["work_branch"],
+        serde_json::json!({ "branch": WORK, "classification": "safe" }),
+        "{entry}"
+    );
+    assert_eq!(
+        entry["checks"].as_array().map(Vec::len),
+        Some(7),
+        "one row per check read: {entry}"
+    );
+    let notes = rig.item_json()["notes"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     assert!(
-        notes.contains("suite: sh the-suite.sh, rc 0"),
-        "and it names the command the landing was handed:\n{notes}"
+        !notes.contains("LANDED "),
+        "and no landing note is on the item:\n{notes}"
     );
     assert_eq!(rig.item_json()["status"], serde_json::json!("closed"));
-    assert!(
-        notes.contains(&format!("landed {landed}"))
-            || rig.item_json()["close_reason"] == serde_json::json!(format!("landed {landed}")),
-        "the close names the landed sha"
+    assert_eq!(
+        rig.item_json()["close_reason"],
+        serde_json::json!(format!("landed {landed}")),
+        "the close names the whole landed sha"
     );
 
     // THE EVENTS, off the stream the binary wrote. The accept this rig made in
@@ -1002,12 +1038,12 @@ fn a_green_landing_moves_the_bare_and_closes_the_item() {
         Some(rig.commit.as_str()),
         "the reviewed commit, and not the one the trunk now carries: {events:?}"
     );
-    // The old side is the range line's own, which git prints ABBREVIATED — so it
-    // is asked to resolve rather than compared forty characters long.
+    // The old side is the range line's own, which git prints ABBREVIATED and
+    // the landing resolves whole.
     assert_eq!(
-        rig.in_bare(&["rev-parse", landing["base"].as_str().expect("a base")]),
-        before,
-        "and the old side of the push's own range line: {events:?}"
+        landing["base"].as_str(),
+        Some(before.as_str()),
+        "and the old side of the push's own range line, whole: {events:?}"
     );
 
     // The work branch, gone from both sides on SAFE.
@@ -1132,10 +1168,18 @@ fn an_also_path_rides_the_landing_and_the_branch_is_still_deleted() {
         !rig.bare_has(&format!("refs/heads/{WORK}")) && !rig.has(WORK),
         "and the branch is gone from both sides"
     );
+    let entry = rig
+        .landing(&rig.item)
+        .expect("the item carries a landed entry");
     assert!(
-        rig.notes().contains("plus --also the-log.md"),
-        "the staged-set row names what was admitted:\n{}",
-        rig.notes()
+        entry["checks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|row| row["evidence"]
+                .as_str()
+                .is_some_and(|evidence| evidence.contains("plus --also the-log.md"))),
+        "the staged-set row names what was admitted: {entry}"
     );
 }
 
@@ -1246,7 +1290,10 @@ fn a_trunk_moved_during_the_act_is_rebase_needed() {
         "and it stands alone: this landing added nothing"
     );
     assert_eq!(rig.item_json()["status"], serde_json::json!("open"));
-    assert!(!rig.notes().contains("LANDED "), "and wrote no note");
+    assert!(
+        rig.landing(&rig.item).is_none(),
+        "and wrote no landed entry"
+    );
 }
 
 /// A remote that rejects the push: exit 1, the remote's own words printed, and
@@ -1273,9 +1320,8 @@ fn a_rejected_push_prints_the_remotes_words_and_writes_nothing() {
     assert_eq!(rig.bare_main(), before, "nothing landed");
     assert_eq!(rig.item_json()["status"], serde_json::json!("open"));
     assert!(
-        !rig.notes().contains("LANDED "),
-        "and no note was written:\n{}",
-        rig.notes()
+        rig.landing(&rig.item).is_none(),
+        "and no landed entry was written"
     );
 }
 
@@ -1542,13 +1588,19 @@ fn a_landing_under_json_prints_the_sha_the_push_named_and_the_table_on_stderr() 
     assert_eq!(data["state"], serde_json::json!("landed"), "{data}");
 
     // The document's sha against what the BARE says its trunk is now: only the
-    // remote can answer the claim a landing makes.
+    // remote can answer the claim a landing makes, and the sha is whole.
     let sha = data["sha"].as_str().expect("the document names a sha");
     assert_eq!(
-        git(&rig.bare, &["rev-parse", sha]),
+        sha,
         rig.bare_main(),
-        "the sha the document carries is the trunk the bare now holds: {data}"
+        "the sha the document carries is the trunk the bare now holds, whole: {data}"
     );
+    // The entry the landing wrote, by the id `item show` lists it under.
+    let entry = rig
+        .landing(&rig.item)
+        .expect("the item carries a landed entry");
+    assert!(data["entry"].is_string(), "{data}");
+    assert_eq!(data["entry"], entry["id"], "the landed entry's id: {data}");
 
     let page = stderr(&out);
     assert!(

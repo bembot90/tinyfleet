@@ -22,7 +22,7 @@ use crate::entry::{
     self, Body, Clearance, Cleared, Delivered, Entry, Held, Landed, OrderWithdrawn, Ordered,
     Reviewed, RulingKind, SuiteRun, Verdict,
 };
-use crate::item::land;
+use crate::item::{land, TRUNK};
 use crate::store::Item;
 
 /// How far an entry's detail lines sit under its summary.
@@ -373,6 +373,27 @@ fn landing(lines: &mut Vec<String>, landed: &Landed) {
             word(&landed.work_branch.classification)
         ),
     );
+    list(lines, "commands", commands(landed).into_iter());
+}
+
+/// The commands that re-run each of a landing's verdicts, over what the entry
+/// carries: the commit it squashed, the sha it landed and the work branch it
+/// classified. The next reader re-runs a verdict rather than believing it.
+fn commands(landed: &Landed) -> Vec<String> {
+    let commit = &landed.squash_of;
+    let sha = &landed.sha;
+    let mut lines = vec![
+        format!("git merge-base {TRUNK} {commit}"),
+        format!("git diff --name-only $(git merge-base {TRUNK} {commit}) {commit}"),
+        format!("git show --stat {sha}"),
+        format!("git rev-list --count {sha}..{TRUNK}"),
+    ];
+    if let Some(branch) = &landed.work_branch.branch {
+        lines.push(format!("git rev-parse {branch}"));
+        lines.push(format!("git diff {commit} {sha} --"));
+    }
+    lines.push(String::from("git status --porcelain"));
+    lines
 }
 
 /// A suite that ran, with its command and exit, or the reason it did not.

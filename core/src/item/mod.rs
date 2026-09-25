@@ -570,10 +570,13 @@ pub const DELIVERY_MARKERS: [&str; 2] = ["DELIVERED", "RE-DELIVERED"];
 /// verdict as a delivery (verification doctrine on the covers region).
 pub const VERDICT_MARKERS: [&str; 2] = ["ACCEPTED", "RETURNED WITH FINDINGS"];
 
-/// The one a landing opens on. It begins with no delivery marker and no verdict
-/// marker, so a reader anchoring on the last column-zero `DELIVERED` line, or on
-/// the last verdict, reads neither a landing (verification doctrine on the
-/// covers region).
+/// The one a landing note opened on. It begins with no delivery marker and no
+/// verdict marker, so a reader anchoring on the last column-zero `DELIVERED`
+/// line, or on the last verdict, reads neither a landing (verification doctrine
+/// on the covers region).
+///
+/// No verb writes a landing note: a landing is the timeline's `landed` entry.
+/// The marker stays for the regions it ends on records written before.
 pub const LANDING_MARKERS: [&str; 1] = ["LANDED"];
 
 /// The one a park note opened on. It shares no prefix with the three above, and
@@ -633,38 +636,6 @@ pub fn last_delivery(notes: &str) -> Option<String> {
             &ANSWER_MARKERS,
         ],
     )
-}
-
-/// The last landing region of an item's notes.
-pub fn last_landing(notes: &str) -> Option<String> {
-    last_region(
-        notes,
-        &LANDING_MARKERS,
-        &[
-            &DELIVERY_MARKERS,
-            &VERDICT_MARKERS,
-            &PARK_MARKERS,
-            &ANSWER_MARKERS,
-        ],
-    )
-}
-
-/// A template's block for one marker: the paragraph it opens. What follows the
-/// blocks is the prose that teaches them, and a note is not made of prose.
-pub fn marker_block(template: &str, marker: &str) -> Option<String> {
-    let mut block = Vec::new();
-    let mut inside = false;
-    for line in template.lines() {
-        if opens_with(line, &[marker]) {
-            inside = true;
-        } else if inside && line.trim().is_empty() {
-            break;
-        }
-        if inside {
-            block.push(line);
-        }
-    }
-    (!block.is_empty()).then(|| block.join("\n"))
 }
 
 /// A token nothing wrote, for the read-backs to ask their own answer about.

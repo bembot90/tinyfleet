@@ -18,7 +18,8 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fleet_controller::platform;
-use fleet_core::item::land::{CRITERIA, SAFE, WORK_BRANCH};
+use fleet_core::entry::{Body, CheckRow, Classification, Landed, NotTested, SuiteRun, WorkBranch};
+use fleet_core::item::land::{SAFE, UNTESTED};
 
 use common::hermetic::Hermetic;
 
@@ -1793,20 +1794,31 @@ fn dispatch_under_the_load_override_refuses_and_withdraws_the_order() {
 /// primary's branch list carries it before the retire and is asked after.
 const WORK: &str = "a-seat/feat/the-work";
 
-/// The landing note a reviewer's `fleet land` leaves on the item, in the row
-/// grammar `land` writes: the criterion off the verb's own list, the verdict, and
-/// the evidence that opens with the branch it classified.
-fn a_landing(verdict: &str, branch: &str) -> String {
-    format!(
-        "LANDED 4444444444444444444444444444444444444444 on main by a-reviewer\n\
-         5. {current:<16} {pass:<10} nothing\n\
-         6. {branch_row:<16} {verdict:<10} {branch} — what the landing read\n\
-         7. {clean:<16} {pass:<10} nothing\n",
-        current = CRITERIA[4],
-        branch_row = CRITERIA[WORK_BRANCH],
-        clean = CRITERIA[6],
-        pass = "PASS",
-    )
+/// Who the landing here is by: the reviewer's seat, typed whole, as `fleet
+/// land` appends its entry.
+const LANDER: &str = "seat:01a0d1f1-0aec-765f-9abe-d4f993b9739a";
+
+/// The landed entry a reviewer's `fleet land` leaves on the item, as the text
+/// the store keeps: whole shas, one row, and the work branch it classified.
+fn a_landing(classification: Classification, branch: &str) -> String {
+    fleet_core::entry::encode(&Body::Landed(Landed {
+        sha: "4444444444444444444444444444444444444444".to_string(),
+        old: "5555555555555555555555555555555555555555".to_string(),
+        squash_of: "1111111111111111111111111111111111111111".to_string(),
+        run: None,
+        test: SuiteRun::NotTested(NotTested {
+            not_tested: UNTESTED.to_string(),
+        }),
+        checks: vec![CheckRow {
+            check: "work branch".to_string(),
+            verdict: "as classified".to_string(),
+            evidence: format!("{branch} — what the landing read"),
+        }],
+        work_branch: WorkBranch {
+            branch: Some(branch.to_string()),
+            classification,
+        },
+    }))
 }
 
 /// A seat the board has dispatched an item to: the store, the item ORDERED to
@@ -1856,14 +1868,15 @@ fn spawned_seat(object: &serde_json::Value) -> String {
     machine_name_of(object["id"].as_str().expect("the id is a string"))
 }
 
-/// A dispatched seat standing on its work branch, its item carrying a landing
-/// that says `verdict` about that branch; the seat is what it answers. What the
-/// arms differ in is that one word.
+/// A dispatched seat standing on its work branch, its item carrying a landed
+/// entry that classifies that branch as `landed` — or no landing at all, where
+/// that is `None`; the seat is what it answers. What the arms differ in is that
+/// one reading.
 ///
 /// THE ITEM IS CLOSED, because `fleet land` closes it with the landed sha in
 /// the reason (the land verb, step l) — so a seat retired after its landing holds
 /// nothing open, which is the state these arms are about.
-fn a_landed_seat(rig: &Rig, verdict: &str) -> String {
+fn a_landed_seat(rig: &Rig, landed: Option<Classification>) -> String {
     let (item, seat) = a_dispatched_seat(rig);
 
     let worktree = rig.worktrees.join(&seat);
@@ -1879,18 +1892,21 @@ fn a_landed_seat(rig: &Rig, verdict: &str) -> String {
         rig.git(&["branch", "--list"])
     );
 
-    let note = rig.bd(&[
-        "note",
-        &item,
-        &a_landing(verdict, WORK),
-        "--actor",
-        "a-reviewer",
-    ]);
-    assert!(
-        note.status.success(),
-        "bd note: {}",
-        String::from_utf8_lossy(&note.stderr)
-    );
+    if let Some(classification) = landed {
+        let appended = rig.bd(&[
+            "comments",
+            "add",
+            &item,
+            &a_landing(classification, WORK),
+            "--actor",
+            LANDER,
+        ]);
+        assert!(
+            appended.status.success(),
+            "bd comments add: {}",
+            String::from_utf8_lossy(&appended.stderr)
+        );
+    }
     // `--force`, because this fixture skips the delivery: bd 1.3.0 refuses a
     // close by an actor that is not the item's assignee, and `fleet land` only
     // ever closes as the assignee — the reviewer its delivery handed the item
@@ -1944,7 +1960,7 @@ fn the_roster_fixtures_pid_names_no_live_process() {
 #[test]
 fn a_retire_deletes_the_work_branch_its_landing_classified_safe() {
     let rig = Rig::new("release-safe", true);
-    let seat = a_landed_seat(&rig, SAFE);
+    let seat = a_landed_seat(&rig, Some(Classification::Safe));
 
     let retired = rig.run(&["seat", "retire", &seat]);
     assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
@@ -1962,18 +1978,39 @@ fn a_retire_deletes_the_work_branch_its_landing_classified_safe() {
     );
 }
 
-/// The control, one word apart: a landing that did not read SAFE leaves the
+/// The control, one reading apart: a landing that did not read SAFE leaves the
 /// branch standing and says which reading spared it.
 #[test]
 fn a_retire_leaves_a_branch_no_landing_called_safe() {
     let rig = Rig::new("release-carries", true);
-    let seat = a_landed_seat(&rig, "CARRIES UNLANDED WORK");
+    let seat = a_landed_seat(&rig, Some(Classification::CarriesUnlandedWork));
 
     let retired = rig.run(&["seat", "retire", &seat]);
     assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
     assert!(
-        stdout(&retired).contains("work branch kept — ")
-            && stdout(&retired).contains("CARRIES UNLANDED WORK"),
+        stdout(&retired).contains(&format!(
+            "work branch kept — `{WORK}` — the landing reads `carries_unlanded_work`"
+        )),
+        "the reason is printed: {}",
+        stdout(&retired)
+    );
+    let listed = rig.git(&["branch", "--list"]);
+    assert!(listed.contains(WORK), "and the branch stands: {listed}");
+}
+
+/// An item that carries no landed entry releases nothing: the retire keeps the
+/// branch and says the item carries no landing.
+#[test]
+fn a_retire_keeps_a_branch_whose_item_carries_no_landing() {
+    let rig = Rig::new("release-none", true);
+    let seat = a_landed_seat(&rig, None);
+
+    let retired = rig.run(&["seat", "retire", &seat]);
+    assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
+    assert!(
+        stdout(&retired).contains(&format!(
+            "work branch kept — `{WORK}` — the item carries no landing"
+        )),
         "the reason is printed: {}",
         stdout(&retired)
     );
@@ -2219,7 +2256,7 @@ fn the_json_feed_prints_the_seat_and_the_turn_that_replaced_the_last() {
 #[test]
 fn the_json_retire_prints_the_reclaim_and_what_became_of_the_work_branch() {
     let rig = Rig::new("json-retire", true);
-    let seat = a_landed_seat(&rig, SAFE);
+    let seat = a_landed_seat(&rig, Some(Classification::Safe));
 
     let retired = rig.run(&["seat", "retire", &seat, "--json"]);
     assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
@@ -2252,7 +2289,7 @@ fn the_json_retire_prints_the_reclaim_and_what_became_of_the_work_branch() {
 #[test]
 fn the_json_retire_says_kept_where_the_landing_did_not_read_safe() {
     let rig = Rig::new("json-retire-kept", true);
-    let seat = a_landed_seat(&rig, "CARRIES UNLANDED WORK");
+    let seat = a_landed_seat(&rig, Some(Classification::CarriesUnlandedWork));
 
     let retired = rig.run(&["seat", "retire", &seat, "--json"]);
     assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
@@ -2264,7 +2301,7 @@ fn the_json_retire_says_kept_where_the_landing_did_not_read_safe() {
         parsed["data"]["branch"]["why"]
             .as_str()
             .expect("the why is a string")
-            .contains("CARRIES UNLANDED WORK"),
+            .contains("carries_unlanded_work"),
         "{parsed}"
     );
     assert!(

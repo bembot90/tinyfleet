@@ -8,10 +8,11 @@
 //! will not enter on demand. The live path is proven against a real bare remote
 //! in the cli's own suite.
 //!
-//! THE STORE IS REAL. The note, the close and their read-backs go through `bd`,
-//! because the one failure this verb has to survive — a write whose read-back
-//! disagrees — is asserted against the store the verb actually talks to, and
-//! forced through a wrapper over it.
+//! THE STORE IS REAL. The landed entry, the close and their read-backs go
+//! through `bd` on the ring, because the one failure this verb has to survive —
+//! a write whose read-back disagrees — is asserted against the store the verb
+//! actually talks to, and forced through the fake's own knob and a wrapper over
+//! it.
 
 mod common;
 
@@ -20,19 +21,21 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use common::{agent, full, keys_agree, seat_actor, shared_store, Rooted, Scratch, StubEvents};
+use fleet_core::entry::Landed as LandedEntry;
 use fleet_core::entry::{
-    Body, CheckResult, Delivered, Finding, NotProven, Reviewed, Size, SuiteRun, Verdict,
+    Body, CheckResult, CheckRow, Classification, Delivered, Entry, Finding, NotProven, NotTested,
+    Reviewed, Size, SuiteRun, Timeline, Verdict, WorkBranch,
 };
 use fleet_core::item::brief::Packs;
 use fleet_core::item::land::{
-    self, LandGit, Landed, Landing, Progress, Pushed, Squashed, Wiring, CRITERIA, LANDING_NOTE,
-    REBASE_NEEDED, SUITE_RERUN,
+    self, LandGit, Landed, Landing, Progress, Pushed, Squashed, Wiring, CRITERIA, REBASE_NEEDED,
+    SUITE_RERUN, UNTESTED,
 };
 use fleet_core::item::lane;
+use fleet_core::item::show::entry_lines;
 use fleet_core::item::{
-    control_token, last_delivery, last_landing, marker_block, render, Change, Git, Project, Stop,
-    CHECK_READ, DELIVERY_MARKERS, ITEM_LANDED, LANDING_MARKERS, TRUNK, TRUNK_BRANCH,
-    VERDICT_MARKERS,
+    control_token, last_delivery, Change, Git, Project, Stop, CHECK_READ, DELIVERY_MARKERS,
+    ITEM_LANDED, LANDING_MARKERS, TRUNK, TRUNK_BRANCH, VERDICT_MARKERS,
 };
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
@@ -110,6 +113,10 @@ struct StubGit {
     /// What the tree this stub is DRIVEN INTO answers about being linked, for
     /// the arm where the seat table names a tree that is a primary too.
     driven_linked: bool,
+    /// What an abbreviated sha resolves to, the way `rev-parse` answers the
+    /// short names a push's range line prints. Every other revision answers
+    /// itself.
+    revs: Vec<(String, String)>,
     /// SHARED with every stub this one is driven into: a landing resolved
     /// elsewhere records its acts on the list the arm holds, in one order.
     calls: Arc<Mutex<Vec<String>>>,
@@ -140,6 +147,7 @@ impl StubGit {
             reviewed_too: None,
             detach_fails: false,
             driven_linked: true,
+            revs: Vec::new(),
             calls: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -170,6 +178,7 @@ impl StubGit {
             reviewed_too: self.reviewed_too.clone(),
             detach_fails: self.detach_fails,
             driven_linked: self.driven_linked,
+            revs: self.revs.clone(),
             calls: Arc::clone(&self.calls),
         }
     }
@@ -305,6 +314,9 @@ impl LandGit for StubGit {
         if rev == WORK || self.reviewed_too.as_deref() == Some(rev) {
             return Ok(Some(self.tip.clone()));
         }
+        if let Some((_, full)) = self.revs.iter().find(|(short, _)| short == rev) {
+            return Ok(Some(full.clone()));
+        }
         Ok(Some(rev.to_string()))
     }
 
@@ -341,10 +353,47 @@ fn one_line(text: &str) -> String {
     text.lines().collect::<Vec<_>>().join(" / ")
 }
 
-/// Everything a landing note carries after its own first line: what the
-/// template writes as {checks}.
-fn checks_of(note: &str) -> String {
-    note.lines().skip(1).collect::<Vec<_>>().join("\n")
+/// The item's last landed entry, off the timeline the store answers: the
+/// record a landing leaves, read where every reader of it reads it.
+fn landing_of(store: &dyn Store, item: &str) -> (Entry, LandedEntry) {
+    let entries = store.timeline(item).expect("the timeline reads");
+    let (entry, landed) = Timeline(&entries)
+        .last_landing()
+        .unwrap_or_else(|| panic!("{item} carries no landed entry: {entries:?}"));
+    (entry.clone(), landed.clone())
+}
+
+/// Whether the item's timeline carries no landed entry at all.
+fn no_landing(store: &dyn Store, item: &str) -> bool {
+    let entries = store.timeline(item).expect("the timeline reads");
+    Timeline(&entries).last_landing().is_none()
+}
+
+/// The landed entry as `fleet item show` renders it, each line taken off its
+/// indent: the check rows by number, the work branch, and the commands block
+/// that re-runs each verdict.
+fn shown(store: &dyn Store, item: &str) -> String {
+    let (entry, _) = landing_of(store, item);
+    entry_lines(&entry)
+        .iter()
+        .map(|line| line.trim_start())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The suite a landing ran, as the landed entry records it.
+fn ran_test(command: &str, rc: i32) -> SuiteRun {
+    SuiteRun::Ran(fleet_core::entry::Ran {
+        command: command.to_string(),
+        rc,
+    })
+}
+
+/// The suite a landing handed none records: the row's own sentence.
+fn untested() -> SuiteRun {
+    SuiteRun::NotTested(NotTested {
+        not_tested: UNTESTED.to_string(),
+    })
 }
 
 /// The progress surface, counted rather than drawn.
@@ -372,14 +421,13 @@ impl Progress for Steps {
     }
 }
 
-/// The real store with one reading bent, so an arm can force the disagreement
-/// the read-back exists to catch.
+/// The real store with one reading bent, so an arm can plant what the
+/// read-back's control asks for.
 struct Doctored<'a> {
     inner: &'a dyn Store,
-    /// Dropped from every note read back, which is what a truncated write looks
-    /// like from here.
-    drop_landing: bool,
-    append: Option<String>,
+    /// An entry id every timeline read carries beside the real ones, under the
+    /// last entry's body — a read that answers for something nothing wrote.
+    plant: Option<String>,
 }
 
 impl Store for Doctored<'_> {
@@ -400,20 +448,7 @@ impl Store for Doctored<'_> {
     }
 
     fn show(&self, item: &str) -> Result<Item, StoreError> {
-        let mut read = self.inner.show(item)?;
-        if self.drop_landing {
-            read.notes = read.notes.map(|notes| {
-                notes
-                    .lines()
-                    .filter(|line| !line.starts_with(LANDING_MARKERS[0]))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            });
-        }
-        if let Some(extra) = &self.append {
-            read.document.push_str(extra);
-        }
-        Ok(read)
+        self.inner.show(item)
     }
 
     fn show_text(&self, item: &str) -> Result<String, StoreError> {
@@ -474,7 +509,14 @@ impl Store for Doctored<'_> {
     }
 
     fn timeline(&self, item: &str) -> Result<Vec<fleet_core::entry::Entry>, StoreError> {
-        self.inner.timeline(item)
+        let mut entries = self.inner.timeline(item)?;
+        if let (Some(id), Some(last)) = (&self.plant, entries.last().cloned()) {
+            entries.push(Entry {
+                id: id.clone(),
+                ..last
+            });
+        }
+        Ok(entries)
     }
 
     fn export(&self, into: &std::path::Path) -> Result<(), StoreError> {
@@ -561,12 +603,6 @@ fn fleet() -> Directory {
 /// of a landing it closes carries.
 fn as_reviewer() -> Actor {
     Actor::seat(reviewer().id)
-}
-
-/// How the note names the closer: the seat a person reads and the id a script
-/// can pass.
-fn closer_named() -> String {
-    format!("{} ({REVIEWER_ID})", reviewer().machine_name())
 }
 
 /// The machine's seat table under the rig's own machine directory: the file a
@@ -913,7 +949,6 @@ fn run_against_path(
     child_path: &str,
     by: &Actor,
 ) -> Ran {
-    let packs = packs(scratch);
     let steps = Steps::default();
     let mut out = Vec::new();
     let mut err = Vec::new();
@@ -933,7 +968,6 @@ fn run_against_path(
         &Wiring {
             store,
             git,
-            packs: &packs,
             project,
             progress: &steps,
             events,
@@ -957,14 +991,14 @@ fn run_against_path(
 
 // ---- the landing -------------------------------------------------------------
 
-/// The whole act: the gates in the § 4 order, the note the template renders,
-/// the close, and both read back.
+/// The whole act: the gates in the § 4 order, the landed entry, the close, and
+/// both read back.
 ///
 /// THE INTEGRATION RING of this suite, and the one arm here that drives `bd`:
 /// the whole landing against the store the verb actually talks to, so the
 /// in-memory board the arms below run on cannot drift from it unseen.
 #[test]
-fn a_clean_landing_runs_the_gates_in_order_and_writes_the_note_and_closes() {
+fn a_clean_landing_runs_the_gates_in_order_and_writes_the_landed_entry_and_closes() {
     let _path = PATH_LOCK.lock().expect("not poisoned");
     let scratch = ring();
     let bd = &Bd::at(&scratch.root);
@@ -1059,58 +1093,52 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_note_and_closes() {
     );
     let _ = at("is_linked_worktree");
 
-    // THE WHOLE NOTE, rendered here from the shipped template and compared to
-    // what the store holds — not the first line, and not by contains.
-    let template = std::fs::read_to_string(
-        packs(scratch)
-            .slot(LANDING_NOTE)
-            .expect("core carries the landing note"),
-    )
-    .expect("the template is readable");
-    let block =
-        marker_block(&template, LANDING_MARKERS[0]).expect("the template carries a LANDED block");
-    let wanted = render(
-        &block,
-        &[
-            ("sha", LANDED),
-            ("rebased", ""),
-            ("trunk", TRUNK_BRANCH),
-            ("actor", &closer_named()),
-            ("old", OLD),
-            ("new", LANDED),
-            ("commit", SHA),
-            ("builder", &full(BUILDER)),
-            ("tested", "suite: exit 0, rc 0"),
-            ("checks", &checks_of(&landed.note)),
-        ],
-    )
-    .expect("every placeholder is one this arm offers");
+    // THE LANDED ENTRY, WHOLE, off the timeline the store answers — every field
+    // but the rows' evidence, which names a temporary path and a duration no
+    // arm can know in advance.
+    let (entry, landing) = landing_of(bd, &item);
     assert_eq!(
-        landed.note, wanted,
-        "the note is the template rendered whole — its first line and its gate and nothing the \
-         template does not carry"
+        entry.id, landed.entry,
+        "the verb answers the entry it appended"
     );
-    // What the check block itself is, asserted where the arm can predict it: the
-    // seven rows by number, criterion and verdict, and the commands block
-    // verbatim. Only the evidence is left to the rows' own checks, because it
-    // names a temporary path and a duration no arm can know in advance.
-    let checks = checks_of(&landed.note);
+    assert_eq!(entry.by, as_reviewer(), "appended by the closer, typed");
+    assert_eq!(landing.sha, LANDED, "the push's own range line");
+    assert_eq!(landing.old, OLD, "and its other end");
+    assert_eq!(landing.squash_of, SHA, "the reviewed commit");
+    assert_eq!(landing.run, None, "a seat landed it in its own name");
+    assert_eq!(landing.test, ran_test("exit 0", 0), "the suite it stood on");
+    assert_eq!(
+        landing.work_branch,
+        WorkBranch {
+            branch: Some(WORK.to_string()),
+            classification: Classification::Safe,
+        },
+        "the branch the delivery named, classified"
+    );
+    // ONE ROW PER CHECK READ, in the order they were read, each under its own
+    // criterion and verdict.
     let verdicts = ["PASS", "PASS", "PASS", "PASS", "PASS", "SAFE", "PASS"];
-    for (n, (criterion, verdict)) in CRITERIA.iter().zip(verdicts).enumerate() {
-        let head = format!("{}. {criterion:<16} {verdict:<10} ", n + 1);
-        assert!(
-            checks.lines().any(|line| line.starts_with(&head)),
-            "no row opening `{head}` in:\n{checks}"
-        );
-    }
-    let commands: Vec<&str> = checks
+    let rows: Vec<(&str, &str)> = landing
+        .checks
+        .iter()
+        .map(|row| (row.check.as_str(), row.verdict.as_str()))
+        .collect();
+    assert_eq!(
+        rows,
+        CRITERIA.iter().copied().zip(verdicts).collect::<Vec<_>>(),
+        "the seven rows, in the order they were read"
+    );
+    // THE COMMANDS BLOCK, which `fleet item show` renders under the rows off
+    // the entry's own shas and branch, verbatim.
+    let shown = shown(bd, &item);
+    let commands: Vec<&str> = shown
         .lines()
-        .skip_while(|line| !line.starts_with("## Commands"))
+        .skip_while(|line| *line != "commands:")
         .collect();
     assert_eq!(
         commands,
         vec![
-            "## Commands — every verdict above, re-runnable",
+            "commands:",
             &format!("git merge-base {TRUNK} {SHA}"),
             &format!("git diff --name-only $(git merge-base {TRUNK} {SHA}) {SHA}"),
             &format!("git show --stat {LANDED}"),
@@ -1119,36 +1147,31 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_note_and_closes() {
             &format!("git diff {SHA} {LANDED} --"),
             "git status --porcelain",
         ],
-        "the commands block is rendered whole"
+        "the commands block is rendered whole:\n{shown}"
     );
 
     let record = scratch.json(&item);
-    assert!(
-        record.contains(&format!("LANDED {LANDED} on {TRUNK_BRANCH}")),
-        "the note is on the item: {record}"
-    );
     let read = bd.show(&item).expect("the item reads back");
-    assert_eq!(
-        last_landing(read.notes.as_deref().unwrap_or_default()).as_deref(),
-        Some(landed.note.as_str()),
-        "the landing region off the item is the note the verb rendered"
-    );
     assert_eq!(read.status, "closed", "the item is closed");
     assert!(
         record.contains(&format!("landed {LANDED}")),
         "the close reason names the landed sha: {record}"
     );
+    assert!(
+        !read
+            .notes
+            .as_deref()
+            .unwrap_or_default()
+            .contains(&format!("LANDED {LANDED}")),
+        "and no landing note is on the item: {record}"
+    );
 
-    // Every row the note carries reached stdout as it was read, in the same
+    // Every row the entry carries reached stdout as it was read, in the same
     // order, and the bar took one step per row.
     for (n, criterion) in CRITERIA.iter().enumerate() {
         let row = format!("{}. {criterion}", n + 1);
         assert!(ran.out.contains(&row), "no `{row}` on stdout:\n{}", ran.out);
-        assert!(
-            landed.note.contains(&row),
-            "no `{row}` in the note:\n{}",
-            landed.note
-        );
+        assert!(shown.contains(&row), "no `{row}` in the entry:\n{shown}");
     }
     assert_eq!(
         ran.rows,
@@ -1298,9 +1321,9 @@ fn an_accepted_item_delivered_only_as_a_prose_note_is_refused() {
 }
 
 /// A landing handed no test command LANDS, on the review alone, and says NOT
-/// TESTED where nobody can miss it: the note's first line, its suite row, the
-/// row on stdout, and `item.landed`'s own `test` — never a zero borrowed from a
-/// run that did not happen.
+/// TESTED where nobody can miss it: the landed entry's `test`, its suite row,
+/// the row on stdout, and `item.landed`'s own `test` — never a zero borrowed
+/// from a run that did not happen.
 #[test]
 fn a_landing_handed_no_test_lands_and_says_not_tested() {
     let scratch = Board::new("land-no-suite");
@@ -1321,7 +1344,7 @@ fn a_landing_handed_no_test_lands_and_says_not_tested() {
         .unwrap_or_else(|stop| panic!("{}\n{}", stop.message, ran.out));
     assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
     // The reading is a measured absence on the stream too, in the same three
-    // words the note's own row prints.
+    // words the entry's own row carries.
     let (_, reading) = events.one(CHECK_READ);
     assert_eq!(reading["suite"], serde_json::Value::Null);
     assert_eq!(reading["rc"], serde_json::Value::Null);
@@ -1333,22 +1356,20 @@ fn a_landing_handed_no_test_lands_and_says_not_tested() {
         serde_json::Value::Null,
         "item.landed records that no test ran"
     );
-    let first = landed.note.lines().next().unwrap_or_default();
-    assert!(
-        first.starts_with(&format!("LANDED {LANDED}"))
-            && first.contains(&format!("— {}: ", land::NOT_TESTED))
-            && first.contains("no test command was handed to this landing"),
-        "the first line says NOT TESTED:\n{}",
-        landed.note
+    let (_, landing) = landing_of(bd, &item);
+    assert_eq!(
+        landing.test,
+        untested(),
+        "the entry says nothing ran, in the row's own sentence, and borrows no rc"
     );
     assert!(
-        !first.contains("rc "),
-        "and borrows no rc from a run that did not happen: {first}"
+        UNTESTED.contains("no test command was handed to this landing"),
+        "{UNTESTED}"
     );
+    let shown = shown(bd, &item);
     assert!(
-        landed.note.contains("4. suite            NOT TESTED"),
-        "and so does the row:\n{}",
-        landed.note
+        shown.contains("4. suite            NOT TESTED"),
+        "and so does the row:\n{shown}"
     );
     assert!(
         ran.out.contains("4. suite            NOT TESTED"),
@@ -1403,7 +1424,7 @@ fn another_writers_orders_key_and_run_label_ride_through_a_landing() {
 
 /// `fleet land --test <command>` runs the command it is handed ON THE LAND
 /// BRANCH — after the squash and the commit, before the push — and records the
-/// command and its rc 0 on the note's first line, the gate reading and
+/// command and its rc 0 on the landed entry, the gate reading and
 /// `item.landed`.
 #[test]
 fn a_landing_handed_a_green_test_lands_and_records_the_command_and_rc_0() {
@@ -1433,20 +1454,17 @@ fn a_landing_handed_a_green_test_lands_and_records_the_command_and_rc_0() {
         .landed
         .as_ref()
         .unwrap_or_else(|stop| panic!("{}\n{}", stop.message, ran.out));
-    assert!(
-        landed
-            .note
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .ends_with("— suite: exit 0, rc 0"),
-        "the first line records the command and its rc:\n{}",
-        landed.note
+    assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
+    let (_, landing) = landing_of(&scratch.store, &item);
+    assert_eq!(
+        landing.test,
+        ran_test("exit 0", 0),
+        "the entry records the command and its rc"
     );
+    let shown = shown(&scratch.store, &item);
     assert!(
-        !landed.note.contains(land::NOT_TESTED),
-        "and a tested landing never reads like an untested one:\n{}",
-        landed.note
+        !shown.contains(land::NOT_TESTED),
+        "and a tested landing never reads like an untested one:\n{shown}"
     );
     let (_, reading) = events.one(CHECK_READ);
     assert_eq!(reading["suite"], serde_json::json!("exit 0"));
@@ -1479,7 +1497,7 @@ fn a_landing_handed_a_green_test_lands_and_records_the_command_and_rc_0() {
 
 /// `fleet land --test <command>` whose command exits non-zero — twice, the
 /// first read and its one rerun — REFUSES, and nothing moved: no push, no
-/// landing note, no close, no `item.landed`, and the land branch put back.
+/// landed entry, no close, no `item.landed`, and the land branch put back.
 #[test]
 fn a_landing_handed_a_red_test_refuses_with_nothing_moved() {
     let scratch = Board::new("land-test-red");
@@ -1525,8 +1543,9 @@ fn a_landing_handed_a_red_test_refuses_with_nothing_moved() {
     assert_eq!(
         scratch.json(&item),
         before,
-        "the item is byte-identical: no note, no close"
+        "the item is byte-identical: no entry, no close"
     );
+    assert!(no_landing(&scratch.store, &item), "and no landed entry");
     assert!(
         events
             .all()
@@ -1643,10 +1662,11 @@ fn also_widens_the_delivered_set_and_reason_rides_the_close() {
         .landed
         .as_ref()
         .unwrap_or_else(|stop| panic!("{}\n{}", stop.message, ran.out));
+    assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
+    let shown = shown(bd, &item);
     assert!(
-        landed.note.contains("plus --also the-log.md"),
-        "the staged-set row names what was admitted:\n{}",
-        landed.note
+        shown.contains("plus --also the-log.md"),
+        "the staged-set row names what was admitted:\n{shown}"
     );
     assert!(
         scratch
@@ -2679,8 +2699,8 @@ fn a_branch_name_is_refused_before_any_git_write() {
 }
 
 /// A landing handed no test command lands on the review alone, and says NOT
-/// TESTED on the one line a script reads — read back off the RECORD, which is
-/// where a script finds it.
+/// TESTED on the field a script reads — the landed entry's `test`, read back
+/// off the RECORD, which is where a script finds it.
 #[test]
 fn a_landing_handed_no_test_says_not_tested_on_the_record() {
     let scratch = Board::new("land-suite-none");
@@ -2700,13 +2720,19 @@ fn a_landing_handed_no_test_says_not_tested_on_the_record() {
         &StubEvents::default(),
     );
     assert_eq!(ran.code(), None, "{}", ran.why());
-    let notes = scratch.json(&item);
-    assert!(
-        notes.contains(&format!(
-            "— {}: no test command was handed to this landing",
-            land::NOT_TESTED
-        )),
-        "the first line says NOT TESTED:\n{notes}"
+    let entries = scratch.store.timeline(&item).expect("the timeline reads");
+    let (_, landing) = Timeline(&entries)
+        .last_landing()
+        .expect("the landing is on the record");
+    assert_eq!(
+        landing.test,
+        SuiteRun::NotTested(NotTested {
+            not_tested: String::from(
+                "no test command was handed to this landing (`fleet land --test <command>`), so \
+                 nothing ran and it stands on the review alone",
+            ),
+        }),
+        "the entry says NOT TESTED in the row's own sentence"
     );
 }
 
@@ -2935,9 +2961,9 @@ fn a_trunk_that_moved_is_rebase_needed_with_its_count() {
 }
 
 /// A rejected push prints what the remote said and NOTHING after it runs: no
-/// note, no close, no branch touched.
+/// landed entry, no close, no branch touched.
 #[test]
-fn a_rejected_push_writes_no_note_and_no_close() {
+fn a_rejected_push_writes_no_entry_and_no_close() {
     let scratch = &store();
     let item = an_item(
         &scratch.store,
@@ -2959,7 +2985,7 @@ fn a_rejected_push_writes_no_note_and_no_close() {
     assert_eq!(
         events.count(),
         0,
-        "the events follow the note, so a refusal before it announces nothing"
+        "the events follow the entry, so a refusal before it announces nothing"
     );
     assert!(
         ran.out.contains("pre-receive hook refused it"),
@@ -2968,10 +2994,7 @@ fn a_rejected_push_writes_no_note_and_no_close() {
     );
     let read = bd.show(&item).expect("the item reads back");
     assert_eq!(read.status, "open", "nothing after the push ran");
-    assert!(
-        last_landing(read.notes.as_deref().unwrap_or_default()).is_none(),
-        "and no landing note was written"
-    );
+    assert!(no_landing(bd, &item), "and no landed entry was written");
     assert_eq!(
         scratch.json(&item),
         before,
@@ -3014,7 +3037,7 @@ fn a_push_with_no_range_line_could_not_tell_and_wrote_nothing() {
     );
     let read = bd.show(&item).expect("the item reads back");
     assert_eq!(read.status, "open");
-    assert!(last_landing(read.notes.as_deref().unwrap_or_default()).is_none());
+    assert!(no_landing(bd, &item));
     assert_eq!(
         scratch.json(&item),
         before,
@@ -3022,44 +3045,190 @@ fn a_push_with_no_range_line_could_not_tell_and_wrote_nothing() {
     );
 }
 
-/// The read-back is the only witness: a note the store gives back without its
-/// landing region is exit 3 printing both readings, and the landing STANDS.
+/// The two ends a push prints, abbreviated the way a real push prints them,
+/// and the whole shas they resolve to in this checkout.
+const OLD_SHORT: &str = "abc1234";
+const NEW_SHORT: &str = "def5678";
+
+/// A stub whose push prints the range ABBREVIATED, as a real push does, and
+/// whose `rev` resolves each end to its whole sha.
+fn abbreviating() -> StubGit {
+    let mut git = StubGit::clean();
+    git.push = Pushed {
+        output: push_out(OLD_SHORT, NEW_SHORT),
+        code: Some(0),
+    };
+    git.revs = vec![
+        (OLD_SHORT.to_string(), OLD.to_string()),
+        (NEW_SHORT.to_string(), LANDED.to_string()),
+    ];
+    git
+}
+
+/// fleet-56e: EVERY SHA ON A LANDING IS WHOLE. The push prints its range line
+/// abbreviated, and the landing resolves both ends before it writes anything:
+/// the landed entry's sha, old and squash_of, the stdout line, the close
+/// reason, the verb's answer and `item.landed`'s sha and base each carry forty
+/// hex.
+///
+/// RED-PROOF, run at 9d1a1af before the change with every assertion but the
+/// entry's: the verb answered `def5678`, the seven characters the push line
+/// printed, and HEAD took the rest off the same two strings.
 #[test]
-fn a_note_that_reads_back_wrong_is_could_not_tell_and_says_the_landing_stands() {
+fn a_push_that_prints_abbreviated_shas_lands_every_sha_whole() {
     let scratch = &store();
     let item = an_item(
         &scratch.store,
-        "an item whose note reads back short",
+        "an item whose push abbreviates",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
-    let doctored = Doctored {
-        inner: bd,
-        drop_landing: true,
-        append: None,
-    };
-    let git = StubGit::clean();
+    let git = abbreviating();
+    let events = StubEvents::default();
 
-    let ran = run(scratch, &doctored, &git, &item, SHA);
-    assert_eq!(ran.code(), Some(3), "{}", ran.why());
-    assert!(
-        ran.why().contains("(absent)") && ran.why().contains(&format!("LANDED {LANDED}")),
-        "both readings are printed: {}",
-        ran.why()
+    let ran = run_watched(
+        scratch,
+        &scratch.store,
+        &git,
+        &item,
+        SHA,
+        &[],
+        None,
+        &events,
     );
-    assert!(ran.why().contains("STANDS"), "{}", ran.why());
-    assert!(
-        ran.why().contains(&format!("bd note {item}")),
-        "and the one idempotent command that repairs it: {}",
-        ran.why()
+    let landed = ran
+        .landed
+        .as_ref()
+        .unwrap_or_else(|stop| panic!("{}\n{}", stop.message, ran.out));
+    assert_eq!(landed.sha, LANDED, "the verb answers the whole sha");
+    let (_, landing) = landing_of(&scratch.store, &item);
+    assert_eq!(
+        (
+            landing.sha.as_str(),
+            landing.old.as_str(),
+            landing.squash_of.as_str()
+        ),
+        (LANDED, OLD, SHA),
+        "the landed entry carries all three whole"
     );
-    // The control for the arm above: the note DID reach the item; only the
-    // reading was bent.
-    assert!(scratch.json(&item).contains(&format!("LANDED {LANDED}")));
+    assert!(
+        [&landing.sha, &landing.old, &landing.squash_of]
+            .iter()
+            .all(|sha| sha.len() == 40),
+        "forty hex each: {landing:?}"
+    );
+    assert!(
+        ran.out.trim_end().ends_with(&format!("LANDED {LANDED}")),
+        "the line a caller greps for is whole:\n{}",
+        ran.out
+    );
+    assert_eq!(
+        scratch
+            .store
+            .closed
+            .lock()
+            .expect("not poisoned")
+            .get(&item)
+            .cloned(),
+        Some(format!("landed {LANDED}")),
+        "the close reason is whole"
+    );
+    let (_, landing) = events.one(ITEM_LANDED);
+    assert_eq!(landing["sha"], serde_json::json!(LANDED), "{landing}");
+    assert_eq!(landing["base"], serde_json::json!(OLD), "{landing}");
 }
 
-/// The negative control: a read that answers yes to a token nothing wrote is
-/// not reading this item.
+/// fleet-56e, the other half: a range end this checkout cannot resolve is an
+/// instrument that could not answer, AFTER the push — exit 3 saying the landing
+/// stands, the item not closed, no landed entry, and nothing announced.
+#[test]
+fn a_pushed_sha_that_resolves_to_no_commit_is_exit_3_with_no_landed_entry() {
+    let scratch = &store();
+    let item = an_item(
+        &scratch.store,
+        "an item whose pushed sha resolves to nothing",
+        Some(("ACCEPTED", SHA)),
+    );
+    let mut git = abbreviating();
+    git.blind = Some(NEW_SHORT.to_string());
+    let events = StubEvents::default();
+
+    let ran = run_watched(
+        scratch,
+        &scratch.store,
+        &git,
+        &item,
+        SHA,
+        &[],
+        None,
+        &events,
+    );
+    assert_eq!(ran.code(), Some(3), "{}\n{}", ran.why(), ran.out);
+    assert_eq!(
+        ran.why(),
+        format!(
+            "the push named {NEW_SHORT}, which resolves to no commit in this checkout — the \
+             landing STANDS on {TRUNK_BRANCH} and {item} carries no landed entry and is not \
+             closed"
+        )
+    );
+    let read = scratch.store.show(&item).expect("the item reads back");
+    assert_eq!(read.status, "open", "the item is not closed");
+    assert!(
+        no_landing(&scratch.store, &item),
+        "and carries no landed entry"
+    );
+    assert_eq!(events.count(), 0, "and nothing reached the stream");
+}
+
+/// A STORE THAT TAKES THE LANDED ENTRY AND DOES NOT KEEP IT is caught by the
+/// entry's own read-back: exit 3, saying the landing STANDS on the trunk —
+/// the push was made, and a caller that read this as nothing having happened
+/// would land twice. Nothing is announced and nothing is closed.
+#[test]
+fn a_landed_entry_the_store_does_not_keep_is_exit_3_and_the_landing_stands() {
+    let scratch = &store();
+    let item = an_item(
+        &scratch.store,
+        "an item whose store forgets the landing",
+        Some(("ACCEPTED", SHA)),
+    );
+    scratch.store.ignore_writes();
+    let events = StubEvents::default();
+
+    let ran = run_watched(
+        scratch,
+        &scratch.store,
+        &StubGit::clean(),
+        &item,
+        SHA,
+        &[],
+        None,
+        &events,
+    );
+    assert_eq!(ran.code(), Some(3), "{}\n{}", ran.why(), ran.out);
+    assert!(
+        ran.why().contains("does not hold the landed entry"),
+        "the stop names the entry the timeline does not hold: {}",
+        ran.why()
+    );
+    assert!(
+        ran.why().ends_with(&format!(
+            "\n  the landing {LANDED} STANDS on {TRUNK_BRANCH}"
+        )),
+        "{}",
+        ran.why()
+    );
+    assert_eq!(events.count(), 0, "nothing is announced");
+    scratch.store.apply_writes();
+    assert_eq!(
+        scratch.store.show(&item).expect("the item reads").status,
+        "open",
+        "and nothing is closed"
+    );
+}
+
+/// The negative control: a timeline read that answers for an entry id nothing
+/// wrote is not reading this item, and the landing says it STANDS.
 #[test]
 fn the_read_back_catches_a_planted_token() {
     let scratch = &store();
@@ -3071,14 +3240,14 @@ fn the_read_back_catches_a_planted_token() {
     let bd = &scratch.store;
     let doctored = Doctored {
         inner: bd,
-        drop_landing: false,
-        append: Some(control_token().to_string()),
+        plant: Some(control_token().to_string()),
     };
     let git = StubGit::clean();
 
     let ran = run(scratch, &doctored, &git, &item, SHA);
     assert_eq!(ran.code(), Some(3), "{}", ran.why());
     assert!(ran.why().contains(control_token()), "{}", ran.why());
+    assert!(ran.why().contains("STANDS"), "{}", ran.why());
 }
 
 // ---- the work branch ---------------------------------------------------------
@@ -3165,7 +3334,7 @@ fn no_delete(git: &StubGit) -> bool {
     })
 }
 
-/// A branch name the delivery note could carry that names the trunk, HEAD or
+/// A branch name the delivered entry could carry that names the trunk, HEAD or
 /// this act's own branch is a question, never a delete: the name is text
 /// somebody wrote and SAFE ends in two destructive calls.
 #[test]
@@ -3222,11 +3391,10 @@ fn a_branch_name_that_names_a_trunk_is_never_deleted() {
 // ---- the release a retire reads back ---------------------------------------
 
 /// The held case end to end: the local delete refuses because a worktree still
-/// has the branch, the landing says where the delete finishes, and the note it
-/// WROTE is the one the release READS — so the two halves cannot drift apart
-/// over a row's grammar.
+/// has the branch, the landing says where the delete finishes, and the entry it
+/// WROTE is the one the release READS — so the two halves cannot drift apart.
 #[test]
-fn a_held_local_delete_names_the_retire_and_its_own_note_reads_back_as_a_delete() {
+fn a_held_local_delete_names_the_retire_and_its_own_entry_reads_back_as_a_delete() {
     let scratch = &store();
     let bd = &scratch.store;
     let item = an_item(
@@ -3259,17 +3427,13 @@ fn a_held_local_delete_names_the_retire_and_its_own_note_reads_back_as_a_delete(
         git.calls()
     );
 
-    // THE NOTE THE LANDING JUST WROTE, read back off the store the way the
-    // retire reads it — never a literal typed here.
-    let notes = bd
-        .show(&item)
-        .expect("the item reads back")
-        .notes
-        .unwrap_or_default();
+    // THE TIMELINE THE LANDING JUST WROTE, read back off the store the way the
+    // retire reads it — never an entry typed here.
+    let timeline = bd.timeline(&item).expect("the timeline reads back");
     assert_eq!(
-        land::release(&notes, Some(WORK)),
+        land::release(&timeline, Some(WORK)),
         land::Release::Delete(WORK.to_string()),
-        "the landing's own SAFE row releases the branch it named:\n{notes}"
+        "the landing's own SAFE work branch is released:\n{timeline:?}"
     );
 
     // The control on the second key: a seat standing on some OTHER branch is
@@ -3277,15 +3441,16 @@ fn a_held_local_delete_names_the_retire_and_its_own_note_reads_back_as_a_delete(
     let elsewhere = "a-builder/feat/something-else";
     assert!(
         matches!(
-            land::release(&notes, Some(elsewhere)),
+            land::release(&timeline, Some(elsewhere)),
             land::Release::Keep(why) if why.contains(elsewhere) && why.contains(WORK)
         ),
-        "a branch the landing did not name is kept:\n{notes}"
+        "a branch the landing did not name is kept:\n{timeline:?}"
     );
 }
 
-/// The three verdicts that are not SAFE, each produced by a REAL landing and
-/// each read back as a keep — the control half of the arm above.
+/// The three classifications that are not SAFE, each produced by a REAL
+/// landing and each read back as a keep naming it — the control half of the arm
+/// above.
 #[test]
 fn a_landing_that_did_not_read_safe_releases_nothing() {
     let scratch = &store();
@@ -3293,10 +3458,10 @@ fn a_landing_that_did_not_read_safe_releases_nothing() {
 
     // Every rig here also holds the branch, so what keeps it is the verdict and
     // never a delete that happened to succeed at land time.
-    for what in [
-        "whose branch moved on",
-        "whose landed content differs",
-        "whose branch cannot be read",
+    for (what, reads) in [
+        ("whose branch moved on", "carries_unlanded_work"),
+        ("whose landed content differs", "carries"),
+        ("whose branch cannot be read", "could_not_tell"),
     ] {
         let item = an_item(
             &scratch.store,
@@ -3312,96 +3477,138 @@ fn a_landing_that_did_not_read_safe_releases_nothing() {
         }
         let ran = run(scratch, bd, &git, &item, SHA);
         assert!(ran.landed.is_ok(), "{}", ran.why());
-        let notes = bd
-            .show(&item)
-            .expect("the item reads back")
-            .notes
-            .unwrap_or_default();
-        assert!(
-            matches!(land::release(&notes, Some(WORK)), land::Release::Keep(_)),
-            "an item {what} is kept:\n{notes}"
+        let timeline = bd.timeline(&item).expect("the timeline reads back");
+        assert_eq!(
+            land::release(&timeline, Some(WORK)),
+            land::Release::Keep(format!("`{WORK}` — the landing reads `{reads}`")),
+            "an item {what} is kept, naming the classification"
         );
     }
 }
 
-/// Every reading that is absent, unparsable or dangerous keeps the branch.
+/// A landed entry by the reviewer, classifying `branch` as `classification`:
+/// the one field a retire reads, on an entry that validates like any other.
+fn a_landed(n: u32, branch: Option<&str>, classification: Classification) -> Entry {
+    Entry {
+        id: format!("c-{n}"),
+        at: AT.to_string(),
+        by: as_reviewer(),
+        body: Body::Landed(LandedEntry {
+            sha: LANDED.to_string(),
+            old: OLD.to_string(),
+            squash_of: SHA.to_string(),
+            run: None,
+            test: untested(),
+            checks: vec![CheckRow {
+                check: "work branch".to_string(),
+                verdict: "SAFE".to_string(),
+                evidence: "what the landing read".to_string(),
+            }],
+            work_branch: WorkBranch {
+                branch: branch.map(str::to_string),
+                classification,
+            },
+        }),
+    }
+}
+
+/// The delivered entry a timeline opens on, as the builder's seat wrote it.
+fn a_delivered() -> Entry {
+    Entry {
+        id: "c-1".to_string(),
+        at: AT.to_string(),
+        by: seat_actor(BUILDER),
+        body: Body::Delivered(a_delivery(SHA)),
+    }
+}
+
+/// Every reading that is absent, not SAFE or dangerous keeps the branch; the
+/// one delete there is needs the LAST landing's work branch safe and named as
+/// the branch the going seat is on.
 ///
-/// The notes here are FORGED on purpose: a note is text somebody wrote, and a
-/// SAFE row naming the trunk is exactly the shape a hand could put on an item.
+/// The timelines here are FORGED on purpose: an entry is text somebody could
+/// write, and a SAFE landing naming the trunk is exactly the shape a hand could
+/// put on an item.
 #[test]
 fn a_release_keeps_the_branch_on_every_reading_but_one() {
-    assert_eq!(
-        CRITERIA[land::WORK_BRANCH],
-        "work branch",
-        "the row the release reads is the one the landing writes"
-    );
-
-    // The one delete there is, as the control: everything below is this note
-    // with one thing changed.
     let safe = |branch: &str| {
-        format!(
-            "LANDED {LANDED} on {TRUNK_BRANCH} by {REVIEWER}\n\
-             5. base current     PASS       nothing\n\
-             6. work branch      SAFE       {branch} — its tip is the reviewed commit\n\
-             7. tree clean after PASS       nothing\n"
-        )
+        vec![
+            a_delivered(),
+            a_landed(2, Some(branch), Classification::Safe),
+        ]
     };
     assert_eq!(
         land::release(&safe(WORK), Some(WORK)),
         land::Release::Delete(WORK.to_string()),
         "the control deletes"
     );
+    assert_eq!(
+        land::release(&[a_delivered()], Some(WORK)),
+        land::Release::Keep(format!("`{WORK}` — the item carries no landing")),
+        "a timeline with no landing says so"
+    );
 
-    let kept: [(&str, String, Option<&str>); 9] = [
+    let kept: [(&str, Vec<Entry>, Option<&str>); 11] = [
         ("a seat on no branch", safe(WORK), None),
         ("a seat on an empty branch", safe(WORK), Some("   ")),
+        ("no landing at all", vec![a_delivered()], Some(WORK)),
+        ("no entry at all", Vec::new(), Some(WORK)),
         (
-            "no landing at all",
-            "DELIVERED abc — a-builder\n".to_string(),
+            "a landing that did not read safe",
+            vec![
+                a_delivered(),
+                a_landed(2, Some(WORK), Classification::CarriesUnlandedWork),
+            ],
+            Some(WORK),
+        ),
+        // THE LAST LANDING IS THE ONE READ: an earlier safe reading is
+        // superseded by the later one that was not.
+        (
+            "a safe landing a later one superseded",
+            vec![
+                a_delivered(),
+                a_landed(2, Some(WORK), Classification::Safe),
+                a_landed(3, Some(WORK), Classification::Carries),
+            ],
             Some(WORK),
         ),
         (
-            "a landing with no work-branch row",
-            format!("LANDED {LANDED} on {TRUNK_BRANCH} by {REVIEWER}\n4. suite  PASS  green\n"),
+            "a safe landing naming no branch",
+            vec![a_delivered(), a_landed(2, None, Classification::Safe)],
             Some(WORK),
         ),
         (
-            "a row whose verdict is not SAFE",
-            safe(WORK).replace("SAFE", "CARRIES UNLANDED WORK"),
-            Some(WORK),
-        ),
-        (
-            "a SAFE row naming the trunk",
+            "a safe landing naming the trunk",
             safe(TRUNK_BRANCH),
             Some(TRUNK_BRANCH),
         ),
         (
-            "a SAFE row naming the remote trunk",
+            "a safe landing naming the remote trunk",
             safe(TRUNK),
             Some(TRUNK),
         ),
         (
-            "a SAFE row naming an option",
+            "a safe landing naming an option",
             safe("--force"),
             Some("--force"),
         ),
         // A RETIRE HAS NO LAND BRANCH, so the `""` handed to the refusal list
-        // above cannot equal any name and the prefix is what answers here.
+        // cannot equal any name and the prefix is what answers here.
         (
-            "a SAFE row naming another landing's branch",
+            "a safe landing naming another landing's branch",
             safe("land/an-other-item"),
             Some("land/an-other-item"),
         ),
     ];
-    for (what, notes, held) in kept {
+    for (what, timeline, held) in kept {
         assert!(
-            matches!(land::release(&notes, held), land::Release::Keep(_)),
-            "{what} keeps the branch:\n{notes}"
+            matches!(land::release(&timeline, held), land::Release::Keep(_)),
+            "{what} keeps the branch:\n{timeline:?}"
         );
     }
 }
 
-/// A delivery note naming ANOTHER landing's branch is a question too. The
+/// A delivered entry naming ANOTHER landing's branch is a question too. The
 /// prefix and not the item is what makes a ref a landing's, so `land/<other>`
 /// is refused where only this act's own `land/<item>` was.
 ///
@@ -3451,16 +3658,12 @@ fn a_delivery_naming_another_landings_branch_is_never_deleted() {
 // ---- the template and its marker ---------------------------------------------
 
 /// The landing marker is distinct from every delivery and verdict marker: one
-/// of each in one note, and each reader finds only its own.
+/// of each in one note, and the delivery reader finds only its own.
 #[test]
-fn each_reader_finds_only_its_own_region() {
-    // THE SHIPPED LANDING SHAPE, rendered — not a literal typed here, which
-    // would prove the arm's own string and not the pack's marker. No verb
-    // writes a delivery or a verdict note any more, so those two regions are
-    // ones a person's older record still carries, each opened on the marker
-    // the region readers anchor on.
-    let scratch = &store();
-    let packs = packs(scratch);
+fn the_delivery_reader_finds_only_its_own_region() {
+    // No verb writes a delivery, a verdict or a landing note any more, so all
+    // three regions are ones a person's older record still carries, each
+    // opened on the marker the region readers anchor on.
     let delivery = format!(
         "{} {SHA} — {}\ncommit:  {SHA}\nbranch:  a-builder/feat/the-work",
         DELIVERY_MARKERS[0],
@@ -3470,26 +3673,11 @@ fn each_reader_finds_only_its_own_region() {
         "{} {SHA} — {REVIEWER}\nitem:    fx-1\ndecisions: 0 accepted, 0 overruled",
         VERDICT_MARKERS[0]
     );
-    let landing = render(
-        &marker_block(
-            &packs.read(LANDING_NOTE).expect("core carries it"),
-            LANDING_MARKERS[0],
-        )
-        .expect("the landing grammar names LANDED"),
-        &[
-            ("sha", LANDED),
-            ("rebased", ""),
-            ("trunk", TRUNK_BRANCH),
-            ("actor", REVIEWER),
-            ("old", OLD),
-            ("new", LANDED),
-            ("commit", SHA),
-            ("builder", BUILDER),
-            ("tested", "suite: exit 0, rc 0"),
-            ("checks", "1. reviewed commit PASS  read here"),
-        ],
-    )
-    .expect("every placeholder is one this arm offers");
+    let landing = format!(
+        "{} {LANDED} on {TRUNK_BRANCH} by {REVIEWER} (range {OLD}..{LANDED}; squash of {SHA}) — \
+         suite: exit 0, rc 0\n1. reviewed commit PASS  read here",
+        LANDING_MARKERS[0]
+    );
     let notes = format!("{delivery}\n{verdict}\n{landing}");
 
     assert_eq!(
@@ -3497,17 +3685,11 @@ fn each_reader_finds_only_its_own_region() {
         Some(delivery.as_str()),
         "the delivery region stops at the verdict"
     );
-    assert_eq!(
-        last_landing(&notes).as_deref(),
-        Some(landing.as_str()),
-        "and the landing region is the landing"
-    );
     // The control: with the verdict taken away the delivery stops at the
     // landing instead, so each boundary is its own marker's doing and not an
     // artefact.
     let without = format!("{delivery}\n{landing}");
     assert_eq!(last_delivery(&without).as_deref(), Some(delivery.as_str()));
-    assert!(last_landing(&format!("{delivery}\n{verdict}")).is_none());
 }
 
 /// A REGION IS ENDED BY WHAT FOLLOWS IT, NEVER BY ITS OWN KIND.
@@ -3524,8 +3706,9 @@ fn a_region_is_ended_by_what_follows_it_and_never_by_its_own_kind() {
     );
     let verdict = format!("{} {SHA} — {REVIEWER}", VERDICT_MARKERS[1]);
     let landed = format!(
-        "LANDED {LANDED} on {TRUNK_BRANCH} by {REVIEWER} — NOT TESTED: no test command was \
-         handed to this landing"
+        "{} {LANDED} on {TRUNK_BRANCH} by {REVIEWER} — NOT TESTED: no test command was handed \
+         to this landing",
+        LANDING_MARKERS[0]
     );
 
     assert_eq!(
@@ -3543,10 +3726,6 @@ fn a_region_is_ended_by_what_follows_it_and_never_by_its_own_kind() {
         Some(delivered.as_str()),
         "and so does a landing"
     );
-    assert_eq!(
-        last_landing(&format!("{delivered}\n{landed}")).as_deref(),
-        Some(landed.as_str())
-    );
     // The half a naive bound gets wrong: a SECOND delivery does not end the
     // first — it is the one read, and it runs to the end.
     let redelivered = format!("{} {SHA} — {BUILDER}\nbase:    {OLD}", DELIVERY_MARKERS[1]);
@@ -3557,32 +3736,26 @@ fn a_region_is_ended_by_what_follows_it_and_never_by_its_own_kind() {
     );
 }
 
-/// The template is one of the binary's own defaults, resolves through the
-/// layers, and the registry lists it — which is the registry existence test: a
-/// row naming a path the set does not hold is a defect.
+/// The landing grammar is gone from the defaults and the registry: a landing
+/// is an entry, and no verb renders a note for it.
 #[test]
-fn the_landing_template_is_a_default_and_the_registry_still_resolves() {
+fn the_defaults_carry_no_landing_template_and_the_registry_names_none() {
     let scratch = Board::new("land-template");
-    let template: PathBuf = packs(&scratch)
-        .slot(LANDING_NOTE)
-        .expect("the defaults carry the landing note");
+    let gone = "assets/landing-note.md";
     assert!(
-        template.starts_with(&scratch.defaults_dir),
-        "the template resolves out of the materialized defaults: {}",
-        template.display()
+        !scratch.defaults_dir.join(gone).exists(),
+        "`{gone}` is gone: a landing is an entry"
     );
-    let body = std::fs::read_to_string(&template).expect("the template is readable");
     assert!(
-        body.starts_with(LANDING_MARKERS[0]),
-        "it opens on the landing marker:\n{body}"
+        packs(&scratch).slot(gone).is_err(),
+        "and nothing resolves it through the layers"
     );
-
     let registry =
         std::fs::read_to_string(scratch.defaults_dir.join("assets/shadow-registry.toml"))
             .expect("the registry is readable");
     assert!(
-        registry.contains("assets/landing-note.md"),
-        "and the registry names it:\n{registry}"
+        !registry.contains(gone),
+        "and the registry names no `{gone}`:\n{registry}"
     );
 }
 
@@ -3954,10 +4127,7 @@ fn a_lane_whose_lock_cannot_be_made_is_exit_3_with_nothing_written() {
     );
     let read = bd.show(&item).expect("the item reads");
     assert_eq!(read.status, "open", "nothing was written");
-    assert!(
-        last_landing(&read.notes.unwrap_or_default()).is_none(),
-        "and no landing note"
-    );
+    assert!(no_landing(bd, &item), "and no landed entry");
     assert!(
         git.calls()
             .iter()
@@ -4026,7 +4196,7 @@ impl lane::Load for StubLoad {
 }
 
 /// A RED GATE IS RERUN ONCE AND A GREEN SECOND READING LANDS, with both rows in
-/// the note and both readings on the stream.
+/// the landed entry and both readings on the stream.
 #[test]
 fn a_red_gate_is_rerun_once_and_a_green_second_reading_lands_with_both_rows() {
     let scratch = &store();
@@ -4063,10 +4233,40 @@ fn a_red_gate_is_rerun_once_and_a_green_second_reading_lands_with_both_rows() {
         .as_ref()
         .unwrap_or_else(|stop| panic!("the landing was refused: {}\n{}", stop.message, ran.out));
 
-    let checks = checks_of(&landed.note);
+    assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
+    // ONE ROW PER CHECK READ, IN ORDER: eight with the rerun, which sits under
+    // its own name between the first reading and the trunk's row.
+    let (_, landing) = landing_of(bd, &item);
+    let named: Vec<&str> = landing
+        .checks
+        .iter()
+        .map(|row| row.check.as_str())
+        .collect();
+    assert_eq!(
+        named,
+        vec![
+            CRITERIA[0],
+            CRITERIA[1],
+            CRITERIA[2],
+            CRITERIA[3],
+            SUITE_RERUN,
+            CRITERIA[4],
+            CRITERIA[5],
+            CRITERIA[6],
+        ],
+        "eight rows, in the order they were read"
+    );
+    assert_eq!(
+        landing.test,
+        ran_test(&command, 0),
+        "the entry's test is the reading the landing stood on: the rerun's"
+    );
+    let checks = shown(bd, &item);
+    // A row is a number at the start of a line; the `test:` line above them
+    // names the command too, and is not a row.
     let suite_rows: Vec<&str> = checks
         .lines()
-        .filter(|line| line.contains(&command))
+        .filter(|line| line.starts_with(|c: char| c.is_ascii_digit()) && line.contains(&command))
         .collect();
     assert_eq!(suite_rows.len(), 2, "both readings are rows:\n{checks}");
     assert!(
@@ -4084,7 +4284,7 @@ fn a_red_gate_is_rerun_once_and_a_green_second_reading_lands_with_both_rows() {
         "the rerun's log sits beside the first and not over it: {}",
         suite_rows[1]
     );
-    // The rows the note carries after the rerun are still the ones they were
+    // The rows the entry carries after the rerun are still the ones they were
     // named: a row whose criterion came from its POSITION would have slid.
     for criterion in ["base current", "work branch", "tree clean after"] {
         assert!(
@@ -4229,7 +4429,8 @@ fn the_rerun_waits_for_the_box_to_quieten_and_the_row_says_it_did() {
         .landed
         .as_ref()
         .unwrap_or_else(|stop| panic!("the landing was refused: {}\n{}", stop.message, ran.out));
-    let checks = checks_of(&landed.note);
+    assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
+    let checks = shown(bd, &item);
     assert!(
         checks
             .lines()
@@ -4290,7 +4491,8 @@ fn a_wait_that_expires_reruns_anyway_and_the_row_says_it_expired() {
         "the wait was waited: {:?}",
         started.elapsed()
     );
-    let checks = checks_of(&landed.note);
+    assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
+    let checks = shown(bd, &item);
     assert!(
         checks.lines().any(|line| line.contains(SUITE_RERUN)
             && line.contains("expired")
@@ -4301,11 +4503,12 @@ fn a_wait_that_expires_reruns_anyway_and_the_row_says_it_expired() {
 
 // ---- the advance strategy's record -------------------------------------------
 
-/// A DELIVERY THAT WAS BEHIND SAYS SO ON THE NOTE'S FIRST LINE, and one that was
-/// current does not. The two are one arm because the reading that matters is
-/// the DIFFERENCE: a clause printed on every landing would say nothing.
+/// A DELIVERY THAT WAS BEHIND IS ON THE RECORD AS TWO WHOLE BASES: the
+/// delivered entry's own, and the landed entry's `old` — the trunk the push
+/// landed on — which differ, where a current delivery's are one sha. The two
+/// are one arm because the reading that matters is the DIFFERENCE.
 #[test]
-fn a_behind_delivery_names_its_own_base_and_a_current_one_does_not() {
+fn a_behind_delivery_and_its_landing_carry_both_bases_whole() {
     let scratch = &store();
     let bd = &scratch.store;
 
@@ -4319,36 +4522,34 @@ fn a_behind_delivery_names_its_own_base_and_a_current_one_does_not() {
         },
         Some(("ACCEPTED", SHA)),
     );
-    let ran = run(scratch, bd, &StubGit::clean(), &behind, SHA);
-    let note = ran
-        .landed
-        .as_ref()
-        .unwrap_or_else(|stop| panic!("refused: {}\n{}", stop.message, ran.out))
-        .note
-        .clone();
-    let first = note.lines().next().unwrap_or_default();
-    assert!(
-        first.contains(&format!("rebased from {OTHER}")),
-        "the delivery's own base is named beside the one it landed on: {first}"
+    let ran = run(scratch, bd, &abbreviating(), &behind, SHA);
+    assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
+    let entries = bd.timeline(&behind).expect("the timeline reads");
+    let timeline = Timeline(&entries);
+    let (_, delivered) = timeline.last_delivery().expect("the delivery is on it");
+    let (_, landed) = timeline.last_landing().expect("the landing is on it");
+    assert_eq!(delivered.base, OTHER, "the base the delivery was cut from");
+    assert_eq!(
+        landed.old, OLD,
+        "and the whole trunk sha it landed on, which is another"
     );
 
-    // The control: the rig's own delivery names the base the push landed on.
+    // The control: the rig's own delivery names the base the push landed on,
+    // and the two read as one sha.
     let current = an_item(
         &scratch.store,
         "an item delivered on the tip",
         Some(("ACCEPTED", SHA)),
     );
-    let ran = run(scratch, bd, &StubGit::clean(), &current, SHA);
-    let note = ran
-        .landed
-        .as_ref()
-        .unwrap_or_else(|stop| panic!("refused: {}\n{}", stop.message, ran.out))
-        .note
-        .clone();
-    let first = note.lines().next().unwrap_or_default();
-    assert!(
-        !first.contains("rebased from"),
-        "a delivery that was current says nothing: {first}"
+    let ran = run(scratch, bd, &abbreviating(), &current, SHA);
+    assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
+    let entries = bd.timeline(&current).expect("the timeline reads");
+    let timeline = Timeline(&entries);
+    let (_, delivered) = timeline.last_delivery().expect("the delivery is on it");
+    let (_, landed) = timeline.last_landing().expect("the landing is on it");
+    assert_eq!(
+        landed.old, delivered.base,
+        "a delivery that was current landed on its own base"
     );
 }
 
@@ -4423,10 +4624,11 @@ fn a_landing_on_the_board_held_in_memory_runs_with_no_bd_on_the_path() {
         written.contains(&item),
         "carrying the item that was landed:\n{written}"
     );
-    assert!(
-        landed.note.contains(&format!("LANDED {LANDED}")),
-        "and the landing note was written:\n{}",
-        landed.note
+    assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
+    assert_eq!(
+        landing_of(&scratch.store, &item).1.sha,
+        LANDED,
+        "and the landed entry was written"
     );
     assert_eq!(
         scratch.store.show(&item).expect("the item reads").status,
@@ -4541,10 +4743,11 @@ fn the_suite_runs_under_the_constructed_path_and_the_reading_names_it() {
             stop.message, green_ran.out
         )
     });
+    assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
+    let shown = shown(bd, &under_the_constructed_path);
     assert!(
-        landed.note.contains("4. suite            PASS"),
-        "and the suite row is green:\n{}",
-        landed.note
+        shown.contains("4. suite            PASS"),
+        "and the suite row is green:\n{shown}"
     );
     let (_, reading) = green.one(CHECK_READ);
     keys_agree(CHECK_READ, &reading, &[]);
@@ -4763,14 +4966,12 @@ fn a_run_lands_as_the_reviewer_and_names_the_run_beside_it() {
         "the close is made under the holder's own assignee string, which bd fences it on"
     );
 
-    // The note a person reads afterwards names both on its own first line.
-    assert!(
-        landed
-            .note
-            .contains(&format!("by {} through run {run}", closer_named())),
-        "{}",
-        landed.note
-    );
+    // The landed entry a person reads afterwards names both: the reviewer's act,
+    // carried by the run.
+    let (entry, landing) = landing_of(&scratch.store, &item);
+    assert_eq!(entry.id, landed.entry);
+    assert_eq!(entry.by, as_reviewer(), "the reviewer's act, typed");
+    assert_eq!(landing.run, Some(run.clone()), "carried by the run");
 }
 
 /// A RUN IS A RUN BY ITS RECORD. `run:<id>` must name an item the store holds

@@ -33,7 +33,7 @@ What each verb writes, so you know what to look for afterwards:
 | `brief` | nothing — it renders and prints |
 | `deliver` | the commit on the work branch, and the delivery note on the item, rendered from the JSON file `--delivery` names |
 | `review` | the reviewed entry: accepted, or returned with its findings |
-| `land` | the squashed commit on the trunk, the landing note, and the closed item |
+| `land` | the squashed commit on the trunk, the landed entry on the item, and the closed item |
 | `hold` | everything the tree holds, committed on the work branch; the hold, carrying the question from the JSON file `--question` names; the held entry on the item |
 | `clear` | the cleared entry on the item, with the letter and any `--text`, and the hold cleared |
 

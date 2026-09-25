@@ -70,10 +70,6 @@ path = "assets/findings.schema.json"
 purpose = "the JSON shape a reviewer's findings take; fleet review --return reads it against the binary's own type"
 
 [[shadow]]
-path = "assets/landing-note.md"
-purpose = "the note a landing renders, with the one line a script reads the landed sha and the suite off"
-
-[[shadow]]
 path = "assets/question.schema.json"
 purpose = "the JSON shape a seat's question takes, shown in its brief; fleet hold reads it against the binary's own type"
 
