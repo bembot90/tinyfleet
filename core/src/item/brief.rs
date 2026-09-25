@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::guard;
-use crate::item::{dispatch, render, Project, Stop};
+use crate::item::{dispatch, render, show, Project, Stop};
 use crate::resolve::{self, Layer, Resolution};
 use crate::store::Store;
 
@@ -114,7 +114,9 @@ fn refusals(found: Vec<resolve::Refusal>) -> Stop {
 /// each half comes from a different instrument.
 pub struct Subject<'a> {
     pub id: &'a str,
-    /// The item as a person reads it, verbatim.
+    /// The item as a person reads it: [`show::render`] of the item and its
+    /// timeline, verbatim, so the seat reads what `fleet item show` prints and
+    /// never the text the store keeps an entry as.
     pub text: &'a str,
     /// The order, as the dispatch note's template renders it for whoever the
     /// order index says gave it.
@@ -241,7 +243,7 @@ pub fn for_item(
         )));
     };
     let order = dispatch::note_for(packs, by)?;
-    let text = store.show_text(item)?;
+    let text = show::render(&record, &store.timeline(item)?);
     print(
         out,
         err,

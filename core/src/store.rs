@@ -75,6 +75,9 @@ pub struct Item {
     /// What a person calls this item. `land` writes it into the commit subject,
     /// so a trunk's log reads as a list of what was done and not of ids.
     pub title: String,
+    /// What the item says, as the store keeps it: `""` where it says nothing,
+    /// which the store spells by omitting the key.
+    pub description: String,
     pub status: String,
     pub assignee: Option<String>,
     pub notes: Option<String>,
@@ -193,8 +196,13 @@ pub trait Store {
 
     fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError>;
 
-    /// The item as a person reads it — the rendering a brief carries verbatim,
-    /// so a seat and a person read the same text.
+    /// The item as the store itself renders it for a person.
+    ///
+    /// NOTHING CALLS THIS. The brief carries `fleet item show`'s rendering
+    /// (`item::show::render`) since bd's own text — measured on 1.3.0 — prints
+    /// every comment under a `COMMENTS` header, which would put each entry's
+    /// stored JSON in a seat's first turn. The slot stays until the store's
+    /// contract is cut (fleet-zlk split 6).
     fn show_text(&self, item: &str) -> Result<String, StoreError>;
 
     /// Every item the store holds against this seat.
@@ -1143,6 +1151,7 @@ pub fn item_from(id: &str, row: &serde_json::Value) -> Result<Item, StoreError> 
             .cloned(),
         id: wire.id.unwrap_or_else(|| id.to_string()),
         title: wire.title.unwrap_or_default(),
+        description: wire.description.unwrap_or_default(),
         status: wire.status.unwrap_or_default(),
         assignee: wire.assignee,
         notes: wire.notes,

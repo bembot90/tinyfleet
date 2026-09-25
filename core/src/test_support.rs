@@ -376,6 +376,9 @@ fn row_of(
     let mut row = serde_json::Map::new();
     row.insert(String::from("id"), item.id.clone().into());
     row.insert(String::from("title"), item.title.clone().into());
+    if !item.description.is_empty() {
+        row.insert(String::from("description"), item.description.clone().into());
+    }
     row.insert(String::from("status"), item.status.clone().into());
     row.insert(String::from("issue_type"), item.item_type.clone().into());
     if let Some(assignee) = &item.assignee {
@@ -526,6 +529,7 @@ impl Store for FakeStore {
                 Item {
                     id: id.clone(),
                     title: item.title.to_string(),
+                    description: item.description.to_string(),
                     status: String::from("open"),
                     item_type: item.item_type.to_string(),
                     labels: item.labels.iter().map(|l| l.to_string()).collect(),

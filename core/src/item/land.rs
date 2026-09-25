@@ -1499,8 +1499,9 @@ impl Rows {
 }
 
 /// One criterion row. The leading `<n>. ` is what a read-back counts, so a row
-/// is a number at the start of a line and nothing else is.
-fn row(n: usize, criterion: &str, verdict: &str, evidence: &str) -> String {
+/// is a number at the start of a line and nothing else is. `fleet item show`
+/// prints a landing entry's check rows through this same line.
+pub(crate) fn row(n: usize, criterion: &str, verdict: &str, evidence: &str) -> String {
     format!("{n}. {criterion:<16} {verdict:<10} {evidence}")
 }
 

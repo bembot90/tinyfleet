@@ -3,7 +3,8 @@
 //!
 //! Five verbs are driven here — `dispatch`, `deliver`, `review`, `hold` and
 //! `clear`. `land` is the sixth and rides `ring_land.rs`, whose three
-//! repositories are the only rig that can give it a remote to move.
+//! repositories are the only rig that can give it a remote to move. `item
+//! show`, the one verb the SDK reads the store through, is here beside them.
 //!
 //! WHAT EACH ARM ASSERTS IS A FIELD ONLY ITS OWN VERB CAN KNOW: the seat a
 //! dispatch named, the commit a delivery made, the hold a `hold` raised and a
@@ -734,4 +735,124 @@ fn the_old_spellings_ask_and_answer_are_usage_naming_hold_and_clear() {
             String::from_utf8_lossy(&out.stdout)
         );
     }
+}
+
+// ---- `fleet item show`: the SDK's one read of the store ---------------------
+
+impl Rig {
+    /// `fleet item show`, which takes no `--packs-dir`: it renders from the
+    /// store alone.
+    fn item_show(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_fleet"))
+            .args(["item", "show"])
+            .args(args)
+            .current_dir(&self.project)
+            .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub))
+            .output()
+            .expect("the built binary runs")
+    }
+}
+
+/// `item show --json` answers the item under its full id, typed by its hash
+/// alone, with the one entry fleet appended — and nothing of the person's
+/// comment beside it, which is on the item and is not an entry. A missing item
+/// is the refused row, 1, as a refusal document; an item whose timeline holds a
+/// malformed entry is could-not-tell, 3, because a timeline with a hole in it
+/// answers every question wrong.
+#[test]
+fn item_show_prints_the_item_and_its_entries_and_refuses_what_it_cannot_read() {
+    use fleet_core::entry::{Body, OrderKind, Ordered};
+    use fleet_core::seat::actor::Actor;
+    use fleet_core::store::{Bd, Store};
+
+    let rig = Rig::new("show");
+    let item = rig.a_ready_item();
+    let by = Actor::typed(BY).expect("typed").expect("a seat");
+    let store = Bd::at(&rig.project);
+    let appended = store
+        .append(
+            &item,
+            &Body::Ordered(Ordered {
+                order: OrderKind::Dispatch,
+                seat: None,
+            }),
+            &by,
+        )
+        .expect("the entry is appended");
+    let words = "a person's own words, never an entry";
+    let out = rig.bd(&["comments", "add", &item, words]);
+    assert!(out.status.success(), "bd comments add: {}", stderr(&out));
+
+    let hash = item
+        .split_once('-')
+        .map(|(_, hash)| hash)
+        .expect("the id carries a prefix");
+    let out = rig.item_show(&[hash, "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(!stdout(&out).contains(words), "{}", stdout(&out));
+    let data = data_of(&out, "item show");
+    assert_eq!(data["id"], serde_json::json!(item), "the full id: {data}");
+    assert_eq!(data["title"], "an item the SDK will drive");
+    assert_eq!(data["description"], "a scratch item");
+    let timeline = data["timeline"].as_array().expect("a timeline");
+    assert_eq!(timeline.len(), 1, "one entry: {data}");
+    assert_eq!(timeline[0]["id"], serde_json::json!(appended));
+    assert_eq!(timeline[0]["kind"], "ordered");
+    assert_eq!(
+        timeline[0]["by"],
+        serde_json::json!({ "kind": "seat", "id": by.id })
+    );
+
+    // The person's rendering: the same item, the same one entry.
+    let out = rig.item_show(&[&item]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.starts_with(&format!("{item} · an item the SDK will drive  [open]\n")),
+        "{text}"
+    );
+    assert!(text.contains("\ntimeline (1 entries)\n"), "{text}");
+    assert!(
+        text.contains(&format!(
+            "  {BY}  ordered dispatch → a transient seat, not yet named"
+        )),
+        "{text}"
+    );
+    assert!(!text.contains(words), "{text}");
+
+    let out = rig.item_show(&["no-such-item-0", "--json"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let refusal = refusal_of(&out, "item show");
+    assert_eq!(refusal["code"], serde_json::json!("refused"));
+    let why = refusal["why"].as_str().expect("a why").to_string();
+    assert!(
+        stderr(&out).contains(&format!("fleet item show: {why}")),
+        "the same sentence on stderr: {}",
+        stderr(&out)
+    );
+
+    let broken = rig.a_ready_item();
+    let out = rig.bd(&[
+        "comments",
+        "add",
+        &broken,
+        r#"{"fleet.entry":1,"kind":"ordered","order":"dispatch","bogus":1}"#,
+        "--actor",
+        BY,
+    ]);
+    assert!(out.status.success(), "bd comments add: {}", stderr(&out));
+    let out = rig.item_show(&[&broken, "--json"]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert_eq!(
+        refusal_of(&out, "item show")["code"],
+        serde_json::json!("could_not_tell")
+    );
+    let out = rig.item_show(&[&broken]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert!(out.stdout.is_empty(), "{}", stdout(&out));
+    assert!(
+        stderr(&out).starts_with("fleet item show: "),
+        "{}",
+        stderr(&out)
+    );
 }

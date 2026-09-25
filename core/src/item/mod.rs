@@ -20,6 +20,7 @@ pub mod pins;
 pub mod review;
 pub mod rules;
 pub mod run;
+pub mod show;
 
 use std::path::{Path, PathBuf};
 

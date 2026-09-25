@@ -21,8 +21,8 @@ use std::path::{Path, PathBuf};
 use crate::item::brief::{self, Packs, Subject, ORDER_MARK, TRANSIENT};
 use crate::item::deliver::holds;
 use crate::item::{
-    control_token, render, Events, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner, Stop,
-    ITEM_DISPATCHED, NO_SESSION, REFUSED,
+    control_token, render, show, Events, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner,
+    Stop, ITEM_DISPATCHED, NO_SESSION, REFUSED,
 };
 use crate::seat::actor::Actor;
 use crate::seat::identity::{Directory, Kind, SeatId, SeatRef};
@@ -715,12 +715,13 @@ fn note_text(packs: &Packs, by: &str) -> Result<String, Stop> {
 }
 
 /// The brief, rendered from the item as it now reads and written to the briefs
-/// directory as the file a spawn hands its seat.
+/// directory as the file a spawn hands its seat. The item is read with its
+/// timeline and rendered by [`show::render`], the text `fleet brief` prints.
 fn write_brief(wiring: &Wiring, order: &Order, note: &str, seat: &str) -> Result<PathBuf, Stop> {
-    let text = wiring
-        .store
-        .show_text(order.item)
-        .map_err(|e| stands(order.item, &format!("the item could not be read: {e}")))?;
+    let unread = |e: StoreError| stands(order.item, &format!("the item could not be read: {e}"));
+    let record = wiring.store.show(order.item).map_err(unread)?;
+    let timeline = wiring.store.timeline(&record.id).map_err(unread)?;
+    let text = show::render(&record, &timeline);
     let body = brief::text(
         wiring.packs,
         wiring.project,

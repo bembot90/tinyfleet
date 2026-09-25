@@ -13,6 +13,7 @@ mod doctor;
 mod envelope;
 mod exit;
 mod item;
+mod item_show;
 mod lifecycle;
 mod nudge;
 mod prime;
@@ -125,6 +126,12 @@ woke, rest, handed-off and exited are said under `fleet event`.")]
     Routine {
         #[command(subcommand)]
         verb: routines::Verb,
+    },
+
+    /// read one item: its fields and its timeline
+    Item {
+        #[command(subcommand)]
+        verb: item_show::Verb,
     },
 
     // THE OLD SPELLING OF THE FAMILY, kept for one release and refused: a
@@ -614,6 +621,7 @@ fn dispatch() -> Result<Exit> {
         Family::Event { verb } => event_command(&verb),
         Family::Pack { verb } => pack_command(&ui, &verb),
         Family::Routine { verb } => Ok(routines::command(&verb)),
+        Family::Item { verb } => Ok(item_show::command(&verb)),
         Family::Order(_) => Ok(routines::old_name()),
         Family::Dispatch(args) => Ok(item::dispatch_command(&args)),
         Family::Brief(args) => Ok(item::brief_command(&args)),

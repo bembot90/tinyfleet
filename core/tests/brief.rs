@@ -11,7 +11,7 @@ mod common;
 use common::{shared_store, Fixture, Scratch, StubEvents};
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
 use fleet_core::item::dispatch::{self, Order, Wiring};
-use fleet_core::item::{table_at, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner};
+use fleet_core::item::{show, table_at, Project, Ring, RingOutcome, Spawn, SpawnOutcome, Spawner};
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
 use fleet_core::seat::retire;
@@ -145,11 +145,11 @@ fn store_with(notes: Option<&str>) -> FakeStore {
     let store = FakeStore::default();
     store.seed(Item {
         id: ITEM.to_string(),
+        title: String::from("a ready item"),
         status: String::from("open"),
         notes: notes.map(str::to_string),
         ..Item::default()
     });
-    store.set_text(ITEM, "fx-1 · a ready item\nOPEN\n");
     store
 }
 
@@ -841,11 +841,9 @@ fn the_real_store_renders_the_same_brief_as_the_one_held_in_memory() {
     let rig = Rig::new("fidelity");
     let real = Bd::at(&scratch.root);
     let record = real.show(&item).expect("bd answers about the item");
-    let text = real.show_text(&item).expect("bd renders the item");
 
     let fake = FakeStore::default();
     fake.seed(record.clone());
-    fake.set_text(&item, &text);
 
     let through = |store: &dyn Store| {
         let mut out: Vec<u8> = Vec::new();
@@ -878,6 +876,49 @@ fn the_real_store_renders_the_same_brief_as_the_one_held_in_memory() {
     );
 }
 
+/// An item carrying an entry gets fleet's rendering of it in its brief, and
+/// never bd's: bd's own `show` text prints every comment under a `COMMENTS`
+/// header — measured on 1.3.0 — so the first entry a verb appended would reach
+/// every brief as the raw JSON the store keeps.
+///
+/// The person's comment beside the entry is the control on "never bd's": it is
+/// on the item, and fleet's rendering leaves it out.
+#[test]
+fn an_item_carrying_an_entry_is_briefed_through_fleets_rendering() {
+    let scratch = shared_store("brief");
+    let item = scratch.item("an item with a record");
+    let index = dispatch::index(BY, dispatch::KIND, None, AT);
+    let out = scratch.bd(&["update", &item, "--metadata", &index, "--actor", BY]);
+    assert!(out.status.success(), "the order index is written");
+    let real = Bd::at(&scratch.root);
+    real.append(&item, &common::a_delivery(common::A_COMMIT), &by())
+        .expect("the entry is appended");
+    let out = scratch.bd(&["comments", "add", &item, "a person's own words"]);
+    assert!(out.status.success(), "the person's comment is written");
+
+    let rig = Rig::new("entry");
+    let rendered = rig.render_as(&real, &item, SEAT, Some(TOUCHED));
+    assert_eq!(rendered.code, None, "{}", rendered.why);
+    let body = &rendered.body;
+    assert!(!body.contains("COMMENTS"), "no bd header:\n{body}");
+    assert!(!body.contains("{\"fleet.entry\""), "no raw entry:\n{body}");
+    assert!(!body.contains("a person's own words"), "{body}");
+
+    // The block is `fleet item show`'s text, whole, over the one entry.
+    let record = real.show(&item).expect("bd answers about the item");
+    let timeline = real.timeline(&item).expect("bd answers the timeline");
+    assert_eq!(timeline.len(), 1, "the entry, and not the person's comment");
+    let block = format!(
+        "## The item\n\n```\n{}\n```\n",
+        show::render(&record, &timeline)
+    );
+    assert!(
+        body.contains(&block),
+        "the item block is show::render:\n{block}\n--- in ---\n{body}"
+    );
+    assert!(block.contains(&format!("delivered {}", common::A_COMMIT)));
+}
+
 /// The store's human rendering sometimes carries a tip line that NAMES A
 /// PROVIDER, which a pack template may not do — and which would make one item
 /// render two ways depending on whether anybody had looked at it before.
@@ -886,11 +927,11 @@ fn the_real_store_renders_the_same_brief_as_the_one_held_in_memory() {
 /// store's: three fresh stores measured on this box tipped on the second and
 /// third and not the first, and a run under a private HOME did not tip at all.
 /// An arm that demanded it would be red on somebody else's morning. What IS
-/// deterministic is measured instead — the quiet read is stable, and the
-/// template passes the rendering through verbatim, which is the reason the
-/// quiet flag has to be on the read rather than on a filter afterwards.
+/// deterministic is measured instead — the quiet read is stable, and the brief
+/// no longer carries the store's rendering at all: `{item}` is fleet's own
+/// (`show::render`), so a tip in bd's text cannot reach a seat.
 #[test]
-fn the_item_rendering_is_stable_and_a_tip_in_it_would_reach_the_seat() {
+fn the_stores_own_rendering_is_stable_and_never_reaches_the_seat() {
     let scratch = Scratch::new("tip");
     let item = scratch.item("a ready item");
     let store = Bd::at(&scratch.root);
@@ -905,9 +946,10 @@ fn the_item_rendering_is_stable_and_a_tip_in_it_would_reach_the_seat() {
         );
     }
 
-    // The control, observed failing: a store whose rendering DOES carry the tip
-    // puts it in the seat's first turn, because `{item}` is verbatim. That is
-    // the hazard the quiet flag removes at the read.
+    // A store whose own rendering DOES carry the tip leaves the seat's first
+    // turn clean, because the brief never reads that rendering. Before
+    // fleet-zlk.4 `{item}` was the store's text verbatim, and this arm was the
+    // control that watched the tip arrive.
     let tipped = ordered();
     tipped.set_text(
         ITEM,
@@ -915,9 +957,10 @@ fn the_item_rendering_is_stable_and_a_tip_in_it_would_reach_the_seat() {
     );
     let rig = Rig::new("tip-render");
     let rendered = rig.render(&tipped, SEAT);
+    assert_eq!(rendered.code, None, "{}", rendered.why);
     assert!(
-        rendered.body.contains("bd setup claude"),
-        "a tip in the rendering reaches the brief:\n{}",
+        !rendered.body.contains("bd setup claude"),
+        "the store's rendering stays out of the brief:\n{}",
         rendered.body
     );
 }
@@ -947,10 +990,10 @@ mod lessons {
         // The control: a longer body reports a different number, so the
         // assertion above reads the render and not a constant.
         let store = ordered();
-        store.set_text(
-            ITEM,
-            "fx-1 · an item with a very much longer rendering than the one above\n",
-        );
+        store.amend(ITEM, |item| {
+            item.title =
+                String::from("an item with a very much longer rendering than the one above");
+        });
         let longer = rig.render(&store, SEAT);
         assert!(longer.body.len() > rendered.body.len());
         assert!(

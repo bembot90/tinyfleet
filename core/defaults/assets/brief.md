@@ -18,8 +18,9 @@ nobody here can answer, say so **on the item** and reassign it. A return is
 work, not a failure — and a guess written into a diff costs more than a
 question.
 
-The item is the record. This page is a copy of it, and where the two disagree
-the item wins.
+The item is the record. The block under "The item" is fleet's rendering of
+it — what `fleet item show {item_id}` prints — and where this page and the item
+disagree, the item wins.
 
 ## Your order
 
