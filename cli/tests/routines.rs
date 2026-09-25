@@ -585,7 +585,8 @@ fn a_run_action_fires_the_run_verb_against_a_scratch_pack_and_the_events_wrap() 
         .to_string();
     assert!(run_id.starts_with("fx-"), "{run_id}");
     assert_eq!(
-        stream[1]["actor"], "routine:takeoff",
+        stream[1]["actor"],
+        serde_json::json!({ "kind": "routine", "id": "takeoff" }),
         "the routine is the runner, typed"
     );
     assert_eq!(stream[1]["payload"]["workflow"], "rt-hello");

@@ -219,7 +219,7 @@ fn announce(
         .events
         .append(
             ITEM_DELIVERED,
-            &delivery.by.to_string(),
+            delivery.by,
             serde_json::json!({
                 "item": item,
                 "commit": commit,

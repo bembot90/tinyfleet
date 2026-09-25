@@ -26,7 +26,7 @@
 //! is what a fleet's seats depend on, and one run that cannot be advanced is one
 //! run's problem.
 
-use crate::events::{self, EventLog, Record, CONTROLLER};
+use crate::events::{self, ActorRef, EventLog, Record};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -113,6 +113,9 @@ pub trait Runs {
 pub struct Pass<'a> {
     pub runs: &'a dyn Runs,
     pub events: &'a mut EventLog,
+    /// Who the pass's own lines are by: the controller, under this machine's
+    /// identity ([`events::controller`]).
+    pub controller: &'a ActorRef,
     /// The stream this fold reads. The same file [`Pass::events`] appends to,
     /// read rather than written.
     pub stream: &'a Path,
@@ -276,25 +279,26 @@ fn fold(stream: &[Record]) -> BTreeMap<String, Folded> {
                     state.hold = payload_str(record, "hold");
                 }
             }
-            // The seat is the line's ACTOR on both of the arms below — its id —
-            // which is what lets a spawn and a retirement of one seat be read
-            // as the same subject. A `session.spawned` carrying no run key was spawned
+            // The seat is the line's ACTOR on both of the arms below — a seat,
+            // by its id — which is what lets a spawn and a retirement of one
+            // seat be read as the same subject; a line by any other kind names
+            // no seat. A `session.spawned` carrying no run key was spawned
             // outside a run and enters no run's set — which is what makes the
             // key a selector and not a label.
             events::SESSION_SPAWNED => {
-                if let Some(id) = payload_str(record, "run") {
-                    runs.entry(id)
-                        .or_default()
-                        .spawned
-                        .insert(record.actor.clone());
+                if let (Some(id), Some(seat)) = (payload_str(record, "run"), record.actor.seat_id())
+                {
+                    runs.entry(id).or_default().spawned.insert(seat.to_string());
                 }
             }
             // TAKEN IN STREAM ORDER AND NOT AS A FILTER AT THE END: a set
             // subtracted afterwards would drop a live seat along with a dead one
             // wherever one actor is spawned, retired and spawned again.
             events::SESSION_RETIRED | events::SESSION_STOPPED => {
-                for state in runs.values_mut() {
-                    state.spawned.remove(&record.actor);
+                if let Some(seat) = record.actor.seat_id() {
+                    for state in runs.values_mut() {
+                        state.spawned.remove(seat);
+                    }
                 }
             }
             _ => {}
@@ -512,7 +516,7 @@ fn park(pass: &mut Pass, run: &str, state: &Folded) -> Result<(), String> {
     pass.events
         .append(
             ITEM_HELD,
-            CONTROLLER,
+            pass.controller,
             serde_json::json!({
                 "item": run,
                 "reason": reason,
@@ -558,7 +562,7 @@ fn clean(pass: &mut Pass, run: &str, state: &Folded) -> Result<(), String> {
     pass.events
         .append(
             RUN_CLEANED,
-            CONTROLLER,
+            pass.controller,
             serde_json::json!({ "run": run, "count": count }),
         )
         .map_err(|e| format!("{run}'s seats are retired and {RUN_CLEANED} did not land: {e}"))

@@ -498,7 +498,12 @@ fn a_spread_that_returns_after_it_was_closed_is_announced_again() {
                 "announcement {} carries the pinned half",
                 nth + 1
             );
-            assert_eq!(event["actor"], "controller", "announcement {}", nth + 1);
+            assert_eq!(
+                event["actor"],
+                rig.controller_actor(),
+                "announcement {}",
+                nth + 1
+            );
         }
     });
 }

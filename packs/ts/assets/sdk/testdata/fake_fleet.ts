@@ -6,11 +6,12 @@
 //
 // argv: <fake dir> <real binary> <fleet args…>; the canned file is
 // `<fake dir>/<verb>.json` — `{ stdout, code, append?: [{ type, payload }],
-// cwd? }` — and an appended line's actor is the `--by` the call carried. A
+// cwd? }` — and an appended line's actor is the `--by` the call carried, typed
+// as the stream stores it. A
 // canned `cwd` is the directory the verb must have been started from: the fake
 // exits 71 naming both when its own is another, before the canned answer.
 
-import { append } from "./stream.ts";
+import { append, typed } from "./stream.ts";
 
 const [dir, real, ...args] = Deno.args;
 
@@ -61,7 +62,7 @@ if (canned.cwd !== undefined) {
 const by = args[args.indexOf("--by") + 1] ?? "nobody";
 const stream = `${Deno.env.get("FLEET_DIR")}/events.jsonl`;
 for (const line of canned.append ?? []) {
-  await append(stream, line.type, by, line.payload);
+  await append(stream, line.type, typed(by), line.payload);
 }
 if (canned.stdout !== "") {
   await Deno.stdout.write(new TextEncoder().encode(canned.stdout));

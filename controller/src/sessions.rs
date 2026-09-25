@@ -495,10 +495,9 @@ impl Table {
 /// a session twice. The cursor is the last sequence folded, so the next tick
 /// reads from the line after it and no event is consumed twice.
 ///
-/// Every line is keyed on its ACTOR, which on these types is the seat's id. A
-/// line an older build wrote carries the machine name there instead, and the
-/// rows it opens are keyed on a string no seat's id matches: nothing migrates
-/// them, and nothing acts on them.
+/// Every line is keyed on its ACTOR, which on these types is the seat, by its
+/// id. A line whose actor is of another kind names no seat and folds nothing,
+/// though its sequence still moves the cursor.
 ///
 /// The daemon pid is deliberately NOT folded and starts at `None`: the stream
 /// carries no daemon reading, and `None` reads as no replacement rather than as
@@ -507,7 +506,9 @@ pub fn rebuild(events_path: &Path) -> Table {
     let mut table = Table::default();
     for record in crate::events::read_after(events_path, 0) {
         table.consumed_seq = record.seq;
-        let seat = record.actor.clone();
+        let Some(seat) = record.actor.seat_id().map(str::to_string) else {
+            continue;
+        };
         let payload = &record.payload;
         let text = |key: &str| {
             payload
@@ -862,6 +863,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A line whose actor is not a seat folds nothing, even where its id is a
+    /// seat's own: the kind is read first. Its sequence still moves the cursor.
+    #[test]
+    fn the_rebuild_folds_nothing_from_a_line_whose_actor_is_not_a_seat() {
+        let dir = scratch("not-a-seat");
+        let mut by_a_run: serde_json::Value = serde_json::from_str(&line_by(
+            1,
+            ORLA,
+            "ev-spawned",
+            "2026-09-12T10:00:00Z",
+            crate::events::SESSION_SPAWNED,
+            spawned_payload(),
+        ))
+        .unwrap();
+        by_a_run["actor"]["kind"] = serde_json::json!("run");
+        let stream = stream_of(&dir, "events.jsonl", &[by_a_run.to_string()]);
+        let rebuilt = rebuild(&stream);
+        assert!(rebuilt.sessions.is_empty(), "{:?}", rebuilt.sessions);
+        assert_eq!(rebuilt.consumed_seq, 1, "the line is still consumed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The rebuild keys every row, every nudge mark and every latch on the line's
     /// actor, which is the seat's id — and one seat's lines move nothing of
     /// another's.
@@ -1010,8 +1033,12 @@ mod tests {
             let path = dir.join(name);
             let mut log = EventLog::open(&path);
             for (kind, payload) in lines {
-                log.append(kind, "s1", (*payload).clone())
-                    .expect("the line lands");
+                log.append(
+                    kind,
+                    &crate::events::ActorRef::seat("s1"),
+                    (*payload).clone(),
+                )
+                .expect("the line lands");
             }
             path
         };
@@ -1062,10 +1089,10 @@ mod tests {
         line_by(seq, "s1", id, ts, kind, payload)
     }
 
-    /// The same line, by the actor the arm names.
+    /// The same line, by the seat the arm names.
     fn line_by(
         seq: u64,
-        actor: &str,
+        seat: &str,
         id: &str,
         ts: &str,
         kind: &str,
@@ -1076,7 +1103,7 @@ mod tests {
             "seq": seq,
             "ts": ts,
             "type": kind,
-            "actor": actor,
+            "actor": { "kind": "seat", "id": seat },
             "payload": payload,
         })
         .to_string()

@@ -573,7 +573,8 @@ fn run(
     // note name and the close is made under; and the actor the note and the
     // events are written by — the closer, in its typed form.
     let closer_id = closer.to_string();
-    let actor = Actor::seat(closer).to_string();
+    let acting = Actor::seat(closer);
+    let actor = acting.to_string();
     let closer_named = wiring.seats.label(&closer);
     match item.assignee.as_deref() {
         Some(seat) if seat == closer_id => {}
@@ -833,7 +834,7 @@ fn run(
         &suite_command,
         &work_dir,
         landing,
-        &actor,
+        &acting,
         wiring,
     )?;
     let suite_rc = readings.last().map(|reading| reading.rc);
@@ -974,7 +975,7 @@ fn run(
         announce(
             &item.id,
             CHECK_READ,
-            &actor,
+            &acting,
             wiring,
             serde_json::json!({
                 "item": item.id,
@@ -994,7 +995,7 @@ fn run(
         announce(
             &item.id,
             CHECK_READ,
-            &actor,
+            &acting,
             wiring,
             reading.payload(&item.id, suite_command.as_deref()),
         )?;
@@ -1002,7 +1003,7 @@ fn run(
     announce(
         &item.id,
         ITEM_LANDED,
-        &actor,
+        &acting,
         wiring,
         serde_json::json!({
             "item": item.id,
@@ -1210,7 +1211,7 @@ fn suite_check(
     command: &Option<String>,
     work_dir: &Path,
     landing: &Landing,
-    closer: &str,
+    closer: &Actor,
     wiring: &Wiring,
 ) -> Result<Vec<Reading>, Stop> {
     let Some(command) = command else {
@@ -1320,7 +1321,7 @@ fn read_once(
 fn announce(
     item: &str,
     kind: &str,
-    closer: &str,
+    closer: &Actor,
     wiring: &Wiring,
     payload: serde_json::Value,
 ) -> Result<(), Stop> {

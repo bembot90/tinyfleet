@@ -254,8 +254,16 @@ pub const STEP_PAYLOAD: [&str; 6] = ["item", "flight", "step", "run", "outcome",
 
 /// Where a typed event goes. Core never opens the stream file: the cli wires
 /// this to the controller's writer, the same way `dispatch` reaches its spawn.
+///
+/// The actor is handed over typed, and the writer stores it as the stream's
+/// `{kind, id}` object.
 pub trait Events {
-    fn append(&self, kind: &str, actor: &str, payload: serde_json::Value) -> Result<(), String>;
+    fn append(
+        &self,
+        kind: &str,
+        actor: &crate::seat::actor::Actor,
+        payload: serde_json::Value,
+    ) -> Result<(), String>;
 }
 
 /// Where a long act says how far it has got. The cli draws it; core states the

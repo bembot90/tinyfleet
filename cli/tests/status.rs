@@ -615,7 +615,7 @@ fn stream(rig: &Rig, lines: &[(String, &str, serde_json::Value)]) {
             seq,
             ts: ts.clone(),
             kind,
-            actor: "lead-1",
+            actor: &fleet_controller::events::ActorRef::seat("lead-1"),
             payload: payload.clone(),
         })
         .expect("the line serializes");

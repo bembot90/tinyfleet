@@ -91,7 +91,7 @@ impl Rig {
              \x20   mkdir -p {machine}\n\
              \x20   if [ -f \"$stream\" ]; then n=$(awk 'END{{print NR+1}}' \"$stream\"); else n=1; fi\n\
              \x20   printf '{{\"id\":\"stub-%s\",\"seq\":%s,\"ts\":\"2026-09-12T00:00:00Z\",\
-             \"type\":\"controller.started\",\"actor\":\"controller\",\"payload\":{{}}}}\\n' \
+             \"type\":\"controller.started\",\"actor\":{{\"kind\":\"controller\",\"id\":\"a-machine\"}},\"payload\":{{}}}}\\n' \
              \"$n\" \"$n\" >> \"$stream\"\n\
              \x20   exit 0 ;;\n\
              esac\n",

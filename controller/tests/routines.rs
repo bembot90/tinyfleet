@@ -1263,7 +1263,8 @@ fn a_run_action_names_a_workflow_and_pins_its_inputs_as_strings() {
 
 /// A `fleet` on the child path that answers `run` the way the verb does: the
 /// two lines on stdout, `run.started` and one terminal line on the stream
-/// under the actor it was given, and the exit the terminal line maps to.
+/// under the actor it was given — typed, as the stream stores it — and the
+/// exit the terminal line maps to.
 ///
 /// THE VERB IS A STUB HERE because this crate carries no fleet binary: the
 /// contract measured is the action's — what it types, where, and what it reads
@@ -1278,21 +1279,23 @@ stream="$FLEET_DIR/events.jsonl"
 printf '%s\n' "$@" > "$FLEET_DIR/fleet-argv.txt"
 pwd > "$FLEET_DIR/fleet-cwd.txt"
 for word; do by=$word; done
+kind=${by%%:*}
+id=${by#*:}
 workflow=$2
 last=$(tail -n 1 "$stream" 2>/dev/null | sed 's/.*"seq":\([0-9]*\).*/\1/')
 [ -n "$last" ] || last=0
 one=$((last + 1))
 two=$((last + 2))
-echo "{\"id\":\"e-$one\",\"seq\":$one,\"ts\":\"2026-09-18T00:00:00Z\",\"type\":\"run.started\",\"actor\":\"$by\",\"payload\":{\"run\":\"fx-7\",\"hash\":\"h\",\"workflow\":\"$workflow\"}}" >> "$stream"
+echo "{\"id\":\"e-$one\",\"seq\":$one,\"ts\":\"2026-09-18T00:00:00Z\",\"type\":\"run.started\",\"actor\":{\"kind\":\"$kind\",\"id\":\"$id\"},\"payload\":{\"run\":\"fx-7\",\"hash\":\"h\",\"workflow\":\"$workflow\"}}" >> "$stream"
 echo "fx-7 — h"
 case $workflow in
   falls)
-    echo "{\"id\":\"e-$two\",\"seq\":$two,\"ts\":\"2026-09-18T00:00:00Z\",\"type\":\"run.failed\",\"actor\":\"$by\",\"payload\":{\"run\":\"fx-7\",\"exit\":1}}" >> "$stream"
+    echo "{\"id\":\"e-$two\",\"seq\":$two,\"ts\":\"2026-09-18T00:00:00Z\",\"type\":\"run.failed\",\"actor\":{\"kind\":\"$kind\",\"id\":\"$id\"},\"payload\":{\"run\":\"fx-7\",\"exit\":1}}" >> "$stream"
     echo "fx-7 — failed"
     exit 1
     ;;
   *)
-    echo "{\"id\":\"e-$two\",\"seq\":$two,\"ts\":\"2026-09-18T00:00:00Z\",\"type\":\"run.closed\",\"actor\":\"$by\",\"payload\":{\"run\":\"fx-7\"}}" >> "$stream"
+    echo "{\"id\":\"e-$two\",\"seq\":$two,\"ts\":\"2026-09-18T00:00:00Z\",\"type\":\"run.closed\",\"actor\":{\"kind\":\"$kind\",\"id\":\"$id\"},\"payload\":{\"run\":\"fx-7\"}}" >> "$stream"
     echo "fx-7 — closed"
     exit 0
     ;;
@@ -1418,7 +1421,7 @@ fn a_run_action_calls_the_run_verb_and_the_run_id_rides_the_terminal_event() {
     assert!(fired < started && started < closed && closed < completed);
 
     let opening = &stream[0];
-    assert_eq!(opening.actor, "nightly");
+    assert_eq!(opening.actor, events::ActorRef::routine("nightly"));
     assert_eq!(opening.payload["order"], "nightly");
     assert!(
         opening.payload.get("run").is_none(),
@@ -1426,13 +1429,14 @@ fn a_run_action_calls_the_run_verb_and_the_run_id_rides_the_terminal_event() {
         opening.payload
     );
     assert_eq!(
-        stream[1].actor, "routine:nightly",
+        stream[1].actor,
+        events::ActorRef::routine("nightly"),
         "the run names the routine as its runner, typed"
     );
     let run_id = stream[1].payload["run"].as_str().unwrap().to_string();
 
     let terminal = &stream[3];
-    assert_eq!(terminal.actor, "nightly");
+    assert_eq!(terminal.actor, events::ActorRef::routine("nightly"));
     assert_eq!(terminal.payload["order"], "nightly");
     assert_eq!(terminal.payload["outcome"], "ran");
     assert_eq!(terminal.payload["run"], run_id.as_str());

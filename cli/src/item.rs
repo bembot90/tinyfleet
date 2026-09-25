@@ -1691,11 +1691,17 @@ impl StreamEvents {
 }
 
 impl Events for StreamEvents {
-    fn append(&self, kind: &str, actor: &str, payload: serde_json::Value) -> Result<(), String> {
+    fn append(&self, kind: &str, actor: &Actor, payload: serde_json::Value) -> Result<(), String> {
         fleet_controller::events::EventLog::open(&self.path)
-            .append(kind, actor, payload)
+            .append(kind, &stream_actor(actor), payload)
             .map_err(|e| format!("{} could not be appended to: {e}", self.path.display()))
     }
+}
+
+/// The typed actor as the stream stores it: core's kind word and its id, as
+/// the `{kind, id}` object.
+pub(crate) fn stream_actor(actor: &Actor) -> fleet_controller::events::ActorRef {
+    fleet_controller::events::ActorRef::new(actor.kind.as_str(), actor.id.clone())
 }
 
 /// The reading side of the file the appends go to — one type for both, so the

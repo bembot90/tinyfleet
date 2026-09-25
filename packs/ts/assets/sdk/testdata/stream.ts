@@ -2,11 +2,26 @@
 // shape the binary's own writer stores, so a line a test appends by hand and a
 // line `fleet event step` appends sit in one sequence.
 
+/** Who wrote a line, as the stream stores it. */
+export interface Actor {
+  kind: string;
+  id: string;
+}
+
 export interface Line {
   seq: number;
   kind: string;
-  actor: string | null;
+  actor: Actor | null;
   payload: Record<string, unknown>;
+}
+
+/** A typed actor's text, `<kind>:<id>`, as the object the stream stores. Text
+ * with no kind is a seat argument, as the binary reads one. */
+export function typed(text: string): Actor {
+  const at = text.indexOf(":");
+  return at < 0
+    ? { kind: "seat", id: text }
+    : { kind: text.slice(0, at), id: text.slice(at + 1) };
 }
 
 /** The stream as stored, parsed. */
@@ -27,7 +42,7 @@ export async function lines(stream: string): Promise<Line[]> {
 export async function append(
   stream: string,
   kind: string,
-  actor: string,
+  actor: Actor,
   payload: Record<string, unknown>,
 ): Promise<number> {
   const all = await lines(stream);

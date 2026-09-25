@@ -18,8 +18,12 @@
 
 use crate::envelope;
 use crate::exit::Exit;
-use fleet_controller::events::{self, RawLine};
-use fleet_controller::platform;
+use crate::item;
+use fleet_controller::events::{self, ActorRef, RawLine};
+use fleet_controller::routines::load;
+use fleet_controller::{config, platform};
+use fleet_core::item::table_at;
+use fleet_core::seat::actor::Actor;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -32,8 +36,8 @@ const TAIL_DEFAULT: usize = 50;
 /// How often a follower asks the file whether it has grown.
 const FOLLOW_INTERVAL: Duration = Duration::from_millis(250);
 
-/// What a tail is filtered and cursored by. One value each, and the two filters
-/// combine as an AND.
+/// What a tail is filtered and cursored by. One value each, and the three
+/// filters combine as an AND.
 #[derive(clap::Args)]
 pub struct TailArgs {
     /// print new lines as they are appended, until interrupted
@@ -44,9 +48,13 @@ pub struct TailArgs {
     #[arg(long, value_name = "SEQ")]
     pub since: Option<String>,
 
-    /// keep only the lines this seat said
-    #[arg(long, value_name = "NAME")]
+    /// keep only the lines about this seat (id, name or 8+ hex)
+    #[arg(long, value_name = "SEAT")]
     pub seat: Option<String>,
+
+    /// keep only the lines this actor wrote
+    #[arg(long, value_name = "KIND:ID")]
+    pub actor: Option<String>,
 
     /// keep only the lines of this type
     #[arg(long = "type", value_name = "TYPE")]
@@ -62,6 +70,13 @@ pub fn tail(args: &TailArgs) -> Exit {
     if !path.is_file() {
         return no_stream("tail", &path, args.json);
     }
+
+    // The two actor filters, resolved ONCE before anything is read: a seat
+    // argument through the resolver, and a typed actor as given.
+    let filters = match Filters::of(args) {
+        Ok(filters) => filters,
+        Err((exit, why)) => return refused("event tail", exit, &why, args.json),
+    };
 
     // The cursor is EXCLUSIVE — `--since 150` is every line above 150 — and a
     // stamp is inclusive of the line it resolves to, because an event at the
@@ -91,7 +106,7 @@ pub fn tail(args: &TailArgs) -> Exit {
     };
 
     let (lines, mut offset) = events::read_lines_from(&path, 0, after);
-    let kept: Vec<&RawLine> = lines.iter().filter(|line| args.keeps(line)).collect();
+    let kept: Vec<&RawLine> = lines.iter().filter(|line| filters.keeps(line)).collect();
     // FILTER FIRST, THEN THE LAST FIFTY that survive, so `--seat` on a busy
     // stream still answers fifty of that seat's lines.
     let from = if args.since.is_some() {
@@ -119,7 +134,7 @@ pub fn tail(args: &TailArgs) -> Exit {
         // nothing for the life of the follow.
         let (fresh, moved) = events::read_lines_from(&path, offset, 0);
         offset = moved;
-        for line in fresh.iter().filter(|line| args.keeps(line)) {
+        for line in fresh.iter().filter(|line| filters.keeps(line)) {
             say(line, args.json);
         }
     }
@@ -170,23 +185,86 @@ fn record(seq: u64, stored: &serde_json::Value) -> serde_json::Value {
     })
 }
 
-impl TailArgs {
+/// The tail's three filters, each resolved to the value a stored line is
+/// compared with.
+struct Filters<'a> {
+    /// `--seat`, resolved to the seat it names: `{seat, <id>}`.
+    seat: Option<ActorRef>,
+    /// `--actor`, read as a typed actor.
+    actor: Option<ActorRef>,
+    kind: Option<&'a str>,
+}
+
+impl<'a> Filters<'a> {
+    /// The filters, or the refusal and its row of the exit table.
+    ///
+    /// `--seat` is resolved as every seat argument is — its id, eight or more
+    /// of its hex digits, its name or its machine name — over the seats this
+    /// fleet lists: the policy's roster, the machine's rows and this machine's
+    /// identity. A miss or an ambiguity is the resolver's own refusal, exit 1,
+    /// and an empty argument is exit 2. `--actor` must be typed, `<kind>:<id>`,
+    /// and anything else is exit 2.
+    fn of(args: &'a TailArgs) -> Result<Filters<'a>, (Exit, String)> {
+        let seat = match args.seat.as_deref() {
+            None => None,
+            Some(arg) => Some(seat_named(arg)?),
+        };
+        let actor = match args.actor.as_deref() {
+            None => None,
+            Some(text) => match Actor::typed(text) {
+                Some(Ok(actor)) => Some(item::stream_actor(&actor)),
+                Some(Err(why)) => return Err((Exit::Usage, format!("--actor {why}"))),
+                None => {
+                    return Err((Exit::Usage, format!("--actor {text} is not kind:id")));
+                }
+            },
+        };
+        Ok(Filters {
+            seat,
+            actor,
+            kind: args.kind.as_deref(),
+        })
+    }
+
     /// Whether a stored line survives the filters.
     ///
     /// A line the stream carries with no actor or no type is EXCLUDED by a
     /// filter it cannot answer and printed when no filter is given: it is a line
     /// of the stream either way, and a filter is a claim about a field it has.
+    /// An actor matches exactly, kind and id both, so a run whose id is a
+    /// seat's own is never a line about that seat.
     fn keeps(&self, line: &RawLine) -> bool {
-        matches(self.seat.as_deref(), line.actor.as_deref())
-            && matches(self.kind.as_deref(), line.kind.as_deref())
+        matches(self.seat.as_ref(), line.actor.as_ref())
+            && matches(self.actor.as_ref(), line.actor.as_ref())
+            && matches(self.kind, line.kind.as_deref())
     }
 }
 
-fn matches(wanted: Option<&str>, stored: Option<&str>) -> bool {
+fn matches<T: PartialEq + ?Sized>(wanted: Option<&T>, stored: Option<&T>) -> bool {
     match wanted {
         None => true,
         Some(wanted) => stored == Some(wanted),
     }
+}
+
+/// The one seat `--seat` names, as the actor a line about it carries.
+fn seat_named(arg: &str) -> Result<ActorRef, (Exit, String)> {
+    let machine_dir = platform::machine_dir();
+    let rows = config::read(&machine_dir.join("config.json"))
+        .map(|machine| machine.seats)
+        .unwrap_or_default();
+    let policy = load::fleet_root(None, &machine_dir)
+        .map(|root| table_at(&root.join("fleet.toml")))
+        .unwrap_or_default();
+    config::directory(&rows, &policy, &machine_dir)
+        .resolve_listed(arg)
+        .map(|seat| ActorRef::seat(seat.id))
+        .map_err(|unresolved| {
+            (
+                Exit::from_status(unresolved.code()).unwrap_or(Exit::Refused),
+                format!("--seat {unresolved}"),
+            )
+        })
 }
 
 pub fn show(id: &str, json: bool) -> Exit {

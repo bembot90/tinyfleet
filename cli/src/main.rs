@@ -463,8 +463,11 @@ controller consumes it.")]
     Step(step::StepArgs),
 
     // The reader half of the family, beside the writers: what a seat or a
-    // workflow says is read back where it is written.
+    // workflow says is read back where it is written. Each option's help is on
+    // the line under it: `--actor <KIND:ID>` widens the option column past
+    // where the longest help line fits in eighty columns beside it.
     /// print lines of the stream, as stored
+    #[command(next_line_help = true)]
     Tail(stream::TailArgs),
 
     /// print one event by id, pretty-printed

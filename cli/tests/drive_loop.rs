@@ -111,7 +111,11 @@ fn a_moved_substrate_is_one_event_and_not_a_failure() {
         .unwrap();
     assert_eq!(moved["payload"]["observed"], "9.9.10");
     assert_eq!(moved["payload"]["expected"], "9.9.9");
-    assert_eq!(moved["actor"], "controller");
+    assert_eq!(
+        moved["actor"],
+        rig.controller_actor(),
+        "the controller, under this machine's identity"
+    );
 }
 
 /// One spread, many polls, one event — and a poll whose version read FAILED

@@ -14,7 +14,7 @@
 use crate::exit::Exit;
 use crate::item;
 use clap::ValueEnum;
-use fleet_controller::events::{self, EventLog};
+use fleet_controller::events::{self, ActorRef, EventLog};
 use fleet_controller::platform;
 use fleet_core::item::{STEP_CLOSED, STEP_STARTED};
 use fleet_core::seat::actor::Actor;
@@ -82,9 +82,9 @@ pub fn record(args: &StepArgs) -> Exit {
     };
     let kind = args.phase.kind();
     let actor = match item::fleet_actor() {
-        None => format!("run:{}", args.run),
+        None => ActorRef::new(events::RUN, args.run.as_str()),
         Some(given) => match Actor::typed(&given) {
-            Some(Ok(actor)) => actor.to_string(),
+            Some(Ok(actor)) => item::stream_actor(&actor),
             _ => {
                 eprintln!("fleet event step: FLEET_ACTOR {given} is not kind:id");
                 return Exit::Usage;

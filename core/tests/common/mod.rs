@@ -710,7 +710,12 @@ impl StubEvents {
 }
 
 impl fleet_core::item::Events for StubEvents {
-    fn append(&self, kind: &str, actor: &str, payload: serde_json::Value) -> Result<(), String> {
+    fn append(
+        &self,
+        kind: &str,
+        actor: &fleet_core::seat::actor::Actor,
+        payload: serde_json::Value,
+    ) -> Result<(), String> {
         if let Some(why) = &self.refuse {
             return Err(why.clone());
         }

@@ -1005,7 +1005,7 @@ const MOVED_TO: u64 = 99;
 fn waits_after_moving_the_stream() -> String {
     format!(
         "echo '{{\"id\":\"x\",\"seq\":{MOVED_TO},\"ts\":\"t\",\"type\":\"probe.wrote\",\
-         \"actor\":\"the-workflow\",\"payload\":{{}}}}' >> \"$FLEET_STREAM\"\n\
+         \"actor\":{{\"kind\":\"run\",\"id\":\"the-workflow\"}},\"payload\":{{}}}}' >> \"$FLEET_STREAM\"\n\
          echo \"started_at=$FLEET_STREAM_SEQ\"\n\
          echo '{{\"for\":\"a delivery\"}}'\n\
          exit 2"
@@ -1684,9 +1684,18 @@ fn a_policy_setting_a_key_nothing_reads_opens_no_run_and_names_it() {
 struct Stream(PathBuf);
 
 impl fleet_core::item::Events for Stream {
-    fn append(&self, kind: &str, actor: &str, payload: serde_json::Value) -> Result<(), String> {
+    fn append(
+        &self,
+        kind: &str,
+        actor: &fleet_core::seat::actor::Actor,
+        payload: serde_json::Value,
+    ) -> Result<(), String> {
         fleet_controller::events::EventLog::open(&self.0)
-            .append(kind, actor, payload)
+            .append(
+                kind,
+                &fleet_controller::events::ActorRef::new(actor.kind.as_str(), actor.id.clone()),
+                payload,
+            )
             .map_err(|e| e.to_string())
     }
 }
@@ -1869,7 +1878,10 @@ fn a_cancelled_waiting_run_is_closed_announced_and_never_executed_again() {
     );
     let cancelled = only(&rig, from, fleet_core::item::RUN_CANCELLED);
     assert_eq!(cancelled["payload"]["run"].as_str(), Some(id.as_str()));
-    assert_eq!(cancelled["actor"].as_str(), Some(PERSON));
+    assert_eq!(
+        cancelled["actor"],
+        serde_json::json!({ "kind": "seat", "id": &PERSON["seat:".len()..] })
+    );
     let keys: Vec<&str> = cancelled["payload"]
         .as_object()
         .expect("the payload is an object")

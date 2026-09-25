@@ -983,6 +983,14 @@ impl Rig {
     fn machine(&self) -> PathBuf {
         self.root.join("machine")
     }
+    /// The actor the controller's own lines carry: the controller, under this
+    /// machine's identity — which the controller mints where there is none.
+    fn controller_actor(&self) -> serde_json::Value {
+        let identity = fleet_core::seat::identity::read_identity(&self.machine())
+            .expect("the identity reads")
+            .expect("the controller minted one");
+        serde_json::json!({ "kind": "controller", "id": identity.id.to_string() })
+    }
     fn home(&self) -> PathBuf {
         self.root.join("home")
     }

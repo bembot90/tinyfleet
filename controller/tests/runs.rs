@@ -12,7 +12,7 @@
 //! acts are a seam at all — so an arm here that shelled a real script would be
 //! measuring the binary's wiring through a crate that does not have it.
 
-use fleet_controller::events::{self, EventLog};
+use fleet_controller::events::{self, ActorRef, EventLog};
 use fleet_controller::runs::{self, Pass, Runs, Standing};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -100,7 +100,7 @@ impl Runs for Stub {
         let mut log = self.log();
         log.append(
             runs::RUN_STARTED,
-            "a-runner",
+            &the_runner(),
             serde_json::json!({ "run": run, "hash": "abc", "workflow": "w" }),
         )
         .expect("the stream takes the start");
@@ -124,7 +124,7 @@ impl Runs for Stub {
                 serde_json::json!({ "run": run, "exit": 7, "read": serde_json::Value::Null }),
             ),
         };
-        log.append(kind, "a-runner", payload)
+        log.append(kind, &the_runner(), payload)
             .expect("the stream takes the outcome");
         Ok(())
     }
@@ -143,7 +143,7 @@ impl Runs for Stub {
         self.log()
             .append(
                 events::SESSION_RETIRED,
-                seat,
+                &a_seat(seat),
                 serde_json::json!({ "seat": seat, "item": run }),
             )
             .expect("the stream takes the retirement");
@@ -151,12 +151,24 @@ impl Runs for Stub {
     }
 }
 
+/// The runner every run-lifecycle line of these arms is written by.
+fn the_runner() -> ActorRef {
+    ActorRef::new(events::RUN, "a-runner")
+}
+
+/// A seat, as the line about it names it.
+fn a_seat(id: &str) -> ActorRef {
+    ActorRef::seat(id)
+}
+
 /// One pass, with the cap the arm names.
 fn pass(stub: &Stub, stream: &Path, max_crashes: u64) -> Result<(), String> {
     let mut log = EventLog::open(stream);
+    let controller = ActorRef::new(events::CONTROLLER, "a-machine");
     let mut pass = Pass {
         runs: stub,
         events: &mut log,
+        controller: &controller,
         stream,
         max_crashes,
     };
@@ -186,14 +198,14 @@ fn a_waiting_run(stream: &Path, run: &str) {
     let mut log = EventLog::open(stream);
     log.append(
         runs::RUN_STARTED,
-        "a-runner",
+        &the_runner(),
         serde_json::json!({ "run": run, "hash": "abc", "workflow": "w" }),
     )
     .expect("the start lands");
     let at_exit = EventLog::open(stream).seq();
     log.append(
         runs::RUN_WAITING,
-        "a-runner",
+        &the_runner(),
         serde_json::json!({ "run": run, "wake": { "for": "a line" }, "seq": at_exit }),
     )
     .expect("the wait lands");
@@ -202,7 +214,7 @@ fn a_waiting_run(stream: &Path, run: &str) {
 /// Somebody else's line on the stream — the move a waiting run is woken by.
 fn a_line_from_elsewhere(stream: &Path) {
     EventLog::open(stream)
-        .append(events::SEAT_WOKE, "s1", serde_json::json!({}))
+        .append(events::SEAT_WOKE, &a_seat("s1"), serde_json::json!({}))
         .expect("the line lands");
 }
 
@@ -214,14 +226,14 @@ fn a_run_waiting_with(stream: &Path, run: &str, wake: serde_json::Value) {
     let mut log = EventLog::open(stream);
     log.append(
         runs::RUN_STARTED,
-        "a-runner",
+        &the_runner(),
         serde_json::json!({ "run": run, "hash": "abc", "workflow": "w" }),
     )
     .expect("the start lands");
     let at_exit = EventLog::open(stream).seq();
     log.append(
         runs::RUN_WAITING,
-        "a-runner",
+        &the_runner(),
         serde_json::json!({ "run": run, "wake": wake, "seq": at_exit }),
     )
     .expect("the wait lands");
@@ -230,7 +242,7 @@ fn a_run_waiting_with(stream: &Path, run: &str, wake: serde_json::Value) {
 /// One item's state, announced by whoever moved it.
 fn an_item_moved(stream: &Path, kind: &str, item: &str) {
     EventLog::open(stream)
-        .append(kind, "s1", serde_json::json!({ "item": item }))
+        .append(kind, &a_seat("s1"), serde_json::json!({ "item": item }))
         .expect("the line lands");
 }
 
@@ -242,7 +254,7 @@ fn a_hold_raised(stream: &Path, run: &str, hold: &str) {
     EventLog::open(stream)
         .append(
             runs::ITEM_HELD,
-            run,
+            &ActorRef::new(events::RUN, run),
             serde_json::json!({
                 "item": run, "reason": "ask", "branch": null, "commit": null, "hold": hold,
             }),
@@ -255,7 +267,7 @@ fn a_hold_cleared(stream: &Path, item: &str, hold: &str) {
     EventLog::open(stream)
         .append(
             runs::HOLD_CLEARED,
-            "alberto",
+            &a_seat("alberto"),
             serde_json::json!({ "item": item, "hold": hold, "letter": "a" }),
         )
         .expect("the clearance lands");
@@ -264,7 +276,7 @@ fn a_hold_cleared(stream: &Path, item: &str, hold: &str) {
 /// One lifecycle line of a run nobody is waiting on, or of a child.
 fn a_run_line(stream: &Path, kind: &str, run: &str) {
     EventLog::open(stream)
-        .append(kind, "a-runner", serde_json::json!({ "run": run }))
+        .append(kind, &the_runner(), serde_json::json!({ "run": run }))
         .expect("the line lands");
 }
 
@@ -285,7 +297,7 @@ fn a_run_waiting_after(
     EventLog::open(stream)
         .append(
             runs::RUN_WAITING,
-            "a-runner",
+            &the_runner(),
             serde_json::json!({ "run": run, "wake": wake, "seq": at_exit }),
         )
         .expect("the wait lands");
@@ -705,13 +717,13 @@ fn a_closed_run_is_never_re_run_however_far_the_stream_moves() {
     let mut log = EventLog::open(&stream);
     log.append(
         runs::RUN_STARTED,
-        "a-runner",
+        &the_runner(),
         serde_json::json!({ "run": "r1", "hash": "abc", "workflow": "w" }),
     )
     .expect("the start lands");
     log.append(
         runs::RUN_CLOSED,
-        "a-runner",
+        &the_runner(),
         serde_json::json!({ "run": "r1" }),
     )
     .expect("the close lands");
@@ -744,13 +756,13 @@ fn a_run_nothing_can_classify_runs_to_the_cap_then_parks() {
     let mut log = EventLog::open(&stream);
     log.append(
         runs::RUN_STARTED,
-        "a-runner",
+        &the_runner(),
         serde_json::json!({ "run": "r2", "hash": "abc", "workflow": "w" }),
     )
     .expect("the start lands");
     log.append(
         runs::RUN_COULD_NOT_TELL,
-        "a-runner",
+        &the_runner(),
         serde_json::json!({ "run": "r2", "exit": 7, "read": serde_json::Value::Null }),
     )
     .expect("the reading lands");
@@ -812,7 +824,7 @@ fn the_readings_follow_the_pass_from_could_not_tell_to_held() {
             serde_json::json!({ "run": "r4", "reason": { "why": "refused" } }),
         ),
     ] {
-        log.append(kind, "a-runner", payload)
+        log.append(kind, &the_runner(), payload)
             .expect("the line lands");
     }
     let read = || runs::readings(&events::read_after(&stream, 0));
@@ -847,7 +859,7 @@ fn the_cap_the_pass_is_handed_is_the_one_it_counts_against() {
     let mut log = EventLog::open(&stream);
     log.append(
         runs::RUN_COULD_NOT_TELL,
-        "a-runner",
+        &the_runner(),
         serde_json::json!({ "run": "r2", "exit": 7, "read": serde_json::Value::Null }),
     )
     .expect("the reading lands");
@@ -866,9 +878,10 @@ fn the_cap_the_pass_is_handed_is_the_one_it_counts_against() {
 /// run is untouched, and one `run.cleaned` carries the count.
 #[test]
 fn a_closed_run_retires_the_seats_it_spawned_and_no_others() {
-    // Every actor on a session line is the seat's full id.
+    // Every actor on a session line is the seat, by its full id.
     const S1: &str = "01a0d1f1-0aec-765f-9abe-1a1a1a1a1a1a";
     const S2: &str = "01a0d1f1-0aec-765f-9abe-2b2b2b2b2b2b";
+    const S3: &str = "01a0d1f1-0aec-765f-9abe-3c3c3c3c3c3c";
     const S7: &str = "01a0d1f1-0aec-765f-9abe-7c7c7c7c7c7c";
     const S9: &str = "01a0d1f1-0aec-765f-9abe-9d9d9d9d9d9d";
     let scratch = Scratch::new("ac3");
@@ -877,7 +890,7 @@ fn a_closed_run_retires_the_seats_it_spawned_and_no_others() {
     for (seat, run) in [(S1, Some("r3")), (S2, Some("r3")), (S9, Some("other"))] {
         log.append(
             events::SESSION_SPAWNED,
-            seat,
+            &a_seat(seat),
             serde_json::json!({ "worktree": "/w", "run": run }),
         )
         .expect("the spawn lands");
@@ -886,19 +899,27 @@ fn a_closed_run_retires_the_seats_it_spawned_and_no_others() {
     // which is the shape a spawn from a shell writes.
     log.append(
         events::SESSION_SPAWNED,
-        S7,
+        &a_seat(S7),
         serde_json::json!({ "worktree": "/w", "run": serde_json::Value::Null }),
+    )
+    .expect("the spawn lands");
+    // A line whose actor is no seat, though its id has a seat id's shape: it
+    // names nobody the run spawned, and the cleanup asks for nothing on it.
+    log.append(
+        events::SESSION_SPAWNED,
+        &ActorRef::new(events::RUN, S3),
+        serde_json::json!({ "worktree": "/w", "run": "r3" }),
     )
     .expect("the spawn lands");
     log.append(
         runs::RUN_STARTED,
-        "a-runner",
+        &the_runner(),
         serde_json::json!({ "run": "r3", "hash": "abc", "workflow": "w" }),
     )
     .expect("the start lands");
     log.append(
         runs::RUN_CLOSED,
-        "a-runner",
+        &the_runner(),
         serde_json::json!({ "run": "r3" }),
     )
     .expect("the close lands");
@@ -916,7 +937,7 @@ fn a_closed_run_retires_the_seats_it_spawned_and_no_others() {
     );
     let retired: Vec<String> = of_kind(&stream, events::SESSION_RETIRED)
         .into_iter()
-        .map(|record| record.actor)
+        .map(|record| record.actor.id)
         .collect();
     assert_eq!(retired, vec![S1.to_string(), S2.to_string()]);
     let cleaned = of_kind(&stream, runs::RUN_CLEANED);
@@ -943,7 +964,7 @@ fn a_seat_retired_before_the_cleanup_is_not_asked_for_twice() {
     let spawn = |log: &mut EventLog, seat: &str| {
         log.append(
             events::SESSION_SPAWNED,
-            seat,
+            &a_seat(seat),
             serde_json::json!({ "worktree": "/w", "run": "r4" }),
         )
         .expect("the spawn lands");
@@ -953,7 +974,7 @@ fn a_seat_retired_before_the_cleanup_is_not_asked_for_twice() {
     // s1 goes early, by somebody else's hand.
     log.append(
         events::SESSION_STOPPED,
-        "s1",
+        &a_seat("s1"),
         serde_json::json!({ "worktree": "/w" }),
     )
     .expect("the stop lands");
@@ -961,7 +982,7 @@ fn a_seat_retired_before_the_cleanup_is_not_asked_for_twice() {
     spawn(&mut log, "s1");
     log.append(
         runs::RUN_FAILED,
-        "a-runner",
+        &the_runner(),
         serde_json::json!({ "run": "r4", "reason": { "said": "no" } }),
     )
     .expect("the failure lands");
@@ -991,7 +1012,7 @@ fn a_run_that_spawned_no_seat_is_cleaned_with_a_count_of_zero() {
     EventLog::open(&stream)
         .append(
             runs::RUN_CLOSED,
-            "a-runner",
+            &the_runner(),
             serde_json::json!({ "run": "r5" }),
         )
         .expect("the close lands");
@@ -1014,13 +1035,13 @@ fn the_park_retires_the_runs_seats_as_an_ending_does() {
     let mut log = EventLog::open(&stream);
     log.append(
         events::SESSION_SPAWNED,
-        "s3",
+        &a_seat("s3"),
         serde_json::json!({ "worktree": "/w", "run": "r6" }),
     )
     .expect("the spawn lands");
     log.append(
         runs::RUN_COULD_NOT_TELL,
-        "a-runner",
+        &the_runner(),
         serde_json::json!({ "run": "r6", "exit": 7, "read": serde_json::Value::Null }),
     )
     .expect("the reading lands");
@@ -1051,7 +1072,7 @@ fn a_cancelled_run_is_never_executed_again_and_its_seats_are_retired() {
     EventLog::open(&stream)
         .append(
             events::SESSION_SPAWNED,
-            "s4",
+            &a_seat("s4"),
             serde_json::json!({ "worktree": "/w", "run": "r9" }),
         )
         .expect("the spawn lands");
@@ -1059,7 +1080,7 @@ fn a_cancelled_run_is_never_executed_again_and_its_seats_are_retired() {
     EventLog::open(&stream)
         .append(
             runs::RUN_CANCELLED,
-            "a-person",
+            &a_seat("a-person"),
             serde_json::json!({ "run": "r9" }),
         )
         .expect("the cancel lands");
@@ -1088,7 +1109,7 @@ fn a_cancelled_run_is_never_executed_again_and_its_seats_are_retired() {
     EventLog::open(&stream)
         .append(
             runs::RUN_WAITING,
-            "a-runner",
+            &the_runner(),
             serde_json::json!({ "run": "r9", "wake": { "for": "a line" }, "seq": at_exit }),
         )
         .expect("the late wait lands");
@@ -1112,7 +1133,7 @@ fn one_run_that_will_not_move_does_not_stop_the_pass() {
     EventLog::open(&stream)
         .append(
             runs::RUN_CLOSED,
-            "a-runner",
+            &the_runner(),
             serde_json::json!({ "run": "r8" }),
         )
         .expect("the close lands");

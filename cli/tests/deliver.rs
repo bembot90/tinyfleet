@@ -460,8 +460,8 @@ fn a_live_reviewer_is_rung_with_the_item_and_the_commit_the_delivery_made() {
     assert_eq!(last["type"].as_str(), Some("item.delivered"), "{last}");
     // The seat named itself by name; the cli hands the verb its id, typed.
     assert_eq!(
-        last["actor"].as_str(),
-        Some(format!("seat:{}", rig.seat_id()).as_str())
+        last["actor"],
+        serde_json::json!({ "kind": "seat", "id": rig.seat_id().to_string() })
     );
     assert_eq!(last["payload"]["item"].as_str(), Some(item.as_str()));
     assert_eq!(last["payload"]["commit"].as_str(), Some(head.as_str()));
@@ -621,8 +621,8 @@ fn review_land_writes_the_accept_on_the_record_and_the_event_on_the_stream() {
         .expect("the stream carries the verdict");
     assert_eq!(last["type"].as_str(), Some("item.reviewed"), "{last}");
     assert_eq!(
-        last["actor"].as_str(),
-        Some(format!("seat:{REVIEWER_ID}").as_str())
+        last["actor"],
+        serde_json::json!({ "kind": "seat", "id": REVIEWER_ID })
     );
     assert_eq!(last["payload"]["item"].as_str(), Some(item.as_str()));
     assert_eq!(last["payload"]["commit"].as_str(), Some(head.as_str()));

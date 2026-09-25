@@ -186,7 +186,12 @@ function recorded(
     : kind === "returned"
     ? { item, commit, findings: "f.md" }
     : { item, sha: commit, base: "0", squash_of: commit };
-  return append(s.env.stream, `item.${kind}`, "a-seat", payload);
+  return append(
+    s.env.stream,
+    `item.${kind}`,
+    { kind: "seat", id: "a-seat" },
+    payload,
+  );
 }
 
 Deno.test("spawn — a delivery a verdict returned, or a landing closed, is not carried: an item delivered then returned below the start seq is dispatched, and so is one delivered then landed", async () => {
@@ -402,7 +407,7 @@ Deno.test("AC2 hold — the question note, fleet hold on the run's record item, 
   assertEquals(await replay(fn, s.env, "{}"), { code: 2, waiting: "hold-7" });
   assertEquals((await calls(s)).length, 1, "the re-run does not ask twice");
 
-  await append(s.env.stream, "hold.cleared", "a-person", {
+  await append(s.env.stream, "hold.cleared", { kind: "seat", id: "a-person" }, {
     item: runId,
     hold: "hold-7",
     letter: "B",
@@ -432,13 +437,13 @@ Deno.test("AC3 until — Waiting names exactly the outstanding items, in the ord
     code: 2,
     waiting: ["it-a", "it-b", "it-c"],
   });
-  await append(s.env.stream, "item.landed", "kite", {
+  await append(s.env.stream, "item.landed", { kind: "seat", id: "kite" }, {
     item: "it-b",
     sha: "b0b",
     base: "0",
     squash_of: "x",
   });
-  await append(s.env.stream, "item.delivered", "pell", {
+  await append(s.env.stream, "item.delivered", { kind: "seat", id: "pell" }, {
     item: "it-a",
     commit: "a0a",
     branch: "w",
@@ -449,12 +454,12 @@ Deno.test("AC3 until — Waiting names exactly the outstanding items, in the ord
     { code: 2, waiting: ["it-a", "it-c"] },
     "a delivery is not a landing",
   );
-  await append(s.env.stream, "item.landed", "kite", {
+  await append(s.env.stream, "item.landed", { kind: "seat", id: "kite" }, {
     item: "it-c",
     sha: "c0c",
   });
   assertEquals(await replay(fn, s.env, "{}"), { code: 2, waiting: ["it-a"] });
-  await append(s.env.stream, "item.landed", "kite", {
+  await append(s.env.stream, "item.landed", { kind: "seat", id: "kite" }, {
     item: "it-a",
     sha: "a0a",
   });
@@ -530,7 +535,10 @@ Deno.test("AC1 start — fleet run <name> --by <run> --input k=v, Waiting on the
     "the re-run does not start a second child",
   );
 
-  await append(s.env.stream, "run.closed", "fleet-run-child", {
+  await append(s.env.stream, "run.closed", {
+    kind: "run",
+    id: "fleet-run-child",
+  }, {
     run: "fleet-run-child",
   });
   assertEquals(await replay(fn, s.env, "{}"), { code: 0 });
@@ -587,14 +595,19 @@ Deno.test("start — a child a person cancelled fails the step naming it cancell
     waiting: "fleet-run-gone",
   });
 
-  await append(s.env.stream, "run.cancelled", "a-person", {
-    run: "fleet-run-gone",
-  });
+  await append(
+    s.env.stream,
+    "run.cancelled",
+    { kind: "seat", id: "a-person" },
+    {
+      run: "fleet-run-gone",
+    },
+  );
   const cancelled = await replay(fn, s.env, "{}");
   assertEquals(cancelled.code, 1, "a cancelled child ends the parent's wait");
   assertMatch(
     String((cancelled as { reason: unknown }).reason),
-    /run fleet-run-gone was cancelled/,
+    /run fleet-run-gone was cancelled by seat:a-person/,
   );
   assertEquals((await calls(s)).length, 1, "and no second child is started");
 });

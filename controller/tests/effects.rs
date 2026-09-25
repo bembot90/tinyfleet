@@ -1180,8 +1180,12 @@ mod lessons {
         // the ORDER that decides — a clear before the halt leaves the hold
         // standing.
         let mut log = rig.log();
-        log.append(events::SEAT_CLEAR_HALT, S1, serde_json::json!({}))
-            .expect("the request lands");
+        log.append(
+            events::SEAT_CLEAR_HALT,
+            &events::ActorRef::seat(S1),
+            serde_json::json!({}),
+        )
+        .expect("the request lands");
         let cleared = sessions::rebuild(&stream);
         assert!(!cleared.seat_state(S1).halted);
         assert_eq!(cleared.seat_state(S1).blind, 0);

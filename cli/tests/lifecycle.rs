@@ -244,7 +244,7 @@ impl Rig {
              \x20 if [ -f \"$stream\" ]; then n=$(awk 'END{{print NR+1}}' \"$stream\"); else n=1; fi\n\
              \x20 mkdir -p {machine}\n\
              \x20 printf '{{\"id\":\"stub-%s\",\"seq\":%s,\"ts\":\"2026-09-12T00:00:00Z\",\
-             \"type\":\"%s\",\"actor\":\"controller\",\"payload\":{{}}}}\\n' \"$n\" \"$n\" \"$1\" \
+             \"type\":\"%s\",\"actor\":{{\"kind\":\"controller\",\"id\":\"a-machine\"}},\"payload\":{{}}}}\\n' \"$n\" \"$n\" \"$1\" \
              >> \"$stream\"\n\
              }}\n\
              verb=$1\n\
@@ -1686,7 +1686,7 @@ fn the_foreground_loop_advances_a_waiting_run() {
     EventLog::open(&stream)
         .append(
             runs::RUN_WAITING,
-            "a-runner",
+            &fleet_controller::events::ActorRef::new(fleet_controller::events::RUN, "a-runner"),
             serde_json::json!({ "run": RUN, "wake": { "for": "a line" }, "seq": 0 }),
         )
         .expect("the stream takes the waiting line");

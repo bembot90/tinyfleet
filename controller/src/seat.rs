@@ -8,7 +8,7 @@
 
 use crate::clock;
 use crate::config;
-use crate::events::{self, EventLog};
+use crate::events::{self, ActorRef, EventLog};
 use fleet_core::seat::identity::SeatId;
 use std::path::Path;
 
@@ -47,10 +47,10 @@ pub const COLLECTOR_STALE_POLLS: u64 = 3;
 /// working and waits for a successor, so "it was written" has to be a reading of
 /// the file and not of this process's own intent.
 ///
-/// The line's actor is the seat's id, and so is the projection row a refusal
-/// reads. Every sentence names the seat by its machine name, off the seat list,
-/// which is what a person types back — and by the id where the list will not
-/// read.
+/// The line's actor is the seat, `{seat, <id>}`, and the read-back compares the
+/// typed actor; the projection row a refusal reads is keyed on the same id.
+/// Every sentence names the seat by its machine name, off the seat list, which
+/// is what a person types back — and by the id where the list will not read.
 pub fn record(
     machine_dir: &Path,
     kind: &str,
@@ -87,11 +87,12 @@ pub fn record(
     };
     let stream = machine_dir.join("events.jsonl");
     let mut log = EventLog::open(&stream);
-    if let Err(e) = log.append(kind, &key, payload) {
+    let actor = ActorRef::seat(&key);
+    if let Err(e) = log.append(kind, &actor, payload) {
         return Err((1, format!("could not append to {}: {e}", stream.display())));
     }
     match events::read_after(&stream, log.seq().saturating_sub(1)).last() {
-        Some(record) if record.kind == kind && record.actor == key => {
+        Some(record) if record.kind == kind && record.actor == actor => {
             Ok(format!("{kind} {seat} — seq {}", record.seq))
         }
         other => Err((

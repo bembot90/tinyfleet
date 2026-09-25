@@ -154,13 +154,13 @@ impl Rig {
         append(
             &rig.stream_path(),
             "run.waiting",
-            "a-seat",
+            serde_json::json!({"kind": "seat", "id": "a-seat"}),
             serde_json::json!({"run": RUN, "seq": 0}),
         );
         append(
             &rig.stream_path(),
             "hold.cleared",
-            "a-seat",
+            serde_json::json!({"kind": "seat", "id": "a-seat"}),
             serde_json::json!({"item": RUN, "letter": "A"}),
         );
 
@@ -208,14 +208,14 @@ impl Rig {
             .collect()
     }
 
-    /// Every line the run wrote, as `<type> <actor>` pairs — the actor beside
+    /// Every line the run wrote, as `<type> <actor id>` pairs — the actor beside
     /// the kind, because what each arm asserts is WHICH seat got which line.
     fn lines(&self) -> Vec<String> {
         self.stream()
             .into_iter()
             .filter_map(|event| {
                 let kind = event["type"].as_str()?.to_string();
-                let actor = event["actor"].as_str().unwrap_or("-").to_string();
+                let actor = event["actor"]["id"].as_str().unwrap_or("-").to_string();
                 Some(format!("{kind} {actor}"))
             })
             .collect()
@@ -252,7 +252,7 @@ impl Drop for Rig {
 /// Append one line to the stream at the sequence the FILE has room for, which is
 /// how the loop's own log appends: the run's back half is another writer, and a
 /// sequence held in memory would hand it a number a controller line has taken.
-fn append(path: &Path, kind: &str, actor: &str, payload: serde_json::Value) {
+fn append(path: &Path, kind: &str, actor: serde_json::Value, payload: serde_json::Value) {
     let next = std::fs::read_to_string(path)
         .unwrap_or_default()
         .lines()
@@ -300,7 +300,7 @@ impl Runs for ALandStepOnThePollingThread<'_> {
         append(
             &self.stream,
             "run.failed",
-            "controller",
+            serde_json::json!({"kind": "controller", "id": "a-machine"}),
             serde_json::json!({
                 "run": run,
                 "reason": {"code": "refused", "verb": "land", "why": "the suite exited 1"},
@@ -510,7 +510,7 @@ fn a_fleet_that_went_pid_less_inside_a_runs_land_step_is_held_on_the_poll_after_
         "the run was executed once and nothing else was asked of it: {lines:?}"
     );
     assert_eq!(
-        rig.lines_reading("run.failed controller"),
+        rig.lines_reading("run.failed a-machine"),
         1,
         "the run failed at its land step: {lines:?}"
     );
@@ -518,8 +518,12 @@ fn a_fleet_that_went_pid_less_inside_a_runs_land_step_is_held_on_the_poll_after_
     // THE CLEANUP THAT FOLLOWS THE FAILURE TOUCHES NO SESSION: it walks the
     // seats the run SPAWNED, and this run spawned none, so its line carries a
     // count of zero — the reading all three of the incident's runs carried.
+    // The line is the controller's, under this machine's identity.
+    let identity = fleet_core::seat::identity::read_identity(&rig.machine)
+        .expect("the identity reads")
+        .expect("the controller minted one");
     assert_eq!(
-        rig.lines_reading("run.cleaned controller"),
+        rig.lines_reading(&format!("run.cleaned {}", identity.id)),
         1,
         "the failure was cleaned up once: {lines:?}"
     );

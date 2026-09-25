@@ -7,7 +7,8 @@
 //! health drowns the three lines a person came to read.
 
 use crate::clock;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
@@ -18,13 +19,80 @@ pub struct Event<'a> {
     pub ts: String,
     #[serde(rename = "type")]
     pub kind: &'a str,
-    pub actor: &'a str,
+    pub actor: &'a ActorRef,
     pub payload: serde_json::Value,
 }
 
-/// The actor on an event the controller itself is the subject of. Every other
-/// event names the seat.
+/// The four kinds an actor on the stream is, each the word its `kind` carries.
+pub const SEAT: &str = "seat";
+pub const RUN: &str = "run";
+pub const ROUTINE: &str = "routine";
 pub const CONTROLLER: &str = "controller";
+
+/// Who wrote a line, as the stream stores it: `{"kind": …, "id": …}`.
+///
+/// THE STREAM'S OWN COPY of the typed actor, and not core's: this crate takes
+/// a seat's identity from core and nothing about who acts, so the line carries
+/// the two strings and a reader decides by the kind. A seat's id is its full
+/// seat id; a run's, a routine's and the controller's are the ids each acts
+/// under.
+///
+/// A `seat.*` or `session.*` line names the seat the line is ABOUT, which on a
+/// session line is the seat the controller acted on.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ActorRef {
+    pub kind: String,
+    pub id: String,
+}
+
+impl ActorRef {
+    pub fn new(kind: &str, id: impl Into<String>) -> ActorRef {
+        ActorRef {
+            kind: kind.to_string(),
+            id: id.into(),
+        }
+    }
+
+    pub fn seat(id: impl fmt::Display) -> ActorRef {
+        ActorRef::new(SEAT, id.to_string())
+    }
+
+    pub fn routine(name: &str) -> ActorRef {
+        ActorRef::new(ROUTINE, name)
+    }
+
+    /// The seat's id where this is a seat, and `None` for every other kind.
+    pub fn seat_id(&self) -> Option<&str> {
+        (self.kind == SEAT).then_some(self.id.as_str())
+    }
+}
+
+/// `<kind>:<id>`, the string form a sentence names an actor by.
+impl fmt::Display for ActorRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.kind, self.id)
+    }
+}
+
+/// The actor on an event the controller itself is the subject of: the
+/// controller, under this machine's identity — minted where the machine has
+/// none yet, as a verb run on it with no actor would mint it.
+///
+/// AN IDENTITY THAT WILL NOT READ DOES NOT STOP A WRITE. The line is written
+/// under the id `unknown`, and the reason is said once here: a controller that
+/// refused to journal over its identity file would leave the fleet unrecorded.
+pub fn controller(machine_dir: &Path) -> ActorRef {
+    match fleet_core::seat::identity::identity_or_mint(machine_dir) {
+        Ok((identity, _)) => ActorRef::new(CONTROLLER, identity.id.to_string()),
+        Err(why) => {
+            eprintln!(
+                "fleet observe: could not tell this machine's identity, so the controller's \
+                 lines carry the id `unknown`: {why}"
+            );
+            ActorRef::new(CONTROLLER, "unknown")
+        }
+    }
+}
 
 /// The four events a seat's workflow emits through `fleet event`.
 ///
@@ -172,7 +240,7 @@ pub struct Record {
     /// A reader that REQUIRED it would drop a line the sequence still numbers.
     pub ts: String,
     pub kind: String,
-    pub actor: String,
+    pub actor: ActorRef,
     pub payload: serde_json::Value,
 }
 
@@ -183,6 +251,10 @@ pub struct Record {
 /// line is an expected transient and the lines before it are still the record.
 /// A file that is not there is an empty read, which is a fleet nobody has asked
 /// anything of yet.
+///
+/// A line whose actor is not the typed object — a bare string, as an older
+/// build wrote — is skipped too: every reader here decides by the actor's kind,
+/// and a line that has none names nobody.
 pub fn read_after(path: &Path, after: u64) -> Vec<Record> {
     let Ok(file) = std::fs::File::open(path) else {
         return Vec::new();
@@ -209,7 +281,7 @@ pub fn read_after(path: &Path, after: u64) -> Vec<Record> {
                     .unwrap_or_default()
                     .to_string(),
                 kind: value.get("type")?.as_str()?.to_string(),
-                actor: value.get("actor")?.as_str()?.to_string(),
+                actor: actor_of(&value)?,
                 payload: value
                     .get("payload")
                     .cloned()
@@ -225,14 +297,14 @@ pub fn read_after(path: &Path, after: u64) -> Vec<Record> {
 /// own bytes and never re-serializes, because one JSON object per line exactly
 /// as stored is the contract and a re-serialization would reorder the keys. The
 /// two parsed names are the filters' and nothing else's, and each is optional:
-/// a stored line carrying a sequence and no actor is still a line of the stream,
-/// where [`read_after`] drops it.
+/// a stored line carrying a sequence and no actor — or an actor that is not the
+/// typed object — is still a line of the stream, where [`read_after`] drops it.
 #[derive(Clone, Debug)]
 pub struct RawLine {
     pub seq: u64,
     pub ts: String,
     pub kind: Option<String>,
-    pub actor: Option<String>,
+    pub actor: Option<ActorRef>,
     /// The line exactly as stored, its trailing newline stripped.
     pub text: String,
 }
@@ -298,13 +370,23 @@ fn raw_line(line: &str, after: u64) -> Option<RawLine> {
         seq,
         ts: string_field(&value, "ts").unwrap_or_default(),
         kind: string_field(&value, "type"),
-        actor: string_field(&value, "actor"),
+        actor: actor_of(&value),
         text: line.to_string(),
     })
 }
 
 fn string_field(value: &serde_json::Value, name: &str) -> Option<String> {
     Some(value.get(name)?.as_str()?.to_string())
+}
+
+/// The line's actor, where it is an object carrying a string `kind` and a
+/// string `id`. A bare string — the shape an older build wrote — is no actor.
+fn actor_of(value: &serde_json::Value) -> Option<ActorRef> {
+    let actor = value.get("actor")?;
+    Some(ActorRef {
+        kind: string_field(actor, "kind")?,
+        id: string_field(actor, "id")?,
+    })
 }
 
 /// Every line whose `id` is `id`, as the file holds them.
@@ -374,7 +456,7 @@ impl EventLog {
     pub fn append(
         &mut self,
         kind: &str,
-        actor: &str,
+        actor: &ActorRef,
         payload: serde_json::Value,
     ) -> std::io::Result<()> {
         self.append_id(kind, actor, payload).map(|_| ())
@@ -387,7 +469,7 @@ impl EventLog {
     pub fn append_id(
         &mut self,
         kind: &str,
-        actor: &str,
+        actor: &ActorRef,
         payload: serde_json::Value,
     ) -> std::io::Result<String> {
         if let Some(dir) = self.path.parent() {
@@ -447,6 +529,85 @@ fn last_seq(path: &Path) -> Option<u64> {
 mod tests {
     use super::*;
 
+    fn seat(id: &str) -> ActorRef {
+        ActorRef::seat(id)
+    }
+
+    fn the_controller() -> ActorRef {
+        ActorRef::new(CONTROLLER, "a-machine")
+    }
+
+    /// The actor is written as the typed object, never as a string of it.
+    #[test]
+    fn an_appended_line_serializes_its_actor_as_an_object() {
+        let dir = std::env::temp_dir().join(format!("fleet-events-typed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("events.jsonl");
+
+        let mut log = EventLog::open(&path);
+        log.append(SEAT_WOKE, &seat("s1"), serde_json::json!({}))
+            .unwrap();
+        log.append(
+            "step.started",
+            &ActorRef::new(RUN, "fleet-run-7"),
+            serde_json::json!({}),
+        )
+        .unwrap();
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<serde_json::Value> = body
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            lines[0]["actor"],
+            serde_json::json!({ "kind": "seat", "id": "s1" })
+        );
+        assert_eq!(
+            lines[1]["actor"],
+            serde_json::json!({ "kind": "run", "id": "fleet-run-7" })
+        );
+        assert_eq!(
+            read_after(&path, 0)[1].actor,
+            ActorRef::new(RUN, "fleet-run-7")
+        );
+        assert_eq!(
+            ActorRef::new(RUN, "fleet-run-7").to_string(),
+            "run:fleet-run-7"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A line whose actor is a bare string — the shape an older build wrote —
+    /// names nobody: the fold's reader skips it, and the tail's reader keeps it
+    /// as a line of the stream with no actor.
+    #[test]
+    fn a_line_with_a_string_actor_is_skipped_by_the_fold_and_kept_by_the_tail() {
+        let dir = std::env::temp_dir().join(format!("fleet-events-string-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("events.jsonl");
+        std::fs::write(
+            &path,
+            "{\"id\":\"a\",\"seq\":1,\"ts\":\"t\",\"type\":\"seat.woke\",\"actor\":\"01a0d1f1-0aec-765f-9abe-d4f993b9739a\",\"payload\":{}}\n\
+             {\"id\":\"b\",\"seq\":2,\"ts\":\"t\",\"type\":\"seat.woke\",\"actor\":{\"kind\":\"seat\"},\"payload\":{}}\n\
+             {\"id\":\"c\",\"seq\":3,\"ts\":\"t\",\"type\":\"seat.woke\",\"actor\":{\"kind\":\"seat\",\"id\":\"s1\"},\"payload\":{}}\n",
+        )
+        .unwrap();
+
+        let folded = read_after(&path, 0);
+        let seqs: Vec<u64> = folded.iter().map(|r| r.seq).collect();
+        assert_eq!(seqs, vec![3], "only the typed actor is read: {folded:?}");
+        assert_eq!(folded[0].actor, seat("s1"));
+
+        let raw = read_lines_after(&path, 0);
+        assert_eq!(raw.len(), 3, "every line is a line of the stream: {raw:?}");
+        assert_eq!(raw[0].actor, None, "a string actor is no actor");
+        assert_eq!(raw[1].actor, None, "and neither is an object with no id");
+        assert_eq!(raw[2].actor, Some(seat("s1")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_reopened_stream_continues_the_sequence() {
         let dir = std::env::temp_dir().join(format!("fleet-events-{}", std::process::id()));
@@ -454,10 +615,18 @@ mod tests {
         let path = dir.join("events.jsonl");
 
         let mut log = EventLog::open(&path);
-        log.append("controller.started", CONTROLLER, serde_json::json!({}))
-            .unwrap();
-        log.append("controller.stopped", CONTROLLER, serde_json::json!({}))
-            .unwrap();
+        log.append(
+            "controller.started",
+            &the_controller(),
+            serde_json::json!({}),
+        )
+        .unwrap();
+        log.append(
+            "controller.stopped",
+            &the_controller(),
+            serde_json::json!({}),
+        )
+        .unwrap();
         assert_eq!(log.seq(), 2);
 
         let reopened = EventLog::open(&path);
@@ -483,8 +652,12 @@ mod tests {
         let path = dir.join("events.jsonl");
         let mut log = EventLog::open(&path);
         for _ in 0..5 {
-            log.append("controller.started", CONTROLLER, serde_json::json!({}))
-                .unwrap();
+            log.append(
+                "controller.started",
+                &the_controller(),
+                serde_json::json!({}),
+            )
+            .unwrap();
         }
         let ids: Vec<String> = std::fs::read_to_string(&path)
             .unwrap()
@@ -517,16 +690,21 @@ mod tests {
         );
 
         let mut log = EventLog::open(&path);
-        log.append(SEAT_WOKE, "s1", serde_json::json!({})).unwrap();
-        log.append(SEAT_RESTING, "s1", serde_json::json!({"reason": "a nap"}))
+        log.append(SEAT_WOKE, &seat("s1"), serde_json::json!({}))
             .unwrap();
-        log.append(SEAT_EXITED, "s2", serde_json::json!({}))
+        log.append(
+            SEAT_RESTING,
+            &seat("s1"),
+            serde_json::json!({"reason": "a nap"}),
+        )
+        .unwrap();
+        log.append(SEAT_EXITED, &seat("s2"), serde_json::json!({}))
             .unwrap();
 
         let all = read_after(&path, 0);
         assert_eq!(all.len(), 3);
         assert_eq!(all[0].kind, SEAT_WOKE);
-        assert_eq!(all[1].actor, "s1");
+        assert_eq!(all[1].actor, seat("s1"));
         assert_eq!(all[1].payload["reason"], "a nap");
         assert_eq!(all[2].seq, 3);
 
@@ -541,12 +719,12 @@ mod tests {
         let mut body = std::fs::read_to_string(&path).unwrap();
         body.push_str("{\"seq\":4,\"type\":\"seat.wo");
         body.push('\n');
-        body.push_str("{\"id\":\"x\",\"seq\":5,\"ts\":\"t\",\"type\":\"seat.woke\",\"actor\":\"s3\",\"payload\":{}}\n");
+        body.push_str("{\"id\":\"x\",\"seq\":5,\"ts\":\"t\",\"type\":\"seat.woke\",\"actor\":{\"kind\":\"seat\",\"id\":\"s3\"},\"payload\":{}}\n");
         std::fs::write(&path, body).unwrap();
         let after = read_after(&path, 3);
         assert_eq!(after.len(), 1, "the torn line is skipped: {after:?}");
         assert_eq!(after[0].seq, 5);
-        assert_eq!(after[0].actor, "s3");
+        assert_eq!(after[0].actor, seat("s3"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -566,18 +744,22 @@ mod tests {
         // The loop's log, opened and holding a sequence in memory.
         let mut loop_log = EventLog::open(&path);
         loop_log
-            .append(CONTROLLER_STARTED, CONTROLLER, serde_json::json!({}))
+            .append(CONTROLLER_STARTED, &the_controller(), serde_json::json!({}))
             .unwrap();
 
         // The CLI's, a separate handle on the same file — which is what a second
         // process is.
         let mut cli = EventLog::open(&path);
-        cli.append(SEAT_RESTING, "s1", serde_json::json!({"reason": "x"}))
-            .unwrap();
+        cli.append(
+            SEAT_RESTING,
+            &seat("s1"),
+            serde_json::json!({"reason": "x"}),
+        )
+        .unwrap();
 
         // And the loop writes again, without having re-opened.
         loop_log
-            .append(SESSION_RESTED, "s1", serde_json::json!({}))
+            .append(SESSION_RESTED, &seat("s1"), serde_json::json!({}))
             .unwrap();
 
         let lines = read_after(&path, 0);
@@ -606,7 +788,7 @@ mod tests {
                     // Its own open: to flock, a separate open file description is
                     // what a second process is.
                     let mut log = EventLog::open(path);
-                    let actor = format!("w{writer}");
+                    let actor = seat(&format!("w{writer}"));
                     start.wait();
                     for _ in 0..PER_WRITER {
                         log.append(SEAT_WOKE, &actor, serde_json::json!({}))
@@ -741,7 +923,7 @@ mod tests {
 
         // Written by hand, with the keys in an order no serializer here would
         // choose: what comes back is the line, not a re-serialization of it.
-        let stored = "{\"payload\":{},\"actor\":\"a-seat\",\"type\":\"seat.woke\",\"ts\":\"2026-09-08T00:00:01Z\",\"seq\":1,\"id\":\"x-1\"}";
+        let stored = "{\"payload\":{},\"actor\":{\"id\":\"a-seat\",\"kind\":\"seat\"},\"type\":\"seat.woke\",\"ts\":\"2026-09-08T00:00:01Z\",\"seq\":1,\"id\":\"x-1\"}";
         let nameless = "{\"seq\":2,\"ts\":\"2026-09-08T00:00:02Z\",\"id\":\"x-2\"}";
         std::fs::write(&path, format!("{stored}\n{nameless}\n{{\"seq\":3,\"ty")).unwrap();
 
@@ -750,7 +932,7 @@ mod tests {
         assert_eq!(lines[0].text, stored, "the bytes are the file's own");
         assert_eq!(lines[0].seq, 1);
         assert_eq!(lines[0].ts, "2026-09-08T00:00:01Z");
-        assert_eq!(lines[0].actor.as_deref(), Some("a-seat"));
+        assert_eq!(lines[0].actor, Some(seat("a-seat")));
         assert_eq!(lines[0].kind.as_deref(), Some("seat.woke"));
 
         assert_eq!(lines[1].text, nameless);

@@ -961,8 +961,8 @@ fn a_green_landing_moves_the_bare_and_closes_the_item() {
     assert_eq!(reading["verdict"].as_str(), Some("green"));
     assert_eq!(reading["reading"], serde_json::json!(1));
     assert_eq!(
-        events[2]["actor"].as_str(),
-        Some(format!("seat:{REVIEWER_ID}").as_str()),
+        events[2]["actor"],
+        serde_json::json!({ "kind": "seat", "id": REVIEWER_ID }),
         "the landing is the reviewer's act, typed"
     );
     assert_eq!(landing["sha"].as_str(), Some(landed.as_str()));

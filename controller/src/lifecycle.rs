@@ -11,7 +11,7 @@
 //! touches the project's work-graph store: the controller never initialises and
 //! never rewrites one, and nothing here shells out to it.
 
-use crate::events::{self, EventLog, CONTROLLER};
+use crate::events::{self, EventLog};
 use crate::policy::{self, Policy};
 use crate::{clock, config, platform};
 use fleet_core::seat::identity::{roster_in, Kind, SeatRef};
@@ -356,7 +356,7 @@ pub fn registered_event(machine_dir: &Path, root: &Path, name: &str) -> Result<(
     EventLog::open(&machine_dir.join("events.jsonl"))
         .append(
             events::PROJECT_REGISTERED,
-            CONTROLLER,
+            &events::controller(machine_dir),
             serde_json::json!({ "root": root.display().to_string(), "name": name }),
         )
         .map_err(|e| e.to_string())

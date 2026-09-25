@@ -9,7 +9,7 @@
 //! its event are written once, at the transition into the hold.
 
 use crate::adapter::{Agent, RemoveAnswer, StartOutcome, StartSpec};
-use crate::events::{self, EventLog};
+use crate::events::{self, ActorRef, EventLog};
 use crate::policy::Policy;
 use crate::sessions::{SessionRow, Table};
 use fleet_core::seat::actor::Actor;
@@ -275,7 +275,7 @@ pub fn start_once(
             Ok(append(
                 events_log,
                 events::SESSION_SPAWNED,
-                &target.seat.to_string(),
+                &ActorRef::seat(target.seat),
                 payload,
             ))
         }
@@ -283,7 +283,7 @@ pub fn start_once(
             append(
                 events_log,
                 events::SESSION_CRASHED,
-                &target.seat.to_string(),
+                &ActorRef::seat(target.seat),
                 crashed_payload(PHASE_START, &cause, &log),
             );
             Err(cause)
@@ -337,7 +337,7 @@ pub fn rest(
     append(
         events_log,
         events::SESSION_RESTED,
-        &target.seat.to_string(),
+        &ActorRef::seat(target.seat),
         serde_json::json!({
             "predecessor": target.session_id,
             "predecessor_address": short_id,
@@ -382,7 +382,7 @@ pub fn revive(
     let dispatch_id = append(
         events_log,
         events::SESSION_REVIVED,
-        &target.seat.to_string(),
+        &ActorRef::seat(target.seat),
         serde_json::json!({
             "session": session_id,
             "address": short_id,
@@ -486,7 +486,7 @@ pub fn adopt(
         append(
             events_log,
             events::SESSION_ADOPTED,
-            &row.seat,
+            &ActorRef::seat(&row.seat),
             serde_json::json!({
                 "session": session_id,
                 "short_id": row.short_id,
@@ -508,8 +508,8 @@ pub fn adopt(
 ///
 /// Announced ONCE per transition into the halt and never once per poll: the
 /// caller writes this only when the latch moved. The line names the seat by its
-/// machine name, which is what a person types back; the event's actor is its
-/// id.
+/// machine name, which is what a person types back; the event's actor is the
+/// seat, by its id.
 pub fn halted(seat: &SeatId, machine_name: &str, blind: u32, events_log: &mut EventLog) {
     eprintln!(
         "fleet observe: {machine_name} has gone blind on {blind} consecutive dispatches and is \
@@ -519,7 +519,7 @@ pub fn halted(seat: &SeatId, machine_name: &str, blind: u32, events_log: &mut Ev
     append(
         events_log,
         events::SESSION_HALTED,
-        &seat.to_string(),
+        &ActorRef::seat(seat),
         serde_json::json!({ "blind": blind }),
     );
 }
@@ -530,7 +530,7 @@ pub fn blind_dispatch(seat: &SeatId, blind: u32, verdict: &str, events_log: &mut
     append(
         events_log,
         events::DISPATCH_BLIND,
-        &seat.to_string(),
+        &ActorRef::seat(seat),
         serde_json::json!({ "blind": blind, "verdict": verdict }),
     );
 }
@@ -573,7 +573,7 @@ pub fn nudge(
     append(
         events_log,
         events::SESSION_NUDGED,
-        &seat,
+        &ActorRef::seat(&seat),
         serde_json::json!({
             "session": session_id,
             "context_tokens": tokens,
@@ -594,7 +594,7 @@ pub fn nudge(
 fn append(
     events_log: &mut EventLog,
     kind: &str,
-    actor: &str,
+    actor: &ActorRef,
     payload: serde_json::Value,
 ) -> String {
     match events_log.append_id(kind, actor, payload) {

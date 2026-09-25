@@ -205,7 +205,7 @@ pub fn hold(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result
         .events
         .append(
             ITEM_HELD,
-            &by,
+            question.by,
             serde_json::json!({
                 "item": item,
                 "reason": ASK,
@@ -583,7 +583,7 @@ pub fn clear(out: &mut dyn Write, clearance: &Clearance, wiring: &Wiring) -> Res
         .events
         .append(
             HOLD_CLEARED,
-            &by,
+            clearance.by,
             serde_json::json!({
                 "item": clearance.item,
                 "hold": hold,

@@ -365,7 +365,7 @@ fn announce(
 ) -> Result<(), Stop> {
     wiring
         .events
-        .append(kind, &verdict.by.to_string(), payload)
+        .append(kind, verdict.by, payload)
         .map_err(|e| {
             Stop::could_not_tell(format!(
                 "{kind} did not reach the stream: {e}\n  the verdict on {item} STANDS"

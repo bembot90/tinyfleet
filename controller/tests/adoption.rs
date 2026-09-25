@@ -325,14 +325,14 @@ impl Rig {
             .collect()
     }
 
-    /// Every session line the run wrote, as `<type> <actor>` pairs — the actor
+    /// Every session line the run wrote, as `<type> <actor id>` pairs — the actor
     /// beside the kind, because the claim is about WHICH seat got which line.
     fn session_lines(&self) -> Vec<String> {
         self.stream()
             .into_iter()
             .filter_map(|event| {
                 let kind = event["type"].as_str()?.to_string();
-                let actor = event["actor"].as_str().unwrap_or("-").to_string();
+                let actor = event["actor"]["id"].as_str().unwrap_or("-").to_string();
                 kind.starts_with("session.")
                     .then(|| format!("{kind} {actor}"))
             })

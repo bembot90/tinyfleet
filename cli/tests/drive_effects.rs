@@ -124,7 +124,10 @@ mod effects {
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         let last = rig.events().pop().expect("the stream carries the rest");
         assert_eq!(last["type"], "seat.resting");
-        assert_eq!(last["actor"], SEAT_ID);
+        assert_eq!(
+            last["actor"],
+            serde_json::json!({ "kind": "seat", "id": SEAT_ID })
+        );
         assert_eq!(last["payload"]["reason"], "a nap");
 
         // The other three verbs, each exiting 0 and each advancing the sequence
@@ -143,7 +146,10 @@ mod effects {
             assert_eq!(out.status.code(), Some(0), "{verb}: {}", stderr(&out));
             let line = rig.events().pop().expect("the stream carries the record");
             assert_eq!(line["type"], kind);
-            assert_eq!(line["actor"], SEAT_ID);
+            assert_eq!(
+                line["actor"],
+                serde_json::json!({ "kind": "seat", "id": SEAT_ID })
+            );
             let seq = line["seq"].as_u64().expect("the line carries a seq");
             assert_eq!(
                 seq,
@@ -218,7 +224,10 @@ mod effects {
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         let last = rig.events().pop().expect("the stream carries the rest");
         assert_eq!(last["type"], "seat.resting");
-        assert_eq!(last["actor"], SEAT_ID);
+        assert_eq!(
+            last["actor"],
+            serde_json::json!({ "kind": "seat", "id": SEAT_ID })
+        );
         assert_eq!(last["payload"]["reason"], "a nap");
     }
 
@@ -416,12 +425,12 @@ mod effects {
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
 
         // Around the refusal: the event written into the file by hand, by the
-        // seat's id as every seat line is. The consumer drops it with one line
-        // and issues nothing.
+        // seat as every seat line is. The consumer drops it with one line and
+        // issues nothing.
         append_event(
             &rig,
             "seat.resting",
-            SEAT_ID,
+            serde_json::json!({ "kind": "seat", "id": SEAT_ID }),
             serde_json::json!({"reason": "x"}),
         );
         let out = rig.observe();
@@ -570,7 +579,11 @@ mod effects {
             .into_iter()
             .find(|e| e["type"] == "session.spawned")
             .expect("the start wrote its event");
-        assert_eq!(spawned["actor"], SEAT_ID, "the line's actor is the full id");
+        assert_eq!(
+            spawned["actor"],
+            serde_json::json!({ "kind": "seat", "id": SEAT_ID }),
+            "the line's actor is the seat, by its full id"
+        );
         assert_eq!(spawned["payload"]["name"], named);
     }
 
@@ -1285,7 +1298,10 @@ mod effects {
             .find(|e| e["type"] == "session.adopted")
             .expect("the event is in the stream");
         assert_eq!(adopted["payload"]["session"], "a-session");
-        assert_eq!(adopted["actor"], SEAT_ID);
+        assert_eq!(
+            adopted["actor"],
+            serde_json::json!({ "kind": "seat", "id": SEAT_ID })
+        );
         assert_eq!(
             rig.calls().len(),
             before,
@@ -1462,9 +1478,8 @@ mod effects {
 
     /// A seat event whose actor names no configured row is dropped with a line.
     ///
-    /// The actor is matched on the seat's id: another seat's id is no row of
-    /// this list, and neither is this seat's own machine name — the shape a line
-    /// an older build wrote carries.
+    /// The actor is a seat, matched on its id: another seat's id is no row of
+    /// this list, and neither is this seat's own machine name.
     #[test]
     fn a_seat_event_for_a_row_the_seat_list_does_not_carry_is_dropped() {
         const ANOTHER: &str = "01a0d1f1-0aec-765f-9abe-0000000000ff";
@@ -1476,7 +1491,7 @@ mod effects {
             append_event(
                 &rig,
                 "seat.resting",
-                actor,
+                serde_json::json!({ "kind": "seat", "id": actor }),
                 serde_json::json!({"reason": "x"}),
             );
             let out = rig.observe();
@@ -1499,7 +1514,7 @@ mod effects {
         append_event(
             &rig,
             "seat.resting",
-            SEAT_ID,
+            serde_json::json!({ "kind": "seat", "id": SEAT_ID }),
             serde_json::json!({"reason": "x"}),
         );
         let out = rig.observe();
@@ -1510,6 +1525,41 @@ mod effects {
             stderr(&out)
         );
         assert_eq!(seat_row(&rig)["decision"], "rest", "{}", seat_row(&rig));
+    }
+
+    /// A seat event whose actor is not a seat is dropped with a line, BY ITS
+    /// KIND: a run whose id is this seat's own id is still a run, and a fold
+    /// that compared the id alone would take the run's line as the seat's.
+    #[test]
+    fn a_seat_event_whose_actor_is_not_a_seat_is_dropped_by_its_kind() {
+        for kind in ["seat.woke", "seat.resting"] {
+            let rig = Rig::new("effect-run-actor");
+            rig.write_roster(&live_row(&rig.worktree(), "ab12"));
+            assert_eq!(rig.observe().status.code(), Some(0));
+
+            append_event(
+                &rig,
+                kind,
+                serde_json::json!({ "kind": "run", "id": SEAT_ID }),
+                serde_json::json!({"reason": "x"}),
+            );
+            let out = rig.observe();
+            assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+            assert!(
+                stderr(&out).contains(&format!(
+                    "fleet observe: dropping a {kind} whose actor run:{SEAT_ID} is not a seat"
+                )),
+                "the drop is stated by kind: {}",
+                stderr(&out)
+            );
+            assert!(
+                !stderr(&out).contains("names no seat row"),
+                "{}",
+                stderr(&out)
+            );
+            assert_ne!(seat_row(&rig)["decision"], "rest", "{}", seat_row(&rig));
+            assert!(rig.calls().is_empty(), "{kind}: {:?}", rig.calls());
+        }
     }
 
     /// An effect execs the binary the GATE resolved, on the constructed path,
@@ -1607,7 +1657,7 @@ mod effects {
 
     /// One line into the stream, written the way something other than the CLI
     /// would write it — which is the case the consumer's drops exist for.
-    fn append_event(rig: &Rig, kind: &str, actor: &str, payload: serde_json::Value) {
+    fn append_event(rig: &Rig, kind: &str, actor: serde_json::Value, payload: serde_json::Value) {
         let path = rig.events_path();
         let body = std::fs::read_to_string(&path).unwrap_or_default();
         let seq = body
@@ -1800,7 +1850,10 @@ mod isolation {
             .into_iter()
             .find(|e| e["type"] == "dispatch.failed")
             .expect("the line is on the stream");
-        assert_eq!(line["actor"], SEAT_ID);
+        assert_eq!(
+            line["actor"],
+            serde_json::json!({ "kind": "seat", "id": SEAT_ID })
+        );
         assert_eq!(
             line["payload"]["seat"],
             serde_json::json!({ "id": SEAT_ID, "name": "Orla", "kind": "agent" }),

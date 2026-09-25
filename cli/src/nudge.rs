@@ -15,14 +15,14 @@
 use std::path::Path;
 use std::time::Duration;
 
-use fleet_controller::events::{self, EventLog};
+use fleet_controller::events::{self, ActorRef, EventLog};
 use fleet_controller::observe::RosterState;
 use fleet_controller::seat::COLLECTOR_STALE_POLLS;
 use fleet_controller::{clock, policy as controller};
 use fleet_core::item::RingOutcome;
 
 use crate::exit::Exit;
-use crate::item::{acting, SeatRing};
+use crate::item::{acting, stream_actor, SeatRing};
 use crate::ui::{Stream, Tone, Ui};
 
 /// The published document this verb refuses without.
@@ -66,9 +66,10 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
     let key = row.id.to_string();
     let seat = row.machine_name();
     // Who sent it, resolved as every writing verb's actor is: the verb has no
-    // `--by`, so `FLEET_ACTOR`, else this machine's identity.
+    // `--by`, so `FLEET_ACTOR`, else this machine's identity. The payload
+    // carries it typed, as the stream's `{kind, id}`.
     let by = match acting("seat nudge", None, &here) {
-        Ok(by) => by.to_string(),
+        Ok(by) => stream_actor(&by),
         Err(stop) => return stopped(&stop.message, stop.code),
     };
 
@@ -104,9 +105,11 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
 
     let stream = here.machine_dir.join(STREAM);
     let mut log = EventLog::open(&stream);
+    // The line is ABOUT the seat, as every `session.*` line is: its actor is the
+    // seat nudged, and who sent it is the payload's `by`.
     if let Err(e) = log.append(
         events::SESSION_NUDGED,
-        &key,
+        &ActorRef::seat(&key),
         serde_json::json!({
             "session": rung.session,
             "by": by,

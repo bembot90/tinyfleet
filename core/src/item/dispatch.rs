@@ -478,7 +478,7 @@ fn announce(
         .events
         .append(
             ITEM_DISPATCHED,
-            &order.by.to_string(),
+            order.by,
             serde_json::Value::Object(payload),
         )
         .map_err(|e| {

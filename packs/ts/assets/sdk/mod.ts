@@ -458,7 +458,7 @@ class Handle implements Run {
   hold(question: string, options: string[]): Promise<string> {
     const k = ++this.holds;
     return this.step(`hold ${question}`, async () => {
-      const parks = (await this.tail({ type: ITEM_HELD, seat: this.actor }))
+      const parks = (await this.tail({ type: ITEM_HELD, actor: this.actor }))
         .filter((r) => r.payload.item === this.id);
       let hold: string;
       if (parks.length >= k) {
@@ -522,7 +522,7 @@ class Handle implements Run {
   ): Promise<{ run: string }> {
     const k = ++this.starts;
     return this.step(`start ${name}`, async () => {
-      let mine = await this.tail({ type: RUN_STARTED, seat: this.actor });
+      let mine = await this.tail({ type: RUN_STARTED, actor: this.actor });
       if (mine.length < k) {
         const args = ["run", name, "--by", this.actor];
         for (const [key, value] of Object.entries(inputs)) {
@@ -532,7 +532,7 @@ class Handle implements Run {
           args.push("--input", `${key}=${text}`);
         }
         await this.fleet(args);
-        mine = await this.tail({ type: RUN_STARTED, seat: this.actor });
+        mine = await this.tail({ type: RUN_STARTED, actor: this.actor });
         if (mine.length < k) {
           throw new Error(
             `start: fleet run ${name} exited 0 and no ${RUN_STARTED} by ${this.actor} followed on the stream`,
@@ -559,7 +559,9 @@ class Handle implements Run {
       if (cancelled !== undefined) {
         throw new Error(
           `start: run ${child} was cancelled${
-            cancelled.actor === null ? "" : ` by ${cancelled.actor}`
+            cancelled.actor === null
+              ? ""
+              : ` by ${cancelled.actor.kind}:${cancelled.actor.id}`
           }`,
         );
       }
@@ -677,18 +679,24 @@ async function recordedSteps(env: Env): Promise<Map<number, Closed>> {
   return closed;
 }
 
-/** The filters `fleet event tail` takes: the kind, and the actor it stores
- * under `--seat`. */
+/** The filters `fleet event tail` takes: the kind, and the typed actor that
+ * wrote the line, `<kind>:<id>`, under `--actor`. */
 interface Filter {
   type: string;
-  seat?: string;
+  actor?: string;
+}
+
+/** Who wrote a line, as the stream stores it. */
+interface Actor {
+  kind: string;
+  id: string;
 }
 
 /** One stored event as the tail's envelope carries it. */
 interface Record_ {
   seq: number;
   kind: string;
-  actor: string | null;
+  actor: Actor | null;
   payload: Record<string, unknown>;
 }
 
@@ -705,7 +713,7 @@ async function tail(env: Env, filter: Filter): Promise<Record_[]> {
     "--type",
     filter.type,
   ];
-  if (filter.seat !== undefined) args.push("--seat", filter.seat);
+  if (filter.actor !== undefined) args.push("--actor", filter.actor);
   const printed = await fleet(env, args);
   const records: Record_[] = [];
   for (const line of printed.split("\n")) {
@@ -721,11 +729,21 @@ async function tail(env: Env, filter: Filter): Promise<Record_[]> {
     records.push({
       seq: Number(data.seq),
       kind: String(data.kind),
-      actor: typeof data.actor === "string" ? data.actor : null,
+      actor: actorOf(data.actor),
       payload: payload !== null && typeof payload === "object" ? payload : {},
     });
   }
   return records;
+}
+
+/** The envelope's actor, where it is the typed object carrying a string kind
+ * and a string id; anything else is no actor. */
+function actorOf(actor: unknown): Actor | null {
+  if (actor === null || typeof actor !== "object") return null;
+  const { kind, id } = actor as Record<string, unknown>;
+  return typeof kind === "string" && typeof id === "string"
+    ? { kind, id }
+    : null;
 }
 
 interface Ran {

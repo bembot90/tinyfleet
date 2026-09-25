@@ -67,7 +67,7 @@ export async function scratch(): Promise<Scratch> {
     seq: 1,
     ts: "2026-09-18T00:00:00Z",
     type: "run.started",
-    actor: "the-suite",
+    actor: { kind: "run", id: "the-suite" },
     payload: { run: runId, hash: "0", workflow: "w" },
   });
   await Deno.writeTextFile(stream, `${opening}\n`);

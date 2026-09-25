@@ -6,7 +6,7 @@ use crate::clock::{self, Clock, SystemClock};
 use crate::config::{self, MachineConfig, Seat};
 use crate::decide::{self, FleetShape, SeatInput, Verdict};
 use crate::effect::{self, Outcome, Target};
-use crate::events::{self, EventLog, CONTROLLER};
+use crate::events::{self, ActorRef, EventLog};
 use crate::observe::{self, RosterState, SeatObservation};
 use crate::platform;
 use crate::policy::{self, Policy};
@@ -257,6 +257,9 @@ pub struct Observer<'a> {
     policy_seen: Option<std::time::SystemTime>,
     policy_error: Option<String>,
     events_log: EventLog,
+    /// Who the controller's own lines are by: this machine's identity, read
+    /// once at startup.
+    controller: ActorRef,
     /// The spread announced and not yet closed. Only a version that WAS READ
     /// and agrees with the pin clears it.
     announced_move: Option<(Option<String>, Option<String>)>,
@@ -346,6 +349,7 @@ impl<'a> Observer<'a> {
         let policy_error: Option<String> = None;
 
         let mut events_log = EventLog::open(&machine_dir.join("events.jsonl"));
+        let controller = events::controller(&machine_dir);
         let announced_move: Option<(Option<String>, Option<String>)> = None;
 
         if let Some(why) = &seams.effects_off {
@@ -414,7 +418,7 @@ impl<'a> Observer<'a> {
         log_event(
             &mut events_log,
             events::CONTROLLER_STARTED,
-            CONTROLLER,
+            &controller,
             serde_json::json!({
                 "controller_version": env!("CARGO_PKG_VERSION"),
                 "machine_dir": machine_dir.display().to_string(),
@@ -442,6 +446,7 @@ impl<'a> Observer<'a> {
             policy_seen,
             policy_error,
             events_log,
+            controller,
             announced_move,
             table_base: table.clone(),
             table_said: None,
@@ -753,7 +758,7 @@ impl<'a> Observer<'a> {
         for (seat, machine_name, item) in &logged_out {
             if let Err(e) = self.events_log.append(
                 events::DISPATCH_FAILED,
-                &seat.id,
+                &ActorRef::seat(&seat.id),
                 events::dispatch_failed_payload(
                     seat,
                     item.as_deref(),
@@ -1103,6 +1108,7 @@ impl<'a> Observer<'a> {
             let mut pass = crate::runs::Pass {
                 runs,
                 events: &mut self.events_log,
+                controller: &self.controller,
                 stream: &stream,
                 max_crashes: self.policy.run_max_crashes,
             };
@@ -1130,7 +1136,7 @@ impl<'a> Observer<'a> {
                     log_event(
                         &mut self.events_log,
                         events::SUBSTRATE_MOVED,
-                        CONTROLLER,
+                        &self.controller,
                         serde_json::json!({
                             "agent": "claude_code",
                             "observed": pair.0,
@@ -1231,7 +1237,7 @@ impl<'a> Observer<'a> {
             log_event(
                 &mut self.events_log,
                 events::CONTROLLER_STOPPED,
-                CONTROLLER,
+                &self.controller,
                 serde_json::json!({ "controller_version": env!("CARGO_PKG_VERSION") }),
             );
         }
@@ -1457,9 +1463,11 @@ impl Recorded {
 /// `seat.handed_off` are recorded as lifecycle and nothing more — neither asks
 /// for anything.
 ///
-/// The actor a line carries is the seat's id, and `known` is the ids of the
-/// seat list's rows. An actor that is no id at all — a line an older build
-/// wrote under the machine name — names no row either.
+/// The actor a line carries is REFUSED BY ITS KIND first: a run, a routine or
+/// the controller is not a seat whatever its id says, so a run whose id
+/// happens to be a seat's is never read as that seat. A seat's id is then
+/// matched against `known`, the ids of the seat list's rows; an id that is no
+/// seat id at all names no row either.
 fn fold(
     stream: &[events::Record],
     known: &BTreeSet<SeatId>,
@@ -1470,21 +1478,25 @@ fn fold(
         if !events::SEAT_TYPES.contains(&record.kind.as_str()) {
             continue;
         }
-        let Some(id) = SeatId::parse(&record.actor)
-            .ok()
-            .filter(|id| known.contains(id))
-        else {
+        let Some(said) = record.actor.seat_id() else {
             eprintln!(
-                "fleet observe: dropping a {} whose actor `{}` names no seat row",
+                "fleet observe: dropping a {} whose actor {} is not a seat",
                 record.kind, record.actor
+            );
+            continue;
+        };
+        let Some(id) = SeatId::parse(said).ok().filter(|id| known.contains(id)) else {
+            eprintln!(
+                "fleet observe: dropping a {} whose actor `{said}` names no seat row",
+                record.kind
             );
             continue;
         };
         if record.kind == events::SEAT_RESTING && transient.contains(&id) {
             eprintln!(
-                "fleet observe: dropping a {} for `{}`, which is a transient row; only named \
+                "fleet observe: dropping a {} for `{said}`, which is a transient row; only named \
                  seats rest",
-                record.kind, record.actor
+                record.kind
             );
             continue;
         }
@@ -1590,7 +1602,7 @@ fn write_projection(machine_dir: &Path, document: &Projection) {
     }
 }
 
-fn log_event(events_log: &mut EventLog, kind: &str, actor: &str, payload: serde_json::Value) {
+fn log_event(events_log: &mut EventLog, kind: &str, actor: &ActorRef, payload: serde_json::Value) {
     if let Err(e) = events_log.append(kind, actor, payload) {
         eprintln!("fleet observe: could not append {kind} to the event stream: {e}");
     }

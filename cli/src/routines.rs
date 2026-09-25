@@ -545,7 +545,7 @@ fn routine_rows(machine_dir: &std::path::Path, name: Option<&str>, since: u64) -
                 .payload
                 .get("order")
                 .and_then(|o| o.as_str())
-                .unwrap_or(&record.actor)
+                .unwrap_or(&record.actor.id)
                 .to_string();
             format!(
                 "{}  {}  {}  {}  {}",

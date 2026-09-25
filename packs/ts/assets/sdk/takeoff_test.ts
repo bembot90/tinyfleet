@@ -101,7 +101,10 @@ async function delivered(
   item: string,
   commit: string,
 ): Promise<number> {
-  return await append(s.env.stream, "item.delivered", "a-builder", {
+  return await append(s.env.stream, "item.delivered", {
+    kind: "seat",
+    id: "a-builder",
+  }, {
     item,
     commit,
     branch: `w/${item}`,
@@ -280,7 +283,7 @@ Deno.test("AC1 hold — under review=hold every verdict is a hold: the flight wa
     "one ask across the re-runs",
   );
 
-  await append(s.env.stream, "hold.cleared", "a-person", {
+  await append(s.env.stream, "hold.cleared", { kind: "seat", id: "a-person" }, {
     item: runId,
     hold: "hold-1",
     letter: "B",
@@ -347,7 +350,7 @@ Deno.test("AC1 hold — under review=hold every verdict is a hold: the flight wa
     code: 2,
     waiting: "hold-2",
   });
-  await append(t.env.stream, "hold.cleared", "a-person", {
+  await append(t.env.stream, "hold.cleared", { kind: "seat", id: "a-person" }, {
     item: t.env.runId,
     hold: "hold-2",
     letter: "A",
@@ -404,7 +407,7 @@ Deno.test("AC1 an item taken back — its delivery sits at or below the seq the 
     "the hold carries the delivery's own commit",
   );
 
-  await append(env.stream, "hold.cleared", "a-person", {
+  await append(env.stream, "hold.cleared", { kind: "seat", id: "a-person" }, {
     item: runId,
     hold: "hold-1",
     letter: "A",

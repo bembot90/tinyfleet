@@ -278,13 +278,17 @@ fn a_live_row_and_a_fresh_projection_carry_the_text_and_say_sent() {
     let event = &events[0];
     assert_eq!(
         event["actor"],
-        serde_json::json!(SEAT_ID),
-        "the line's actor is the seat's id"
+        serde_json::json!({ "kind": "seat", "id": SEAT_ID }),
+        "the line's actor is the seat nudged, by its id"
     );
     assert_eq!(event["payload"]["outcome"], serde_json::json!("sent"));
     assert_eq!(event["payload"]["source"], serde_json::json!("seat nudge"));
     assert_eq!(event["payload"]["session"], serde_json::json!("abcdef"));
-    assert_eq!(event["payload"]["by"], serde_json::json!("run:a-caller"));
+    assert_eq!(
+        event["payload"]["by"],
+        serde_json::json!({ "kind": "run", "id": "a-caller" }),
+        "who sent it is the payload's `by`, typed"
+    );
     assert_eq!(
         event["payload"]["context_tokens"],
         serde_json::Value::Null,
@@ -320,7 +324,10 @@ fn a_renamed_seat_is_rung_by_the_session_name_its_row_recorded() {
     );
     let events = rig.nudged_events();
     assert_eq!(events.len(), 1, "one event: {events:?}");
-    assert_eq!(events[0]["actor"], serde_json::json!(SEAT_ID));
+    assert_eq!(
+        events[0]["actor"],
+        serde_json::json!({ "kind": "seat", "id": SEAT_ID })
+    );
 }
 
 #[test]

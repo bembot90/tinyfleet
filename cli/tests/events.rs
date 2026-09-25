@@ -35,9 +35,13 @@ const TYPES: [&str; 4] = [
     "seat.exited",
 ];
 
-/// The two actors it alternates between. Neither is a seat this fleet runs:
-/// what the filter matches is the stored string.
-const SEATS: [&str; 2] = ["builder-a", "builder-b"];
+/// The two actors it alternates between, both runs by their ids: what
+/// `--actor` matches is the stored `{kind, id}`, typed and exact.
+const RUNS: [&str; 2] = ["builder-a", "builder-b"];
+
+/// A seat the policy lists under a name, for the `--seat` arms: the argument
+/// is resolved through the roster, and the line is kept by the id it names.
+const ORLA_ID: &str = "01a0d1f1-0aec-765f-9abe-00000000000b";
 
 struct Rig {
     root: PathBuf,
@@ -113,11 +117,21 @@ fn code(output: &Output) -> Option<i32> {
 /// has. The id is `event_id`'s: hex nanoseconds, a hyphen, then hex sequence.
 fn line(seq: usize) -> String {
     format!(
-        "{{\"id\":\"{}\",\"seq\":{seq},\"ts\":\"{}\",\"type\":\"{}\",\"actor\":\"{}\",\"payload\":{{}}}}",
+        "{{\"id\":\"{}\",\"seq\":{seq},\"ts\":\"{}\",\"type\":\"{}\",\"actor\":{{\"kind\":\"run\",\"id\":\"{}\"}},\"payload\":{{}}}}",
         id(seq),
         stamp(seq),
         TYPES[(seq - 1) % TYPES.len()],
-        SEATS[(seq - 1) % SEATS.len()],
+        RUNS[(seq - 1) % RUNS.len()],
+    )
+}
+
+/// One stored line by the actor given as its stored JSON, for the arms that
+/// mix kinds.
+fn line_by(seq: usize, kind: &str, actor: &str) -> String {
+    format!(
+        "{{\"id\":\"{}\",\"seq\":{seq},\"ts\":\"{}\",\"type\":\"{kind}\",\"actor\":{actor},\"payload\":{{}}}}",
+        id(seq),
+        stamp(seq),
     )
 }
 
@@ -194,33 +208,33 @@ fn the_tail_answers_the_last_fifty_lines_as_stored_and_the_cursor_moves_them() {
 /// AC1 — the filters, and the ORDER they run in: filter first, then the last
 /// fifty that survive.
 ///
-/// The fixture is built so the two orders differ. `builder-a` says a hundred of
-/// the two hundred lines, so filtering first answers fifty of that seat's own
-/// lines and taking fifty first would answer twenty-five; a type says fifty, so
-/// filtering first answers all fifty and taking fifty first would answer twelve
-/// or thirteen. Each count is computed from the fixture here.
+/// The fixture is built so the two orders differ. `run:builder-a` says a
+/// hundred of the two hundred lines, so filtering first answers fifty of that
+/// run's own lines and taking fifty first would answer twenty-five; a type says
+/// fifty, so filtering first answers all fifty and taking fifty first would
+/// answer twelve or thirteen. Each count is computed from the fixture here.
 #[test]
 fn the_filters_run_before_the_last_fifty_are_taken_and_combine_as_an_and() {
     let rig = Rig::new("filters");
     rig.write_stream(&fixture());
 
-    let seat_lines: Vec<usize> = (1..=LINES)
-        .filter(|seq| SEATS[(seq - 1) % 2] == "builder-a")
+    let actor_lines: Vec<usize> = (1..=LINES)
+        .filter(|seq| RUNS[(seq - 1) % 2] == "builder-a")
         .collect();
     assert_eq!(
-        seat_lines.len(),
+        actor_lines.len(),
         100,
         "the fixture the assertion is read off"
     );
-    let wanted: Vec<usize> = seat_lines[seat_lines.len() - DEFAULT..].to_vec();
-    let by_seat = rig.fleet(&["event", "tail", "--seat", "builder-a"]);
-    assert_eq!(code(&by_seat), Some(0), "{}", err(&by_seat));
+    let wanted: Vec<usize> = actor_lines[actor_lines.len() - DEFAULT..].to_vec();
+    let by_actor = rig.fleet(&["event", "tail", "--actor", "run:builder-a"]);
+    assert_eq!(code(&by_actor), Some(0), "{}", err(&by_actor));
     assert_eq!(
-        out(&by_seat),
+        out(&by_actor),
         expected(&wanted),
         "filtering after the take would answer twenty-five of these"
     );
-    assert_eq!(out(&by_seat).lines().count(), DEFAULT);
+    assert_eq!(out(&by_actor).lines().count(), DEFAULT);
 
     // A type: fifty lines in the fixture, so filtering first answers all fifty.
     let typed: Vec<usize> = (1..=LINES)
@@ -232,22 +246,159 @@ fn the_filters_run_before_the_last_fifty_are_taken_and_combine_as_an_and() {
     assert_eq!(out(&by_type), expected(&typed));
 
     // The two together are an AND. `seat.woke` falls on every fourth line from
-    // the first, which is odd, so `builder-a` says all fifty of them and
-    // `builder-b` says none — which is the reading a filter that ORed would
+    // the first, which is odd, so `run:builder-a` says all fifty of them and
+    // `run:builder-b` says none — which is the reading a filter that ORed would
     // fail on both halves.
     let woke: Vec<usize> = (1..=LINES)
         .filter(|seq| TYPES[(seq - 1) % 4] == TYPES[0])
         .collect();
-    let both = rig.fleet(&["event", "tail", "--seat", "builder-a", "--type", TYPES[0]]);
+    let both = rig.fleet(&[
+        "event",
+        "tail",
+        "--actor",
+        "run:builder-a",
+        "--type",
+        TYPES[0],
+    ]);
     assert_eq!(code(&both), Some(0), "{}", err(&both));
     assert_eq!(out(&both), expected(&woke));
-    let neither = rig.fleet(&["event", "tail", "--seat", "builder-b", "--type", TYPES[0]]);
+    let neither = rig.fleet(&[
+        "event",
+        "tail",
+        "--actor",
+        "run:builder-b",
+        "--type",
+        TYPES[0],
+    ]);
     assert_eq!(code(&neither), Some(0), "{}", err(&neither));
     assert_eq!(
         out(&neither),
         "",
         "no line is both, so the AND answers none"
     );
+}
+
+/// The lines the `--seat` and `--actor` arms read: Orla's own two, a run's, a
+/// run whose id is Orla's own id, and a line an older build wrote with the
+/// actor as a bare string.
+fn mixed() -> Vec<String> {
+    let orla = format!("{{\"kind\":\"seat\",\"id\":\"{ORLA_ID}\"}}");
+    vec![
+        line_by(1, "seat.woke", &orla),
+        line_by(2, "run.started", "{\"kind\":\"run\",\"id\":\"r1\"}"),
+        line_by(3, "seat.resting", &orla),
+        line_by(
+            4,
+            "run.started",
+            &format!("{{\"kind\":\"run\",\"id\":\"{ORLA_ID}\"}}"),
+        ),
+        line_by(5, "run.closed", "{\"kind\":\"run\",\"id\":\"r2\"}"),
+        line_by(6, "run.closed", "\"run:r1\""),
+        line_by(7, "run.closed", "{\"kind\":\"run\",\"id\":\"r1\"}"),
+    ]
+}
+
+/// The lines of [`mixed`] the arm expects back, as stdout would carry them.
+fn mixed_expected(seqs: &[usize]) -> String {
+    let all = mixed();
+    let mut body = seqs
+        .iter()
+        .map(|seq| all[seq - 1].clone())
+        .collect::<Vec<String>>()
+        .join("\n");
+    body.push('\n');
+    body
+}
+
+/// `--seat` resolves its argument through the resolver — over the policy's
+/// roster, the machine's rows and its identity — and keeps the lines whose
+/// actor is that seat: Orla's two lines, and never a run's, even a run whose id
+/// is Orla's own.
+#[test]
+fn tail_seat_resolves_the_argument_and_keeps_only_that_seats_lines() {
+    let rig = Rig::new("seat-filter");
+    rig.write_stream(&mixed());
+    std::fs::write(
+        rig.root.join("fleet.toml"),
+        format!("[seats.{ORLA_ID}]\nkind = \"agent\"\nname = \"Orla\"\n"),
+    )
+    .unwrap();
+    let tail = |args: &[&str]| {
+        rig.command(args)
+            .current_dir(&rig.root)
+            .output()
+            .expect("the built binary runs")
+    };
+
+    for named in ["orla", "Orla", "00000000000b", ORLA_ID] {
+        let kept = tail(&["event", "tail", "--seat", named]);
+        assert_eq!(code(&kept), Some(0), "{named}: {}", err(&kept));
+        assert_eq!(out(&kept), mixed_expected(&[1, 3]), "{named}");
+    }
+
+    // The filters combine as an AND.
+    let rested = tail(&["event", "tail", "--seat", "orla", "--type", "seat.resting"]);
+    assert_eq!(code(&rested), Some(0), "{}", err(&rested));
+    assert_eq!(out(&rested), mixed_expected(&[3]));
+
+    // A seat the fleet does not list is the resolver's refusal, exit 1, and an
+    // empty argument is the call's fault, exit 2 — each in the envelope's
+    // refusal shape under `--json`.
+    let nobody = tail(&["event", "tail", "--seat", "nobody"]);
+    assert_eq!(code(&nobody), Some(1), "{}", err(&nobody));
+    assert_eq!(out(&nobody), "");
+    assert!(
+        err(&nobody).contains("fleet event tail: --seat nobody names no seat"),
+        "{}",
+        err(&nobody)
+    );
+    for (arg, exit, class) in [("nobody", 1, "refused"), ("", 2, "usage")] {
+        let refused = tail(&["event", "tail", "--seat", arg, "--json"]);
+        assert_eq!(code(&refused), Some(exit), "{arg:?}: {}", err(&refused));
+        let parsed: serde_json::Value = serde_json::from_str(&out(&refused))
+            .unwrap_or_else(|e| panic!("{e}: {}", out(&refused)));
+        assert_eq!(parsed["ok"], serde_json::Value::Bool(false));
+        assert_eq!(parsed["verb"], "event tail");
+        assert_eq!(parsed["refusal"]["code"], class, "{parsed}");
+    }
+}
+
+/// `--actor <kind>:<id>` keeps an exact typed match: r1's own lines, and not
+/// r2's, not a seat's, and not a line whose actor is the bare string `run:r1`.
+/// Text that is not a typed actor is a usage error.
+#[test]
+fn tail_actor_keeps_an_exact_typed_match_and_refuses_what_is_not_one() {
+    let rig = Rig::new("actor-filter");
+    rig.write_stream(&mixed());
+
+    let r1 = rig.fleet(&["event", "tail", "--actor", "run:r1"]);
+    assert_eq!(code(&r1), Some(0), "{}", err(&r1));
+    assert_eq!(out(&r1), mixed_expected(&[2, 7]));
+
+    let orla = rig.fleet(&["event", "tail", "--actor", &format!("seat:{ORLA_ID}")]);
+    assert_eq!(code(&orla), Some(0), "{}", err(&orla));
+    assert_eq!(out(&orla), mixed_expected(&[1, 3]));
+
+    for bad in ["nonsense", "run:", "seat:not-a-uuid"] {
+        let refused = rig.fleet(&["event", "tail", "--actor", bad]);
+        assert_eq!(code(&refused), Some(2), "{bad}: {}", err(&refused));
+        assert_eq!(out(&refused), "", "{bad}");
+        assert!(
+            err(&refused).starts_with("fleet event tail: --actor ") && err(&refused).contains(bad),
+            "{bad}: {}",
+            err(&refused)
+        );
+    }
+    assert!(
+        err(&rig.fleet(&["event", "tail", "--actor", "nonsense"]))
+            .contains("fleet event tail: --actor nonsense is not kind:id"),
+        "text that is no typed actor at all says what it is not"
+    );
+    let nonsense = rig.fleet(&["event", "tail", "--actor", "nonsense", "--json"]);
+    assert_eq!(code(&nonsense), Some(2), "{}", err(&nonsense));
+    let parsed: serde_json::Value =
+        serde_json::from_str(&out(&nonsense)).unwrap_or_else(|e| panic!("{e}: {}", out(&nonsense)));
+    assert_eq!(parsed["refusal"]["code"], "usage", "{parsed}");
 }
 
 /// AC2 — a stamp given to `--since`: the sequence it resolves to is inclusive,
@@ -302,12 +453,12 @@ fn a_stamp_resolves_to_a_sequence_and_says_which_one_on_stderr() {
     let gapped = Rig::new("gap");
     gapped.write_stream(&[
         format!(
-            "{{\"id\":\"a\",\"seq\":1,\"ts\":\"{}\",\"type\":\"{}\",\"actor\":\"builder-a\"}}",
+            "{{\"id\":\"a\",\"seq\":1,\"ts\":\"{}\",\"type\":\"{}\",\"actor\":{{\"kind\":\"run\",\"id\":\"builder-a\"}}}}",
             clock::stamp_secs(START),
             TYPES[0]
         ),
         format!(
-            "{{\"id\":\"b\",\"seq\":2,\"ts\":\"{}\",\"type\":\"{}\",\"actor\":\"builder-a\"}}",
+            "{{\"id\":\"b\",\"seq\":2,\"ts\":\"{}\",\"type\":\"{}\",\"actor\":{{\"kind\":\"run\",\"id\":\"builder-a\"}}}}",
             clock::stamp_secs(START + 10),
             TYPES[0]
         ),
@@ -503,6 +654,12 @@ fn the_json_readers_print_one_envelope_per_event_carrying_the_record_whole() {
         assert_eq!(parsed["data"]["ts"], stored["ts"], "{document}");
         assert_eq!(parsed["data"]["kind"], stored["type"], "{document}");
         assert_eq!(parsed["data"]["actor"], stored["actor"], "{document}");
+        // The actor is the typed object, not a string of it.
+        assert_eq!(
+            parsed["data"]["actor"],
+            serde_json::json!({ "kind": "run", "id": RUNS[index % 2] }),
+            "{document}"
+        );
         assert_eq!(parsed["data"]["payload"], stored["payload"], "{document}");
     }
 
@@ -629,7 +786,7 @@ fn the_step_writer_appends_both_halves_on_the_run_and_the_json_tail_reads_the_cl
     assert_eq!(first["type"], "step.started");
     assert_eq!(
         first["actor"],
-        format!("run:{run}"),
+        serde_json::json!({ "kind": "run", "id": run }),
         "the run is the actor: {first}"
     );
     assert_eq!(first["payload"]["run"], run);
@@ -661,7 +818,10 @@ fn the_step_writer_appends_both_halves_on_the_run_and_the_json_tail_reads_the_cl
     assert_eq!(code(&closed), Some(0), "{}", err(&closed));
     let second = stream(2);
     assert_eq!(second["type"], "step.closed");
-    assert_eq!(second["actor"], "routine:x");
+    assert_eq!(
+        second["actor"],
+        serde_json::json!({ "kind": "routine", "id": "x" })
+    );
     assert_eq!(second["payload"]["n"], 1);
     assert_eq!(second["payload"]["name"], "fetch");
     assert_eq!(

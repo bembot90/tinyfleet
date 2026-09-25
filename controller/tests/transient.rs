@@ -1266,7 +1266,7 @@ fn a_spawn_makes_a_detached_worktree_a_row_and_a_session_and_prints_its_name() {
     assert_eq!(flag("--name"), Some(seat));
 
     // The session-table row, keyed on the seat's id, and the one event, whose
-    // actor is that id.
+    // actor is that seat, by its id.
     let table = rig.table();
     let opened = table
         .newest_for(&row.id.to_string())
@@ -1284,7 +1284,10 @@ fn a_spawn_makes_a_detached_worktree_a_row_and_a_session_and_prints_its_name() {
     );
     let spawned_lines = rig.events_of(events::SESSION_SPAWNED);
     assert_eq!(spawned_lines.len(), 1);
-    assert_eq!(spawned_lines[0]["actor"], row.id.to_string());
+    assert_eq!(
+        spawned_lines[0]["actor"],
+        serde_json::json!({ "kind": "seat", "id": row.id.to_string() })
+    );
     assert!(rig.events_of(events::SESSION_CRASHED).is_empty());
 
     // A second spawn mints a seat of its own and its own directory.
@@ -1545,7 +1548,11 @@ fn a_live_idle_row_is_fed_and_the_occupant_marker_moves() {
 
     let nudged = rig.events_of(events::SESSION_NUDGED);
     assert_eq!(nudged.len(), 1, "one line for one move: {nudged:?}");
-    assert_eq!(nudged[0]["actor"], id, "the line's actor is the seat's id");
+    assert_eq!(
+        nudged[0]["actor"],
+        serde_json::json!({ "kind": "seat", "id": id }),
+        "the line's actor is the seat, by its id"
+    );
     assert_eq!(
         nudged[0]["payload"]["prior_first_turn"],
         "the turn it came up with"
@@ -1655,7 +1662,11 @@ fn a_retire_stops_removes_prunes_drops_both_rows_and_prints_the_reclaim() {
 
     let stopped = rig.events_of(events::SESSION_STOPPED);
     assert_eq!(stopped.len(), 1, "one line: {stopped:?}");
-    assert_eq!(stopped[0]["actor"], id, "the line's actor is the seat's id");
+    assert_eq!(
+        stopped[0]["actor"],
+        serde_json::json!({ "kind": "seat", "id": id }),
+        "the line's actor is the seat, by its id"
+    );
     assert_eq!(stopped[0]["payload"]["pid"], pid);
     assert_eq!(stopped[0]["payload"]["dead"], false);
     assert_eq!(stopped[0]["payload"]["bytes"], reclaimed.bytes.unwrap());
@@ -2834,8 +2845,9 @@ fn a_priced_retire_reads_the_cost_the_branch_and_the_commit_before_it_reclaims()
     assert_eq!(payload["pid"], pid, "and the reclaim beside it");
     assert_eq!(payload["bytes"], priced.reclaimed.bytes.unwrap());
     assert_eq!(
-        retired[0]["actor"], id,
-        "the line's actor is the seat's id, and its payload names the machine name"
+        retired[0]["actor"],
+        serde_json::json!({ "kind": "seat", "id": id }),
+        "the line's actor is the seat, by its id, and its payload names the machine name"
     );
 }
 

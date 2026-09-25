@@ -32,7 +32,7 @@ use crate::adapter::{dir_key, Agent, RemoveAnswer, RosterRead};
 use crate::clock::Clock;
 use crate::config::{self, Seat};
 use crate::effect::{self, Outcome, Target};
-use crate::events::{self, EventLog};
+use crate::events::{self, ActorRef, EventLog};
 use crate::platform;
 use crate::policy::Policy;
 use crate::projection::SeatView;
@@ -233,6 +233,9 @@ impl Machine<'_> {
     /// It is could-not-tell rather than a refusal, which is the same shape a
     /// probe that cannot answer takes: the act stands, and the message says
     /// which line did not land.
+    ///
+    /// Every line these verbs write is about a seat, and names it as the actor
+    /// by its id.
     fn journal(
         &self,
         log: &mut EventLog,
@@ -240,13 +243,14 @@ impl Machine<'_> {
         seat: &str,
         payload: serde_json::Value,
     ) -> Result<(), Refusal> {
-        log.append(kind, seat, payload).map_err(|e| {
-            Refusal::could_not_tell(format!(
-                "{kind} for `{seat}` could not be appended to {}, so the act stands and the \
+        log.append(kind, &ActorRef::seat(seat), payload)
+            .map_err(|e| {
+                Refusal::could_not_tell(format!(
+                    "{kind} for `{seat}` could not be appended to {}, so the act stands and the \
                  ledger does not carry it: {e}",
-                self.stream_path().display()
-            ))
-        })
+                    self.stream_path().display()
+                ))
+            })
     }
 
     /// One listing, once. `Unreadable` is could-not-tell on every verb that
@@ -1123,12 +1127,14 @@ fn rolled_back(
 }
 
 /// The output file the `session.crashed` line this start wrote names. `seat` is
-/// the seat's id, which is the line's actor.
+/// the seat's id, and the line's actor is that seat.
 fn crashed_output(stream: &Path, after: u64, seat: &str) -> Option<String> {
     events::read_after(stream, after)
         .into_iter()
         .rev()
-        .find(|record| record.kind == events::SESSION_CRASHED && record.actor == seat)
+        .find(|record| {
+            record.kind == events::SESSION_CRASHED && record.actor.seat_id() == Some(seat)
+        })
         .and_then(|record| {
             record
                 .payload

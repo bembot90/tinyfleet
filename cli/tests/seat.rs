@@ -1502,7 +1502,10 @@ fn dispatch_without_a_seat_spawns_through_the_real_spawner_and_assigns_the_name(
     let events = rig.events();
     let last = events.last().expect("the stream carries the dispatch");
     assert_eq!(last["type"].as_str(), Some("item.dispatched"), "{last}");
-    assert_eq!(last["actor"].as_str(), Some(ARCHITECT));
+    assert_eq!(
+        last["actor"],
+        serde_json::json!({ "kind": "seat", "id": &ARCHITECT["seat:".len()..] })
+    );
     assert_eq!(last["payload"]["item"].as_str(), Some(item.as_str()));
     assert_eq!(
         last["payload"]["seat"],

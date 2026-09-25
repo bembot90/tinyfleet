@@ -304,13 +304,13 @@ pub fn run(out: &mut dyn Write, order: &Order, wiring: &Wiring) -> Result<Ran, S
         path: &path,
     };
     let hash = pin_and_bundle(pinning, order, wiring)
-        .map_err(|stop| never_started(&id, stop, &order.by.to_string(), wiring))?;
+        .map_err(|stop| never_started(&id, stop, order.by, wiring))?;
 
     wiring
         .events
         .append(
             RUN_STARTED,
-            &order.by.to_string(),
+            order.by,
             serde_json::json!({
                 "run": id,
                 "hash": hash,
@@ -467,7 +467,7 @@ pub fn rerun(out: &mut dyn Write, again: &Again, wiring: &Wiring) -> Result<Ende
         .events
         .append(
             RUN_STARTED,
-            &again.by.to_string(),
+            again.by,
             serde_json::json!({
                 "run": started.run,
                 "hash": started.hash,
@@ -602,13 +602,13 @@ pub fn cancel(
         ))
     };
     events
-        .append(RUN_CANCELLED, &by, serde_json::json!({ "run": run }))
+        .append(RUN_CANCELLED, cancel.by, serde_json::json!({ "run": run }))
         .map_err(written)?;
     for hold in &holds {
         events
             .append(
                 HOLD_CLEARED,
-                &by,
+                cancel.by,
                 serde_json::json!({ "item": run, "hold": hold, "letter": serde_json::Value::Null }),
             )
             .map_err(written)?;
@@ -1282,10 +1282,10 @@ fn pin_and_bundle(pinning: Pinning, order: &Order, wiring: &Wiring) -> Result<St
 /// THE CLOSE, THEN THE EVENT, as the back half's polarity has it: `run.failed`
 /// over a record still open would announce an end the store does not hold. The
 /// refusal keeps its own exit, because what went wrong is still what it says.
-fn never_started(id: &str, stop: Stop, by: &str, wiring: &Wiring) -> Stop {
+fn never_started(id: &str, stop: Stop, by: &Actor, wiring: &Wiring) -> Stop {
     let fate = match wiring
         .store
-        .close(id, "the run failed before it started", by)
+        .close(id, "the run failed before it started", &by.to_string())
     {
         Err(e) => format!(
             "the record {id} filed for this run STANDS open, and its close did not land: {e} — \
@@ -1490,7 +1490,7 @@ fn execute(
     }
     wiring
         .events
-        .append(ended.kind(), &order.by.to_string(), payload)
+        .append(ended.kind(), order.by, payload)
         .map_err(|e| {
             Stop::could_not_tell(format!(
                 "{} {} and {} did not reach the stream: {e}\n  the record STANDS",

@@ -162,14 +162,14 @@ impl Rig {
             .collect()
     }
 
-    /// Every line the run wrote, as `<type> <actor>` pairs — the actor beside
+    /// Every line the run wrote, as `<type> <actor id>` pairs — the actor beside
     /// the kind, because what each arm asserts is WHICH seat got which line.
     fn lines(&self) -> Vec<String> {
         self.stream()
             .into_iter()
             .filter_map(|event| {
                 let kind = event["type"].as_str()?.to_string();
-                let actor = event["actor"].as_str().unwrap_or("-").to_string();
+                let actor = event["actor"]["id"].as_str().unwrap_or("-").to_string();
                 Some(format!("{kind} {actor}"))
             })
             .collect()
