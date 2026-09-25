@@ -107,11 +107,14 @@ pub const CHECKS: &[(&str, Check)] = &[
 
 /// Every check against the one store, in [`CHECKS`]' order, each answer
 /// beside its name. A failure never stops the run.
-pub fn run(ctx: &Ctx) -> Vec<(&'static str, Result<Passed, String>)> {
-    CHECKS
-        .iter()
-        .map(|(name, check)| (*name, check(ctx)))
-        .collect()
+///
+/// A CHECK IS ASKED ONLY AS THE NEXT ANSWER IS READ, so a caller prints each
+/// answer as it lands: the whole table on a store that forks a process per
+/// call takes long enough that a silent run reads as a hung one.
+pub fn run<'c>(
+    ctx: &'c Ctx<'c>,
+) -> impl Iterator<Item = (&'static str, Result<Passed, String>)> + 'c {
+    CHECKS.iter().map(move |(name, check)| (*name, check(ctx)))
 }
 
 type Answer = Result<Passed, String>;

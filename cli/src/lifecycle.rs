@@ -17,7 +17,7 @@ use fleet_controller::{config, events, platform, policy as controller};
 use fleet_core::defaults;
 use fleet_core::item::Stop;
 use fleet_core::seat::identity;
-use fleet_core::store::{self, Opening, PackDirs, STORE_TIMEOUT};
+use fleet_core::store::{self, AdapterSource, Opening, PackDirs, STORE_TIMEOUT};
 
 use crate::exit::Exit;
 use crate::item::{derived_worktrees_dir, resolve_at, resolve_from};
@@ -179,6 +179,7 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
             let prefix = store::open(&Opening {
                 root: &root,
                 policy: &store::project_policy(&root)?,
+                source: AdapterSource::Setting,
                 search_path: &platform::child_path(&platform::home_dir()),
                 strict: false,
                 timeout: STORE_TIMEOUT,

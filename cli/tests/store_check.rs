@@ -10,9 +10,12 @@
 //! them and read their request off stdin, one process per call, as
 //! `core/src/store/exec.rs` runs one.
 
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use fleet_core::store::conformance::CHECKS;
 
@@ -67,6 +70,21 @@ impl Rig {
             .hermetic(&self.root.join("home"), &self.root.join("machine"), None)
             .env("TMPDIR", self.tmp())
             .output()
+            .expect("the built binary runs")
+    }
+
+    /// `fleet store check` with `args` as [`check`](Rig::check) runs it, left
+    /// running with its stdout on a pipe the arm reads.
+    fn spawned(&self, args: &[&str]) -> Child {
+        Command::new(env!("CARGO_BIN_EXE_fleet"))
+            .args(["store", "check"])
+            .args(args)
+            .current_dir(self.project())
+            .hermetic(&self.root.join("home"), &self.root.join("machine"), None)
+            .env("TMPDIR", self.tmp())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
             .expect("the built binary runs")
     }
 
@@ -316,16 +334,19 @@ fn a_relative_adapter_path_is_usage() {
 }
 
 /// Arm 5. An adapter path nothing is at could not be run: exit 3, naming the
-/// path.
+/// path and the flag that named it, which is not the project's `[store]
+/// adapter`.
+///
+/// RED-PROOF: on the base the refusal opens `[store] adapter names`, a key
+/// this run was never handed.
 #[test]
 fn an_adapter_nothing_is_at_is_could_not_tell_naming_the_path() {
     let rig = Rig::new("nonexistent");
     let out = rig.check(&["--adapter", "/nonexistent"]);
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
-    assert!(
-        stderr(&out).contains("/nonexistent"),
-        "the refusal names the path: {}",
-        stderr(&out)
+    assert_eq!(
+        stderr(&out),
+        "fleet store check: --adapter names `/nonexistent`, which is not an executable file\n"
     );
     assert_eq!(stdout(&out), "", "no check line was printed");
     assert!(
@@ -381,6 +402,76 @@ fn a_project_naming_an_adapter_is_checked_on_the_one_its_packs_carry() {
          store it makes for the purpose — nothing was run\n"
     );
     assert_eq!(rig.argv(), ["capabilities"], "the pack's entry was asked");
+    assert!(
+        rig.left().is_empty(),
+        "the temp dir is gone: {:?}",
+        rig.left()
+    );
+}
+
+/// Arm 7. Each check's line is on stdout as its check is answered, before the
+/// next check is asked: an adapter whose `version` waits on a file the arm
+/// writes has the first check's line read off the pipe while the run is still
+/// waiting on the second.
+///
+/// The wait is bounded inside the stub, under the store call's own bound, so
+/// the run ends whichever way the arm goes and leaves no process behind.
+///
+/// RED-PROOF: a run that prints once every check has answered prints nothing
+/// while `version` waits, and no line is read within the bound.
+#[test]
+fn each_line_is_printed_as_its_check_is_answered() {
+    let rig = Rig::new("streamed");
+    let release = rig.root.join("release");
+    let adapter = rig.stub(&format!(
+        "capabilities) echo '{{\"schema_version\":1,\"scratch\":true}}' ;;\n\
+         scratch)\n\
+           into=$(printf '%s' \"$request\" | sed -n 's/.*\"into\":\"\\([^\"]*\\)\".*/\\1/p')\n\
+           printf '{{\"schema_version\":1,\"root\":\"%s\"}}\\n' \"$into\" ;;\n\
+         version)\n\
+           i=0\n\
+           while [ ! -f '{release}' ] && [ $i -lt 400 ]; do sleep 0.1; i=$((i+1)); done\n\
+           echo '{{\"schema_version\":1}}' ;;\n\
+         *) echo '{{\"schema_version\":1}}' ;;",
+        release = release.display(),
+    ));
+    let mut child = rig.spawned(&["--adapter", &adapter.to_string_lossy()]);
+    let pipe = child.stdout.take().expect("stdout is piped");
+    let (lines, read) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(pipe).lines() {
+            let Ok(line) = line else { break };
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    let first = read.recv_timeout(Duration::from_secs(20));
+    let running = child.try_wait().expect("the run's state reads").is_none();
+    std::fs::write(&release, "").expect("the stub's wait is released");
+    let status = child.wait().expect("the run ends");
+    reader.join().expect("the reader ends");
+    let rest: Vec<String> = read.try_iter().collect();
+
+    let first = first.expect("a line is on stdout while the second check waits");
+    assert!(
+        ["PASS  empty listings", "FAIL  empty listings: "]
+            .iter()
+            .any(|opens| first.starts_with(opens)),
+        "the first line is the first check's: {first}"
+    );
+    assert!(running, "the first line was read before the run ended");
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "the bare stub fails checks: {rest:?}"
+    );
+    assert_eq!(
+        rest.len(),
+        CHECKS.len(),
+        "every other check's line and the summary followed: {rest:?}"
+    );
     assert!(
         rig.left().is_empty(),
         "the temp dir is gone: {:?}",

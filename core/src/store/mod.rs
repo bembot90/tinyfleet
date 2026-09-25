@@ -345,6 +345,9 @@ pub struct Opening<'a> {
     /// `fleet.toml`. A standalone fleet's file is the fleet's, not the
     /// project's, and names no store.
     pub policy: &'a toml::Table,
+    /// Where the `[store] adapter` in `policy` was written, which a refusal
+    /// of it names: the project's own file, or a flag a verb carried into it.
+    pub source: AdapterSource,
     /// The search path the built-in store's binary is resolved on: the
     /// caller's constructed child `PATH`, and never this process's own, which
     /// under a service holds neither a package manager's prefix nor the user's
@@ -359,6 +362,26 @@ pub struct Opening<'a> {
     /// Where an adapter's bare name is resolved, or `None` for a caller with
     /// no machine's packs behind it, where a name resolves nowhere.
     pub packs: Option<PackDirs<'a>>,
+}
+
+/// Where the `[store] adapter` an [`Opening`] opens by was written, so a
+/// refusal names the thing a person wrote and not a key they never did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdapterSource {
+    /// `[store] adapter` in the project's own file.
+    Setting,
+    /// `fleet store check --adapter`, carried into the policy as the setting.
+    Flag,
+}
+
+impl AdapterSource {
+    /// What the person wrote, as a refusal quotes it.
+    fn written(self) -> &'static str {
+        match self {
+            AdapterSource::Setting => "[store] adapter",
+            AdapterSource::Flag => "--adapter",
+        }
+    }
 }
 
 /// The installed packs and the binary's defaults beneath them, as
@@ -377,8 +400,8 @@ pub struct PackDirs<'a> {
 /// built-in store's name, or no key at all, is that store; an absolute path to
 /// an executable file is an adapter that answers the contract at that path;
 /// any other name is the store adapter the installed packs carry under it.
-/// Anything else is could not tell, naming what the file said, and nothing is
-/// run.
+/// Anything else is could not tell, naming what was written where it was
+/// ([`AdapterSource`]), and nothing is run.
 ///
 /// ONE OPENER FOR EVERY CALLER — the verbs, the run pass and `fleet prime` —
 /// so the store a verb writes to and the one the pass reads are one store.
@@ -391,7 +414,7 @@ pub fn open(at: &Opening) -> Result<Box<dyn Store>, StoreError> {
         Some(toml::Value::String(path)) if path.starts_with('/') => {
             let adapter = Path::new(path);
             if !executable_file(adapter) {
-                return Err(unopened(Unopened::NotExecutable(path)));
+                return Err(unopened(at.source, Unopened::NotExecutable(path)));
             }
             Ok(Box::new(
                 exec::Exec::at(adapter, at.root).with_timeout(at.timeout),
@@ -400,8 +423,13 @@ pub fn open(at: &Opening) -> Result<Box<dyn Store>, StoreError> {
         Some(toml::Value::String(name)) if !name.is_empty() && !name.contains('/') => {
             by_name(at, name)
         }
-        Some(toml::Value::String(other)) => Err(unopened(Unopened::NeitherForm(other.clone()))),
-        Some(other) => Err(unopened(Unopened::NeitherForm(other.to_string()))),
+        Some(toml::Value::String(other)) => {
+            Err(unopened(at.source, Unopened::NeitherForm(other.clone())))
+        }
+        Some(other) => Err(unopened(
+            at.source,
+            Unopened::NeitherForm(other.to_string()),
+        )),
     }
 }
 
@@ -426,10 +454,10 @@ pub fn adapter_name(policy: &toml::Table) -> String {
 /// WHOLE, so its entry is the file beside that one and never another layer's.
 fn by_name(at: &Opening, name: &str) -> Result<Box<dyn Store>, StoreError> {
     let Some(installed) = at.packs else {
-        return Err(unopened(Unopened::NoPacks(name)));
+        return Err(unopened(at.source, Unopened::NoPacks(name)));
     };
     let packs = crate::item::brief::Packs::under(installed.packs_dir, installed.defaults_dir)
-        .map_err(|stop| unopened(Unopened::Layers(name, stop.message)))?;
+        .map_err(|stop| unopened(at.source, Unopened::Layers(name, stop.message)))?;
     let declared = format!(
         "{}/{}/{name}/{}",
         crate::pack::ADAPTERS,
@@ -439,19 +467,20 @@ fn by_name(at: &Opening, name: &str) -> Result<Box<dyn Store>, StoreError> {
     let Some(dir) = crate::resolve::slot_path(&packs.resolution, &packs.layers, &declared)
         .and_then(|file| file.parent().map(Path::to_path_buf))
     else {
-        return Err(unopened(Unopened::Nowhere(name)));
+        return Err(unopened(at.source, Unopened::Nowhere(name)));
     };
     // The manifest is held to the format here, its entry's executable bit
     // included, so an adapter `fleet pack check` refuses is never run.
     let manifest = crate::pack::adapter_manifest(&dir)
-        .map_err(|defect| unopened(Unopened::Defect(name, defect)))?;
+        .map_err(|defect| unopened(at.source, Unopened::Defect(name, defect)))?;
     let entry = dir.join(&manifest.entry);
     Ok(Box::new(
         exec::Exec::at(&entry, at.root).with_timeout(at.timeout),
     ))
 }
 
-/// Why the adapter `[store] adapter` names is not opened.
+/// Why the adapter `[store] adapter` names is not opened, wherever the setting
+/// was written.
 enum Unopened<'s> {
     NotExecutable(&'s str),
     NeitherForm(String),
@@ -463,14 +492,15 @@ enum Unopened<'s> {
 
 /// EVERY REFUSAL OF THE SETTING IS WORDED HERE, and nowhere else, so what a
 /// refusal says about where the setting came from is said once.
-fn unopened(why: Unopened) -> StoreError {
+fn unopened(source: AdapterSource, why: Unopened) -> StoreError {
+    let written = source.written();
     StoreError::Unreadable(match why {
         Unopened::NotExecutable(path) => {
-            format!("[store] adapter names `{path}`, which is not an executable file")
+            format!("{written} names `{path}`, which is not an executable file")
         }
         Unopened::NeitherForm(said) => format!(
-            "[store] adapter is `{said}` — it is \"bd\", the name of a store adapter an \
-             installed pack carries, or an absolute path to an adapter executable"
+            "{written} is `{said}` — it is \"bd\", the name of a store adapter an installed \
+             pack carries, or an absolute path to an adapter executable"
         ),
         Unopened::NoPacks(name) => format!(
             "no store adapter named `{name}` resolves: no packs are installed here to carry one"

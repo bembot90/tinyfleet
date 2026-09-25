@@ -426,10 +426,12 @@ It exits 0.
 
 Each check prints one line on standard output, in the same order every
 run: `PASS` and the check's name, `SKIP` with why the check does not apply,
-or `FAIL` with what the store answered instead. Every check runs whatever
-the one before it answered, so one run names every disagreement. The last
-line names the adapter, by the name its `version` answers, else by its path,
-and counts the checks that passed, failed and were skipped.
+or `FAIL` with what the store answered instead. A check's line is printed
+as soon as the check answers, before the next check runs, so a slow adapter
+shows its progress line by line. Every check runs whatever the one before
+it answered, so one run names every disagreement. The last line names the
+adapter, by the name its `version` answers, else by its path, and counts
+the checks that passed, failed and were skipped.
 
 Two checks can be skipped. `export` is skipped for a store whose
 capabilities declare no export. `another writer's keys` is always skipped
@@ -443,7 +445,8 @@ an item.
 | a check failed | 1 | its `FAIL` line, and the summary's count of failures |
 | the adapter declares no `scratch` | 1 | `fleet store check: <adapter> declares no scratch capability, and the check runs only on a store it makes for the purpose — nothing was run` |
 | `--adapter` names a relative path | 2 | `fleet store check: --adapter takes an absolute path to an executable, and <path> is not one` |
-| nothing executable is at the path | 3 | ``fleet store check: [store] adapter names `<path>`, which is not an executable file`` |
+| nothing executable is at the path `--adapter` names | 3 | ``fleet store check: --adapter names `<path>`, which is not an executable file`` |
+| nothing executable is at the path `[store] adapter` names | 3 | ``fleet store check: [store] adapter names `<path>`, which is not an executable file`` |
 | no installed pack carries the name | 3 | ``fleet store check: no store adapter named `<name>` in the installed packs — `fleet pack add <repo>//adapters/store/<name> --version <version>` installs one`` |
 | the installed packs do not resolve | 3 | ``fleet store check: no store adapter named `<name>` resolves:`` and the reason |
 | the pack's adapter fails the format | 3 | ``fleet store check: the store adapter `<name>` cannot be opened:`` and the defect |

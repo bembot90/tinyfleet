@@ -26,7 +26,9 @@ use fleet_core::item::run as workflow_run;
 use fleet_core::seat;
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::{identity_or_mint, SeatId};
-use fleet_core::store::{self, ItemId, Opening, PackDirs, Store, StoreError, STORE_TIMEOUT};
+use fleet_core::store::{
+    self, AdapterSource, ItemId, Opening, PackDirs, Store, StoreError, STORE_TIMEOUT,
+};
 
 use crate::item::{resolve_from, Here, StreamEvents, EVENTS};
 use crate::transient::{as_refusal, effect_agent, machine_of, policy_of, Where};
@@ -67,6 +69,7 @@ impl Stores for ProjectStores {
         store::open(&Opening {
             root: &here.project.root,
             policy: &here.project.policy,
+            source: AdapterSource::Setting,
             search_path: &self.search_path,
             strict: false,
             timeout: STORE_TIMEOUT,

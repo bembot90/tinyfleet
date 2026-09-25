@@ -1515,6 +1515,7 @@ fn opened(
     store::open(&store::Opening {
         root,
         policy,
+        source: store::AdapterSource::Setting,
         search_path: "",
         strict: false,
         timeout,
@@ -1676,6 +1677,45 @@ fn an_adapter_that_is_no_executable_or_neither_form_is_could_not_tell() {
     }
 }
 
+/// The same refusals name `--adapter` where the flag carried the setting in,
+/// and never the `[store] adapter` the person did not write.
+///
+/// RED-PROOF: on the base there is no source to open by, and every refusal
+/// names `[store] adapter`.
+#[test]
+fn a_refusal_names_the_flag_that_said_the_adapter() {
+    let dir = Fixture::new("store-open-flag");
+    let refused = |value: &str| {
+        let policy = policy_of(&format!("[store]\nadapter = {value}\n"));
+        match store::open(&store::Opening {
+            root: &dir.root,
+            policy: &policy,
+            source: store::AdapterSource::Flag,
+            search_path: "",
+            strict: false,
+            timeout: store::STORE_TIMEOUT,
+            packs: None,
+        }) {
+            Err(StoreError::Unreadable(why)) => why,
+            Err(other) => panic!("wanted Unreadable, got {other:?}"),
+            Ok(_) => panic!("{value} opened a store"),
+        }
+    };
+    let absent = dir.path("absent");
+    assert_eq!(
+        refused(&format!("{:?}", absent.display())),
+        format!(
+            "--adapter names `{}`, which is not an executable file",
+            absent.display()
+        )
+    );
+    assert_eq!(
+        refused("\"bin/adapter\""),
+        "--adapter is `bin/adapter` — it is \"bd\", the name of a store adapter an installed \
+         pack carries, or an absolute path to an adapter executable"
+    );
+}
+
 // ---- a bare name, resolved through the installed packs ----------------------
 
 /// A machine directory's packs and the binary's defaults beneath them, as
@@ -1757,6 +1797,7 @@ fn opened_over(
     store::open(&store::Opening {
         root,
         policy,
+        source: store::AdapterSource::Setting,
         search_path: "",
         strict: false,
         timeout: store::STORE_TIMEOUT,

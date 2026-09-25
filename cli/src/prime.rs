@@ -20,7 +20,7 @@ use fleet_core::lock;
 use fleet_core::resolve::{self, Layer};
 use fleet_core::seat::identity::SeatId;
 use fleet_core::store::types::Version;
-use fleet_core::store::{self, Filter, Opening, PackDirs, Status};
+use fleet_core::store::{self, AdapterSource, Filter, Opening, PackDirs, Status};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -245,6 +245,7 @@ fn store_version(root: &Path) -> Result<(Version, String), String> {
     let store = store::open(&Opening {
         root,
         policy: &policy,
+        source: AdapterSource::Setting,
         search_path: &platform::child_path(&platform::home_dir()),
         strict: false,
         timeout: VERSION_TIMEOUT,
@@ -314,6 +315,7 @@ fn items(project_root: &Path, seat: &SeatId) -> Result<Vec<(String, String)>, St
     let store = store::open(&Opening {
         root: project_root,
         policy: &policy,
+        source: AdapterSource::Setting,
         search_path: &platform::child_path(&platform::home_dir()),
         strict: true,
         timeout: ITEMS_TIMEOUT,

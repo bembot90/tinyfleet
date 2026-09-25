@@ -2,8 +2,9 @@
 //!
 //! One family module and one arm in the dispatch. `check` runs every check of
 //! the store contract ([`conformance::run`]) against an adapter, and prints one
-//! line per check and a summary: the checks are the library's, and what this
-//! module owns is which adapter, the store they run on, and the exit.
+//! line per check as it is answered, then a summary: the checks are the
+//! library's, and what this module owns is which adapter, the store they run
+//! on, and the exit.
 //!
 //! THE CHECKS WRITE, so they never run on a project's own store. They run on a
 //! scratch store the adapter makes through its `scratch` verb, inside a temp
@@ -16,13 +17,14 @@
 //! is printed as SKIP here, saying why.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fleet_controller::platform;
 use fleet_core::policy::{self, Value};
 use fleet_core::store::conformance::{self, Ctx, Passed};
-use fleet_core::store::{self, Opening, PackDirs, STORE_TIMEOUT};
+use fleet_core::store::{self, AdapterSource, Opening, PackDirs, STORE_TIMEOUT};
 
 use crate::exit::Exit;
 use crate::item;
@@ -102,10 +104,12 @@ fn check(adapter: Option<&Path>) -> Exit {
         packs_dir: &here.packs_dir,
         defaults_dir: &here.defaults_dir,
     });
+    let mut source = AdapterSource::Setting;
     if let Some(path) = adapter {
         let named = Value::from(path.display().to_string());
         let table = Value::from(BTreeMap::from([("adapter", named)]));
         policy.insert(String::from("store"), table);
+        source = AdapterSource::Flag;
     }
     let policy = &policy;
     // The adapter by what selects it: the path, or the built-in store's name.
@@ -134,6 +138,7 @@ fn check(adapter: Option<&Path>) -> Exit {
         store::open(&Opening {
             root,
             policy,
+            source,
             search_path: &search_path,
             strict: true,
             timeout: STORE_TIMEOUT,
@@ -172,9 +177,8 @@ fn check(adapter: Option<&Path>) -> Exit {
         absent: absent.as_ref(),
         another_writer: None,
     };
-    let answers = conformance::run(&ctx);
     let (mut passed, mut failed, mut skipped) = (0, 0, 0);
-    for (name, answer) in &answers {
+    for (name, answer) in conformance::run(&ctx) {
         match answer {
             Ok(Passed::Pass) => {
                 passed += 1;
@@ -189,6 +193,9 @@ fn check(adapter: Option<&Path>) -> Exit {
                 println!("FAIL  {name}: {why}");
             }
         }
+        // Each line is owed to a pipe as it lands, before the next check is
+        // asked, whatever buffering std picks for a stdout that is no terminal.
+        let _ = std::io::stdout().flush();
     }
     let name = made.version().map(|v| v.name).unwrap_or(named);
     println!("store check: {name} — {passed} passed, {failed} failed, {skipped} skipped");

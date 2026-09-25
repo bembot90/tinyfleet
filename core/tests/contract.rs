@@ -103,7 +103,6 @@ fn every_check_holds(store: &Bd, root: &Path, which: &str, plant: &AnotherWriter
         another_writer: Some(plant),
     };
     let failed: Vec<String> = conformance::run(&ctx)
-        .into_iter()
         .filter_map(|(name, answer)| match answer {
             Ok(Passed::Pass) => None,
             Ok(Passed::Skip(why)) => Some(format!("{name}: skipped — {why}")),

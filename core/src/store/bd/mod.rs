@@ -1359,7 +1359,7 @@ pub fn item_prefix_in(config: &str) -> Option<String> {
 #[cfg(test)]
 mod opening_tests {
     use super::{open, resolve, Filter, StoreError, BD, STORE_TIMEOUT};
-    use crate::store::Opening;
+    use crate::store::{AdapterSource, Opening};
     use std::path::{Path, PathBuf};
 
     /// Serialises the arms here, because `cargo test` runs this binary's arms
@@ -1454,6 +1454,7 @@ mod opening_tests {
             open(&Opening {
                 root: &root,
                 policy: &policy,
+                source: AdapterSource::Setting,
                 search_path,
                 strict: true,
                 timeout: STORE_TIMEOUT,
