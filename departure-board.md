@@ -16,12 +16,12 @@ written by hand; the item's own dependencies are the real blockers.
 | Landed | Bead | What | Blocked by |
 | --- | --- | --- | --- |
 | ☑ | fleet-run | A non-seat-id assignee reads Unreadable at exit 3, and store::Item.assignee becomes Option<SeatId> | — (first: every seam sits on it) |
-| ☐ | fleet-wpf0.1 | The contract's fences: update takes if_assignee and status open, order.withdraw takes if_assignee, if_status and reopen, moved joins the refusals, show carries description (folds fleet-j7q) | fleet-run |
+| ☑ | fleet-wpf0.1 | The contract's fences: update takes if_assignee and status open, order.withdraw takes if_assignee, if_status and reopen, moved joins the refusals, show carries description (folds fleet-j7q) | fleet-run |
 | ☑ | fleet-pjl | The contract's actor is one string everywhere: the timeline entry's wire shape is pinned, and close takes an actor | — |
 | ☑ | fleet-b47 | Adapter and doc agree on missing writes, the empty update and NewItem::validate | — |
-| ☐ | fleet-urp | The contract's Item and list rows carry the store's foreign keys, and the adopt-board check reads class 2 off them | fleet-run |
+| ☑ | fleet-urp | The contract's Item and list rows carry the store's foreign keys, and the adopt-board check reads class 2 off them | fleet-run |
 | ☐ | fleet-2tp | ItemSummary carries the assignee and the run record, so a listing needs no show per row | fleet-run |
-| ☐ | fleet-xpc | Capabilities declares the CLI the guard polices and the item vocabulary routines check | — |
+| ☑ | fleet-xpc | Capabilities declares the CLI the guard polices and the item vocabulary routines check | — |
 | ☑ | fleet-z5m | The store contract's fragment rule is a prefix rule, as bd 1.3.0 resolves | — |
 | ☑ | fleet-vqre | Two OrderKind types exist: entry.rs's {Dispatch} and the contract's {Dispatch, Review} | — |
 | ☑ | fleet-4qpq | fleet store check names [store] adapter for a bad --adapter and prints nothing for ~50 s | — |
