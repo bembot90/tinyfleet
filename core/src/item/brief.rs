@@ -15,7 +15,7 @@ use crate::guard;
 use crate::input::{self, DeliveryInput, QuestionInput};
 use crate::item::{render, show, Project, Stop};
 use crate::resolve::{self, Layer, Resolution};
-use crate::store::{Orders, Store};
+use crate::store::{Order, OrderState, Store};
 
 /// The four files this verb reads, all of them shadowable.
 pub const BRIEF: &str = "assets/brief.md";
@@ -128,12 +128,12 @@ pub struct Subject<'a> {
 /// The order as the brief prints it: who gave it and when, off the order
 /// index. `fleet brief` and a dispatch's own brief both render it here, so the
 /// two are one text.
-pub fn order_text(index: &Orders) -> String {
-    let field = |held: &Option<String>| held.clone().unwrap_or_else(|| String::from("(absent)"));
+pub fn order_text(order: &Order) -> String {
     format!(
-        "dispatch ordered by {} at {}",
-        field(&index.by),
-        field(&index.at)
+        "{} ordered by {} at {}",
+        order.kind.as_str(),
+        order.by,
+        order.at
     )
 }
 
@@ -207,11 +207,11 @@ pub fn print(
 
 /// The brief for one item, read out of the store and printed.
 ///
-/// The order INDEX is what decides — `metadata["fleet.orders"]`, the reading
-/// dispatch, deliver, review and retire all take: an item carrying none has not
-/// been given to anybody, and a brief for it would tell a seat it may begin
-/// when nothing said so. The timeline is never searched for it, because a
-/// withdrawal unsets the index and leaves the ordered entry standing.
+/// The order INDEX is what decides — the reading dispatch, deliver, review
+/// and retire all take: an item carrying none has not been given to anybody,
+/// and a brief for it would tell a seat it may begin when nothing said so. The
+/// timeline is never searched for it, because a withdrawal unsets the index
+/// and leaves the ordered entry standing.
 ///
 /// The order the brief prints is rendered from the index by [`order_text`],
 /// which a dispatch renders its own brief's order with, so the brief `fleet
@@ -231,25 +231,21 @@ pub fn for_item(
     // the id the store answered, never the part of it that was typed.
     let record = store.show(item)?;
     let item = record.id.as_str();
-    let Some(index) = record.orders.as_ref() else {
-        return Err(Stop::refused(if record.has_orders_key {
-            format!(
-                "{item}'s order index is not an object — a brief read off an order nobody can \
-                 read would tell a seat it may begin when nothing said so"
-            )
-        } else {
-            format!(
-                "{item} carries no order index — a brief for an unordered item would tell a seat \
-                 it may begin when nothing said so"
-            )
-        }));
+    let index = match &record.order {
+        OrderState::Ordered(index) => index,
+        OrderState::Unreadable => {
+            return Err(Stop::refused(format!(
+                "{item}'s order index is not one this fleet can read — a brief read off an \
+                 order nobody can read would tell a seat it may begin when nothing said so"
+            )))
+        }
+        OrderState::None => {
+            return Err(Stop::refused(format!(
+                "{item} carries no order index — a brief for an unordered item would tell a \
+                 seat it may begin when nothing said so"
+            )))
+        }
     };
-    if index.by.is_none() {
-        return Err(Stop::refused(format!(
-            "{item}'s order index names no dispatcher — the brief's order says who gave it, and \
-             the record does not say who that is"
-        )));
-    }
     let order = order_text(index);
     let text = show::render(&record, &store.timeline(item)?);
     print(

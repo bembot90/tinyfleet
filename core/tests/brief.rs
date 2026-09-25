@@ -18,7 +18,7 @@ use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
 use fleet_core::seat::retire;
 use fleet_core::store::bd::Bd;
-use fleet_core::store::{AssignedItem, Item, Orders, Store};
+use fleet_core::store::{self, AssignedItem, Item, OrderKind, OrderState, Stamp, Status, Store};
 use fleet_core::test_support::FakeStore;
 
 /// A policy file with one guard opted out, so the on/off line is read rather
@@ -149,9 +149,9 @@ struct Rendered {
 fn one_item() -> FakeStore {
     let store = FakeStore::default();
     store.seed(Item {
-        id: ITEM.to_string(),
+        id: ITEM.into(),
         title: String::from("a ready item"),
-        status: String::from("open"),
+        status: Status::Open,
         ..Item::default()
     });
     store
@@ -161,15 +161,18 @@ fn one_item() -> FakeStore {
 /// which is what the brief is gated on and what its order is rendered from.
 fn ordered() -> FakeStore {
     let store = one_item();
-    store.amend(ITEM, |item| {
-        item.orders = Some(Orders {
-            by: Some(BY.to_string()),
-            kind: Some(dispatch::KIND.to_string()),
-            at: Some(AT.to_string()),
-            ..Orders::default()
-        });
-    });
+    store.amend(ITEM, |item| item.order = dispatched_by(by(), AT));
     store
+}
+
+/// A dispatch's index naming no seat yet, as the order's own types.
+fn dispatched_by(by: Actor, at: &str) -> OrderState {
+    OrderState::Ordered(store::Order {
+        kind: OrderKind::Dispatch,
+        by,
+        seat: None,
+        at: Stamp::parse(at).expect("a stamp"),
+    })
 }
 
 /// An empty packs directory resolves rather than refusing: the binary's own
@@ -513,23 +516,27 @@ fn an_item_with_no_order_index_is_refused_and_writes_nothing() {
     assert_eq!(rendered.body.len(), 0, "nothing reaches stdout");
 
     // An index that is there and cannot be read is refused by its own line, and
-    // so is one naming nobody: the order the brief prints is rendered from who
-    // gave it. Each is the ordered store with one reading taken away, so what
-    // refuses is that reading and not the rest of the record.
+    // so is one naming nobody, which is an index only partly filled: the order
+    // the brief prints is rendered from who gave it. Each is the ordered store
+    // with one reading taken away, so what refuses is that reading and not the
+    // rest of the record.
     let unreadable = ordered();
-    unreadable.amend(ITEM, |item| {
-        item.orders = None;
-        item.has_orders_key = true;
-    });
-    let nobody = ordered();
-    nobody.amend(ITEM, |item| {
-        if let Some(index) = item.orders.as_mut() {
-            index.by = None;
-        }
-    });
+    unreadable.amend(ITEM, |item| item.order = OrderState::Unreadable);
+    let nobody = one_item();
+    nobody
+        .metadata
+        .lock()
+        .expect("the metadata is not poisoned")
+        .insert(
+            ITEM.to_string(),
+            serde_json::json!({ "fleet.orders": { "v": 1, "kind": "dispatch", "at": AT } })
+                .as_object()
+                .cloned()
+                .expect("an object"),
+        );
     for (store, wanted) in [
-        (&unreadable, "order index is not an object"),
-        (&nobody, "order index names no dispatcher"),
+        (&unreadable, "order index is not one this fleet can read"),
+        (&nobody, "order index is not one this fleet can read"),
     ] {
         let rendered = rig.render(store, SEAT);
         assert_eq!(rendered.code, Some(1), "{}", rendered.why);
@@ -684,7 +691,7 @@ fn a_withdrawn_order_is_refused_and_writes_nothing() {
     .expect("the dispatch lands");
     let row = AssignedItem {
         id: ITEM.to_string(),
-        status: String::from("open"),
+        status: Status::Open,
         ..AssignedItem::default()
     };
     let orla = SeatId::parse(ORLA).expect("Orla's id parses");
@@ -724,11 +731,7 @@ fn a_withdrawn_order_is_refused_and_writes_nothing() {
             "{line}: and the withdrawal is the last entry: {entries:?}"
         );
         assert!(Timeline(&entries).current_order().is_none(), "{line}");
-        assert!(
-            !read.has_orders_key,
-            "and the index is gone: {:?}",
-            read.orders
-        );
+        assert_eq!(read.order, OrderState::None, "and the index is gone");
 
         let rendered = rig.render(store, SEAT);
         assert_eq!(
@@ -808,12 +811,12 @@ fn the_order_block_reads_who_gave_it_and_when_off_the_index() {
     let rig = Rig::new("order-text");
     let store = ordered();
     store.amend(ITEM, |item| {
-        item.orders = Some(Orders {
-            by: Some(String::from("seat:01a0d1f1-0aec-765f-9abe-0000000000b1")),
-            kind: Some(dispatch::KIND.to_string()),
-            at: Some(String::from("2026-09-24T08:15:00Z")),
-            ..Orders::default()
-        });
+        item.order = dispatched_by(
+            Actor::typed("seat:01a0d1f1-0aec-765f-9abe-0000000000b1")
+                .expect("typed")
+                .expect("a seat"),
+            "2026-09-24T08:15:00Z",
+        );
     });
 
     let rendered = rig.render(&store, SEAT);
@@ -826,11 +829,9 @@ fn the_order_block_reads_who_gave_it_and_when_off_the_index() {
         "the order block is the index's dispatcher and time:\n{}",
         rendered.body
     );
-    let index = store
-        .show(ITEM)
-        .expect("the item reads")
-        .orders
-        .expect("the index is an object");
+    let OrderState::Ordered(index) = store.show(ITEM).expect("the item reads").order else {
+        panic!("the index reads as an order");
+    };
     assert_eq!(
         brief::order_text(&index),
         "dispatch ordered by seat:01a0d1f1-0aec-765f-9abe-0000000000b1 at 2026-09-24T08:15:00Z"
@@ -1078,11 +1079,11 @@ fn the_real_store_renders_the_same_brief_as_the_one_held_in_memory() {
     };
 
     assert_eq!(through(&real), through(&fake), "byte for byte");
-    assert_eq!(record.status, "open");
-    assert_eq!(
-        record.orders.and_then(|index| index.by).as_deref(),
-        Some(BY),
-        "the order index bd stored is the one that was written"
+    assert_eq!(record.status, Status::Open);
+    assert!(
+        matches!(&record.order, OrderState::Ordered(index) if index.by == by()),
+        "the order index bd stored is the one that was written: {:?}",
+        record.order
     );
 }
 

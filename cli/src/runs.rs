@@ -302,7 +302,7 @@ mod tests {
     use super::*;
     use fleet_core::entry::{Body, OrderWithdrawn, Withdrawal};
     use fleet_core::item::COULD_NOT_TELL;
-    use fleet_core::store::{Item, Orders};
+    use fleet_core::store::{Item, Order, OrderKind, OrderState, Stamp, Status};
     use fleet_core::test_support::FakeStore;
 
     /// The seat's full id, which the order was assigned to and the withdrawal
@@ -330,17 +330,19 @@ mod tests {
     fn a_parked_item() -> FakeStore {
         let store = FakeStore::default();
         store.seed(Item {
-            id: PARKED.to_string(),
+            id: PARKED.into(),
             title: String::from("an item a seat was dispatched and parked"),
-            status: String::from("open"),
+            status: Status::Open,
             assignee: Some(SEAT.to_string()),
-            orders: Some(Orders {
-                by: Some(String::from("a-run")),
-                kind: Some(String::from("run")),
-                seat: Some(SEAT.to_string()),
-                at: Some(String::from("2026-09-14T10:40:39Z")),
+            order: OrderState::Ordered(Order {
+                kind: OrderKind::Dispatch,
+                by: Actor {
+                    kind: ActorKind::Run,
+                    id: String::from("a-run"),
+                },
+                seat: Some(seat()),
+                at: Stamp::parse("2026-09-14T10:40:39Z").expect("a stamp"),
             }),
-            has_orders_key: true,
             ..Item::default()
         });
         store
@@ -360,12 +362,17 @@ mod tests {
             "the item reads unassigned: {:?}",
             after.assignee
         );
-        assert!(
-            !after.has_orders_key,
-            "and carries no orders key: {}",
-            after.document
+        assert_eq!(
+            after.order,
+            OrderState::None,
+            "and carries no order index: {}",
+            after.proof.as_str()
         );
-        assert_eq!(after.status, "open", "the work itself is still to be done");
+        assert_eq!(
+            after.status,
+            Status::Open,
+            "the work itself is still to be done"
+        );
         let entries = store
             .timeline(PARKED)
             .expect("the store answers the timeline");

@@ -21,47 +21,47 @@ pub mod bd;
 pub mod keys;
 pub mod types;
 
-/// One item as a read answers it.
+pub use types::{ItemId, Order, OrderKind, OrderState, ReadProof, RunRecord, Stamp, Status};
+
+/// One item as a read answers it, in the contract's own types field by field:
+/// [`types::Item`]'s fields and the description beside them.
 ///
-/// The three fields a dispatch asserts are `Option` because the store OMITS a
-/// key it has no value for: an item nobody has assigned carries no `assignee`
-/// at all, and an absent field is a third answer that must not read as a
-/// disagreement.
+/// NOT YET [`types::Item`] ITSELF. The assignee is still the text the store
+/// holds, because a board a project brought may name a person there, and
+/// what a holder that is not a seat id reads as is not ruled yet; the
+/// description is `item show`'s, which the contract's item does not carry.
+///
+/// An assignee is `Option` because the store OMITS a key it has no value for:
+/// an item nobody has assigned carries no `assignee` at all, and an absent
+/// field is a third answer that must not read as a disagreement.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Item {
-    pub id: String,
+    pub id: ItemId,
     /// What a person calls this item. `land` writes it into the commit subject,
     /// so a trunk's log reads as a list of what was done and not of ids.
     pub title: String,
     /// What the item says, as the store keeps it: `""` where it says nothing,
-    /// which the store spells by omitting the key.
+    /// which the store spells by omitting the key. `item show` renders it.
     pub description: String,
-    pub status: String,
+    pub status: Status,
     pub assignee: Option<String>,
-    /// `metadata["fleet.orders"]` ([`keys::ORDERS`]), as the store holds it.
-    pub orders: Option<Orders>,
-    /// Whether `metadata` carried a `fleet.orders` key at all, which `orders`
-    /// alone cannot say: a key holding something that is not an object at
-    /// [`keys::VERSION`] is present and unreadable, and a withdrawal has to
-    /// tell that from absent.
-    pub has_orders_key: bool,
+    /// The order index: none, one the store holds and this fleet cannot read,
+    /// or the order — one value, so an order that is there and unread cannot
+    /// be built as absent.
+    pub order: OrderState,
     /// The open items that block this one by a type the store's ready set
-    /// honours, by id.
-    pub blockers: Vec<String>,
-    /// The type, as the store spells it: the JSON key is `issue_type` and a
-    /// rule matches on this value.
+    /// honours.
+    pub blockers: Vec<ItemId>,
+    /// The type, as the store spells it: a rule matches on this value.
     pub item_type: String,
     /// The item's OWN labels and no parent's, which is what the store answers.
     pub labels: Vec<String>,
-    /// `metadata["fleet.run"]` ([`keys::RUN`]), as free JSON and as the store
-    /// holds it, for a run's record item — its version is the reader's to
-    /// check, through [`keys::versioned`]. A top-level key of its own, which is
-    /// what lets the store's top-level merge leave the item's other keys
-    /// standing.
-    pub run: Option<serde_json::Value>,
-    /// The decoded document, as text. The negative control reads this, so the
+    /// A run's record, on the item that records it. One the store holds at a
+    /// shape this fleet does not read is no item at all: the read refuses.
+    pub run: Option<RunRecord>,
+    /// The whole text the read answered. The negative control asks it, so the
     /// control asks the SAME answer for a token nothing wrote.
-    pub document: String,
+    pub proof: ReadProof,
 }
 
 /// A new item, as the arguments a `create` takes.
@@ -76,16 +76,6 @@ pub struct NewItem<'a> {
     pub labels: &'a [&'a str],
 }
 
-/// The order index, read field by field rather than as free JSON: the read-back
-/// compares four named values and nothing else.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Orders {
-    pub by: Option<String>,
-    pub kind: Option<String>,
-    pub seat: Option<String>,
-    pub at: Option<String>,
-}
-
 /// One item assigned to a seat, as the seat's list answers it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AssignedItem {
@@ -93,14 +83,12 @@ pub struct AssignedItem {
     /// What a person calls this item, read off this row — the words a
     /// session's start carries beside the id.
     pub title: String,
-    pub status: String,
-    /// Whether `metadata` carried a `fleet.orders` key, read off THIS ROW and
-    /// not off a second call: the listing answers each row's metadata, so a
-    /// caller asking which of a seat's items are ordered pays one call and not
-    /// one per row. The same third answer [`Item::has_orders_key`] carries — a key
-    /// holding something that is not an object at [`keys::VERSION`] is present
-    /// and unreadable.
-    pub has_orders_key: bool,
+    pub status: Status,
+    /// The order index, read off THIS ROW and not off a second call: the
+    /// listing answers each row's metadata, so a caller asking which of a
+    /// seat's items are ordered pays one call and not one per row. The same
+    /// three answers [`Item::order`] carries.
+    pub order: OrderState,
     /// The type, as the listing spells it (`issue_type`), read off this row.
     pub item_type: String,
 }
@@ -221,7 +209,7 @@ pub trait Store {
             return Err(moved(item, seat, &held));
         }
         if read.status != status {
-            return Err(restatused(item, status, &read.status));
+            return Err(restatused(item, status, read.status.as_str()));
         }
         self.reopen(item, by)?;
         self.hand_over(item, seat, "", by)?;

@@ -28,7 +28,7 @@ use crate::item::{
 };
 use crate::seat::actor::Actor;
 use crate::seat::identity::{Directory, Kind, SeatId, SeatRef};
-use crate::store::{keys, Item, Orders, Store, StoreError};
+use crate::store::{self, keys, Item, OrderState, Stamp, Status, Store, StoreError};
 
 /// The kind of order this verb writes. The reference's other two grammars —
 /// a run's feed, a spawn's own line — are that repository's; here there is one
@@ -227,25 +227,27 @@ fn refuse_unless_dispatchable<'w>(
         )));
     }
     refuse_an_epic(item)?;
-    if item.has_orders_key {
-        // A key this binary cannot read is not an order it can weigh: it may
+    match &item.order {
+        OrderState::None => {}
+        // An index this binary cannot read is not an order it can weigh: it may
         // be one, at a version a newer fleet wrote, so it is could-not-tell and
         // never taken for absent or overwritten.
-        let Some(index) = item.orders.as_ref() else {
+        OrderState::Unreadable => {
             return Err(Stop::could_not_tell(format!(
-                "{} carries a `{}` this fleet cannot read — it is not an object at {} {} — and \
-                 a dispatch will not guess whether it is an order",
+                "{}'s order index is not one this fleet can read — this fleet reads an order at \
+                 {} {} — and a dispatch will not guess whether it is an order",
                 order.item,
-                keys::ORDERS,
                 keys::VERSION_FIELD,
                 keys::VERSION
             )));
-        };
-        return Err(Stop::refused(format!(
-            "{} already carries an order — {}",
-            order.item,
-            standing(index)
-        )));
+        }
+        OrderState::Ordered(index) => {
+            return Err(Stop::refused(format!(
+                "{} already carries an order — {}",
+                order.item,
+                standing(index)
+            )));
+        }
     }
 
     let Some(to) = order.to else {
@@ -306,7 +308,7 @@ fn to_named_seat(
         .assign(order.item, seat, &order.by.to_string())
         .map_err(|e| wrote_nothing(order.item, "the assignee", &e))?;
     let entry = write_order(order, wiring, Some(&named.id), true)?;
-    read_back(order, wiring, Some(seat), Some(seat))?;
+    read_back(order, wiring, Some(seat), Some(&named.id))?;
     announce(order, wiring, &entry)?;
 
     let brief_path = match order.brief {
@@ -417,7 +419,7 @@ fn to_a_transient_seat(
                 })?;
             let entry =
                 write_order(order, wiring, Some(&spawned.id), false).map_err(Refused::stopped)?;
-            read_back(order, wiring, Some(&seat), Some(&seat)).map_err(Refused::stopped)?;
+            read_back(order, wiring, Some(&seat), Some(&spawned.id)).map_err(Refused::stopped)?;
             announce(order, wiring, &entry).map_err(Refused::stopped)?;
             // The item's own rendering moved under the brief: the assignment
             // and the seat in the index are both in it. Rendered again over the
@@ -508,10 +510,10 @@ fn withdraw(err: &mut dyn Write, order: &Order, wiring: &Wiring, cause: &str) ->
         },
     )?;
     let item = read(wiring.store, order.item)?;
-    if item.has_orders_key {
+    if !matches!(item.order, OrderState::None) {
         return Err(stands(
             order.item,
-            "the index still carries a fleet.orders key after the withdrawal",
+            "the item still carries its order index after the withdrawal",
         ));
     }
     let _ = writeln!(err, "withdrawn: {WITHDRAWN}: {cause}");
@@ -526,10 +528,10 @@ fn withdraw(err: &mut dyn Write, order: &Order, wiring: &Wiring, cause: &str) ->
 /// rounding the third outcome exists to stop, arriving by the other side.
 fn not_told(err: &mut dyn Write, order: &Order, wiring: &Wiring, cause: &str) -> Result<(), Stop> {
     let item = read(wiring.store, order.item)?;
-    if !item.has_orders_key {
+    if matches!(item.order, OrderState::None) {
         return Err(stands(
             order.item,
-            "the index carries no fleet.orders key after a spawn that could not be told",
+            "the item carries no order index after a spawn that could not be told",
         ));
     }
     let _ = writeln!(err, "could not tell: {NOT_TOLD}: {cause}");
@@ -600,16 +602,23 @@ pub fn index(by: &str, kind: &str, seat: Option<&str>, at: &str) -> String {
     keys::stamped(keys::ORDERS, index).to_string()
 }
 
-/// One read, asserting the assignee and the four index fields against the
-/// ARGUMENTS — plus a token nothing wrote. The entry is not asked about here:
-/// [`recorded`] read it back when it was appended.
+/// One read, asserting the assignee and the four fields of the order index
+/// against the ARGUMENTS — plus a token nothing wrote. The entry is not asked
+/// about here: [`recorded`] read it back when it was appended.
+///
+/// The fields are compared as the order's own types: who gave it as an actor,
+/// its kind, the seat as a seat id and when as a stamp. A wanted `at` that is
+/// no stamp is a question and not a disagreement: the index it was written
+/// into cannot read as an order, and the read-back would blame the store.
 fn read_back(
     order: &Order,
     wiring: &Wiring,
     assignee: Option<&str>,
-    seat: Option<&str>,
+    seat: Option<&SeatId>,
 ) -> Result<(), Stop> {
     let item = read(wiring.store, order.item)?;
+    let seat_text = seat.map(SeatId::to_string);
+    let repair = || index_repair(order, seat_text.as_deref());
 
     if let Some(wanted) = assignee {
         if item.assignee.as_deref() != Some(wanted) {
@@ -623,36 +632,74 @@ fn read_back(
         }
     }
 
-    let Some(index) = item.orders.as_ref() else {
-        return Err(disagrees(
-            order.item,
-            keys::ORDERS,
-            &format!("an object at {} {}", keys::VERSION_FIELD, keys::VERSION),
-            None,
-            &index_repair(order, seat),
-        ));
+    let Some(at) = Stamp::parse(order.at) else {
+        return Err(Stop::could_not_tell(format!(
+            "{} was ordered at `{}`, which is not a stamp — the form is YYYY-MM-DDTHH:MM:SSZ — so \
+             the order index written with it is not one this fleet can read",
+            order.item, order.at
+        )));
     };
-    let by = order.by.to_string();
-    let wanted: [(&str, Option<&str>, Option<&str>); 4] = [
-        ("by", Some(by.as_str()), index.by.as_deref()),
-        ("kind", Some(KIND), index.kind.as_deref()),
-        ("seat", seat, index.seat.as_deref()),
-        ("at", Some(order.at), index.at.as_deref()),
-    ];
-    for (field, want, got) in wanted {
-        if want != got {
+    let index = match &item.order {
+        OrderState::Ordered(index) => index,
+        OrderState::Unreadable => {
             return Err(disagrees(
                 order.item,
-                &format!("{}.{field}", keys::ORDERS),
-                want.unwrap_or("(absent)"),
-                got,
-                &index_repair(order, seat),
-            ));
+                "the order index",
+                "a readable order index",
+                Some("one this fleet cannot read"),
+                &repair(),
+            ))
         }
+        OrderState::None => {
+            return Err(disagrees(
+                order.item,
+                "the order index",
+                "a readable order index",
+                None,
+                &repair(),
+            ))
+        }
+    };
+    let field = |name: &str, wanted: Option<String>, got: Option<String>| {
+        disagrees(
+            order.item,
+            &format!("order.{name}"),
+            wanted.as_deref().unwrap_or("(absent)"),
+            got.as_deref(),
+            &repair(),
+        )
+    };
+    if index.by != *order.by {
+        return Err(field(
+            "by",
+            Some(order.by.to_string()),
+            Some(index.by.to_string()),
+        ));
+    }
+    if index.kind != store::OrderKind::Dispatch {
+        return Err(field(
+            "kind",
+            Some(KIND.to_string()),
+            Some(index.kind.as_str().to_string()),
+        ));
+    }
+    if index.seat.as_ref() != seat {
+        return Err(field(
+            "seat",
+            seat_text.clone(),
+            index.seat.map(|held| held.to_string()),
+        ));
+    }
+    if index.at != at {
+        return Err(field(
+            "at",
+            Some(at.to_string()),
+            Some(index.at.to_string()),
+        ));
     }
 
     let control = control_token();
-    if item.document.contains(control) {
+    if item.proof.carries(control) {
         return Err(Stop::could_not_tell(format!(
             "the read-back on {} carries {control}, which nothing wrote — the read is not \
              reading this item",
@@ -672,10 +719,10 @@ fn write_brief(wiring: &Wiring, order: &Order, seat: &str) -> Result<PathBuf, St
     let record = wiring.store.show(order.item).map_err(unread)?;
     let timeline = wiring.store.timeline(&record.id).map_err(unread)?;
     let text = show::render(&record, &timeline);
-    let Some(index) = record.orders.as_ref() else {
+    let OrderState::Ordered(index) = &record.order else {
         return Err(stands(
             order.item,
-            "the index read back and then was gone from under the brief",
+            "the order index read back and then was gone from under the brief",
         ));
     };
     let body = brief::text(
@@ -723,21 +770,22 @@ fn read(store: &dyn Store, item: &str) -> Result<Item, Stop> {
 }
 
 fn why_not_ready(item: &Item) -> String {
-    if item.status != "open" {
+    if item.status != Status::Open {
         return format!("its status is `{}`", item.status);
     }
     if item.blockers.is_empty() {
         return "the store does not list it among the ready".to_string();
     }
-    format!("it is blocked by {}", item.blockers.join(", "))
+    let blockers: Vec<&str> = item.blockers.iter().map(|id| id.as_str()).collect();
+    format!("it is blocked by {}", blockers.join(", "))
 }
 
-fn standing(index: &Orders) -> String {
+fn standing(index: &store::Order) -> String {
     format!(
         "kind={} by={} at={}",
-        index.kind.as_deref().unwrap_or("(none)"),
-        index.by.as_deref().unwrap_or("(none)"),
-        index.at.as_deref().unwrap_or("(none)")
+        index.kind.as_str(),
+        index.by,
+        index.at
     )
 }
 

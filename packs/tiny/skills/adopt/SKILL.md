@@ -24,7 +24,10 @@ prose**:
   and stop.
 - **3** — the board could not be read. Quote the lines under the row and stop.
   Never route around it by reading the store's own binary yourself: the check
-  reads through fleet so that what it reports is what fleet will read.
+  reads through fleet so that what it reports is what fleet will read. The one
+  exception is a line saying `<id>'s run record is not one this fleet reads`:
+  that is the `fleet.run` row below, reached through the refusal. Walk that
+  row for the id it names, then run the check again.
 - **1** — found. Walk the report below.
 
 Say what was read before anything else: the ready set and the open items
@@ -34,9 +37,12 @@ report; say so rather than let "found" read as "the whole board".
 ## 2. Walk the report, one row and one question at a time
 
 Take the rows in the report's order and skip the ones that say `none`. For a
-row, read each example id through `fleet item show <id> --json` — and its
-metadata off its row in `fleet item list --ready --json` — **before** saying
-anything about it: the report says where to look, the item says what is there.
+row, read each example id through `fleet item show <id> --json` **before**
+saying anything about it: the report says where to look, the item says what is
+there. A row that says `not counted` is a key fleet does not read, and a list
+row carries no raw metadata: say what the row means, and ask the person whether
+their board keeps such a key and on which items. Never read the store's own
+binary to count them.
 Then say what the row means, what fleet reads instead, and the choices; ask
 the person to choose, and wait. One question per turn.
 
@@ -46,7 +52,7 @@ these, or wrote them at a version this binary does not read.
 | Row | What it means, and the choices |
 | --- | --- |
 | `fleet.orders` at a version or shape fleet does not read | The item reads as `order unreadable`, and `fleet dispatch` answers 3 on it rather than guess whether it is an order. Ask whether another fleet at a newer release flies this board: if so, write nothing — the fix is the release. If not, the index is stale or hand-written, and the write is removing it: `bd update <id> --unset-metadata fleet.orders --actor <person>`. Read back: `order` is `null`. |
-| `fleet.run` at a version or shape fleet does not read | The same question and the same write, `--unset-metadata fleet.run`. Read back: the item's row in `fleet item list --label fleet:run --json` carries `run: null`. |
+| `fleet.run` at a version or shape fleet does not read | It is never counted: the item refuses fleet's read of it, so the check answers 3 with the refusal naming the item. The same question and the same write, `--unset-metadata fleet.run`. Read back: `fleet item list --label fleet:run --json` exits 0 again. |
 | `fleet:run` on an item that is not a run record | Every open item under `fleet:run` counts against `[core.run] max_open`, and `fleet cancel` treats it as a run's record. Unless it is one fleet filed, the write is the label off: `bd update <id> --remove-label fleet:run --actor <person>`. Read back: `labels` in `fleet item show <id> --json`. |
 | a `fleet.` key or `fleet:` label fleet never writes | The namespace is fleet's. Offer to remove it (`--unset-metadata <key>` or `--remove-label <label>`), or to move it under the board's own name: the new key written first and read back, then the old one removed and read back — two writes, two confirmations. |
 

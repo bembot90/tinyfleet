@@ -11,6 +11,11 @@
 //! `bd` on the rig's own scratch board, never through fleet: the subject is a
 //! board fleet did not write.
 //!
+//! A ROW IS THE FIELDS FLEET READS and no raw metadata, so the board's own
+//! bare `orders` is named by no row: the check names that row and does not
+//! count it. And a `fleet.run` this binary does not read is no row at all — it
+//! refuses the list, and the check could not tell.
+//!
 //! ITS OWN `bd init` AND NOT THE RUN'S SHARED BOARD: the check reads the whole
 //! ready set and counts it, so a neighbour's rows would move every number.
 //!
@@ -263,10 +268,7 @@ fn the_check_names_each_class_on_a_fixture_board_with_its_count_and_ids() {
     );
     let stray_label = rig.filed("a bug under the run label", "bug", &["fleet:run"]);
     let record = rig.filed("a run fleet filed", "task", &["fleet:run"]);
-    rig.metadata(
-        &record,
-        serde_json::json!({ "fleet.run": { "v": 1, "hash": "h1" } }),
-    );
+    rig.metadata(&record, serde_json::json!({ "fleet.run": a_run_record() }));
     let marked = rig.filed("delivered by hand", "task", &[]);
     rig.bd(&[
         "comments",
@@ -297,19 +299,30 @@ fn the_check_names_each_class_on_a_fixture_board_with_its_count_and_ids() {
             .unwrap_or_else(|| panic!("{id} is listed"))
             .clone()
     };
-    assert_eq!(row(&bare_orders)["metadata"]["orders"]["owner"], "alice");
     assert_eq!(row(&bare_orders)["order"], serde_json::Value::Null);
+    assert!(
+        !row(&bare_orders).to_string().contains("alice"),
+        "the board's own key is not in the row: {}",
+        row(&bare_orders)
+    );
     assert_eq!(
         row(&odd_version)["order"],
         serde_json::json!({ "unreadable": true })
     );
-    assert_eq!(
-        row(&record)["run"],
-        serde_json::json!({ "v": 1, "hash": "h1" })
-    );
+    let mut read_back = a_run_record();
+    read_back
+        .as_object_mut()
+        .expect("a record is an object")
+        .remove("v");
+    assert_eq!(row(&record)["run"], read_back, "the record, as it reads");
     assert_eq!(row(&stray_label)["run"], serde_json::Value::Null);
     assert_eq!(row(&stray_label)["type"], "bug");
-    assert_eq!(row(&plain)["metadata"], serde_json::Value::Null);
+    for listed in &ready {
+        assert!(
+            listed.get("metadata").is_none(),
+            "no row carries raw metadata: {listed}"
+        );
+    }
     assert_eq!(
         ids_of(&rig.listed(&["--label", "fleet:run"])),
         sorted(&[&stray_label, &record])
@@ -327,7 +340,7 @@ fn the_check_names_each_class_on_a_fixture_board_with_its_count_and_ids() {
     let head = said.lines().next().unwrap_or_default();
     assert_eq!(
         head,
-        "finding adopt-board (defaults) — adopt-board: found — 4 items to adopt; \
+        "finding adopt-board (defaults) — adopt-board: found — 3 items to adopt; \
          `fleet item show <id> --json` reads each, and the adopt skill walks the mapping",
         "{said}"
     );
@@ -349,7 +362,8 @@ fn the_check_names_each_class_on_a_fixture_board_with_its_count_and_ids() {
         )
     );
     assert!(
-        line_for(&lines, "fleet.run at a version").ends_with(": none"),
+        line_for(&lines, "fleet.run at a version")
+            .contains("none read — one refuses the list itself"),
         "{said}"
     );
     assert_eq!(
@@ -360,16 +374,24 @@ fn the_check_names_each_class_on_a_fixture_board_with_its_count_and_ids() {
         )
     );
     assert!(
-        line_for(&lines, "2. conventions of the board itself").ends_with("— 2 items"),
+        line_for(&lines, "2. conventions of the board itself").ends_with("— 1 item"),
         "{said}"
     );
-    assert_eq!(
-        line_for(&lines, "an order-like metadata key"),
-        format!(
-            "adopt-board:    an order-like metadata key that is not fleet.orders: 1 item — \
-             {bare_orders}; keys orders (holding kind, owner)"
-        )
-    );
+    for uncounted in [
+        "a fleet. key fleet never writes",
+        "an order-like metadata key that is not fleet.orders",
+        "a run-like metadata key that is not fleet.run",
+        "an assignee-like metadata key",
+    ] {
+        assert_eq!(
+            line_for(&lines, uncounted),
+            format!(
+                "adopt-board:    {uncounted}: not counted — `fleet item list` answers the fields \
+                 fleet reads, never the raw metadata of an item"
+            ),
+            "named and not counted: {said}"
+        );
+    }
     assert_eq!(
         line_for(&lines, "a run label that is not fleet:run"),
         format!(
@@ -389,13 +411,54 @@ fn the_check_names_each_class_on_a_fixture_board_with_its_count_and_ids() {
     );
 
     // The controls: nothing fleet wrote, nothing plain, no comment and no
-    // assignee is named on any line of the report.
-    for control in [&plain, &record, &marked, &held] {
+    // assignee is named on any line of the report — and no metadata key of
+    // the board's own, which no row carries.
+    for control in [&plain, &record, &marked, &held, &bare_orders] {
         assert!(
             !lines.iter().any(|line| names(line, control)),
             "{control} is named nowhere: {said}"
         );
     }
+}
+
+/// A run record as fleet writes one, its version stamped in.
+fn a_run_record() -> serde_json::Value {
+    serde_json::json!({
+        "v": 1, "hash": "h1", "workflow": "greet", "pack": "ts", "entry": "greet.ts",
+        "started_at": "2026-09-25T00:00:00Z",
+    })
+}
+
+/// A `fleet.run` at a version this binary does not read refuses the list that
+/// reaches it, naming the item and the version — so the check could not read
+/// the board, and says so with the list's refusal under the row.
+#[test]
+fn a_run_record_fleet_does_not_read_refuses_the_list_and_the_check_could_not_tell() {
+    let rig = Rig::with_a_board("run-version");
+    let odd = rig.filed("a run at another version", "task", &["fleet:run"]);
+    rig.metadata(
+        &odd,
+        serde_json::json!({ "fleet.run": { "v": 2, "hash": "h1" } }),
+    );
+
+    let out = rig.fleet(&["item", "list", "--label", "fleet:run", "--json"]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    let named = format!("{odd}'s run record is not one this fleet reads (fleet.run, v 2)");
+    assert!(stderr(&out).contains(&named), "{}", stderr(&out));
+
+    let out = rig.doctor();
+    let said = stdout(&out);
+    assert_eq!(out.status.code(), Some(3), "{said}{}", stderr(&out));
+    assert!(
+        said.lines().next().unwrap_or_default().starts_with(
+            "could not tell adopt-board (defaults) — adopt-board: could not read the board"
+        ),
+        "{said}"
+    );
+    assert!(
+        report(&said).iter().any(|line| line.contains(&named)),
+        "the list's refusal, naming the item, is printed under the row: {said}"
+    );
 }
 
 // ---- nothing to adopt -------------------------------------------------------

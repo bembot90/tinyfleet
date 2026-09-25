@@ -58,7 +58,10 @@ mod tests {
     use serde::de::DeserializeOwned;
     use serde::Serialize;
 
-    use super::super::{bd_wire, first_value, item_from, opened, shown, StoreError, PINNED_BD};
+    use super::super::{
+        bd_wire, first_value, item_from, opened, shown, ItemId, OrderState, Status, StoreError,
+        PINNED_BD,
+    };
 
     const GENERATED: &str = include_str!("bd_wire.rs");
     const FRAGMENT: &[u8] = include_bytes!("bd_wire.schema.json");
@@ -169,50 +172,64 @@ mod tests {
     /// Every field a verb asserts on, off bd 1.3.0's own answer: the open
     /// `blocks` is the one blocker, the closed one and the `discovered-from`
     /// are not.
+    ///
+    /// THE RECORDING PREDATES THE TYPED RECORD AND THE TYPED ORDER. Its
+    /// `fleet.run` is no run's record — `{"v":1,"ok":true,"steps":[1,2]}` — so
+    /// the row as recorded refuses the read, naming the key and its version;
+    /// and its order index names `alberto`, who is no typed actor, and a kind
+    /// fleet gives no order of, so with the run taken off the row the index
+    /// reads as present and unreadable.
     #[test]
     fn a_recorded_show_reads_into_the_item_a_verb_asserts_on() {
-        let item = item_from(
-            "fx",
-            &shown("fx", answer(SHOW), "").expect("the item is there"),
-        )
-        .expect("the recorded show decodes");
+        let row = shown("fx", answer(SHOW), "").expect("the item is there");
+        let refusal = item_from("fx", &row).expect_err("the recorded run is no run record");
+        assert!(
+            matches!(
+                &refusal,
+                StoreError::Unreadable(why)
+                    if why.contains("'s run record is not one this fleet reads (fleet.run, v 1)")
+            ),
+            "{refusal:?}"
+        );
+
+        let mut row = row;
+        row["metadata"]
+            .as_object_mut()
+            .expect("the recorded show holds metadata")
+            .remove("fleet.run");
+        let item = item_from("fx", &row).expect("the rest of the recorded show decodes");
 
         assert_eq!(item.title, "downstream");
-        assert_eq!(item.status, "open");
+        assert_eq!(item.status, Status::Open);
         assert_eq!(item.item_type, "task");
         assert_eq!(item.assignee.as_deref(), Some("seat-1"));
         assert_eq!(item.labels, vec!["fleet", "fleet:run"]);
-        assert_eq!(item.blockers, vec![dependency_titled("upstream open")]);
-        assert!(item.has_orders_key);
         assert_eq!(
-            item.orders,
-            Some(super::super::Orders {
-                by: Some(String::from("alberto")),
-                kind: Some(String::from("build")),
-                seat: Some(String::from("seat-1")),
-                at: Some(String::from("2026-09-23T10:00:00Z")),
-            })
+            item.blockers,
+            vec![ItemId::from(dependency_titled("upstream open"))]
         );
-        assert_eq!(
-            item.run,
-            Some(serde_json::json!({ "v": 1, "ok": true, "steps": [1, 2] }))
-        );
+        assert_eq!(item.order, OrderState::Unreadable);
+        assert_eq!(item.run, None);
         assert!(
             item.id.starts_with("fx-"),
             "the answer's id wins: {}",
             item.id
         );
+        assert!(
+            item.proof.carries("downstream"),
+            "the proof is the row read"
+        );
     }
 
     /// The three states of the order index, off bd 1.3.0's answers where it
-    /// has them: an object, a key holding no object, and no fleet key at all —
-    /// which is what a row holding only another writer's bare `orders` and
-    /// `run` answers.
+    /// has them: a key holding no object, and no fleet key at all — which is
+    /// what a row holding only another writer's bare `orders` and `run`
+    /// answers.
     #[test]
     fn an_orders_key_holding_no_object_is_present_and_unreadable() {
         let row = shown("fx", answer(SHOW_UNREADABLE_ORDERS), "").expect("the item is there");
         let item = item_from("fx", &row).expect("the recorded show decodes");
-        assert_eq!((item.orders, item.has_orders_key), (None, true));
+        assert_eq!(item.order, OrderState::Unreadable);
 
         let bare = rows(READY)
             .into_iter()
@@ -223,10 +240,7 @@ mod tests {
             "the discovered source carries another writer's bare keys: {bare}"
         );
         let item = item_from("fx", &bare).expect("a ready row decodes as a show row");
-        assert_eq!(
-            (item.orders, item.has_orders_key, item.run),
-            (None, false, None)
-        );
+        assert_eq!((item.order, item.run), (OrderState::None, None));
     }
 
     /// Metadata that is not an object at all — which beads' spec says a store
@@ -235,10 +249,7 @@ mod tests {
     fn metadata_that_is_not_an_object_holds_no_orders() {
         let row = serde_json::json!({ "id": "fx-1", "metadata": [1, 2] });
         let item = item_from("fx-1", &row).expect("raw metadata decodes whatever it holds");
-        assert_eq!(
-            (item.orders, item.has_orders_key, item.run),
-            (None, false, None)
-        );
+        assert_eq!((item.order, item.run), (OrderState::None, None));
     }
 
     /// A code bd did not spell as text still leaves the answer an error, read

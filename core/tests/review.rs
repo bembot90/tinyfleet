@@ -25,10 +25,10 @@ use fleet_core::entry::{
 use fleet_core::item::brief::Packs;
 use fleet_core::item::review::{self, Mode, Verdict, Wiring};
 use fleet_core::item::show::entry_lines;
-use fleet_core::item::{Change, Git, Project, Ring, RingOutcome, ITEM_ENTRY};
+use fleet_core::item::{control_token, Change, Git, Project, Ring, RingOutcome, ITEM_ENTRY};
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::store::bd::Bd;
-use fleet_core::store::{AssignedItem, Item, Store, StoreError};
+use fleet_core::store::{AssignedItem, Item, OrderState, ReadProof, Store, StoreError};
 use fleet_core::test_support::Board;
 
 const AT: &str = "2026-09-09T04:05:06Z";
@@ -216,12 +216,15 @@ impl Ring for StubRing {
     }
 }
 
-/// The real store with its assignee reading bent once an assignment has been
-/// written, so an arm can force the disagreement the return's read-back exists
-/// to catch — while the holder the review reads first is still the real one.
+/// The real store with its reading bent once an assignment has been written,
+/// so an arm can force the disagreement the return's read-back exists to catch
+/// — while the holder the review reads first is still the real one. The
+/// assignee is bent where one is named, and a token nothing wrote is planted
+/// in the read's proof where one is named.
 struct Doctored<'a> {
     inner: &'a dyn Store,
-    assignee: String,
+    assignee: Option<String>,
+    plant: Option<&'static str>,
     assigned: std::sync::atomic::AtomicBool,
 }
 
@@ -245,7 +248,12 @@ impl Store for Doctored<'_> {
     fn show(&self, item: &str) -> Result<Item, StoreError> {
         let mut read = self.inner.show(item)?;
         if self.assigned.load(std::sync::atomic::Ordering::SeqCst) {
-            read.assignee = Some(self.assignee.clone());
+            if let Some(assignee) = &self.assignee {
+                read.assignee = Some(assignee.clone());
+            }
+            if let Some(token) = self.plant {
+                read.proof = ReadProof::of(format!("{}{token}", read.proof.as_str()));
+            }
         }
         Ok(read)
     }
@@ -356,7 +364,7 @@ fn a_delivered_item(store: &dyn Store, title: &str, builder: &str) -> String {
         .set_orders(
             &item,
             &format!(
-                r#"{{"fleet.orders": {{"v": 1, "by": "an-architect", "kind": "dispatch", "seat": "{seat}", "at": "{AT}"}}}}"#
+                r#"{{"fleet.orders": {{"v": 1, "by": "run:an-architect", "kind": "dispatch", "seat": "{seat}", "at": "{AT}"}}}}"#
             ),
             "an-architect",
         )
@@ -853,15 +861,10 @@ fn a_return_reassigns_to_the_orders_seat_id_and_an_absent_builder_is_named_by_la
     let scratch = &store();
     let builder = "s-absent";
     let item = a_delivered_item(&scratch.store, "an item returned to nobody live", builder);
-    assert_eq!(
-        scratch
-            .store
-            .show(&item)
-            .expect("the item reads")
-            .orders
-            .and_then(|orders| orders.seat),
-        Some(full(builder)),
-        "the premise: the order index carries the builder's id"
+    let order = scratch.store.show(&item).expect("the item reads").order;
+    assert!(
+        matches!(&order, OrderState::Ordered(index) if index.seat.map(|seat| seat.to_string()) == Some(full(builder))),
+        "the premise: the order index carries the builder's id: {order:?}"
     );
     let findings = findings(scratch, "absent", &["the one finding."]);
     let ring = StubRing::answering(RingOutcome::Absent);
@@ -977,7 +980,8 @@ fn a_return_whose_assignee_reads_back_as_somebody_else_could_not_tell_and_rings_
     let findings = findings(scratch, "bent", &["the one finding."]);
     let bent = Doctored {
         inner: &scratch.store,
-        assignee: "somebody-else".to_string(),
+        assignee: Some("somebody-else".to_string()),
+        plant: None,
         assigned: std::sync::atomic::AtomicBool::new(false),
     };
     let ring = StubRing::new();
@@ -1011,6 +1015,48 @@ fn a_return_whose_assignee_reads_back_as_somebody_else_could_not_tell_and_rings_
         )),
         "{}",
         said.stop
+    );
+    assert!(ring.calls().is_empty(), "rung: {:?}", ring.calls());
+}
+
+/// THE NEGATIVE CONTROL on the return's read-back: a read whose proof carries
+/// a token nothing wrote is not reading this item, however right its assignee
+/// reads — a could-not-tell, and nobody is rung.
+#[test]
+fn the_negative_control_catches_a_planted_token_on_a_return() {
+    let scratch = &store();
+    let builder = "s-planted";
+    let item = a_delivered_item(&scratch.store, "an item whose read is not its own", builder);
+    let findings = findings(scratch, "planted", &["the one finding."]);
+    let planted = Doctored {
+        inner: &scratch.store,
+        assignee: None,
+        plant: Some(control_token()),
+        assigned: std::sync::atomic::AtomicBool::new(false),
+    };
+    let ring = StubRing::new();
+    let events = StubEvents::default();
+
+    let (said, code) = run_through(
+        &planted,
+        scratch,
+        &item,
+        Mode::Return(&findings),
+        &StubGit::answering(a_diff()),
+        &ring,
+        &events,
+    );
+
+    assert_eq!(code, 3, "{}{}{}", said.out, said.err, said.stop);
+    assert!(
+        said.stop.contains(control_token()) && said.stop.contains("not reading this item"),
+        "{}",
+        said.stop
+    );
+    assert_eq!(
+        events.count(),
+        0,
+        "a read that is not this item's announces nothing"
     );
     assert!(ring.calls().is_empty(), "rung: {:?}", ring.calls());
 }

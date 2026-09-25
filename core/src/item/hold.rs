@@ -51,10 +51,6 @@ use crate::store::{Item, Store};
 /// must meet that as a value and not as a missing one.
 pub const RUN_BRANCH: &str = "(run)";
 
-/// The key the run's own hash sits under in the record's `run` object, written
-/// by [`run::run`] at the open.
-const HASH: &str = "hash";
-
 // ---- the question ------------------------------------------------------------
 
 /// The question, as its arguments.
@@ -208,18 +204,16 @@ pub fn hold(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result
     })
 }
 
-/// The hash a run is pinned to, off its record's own `run` object, which is
-/// what a run stands on where a seat stands on a commit. A record whose open
-/// never wrote the object reads `(none)` rather than refusing: the question is
-/// the point of the park and the hash is context beside it.
+/// The hash a run is pinned to, off its run record, which is what a run
+/// stands on where a seat stands on a commit. A record whose open never wrote
+/// the run record reads `(none)` rather than refusing: the question is the
+/// point of the park and the hash is context beside it.
 fn run_hash(record: &Item) -> String {
     record
         .run
         .as_ref()
-        .and_then(|object| object.get(HASH))
-        .and_then(|value| value.as_str())
-        .unwrap_or("(none)")
-        .to_string()
+        .map(|run| run.hash.clone())
+        .unwrap_or_else(|| String::from("(none)"))
 }
 
 /// A question as a person reads it: the question, its context on the next line

@@ -19,7 +19,7 @@ use fleet_core::lock;
 use fleet_core::process::run_bounded;
 use fleet_core::resolve::{self, Layer};
 use fleet_core::store::bd::{Bd, PINNED_BD};
-use fleet_core::store::Store;
+use fleet_core::store::{Status, Store};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -325,7 +325,7 @@ fn items(project_root: &Path, seat: &str) -> Result<Vec<(String, String)>, Strin
         .assigned_to(seat)
         .map_err(|why| why.to_string())?
         .into_iter()
-        .filter(|row| matches!(row.status.as_str(), "open" | "in_progress"))
+        .filter(|row| matches!(row.status, Status::Open | Status::InProgress))
         .map(|row| (row.id, row.title))
         .collect())
 }

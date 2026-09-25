@@ -37,7 +37,7 @@ use crate::item::{
 };
 use crate::seat::actor::{Actor, ActorKind};
 use crate::seat::identity::Directory;
-use crate::store::{Item, Store};
+use crate::store::{Item, Order, OrderState, Store};
 
 /// What the ring carries on a return.
 pub const RING: &str = "{item} is returned with {findings} finding(s) and is yours again. \
@@ -143,7 +143,7 @@ pub fn review(
     };
 
     Ok(Read {
-        item: item.id,
+        item: item.id.to_string(),
         commit,
         size,
         entry: written,
@@ -365,12 +365,24 @@ fn retur(
     // The builder is the order index's seat: the record of who was given this
     // item, which is the one place that says where a return goes. It is the
     // seat's full id, which is what the return assigns and rings.
-    let Some(builder) = item.orders.as_ref().and_then(|o| o.seat.clone()) else {
-        return Err(Stop::refused(format!(
-            "{}'s order index names no seat — a return goes to the seat the order named and the \
-             record does not say who that is",
-            item.id
-        )));
+    let builder = match &item.order {
+        OrderState::Ordered(Order {
+            seat: Some(seat), ..
+        }) => seat.to_string(),
+        OrderState::Unreadable => {
+            return Err(Stop::refused(format!(
+                "{}'s order index is not one this fleet can read — a return goes to the seat the \
+                 order named and the record does not say who that is",
+                item.id
+            )))
+        }
+        OrderState::Ordered(_) | OrderState::None => {
+            return Err(Stop::refused(format!(
+                "{}'s order index names no seat — a return goes to the seat the order named and \
+                 the record does not say who that is",
+                item.id
+            )))
+        }
     };
 
     let reviewed = Body::Reviewed(Reviewed {
@@ -447,7 +459,7 @@ fn write_verdict(
             )));
         }
         let control = control_token();
-        if read.document.contains(control) {
+        if read.proof.carries(control) {
             return Err(Stop::could_not_tell(format!(
                 "the read-back on {item} carries {control}, which nothing wrote — the read is not \
                  reading this item"

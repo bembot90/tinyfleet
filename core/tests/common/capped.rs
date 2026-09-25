@@ -43,7 +43,7 @@ pub fn capped_bd(dir: &Fixture, seat: &str, rows: &[Held], log: &Path) -> PathBu
     for row in rows {
         let orders = if row.ordered {
             format!(
-                ",\"metadata\":{{\"fleet.orders\":{{\"v\":1,\"by\":\"an-architect\",\"kind\":\"dispatch\",\
+                ",\"metadata\":{{\"fleet.orders\":{{\"v\":1,\"by\":\"run:an-architect\",\"kind\":\"dispatch\",\
                  \"seat\":\"{seat}\",\"at\":\"2026-09-14T10:40:39Z\"}}}}"
             )
         } else {

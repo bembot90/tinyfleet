@@ -164,7 +164,7 @@ impl Project {
                 "update",
                 &item,
                 "--metadata",
-                r#"{"fleet.orders": {"v": 1, "by": "lead-1", "kind": "dispatch", "at": "2026-09-09T00:00:00Z"}}"#,
+                r#"{"fleet.orders": {"v": 1, "by": "run:lead-1", "kind": "dispatch", "at": "2026-09-09T00:00:00Z"}}"#,
                 "--actor",
                 "lead-1",
             ])

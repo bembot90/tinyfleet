@@ -33,6 +33,7 @@ use common::hermetic::Hermetic;
 use fleet_core::item::pins;
 use fleet_core::item::run as workflow_run;
 use fleet_core::seat::actor::{Actor, ActorKind};
+use fleet_core::store::StoreError;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -1793,6 +1794,178 @@ fn a_rerun_reads_the_settings_the_run_was_opened_with_and_not_the_edited_file() 
     );
 }
 
+/// The real store with one reading bent: every read's proof carries a token
+/// nothing wrote, which is the one answer the pins' read-back asks of it.
+struct Planted(fleet_core::store::bd::Bd);
+
+impl fleet_core::store::Store for Planted {
+    fn ready(&self) -> Result<Vec<String>, StoreError> {
+        self.0.ready()
+    }
+
+    fn show(&self, item: &str) -> Result<fleet_core::store::Item, StoreError> {
+        let mut read = self.0.show(item)?;
+        read.proof = fleet_core::store::ReadProof::of(format!(
+            "{}{}",
+            read.proof.as_str(),
+            fleet_core::item::control_token()
+        ));
+        Ok(read)
+    }
+
+    fn open_labelled(&self, label: &str) -> Result<Vec<String>, StoreError> {
+        self.0.open_labelled(label)
+    }
+
+    fn create(&self, item: &fleet_core::store::NewItem, by: &str) -> Result<String, StoreError> {
+        self.0.create(item, by)
+    }
+
+    fn set_title(&self, item: &str, title: &str, by: &str) -> Result<(), StoreError> {
+        self.0.set_title(item, title, by)
+    }
+
+    fn assigned_to(&self, seat: &str) -> Result<Vec<fleet_core::store::AssignedItem>, StoreError> {
+        self.0.assigned_to(seat)
+    }
+
+    fn assign(&self, item: &str, seat: &str, by: &str) -> Result<(), StoreError> {
+        self.0.assign(item, seat, by)
+    }
+
+    fn hand_over(&self, item: &str, from: &str, to: &str, by: &str) -> Result<(), StoreError> {
+        self.0.hand_over(item, from, to, by)
+    }
+
+    fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
+        self.0.set_orders(item, payload, by)
+    }
+
+    fn set_metadata(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
+        self.0.set_metadata(item, payload, by)
+    }
+
+    fn unset_orders(&self, item: &str, by: &str) -> Result<(), StoreError> {
+        self.0.unset_orders(item, by)
+    }
+
+    fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
+        self.0.reopen(item, by)
+    }
+
+    fn withdraw_order(
+        &self,
+        item: &str,
+        seat: &str,
+        status: &str,
+        by: &str,
+    ) -> Result<(), StoreError> {
+        self.0.withdraw_order(item, seat, status, by)
+    }
+
+    fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
+        self.0.hold(item, reason, by)
+    }
+
+    fn open_holds(&self) -> Result<Vec<String>, StoreError> {
+        self.0.open_holds()
+    }
+
+    fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError> {
+        self.0.clear_hold(hold, by)
+    }
+
+    fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
+        self.0.close(item, reason, by)
+    }
+
+    fn append(
+        &self,
+        item: &str,
+        body: &fleet_core::entry::Body,
+        by: &Actor,
+    ) -> Result<String, StoreError> {
+        self.0.append(item, body, by)
+    }
+
+    fn timeline(&self, item: &str) -> Result<Vec<fleet_core::entry::Entry>, StoreError> {
+        self.0.timeline(item)
+    }
+
+    fn capabilities(&self) -> Result<fleet_core::store::types::Capabilities, StoreError> {
+        self.0.capabilities()
+    }
+
+    fn export(&self, into: &Path) -> Result<PathBuf, StoreError> {
+        self.0.export(into)
+    }
+}
+
+/// THE NEGATIVE CONTROL on the pins' read-back: a read whose proof carries a
+/// token nothing wrote is not reading the record, however right its hash and
+/// workflow read — a could-not-tell naming the token, and no process started.
+///
+/// Core's own entry, called in this process as the cli calls it, over a store
+/// that plants the token in every read's proof.
+#[test]
+fn the_pins_read_back_catches_a_planted_token() {
+    let rig = Rig::new(
+        "planted",
+        &Pack::running("echo 'nothing runs'"),
+        &cap_that_is_not_the_subject(),
+    );
+    let store = Planted(fleet_core::store::bd::Bd::at(&rig.project));
+    let packs = fleet_core::item::brief::Packs::under(
+        &rig.machine.join("packs"),
+        &rig.machine.join(fleet_core::defaults::DIR),
+    )
+    .unwrap_or_else(|stop| panic!("the layers resolve: {}", stop.message));
+    let policy_file = rig.project.join("fleet.toml");
+    let table = fleet_core::item::table_at(&policy_file);
+    let project = fleet_core::item::Project {
+        root: rig.project.clone(),
+        name: String::from("project"),
+        policy: table.clone(),
+        guards: table,
+    };
+    let stream = Stream(rig.machine.join("events.jsonl"));
+    let child_path = match std::env::var("PATH") {
+        Ok(held) => format!("{}:{held}", rig.stubs.display()),
+        Err(_) => rig.stubs.display().to_string(),
+    };
+    let workflow = rig.workflow(ONE);
+
+    let stop = workflow_run::run(
+        &mut Vec::new(),
+        &workflow_run::Order {
+            workflow: &workflow,
+            inputs: &[],
+            by: &Actor::typed(BY).expect("typed").expect("a seat"),
+            at: "2026-09-25T00:00:00Z",
+            machine_dir: &rig.machine,
+            fleet_bin: Path::new(env!("CARGO_BIN_EXE_fleet")),
+        },
+        &workflow_run::Wiring {
+            store: &store,
+            project: &project,
+            packs: &packs,
+            policy_file: &policy_file,
+            events: &stream,
+            stream: &stream,
+            child_path: &child_path,
+        },
+    )
+    .expect_err("a read that is not the record's is refused");
+
+    assert_eq!(stop.code, 3, "{}", stop.message);
+    assert!(
+        stop.message.contains(fleet_core::item::control_token())
+            && stop.message.contains("not reading this item"),
+        "{}",
+        stop.message
+    );
+}
+
 // ---- the cancel ----------------------------------------------------------------
 
 /// The same wiring the controller's run pass hands core's re-run, over this
@@ -1907,9 +2080,9 @@ fn a_cancelled_waiting_run_is_closed_announced_and_never_executed_again() {
 }
 
 /// A record whose `fleet.run` is at a version this binary does not know, or at
-/// none, is could-not-tell naming the key and the version, and is never
-/// executed again as though its shape were known — whatever another writer's
-/// bare `run` beside it holds (fleet-4j6).
+/// none, refuses the read of the record itself: could-not-tell naming the key
+/// and the version, and never executed again as though its shape were known —
+/// whatever another writer's bare `run` beside it holds (fleet-4j6).
 #[test]
 fn a_run_object_at_an_unknown_version_is_could_not_tell_and_never_executed() {
     use fleet_core::store::Store;
@@ -1944,8 +2117,8 @@ fn a_run_object_at_an_unknown_version_is_could_not_tell_and_never_executed() {
         let stop = rerun_in_this_process(&rig, &id).expect_err("the run is not executed");
         assert_eq!(stop.code, 3, "{found}: {}", stop.message);
         let named = match object {
-            Some(v) => format!("`fleet.run` carries v {v}, and this fleet reads v 1"),
-            None => String::from("`fleet.run` carries no v, and this fleet reads v 1"),
+            Some(v) => format!("{id}'s run record is not one this fleet reads (fleet.run, v {v})"),
+            None => format!("{id}'s run record is not one this fleet reads (fleet.run, v none)"),
         };
         assert!(
             stop.message.contains(&named),

@@ -743,7 +743,7 @@ pub const FOREIGN_LABEL: &str = "run";
 pub fn foreign_of(store: &dyn Store, item: &str) -> (String, Vec<String>) {
     let read = store.show(item).expect("the item reads");
     let document: serde_json::Value =
-        serde_json::from_str(&read.document).expect("the document is JSON");
+        serde_json::from_str(read.proof.as_str()).expect("the document is JSON");
     (document["metadata"]["orders"].to_string(), read.labels)
 }
 

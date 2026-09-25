@@ -23,7 +23,7 @@ use crate::entry::{
     Reviewed, RulingKind, SuiteRun, Verdict,
 };
 use crate::item::{land, TRUNK};
-use crate::store::Item;
+use crate::store::{Item, OrderState};
 
 /// How far an entry's detail lines sit under its summary.
 const DETAIL: usize = 4;
@@ -47,7 +47,8 @@ pub fn render(item: &Item, timeline: &[Entry]) -> String {
         order_line(item),
     ];
     if !item.blockers.is_empty() {
-        lines.push(format!("blocked by {}", item.blockers.join(", ")));
+        let blockers: Vec<&str> = item.blockers.iter().map(|id| id.as_str()).collect();
+        lines.push(format!("blocked by {}", blockers.join(", ")));
     }
     lines.push(String::new());
     lines.push(if item.description.is_empty() {
@@ -71,16 +72,7 @@ pub fn render(item: &Item, timeline: &[Entry]) -> String {
 /// [`entry::to_json`]'s, so this document and the entry model cannot disagree
 /// about what an entry carries.
 pub fn document(item: &Item, timeline: &[Entry]) -> Value {
-    let order = match (&item.orders, item.has_orders_key) {
-        (Some(index), _) => serde_json::json!({
-            "by": index.by,
-            "kind": index.kind,
-            "seat": index.seat,
-            "at": index.at,
-        }),
-        (None, true) => serde_json::json!({ "unreadable": true }),
-        (None, false) => Value::Null,
-    };
+    let order = order_json(&item.order);
     serde_json::json!({
         "id": item.id,
         "title": item.title,
@@ -116,25 +108,40 @@ pub fn entry_lines(entry: &Entry) -> Vec<String> {
 
 // ---- the fields -------------------------------------------------------------
 
-/// The order index, read as the verbs read it: absent is `none`, a key that
-/// holds no readable index is `unreadable`, and a field the index lacks is
-/// `(absent)`.
+/// The order index, read as the verbs read it: absent is `none`, and a key
+/// that holds no order this fleet can read is `unreadable`.
 fn order_line(item: &Item) -> String {
-    let Some(index) = &item.orders else {
-        return String::from(if item.has_orders_key {
-            "order unreadable"
-        } else {
-            "order none"
-        });
-    };
-    let field = |held: &Option<String>| held.clone().unwrap_or_else(|| String::from("(absent)"));
-    format!(
-        "order {} by {} at {}, seat {}",
-        field(&index.kind),
-        field(&index.by),
-        field(&index.at),
-        index.seat.as_deref().unwrap_or("not yet named")
-    )
+    match &item.order {
+        OrderState::None => String::from("order none"),
+        OrderState::Unreadable => String::from("order unreadable"),
+        OrderState::Ordered(order) => format!(
+            "order {} by {} at {}, seat {}",
+            order.kind.as_str(),
+            order.by,
+            order.at,
+            order
+                .seat
+                .map(|seat| seat.to_string())
+                .unwrap_or_else(|| String::from("not yet named"))
+        ),
+    }
+}
+
+/// The order index as a caller parses it, the one shape `item show` and `item
+/// list` both answer: `null` for none, `{"unreadable": true}` for an index
+/// this fleet cannot read, and the order's four fields — the seat `null` where
+/// the order names none yet.
+pub fn order_json(order: &OrderState) -> Value {
+    match order {
+        OrderState::None => Value::Null,
+        OrderState::Unreadable => serde_json::json!({ "unreadable": true }),
+        OrderState::Ordered(order) => serde_json::json!({
+            "by": order.by,
+            "kind": order.kind,
+            "seat": order.seat,
+            "at": order.at,
+        }),
+    }
 }
 
 fn joined_or_none(list: &[String]) -> String {

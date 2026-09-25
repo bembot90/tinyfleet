@@ -2,21 +2,20 @@
 //!
 //! The store's three set reads are the filters, so what this suite proves is
 //! which ids each one answers, what two of them answer together, and that a
-//! row carries `item show`'s fields plus the run's object and the metadata as
-//! the store holds it — the one field the defaults' `adopt-board` check reads a
-//! board's own conventions from. The shipped binary and a real board are the
-//! cli's `adopt.rs`.
+//! row carries `item show`'s fields plus the run's record — the typed fields
+//! the item carries, and no raw metadata. The shipped binary and a real board
+//! are the cli's `adopt.rs`.
 
 use fleet_core::item::list::{document, ids, list, render, Filter};
 use fleet_core::item::{COULD_NOT_TELL, USAGE};
-use fleet_core::store::Item;
+use fleet_core::store::{Item, Status};
 use fleet_core::test_support::FakeStore;
 
 fn item(id: &str, status: &str, labels: &[&str]) -> Item {
     Item {
-        id: id.to_string(),
+        id: id.into(),
         title: format!("the item {id}"),
-        status: status.to_string(),
+        status: Status::from(status),
         item_type: String::from("task"),
         labels: labels.iter().map(|label| label.to_string()).collect(),
         ..Item::default()
@@ -24,9 +23,9 @@ fn item(id: &str, status: &str, labels: &[&str]) -> Item {
 }
 
 /// Five items: a plain one, one carrying a board's own `orders` beside a
-/// `fleet.orders` at a version this binary does not read, a run's record, a
-/// `fleet.run` at a version it does not read, and one in progress held
-/// against a seat — out of the ready set and in the assignee's read.
+/// `fleet.orders` at a version this binary does not read, a run's record, one
+/// carrying a readable order index, and one in progress held against a seat —
+/// out of the ready set and in the assignee's read.
 fn a_store() -> FakeStore {
     let store = FakeStore::default();
     store.seed(item("fx-1", "open", &[]));
@@ -48,22 +47,34 @@ fn a_store() -> FakeStore {
         .cloned()
         .expect("an object"),
     );
-    metadata.insert(
-        String::from("fx-3"),
-        serde_json::json!({ "fleet.run": { "v": 1, "hash": "h1" } })
-            .as_object()
-            .cloned()
-            .expect("an object"),
-    );
+    metadata.insert(String::from("fx-3"), run_record());
     metadata.insert(
         String::from("fx-4"),
-        serde_json::json!({ "fleet.run": { "v": 9 } })
-            .as_object()
-            .cloned()
-            .expect("an object"),
+        serde_json::json!({ "fleet.orders": {
+            "v": 1, "by": BY, "kind": "dispatch", "seat": SEAT, "at": AT,
+        }})
+        .as_object()
+        .cloned()
+        .expect("an object"),
     );
     drop(metadata);
     store
+}
+
+/// Who gave fx-4's order, the seat it names and when.
+const BY: &str = "run:lead-1";
+const SEAT: &str = "01a0d1f1-0aec-765f-9abe-00000005ea71";
+const AT: &str = "2026-09-24T10:00:00Z";
+
+/// A run's record as the run writes it, its version stamped in.
+fn run_record() -> serde_json::Map<String, serde_json::Value> {
+    serde_json::json!({ "fleet.run": {
+        "v": 1, "hash": "h1", "workflow": "greet", "pack": "ts", "entry": "greet.ts",
+        "started_at": AT,
+    }})
+    .as_object()
+    .cloned()
+    .expect("an object")
 }
 
 fn filter(ready: bool, label: Option<&str>, assignee: Option<&str>) -> Filter {
@@ -129,10 +140,10 @@ fn a_store_that_does_not_answer_is_could_not_tell() {
     );
 }
 
-/// The rows: `item show`'s fields, the run's object read at its version, and
-/// the metadata whole — fleet's two keys and the board's own beside them.
+/// The rows: `item show`'s fields and the run's record, each as the item
+/// carries it — and no raw metadata, the board's own keys and fleet's alike.
 #[test]
-fn a_row_carries_the_fields_the_run_and_the_metadata() {
+fn a_row_carries_the_fields_and_the_run_record() {
     let store = a_store();
     let items = list(&store, &filter(true, None, None)).expect("the ready set");
     let document = document(&items);
@@ -149,7 +160,7 @@ fn a_row_carries_the_fields_the_run_and_the_metadata() {
         keys.sort_unstable();
         assert_eq!(
             keys,
-            ["assignee", "id", "labels", "metadata", "order", "run", "status", "title", "type"],
+            ["assignee", "id", "labels", "order", "run", "status", "title", "type"],
             "{row}"
         );
     }
@@ -162,21 +173,28 @@ fn a_row_carries_the_fields_the_run_and_the_metadata() {
     let plain = by_id("fx-1");
     assert_eq!(plain["order"], serde_json::Value::Null);
     assert_eq!(plain["run"], serde_json::Value::Null);
-    assert_eq!(plain["metadata"], serde_json::Value::Null);
     assert_eq!(plain["type"], "task");
     assert_eq!(plain["status"], "open");
 
     let foreign = by_id("fx-2");
     assert_eq!(foreign["order"], serde_json::json!({ "unreadable": true }));
-    assert_eq!(foreign["metadata"]["orders"]["owner"], "alice");
-    assert_eq!(foreign["metadata"]["fleet.orders"]["v"], 2);
+    assert!(
+        !foreign.to_string().contains("alice"),
+        "the board's own key is not handed on: {foreign}"
+    );
     assert_eq!(foreign["labels"], serde_json::json!(["backend"]));
 
     let record = by_id("fx-3");
-    assert_eq!(record["run"], serde_json::json!({ "v": 1, "hash": "h1" }));
     assert_eq!(
-        by_id("fx-4")["run"],
-        serde_json::json!({ "unreadable": true })
+        record["run"],
+        serde_json::json!({
+            "hash": "h1", "workflow": "greet", "pack": "ts", "entry": "greet.ts",
+            "started_at": AT,
+        })
+    );
+    assert_eq!(
+        by_id("fx-4")["order"],
+        serde_json::json!({ "by": BY, "kind": "dispatch", "seat": SEAT, "at": AT })
     );
 
     let rendered = render(&items);
@@ -187,4 +205,31 @@ fn a_row_carries_the_fields_the_run_and_the_metadata() {
         "{rendered}"
     );
     assert_eq!(render(&[]), "(no items)");
+}
+
+/// A `fleet.run` this binary does not read is no row: it refuses the read of
+/// its item, and so the list, naming the item and the version it carries —
+/// never a row that reads as though the item carried no run.
+#[test]
+fn a_run_record_this_fleet_does_not_read_refuses_the_list() {
+    let store = a_store();
+    store
+        .metadata
+        .lock()
+        .expect("the metadata is not poisoned")
+        .insert(
+            String::from("fx-3"),
+            serde_json::json!({ "fleet.run": { "v": 2, "hash": "h1" } })
+                .as_object()
+                .cloned()
+                .expect("an object"),
+        );
+    let stop = list(&store, &filter(true, None, None)).expect_err("the read refuses");
+    assert_eq!(stop.code, COULD_NOT_TELL, "{}", stop.message);
+    assert!(
+        stop.message
+            .contains("fx-3's run record is not one this fleet reads (fleet.run, v 2)"),
+        "{}",
+        stop.message
+    );
 }

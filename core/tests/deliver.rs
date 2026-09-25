@@ -25,7 +25,7 @@ use fleet_core::item::{
     control_token, run, Change, Git, Project, Ring, RingOutcome, Stop, ITEM_ENTRY, TRUNK,
 };
 use fleet_core::seat::actor::{Actor, ActorKind};
-use fleet_core::store::{AssignedItem, Item, Store, StoreError};
+use fleet_core::store::{AssignedItem, Item, ReadProof, Store, StoreError};
 
 const REVIEWER: &str = "a-reviewer";
 const AT: &str = "2026-09-09T04:05:06Z";
@@ -173,7 +173,9 @@ impl Store for Doctored<'_> {
             read.assignee = Some(assignee.clone());
         }
         if let Some(extra) = &self.append {
-            read.document.push_str(extra);
+            // THE FAKE PLANTS THE TOKEN IN ITS PROOF: the read's own text,
+            // which is what the negative control asks.
+            read.proof = ReadProof::of(format!("{}{extra}", read.proof.as_str()));
         }
         Ok(read)
     }
@@ -280,7 +282,7 @@ fn an_ordered_item(graph: &Graph, title: &str, seat: &str) -> String {
         .set_orders(
             &item,
             &format!(
-                r#"{{"fleet.orders": {{"v": 1, "by": "an-architect", "kind": "dispatch", "seat": "{seat}", "at": "{AT}"}}}}"#
+                r#"{{"fleet.orders": {{"v": 1, "by": "run:an-architect", "kind": "dispatch", "seat": "{seat}", "at": "{AT}"}}}}"#
             ),
             "an-architect",
         )

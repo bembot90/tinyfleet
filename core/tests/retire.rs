@@ -17,7 +17,7 @@ use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
 use fleet_core::seat::retire;
 use fleet_core::store::bd::Bd;
-use fleet_core::store::{AssignedItem, Item, Orders, Store};
+use fleet_core::store::{AssignedItem, Item, Order, OrderKind, OrderState, Stamp, Status, Store};
 use fleet_core::test_support::FakeStore;
 
 /// A transient seat's full id, which is what an order assigns to: the incident
@@ -46,21 +46,37 @@ const CLOSED: &str = "fx-closed";
 const ANOTHER: &str = "fx-another-seat";
 const EPIC: &str = "fx-epic";
 
+/// The order a dispatch gave this seat, as the index reads it.
+fn an_order() -> OrderState {
+    OrderState::Ordered(Order {
+        kind: OrderKind::Dispatch,
+        by: Actor::typed("run:an-architect")
+            .expect("typed")
+            .expect("a run"),
+        seat: Some(seat()),
+        at: Stamp::parse("2026-09-14T10:40:39Z").expect("a stamp"),
+    })
+}
+
 fn item(id: &str, status: &str, assignee: &str, ordered: bool) -> Item {
     Item {
-        id: id.to_string(),
+        id: id.into(),
         title: format!("{id} · an item"),
-        status: status.to_string(),
+        status: Status::from(status),
         assignee: Some(assignee.to_string()),
-        orders: ordered.then(|| Orders {
-            by: Some(String::from("an-architect")),
-            kind: Some(String::from("dispatch")),
-            seat: Some(SEAT.to_string()),
-            at: Some(String::from("2026-09-14T10:40:39Z")),
-        }),
-        has_orders_key: ordered,
+        order: if ordered {
+            an_order()
+        } else {
+            OrderState::None
+        },
         ..Item::default()
     }
+}
+
+/// Whether a read carries an order index — any of the two answers that are
+/// not none.
+fn ordered(read: &Item) -> bool {
+    read.order != OrderState::None
 }
 
 /// One board holding the four items the query has to tell apart: the ordered
@@ -113,10 +129,11 @@ fn a_retire_withdraws_every_open_ordered_item_the_seat_still_holds() {
     retire::withdraw(&store, &held, &seat(), LABEL, &by()).expect("the withdrawal lands");
 
     let after = read(&store, HELD);
-    assert!(
-        !after.has_orders_key,
-        "no orders key survives the withdrawal: {}",
-        after.document
+    assert_eq!(
+        after.order,
+        OrderState::None,
+        "no order index survives the withdrawal: {}",
+        after.proof.as_str()
     );
     assert!(
         after.assignee.as_deref().unwrap_or("").trim().is_empty(),
@@ -156,9 +173,9 @@ fn a_retire_reopens_an_item_the_seat_marked_in_progress() {
     let after = read(&store, HELD);
     assert_eq!(after.status, "open", "the claimed item reads open");
     assert!(
-        after.assignee.as_deref().unwrap_or("").trim().is_empty() && !after.has_orders_key,
+        after.assignee.as_deref().unwrap_or("").trim().is_empty() && !ordered(&after),
         "and unassigned and unordered: {}",
-        after.document
+        after.proof.as_str()
     );
     assert!(
         store
@@ -198,9 +215,9 @@ fn a_retire_whose_item_was_closed_after_the_listing_is_refused_and_reopens_nothi
     let after = read(&store, HELD);
     assert_eq!(after.status, "closed", "the item stays closed");
     assert!(
-        after.has_orders_key && after.assignee.as_deref() == Some(SEAT),
+        ordered(&after) && after.assignee.as_deref() == Some(SEAT),
         "nothing was written: {}",
-        after.document
+        after.proof.as_str()
     );
     assert!(
         timeline(&store, HELD).is_empty(),
@@ -216,8 +233,8 @@ fn a_retire_handed_a_closed_row_writes_nothing() {
     let store = board();
     let row = AssignedItem {
         id: CLOSED.to_string(),
-        status: String::from("closed"),
-        has_orders_key: true,
+        status: Status::Closed,
+        order: an_order(),
         ..AssignedItem::default()
     };
 
@@ -260,7 +277,7 @@ fn a_retire_leaves_what_the_seat_does_not_hold_under_an_open_order() {
         );
     }
     assert!(
-        read(&store, CLOSED).has_orders_key && read(&store, ANOTHER).has_orders_key,
+        ordered(&read(&store, CLOSED)) && ordered(&read(&store, ANOTHER)),
         "the two ordered items this seat does not hold open keep their order"
     );
 }
@@ -300,7 +317,7 @@ fn a_retire_leaves_another_writers_orders_key_untouched() {
     );
     assert!(timeline(&store, THEIRS).is_empty(), "and carries no entry");
     assert!(
-        !read(&store, HELD).has_orders_key,
+        !ordered(&read(&store, HELD)),
         "fleet's own order is withdrawn"
     );
     assert_eq!(
@@ -337,9 +354,9 @@ fn a_retire_withdraws_an_ordered_epic_the_seat_still_names() {
 
     let after = read(&store, EPIC);
     assert!(
-        !after.has_orders_key && after.assignee.as_deref().unwrap_or("").trim().is_empty(),
+        !ordered(&after) && after.assignee.as_deref().unwrap_or("").trim().is_empty(),
         "the epic reads unordered and unassigned: {}",
-        after.document
+        after.proof.as_str()
     );
     assert_eq!(after.status, "open", "the epic stays open");
 }
@@ -413,15 +430,15 @@ fn a_retire_whose_withdrawal_does_not_land_refuses_and_names_the_item() {
         stop.message
     );
     assert!(
-        stop.message.contains(HELD) && stop.message.contains("orders key"),
+        stop.message.contains(HELD) && stop.message.contains("order index"),
         "the stop names the item and what is still on it: {}",
         stop.message
     );
     let after = read(&store, HELD);
     assert!(
-        after.has_orders_key && after.assignee.as_deref() == Some(SEAT),
+        ordered(&after) && after.assignee.as_deref() == Some(SEAT),
         "the item is as it was, so the seat's row must not be dropped: {}",
-        after.document
+        after.proof.as_str()
     );
 }
 
@@ -456,9 +473,9 @@ fn a_retire_whose_item_moved_to_another_seat_is_refused_and_writes_nothing() {
     );
     let after = read(&store, HELD);
     assert!(
-        after.has_orders_key && after.assignee.as_deref() == Some("agent-9d2b4f60"),
+        ordered(&after) && after.assignee.as_deref() == Some("agent-9d2b4f60"),
         "nothing was written: {}",
-        after.document
+        after.proof.as_str()
     );
     assert!(
         timeline(&store, HELD).is_empty(),
@@ -478,8 +495,8 @@ fn a_retire_that_cannot_read_the_board_refuses_rather_than_reading_no_hold() {
             vec![AssignedItem {
                 id: HELD.to_string(),
                 title: String::new(),
-                status: String::from("open"),
-                has_orders_key: true,
+                status: Status::Open,
+                order: an_order(),
                 item_type: String::from("task"),
             }],
         )]
@@ -535,9 +552,9 @@ fn a_retire_withdraws_an_ordered_item_past_the_fiftieth_row() {
         .show("fx-row-51")
         .expect("the store answers about the item");
     assert!(
-        !after.has_orders_key && after.assignee.is_none() && after.status == "open",
+        !ordered(&after) && after.assignee.is_none() && after.status == "open",
         "the item reads open, unassigned and unordered: {}",
-        after.document
+        after.proof.as_str()
     );
     assert_eq!(
         timeline(&store, "fx-row-51")

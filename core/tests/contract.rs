@@ -29,11 +29,40 @@ use std::path::Path;
 use common::{a_delivery, seat_actor, shared_store, A_COMMIT};
 use fleet_core::entry::{Body, OrderKind, Ordered};
 use fleet_core::item::dispatch;
+use fleet_core::seat::actor::Actor;
+use fleet_core::seat::identity::SeatId;
 use fleet_core::store::bd::Bd;
-use fleet_core::store::{keys, NewItem, Store, StoreError};
+use fleet_core::store::{keys, NewItem, Order, OrderState, RunRecord, Stamp, Store, StoreError};
 use fleet_core::test_support::Board;
 
 const BY: &str = "the-contract";
+
+/// Who an order index here names as its dispatcher, the seat it names — the
+/// full id, a string the store carries and never reads — and when.
+const ORDERED_BY: &str = "run:an-architect";
+const SEAT: &str = "01a0d1f1-0aec-765f-9abe-00000000a5ea";
+const AT: &str = "2026-09-13T00:00:00Z";
+
+/// The order the index [`dispatch::index`] writes over those three reads as.
+fn the_order() -> Order {
+    Order {
+        kind: fleet_core::store::OrderKind::Dispatch,
+        by: Actor::typed(ORDERED_BY).expect("typed").expect("a run"),
+        seat: Some(SeatId::parse(SEAT).expect("a seat id")),
+        at: Stamp::parse(AT).expect("a stamp"),
+    }
+}
+
+/// A run's record, as the run's own writer stamps it, pinned to `hash`.
+fn a_record(hash: &str) -> RunRecord {
+    RunRecord {
+        hash: hash.to_string(),
+        workflow: String::from("greet"),
+        pack: String::from("ts"),
+        entry: String::from("greet.ts"),
+        started_at: Stamp::parse(AT).expect("a stamp"),
+    }
+}
 
 /// One check: the store, the root it writes under — the export is a file and
 /// the two stores keep theirs in two places — and the name of the half it is
@@ -167,38 +196,28 @@ fn set_title(store: &dyn Store, _: &Path, which: &str) {
 fn orders(store: &dyn Store, _: &Path, which: &str) {
     let item = filed(store, "an item with an order on it");
     let read = store.show(&item).expect("the item reads");
-    assert!(
-        !read.has_orders_key,
+    assert_eq!(
+        read.order,
+        OrderState::None,
         "{which}: nothing has written an order yet"
     );
-    assert_eq!(read.orders, None, "{which}");
 
-    // The seat as a dispatch writes it: the full id, a string the store
-    // carries and never reads.
-    let seat = "01a0d1f1-0aec-765f-9abe-00000000a5ea";
     store
         .set_orders(
             &item,
-            &format!(
-                r#"{{"fleet.orders":{{"v":1,"by":"an-architect","kind":"dispatch","seat":"{seat}","at":"2026-09-13T00:00:00Z"}}}}"#
-            ),
+            &dispatch::index(ORDERED_BY, dispatch::KIND, Some(SEAT), AT),
             BY,
         )
         .expect("the order index lands");
     let read = store.show(&item).expect("the item reads");
-    assert!(read.has_orders_key, "{which}: the key is there");
-    let index = read.orders.expect("the index is an object");
-    assert_eq!(index.by.as_deref(), Some("an-architect"), "{which}");
-    assert_eq!(index.kind.as_deref(), Some("dispatch"), "{which}");
-    assert_eq!(index.seat.as_deref(), Some(seat), "{which}");
-    assert_eq!(index.at.as_deref(), Some("2026-09-13T00:00:00Z"), "{which}");
+    assert_eq!(read.order, OrderState::Ordered(the_order()), "{which}");
 
     store.unset_orders(&item, BY).expect("the withdrawal lands");
     let read = store.show(&item).expect("the item reads");
-    assert_eq!(read.orders, None, "{which}: the index is gone");
-    assert!(
-        !read.has_orders_key,
-        "{which}: and the key with it — a withdrawal is told from an unreadable value"
+    assert_eq!(
+        read.order,
+        OrderState::None,
+        "{which}: the index is gone — a withdrawal is told from an unreadable value"
     );
 }
 
@@ -222,8 +241,9 @@ fn fenced(store: &dyn Store, _: &Path, which: &str) {
             Some("a-seat"),
             "{which}: {what} — nothing was written, the holder stands"
         );
-        assert!(
-            read.has_orders_key,
+        assert_ne!(
+            read.order,
+            OrderState::None,
             "{which}: {what} — and so does its order"
         );
         assert_eq!(read.status, status, "{which}: {what} — and its status");
@@ -271,7 +291,7 @@ fn fenced(store: &dyn Store, _: &Path, which: &str) {
         "{which}: the assignee is cleared: {:?}",
         read.assignee
     );
-    assert!(!read.has_orders_key, "{which}: and the order unset");
+    assert_eq!(read.order, OrderState::None, "{which}: and the order unset");
     assert_eq!(read.status, "open", "{which}: and the item open");
 
     match store.hand_over(&item, "a-seat", "the-builder", BY) {
@@ -301,41 +321,53 @@ fn metadata_merge(store: &dyn Store, _: &Path, which: &str) {
         .set_metadata(&item, r#"{"a_prior_key":{"kept":true}}"#, BY)
         .expect("the first key lands");
     store
-        .set_metadata(&item, r#"{"fleet.run":{"v":1,"items":["fx-one"]}}"#, BY)
+        .set_metadata(&item, &a_run_object("fx-one"), BY)
         .expect("the second key lands");
 
     let read = store.show(&item).expect("the item reads");
     assert!(
-        read.document.contains("a_prior_key") && read.document.contains("kept"),
+        read.proof.carries("a_prior_key") && read.proof.carries("kept"),
         "{which}: the write MERGES at the top level: {}",
-        read.document
+        read.proof.as_str()
     );
     assert_eq!(
         read.run,
-        Some(serde_json::json!({ "v": 1, "items": ["fx-one"] })),
+        Some(a_record("fx-one")),
         "{which}: and the key it wrote is there"
     );
 
     store
-        .set_metadata(&item, r#"{"fleet.run":{"v":1,"hash":"deadbeef"}}"#, BY)
+        .set_metadata(
+            &item,
+            r#"{"fleet.run":{"v":1,"hash":"deadbeef","workflow":"w","pack":"p","entry":"e","started_at":"2026-09-13T00:00:00Z"}}"#,
+            BY,
+        )
         .expect("a second write of the same key lands");
     let read = store.show(&item).expect("the item reads");
     assert_eq!(
         read.run,
-        Some(serde_json::json!({ "v": 1, "hash": "deadbeef" })),
+        Some(RunRecord {
+            hash: String::from("deadbeef"),
+            workflow: String::from("w"),
+            pack: String::from("p"),
+            entry: String::from("e"),
+            started_at: Stamp::parse(AT).expect("a stamp"),
+        }),
         "{which}: one key's own object is REPLACED, not merged into"
     );
     assert!(
-        read.document.contains("a_prior_key"),
+        read.proof.carries("a_prior_key"),
         "{which}: the top level still merged: {}",
-        read.document
+        read.proof.as_str()
     );
 }
 
 /// A run's object, as the run's own writer stamps it.
 fn a_run_object(hash: &str) -> String {
-    let mut object = serde_json::Map::new();
-    object.insert(String::from("hash"), hash.into());
+    let object = serde_json::to_value(a_record(hash))
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .expect("a record is an object");
     keys::stamped(keys::RUN, object).to_string()
 }
 
@@ -348,7 +380,7 @@ fn fleet_keys(store: &dyn Store, _: &Path, which: &str) {
     let foreign = r#"{"orders":{"seat":"another-tools-seat","by":7}}"#;
     let foreign_of = |read: &fleet_core::store::Item| {
         let document: serde_json::Value =
-            serde_json::from_str(&read.document).expect("the document is JSON");
+            serde_json::from_str(read.proof.as_str()).expect("the document is JSON");
         document["metadata"]["orders"].clone()
     };
 
@@ -358,20 +390,20 @@ fn fleet_keys(store: &dyn Store, _: &Path, which: &str) {
     store
         .set_orders(
             &item,
-            &dispatch::index("an-architect", dispatch::KIND, Some("a-seat"), "then"),
+            &dispatch::index(ORDERED_BY, dispatch::KIND, Some(SEAT), AT),
             BY,
         )
         .expect("the order index lands");
     let read = store.show(&item).expect("the item reads");
     assert_eq!(
         read.run,
-        Some(serde_json::json!({ "v": 1, "hash": "h1" })),
+        Some(a_record("h1")),
         "{which}: the index's write kept the run's object: {}",
-        read.document
+        read.proof.as_str()
     );
     assert_eq!(
-        read.orders.and_then(|index| index.seat).as_deref(),
-        Some("a-seat"),
+        read.order,
+        OrderState::Ordered(the_order()),
         "{which}: and the index reads at its version"
     );
 
@@ -384,14 +416,14 @@ fn fleet_keys(store: &dyn Store, _: &Path, which: &str) {
     let read = store.show(&item).expect("the item reads");
     assert_eq!(
         read.run,
-        Some(serde_json::json!({ "v": 1, "hash": "h2" })),
+        Some(a_record("h2")),
         "{which}: the run's own write replaced its object"
     );
     assert_eq!(
-        read.orders.and_then(|index| index.seat).as_deref(),
-        Some("a-seat"),
+        read.order,
+        OrderState::Ordered(the_order()),
         "{which}: and kept the index, which the bare `orders` beside it is not: {}",
-        read.document
+        read.proof.as_str()
     );
 
     store
@@ -401,14 +433,15 @@ fn fleet_keys(store: &dyn Store, _: &Path, which: &str) {
         .withdraw_order(&item, "a-seat", "open", BY)
         .expect("the holder's withdraw lands");
     let read = store.show(&item).expect("the item reads");
-    assert!(
-        !read.has_orders_key,
+    assert_eq!(
+        read.order,
+        OrderState::None,
         "{which}: the order is withdrawn: {}",
-        read.document
+        read.proof.as_str()
     );
     assert_eq!(
         read.run,
-        Some(serde_json::json!({ "v": 1, "hash": "h2" })),
+        Some(a_record("h2")),
         "{which}: and the run's object stands"
     );
     assert_eq!(

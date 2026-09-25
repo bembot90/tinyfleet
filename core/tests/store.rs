@@ -39,7 +39,7 @@ use fleet_core::entry::{Body, OrderKind, Ordered};
 use fleet_core::item::{recorded, Stop, Unrecorded, COULD_NOT_TELL, REFUSED};
 use fleet_core::process::DRAIN_GRACE;
 use fleet_core::store::bd::{item_from, Bd};
-use fleet_core::store::{NewItem, Store, StoreError};
+use fleet_core::store::{NewItem, OrderState, Store, StoreError};
 
 /// Serialises every arm in this binary, because the seam they share is the
 /// process's `PATH` and there is one of those.
@@ -359,12 +359,13 @@ fn every_read_opens_the_envelope() {
     .file(
         "answers/show-fx-held.json",
         "{\"data\": [{\"id\": \"fx-held\", \"title\": \"a held item\", \"status\": \"open\", \
-         \"assignee\": \"a-seat\", \"metadata\": {\"fleet.orders\": {\"v\": 1, \"by\": \"an-architect\"}}}], \
+         \"assignee\": \"a-seat\", \"metadata\": {\"fleet.orders\": {\"v\": 1, \"by\": \"run:an-architect\", \
+         \"kind\": \"dispatch\", \"at\": \"2026-09-23T23:30:39Z\"}}}], \
          \"schema_version\": 1}\nTip: a line after the answer\n",
     )
     .file(
         "answers/list.json",
-        r#"{"data": [{"id": "fx-listed", "title": "a listed item", "status": "open", "metadata": {"fleet.orders": {"v": 1, "by": "an-architect"}}}], "schema_version": 1}"#,
+        r#"{"data": [{"id": "fx-listed", "title": "a listed item", "status": "open", "metadata": {"fleet.orders": {"v": 1, "by": "run:an-architect", "kind": "dispatch", "at": "2026-09-23T23:30:39Z"}}}], "schema_version": 1}"#,
     )
     .file(
         "answers/gate-list.json",
@@ -390,9 +391,10 @@ fn every_read_opens_the_envelope() {
     assert_eq!(held.id, "fx-held");
     assert_eq!(held.title, "a held item");
     assert_eq!(held.assignee.as_deref(), Some("a-seat"));
-    assert_eq!(
-        held.orders.and_then(|orders| orders.by).as_deref(),
-        Some("an-architect")
+    assert!(
+        matches!(&held.order, OrderState::Ordered(order) if order.by.to_string() == "run:an-architect"),
+        "{:?}",
+        held.order
     );
 
     assert_eq!(
@@ -408,7 +410,11 @@ fn every_read_opens_the_envelope() {
         rows[0].title, "a listed item",
         "the row's own title is read"
     );
-    assert!(rows[0].has_orders_key, "the row's own metadata is read");
+    assert!(
+        matches!(rows[0].order, OrderState::Ordered(_)),
+        "the row's own metadata is read: {:?}",
+        rows[0].order
+    );
 
     assert_eq!(
         store.open_holds().expect("the gate list decodes"),

@@ -15,7 +15,7 @@ use fleet_core::entry::{
 use fleet_core::item::show::{document, entry_lines, render};
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
-use fleet_core::store::{Item, Orders};
+use fleet_core::store::{Item, Order, OrderState, Stamp, Status};
 
 const C1: &str = "1111111111111111111111111111111111111111";
 const C2: &str = "2222222222222222222222222222222222222222";
@@ -36,6 +36,17 @@ fn words(text: &str) -> String {
     text.to_string()
 }
 
+/// The dispatch `run:lead-1` gave at the stamp every order here carries, to
+/// the seat named or to none yet.
+fn an_order(seat: Option<SeatId>) -> OrderState {
+    OrderState::Ordered(Order {
+        kind: fleet_core::store::OrderKind::Dispatch,
+        by: actor("run:lead-1"),
+        seat,
+        at: Stamp::parse("2026-09-23T10:00:00Z").expect("a stamp"),
+    })
+}
+
 fn entry(n: u32, by: &str, body: Body) -> Entry {
     Entry {
         id: format!("c-{n}"),
@@ -48,21 +59,15 @@ fn entry(n: u32, by: &str, body: Body) -> Entry {
 /// An item carrying every field the rendering reads.
 fn an_item() -> Item {
     Item {
-        id: words("fx-1"),
+        id: "fx-1".into(),
         title: words("an item with a record"),
         description: words("the item's own words\nover two lines"),
-        status: words("in_progress"),
+        status: Status::InProgress,
         item_type: words("task"),
         labels: vec![words("fleet"), words("core")],
         assignee: Some(words(SEAT)),
-        orders: Some(Orders {
-            by: Some(words("run:lead-1")),
-            kind: Some(words("dispatch")),
-            seat: Some(words(SEAT)),
-            at: Some(words("2026-09-23T10:00:00Z")),
-        }),
-        has_orders_key: true,
-        blockers: vec![words("fx-2"), words("fx-3")],
+        order: an_order(Some(seat())),
+        blockers: vec!["fx-2".into(), "fx-3".into()],
         ..Item::default()
     }
 }
@@ -475,9 +480,9 @@ fn the_other_form_of_each_kind_renders_its_own_line() {
 #[test]
 fn an_item_with_nothing_on_it_says_none_where_each_field_is() {
     let bare = Item {
-        id: words("fx-9"),
+        id: "fx-9".into(),
         title: words("a bare item"),
-        status: words("open"),
+        status: Status::Open,
         item_type: words("bug"),
         ..Item::default()
     };
@@ -496,18 +501,12 @@ timeline (no entries)"
     // A key holding no readable index is its own answer, and an index missing
     // its seat is an order nobody has been named for yet.
     let unreadable = Item {
-        has_orders_key: true,
+        order: OrderState::Unreadable,
         ..bare.clone()
     };
     assert!(render(&unreadable, &[]).contains("\norder unreadable\n"));
     let transient = Item {
-        orders: Some(Orders {
-            by: Some(words("run:lead-1")),
-            kind: Some(words("dispatch")),
-            seat: None,
-            at: Some(words("2026-09-23T10:00:00Z")),
-        }),
-        has_orders_key: true,
+        order: an_order(None),
         ..bare
     };
     assert!(render(&transient, &[])
@@ -569,7 +568,7 @@ fn the_document_carries_the_fields_and_each_entry_as_the_entry_model_writes_it()
 
     // The three answers the index has, and an assignee nobody holds as null.
     let bare = Item {
-        id: words("fx-9"),
+        id: "fx-9".into(),
         ..Item::default()
     };
     let doc = document(&bare, &[]);
@@ -577,7 +576,7 @@ fn the_document_carries_the_fields_and_each_entry_as_the_entry_model_writes_it()
     assert_eq!(doc["assignee"], serde_json::Value::Null);
     assert_eq!(doc["timeline"], serde_json::json!([]));
     let unreadable = Item {
-        has_orders_key: true,
+        order: OrderState::Unreadable,
         ..bare
     };
     assert_eq!(

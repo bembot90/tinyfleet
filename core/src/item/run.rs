@@ -55,7 +55,7 @@ use crate::policy;
 use crate::resolve::Layer;
 use crate::seat::actor::Actor;
 use crate::settings;
-use crate::store::{keys, Item, NewItem, Store, StoreError};
+use crate::store::{keys, Item, NewItem, RunRecord, Status, Store, StoreError};
 
 /// Where the run directories go, under the machine directory.
 pub const RUNS: &str = "runs";
@@ -86,9 +86,6 @@ pub const RECORD_TYPE: &str = "task";
 
 /// The title the record carries between the create and the retitle.
 pub const UNTITLED: &str = "a run being filed";
-
-/// The store's own word for a record that is closed.
-const CLOSED: &str = "closed";
 
 /// Runs open at once where `[core.run] max_open` names no number.
 pub const MAX_OPEN: u64 = 4;
@@ -224,7 +221,8 @@ impl Ended {
     /// The word the verb's own second line ends on.
     pub fn word(self) -> &'static str {
         match self {
-            Ended::Closed => "closed",
+            // The record's own status, which a closed run's record reads.
+            Ended::Closed => Status::Closed.as_str(),
             Ended::Failed => "failed",
             Ended::Waiting => "waiting",
             Ended::CouldNotTell => "could not tell",
@@ -374,38 +372,25 @@ pub fn rerun(out: &mut dyn Write, again: &Again, wiring: &Wiring) -> Result<Ende
     let record = read(wiring.store, again.run)?;
     // A CLOSED RECORD IS AN ENDED RUN, however it came to be closed — a cancel,
     // or a person's own close — and whatever the stream last said about it.
-    if record.status == CLOSED {
+    if record.status == Status::Closed {
         return Err(Stop::refused(format!(
             "{} is closed — a closed run is not executed again",
             again.run
         )));
     }
-    let object = object_of(&record)?.ok_or_else(|| {
+    // A record this fleet does not read never reached here: the read above
+    // refused it, which is a could-not-tell.
+    let pinned = record.run.as_ref().ok_or_else(|| {
         Stop::refused(format!(
-            "{} carries no `{}` object — a re-run is over a run this fleet opened, and the \
+            "{} carries no run record — a re-run is over a run this fleet opened, and the \
              record does not say it opened one",
-            again.run,
-            keys::RUN
+            again.run
         ))
     })?;
-    let pinned = |key: &str| -> Result<String, Stop> {
-        object
-            .get(key)
-            .and_then(|value| value.as_str())
-            .map(str::to_string)
-            .ok_or_else(|| {
-                Stop::refused(format!(
-                    "{}'s `{}` object names no {key} — the pins a re-run reads are the ones the \
-                     open wrote",
-                    again.run,
-                    keys::RUN
-                ))
-            })
-    };
-    let hash = pinned("hash")?;
-    let workflow = pinned("workflow")?;
-    let relative = pinned("entry")?;
-    let pack_name = pinned("pack")?;
+    let hash = pinned.hash.clone();
+    let workflow = pinned.workflow.clone();
+    let relative = pinned.entry.clone();
+    let pack_name = pinned.pack.clone();
 
     let directory = again.machine_dir.join(RUNS).join(again.run);
     if !directory.join(BUNDLE).is_file() {
@@ -562,7 +547,7 @@ pub fn cancel(
              runs and nothing else"
         )));
     }
-    if record.status == CLOSED {
+    if record.status == Status::Closed {
         return Err(Stop::refused(format!(
             "{run} is closed already — the run has ended and there is nothing to cancel"
         )));
@@ -574,8 +559,8 @@ pub fn cancel(
     let holds: Vec<String> = record
         .blockers
         .iter()
-        .filter(|blocker| open.contains(blocker))
-        .cloned()
+        .filter(|blocker| open.iter().any(|hold| *blocker == hold))
+        .map(|blocker| blocker.to_string())
         .collect();
     // ONE CLEARED ENTRY PER HOLD, before the store's hold is cleared: the
     // record says the hold was cancelled, never that somebody chose no letter.
@@ -611,8 +596,13 @@ pub fn cancel(
         ))
     })?;
     let read_back = read(store, run)?;
-    if read_back.status != CLOSED {
-        return Err(disagrees(run, "status", CLOSED, &read_back.status));
+    if read_back.status != Status::Closed {
+        return Err(disagrees(
+            run,
+            "status",
+            Status::Closed.as_str(),
+            read_back.status.as_str(),
+        ));
     }
 
     let written = |e: String| {
@@ -1213,28 +1203,25 @@ fn write_the_pins(
             ))
         })?;
 
+    // THE RECORD IS READ AS ITS OWN TYPE. One the store answers at a shape this
+    // fleet does not read refuses the read above, which is a could-not-tell.
     let read_back = read(wiring.store, id)?;
-    let object = object_of(&read_back)?;
-    let field = |key: &str| {
-        object
-            .and_then(|object| object.get(key))
-            .and_then(|value| value.as_str())
-            .unwrap_or("(absent)")
-            .to_string()
+    let record = read_back.run.as_ref();
+    let field = |pinned: fn(&RunRecord) -> &str| {
+        record
+            .map(|record| pinned(record).to_string())
+            .unwrap_or_else(|| String::from("(absent)"))
     };
-    if field("hash") != hash {
-        return Err(disagrees(id, "hash", hash, &field("hash")));
+    let held_hash = field(|record| &record.hash);
+    if held_hash != hash {
+        return Err(disagrees(id, "hash", hash, &held_hash));
     }
-    if field("workflow") != resolved.name {
-        return Err(disagrees(
-            id,
-            "workflow",
-            &resolved.name,
-            &field("workflow"),
-        ));
+    let held_workflow = field(|record| &record.workflow);
+    if held_workflow != resolved.name {
+        return Err(disagrees(id, "workflow", &resolved.name, &held_workflow));
     }
     let control = control_token();
-    if read_back.document.contains(control) {
+    if read_back.proof.carries(control) {
         return Err(Stop::could_not_tell(format!(
             "the read-back on {id} carries {control}, which nothing wrote — the read is not \
              reading this item"
@@ -1593,24 +1580,6 @@ fn read(store: &dyn Store, id: &str) -> Result<Item, Stop> {
     store
         .show(id)
         .map_err(|e: StoreError| Stop::could_not_tell(format!("{id} could not be read: {e}")))
-}
-
-/// The run's own object off its record, at the one version this binary reads,
-/// or `None` where the record carries no `fleet.run` at all.
-///
-/// A key at another version, or at none, is could-not-tell naming the key and
-/// the version: a run a newer fleet opened is not executed again, or read
-/// back, as though this binary knew its shape.
-fn object_of(record: &Item) -> Result<Option<&serde_json::Map<String, serde_json::Value>>, Stop> {
-    let Some(held) = record.run.as_ref() else {
-        return Ok(None);
-    };
-    keys::versioned(keys::RUN, held).map(Some).map_err(|why| {
-        Stop::could_not_tell(format!(
-            "{}'s {why} — this fleet will not guess at a run's shape it does not know",
-            record.id
-        ))
-    })
 }
 
 fn disagrees(id: &str, key: &str, wrote: &str, read_back: &str) -> Stop {

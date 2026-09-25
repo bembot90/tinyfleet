@@ -604,7 +604,7 @@ impl Rig {
                 REVIEWER_ID,
                 "--metadata",
                 &format!(
-                    r#"{{"fleet.orders": {{"v": 1, "by": "an-architect", "kind": "dispatch", "seat": "{BUILDER_ID}", "at": "2026-09-12T00:00:00Z"}}}}"#
+                    r#"{{"fleet.orders": {{"v": 1, "by": "run:an-architect", "kind": "dispatch", "seat": "{BUILDER_ID}", "at": "2026-09-12T00:00:00Z"}}}}"#
                 ),
                 "--actor",
                 BUILDER,

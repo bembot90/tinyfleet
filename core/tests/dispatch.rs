@@ -26,7 +26,7 @@ use fleet_core::item::{
 };
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
-use fleet_core::store::{AssignedItem, Item, Store, StoreError};
+use fleet_core::store::{self, AssignedItem, Item, OrderState, ReadProof, Store, StoreError};
 
 const POLICY: &str = "[guards]\n";
 /// The builder's checks every arm's order hands over, as a workflow would.
@@ -35,6 +35,9 @@ const TOUCHED: &str = "make check";
 /// carries.
 const BY: &str = "seat:01a0d1f1-0aec-765f-9abe-0000001ead01";
 const AT: &str = "2026-09-08T18:46:55Z";
+
+/// Who gave an order already standing on an item, which is not [`BY`].
+const SOMEONE: &str = "run:someone";
 
 /// [`BY`], typed.
 fn by() -> Actor {
@@ -108,7 +111,7 @@ struct Doctored<'a> {
     inner: &'a dyn Store,
     assignee: Option<String>,
     /// The seat the order index reads back naming.
-    seat: Option<String>,
+    seat: Option<SeatId>,
     append: Option<String>,
 }
 
@@ -134,11 +137,13 @@ impl Store for Doctored<'_> {
         if let Some(assignee) = &self.assignee {
             read.assignee = Some(assignee.clone());
         }
-        if let (Some(seat), Some(index)) = (&self.seat, read.orders.as_mut()) {
-            index.seat = Some(seat.clone());
+        if let (Some(seat), OrderState::Ordered(index)) = (self.seat, &mut read.order) {
+            index.seat = Some(seat);
         }
+        // THE FAKE PLANTS THE TOKEN IN ITS PROOF: the read's own text, which is
+        // what the negative control asks.
         if let Some(extra) = &self.append {
-            read.document.push_str(extra);
+            read.proof = ReadProof::of(format!("{}{extra}", read.proof.as_str()));
         }
         Ok(read)
     }
@@ -422,13 +427,27 @@ fn order_line(item: &str, seat: Option<&str>, entry: &str) -> String {
     }
 }
 
-fn index_of(rig: &Rig, item: &str) -> fleet_core::store::Orders {
-    rig.graph
-        .store()
-        .show(item)
-        .expect("the item reads back")
-        .orders
-        .expect("the index is an object")
+fn index_of(rig: &Rig, item: &str) -> store::Order {
+    ordered_index(rig.graph.store().show(item).expect("the item reads back"))
+}
+
+/// The order a read's index holds, where it holds one this fleet reads.
+fn ordered_index(read: Item) -> store::Order {
+    match read.order {
+        OrderState::Ordered(index) => index,
+        other => panic!("the index reads as an order, not {other:?}"),
+    }
+}
+
+/// The order a dispatch by [`BY`] at [`AT`] writes, to `seat` or to no seat
+/// yet, as the index reads it.
+fn wanted_index(seat: Option<&str>) -> store::Order {
+    store::Order {
+        kind: store::OrderKind::Dispatch,
+        by: by(),
+        seat: seat.map(seat_id),
+        at: store::Stamp::parse(AT).expect("a stamp"),
+    }
 }
 
 #[test]
@@ -474,11 +493,7 @@ fn a_named_dispatch_writes_the_assignee_the_ordered_entry_and_the_index() {
 
     let read = rig.graph.store().show(&item).expect("the item reads back");
     assert_eq!(read.assignee.as_deref(), Some(seat.as_str()));
-    let index = read.orders.expect("the index is an object");
-    assert_eq!(index.by.as_deref(), Some(BY));
-    assert_eq!(index.kind.as_deref(), Some("dispatch"));
-    assert_eq!(index.seat.as_deref(), Some(seat.as_str()));
-    assert_eq!(index.at.as_deref(), Some(AT));
+    assert_eq!(ordered_index(read), wanted_index(Some("Orla")));
 
     // The one event: the ordered entry's signal, by the dispatcher, naming the
     // entry the timeline holds. The seat is the entry's and the index's.
@@ -609,11 +624,7 @@ fn a_named_dispatch_appends_one_ordered_entry_and_writes_no_note() {
         "the timeline is the one order, naming the seat's id"
     );
     assert_eq!(entries[0].by, by(), "by the dispatcher's actor");
-    let index = index_of(&rig, &item);
-    assert_eq!(index.by.as_deref(), Some(BY));
-    assert_eq!(index.kind.as_deref(), Some("dispatch"));
-    assert_eq!(index.seat.as_deref(), Some(full(&seat).as_str()));
-    assert_eq!(index.at.as_deref(), Some(AT));
+    assert_eq!(index_of(&rig, &item), wanted_index(Some(&seat)));
 
     let wrote = board.store.wrote();
     assert!(
@@ -671,7 +682,7 @@ fn an_ordered_entry_the_store_does_not_keep_exits_three_naming_it() {
         answer.why
     );
     assert!(
-        !answer.why.contains("fleet.orders"),
+        !answer.why.contains("order index"),
         "and it stops at the entry, before the index: {}",
         answer.why
     );
@@ -714,8 +725,8 @@ fn an_item_already_ordered_is_refused_and_nothing_is_written() {
         .store()
         .set_orders(
             &item,
-            r#"{"fleet.orders":{"v":1,"by":"someone","kind":"dispatch","at":"then"}}"#,
-            "someone",
+            &dispatch::index(SOMEONE, dispatch::KIND, None, AT),
+            SOMEONE,
         )
         .expect("the order index lands");
 
@@ -739,7 +750,7 @@ fn an_item_already_ordered_is_refused_and_nothing_is_written() {
         answer.why
     );
     assert!(
-        answer.why.contains("someone"),
+        answer.why.contains(SOMEONE),
         "the standing order is named: {}",
         answer.why
     );
@@ -747,7 +758,49 @@ fn an_item_already_ordered_is_refused_and_nothing_is_written() {
     assert_eq!(rig.events.count(), 0, "a refusal appends nothing");
 }
 
-/// A `fleet.orders` at a version this binary does not know, or at none, is
+/// An order index whose fields do not read as an order — here an `at` that is
+/// not a stamp — is the index read as unreadable, never as an order this fleet
+/// can weigh: a dispatch could-not-tell over it, with nothing written.
+#[test]
+fn an_order_index_that_does_not_parse_reads_unreadable_and_dispatch_says_could_not_tell() {
+    let rig = Rig::new("unparsed");
+    let item = rig.graph.item("an item whose order index names no stamp");
+    rig.graph
+        .store()
+        .set_orders(
+            &item,
+            &format!(r#"{{"fleet.orders":{{"v":1,"by":"{BY}","kind":"dispatch","at":"then"}}}}"#),
+            BY,
+        )
+        .expect("the order index lands");
+
+    let before = rig.graph.json(&item);
+    let seat = String::from("s-unparsed");
+    let ring = StubRing::answering(RingOutcome::Delivered);
+    let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
+    let answer = rig.run(
+        &item,
+        Some(&seat),
+        std::slice::from_ref(&seat),
+        rig.graph.store(),
+        &ring,
+        &spawner,
+    );
+
+    assert_eq!(answer.code, Some(3), "{}", answer.why);
+    assert!(
+        answer
+            .why
+            .contains("order index is not one this fleet can read"),
+        "{}",
+        answer.why
+    );
+    assert_eq!(rig.graph.json(&item), before, "the item is untouched");
+    assert!(ring.calls().is_empty(), "nobody is rung");
+    assert_eq!(rig.events.count(), 0, "a could-not-tell appends nothing");
+}
+
+/// An order index at a version this binary does not know, or at none, is
 /// present and unreadable — never absent, never an order — and a dispatch
 /// could-not-tell over it with nothing written (fleet-4j6 AC4).
 #[test]
@@ -756,11 +809,11 @@ fn a_fleet_orders_at_an_unknown_version_is_unreadable_and_dispatch_could_not_tel
     for (label, payload) in [
         (
             "v2",
-            r#"{"fleet.orders":{"v":2,"by":"a-newer-fleet","kind":"dispatch","at":"then"}}"#,
+            r#"{"fleet.orders":{"v":2,"by":"run:a-newer-fleet","kind":"dispatch","at":"2026-09-08T18:46:55Z"}}"#,
         ),
         (
             "no-v",
-            r#"{"fleet.orders":{"by":"an-older-fleet","kind":"dispatch","at":"then"}}"#,
+            r#"{"fleet.orders":{"by":"run:an-older-fleet","kind":"dispatch","at":"2026-09-08T18:46:55Z"}}"#,
         ),
     ] {
         let item = rig.graph.item(&format!("an item ordered at {label}"));
@@ -769,11 +822,11 @@ fn a_fleet_orders_at_an_unknown_version_is_unreadable_and_dispatch_could_not_tel
             .set_orders(&item, payload, "another-fleet")
             .expect("the order index lands");
         let read = rig.graph.store().show(&item).expect("the item reads");
-        assert!(
-            read.has_orders_key && read.orders.is_none(),
-            "{label}: present and unreadable: {:?} {}",
-            read.orders,
-            read.document
+        assert_eq!(
+            read.order,
+            OrderState::Unreadable,
+            "{label}: present and unreadable: {}",
+            read.proof.as_str()
         );
 
         let before = rig.graph.json(&item);
@@ -791,9 +844,11 @@ fn a_fleet_orders_at_an_unknown_version_is_unreadable_and_dispatch_could_not_tel
 
         assert_eq!(answer.code, Some(3), "{label}: {}", answer.why);
         assert!(
-            answer.why.contains("`fleet.orders` this fleet cannot read")
+            answer
+                .why
+                .contains("order index is not one this fleet can read")
                 && answer.why.contains("v 1"),
-            "{label}: the key and the version this fleet reads are named: {}",
+            "{label}: the index and the version this fleet reads are named: {}",
             answer.why
         );
         assert_eq!(
@@ -823,10 +878,11 @@ fn another_writers_orders_key_and_run_label_are_neither_read_nor_moved() {
     rig.graph.label(&item, common::FOREIGN_LABEL);
     let before = common::foreign_of(rig.graph.store(), &item);
     let read = rig.graph.store().show(&item).expect("the item reads");
-    assert!(
-        !read.has_orders_key && read.orders.is_none(),
+    assert_eq!(
+        read.order,
+        OrderState::None,
         "a bare `orders` reads as no order: {}",
-        read.document
+        read.proof.as_str()
     );
 
     let ring = StubRing::answering(RingOutcome::Delivered);
@@ -842,8 +898,8 @@ fn another_writers_orders_key_and_run_label_are_neither_read_nor_moved() {
 
     assert_eq!(answer.code, None, "{}", answer.why);
     assert_eq!(
-        index_of(&rig, &item).seat.as_deref(),
-        Some(full(&seat).as_str()),
+        index_of(&rig, &item).seat,
+        Some(seat_id(&seat)),
         "fleet's own index names the seat"
     );
     assert_eq!(
@@ -949,8 +1005,8 @@ fn ordered(rig: &Rig, item: &str, seat: &str) {
         .store()
         .set_orders(
             item,
-            &dispatch::index("someone", dispatch::KIND, Some(seat), "then"),
-            "someone",
+            &dispatch::index(SOMEONE, dispatch::KIND, Some(seat), AT),
+            SOMEONE,
         )
         .expect("the order index lands");
 }
@@ -1036,7 +1092,10 @@ fn a_seat_assigned_only_unordered_work_and_an_epic_is_dispatched() {
     assert_eq!(answer.code, None, "{}", answer.why);
     let read = rig.graph.store().show(&item).expect("the item reads back");
     assert_eq!(read.assignee.as_deref(), Some(full(&seat).as_str()));
-    assert!(read.orders.is_some(), "the order is written");
+    assert!(
+        matches!(read.order, OrderState::Ordered(_)),
+        "the order is written"
+    );
     assert_eq!(ring.calls().len(), 1, "the seat is rung");
 }
 
@@ -1125,7 +1184,7 @@ fn an_index_that_reads_back_wrong_is_handed_the_index_repair() {
     let bent = Doctored {
         inner: rig.graph.store(),
         assignee: None,
-        seat: Some(String::from("somebody-else")),
+        seat: Some(seat_id("somebody-else")),
         append: None,
     };
 
@@ -1140,7 +1199,8 @@ fn an_index_that_reads_back_wrong_is_handed_the_index_repair() {
     assert_eq!(answer.code, Some(3), "{}", answer.why);
     assert!(
         answer.why.contains(&format!(
-            "{item} read back with fleet.orders.seat == somebody-else"
+            "{item} read back with order.seat == {}",
+            full("somebody-else")
         )),
         "the field and the value read: {}",
         answer.why
@@ -1228,7 +1288,10 @@ fn a_ring_that_finds_no_live_session_leaves_the_order_standing() {
 
     let read = rig.graph.store().show(&item).expect("the item reads back");
     assert_eq!(read.assignee.as_deref(), Some(full(&seat).as_str()));
-    assert!(read.orders.is_some(), "the three writes stand");
+    assert!(
+        matches!(read.order, OrderState::Ordered(_)),
+        "the three writes stand"
+    );
     assert!(rig.briefs().join(format!("{item}.md")).is_file());
 }
 
@@ -1271,9 +1334,7 @@ fn a_suffix_is_dispatched_under_the_full_id_it_resolves_to() {
         vec![&ordered_to(Some(seat_id(&seat)))],
         "the ordered entry is on the full id's item"
     );
-    let index = read.orders.expect("the index is an object");
-    assert_eq!(index.seat.as_deref(), Some(full(&seat).as_str()));
-    assert_eq!(index.at.as_deref(), Some(AT));
+    assert_eq!(ordered_index(read), wanted_index(Some(&seat)));
 
     let wrote = board.store.wrote();
     for verb in ["assign", "append", "set_orders"] {
@@ -1523,13 +1584,11 @@ mod transient {
 
         let read = rig.graph.store().show(&item).expect("the item reads back");
         assert_eq!(read.assignee.as_deref(), Some(full("t1").as_str()));
-        let index = index_of(&rig, &item);
         assert_eq!(
-            index.seat.as_deref(),
-            Some(full("t1").as_str()),
+            index_of(&rig, &item),
+            wanted_index(Some("t1")),
             "the seat joins the index"
         );
-        assert_eq!(index.kind.as_deref(), Some("dispatch"));
         assert!(
             ring.calls().is_empty(),
             "the spawn's own first turn IS the ring, so nothing is nudged"
@@ -1598,10 +1657,10 @@ mod transient {
         assert!(answer.why.contains("withdrawn"), "{}", answer.why);
 
         let read = rig.graph.store().show(&item).expect("the item reads back");
-        assert!(
-            !read.has_orders_key,
-            "no orders key survives a withdrawal: {:?}",
-            read.orders
+        assert_eq!(
+            read.order,
+            OrderState::None,
+            "no order index survives a withdrawal"
         );
         assert_eq!(read.assignee, None, "nobody was ever assigned");
         // The order stays as history, and the withdrawal after it says why.
@@ -1653,7 +1712,11 @@ mod transient {
 
         let read = rig.graph.store().show(&item).expect("the item reads back");
         assert_eq!(read.assignee, None, "nobody was assigned");
-        assert!(read.has_orders_key, "the order stands: {:?}", read.orders);
+        assert!(
+            matches!(read.order, OrderState::Ordered(_)),
+            "the order stands: {:?}",
+            read.order
+        );
         assert_eq!(rig.events.count(), 0, "and nothing was announced");
     }
 
@@ -1685,7 +1748,11 @@ mod transient {
         assert!(answer.why.contains("the order stands"), "{}", answer.why);
 
         let read = rig.graph.store().show(&item).expect("the item reads back");
-        assert!(read.has_orders_key, "the order stands: {:?}", read.orders);
+        assert!(
+            matches!(read.order, OrderState::Ordered(_)),
+            "the order stands: {:?}",
+            read.order
+        );
         // THE ORDER AND NOTHING AFTER IT: no withdrawal, and no entry for what
         // could not be observed — the cause is the exit's message.
         assert_eq!(
@@ -1785,7 +1852,7 @@ mod transient {
 
         let read = rig.graph.store().show(&item).expect("the item reads back");
         assert!(
-            read.has_orders_key,
+            matches!(read.order, OrderState::Ordered(_)),
             "the order is on the record: the entry and the index precede the event"
         );
     }

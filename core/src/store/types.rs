@@ -277,6 +277,16 @@ pub enum OrderKind {
     Review,
 }
 
+impl OrderKind {
+    /// The word the JSON spells it with, for a line that names the kind.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OrderKind::Dispatch => "dispatch",
+            OrderKind::Review => "review",
+        }
+    }
+}
+
 /// The order an item stands under: what it asks, who gave it, the seat it is
 /// for where one is named, and when.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -330,6 +340,13 @@ impl ReadProof {
     /// Whether the read's text carries the token anywhere.
     pub fn carries(&self, token: &str) -> bool {
         self.0.contains(token)
+    }
+
+    /// The text itself, for a suite comparing one read with the next and for
+    /// a message quoting it — never for a verb to decide on, which reads the
+    /// item's own fields.
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 

@@ -13,13 +13,12 @@
 //! it.
 //!
 //! A ROW IS `item show`'s FIELDS, not its timeline. The order index reads as
-//! [`show::document`] reads it; the run's own object reads the same way — the
-//! object where it is at the version this binary reads, `{"unreadable": true}`
-//! where the key is there and is not — and `metadata` is every key the item's
-//! metadata holds, fleet's and anyone else's, as the store answered it. That
-//! last field is what the defaults' `adopt-board` doctor check reads a board's
-//! own conventions from, and it is read off [`Item::document`], the store's
-//! answer as decoded, because the contract names no field for it yet.
+//! [`show::document`] reads it, and the run's record as the store answered it
+//! — the record, or `null` where the item carries none. A record this fleet
+//! does not read refuses the read, and so the list, naming the item: it is
+//! never a row. The row carries what the item carries and no raw metadata: a
+//! key the store holds that fleet does not read is the store's, and it is not
+//! handed on.
 //!
 //! It writes nothing.
 //!
@@ -27,8 +26,8 @@
 
 use serde_json::Value;
 
-use crate::item::Stop;
-use crate::store::{keys, Item, Store, StoreError};
+use crate::item::{show, Stop};
+use crate::store::{Item, Store, StoreError};
 
 /// What a list is asked for: each field one of the store's set reads, and a
 /// list naming none of them is not a call this verb can answer.
@@ -122,23 +121,6 @@ pub fn document(items: &[Item]) -> Value {
 
 /// One item's row.
 pub fn row(item: &Item) -> Value {
-    let order = match (&item.orders, item.has_orders_key) {
-        (Some(index), _) => serde_json::json!({
-            "by": index.by,
-            "kind": index.kind,
-            "seat": index.seat,
-            "at": index.at,
-        }),
-        (None, true) => serde_json::json!({ "unreadable": true }),
-        (None, false) => Value::Null,
-    };
-    let run = match &item.run {
-        None => Value::Null,
-        Some(held) => match keys::versioned(keys::RUN, held) {
-            Ok(object) => Value::Object(object.clone()),
-            Err(_) => serde_json::json!({ "unreadable": true }),
-        },
-    };
     serde_json::json!({
         "id": item.id,
         "title": item.title,
@@ -146,21 +128,9 @@ pub fn row(item: &Item) -> Value {
         "type": item.item_type,
         "labels": item.labels,
         "assignee": item.assignee,
-        "order": order,
-        "run": run,
-        "metadata": metadata_of(item),
+        "order": show::order_json(&item.order),
+        "run": item.run,
     })
-}
-
-/// The item's metadata as the store answered it, or `null` where it holds
-/// none — which is also what a document that does not parse reads as, because
-/// every field above was already decoded from that same document.
-fn metadata_of(item: &Item) -> Value {
-    serde_json::from_str::<Value>(&item.document)
-        .ok()
-        .and_then(|document| document.get("metadata").cloned())
-        .filter(|metadata| metadata.is_object())
-        .unwrap_or(Value::Null)
 }
 
 /// The list as a person reads it: one line per item, or a line saying there

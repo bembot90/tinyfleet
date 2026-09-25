@@ -55,7 +55,7 @@ use crate::policy;
 use crate::seat::actor::{Actor, ActorKind};
 use crate::seat::identity::{Directory, SeatId};
 use crate::store::types::ExportSpec;
-use crate::store::{Item, Store, StoreError};
+use crate::store::{Item, Status, Store, StoreError};
 
 /// The criteria a landing reads, in the order the checks are READ — which is
 /// the order they are printed in, so the page a person watches and the landed
@@ -541,7 +541,7 @@ fn run(
         item: &resolved,
         ..*landing
     };
-    if item.status == "closed" {
+    if item.status == Status::Closed {
         return Err(Stop::refused(format!(
             "{} is closed — a landing closes an item and cannot close one twice",
             item.id
@@ -835,7 +835,7 @@ fn run(
     );
 
     // (g) THE COMMIT, from a message file, its sha read in the same act.
-    let work_dir = landing.machine_dir.join("land").join(&item.id);
+    let work_dir = landing.machine_dir.join("land").join(item.id.as_str());
     std::fs::create_dir_all(&work_dir).map_err(|e| {
         Stop::could_not_tell(format!(
             "the landing's own directory {} could not be made: {e}",
@@ -990,7 +990,7 @@ fn run(
         sha: sha.clone(),
         old: old.clone(),
         squash_of: commit.to_string(),
-        run: by_run.as_ref().map(|record| record.id.clone()),
+        run: by_run.as_ref().map(|record| record.id.to_string()),
         test,
         checks: rows.rows(),
         work_branch: entry::WorkBranch {
@@ -1074,7 +1074,7 @@ fn run(
         .close(&item.id, &reason, &closer_id)
         .map_err(|e| rerun(&item.id, &sha, &e.to_string()))?;
     let closed = read(wiring.store, &item.id)?;
-    if closed.status != "closed" {
+    if closed.status != Status::Closed {
         return Err(rerun(
             &item.id,
             &sha,
@@ -1140,7 +1140,7 @@ fn run(
     let _ = writeln!(out, "{LANDED} {sha}");
 
     Ok(Landed {
-        item: item.id,
+        item: item.id.to_string(),
         sha,
         entry,
     })
@@ -1766,7 +1766,7 @@ fn accepted(
     }
     let its_run = by_run.map(|record| Actor {
         kind: ActorKind::Run,
-        id: record.id.clone(),
+        id: record.id.to_string(),
     });
     if entry.by != *closer && Some(&entry.by) != its_run.as_ref() {
         return Err(Stop::refused(format!(

@@ -266,7 +266,7 @@ fn an_ordered_item(store: &dyn Store, title: &str, seat: &str) -> String {
         .set_orders(
             &item,
             &format!(
-                r#"{{"fleet.orders": {{"v": 1, "by": "a-flight", "kind": "dispatch", "seat": "{seat}", "at": "{AT}"}}}}"#
+                r#"{{"fleet.orders": {{"v": 1, "by": "run:a-flight", "kind": "dispatch", "seat": "{seat}", "at": "{AT}"}}}}"#
             ),
             "a-flight",
         )
@@ -658,7 +658,7 @@ fn a_runs_record_parks_off_the_trunk_and_performs_no_git_act() {
     scratch.label(&item, run::LABEL);
     scratch.set_metadata(
         &item,
-        &format!(r#"{{"fleet.run": {{"v": 1, "hash": "{RUN_HASH}", "workflow": "takeoff"}}}}"#),
+        &format!(r#"{{"fleet.run": {{"v": 1, "hash": "{RUN_HASH}", "workflow": "takeoff", "pack": "ts", "entry": "takeoff.ts", "started_at": "{AT}"}}}}"#),
     );
     let its_run = Actor {
         kind: ActorKind::Run,
@@ -767,7 +767,7 @@ fn an_item_that_is_not_a_runs_record_is_refused_the_park_on_the_trunk() {
     let item = an_ordered_item(&scratch.store, "an item that is not a run's record", seat);
     scratch.set_metadata(
         &item,
-        &format!(r#"{{"fleet.run": {{"v": 1, "hash": "{RUN_HASH}", "workflow": "takeoff"}}}}"#),
+        &format!(r#"{{"fleet.run": {{"v": 1, "hash": "{RUN_HASH}", "workflow": "takeoff", "pack": "ts", "entry": "takeoff.ts", "started_at": "{AT}"}}}}"#),
     );
     let question = a_question(scratch, "not-a-run", QUESTION);
     let before = scratch.json(&item);
@@ -1220,7 +1220,7 @@ fn an_epic_is_refused_before_the_commit_and_nothing_is_written() {
 fn a_held_row(item: &str, seat: &str) -> String {
     let seat = full(seat);
     format!(
-        r#"{{"id":"{item}","title":"an item whose hold fails","status":"open","issue_type":"task","assignee":"{seat}","metadata":{{"fleet.orders":{{"v":1,"by":"a-flight","kind":"dispatch","seat":"{seat}","at":"{AT}"}}}}}}"#
+        r#"{{"id":"{item}","title":"an item whose hold fails","status":"open","issue_type":"task","assignee":"{seat}","metadata":{{"fleet.orders":{{"v":1,"by":"run:a-flight","kind":"dispatch","seat":"{seat}","at":"{AT}"}}}}}}"#
     )
 }
 
@@ -1694,7 +1694,7 @@ fn a_runs_record(scratch: &Board, title: &str) -> String {
     scratch.label(&run, run::LABEL);
     scratch.set_metadata(
         &run,
-        &format!(r#"{{"fleet.run": {{"v": 1, "hash": "{RUN_HASH}", "workflow": "takeoff"}}}}"#),
+        &format!(r#"{{"fleet.run": {{"v": 1, "hash": "{RUN_HASH}", "workflow": "takeoff", "pack": "ts", "entry": "takeoff.ts", "started_at": "{AT}"}}}}"#),
     );
     run
 }

@@ -24,8 +24,8 @@ use serde::Deserialize;
 
 use super::types::{Capabilities, ExportSpec};
 use super::{
-    first_value, holder_named, keys, validated, AssignedItem, Item, NewItem, Orders, Store,
-    StoreError, STORE_TIMEOUT,
+    first_value, holder_named, keys, validated, AssignedItem, Item, ItemId, NewItem, Order,
+    OrderState, ReadProof, RunRecord, Status, Store, StoreError, STORE_TIMEOUT,
 };
 use crate::entry::{self, Body, Entry};
 use crate::process::{deadline_cause, run_bounded};
@@ -385,33 +385,69 @@ fn sole(value: serde_json::Value) -> Option<serde_json::Value> {
     }
 }
 
-/// The order index off a document's metadata, and whether the key was there at
-/// all. The metadata is bd's raw JSON and not a typed map, so a `fleet.orders`
-/// holding something that is not an object — or an object at a version this
-/// binary does not know — still reads as present, and never as an order.
+/// The order index off a row's metadata, as one of its three answers.
+///
+/// Absent or `null` is no order. A key that is there and is not an object at
+/// [`keys::VERSION`] whose fields read as an [`Order`] — a partly filled index,
+/// one at a version this binary does not know, one whose `at` is no stamp — is
+/// [`OrderState::Unreadable`]: present, and never guessed at as an order.
 ///
 /// ONLY FLEET'S KEY. A bare `orders` is some other writer's, whatever shape it
 /// holds, and an item carrying one and no `fleet.orders` reads as unordered.
-fn orders_of(metadata: Option<&serde_json::Value>) -> (Option<Orders>, bool) {
+pub(crate) fn order_of(metadata: Option<&serde_json::Value>) -> OrderState {
     let Some(held) = metadata.and_then(|m| m.get(keys::ORDERS)) else {
-        return (None, false);
+        return OrderState::None;
     };
     if held.is_null() {
-        return (None, false);
+        return OrderState::None;
     }
-    let Ok(table) = keys::versioned(keys::ORDERS, held) else {
-        return (None, true);
+    let Ok(index) = keys::versioned(keys::ORDERS, held) else {
+        return OrderState::Unreadable;
     };
-    let read = |key: &str| table.get(key).and_then(|v| v.as_str()).map(str::to_string);
-    (
-        Some(Orders {
-            by: read("by"),
-            kind: read("kind"),
-            seat: read("seat"),
-            at: read("at"),
-        }),
-        true,
-    )
+    let mut fields = index.clone();
+    fields.remove(keys::VERSION_FIELD);
+    match serde_json::from_value::<Order>(serde_json::Value::Object(fields)) {
+        Ok(order) => OrderState::Ordered(order),
+        Err(_) => OrderState::Unreadable,
+    }
+}
+
+/// A run's record off a row's metadata: absent or `null` is no record, and
+/// one at [`keys::VERSION`] that reads as a [`RunRecord`] is the record.
+///
+/// ANYTHING ELSE REFUSES THE READ. A record this binary cannot read is a run
+/// it cannot tell the state of, and the item is not answered as though it
+/// carried none. The version comes off the object before the record is
+/// decoded, because the writer stamps it in and the record's own fields are
+/// the rest.
+fn run_of(id: &str, metadata: Option<&serde_json::Value>) -> Result<Option<RunRecord>, StoreError> {
+    let Some(held) = metadata
+        .and_then(|m| m.get(keys::RUN))
+        .filter(|held| !held.is_null())
+    else {
+        return Ok(None);
+    };
+    let refused = |why: Option<String>| {
+        let version = held
+            .get(keys::VERSION_FIELD)
+            .map(serde_json::Value::to_string)
+            .unwrap_or_else(|| String::from("none"));
+        let mut said = format!(
+            "{id}'s run record is not one this fleet reads ({}, {} {version})",
+            keys::RUN,
+            keys::VERSION_FIELD
+        );
+        if let Some(why) = why {
+            said.push_str(&format!(" — {why}"));
+        }
+        StoreError::Unreadable(said)
+    };
+    let record = keys::versioned(keys::RUN, held).map_err(|_| refused(None))?;
+    let mut fields = record.clone();
+    fields.remove(keys::VERSION_FIELD);
+    serde_json::from_value::<RunRecord>(serde_json::Value::Object(fields))
+        .map(Some)
+        .map_err(|why| refused(Some(why.to_string())))
 }
 
 /// The dependency types bd's ready set honours as blocking, MEASURED on bd
@@ -429,7 +465,7 @@ const BLOCKING: [&str; 3] = ["blocks", "conditional-blocks", "waits-for"];
 /// The dependencies that still stand between this item and a start: an entry
 /// the store reports closed has been answered, and one of a type bd's ready set
 /// does not honour never stood, so neither is a blocker.
-fn blockers_of(entries: &[bd_wire::IssueWithDependencyMetadata]) -> Vec<String> {
+fn blockers_of(entries: &[bd_wire::IssueWithDependencyMetadata]) -> Vec<ItemId> {
     entries
         .iter()
         .filter(|entry| entry.status.as_deref() != Some("closed"))
@@ -442,7 +478,7 @@ fn blockers_of(entries: &[bd_wire::IssueWithDependencyMetadata]) -> Vec<String> 
                 .map(|kind| BLOCKING.contains(&kind))
                 .unwrap_or(true)
         })
-        .filter_map(|entry| entry.id.clone())
+        .filter_map(|entry| entry.id.clone().map(ItemId::from))
         .collect()
 }
 
@@ -530,10 +566,10 @@ impl Store for Bd {
             .into_iter()
             .filter_map(|row| {
                 Some(AssignedItem {
-                    has_orders_key: orders_of(row.metadata.as_ref()).1,
+                    order: order_of(row.metadata.as_ref()),
                     id: row.id?,
                     title: row.title.unwrap_or_default(),
-                    status: row.status.unwrap_or_default(),
+                    status: Status::from(row.status.unwrap_or_default()),
                     item_type: row.issue_type.unwrap_or_default(),
                 })
             })
@@ -838,39 +874,177 @@ fn decoded<'de, Row: Deserialize<'de>>(row: &'de serde_json::Value) -> Result<Ro
     })
 }
 
-/// One document, read into the fields a verb asserts on, through bd's own wire
-/// type. A row that does not decode into it is a store that did not answer
-/// something readable.
+/// One row, read into the fields a verb asserts on, through bd's own wire
+/// type. A row that does not decode into it — or that carries a run's record
+/// this fleet does not read — is a store that did not answer something
+/// readable.
 pub fn item_from(id: &str, row: &serde_json::Value) -> Result<Item, StoreError> {
     let wire: bd_wire::IssueDetails = decoded(row).map_err(|why| {
         StoreError::Unreadable(format!(
             "{id} answered a row bd's wire types do not read: {why}"
         ))
     })?;
-    let (orders, has_orders_key) = orders_of(wire.metadata.as_ref());
+    let id = wire.id.unwrap_or_else(|| id.to_string());
+    let metadata = wire.metadata.as_ref();
     Ok(Item {
+        run: run_of(&id, metadata)?,
+        order: order_of(metadata),
         item_type: wire.issue_type.unwrap_or_default(),
         // The item's own labels, absent when the key is absent — which the
         // store spells as `null` and not as an empty array.
         labels: wire.labels.unwrap_or_default(),
-        // The same read `orders_of` makes, one key over: absent when the key
-        // is absent, so a run that wrote nothing is told from one that wrote
-        // an empty object. A bare `run` is some other writer's and reads as
-        // no run at all.
-        run: wire
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get(keys::RUN))
-            .filter(|held| !held.is_null())
-            .cloned(),
-        id: wire.id.unwrap_or_else(|| id.to_string()),
         title: wire.title.unwrap_or_default(),
         description: wire.description.unwrap_or_default(),
-        status: wire.status.unwrap_or_default(),
+        status: Status::from(wire.status.unwrap_or_default()),
         assignee: wire.assignee,
-        orders,
-        has_orders_key,
         blockers: blockers_of(wire.dependencies.as_deref().unwrap_or_default()),
-        document: row.to_string(),
+        proof: ReadProof::of(row.to_string()),
+        id: ItemId::from(id),
     })
+}
+
+/// The mapping [`item_from`] makes of fleet's two keys, one arm per answer.
+#[cfg(test)]
+mod tests {
+    use super::{item_from, OrderState, StoreError};
+    use crate::seat::actor::Actor;
+    use crate::store::{Order, OrderKind, RunRecord, Stamp};
+
+    const BY: &str = "seat:01a0d1f1-0aec-765f-9abe-0000001ead01";
+    const SEAT: &str = "01a0d1f1-0aec-765f-9abe-00000005ea71";
+    const AT: &str = "2026-09-24T10:00:00Z";
+
+    fn row(metadata: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "id": "fx-1", "title": "an item", "metadata": metadata })
+    }
+
+    fn order_of(index: serde_json::Value) -> OrderState {
+        item_from("fx-1", &row(serde_json::json!({ "fleet.orders": index })))
+            .expect("an order index never refuses the read")
+            .order
+    }
+
+    #[test]
+    fn an_order_index_at_its_version_is_the_order() {
+        assert_eq!(
+            order_of(serde_json::json!({
+                "v": 1, "by": BY, "kind": "dispatch", "seat": SEAT, "at": AT,
+            })),
+            OrderState::Ordered(Order {
+                kind: OrderKind::Dispatch,
+                by: Actor::typed(BY).expect("typed").expect("a seat"),
+                seat: Some(crate::seat::identity::SeatId::parse(SEAT).expect("a seat id")),
+                at: Stamp::parse(AT).expect("a stamp"),
+            })
+        );
+        assert!(
+            matches!(
+                order_of(serde_json::json!({ "v": 1, "by": BY, "kind": "dispatch", "at": AT })),
+                OrderState::Ordered(Order { seat: None, .. })
+            ),
+            "a transient dispatch's index names no seat yet"
+        );
+    }
+
+    #[test]
+    fn an_absent_or_null_order_index_is_none() {
+        let absent = item_from("fx-1", &row(serde_json::json!({}))).expect("reads");
+        assert_eq!(absent.order, OrderState::None);
+        assert_eq!(order_of(serde_json::Value::Null), OrderState::None);
+    }
+
+    /// Not an object, at another version or none, partly filled, a field that
+    /// is not the type it names, or one the order does not carry: each is an
+    /// index this fleet cannot read, and none is taken for absent.
+    #[test]
+    fn an_order_index_that_does_not_read_as_an_order_is_unreadable() {
+        for (label, index) in [
+            ("a string", serde_json::json!("not an object")),
+            (
+                "v 2",
+                serde_json::json!({ "v": 2, "by": BY, "kind": "dispatch", "at": AT }),
+            ),
+            (
+                "no v",
+                serde_json::json!({ "by": BY, "kind": "dispatch", "at": AT }),
+            ),
+            (
+                "no by",
+                serde_json::json!({ "v": 1, "kind": "dispatch", "at": AT }),
+            ),
+            (
+                "a bare by",
+                serde_json::json!({ "v": 1, "by": "alberto", "kind": "dispatch", "at": AT }),
+            ),
+            (
+                "a kind fleet gives none of",
+                serde_json::json!({ "v": 1, "by": BY, "kind": "build", "at": AT }),
+            ),
+            (
+                "an at that is no stamp",
+                serde_json::json!({ "v": 1, "by": BY, "kind": "dispatch", "at": "then" }),
+            ),
+            (
+                "a seat that is no id",
+                serde_json::json!({ "v": 1, "by": BY, "kind": "dispatch", "seat": "s1", "at": AT }),
+            ),
+            (
+                "a field it does not carry",
+                serde_json::json!({ "v": 1, "by": BY, "kind": "dispatch", "at": AT, "extra": 1 }),
+            ),
+        ] {
+            assert_eq!(order_of(index), OrderState::Unreadable, "{label}");
+        }
+    }
+
+    #[test]
+    fn a_run_record_at_its_version_is_the_record_and_absent_is_none() {
+        let read = item_from(
+            "fx-1",
+            &row(serde_json::json!({ "fleet.run": {
+                "v": 1, "hash": "h1", "workflow": "greet", "pack": "ts",
+                "entry": "greet.ts", "started_at": AT,
+            }})),
+        )
+        .expect("a record at v 1 reads");
+        assert_eq!(
+            read.run,
+            Some(RunRecord {
+                hash: String::from("h1"),
+                workflow: String::from("greet"),
+                pack: String::from("ts"),
+                entry: String::from("greet.ts"),
+                started_at: Stamp::parse(AT).expect("a stamp"),
+            })
+        );
+        for metadata in [
+            serde_json::json!({}),
+            serde_json::json!({ "fleet.run": null }),
+        ] {
+            let read = item_from("fx-1", &row(metadata.clone())).expect("reads");
+            assert_eq!(read.run, None, "{metadata}");
+        }
+    }
+
+    /// A record at another version, at none, not an object, or at v 1 and not
+    /// a record, refuses the whole read — the item is not answered as one
+    /// carrying no run.
+    #[test]
+    fn a_run_record_this_fleet_does_not_read_refuses_the_read() {
+        for (held, version) in [
+            (serde_json::json!({ "v": 2, "hash": "h1" }), "v 2"),
+            (serde_json::json!({ "hash": "h1" }), "v none"),
+            (serde_json::json!("a string"), "v none"),
+            (serde_json::json!({ "v": 1, "hash": "h1" }), "v 1"),
+        ] {
+            let refusal = item_from("fx-1", &row(serde_json::json!({ "fleet.run": held })))
+                .expect_err("the read refuses");
+            let wanted =
+                format!("fx-1's run record is not one this fleet reads (fleet.run, {version})");
+            assert!(
+                matches!(&refusal, StoreError::Unreadable(why) if why.starts_with(&wanted)),
+                "{held}: {refusal:?}"
+            );
+        }
+    }
 }

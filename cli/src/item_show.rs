@@ -48,9 +48,9 @@ filters are the three sets it does read, and each item they answer is then
 read whole. The contract's own list replaces them.
 
 --json prints {\"items\": [...]}, each row item show's fields without the
-timeline, plus the run's object and the item's metadata as the store holds
-it. It writes nothing. Exit 2 when no read is named, 3 when the store does
-not answer.")]
+timeline, plus the run's record where the item carries one. It writes
+nothing. Exit 2 when no read is named, 3 when the store does not answer or
+an item carries a run record this fleet does not read.")]
     List {
         /// the store's ready set: open and unblocked
         #[arg(long)]

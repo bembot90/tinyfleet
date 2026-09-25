@@ -2,13 +2,13 @@
 //!
 //! THE WORK IS THE REASON. An order left standing against a retired seat is
 //! work nobody holds: the board still assigns the item to a seat that no
-//! longer exists, the item still carries a `fleet.orders` key, and so nobody
+//! longer exists, the item still carries its order index, and so nobody
 //! will deliver it and nothing will dispatch it again. The retire is the act
 //! that ends the seat, so it is the act that releases what the seat held and
 //! puts its items back where a dispatch can reach them.
 //!
 //! The query is the `ordered` half of [`crate::item::deliver::holds`] — every
-//! OPEN item assigned to the seat that carries a `fleet.orders` key, whatever
+//! OPEN item assigned to the seat that carries an order index, whatever
 //! its type — so what is withdrawn here is every order the retired seat would
 //! otherwise strand.
 //!
@@ -24,7 +24,7 @@ use crate::item::deliver::holds;
 use crate::item::{recorded, Stop, Unrecorded};
 use crate::seat::actor::Actor;
 use crate::seat::identity::SeatId;
-use crate::store::{AssignedItem, Store, StoreError};
+use crate::store::{AssignedItem, OrderState, Status, Store, StoreError};
 
 /// The words a retire says on stderr for each item it withdrew. The record's
 /// own half is the `order_withdrawn` entry, so an item whose seat was retired
@@ -88,7 +88,7 @@ pub fn withdraw(
     let writer = by.to_string();
     for row in items {
         let item = row.id.as_str();
-        if row.status != "open" && row.status != "in_progress" {
+        if !matches!(row.status, Status::Open | Status::InProgress) {
             return Err(nothing_written(
                 item,
                 &format!(
@@ -98,7 +98,7 @@ pub fn withdraw(
             ));
         }
         store
-            .withdraw_order(item, &seat, &row.status, &writer)
+            .withdraw_order(item, &seat, row.status.as_str(), &writer)
             .map_err(|e| match e {
                 StoreError::Moved(why) => moved_on(item, label, &why),
                 other => nothing_written(item, &other.to_string()),
@@ -111,8 +111,8 @@ pub fn withdraw(
             Unrecorded::Unconfirmed(why) => halfway(item, &why),
         })?;
         let read = store.show(item)?;
-        if read.has_orders_key {
-            return Err(halfway(item, "it still carries a fleet.orders key"));
+        if !matches!(read.order, OrderState::None) {
+            return Err(halfway(item, "it still carries its order index"));
         }
         if let Some(assignee) = read
             .assignee
@@ -122,7 +122,7 @@ pub fn withdraw(
         {
             return Err(halfway(item, &format!("it reads assigned to `{assignee}`")));
         }
-        if read.status != "open" {
+        if read.status != Status::Open {
             return Err(halfway(item, &format!("it reads {}", read.status)));
         }
     }
@@ -157,6 +157,6 @@ fn nothing_written(item: &str, why: &str) -> Stop {
 fn halfway(item: &str, why: &str) -> Stop {
     Stop::could_not_tell(format!(
         "{item} was not fully withdrawn: {why}\n  finish it by hand — the item open, the assignee \
-         cleared and the fleet.orders key unset — before the seat's row is dropped"
+         cleared and the order index unset — before the seat's row is dropped"
     ))
 }

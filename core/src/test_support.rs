@@ -14,9 +14,11 @@ use std::sync::Mutex;
 
 use crate::entry::{self, Body, Entry};
 use crate::seat::actor::Actor;
-use crate::store::bd::{item_from, opened, shown, SCHEMA_VERSION};
+use crate::store::bd::{item_from, opened, order_of, shown, SCHEMA_VERSION};
 use crate::store::types::{Capabilities, ExportSpec};
-use crate::store::{keys, AssignedItem, Item, NewItem, Orders, Store, StoreError};
+use crate::store::{
+    keys, AssignedItem, Item, ItemId, NewItem, Order, OrderState, Status, Store, StoreError,
+};
 
 /// Where the fake's export goes, relative to the root it is handed: a file of
 /// its own and under a directory of its own, so an arm on the fake that passes
@@ -136,7 +138,7 @@ impl FakeStore {
         self.items
             .lock()
             .expect("the items are not poisoned")
-            .insert(item.id.clone(), item);
+            .insert(item.id.to_string(), item);
     }
 
     /// One stored item moved without a write, for a field the trait carries no
@@ -253,7 +255,7 @@ impl FakeStore {
             .get(item)
             .ok_or_else(|| StoreError::Missing(format!("{item} is not here")))?;
         if held.status != status {
-            return Err(crate::store::restatused(item, status, &held.status));
+            return Err(crate::store::restatused(item, status, held.status.as_str()));
         }
         Ok(())
     }
@@ -285,7 +287,7 @@ impl FakeStore {
         self.metadata
             .lock()
             .expect("the metadata is not poisoned")
-            .get(&item.id)
+            .get(item.id.as_str())
             .cloned()
             .unwrap_or_else(|| seeded_metadata(item))
     }
@@ -329,44 +331,45 @@ impl FakeStore {
 }
 
 /// The metadata a seeded item carries in its own fields, as the object a read
-/// decodes from, under fleet's own keys. `has_orders_key` with no orders is a
-/// key holding something that is not an object, which is a third answer and
-/// not an absence. A seeded run is written as the store would hold it, so a
-/// seed that wants one readable carries its own version.
+/// decodes from, under fleet's own keys and at the version each is written at.
+/// An unreadable order is a key holding something that is not an object, which
+/// is a third answer and not an absence. A seed that wants a run's record the
+/// fleet cannot read, or an index at another version, writes that metadata
+/// itself: the item's own fields hold only what reads.
 fn seeded_metadata(item: &Item) -> serde_json::Map<String, serde_json::Value> {
     let mut object = serde_json::Map::new();
     if let Some(run) = &item.run {
-        object.insert(String::from(keys::RUN), run.clone());
+        object.insert(String::from(keys::RUN), versioned_json(run));
     }
-    match (&item.orders, item.has_orders_key) {
-        (Some(orders), _) => {
-            object.insert(String::from(keys::ORDERS), orders_json(orders));
+    match &item.order {
+        OrderState::Ordered(order) => {
+            object.insert(String::from(keys::ORDERS), order_json(order));
         }
-        (None, true) => {
+        OrderState::Unreadable => {
             object.insert(
                 String::from(keys::ORDERS),
                 serde_json::Value::String(String::new()),
             );
         }
-        (None, false) => {}
+        OrderState::None => {}
     }
     object
 }
 
-fn orders_json(orders: &Orders) -> serde_json::Value {
-    let mut index = serde_json::Map::new();
-    for (key, held) in [
-        ("by", &orders.by),
-        ("kind", &orders.kind),
-        ("seat", &orders.seat),
-        ("at", &orders.at),
-    ] {
-        if let Some(value) = held {
-            index.insert(String::from(key), serde_json::Value::String(value.clone()));
-        }
-    }
-    index.insert(String::from(keys::VERSION_FIELD), keys::VERSION.into());
-    serde_json::Value::Object(index)
+/// The order as the index a dispatch writes: its fields, and its version.
+fn order_json(order: &Order) -> serde_json::Value {
+    versioned_json(order)
+}
+
+/// One of fleet's objects with the version stamped in, as its writer hands it
+/// to the store.
+fn versioned_json(value: &impl serde::Serialize) -> serde_json::Value {
+    let mut object = serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .expect("fleet's own objects serialize as objects");
+    object.insert(String::from(keys::VERSION_FIELD), keys::VERSION.into());
+    serde_json::Value::Object(object)
 }
 
 /// One item in the store's own JSON shape — the row a read is decoded from and
@@ -379,12 +382,12 @@ fn row_of(
     close_reason: Option<&str>,
 ) -> serde_json::Value {
     let mut row = serde_json::Map::new();
-    row.insert(String::from("id"), item.id.clone().into());
+    row.insert(String::from("id"), item.id.as_str().into());
     row.insert(String::from("title"), item.title.clone().into());
     if !item.description.is_empty() {
         row.insert(String::from("description"), item.description.clone().into());
     }
-    row.insert(String::from("status"), item.status.clone().into());
+    row.insert(String::from("status"), item.status.as_str().into());
     row.insert(String::from("issue_type"), item.item_type.clone().into());
     if let Some(assignee) = &item.assignee {
         row.insert(String::from("assignee"), assignee.clone().into());
@@ -473,10 +476,10 @@ impl Store for FakeStore {
             .expect("the items are not poisoned")
             .values()
         {
-            let open = item.status == "open";
-            let free = item.blockers.is_empty() && !on_hold.contains(&item.id);
-            if open && free && !ids.contains(&item.id) {
-                ids.push(item.id.clone());
+            let open = item.status == Status::Open;
+            let free = item.blockers.is_empty() && !on_hold.iter().any(|held| item.id == *held);
+            if open && free && !ids.iter().any(|id| item.id == *id) {
+                ids.push(item.id.to_string());
             }
         }
         Ok(ids)
@@ -496,8 +499,8 @@ impl Store for FakeStore {
             .values()
         {
             let carries = item.labels.iter().any(|held| held == label);
-            if carries && item.status != "closed" && !found.contains(&item.id) {
-                found.push(item.id.clone());
+            if carries && item.status != Status::Closed && !found.iter().any(|id| item.id == *id) {
+                found.push(item.id.to_string());
             }
         }
         Ok(found)
@@ -529,10 +532,10 @@ impl Store for FakeStore {
             .insert(
                 id.clone(),
                 Item {
-                    id: id.clone(),
+                    id: ItemId::from(id.as_str()),
                     title: item.title.to_string(),
                     description: item.description.to_string(),
-                    status: String::from("open"),
+                    status: Status::Open,
                     item_type: item.item_type.to_string(),
                     labels: item.labels.iter().map(|l| l.to_string()).collect(),
                     ..Item::default()
@@ -626,18 +629,16 @@ impl Store for FakeStore {
             .values()
         {
             let mine = item.assignee.as_deref() == Some(seat);
-            if mine && !rows.iter().any(|row| row.id == item.id) {
+            if mine && !rows.iter().any(|row| item.id == row.id) {
                 rows.push(AssignedItem {
-                    id: item.id.clone(),
+                    id: item.id.to_string(),
                     title: item.title.clone(),
                     status: item.status.clone(),
                     // Off the METADATA this store would answer a read with, and
-                    // not off the seeded field, so a row whose orders key a
-                    // write has removed answers here as the real listing does.
-                    has_orders_key: self
-                        .metadata_of(item)
-                        .get(keys::ORDERS)
-                        .is_some_and(|held| !held.is_null()),
+                    // not off the seeded field, and by the reading the real
+                    // listing's rows take — so a row whose index a write has
+                    // removed answers here as the real listing does.
+                    order: order_of(Some(&serde_json::Value::Object(self.metadata_of(item)))),
                     item_type: item.item_type.clone(),
                 });
             }
@@ -676,7 +677,7 @@ impl Store for FakeStore {
 
     fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
         self.log(format!("reopen {item} {by}"))?;
-        self.moving(item, |held| held.status = String::from("open"))
+        self.moving(item, |held| held.status = Status::Open)
     }
 
     /// One log line and every move, which is what the real store's one call
@@ -696,7 +697,7 @@ impl Store for FakeStore {
         self.status_is(item, status)?;
         self.moving(item, |held| {
             held.assignee = Some(String::new());
-            held.status = String::from("open");
+            held.status = Status::Open;
         })?;
         self.metadata_write(item, |object| {
             object.remove(keys::ORDERS);
@@ -745,7 +746,7 @@ impl Store for FakeStore {
     /// it in a field of its own that no read here decodes.
     fn close(&self, item: &str, reason: &str, by: &str) -> Result<(), StoreError> {
         self.log(format!("close {item} {reason} {by}"))?;
-        self.moving(item, |held| held.status = String::from("closed"))?;
+        self.moving(item, |held| held.status = Status::Closed)?;
         if !self.deaf() {
             self.closed
                 .lock()
@@ -1053,7 +1054,9 @@ impl Board {
         self.store
             .show(item)
             .unwrap_or_else(|e| panic!("show {item}: {e}"))
-            .document
+            .proof
+            .as_str()
+            .to_string()
     }
 
     /// The writes a rig makes for its own setup, as the store's own calls: a
@@ -1082,11 +1085,11 @@ impl Board {
     /// One open dependency between two items, which is what takes the first out
     /// of the ready set.
     pub fn blocked_by(&self, item: &str, blocker: &str) {
-        self.amend(item, |held| held.blockers.push(blocker.to_string()));
+        self.amend(item, |held| held.blockers.push(ItemId::from(blocker)));
     }
 
     pub fn status(&self, item: &str, status: &str) {
-        self.amend(item, |held| held.status = status.to_string());
+        self.amend(item, |held| held.status = Status::from(status));
     }
 
     /// The board's writes forgotten, so the rig's own setup is not in the log

@@ -303,7 +303,7 @@ impl Rig {
                 &self.seat_id(),
                 "--metadata",
                 &format!(
-                    r#"{{"fleet.orders": {{"v": 1, "by": "an-architect", "kind": "dispatch", "seat": "{seat}", "at": "2026-09-09T00:00:00Z"}}}}"#,
+                    r#"{{"fleet.orders": {{"v": 1, "by": "run:an-architect", "kind": "dispatch", "seat": "{seat}", "at": "2026-09-09T00:00:00Z"}}}}"#,
                     seat = self.seat_id()
                 ),
                 "--actor",

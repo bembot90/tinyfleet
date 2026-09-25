@@ -40,7 +40,7 @@ use crate::item::{
 use crate::policy;
 use crate::seat::actor::{Actor, ActorKind};
 use crate::seat::identity::{Directory, SeatRef};
-use crate::store::{AssignedItem, Item, Store};
+use crate::store::{AssignedItem, Item, OrderState, Status, Store};
 
 /// What the ring carries: where to look and what to look at. The record is the
 /// item, as it is for every other ring this crate sends.
@@ -281,7 +281,7 @@ pub fn held_item(store: &dyn Store, by: &Actor, named: Option<&str>) -> Result<S
         // never on the part of it that was typed.
         let item = read(store, named)?;
         holds_named(&item, by)?;
-        return Ok(item.id);
+        return Ok(item.id.to_string());
     }
     let Some(seat) = by.seat_id() else {
         return Err(Stop::refused(format!(
@@ -328,7 +328,7 @@ fn holds_named(item: &Item, by: &Actor) -> Result<(), Stop> {
     if item.labels.iter().any(|label| label == run::LABEL) {
         let its_run = Actor {
             kind: ActorKind::Run,
-            id: id.clone(),
+            id: id.to_string(),
         };
         if *by == its_run {
             return Ok(());
@@ -345,8 +345,8 @@ fn holds_named(item: &Item, by: &Actor) -> Result<(), Stop> {
         )));
     };
     let assignee = item.assignee.as_deref();
-    if assignee == Some(seat.to_string().as_str()) && item.has_orders_key && item.item_type != EPIC
-    {
+    let ordered = !matches!(item.order, OrderState::None);
+    if assignee == Some(seat.to_string().as_str()) && ordered && item.item_type != EPIC {
         return Ok(());
     }
     Err(Stop::refused(format!(
@@ -359,15 +359,15 @@ fn holds_named(item: &Item, by: &Actor) -> Result<(), Stop> {
 pub(crate) struct Holds {
     /// Every open row assigned to the seat.
     pub(crate) open: Vec<AssignedItem>,
-    /// Of those, every one that carries a `fleet.orders` key, whatever its
-    /// type: the orders standing against the seat.
+    /// Of those, every one that carries an order index, whatever its type:
+    /// the orders standing against the seat.
     pub(crate) ordered: Vec<AssignedItem>,
     /// Of those, every one that is not an epic: what the seat HOLDS.
     pub(crate) held: Vec<AssignedItem>,
 }
 
 /// THE ONE READING of what a seat holds: an open item assigned to it that
-/// carries a `fleet.orders` key and is not an epic. [`held_item`] and dispatch's
+/// carries an order index and is not an epic. [`held_item`] and dispatch's
 /// one-item-at-a-time refusal both ask it, and an item one of them counted and
 /// the other did not is a seat refused a dispatch over work nobody gave it — a
 /// bug assigned a month ago and never ordered, an epic still naming an old
@@ -388,7 +388,7 @@ pub(crate) fn holds(store: &dyn Store, seat: &str) -> Result<Holds, Stop> {
         .collect::<Vec<AssignedItem>>();
     let ordered = rows
         .iter()
-        .filter(|row| row.has_orders_key)
+        .filter(|row| !matches!(row.order, OrderState::None))
         .cloned()
         .collect::<Vec<AssignedItem>>();
     // An epic is never work a seat holds: it stays open while its children are
@@ -409,7 +409,7 @@ pub(crate) fn holds(store: &dyn Store, seat: &str) -> Result<Holds, Stop> {
 /// The statuses a seat is working under. `in_progress` is the same holding as
 /// `open`: a seat that claimed its item has not stopped holding it.
 fn open(row: &AssignedItem) -> bool {
-    row.status == "open" || row.status == "in_progress"
+    matches!(row.status, Status::Open | Status::InProgress)
 }
 
 /// `[core] reviewer`, through the census reader, as the one seat it names. The
@@ -509,7 +509,7 @@ fn read_back(item: &str, reviewer: &str, wiring: &Wiring) -> Result<(), Stop> {
         ));
     }
     let control = control_token();
-    if read.document.contains(control) {
+    if read.proof.carries(control) {
         return Err(Stop::could_not_tell(format!(
             "the read-back on {item} carries {control}, which nothing wrote — the read is not \
              reading this item"
