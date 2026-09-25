@@ -26,8 +26,8 @@ written by hand; the item's own dependencies are the real blockers.
 | ☑ | fleet-vqre | Two OrderKind types exist: entry.rs's {Dispatch} and the contract's {Dispatch, Review} | — |
 | ☑ | fleet-4qpq | fleet store check names [store] adapter for a bad --adapter and prints nothing for ~50 s | — |
 | ☑ | fleet-wpf0.4 | The trait slims onto the fences: hand_over, reopen and order_withdraw_from go, order_withdraw takes a WithdrawFence | fleet-wpf0.1 |
-| ☐ | fleet-wpf0.5 | fleet store schema prints the contract as JSON Schema generated from the Rust types, committed with a drift test | fleet-wpf0.1, fleet-pjl |
-| ☐ | fleet-wpf0.6 | The fake store decodes the contract's own JSON and nothing of bd's | fleet-run, fleet-urp |
+| ☑ | fleet-wpf0.5 | fleet store schema prints the contract as JSON Schema generated from the Rust types, committed with a drift test | fleet-wpf0.1, fleet-pjl |
+| ☑ | fleet-wpf0.6 | The fake store decodes the contract's own JSON and nothing of bd's | fleet-run, fleet-urp |
 | ☐ | fleet-wpf0.7 | fleet-store-stub: a test-only adapter executable answering the contract from the fake, its state in a file | fleet-wpf0.4, fleet-wpf0.6 |
 | ☐ | fleet-wpf0.8 | core's verb suites run on the stub through Exec | fleet-wpf0.7 |
 | ☐ | fleet-wpf0.9 | cli's suites run on the stub through Exec; store_check keeps one bd arm | fleet-wpf0.7 |
