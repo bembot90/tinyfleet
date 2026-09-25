@@ -1071,4 +1071,139 @@ mod tests {
         let read: Capabilities = serde_json::from_str("{}").unwrap();
         assert_eq!(read, Capabilities::default());
     }
+
+    // ---- 9: the store's documentation ----
+
+    /// docs/store.md prints the contract's JSON, and this arm holds every
+    /// example there to the types: the Item byte for byte, as the arm above
+    /// holds it, each other shape as the types write it, and the envelope's
+    /// answer as [`answer`] reads it.
+    ///
+    /// RED-PROOF: one byte of one example changed in the doc fails this arm,
+    /// naming the example it no longer finds.
+    #[test]
+    fn the_store_doc_prints_every_example_as_the_types_write_it() {
+        let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/store.md"))
+            .expect("docs/store.md reads");
+
+        let mut show = serde_json::Map::new();
+        show.insert(String::from("id"), serde_json::Value::from("a1b2"));
+        let refusal = Refusal {
+            reason: RefusalReason::Ambiguous,
+            message: String::from("a1 matches more than one item"),
+            candidates: vec![ItemId::from("fx-a1b2"), ItemId::from("fx-a1c9")],
+        };
+        let summary = ItemSummary {
+            id: ItemId::from("fx-c3d4"),
+            title: String::from("Name the stamp's fields"),
+            status: Status::Open,
+            item_type: String::from("task"),
+            labels: vec![String::from("fleet")],
+            order: OrderState::None,
+        };
+        let new_item = NewItem {
+            title: String::from("Name the stamp's fields"),
+            description: String::from("Each field has a range."),
+            item_type: String::from("task"),
+            labels: vec![String::from("fleet")],
+            priority: Some(2),
+        };
+        let run = RunRecord {
+            hash: String::from("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+            workflow: String::from("build"),
+            pack: String::from("ts"),
+            entry: String::from("workflows/build.ts"),
+            started_at: stamp("2026-09-23T10:00:00Z"),
+        };
+        let exporting = Capabilities {
+            export: Some(ExportSpec {
+                file: String::from(".beads/issues.jsonl"),
+                dir: String::from(".beads/"),
+            }),
+            scratch: true,
+            item_prefix: Some(String::from("fx")),
+        };
+        let review = Order {
+            kind: OrderKind::Review,
+            ..an_order(None)
+        };
+
+        let mut examples = vec![
+            ITEM_EXAMPLE.to_string(),
+            json(&request(show, Path::new("/work/project"))),
+            format!(r#"{{"schema_version":1,"refused":{}}}"#, json(&refusal)),
+            json(&HoldId::from("fx-h9")),
+            json(&Status::from("deferred")),
+            json(&stamp("2026-09-23T10:00:00Z")),
+            json(&Actor::seat(seat(PERSON))),
+            json(&an_order(Some(seat(SEAT)))),
+            json(&review),
+            json(&OrderState::None),
+            json(&OrderState::Unreadable),
+            json(&OrderState::Ordered(an_order(Some(seat(SEAT))))),
+            json(&run),
+            json(&summary),
+            json(&Filter::Ready),
+            json(&Filter::Label(String::from("fleet"))),
+            json(&Filter::Assignee(seat(SEAT))),
+            json(&new_item),
+            json(&Update::title(String::from("Name the stamp's fields"))),
+            json(&Update::assignee(seat(SEAT))),
+            json(&Update::unassigned()),
+            json(&exporting),
+            json(&Capabilities::default()),
+            json(&Version {
+                name: String::from("tracker"),
+                version: String::from("0.4.0"),
+            }),
+            json(&Resolved {
+                id: ItemId::from("fx-a1b2"),
+            }),
+            json(&Appended {
+                entry: String::from("e-17"),
+            }),
+            json(&Raised {
+                hold: HoldId::from("fx-h9"),
+            }),
+            json(&OpenHolds {
+                holds: vec![HoldId::from("fx-h9")],
+            }),
+            json(&Exported {
+                file: String::from("/work/lane/store/export.jsonl"),
+            }),
+            json(&Scratched {
+                root: String::from("/tmp/fleet-scratch/store"),
+            }),
+        ];
+
+        // The whole answer the envelope section prints, read as `resolve`'s.
+        let answered = r#"{"schema_version":1,"id":"fx-a1b2"}"#;
+        assert_eq!(
+            answer::<Resolved>(answered),
+            Ok(Resolved {
+                id: ItemId::from("fx-a1b2")
+            })
+        );
+        examples.push(answered.to_string());
+
+        // THE CONTROLS: the capability example's export keeps the rules the
+        // doc states, and `{}` reads as the store that declares nothing.
+        assert_eq!(
+            exporting.export.as_ref().map(ExportSpec::validate),
+            Some(Ok(()))
+        );
+        assert_eq!(
+            serde_json::from_str::<Capabilities>("{}").unwrap(),
+            Capabilities::default()
+        );
+
+        let missing: Vec<&String> = examples
+            .iter()
+            .filter(|example| !doc.contains(example.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "docs/store.md does not print these examples verbatim: {missing:#?}"
+        );
+    }
 }

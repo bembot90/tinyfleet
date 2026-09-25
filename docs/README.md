@@ -40,3 +40,4 @@ skill, `.claude/skills/docs/SKILL.md`.
 | `guards.md` | Guards | the four guard classes: shell-trap, record, release-ref, production-write | drafted |
 | `status.md` | Status and the event stream | `fleet status`, `fleet event tail`, `fleet event show` | drafted |
 | `conventions.md` | Exit codes and conventions | the exit table every command shares, full item ids | drafted |
+| `store.md` | The store contract | the store contract an adapter implements: choosing an adapter, the call, the envelope, the exit table, the types, the verbs and what they mean | drafted |
