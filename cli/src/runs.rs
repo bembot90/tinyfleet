@@ -27,7 +27,7 @@ use fleet_core::seat;
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::{identity_or_mint, SeatId};
 use fleet_core::store::bd::Bd;
-use fleet_core::store::Store;
+use fleet_core::store::{ItemId, Store};
 
 use crate::item::{resolve_from, Here, StreamEvents, EVENTS};
 use crate::transient::{as_refusal, effect_agent, machine_of, policy_of, Where};
@@ -216,7 +216,7 @@ impl Runs for Engine {
         let here = self.project_holding(run)?;
         let store = self.stores.open(&here.project.root);
         let entries = store
-            .timeline(run)
+            .timeline(&ItemId::from(run))
             .map_err(|e| format!("{run}'s timeline could not be read: {e}"))?;
         let Some(hold) = entries.iter().rev().find_map(|entry| match &entry.body {
             Body::Held(held) if held.reason == HoldReason::MaxCrashes => Some(held.hold.clone()),
@@ -225,10 +225,10 @@ impl Runs for Engine {
             return Ok(None);
         };
         let open = store
-            .open_holds()
+            .holds_open()
             .map_err(|e| format!("the store's open holds could not be read for {run}: {e}"))?;
         Ok(Some(CapHold {
-            cleared: !open.contains(&hold),
+            cleared: !open.iter().any(|held| *held == hold),
             hold,
         }))
     }
@@ -374,7 +374,7 @@ mod tests {
             "the work itself is still to be done"
         );
         let entries = store
-            .timeline(PARKED)
+            .timeline(&ItemId::from(PARKED))
             .expect("the store answers the timeline");
         assert_eq!(
             entries

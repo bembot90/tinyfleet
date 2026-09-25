@@ -16,7 +16,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use common::{
-    agent, full, keys_agree, seat_id, signal, sweep_dead_stores, Fixture, Graph, Rooted, StubEvents,
+    a_dispatch, agent, full, keys_agree, seat_id, signal, sweep_dead_stores, Fixture, Graph,
+    Rooted, StubEvents,
 };
 use fleet_core::entry::{Body, Entry, OrderKind, OrderWithdrawn, Ordered, Timeline, Withdrawal};
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
@@ -160,32 +161,55 @@ impl Store for Doctored<'_> {
         self.inner.update(id, change, by)
     }
 
-    fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.set_orders(item, payload, by)
+    fn order_set(
+        &self,
+        id: &fleet_core::store::ItemId,
+        order: &fleet_core::store::Order,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.order_set(id, order, by)
     }
 
-    fn set_metadata(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.set_metadata(item, payload, by)
+    fn order_withdraw(
+        &self,
+        id: &fleet_core::store::ItemId,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.order_withdraw(id, by)
     }
 
-    fn unset_orders(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.unset_orders(item, by)
+    fn run_set(
+        &self,
+        id: &fleet_core::store::ItemId,
+        run: &fleet_core::store::RunRecord,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.run_set(id, run, by)
     }
 
     fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
         self.inner.reopen(item, by)
     }
 
-    fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
-        self.inner.hold(item, reason, by)
+    fn hold_raise(
+        &self,
+        id: &fleet_core::store::ItemId,
+        reason: &str,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<fleet_core::store::HoldId, StoreError> {
+        self.inner.hold_raise(id, reason, by)
     }
 
-    fn open_holds(&self) -> Result<Vec<String>, StoreError> {
-        self.inner.open_holds()
+    fn holds_open(&self) -> Result<Vec<fleet_core::store::HoldId>, StoreError> {
+        self.inner.holds_open()
     }
 
-    fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.clear_hold(hold, by)
+    fn hold_clear(
+        &self,
+        hold: &fleet_core::store::HoldId,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.hold_clear(hold, by)
     }
 
     fn close(
@@ -199,14 +223,17 @@ impl Store for Doctored<'_> {
 
     fn append(
         &self,
-        item: &str,
+        item: &fleet_core::store::ItemId,
         body: &fleet_core::entry::Body,
         by: &fleet_core::seat::actor::Actor,
     ) -> Result<String, StoreError> {
         self.inner.append(item, body, by)
     }
 
-    fn timeline(&self, item: &str) -> Result<Vec<fleet_core::entry::Entry>, StoreError> {
+    fn timeline(
+        &self,
+        item: &fleet_core::store::ItemId,
+    ) -> Result<Vec<fleet_core::entry::Entry>, StoreError> {
         self.inner.timeline(item)
     }
 
@@ -419,7 +446,7 @@ fn a_dispatch_by_a_seat_leaves_bd_the_seats_typed_actor() {
 fn timeline_of(rig: &Rig, item: &str) -> Vec<Entry> {
     rig.graph
         .store()
-        .timeline(item)
+        .timeline(&store::ItemId::from(item))
         .expect("the timeline reads back")
 }
 
@@ -650,8 +677,8 @@ fn a_named_dispatch_appends_one_ordered_entry_and_writes_no_note() {
         .collect();
     assert_eq!(
         verbs,
-        ["update", "append", "set_orders"],
-        "the assignee, then the entry, then the index: {wrote:?}"
+        ["update", "append", "order_set"],
+        "the assignee, then the entry, then the order: {wrote:?}"
     );
     assert_eq!(
         answer.out,
@@ -734,14 +761,7 @@ fn a_blocked_item_is_refused_and_nothing_is_written() {
 fn an_item_already_ordered_is_refused_and_nothing_is_written() {
     let rig = Rig::new("ordered");
     let item = rig.graph.item("an item somebody already gave away");
-    rig.graph
-        .store()
-        .set_orders(
-            &item,
-            &dispatch::index(SOMEONE, dispatch::KIND, None, AT),
-            SOMEONE,
-        )
-        .expect("the order index lands");
+    rig.graph.order(&item, &a_dispatch(SOMEONE, None, AT));
 
     let before = rig.graph.json(&item);
     let seat = String::from("s-ordered");
@@ -778,14 +798,10 @@ fn an_item_already_ordered_is_refused_and_nothing_is_written() {
 fn an_order_index_that_does_not_parse_reads_unreadable_and_dispatch_says_could_not_tell() {
     let rig = Rig::new("unparsed");
     let item = rig.graph.item("an item whose order index names no stamp");
-    rig.graph
-        .store()
-        .set_orders(
-            &item,
-            &format!(r#"{{"fleet.orders":{{"v":1,"by":"{BY}","kind":"dispatch","at":"then"}}}}"#),
-            BY,
-        )
-        .expect("the order index lands");
+    rig.graph.set_metadata(
+        &item,
+        &format!(r#"{{"fleet.orders":{{"v":1,"by":"{BY}","kind":"dispatch","at":"then"}}}}"#),
+    );
 
     let before = rig.graph.json(&item);
     let seat = String::from("s-unparsed");
@@ -830,10 +846,7 @@ fn a_fleet_orders_at_an_unknown_version_is_unreadable_and_dispatch_could_not_tel
         ),
     ] {
         let item = rig.graph.item(&format!("an item ordered at {label}"));
-        rig.graph
-            .store()
-            .set_orders(&item, payload, "another-fleet")
-            .expect("the order index lands");
+        rig.graph.set_metadata(&item, payload);
         let read = rig.graph.store().show(&item).expect("the item reads");
         assert_eq!(
             read.order,
@@ -884,10 +897,7 @@ fn another_writers_orders_key_and_run_label_are_neither_read_nor_moved() {
     let item = rig
         .graph
         .item("an item another tool keeps its own index on");
-    rig.graph
-        .store()
-        .set_metadata(&item, common::FOREIGN_ORDERS, "another-tool")
-        .expect("the other writer's key lands");
+    rig.graph.set_metadata(&item, common::FOREIGN_ORDERS);
     rig.graph.label(&item, common::FOREIGN_LABEL);
     let before = common::foreign_of(rig.graph.store(), &item);
     let read = rig.graph.store().show(&item).expect("the item reads");
@@ -1017,14 +1027,7 @@ fn a_seat_the_machine_does_not_run_is_refused() {
 
 /// An order already on the item, as a dispatch would have left it.
 fn ordered(rig: &Rig, item: &str, seat: &str) {
-    rig.graph
-        .store()
-        .set_orders(
-            item,
-            &dispatch::index(SOMEONE, dispatch::KIND, Some(seat), AT),
-            SOMEONE,
-        )
-        .expect("the order index lands");
+    rig.graph.order(item, &a_dispatch(SOMEONE, Some(seat), AT));
 }
 
 #[test]
@@ -1223,15 +1226,17 @@ fn an_index_that_reads_back_wrong_is_handed_the_index_repair() {
     );
     assert!(
         answer.why.contains(&format!(
-            "RERUN: bd update {item} --metadata '{}' --actor {BY}",
-            dispatch::index(BY, "dispatch", Some(&full(&seat)), AT)
+            "RERUN: set the order on {item} to {}",
+            serde_json::to_string(&a_dispatch(BY, Some(&full(&seat)), AT))
+                .expect("an order prints")
         )),
-        "the index's own repair, versioned: {}",
+        "the order's own repair, as the contract's JSON: {}",
         answer.why
     );
     assert!(
-        answer.why.contains(r#""fleet.orders":{"#) && answer.why.contains(r#""v":1"#),
-        "the repair writes fleet's key at its version: {}",
+        !answer.why.contains("fleet.orders") && !answer.why.contains(r#""v":1"#),
+        "and no storage shape — which key a store keeps the order under is its \
+         adapter's: {}",
         answer.why
     );
     assert!(
@@ -1353,7 +1358,7 @@ fn a_suffix_is_dispatched_under_the_full_id_it_resolves_to() {
     assert_eq!(ordered_index(read), wanted_index(Some(&seat)));
 
     let wrote = board.store.wrote();
-    for verb in ["update", "append", "set_orders"] {
+    for verb in ["update", "append", "order_set"] {
         assert!(
             wrote
                 .iter()

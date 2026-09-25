@@ -18,7 +18,7 @@ use fleet_core::item::land::{self, Release};
 use fleet_core::item::{render, Spawn, SpawnOutcome, Spawner, Stop, COULD_NOT_TELL};
 use fleet_core::seat;
 use fleet_core::seat::identity::{Kind, SeatId, SeatRef};
-use fleet_core::store::Store;
+use fleet_core::store::{ItemId, Store};
 
 use crate::envelope;
 use crate::exit::Exit;
@@ -432,7 +432,9 @@ fn held_item(here: &Here, seat: &SeatId) -> Option<String> {
 /// That item's timeline. A store that will not answer reads as no entries,
 /// which is the answer that keeps the branch.
 fn timeline_of(here: &Here, item: &str) -> Option<Vec<Entry>> {
-    open_store(&here.project.root).timeline(item).ok()
+    open_store(&here.project.root)
+        .timeline(&ItemId::from(item))
+        .ok()
 }
 
 // ---- the spawner seam -------------------------------------------------------

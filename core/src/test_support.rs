@@ -14,11 +14,14 @@ use std::sync::Mutex;
 
 use crate::entry::{self, Body, Entry};
 use crate::seat::actor::Actor;
-use crate::store::bd::{item_from, opened, order_of, shown, SCHEMA_VERSION};
+use crate::seat::identity::SeatId;
+use crate::store::bd::{
+    item_from, keys, opened, order_metadata, order_of, run_metadata, shown, SCHEMA_VERSION,
+};
 use crate::store::types::{Capabilities, ExportSpec};
 use crate::store::{
-    already_closed, keys, unchanged, Filter, Item, ItemId, ItemSummary, NewItem, Order, OrderState,
-    Status, Store, StoreError, Update, Version,
+    already_cleared, already_closed, unchanged, Filter, HoldId, Item, ItemId, ItemSummary, NewItem,
+    Order, OrderState, RunRecord, Status, Store, StoreError, Update, Version,
 };
 
 /// Where the fake's export goes, relative to the root it is handed: a file of
@@ -75,7 +78,7 @@ pub struct FakeStore {
     /// question. The nth hold's id is `hold-<n>`, so an entry naming one and
     /// the call that raised it can be compared.
     pub holds: Mutex<Vec<(String, String)>>,
-    /// The holds a `clear_hold` has closed, by id, so the open listing below
+    /// The holds a `hold_clear` has closed, by id, so the open listing below
     /// answers what this store has actually been told.
     pub cleared: Mutex<Vec<String>>,
     /// Why each closed item was closed. The real store holds it in a field of
@@ -194,6 +197,18 @@ impl FakeStore {
             text: text.to_string(),
             at: format!("2026-01-01T00:{:02}:{:02}Z", n / 60, n % 60),
         }
+    }
+
+    /// A metadata object merged onto the item as ANOTHER WRITER leaves one: a
+    /// key fleet does not own, or one of fleet's own at a shape no writer here
+    /// makes. The trait writes only the contract's types, so this is a rig's
+    /// way in, and it is logged as nothing — the rig is putting the board in a
+    /// state. It merges at the top level, as every metadata write here does.
+    pub fn plant_metadata(&self, item: &str, payload: &str) {
+        let metadata = crate::store::first_value(payload)
+            .unwrap_or_else(|| panic!("the metadata for {item} is JSON: {payload}"));
+        self.merged(item, metadata)
+            .unwrap_or_else(|e| panic!("the metadata on {item}: {e}"));
     }
 
     /// Writes land again.
@@ -493,11 +508,11 @@ impl FakeStore {
 fn seeded_metadata(item: &Item) -> serde_json::Map<String, serde_json::Value> {
     let mut object = serde_json::Map::new();
     if let Some(run) = &item.run {
-        object.insert(String::from(keys::RUN), versioned_json(run));
+        object.extend(top_level(run_metadata(run)));
     }
     match &item.order {
         OrderState::Ordered(order) => {
-            object.insert(String::from(keys::ORDERS), order_json(order));
+            object.extend(top_level(order_metadata(order)));
         }
         OrderState::Unreadable => {
             object.insert(
@@ -510,20 +525,13 @@ fn seeded_metadata(item: &Item) -> serde_json::Map<String, serde_json::Value> {
     object
 }
 
-/// The order as the index a dispatch writes: its fields, and its version.
-fn order_json(order: &Order) -> serde_json::Value {
-    versioned_json(order)
-}
-
-/// One of fleet's objects with the version stamped in, as its writer hands it
-/// to the store.
-fn versioned_json(value: &impl serde::Serialize) -> serde_json::Value {
-    let mut object = serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_object().cloned())
-        .expect("fleet's own objects serialize as objects");
-    object.insert(String::from(keys::VERSION_FIELD), keys::VERSION.into());
-    serde_json::Value::Object(object)
+/// The top-level keys of a metadata object the adapter built, which is what
+/// a write merges in.
+fn top_level(metadata: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    match metadata {
+        serde_json::Value::Object(keys) => keys,
+        other => panic!("the adapter's metadata is one object: {other}"),
+    }
 }
 
 /// One item in the store's own JSON shape — the row a read is decoded from and
@@ -724,21 +732,30 @@ impl Store for FakeStore {
         self.moving(item, |held| held.assignee = Some(to.to_string()))
     }
 
-    fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        self.log(format!("set_orders {item} {payload} {by}"))?;
-        self.merged(item, payload)
+    /// The order written as the bd adapter writes it — the same object, built
+    /// by the same function — and merged at the top level, so the run's record
+    /// beside it stands.
+    fn order_set(&self, id: &ItemId, order: &Order, by: &Actor) -> Result<(), StoreError> {
+        let metadata = order_metadata(order);
+        self.log(format!("order_set {id} {metadata} {by}"))?;
+        self.merged(id, metadata)
     }
 
-    fn set_metadata(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        self.log(format!("set_metadata {item} {payload} {by}"))?;
-        self.merged(item, payload)
-    }
-
-    fn unset_orders(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.log(format!("unset_orders {item} {by}"))?;
-        self.metadata_write(item, |object| {
+    /// One log line and both moves, which is what the real store's one call
+    /// leaves: the assignee ABSENT, as bd answers one it cleared, and the key
+    /// gone.
+    fn order_withdraw(&self, id: &ItemId, by: &Actor) -> Result<(), StoreError> {
+        self.log(format!("order_withdraw {id} {by}"))?;
+        self.moving(id, |held| held.assignee = None)?;
+        self.metadata_write(id, |object| {
             object.remove(keys::ORDERS);
         })
+    }
+
+    fn run_set(&self, id: &ItemId, run: &RunRecord, by: &Actor) -> Result<(), StoreError> {
+        let metadata = run_metadata(run);
+        self.log(format!("run_set {id} {metadata} {by}"))?;
+        self.merged(id, metadata)
     }
 
     fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
@@ -751,40 +768,59 @@ impl Store for FakeStore {
     /// No move is made while another seat holds the item, or while it reads a
     /// status other than the one the caller named — bd's `--if-status`, which
     /// is what keeps a closed item closed.
-    fn withdraw_order(
+    fn order_withdraw_from(
         &self,
-        item: &str,
-        seat: &str,
-        status: &str,
-        by: &str,
+        id: &ItemId,
+        seat: &SeatId,
+        status: &Status,
+        by: &Actor,
     ) -> Result<(), StoreError> {
-        self.log(format!("withdraw_order {item} {by}"))?;
-        self.held_by(item, seat)?;
-        self.status_is(item, status)?;
-        self.moving(item, |held| {
-            held.assignee = Some(String::new());
+        self.log(format!("order_withdraw_from {id} {seat} {status} {by}"))?;
+        self.held_by(id, &seat.to_string())?;
+        self.status_is(id, status.as_str())?;
+        self.moving(id, |held| {
+            held.assignee = None;
             held.status = Status::Open;
         })?;
-        self.metadata_write(item, |object| {
+        self.metadata_write(id, |object| {
             object.remove(keys::ORDERS);
         })
     }
 
     /// The hold recorded and answered as an id derived from the call's own
-    /// order: an arm asserting that a park named the hold it raised needs the
-    /// two to agree, and a constant id would agree with a second hold too.
-    fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
+    /// order, `hold-<n>`: an arm asserting that a park named the hold it raised
+    /// needs the two to agree, and a constant id would agree with a second
+    /// hold too.
+    fn hold_raise(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<HoldId, StoreError> {
         if let Some(refused) = self.refuse() {
             return refused;
         }
-        self.log(format!("hold {item} {reason} {by}"))?;
+        self.log(format!("hold_raise {id} {reason} {by}"))?;
         let mut raised = self.holds.lock().expect("the holds are not poisoned");
-        raised.push((item.to_string(), reason.to_string()));
-        Ok(format!("hold-{}", raised.len()))
+        raised.push((id.to_string(), reason.to_string()));
+        Ok(HoldId::from(format!("hold-{}", raised.len())))
+    }
+
+    /// A hold this store never raised is Refused as bd refuses a gate it does
+    /// not hold, and one already cleared is Refused in the adapter's words.
+    fn hold_clear(&self, hold: &HoldId, by: &Actor) -> Result<(), StoreError> {
+        self.log(format!("hold_clear {hold} {by}"))?;
+        let raised = self.holds.lock().expect("the holds are not poisoned").len();
+        if !(1..=raised).any(|n| *hold == format!("hold-{n}")) {
+            return Err(StoreError::Refused(format!("{hold} is not here")));
+        }
+        let mut cleared = self.cleared.lock().expect("the holds are not poisoned");
+        if cleared.iter().any(|held| *hold == *held) {
+            return Err(already_cleared(hold));
+        }
+        if !self.deaf() {
+            cleared.push(hold.to_string());
+        }
+        Ok(())
     }
 
     /// Every hold this store has raised and not been told to clear.
-    fn open_holds(&self) -> Result<Vec<String>, StoreError> {
+    fn holds_open(&self) -> Result<Vec<HoldId>, StoreError> {
         if let Some(refused) = self.refuse() {
             return refused;
         }
@@ -793,19 +829,8 @@ impl Store for FakeStore {
         Ok((1..=raised.len())
             .map(|n| format!("hold-{n}"))
             .filter(|id| !closed.contains(id))
+            .map(HoldId::from)
             .collect())
-    }
-
-    fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError> {
-        self.log(format!("clear_hold {hold} {by}"))?;
-        if self.deaf() {
-            return Ok(());
-        }
-        self.cleared
-            .lock()
-            .expect("the holds are not poisoned")
-            .push(hold.to_string());
-        Ok(())
     }
 
     /// The reason goes to the log and not onto the item: the real store holds
@@ -838,14 +863,14 @@ impl Store for FakeStore {
     /// kept as one comment whose text is the entry's encoding. A deaf store
     /// answers the id it minted and keeps nothing, which is the disagreement
     /// the read-back is there to catch.
-    fn append(&self, item: &str, body: &Body, by: &Actor) -> Result<String, StoreError> {
+    fn append(&self, item: &ItemId, body: &Body, by: &Actor) -> Result<String, StoreError> {
         self.log(format!("append {item} {} {by}", body.kind()))?;
         crate::store::validated(item, body)?;
         if !self
             .items
             .lock()
             .expect("the items are not poisoned")
-            .contains_key(item)
+            .contains_key(item.as_str())
         {
             return Err(StoreError::Refused(format!("{item} is not here")));
         }
@@ -865,7 +890,7 @@ impl Store for FakeStore {
 
     /// Every comment read through [`entry::read_row`], the function bd's
     /// timeline reads its rows with, in the order they were added.
-    fn timeline(&self, item: &str) -> Result<Vec<Entry>, StoreError> {
+    fn timeline(&self, item: &ItemId) -> Result<Vec<Entry>, StoreError> {
         if let Some(refused) = self.refuse() {
             return refused;
         }
@@ -873,13 +898,13 @@ impl Store for FakeStore {
             .items
             .lock()
             .expect("the items are not poisoned")
-            .contains_key(item)
+            .contains_key(item.as_str())
         {
             return Err(StoreError::Refused(format!("{item} is not here")));
         }
         let comments = self.comments.lock().expect("the comments are not poisoned");
         let mut entries = Vec::new();
-        for comment in comments.get(item).into_iter().flatten() {
+        for comment in comments.get(item.as_str()).into_iter().flatten() {
             let read = entry::read_row(
                 item,
                 &comment.id,
@@ -978,12 +1003,12 @@ impl Store for FakeStore {
 }
 
 impl FakeStore {
-    /// One metadata payload merged at the top level, which is both metadata
-    /// writes' polarity.
-    fn merged(&self, item: &str, payload: &str) -> Result<(), StoreError> {
-        let Some(serde_json::Value::Object(written)) = crate::store::first_value(payload) else {
+    /// One metadata object merged at the top level, which is every metadata
+    /// write's polarity.
+    fn merged(&self, item: &str, metadata: serde_json::Value) -> Result<(), StoreError> {
+        let serde_json::Value::Object(written) = metadata else {
             return Err(StoreError::Unreadable(format!(
-                "the payload is not one JSON object: {payload}"
+                "the payload is not one JSON object: {metadata}"
             )));
         };
         self.metadata_write(item, |object| {
@@ -1015,14 +1040,14 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     fn update(&self, id: &ItemId, change: &Update, by: &Actor) -> Result<(), StoreError> {
         (**self).update(id, change, by)
     }
-    fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        (**self).set_orders(item, payload, by)
+    fn order_set(&self, id: &ItemId, order: &Order, by: &Actor) -> Result<(), StoreError> {
+        (**self).order_set(id, order, by)
     }
-    fn set_metadata(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        (**self).set_metadata(item, payload, by)
+    fn order_withdraw(&self, id: &ItemId, by: &Actor) -> Result<(), StoreError> {
+        (**self).order_withdraw(id, by)
     }
-    fn unset_orders(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        (**self).unset_orders(item, by)
+    fn run_set(&self, id: &ItemId, run: &RunRecord, by: &Actor) -> Result<(), StoreError> {
+        (**self).run_set(id, run, by)
     }
     fn hand_over(&self, item: &str, from: &str, to: &str, by: &str) -> Result<(), StoreError> {
         (**self).hand_over(item, from, to, by)
@@ -1030,31 +1055,31 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
         (**self).reopen(item, by)
     }
-    fn withdraw_order(
+    fn order_withdraw_from(
         &self,
-        item: &str,
-        seat: &str,
-        status: &str,
-        by: &str,
+        id: &ItemId,
+        seat: &SeatId,
+        status: &Status,
+        by: &Actor,
     ) -> Result<(), StoreError> {
-        (**self).withdraw_order(item, seat, status, by)
+        (**self).order_withdraw_from(id, seat, status, by)
     }
-    fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
-        (**self).hold(item, reason, by)
+    fn hold_raise(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<HoldId, StoreError> {
+        (**self).hold_raise(id, reason, by)
     }
-    fn open_holds(&self) -> Result<Vec<String>, StoreError> {
-        (**self).open_holds()
+    fn hold_clear(&self, hold: &HoldId, by: &Actor) -> Result<(), StoreError> {
+        (**self).hold_clear(hold, by)
     }
-    fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError> {
-        (**self).clear_hold(hold, by)
+    fn holds_open(&self) -> Result<Vec<HoldId>, StoreError> {
+        (**self).holds_open()
     }
     fn close(&self, id: &ItemId, reason: &str, by: &str) -> Result<(), StoreError> {
         (**self).close(id, reason, by)
     }
-    fn append(&self, item: &str, body: &Body, by: &Actor) -> Result<String, StoreError> {
+    fn append(&self, item: &ItemId, body: &Body, by: &Actor) -> Result<String, StoreError> {
         (**self).append(item, body, by)
     }
-    fn timeline(&self, item: &str) -> Result<Vec<Entry>, StoreError> {
+    fn timeline(&self, item: &ItemId) -> Result<Vec<Entry>, StoreError> {
         (**self).timeline(item)
     }
     fn capabilities(&self) -> Result<Capabilities, StoreError> {
@@ -1153,10 +1178,24 @@ impl Board {
             .unwrap_or_else(|e| panic!("hand {item} to {seat}: {e}"));
     }
 
-    pub fn set_metadata(&self, item: &str, payload: &str) {
+    /// The item's order, written as a dispatch writes one.
+    pub fn order(&self, item: &str, order: Order) {
         self.store
-            .set_metadata(item, payload, "the-test")
-            .unwrap_or_else(|e| panic!("set_metadata {item}: {e}"));
+            .order_set(&ItemId::from(item), &order, &the_test())
+            .unwrap_or_else(|e| panic!("the order on {item}: {e}"));
+    }
+
+    /// The item's run record, written as a run writes one.
+    pub fn run(&self, item: &str, run: RunRecord) {
+        self.store
+            .run_set(&ItemId::from(item), &run, &the_test())
+            .unwrap_or_else(|e| panic!("the run record on {item}: {e}"));
+    }
+
+    /// A metadata object merged onto the item as ANOTHER WRITER leaves one —
+    /// [`FakeStore::plant_metadata`].
+    pub fn set_metadata(&self, item: &str, payload: &str) {
+        self.store.plant_metadata(item, payload);
     }
 
     /// A field the trait carries no verb for, moved on the stored item.

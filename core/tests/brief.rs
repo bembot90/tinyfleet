@@ -715,7 +715,9 @@ fn a_withdrawn_order_is_refused_and_writes_nothing() {
         (&refused, "spawn refused", Withdrawal::SpawnRefused),
     ] {
         let read = store.show(ITEM).expect("the item reads back");
-        let entries = store.timeline(ITEM).expect("the timeline reads back");
+        let entries = store
+            .timeline(&fleet_core::store::ItemId::from(ITEM))
+            .expect("the timeline reads back");
         assert!(
             matches!(
                 entries.first().map(|entry| &entry.body),
@@ -1050,12 +1052,15 @@ fn a_layer_shadowing_the_question_schema_with_a_property_removed_is_no_brief() {
 fn the_real_store_renders_the_same_brief_as_the_one_held_in_memory() {
     let scratch = shared_store("brief");
     let item = scratch.item("a ready item");
-    let index = dispatch::index(BY, dispatch::KIND, None, AT);
-    let out = scratch.bd(&["update", &item, "--metadata", &index, "--actor", BY]);
-    assert!(out.status.success(), "the order index is written");
+    let real = Bd::at(&scratch.root);
+    real.order_set(
+        &store::ItemId::from(item.as_str()),
+        &common::a_dispatch(BY, None, AT),
+        &by(),
+    )
+    .expect("the order is written");
 
     let rig = Rig::new("fidelity");
-    let real = Bd::at(&scratch.root);
     let record = real.show(&item).expect("bd answers about the item");
 
     let fake = FakeStore::default();
@@ -1098,11 +1103,11 @@ fn the_real_store_renders_the_same_brief_as_the_one_held_in_memory() {
 fn an_item_carrying_an_entry_is_briefed_through_fleets_rendering() {
     let scratch = shared_store("brief");
     let item = scratch.item("an item with a record");
-    let index = dispatch::index(BY, dispatch::KIND, None, AT);
-    let out = scratch.bd(&["update", &item, "--metadata", &index, "--actor", BY]);
-    assert!(out.status.success(), "the order index is written");
+    let id = store::ItemId::from(item.as_str());
     let real = Bd::at(&scratch.root);
-    real.append(&item, &common::a_delivery(common::A_COMMIT), &by())
+    real.order_set(&id, &common::a_dispatch(BY, None, AT), &by())
+        .expect("the order is written");
+    real.append(&id, &common::a_delivery(common::A_COMMIT), &by())
         .expect("the entry is appended");
     let out = scratch.bd(&["comments", "add", &item, "a person's own words"]);
     assert!(out.status.success(), "the person's comment is written");
@@ -1117,7 +1122,7 @@ fn an_item_carrying_an_entry_is_briefed_through_fleets_rendering() {
 
     // The block is `fleet item show`'s text, whole, over the one entry.
     let record = real.show(&item).expect("bd answers about the item");
-    let timeline = real.timeline(&item).expect("bd answers the timeline");
+    let timeline = real.timeline(&id).expect("bd answers the timeline");
     assert_eq!(timeline.len(), 1, "the entry, and not the person's comment");
     let block = format!(
         "## The item\n\n```\n{}\n```\n",

@@ -19,12 +19,11 @@ use crate::seat::identity::SeatId;
 use types::Capabilities;
 
 pub mod bd;
-pub mod keys;
 pub mod types;
 
 pub use types::{
-    Filter, ItemId, ItemSummary, NewItem, Order, OrderKind, OrderState, ReadProof, RunRecord,
-    Stamp, Status, Update, Version,
+    Filter, HoldId, ItemId, ItemSummary, NewItem, Order, OrderKind, OrderState, ReadProof,
+    RunRecord, Stamp, Status, Update, Version,
 };
 
 /// One item as a read answers it, in the contract's own types field by field:
@@ -94,6 +93,46 @@ impl std::fmt::Display for StoreError {
     }
 }
 
+/// THE STORE CONTRACT IN-PROCESS, VERB FOR VERB: each verb `docs/store.md`
+/// names is one method here, taking the verb's request fields as its
+/// arguments and answering its response, and an adapter out of process
+/// answers the same verbs as JSON.
+///
+/// | Verb | Method |
+/// | --- | --- |
+/// | `version` | [`version`](Store::version) |
+/// | `capabilities` | [`capabilities`](Store::capabilities) |
+/// | `resolve` | [`resolve`](Store::resolve) |
+/// | `show` | [`show`](Store::show) |
+/// | `list` | [`list`](Store::list) |
+/// | `timeline` | [`timeline`](Store::timeline) |
+/// | `create` | [`create`](Store::create) |
+/// | `update` | [`update`](Store::update) |
+/// | `append` | [`append`](Store::append) |
+/// | `order.set` | [`order_set`](Store::order_set) |
+/// | `order.withdraw` | [`order_withdraw`](Store::order_withdraw) |
+/// | `run.set` | [`run_set`](Store::run_set) |
+/// | `hold.raise` | [`hold_raise`](Store::hold_raise) |
+/// | `hold.clear` | [`hold_clear`](Store::hold_clear) |
+/// | `holds.open` | [`holds_open`](Store::holds_open) |
+/// | `close` | [`close`](Store::close) |
+/// | `export` | [`export`](Store::export) |
+///
+/// `scratch`, a verb a store declares beside `export`, has no method yet.
+///
+/// BESIDE THE TABLE are the fenced writes, which the contract does not name
+/// yet and whose defaults are written in its verbs: [`hand_over`], an update
+/// that lands only while the holder it names still holds the item;
+/// [`reopen`]; and [`order_withdraw_from`], the withdrawal a retire makes,
+/// fenced on the retiring seat and the status it listed. A store with a fence
+/// of its own takes each in one call.
+///
+/// No storage shape crosses this trait: an order and a run's record go in as
+/// the contract's own types, and where a store keeps them is its adapter's.
+///
+/// [`hand_over`]: Store::hand_over
+/// [`reopen`]: Store::reopen
+/// [`order_withdraw_from`]: Store::order_withdraw_from
 pub trait Store {
     /// One item, which the argument may name by PART of its id: the store
     /// resolves a partial id itself, and the answer's `id` is the full one. So
@@ -175,60 +214,63 @@ pub trait Store {
         self.update(&ItemId::from(item), &change, &actor)
     }
 
-    /// `metadata["fleet.orders"]`, written as one object that replaces the key
-    /// whole.
-    fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError>;
+    /// The item's order replaced whole. The assignee and the run's record are
+    /// left as they were: a store keeping the two beside each other writes
+    /// the order without touching the record.
+    fn order_set(&self, id: &ItemId, order: &Order, by: &Actor) -> Result<(), StoreError>;
 
-    /// One metadata object written by the same call `set_orders` makes, for a
-    /// top-level key that is not `fleet.orders`.
+    /// The assignee cleared and the order taken away in ONE act. After any
+    /// answer, an item never reads with its assignee cleared while its order
+    /// stands.
     ///
-    /// It is the SIBLING of that method and not a generalisation of it: the
-    /// write MERGES at the top level, so a run's object never erases the order
-    /// index beside it, and the two keys keep one writer each.
-    fn set_metadata(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError>;
+    /// NO DEFAULT BODY: two writes in a row are exactly the half-withdrawal
+    /// the one act exists to rule out, so every store says how it takes both
+    /// at once.
+    fn order_withdraw(&self, id: &ItemId, by: &Actor) -> Result<(), StoreError>;
 
-    fn unset_orders(&self, item: &str, by: &str) -> Result<(), StoreError>;
+    /// The run's record on the item that records it, replaced whole. The
+    /// order beside it is left as it was.
+    fn run_set(&self, id: &ItemId, run: &RunRecord, by: &Actor) -> Result<(), StoreError>;
 
     /// The item's status set back to `open`, which is all this writes.
     fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError>;
 
-    /// The item reopened, the assignee cleared and the order index unset in
-    /// ONE call, and only while `seat` still holds the item under `status`:
-    /// [`hand_over`](Store::hand_over)'s fence, because a retire's actor is
-    /// never the seat it retires, and the status beside it, because an item
-    /// closed since the caller read it is never reopened.
+    /// The item reopened and its order withdrawn — the assignee cleared and
+    /// the order taken away — in ONE call, and only while `seat` still holds
+    /// the item under `status`: [`hand_over`](Store::hand_over)'s fence,
+    /// because a retire's actor is never the seat it retires, and the status
+    /// beside it, because an item closed since the caller read it is never
+    /// reopened.
     ///
     /// `status` is the one the caller read the item under, and a withdrawal
     /// reads only `open` or `in_progress`. The reopen is the point of the
     /// second: an item left `in_progress` with nobody holding it is out of the
     /// ready set, and no dispatch reaches it until somebody reopens it by hand.
     ///
-    /// The three are what a withdrawal always writes together, and a retire
-    /// pays them on every seat it ends — so a store that takes all three in one
-    /// call is sent one rather than three, which is a call the verb does not
-    /// make while another suite is queueing behind it. The DEFAULT is the writes in
-    /// order behind one read of the fence, the reopen FIRST: a default cut
-    /// short after it leaves an item still held and ordered, which a second
-    /// retire lists and finishes. What no form may do is leave the assignee
-    /// cleared with the index still set, which the caller's read-back catches.
-    fn withdraw_order(
+    /// A retire pays this on every seat it ends — so a store that takes all of
+    /// it in one call is sent one, which is a call the verb does not make while
+    /// another suite is queueing behind it. The DEFAULT is one read of the
+    /// fence, the reopen, then [`order_withdraw`](Store::order_withdraw): a
+    /// default cut short after the reopen leaves an item still held and
+    /// ordered, which a second retire lists and finishes.
+    fn order_withdraw_from(
         &self,
-        item: &str,
-        seat: &str,
-        status: &str,
-        by: &str,
+        id: &ItemId,
+        seat: &SeatId,
+        status: &Status,
+        by: &Actor,
     ) -> Result<(), StoreError> {
-        let read = self.show(item)?;
+        let read = self.show(id)?;
         let held = read.assignee.unwrap_or_default();
+        let seat = seat.to_string();
         if held != seat {
-            return Err(moved(item, seat, &held));
+            return Err(moved(id, &seat, &held));
         }
-        if read.status != status {
-            return Err(restatused(item, status, read.status.as_str()));
+        if read.status != *status {
+            return Err(restatused(id, status.as_str(), read.status.as_str()));
         }
-        self.reopen(item, by)?;
-        self.hand_over(item, seat, "", by)?;
-        self.unset_orders(item, by)
+        self.reopen(id, &by.to_string())?;
+        self.order_withdraw(id, by)
     }
 
     /// A hold raised on this item, answered as the hold's own id.
@@ -237,7 +279,13 @@ pub trait Store {
     /// item leaves the ready set the moment the hold is raised, and it comes back
     /// when somebody clears the hold. So a park needs nothing of fleet's beside
     /// the event.
-    fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError>;
+    fn hold_raise(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<HoldId, StoreError>;
+
+    /// One hold cleared, which puts the item it blocked back in the ready set.
+    ///
+    /// A HOLD ALREADY CLEARED IS REFUSED, naming the hold: the act is already
+    /// done, which is the record's answer: `<hold> is already cleared`.
+    fn hold_clear(&self, hold: &HoldId, by: &Actor) -> Result<(), StoreError>;
 
     /// Every hold the store still calls open, by id.
     ///
@@ -245,10 +293,7 @@ pub trait Store {
     /// item a hold blocks, so a caller that wants one item's hold reads that
     /// hold's id off the item's own park and asks this list whether it is still
     /// here.
-    fn open_holds(&self) -> Result<Vec<String>, StoreError>;
-
-    /// One hold cleared, which puts the item it blocked back in the ready set.
-    fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError>;
+    fn holds_open(&self) -> Result<Vec<HoldId>, StoreError>;
 
     /// The item closed, with the reason a reader gets instead of the act.
     ///
@@ -259,7 +304,8 @@ pub trait Store {
     /// landing closes under the holder's own assignee string, because a store
     /// may close an assigned item only for an actor equal to its assignee —
     /// the adapter's `close` says where that was measured. Whether that
-    /// string becomes a typed actor is ruled with the order writes.
+    /// string becomes a typed actor is fleet-0q4's to rule, and the order
+    /// writes did not rule it.
     fn close(&self, id: &ItemId, reason: &str, by: &str) -> Result<(), StoreError>;
 
     /// One entry appended to the item's timeline, answered as the entry's id.
@@ -267,7 +313,7 @@ pub trait Store {
     /// The body is VALIDATED FIRST, and one that breaks its kind's rules is
     /// Unreadable with nothing written: a store never keeps an entry its own
     /// reader would refuse.
-    fn append(&self, item: &str, body: &Body, by: &Actor) -> Result<String, StoreError>;
+    fn append(&self, item: &ItemId, body: &Body, by: &Actor) -> Result<String, StoreError>;
 
     /// The item's entries, in the store's order. A comment that does not carry
     /// [`crate::entry::KEY`] is a person's and is left out; one that carries it and
@@ -275,7 +321,7 @@ pub trait Store {
     /// and refuses the whole read, naming the comment, because a timeline with
     /// a hole in it answers every question wrong. An item the store does not
     /// hold is Refused.
-    fn timeline(&self, item: &str) -> Result<Vec<Entry>, StoreError>;
+    fn timeline(&self, item: &ItemId) -> Result<Vec<Entry>, StoreError>;
 
     /// What the store keeps beside the graph, answered without a call to the
     /// store: the export a landing commits and the directory it sits in —
@@ -348,6 +394,11 @@ pub(crate) fn unchanged() -> StoreError {
 /// The refusal a close of an item already closed answers.
 pub(crate) fn already_closed(id: &ItemId) -> StoreError {
     StoreError::Refused(format!("{id} is already closed"))
+}
+
+/// The refusal a clear of a hold already cleared answers.
+pub(crate) fn already_cleared(hold: &HoldId) -> StoreError {
+    StoreError::Refused(format!("{hold} is already cleared"))
 }
 
 /// A holder as a refusal names one: the seat, or nobody for `""`.

@@ -56,7 +56,7 @@ use crate::resolve::Layer;
 use crate::seat::actor::Actor;
 use crate::settings;
 use crate::store::{
-    keys, Filter, Item, ItemId, NewItem, RunRecord, Status, Store, StoreError, Update,
+    Filter, HoldId, Item, ItemId, NewItem, RunRecord, Stamp, Status, Store, StoreError, Update,
 };
 
 /// Where the run directories go, under the machine directory.
@@ -556,12 +556,12 @@ pub fn cancel(
     }
 
     let open = store
-        .open_holds()
+        .holds_open()
         .map_err(|e| Stop::could_not_tell(format!("the store's holds could not be read: {e}")))?;
     let holds: Vec<String> = record
         .blockers
         .iter()
-        .filter(|blocker| open.iter().any(|hold| *blocker == hold))
+        .filter(|blocker| open.iter().any(|hold| hold.as_str() == blocker.as_str()))
         .map(|blocker| blocker.to_string())
         .collect();
     // ONE CLEARED ENTRY PER HOLD, before the store's hold is cleared: the
@@ -583,11 +583,13 @@ pub fn cancel(
             };
             Stop::could_not_tell(format!("{why}\n  {run} is NOT cancelled"))
         })?;
-        store.clear_hold(hold, &by).map_err(|e| {
-            Stop::could_not_tell(format!(
-                "{hold} on {run} was not cleared: {e}\n  {run} is NOT cancelled"
-            ))
-        })?;
+        store
+            .hold_clear(&HoldId::from(hold.as_str()), cancel.by)
+            .map_err(|e| {
+                Stop::could_not_tell(format!(
+                    "{hold} on {run} was not cleared: {e}\n  {run} is NOT cancelled"
+                ))
+            })?;
         entries.push(entry);
     }
 
@@ -1180,11 +1182,10 @@ fn file_the_record(order: &Order, resolved: &Resolved, wiring: &Wiring) -> Resul
     Ok(id.to_string())
 }
 
-/// The hash and the run's own object onto the record, read back.
+/// The hash and the run's own record onto the record item, read back.
 ///
-/// The object is written WHOLE, as a flight's is: bd's metadata write merges at
-/// the top level and replaces one key's object, so a write of one key alone
-/// would drop the rest of this one.
+/// The record is written WHOLE, and the store replaces the one the item
+/// carried whole: a record of one field alone would drop the rest of it.
 fn write_the_pins(
     id: &str,
     hash: &str,
@@ -1192,22 +1193,30 @@ fn write_the_pins(
     order: &Order,
     wiring: &Wiring,
 ) -> Result<(), Stop> {
-    let mut object = serde_json::Map::new();
-    object.insert("hash".into(), hash.into());
-    object.insert("workflow".into(), resolved.name.clone().into());
-    object.insert("pack".into(), resolved.pack.name.clone().into());
-    object.insert("entry".into(), resolved.relative.clone().into());
-    object.insert("started_at".into(), order.at.into());
-    let payload = keys::stamped(keys::RUN, object).to_string();
+    let Some(started_at) = Stamp::parse(order.at) else {
+        return Err(Stop::could_not_tell(format!(
+            "the pins were not written on {id}: the run started at `{}`, which is not a stamp — \
+             the form is YYYY-MM-DDTHH:MM:SSZ\n  the run directory is WRITTEN and the record \
+             does not name it",
+            order.at
+        )));
+    };
+    let run = RunRecord {
+        hash: hash.to_string(),
+        workflow: resolved.name.clone(),
+        pack: resolved.pack.name.clone(),
+        entry: resolved.relative.clone(),
+        started_at,
+    };
     wiring
         .store
-        .set_metadata(id, &payload, &order.by.to_string())
+        .run_set(&ItemId::from(id), &run, order.by)
         .map_err(|e| {
+            let json = serde_json::to_string(&run)
+                .unwrap_or_else(|e| format!("(a record that did not print: {e})"));
             Stop::could_not_tell(format!(
                 "the pins did not land on {id}: {e}\n  the run directory is WRITTEN and the \
-                 record does not name it\n  RERUN: bd update {id} --metadata '{payload}' --actor \
-                 {}",
-                order.by
+                 record does not name it\n  RERUN: set the run record on {id} to {json}"
             ))
         })?;
 

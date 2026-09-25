@@ -24,16 +24,18 @@ use serde::Deserialize;
 
 use super::types::{Capabilities, ExportSpec};
 use super::{
-    already_closed, first_value, holder_named, keys, unchanged, validated, Filter, Item, ItemId,
-    ItemSummary, NewItem, Order, OrderState, ReadProof, RunRecord, Status, Store, StoreError,
-    Update, Version, STORE_TIMEOUT,
+    already_cleared, already_closed, first_value, holder_named, unchanged, validated, Filter,
+    HoldId, Item, ItemId, ItemSummary, NewItem, Order, OrderState, ReadProof, RunRecord, Status,
+    Store, StoreError, Update, Version, STORE_TIMEOUT,
 };
 use crate::entry::{self, Body, Entry};
 use crate::process::{deadline_cause, run_bounded};
 use crate::seat::actor::Actor;
+use crate::seat::identity::SeatId;
 
 mod bd_cli;
 mod bd_wire;
+pub mod keys;
 
 /// The binary every write and read goes through when the caller names no
 /// other, resolved on the process's own `PATH`.
@@ -476,6 +478,32 @@ fn run_of(id: &str, metadata: Option<&serde_json::Value>) -> Result<Option<RunRe
         .map_err(|why| refused(Some(why.to_string())))
 }
 
+/// The metadata an [`Order`] is written as: `{"fleet.orders": {…, "v": 1}}`,
+/// the order's own fields with the version stamped in — the one shape
+/// `order_of` reads back, built in the one place that writes it. The store
+/// held in memory writes the same object, so the two cannot drift apart.
+pub fn order_metadata(order: &Order) -> serde_json::Value {
+    keys::stamped(keys::ORDERS, fields_of(order))
+}
+
+/// The metadata a [`RunRecord`] is written as: `{"fleet.run": {…, "v": 1}}`,
+/// which `run_of` reads back.
+pub fn run_metadata(run: &RunRecord) -> serde_json::Value {
+    keys::stamped(keys::RUN, fields_of(run))
+}
+
+/// One of the contract's objects as its JSON fields. An order and a run's
+/// record are structs of text, so neither serializes as anything else — and
+/// were one ever to, the object written would carry its version and nothing
+/// beside it, which reads back as an order or a record this fleet cannot
+/// read, and every writer's read-back refuses that.
+fn fields_of(value: &impl serde::Serialize) -> serde_json::Map<String, serde_json::Value> {
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::Object(fields)) => fields,
+        _ => serde_json::Map::new(),
+    }
+}
+
 /// The dependency types bd's ready set honours as blocking, MEASURED on bd
 /// 1.3.0 in a scratch board: one item per type, each depending on one open
 /// item, then `bd ready --json -n 0`. These three took their item out of the
@@ -637,26 +665,56 @@ impl Store for Bd {
         )
     }
 
-    fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&["update", item, "--metadata", payload, "--actor", by])
-    }
-
-    /// The same argv `set_orders` uses: bd names one flag for a metadata write
-    /// and its polarity is what makes one flag safe for two keys. The write
-    /// MERGES at the top level — measured on bd 1.3.0, where a second write of
-    /// a different key kept the first.
-    fn set_metadata(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&["update", item, "--metadata", payload, "--actor", by])
-    }
-
-    fn unset_orders(&self, item: &str, by: &str) -> Result<(), StoreError> {
+    /// `{"fleet.orders": {…, "v": 1}}` in one `--metadata` write, which
+    /// MERGES at the top level and replaces the one key's object whole —
+    /// measured on bd 1.3.0, where a write of one key kept the other beside
+    /// it. So the order is replaced whole and the run's record stands.
+    fn order_set(&self, id: &ItemId, order: &Order, by: &Actor) -> Result<(), StoreError> {
+        let payload = order_metadata(order).to_string();
+        let by = by.to_string();
         self.wrote(&[
             "update",
-            item,
+            id.as_str(),
+            "--metadata",
+            &payload,
+            "--actor",
+            &by,
+        ])
+    }
+
+    /// ONE `update` carrying both: the empty assignee is what clears the field
+    /// and `--unset-metadata` takes the one key away — measured on bd 1.3.0,
+    /// where the one call left no `assignee` and no `fleet.orders`, and the
+    /// `fleet.run` key and another writer's bare `orders` beside it standing.
+    fn order_withdraw(&self, id: &ItemId, by: &Actor) -> Result<(), StoreError> {
+        let by = by.to_string();
+        self.wrote(&[
+            "update",
+            id.as_str(),
+            "--assignee",
+            "",
             "--unset-metadata",
             keys::ORDERS,
             "--actor",
-            by,
+            &by,
+        ])
+    }
+
+    /// `{"fleet.run": {…, "v": 1}}` by the same flag [`order_set`] writes
+    /// with: bd names one flag for a metadata write, and its polarity is what
+    /// makes one flag safe for two keys.
+    ///
+    /// [`order_set`]: Store::order_set
+    fn run_set(&self, id: &ItemId, run: &RunRecord, by: &Actor) -> Result<(), StoreError> {
+        let payload = run_metadata(run).to_string();
+        let by = by.to_string();
+        self.wrote(&[
+            "update",
+            id.as_str(),
+            "--metadata",
+            &payload,
+            "--actor",
+            &by,
         ])
     }
 
@@ -667,32 +725,36 @@ impl Store for Bd {
         self.wrote(&["update", item, "--status", "open", "--actor", by])
     }
 
-    /// ONE `update` rather than three, because bd takes every flag on one call.
+    /// ONE `update` rather than three, because bd takes every flag on one call:
+    /// [`order_withdraw`]'s argv, fenced, with the reopen beside it.
     ///
-    /// Every flag on one `update`, which bd takes: the empty assignee is what
-    /// clears the field, measured on 1.3.0 — the one call left no `assignee`
-    /// and no `fleet.orders`, the `fleet.run` key beside it standing, and an
-    /// item its seat had marked `in_progress` open and in `bd ready` again.
+    /// Measured on 1.3.0: the one call left no `assignee` and no
+    /// `fleet.orders`, the `fleet.run` key beside it standing, and an item its
+    /// seat had marked `in_progress` open and in `bd ready` again.
     /// `--if-assignee` names the retiring seat, which is what bd 1.3.0 takes
     /// from a retirer on an item that seat marked `in_progress` — measured,
     /// where the same call without it is refused. `--if-status` is what keeps
     /// the reopen off a CLOSED item: measured, the call without it reopened an
     /// item its holder had closed, and with it wrote nothing and exited 13.
-    fn withdraw_order(
+    ///
+    /// [`order_withdraw`]: Store::order_withdraw
+    fn order_withdraw_from(
         &self,
-        item: &str,
-        seat: &str,
-        status: &str,
-        by: &str,
+        id: &ItemId,
+        seat: &SeatId,
+        status: &Status,
+        by: &Actor,
     ) -> Result<(), StoreError> {
+        let seat = seat.to_string();
+        let by = by.to_string();
         self.fenced(
             &[
                 "update",
-                item,
+                id.as_str(),
                 "--if-assignee",
-                seat,
+                &seat,
                 "--if-status",
-                status,
+                status.as_str(),
                 "--assignee",
                 "",
                 "--unset-metadata",
@@ -700,10 +762,10 @@ impl Store for Bd {
                 "--status",
                 "open",
                 "--actor",
-                by,
+                &by,
             ],
-            item,
-            &format!("held by {} as {status}", holder_named(seat)),
+            id,
+            &format!("held by {} as {status}", holder_named(&seat)),
         )
     }
 
@@ -718,10 +780,40 @@ impl Store for Bd {
     /// `--actor` and `--json` are global flags here, so both are available on
     /// this subcommand; a parse of the prose is the form that goes quiet the
     /// day the prose changes.
-    fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
+    fn hold_raise(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<HoldId, StoreError> {
+        let by = by.to_string();
         self.created_id(&[
-            "gate", "create", "--blocks", item, "--reason", reason, "--actor", by, "--json",
+            "gate",
+            "create",
+            "--blocks",
+            id.as_str(),
+            "--reason",
+            reason,
+            "--actor",
+            &by,
+            "--json",
         ])
+        .map(HoldId::from)
+    }
+
+    /// A CLEAR OF A CLEARED HOLD IS READ FIRST, because bd does not refuse
+    /// one. Measured on 1.3.0, on a scratch board: a second `bd gate resolve`
+    /// of a resolved gate exits 0, prints `✓ Gate resolved: <id>` — with
+    /// `Reason: <reason>` under it where one was passed — and writes nothing:
+    /// the gate reads back `closed` with the first resolve's `closed_at` and
+    /// `updated_at`, and no reason. So the gate's own row is read before the
+    /// call, its status alone, and a closed one is Refused with nothing run:
+    /// the act is already done. The read is also what refuses a hold that is
+    /// not there, which bd's own resolve answers with exit 1 and `Error: gate
+    /// not found: <id>`. A resolve landing between the read and the call is
+    /// not caught: bd answers the second resolve as a resolve.
+    fn hold_clear(&self, hold: &HoldId, by: &Actor) -> Result<(), StoreError> {
+        let row = self.shown_row(hold)?;
+        if row.get("status").and_then(serde_json::Value::as_str) == Some(Status::Closed.as_str()) {
+            return Err(already_cleared(hold));
+        }
+        let by = by.to_string();
+        self.wrote(&["gate", "resolve", hold.as_str(), "--actor", &by])
     }
 
     /// The listing answers which hold this is and never which item it blocks —
@@ -734,16 +826,12 @@ impl Store for Bd {
     /// fifty open holds a hold the board keeps open is absent from the listing
     /// — and `clear` refuses a hold it does not find there as one somebody has
     /// already cleared.
-    fn open_holds(&self) -> Result<Vec<String>, StoreError> {
+    fn holds_open(&self) -> Result<Vec<HoldId>, StoreError> {
         Ok(self
             .listed::<bd_wire::Issue>(&["gate", "list", "--json", "-n", "0"])?
             .into_iter()
-            .filter_map(|row| row.id)
+            .filter_map(|row| row.id.map(HoldId::from))
             .collect())
-    }
-
-    fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError> {
-        self.wrote(&["gate", "resolve", hold, "--actor", by])
     }
 
     /// bd 1.3.0 closes an assigned item only for an actor equal to its
@@ -786,13 +874,13 @@ impl Store for Bd {
     /// The id comes off the write's own answer, as `create`'s does. The
     /// `--actor` is what marks this call a write for `Bd::run`'s timeout
     /// message, as it does every other.
-    fn append(&self, item: &str, body: &Body, by: &Actor) -> Result<String, StoreError> {
+    fn append(&self, item: &ItemId, body: &Body, by: &Actor) -> Result<String, StoreError> {
         validated(item, body)?;
         let by = by.to_string();
         self.created_id(&[
             "comments",
             "add",
-            item,
+            item.as_str(),
             &entry::encode(body),
             "--actor",
             &by,
@@ -816,8 +904,8 @@ impl Store for Bd {
     /// THE JSON IS READ BEFORE THE STATUS, for the reason `show`'s is: a missing
     /// item exits non-zero with the error object, which is the record's answer
     /// and not a refusal. So this stays off `answered` and off `listed`.
-    fn timeline(&self, item: &str) -> Result<Vec<Entry>, StoreError> {
-        let args = ["comments", item, "--json"];
+    fn timeline(&self, item: &ItemId) -> Result<Vec<Entry>, StoreError> {
+        let args = ["comments", item.as_str(), "--json"];
         let out = self.run(&args)?;
         let rows = match self.json(&args, &out) {
             Some(serde_json::Value::Object(answer)) if answer.contains_key("error") => {

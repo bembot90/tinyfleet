@@ -610,7 +610,7 @@ fn the_front_half_pins_the_inputs_the_bundle_and_one_hash_over_all_three() {
     );
     assert_eq!(
         record["metadata"]["fleet.run"]["v"].as_u64(),
-        Some(fleet_core::store::keys::VERSION),
+        Some(fleet_core::store::bd::keys::VERSION),
         "the run's object carries its version: {record}"
     );
     assert_eq!(
@@ -1841,42 +1841,65 @@ impl fleet_core::store::Store for Planted {
         self.0.hand_over(item, from, to, by)
     }
 
-    fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        self.0.set_orders(item, payload, by)
+    fn order_set(
+        &self,
+        id: &fleet_core::store::ItemId,
+        order: &fleet_core::store::Order,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.0.order_set(id, order, by)
     }
 
-    fn set_metadata(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        self.0.set_metadata(item, payload, by)
+    fn order_withdraw(
+        &self,
+        id: &fleet_core::store::ItemId,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.0.order_withdraw(id, by)
     }
 
-    fn unset_orders(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.0.unset_orders(item, by)
+    fn run_set(
+        &self,
+        id: &fleet_core::store::ItemId,
+        run: &fleet_core::store::RunRecord,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.0.run_set(id, run, by)
     }
 
     fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
         self.0.reopen(item, by)
     }
 
-    fn withdraw_order(
+    fn order_withdraw_from(
         &self,
-        item: &str,
-        seat: &str,
-        status: &str,
-        by: &str,
+        id: &fleet_core::store::ItemId,
+        seat: &fleet_core::seat::identity::SeatId,
+        status: &fleet_core::store::Status,
+        by: &fleet_core::seat::actor::Actor,
     ) -> Result<(), StoreError> {
-        self.0.withdraw_order(item, seat, status, by)
+        self.0.order_withdraw_from(id, seat, status, by)
     }
 
-    fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
-        self.0.hold(item, reason, by)
+    fn hold_raise(
+        &self,
+        id: &fleet_core::store::ItemId,
+        reason: &str,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<fleet_core::store::HoldId, StoreError> {
+        self.0.hold_raise(id, reason, by)
     }
 
-    fn open_holds(&self) -> Result<Vec<String>, StoreError> {
-        self.0.open_holds()
+    fn holds_open(&self) -> Result<Vec<fleet_core::store::HoldId>, StoreError> {
+        self.0.holds_open()
     }
 
-    fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError> {
-        self.0.clear_hold(hold, by)
+    fn hold_clear(
+        &self,
+        hold: &fleet_core::store::HoldId,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.0.hold_clear(hold, by)
     }
 
     fn close(
@@ -1890,14 +1913,17 @@ impl fleet_core::store::Store for Planted {
 
     fn append(
         &self,
-        item: &str,
+        item: &fleet_core::store::ItemId,
         body: &fleet_core::entry::Body,
         by: &Actor,
     ) -> Result<String, StoreError> {
         self.0.append(item, body, by)
     }
 
-    fn timeline(&self, item: &str) -> Result<Vec<fleet_core::entry::Entry>, StoreError> {
+    fn timeline(
+        &self,
+        item: &fleet_core::store::ItemId,
+    ) -> Result<Vec<fleet_core::entry::Entry>, StoreError> {
         self.0.timeline(item)
     }
 
@@ -2024,11 +2050,14 @@ fn rerun_in_this_process(
 }
 
 /// The ids of every hold the store still lists open.
-fn open_holds(rig: &Rig) -> Vec<String> {
+fn holds_open(rig: &Rig) -> Vec<String> {
     use fleet_core::store::Store;
     fleet_core::store::bd::Bd::at(&rig.project)
-        .open_holds()
+        .holds_open()
         .expect("the store lists its holds")
+        .into_iter()
+        .map(|hold| hold.to_string())
+        .collect()
 }
 
 /// `fleet cancel` on a waiting run: the record is closed, `run.cancelled` names
@@ -2098,7 +2127,6 @@ fn a_cancelled_waiting_run_is_closed_announced_and_never_executed_again() {
 /// whatever another writer's bare `run` beside it holds (fleet-4j6).
 #[test]
 fn a_run_object_at_an_unknown_version_is_could_not_tell_and_never_executed() {
-    use fleet_core::store::Store;
     let rig = Rig::new(
         "rerun-version",
         &Pack::running(WAITS),
@@ -2107,7 +2135,6 @@ fn a_run_object_at_an_unknown_version_is_could_not_tell_and_never_executed() {
     let out = rig.run(&["run", &rig.workflow(ONE), "--by", BY]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let (id, _) = started_line(&out);
-    let store = fleet_core::store::bd::Bd::at(&rig.project);
     let pinned = rig.document(&id)["metadata"]["fleet.run"].clone();
 
     for (found, object) in [("v 2", Some(2)), ("no v", None)] {
@@ -2121,10 +2148,20 @@ fn a_run_object_at_an_unknown_version_is_could_not_tell_and_never_executed() {
                     .remove("v");
             }
         }
+        // A NEWER FLEET'S WRITE, which no verb here makes: through the binary.
         let payload = serde_json::json!({ "fleet.run": written, "run": pinned }).to_string();
-        store
-            .set_metadata(&id, &payload, "a-newer-fleet")
-            .expect("the object is rewritten");
+        let out = Command::new("bd")
+            .arg("-C")
+            .arg(&rig.project)
+            .args(["update", &id, "--metadata", &payload])
+            .args(["--actor", "a-newer-fleet"])
+            .output()
+            .expect("bd runs");
+        assert!(
+            out.status.success(),
+            "the object is rewritten: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         let from = rig.stream_length();
         let stop = rerun_in_this_process(&rig, &id).expect_err("the run is not executed");
@@ -2166,8 +2203,13 @@ fn a_run_held_at_the_cap(rig: &Rig, entered: bool) -> (String, String) {
         .0
     } else {
         store
-            .hold(&id, "a hold nothing on the record names", "controller")
+            .hold_raise(
+                &fleet_core::store::ItemId::from(id.as_str()),
+                "a hold nothing on the record names",
+                &the_controller(),
+            )
             .expect("the bare hold is raised")
+            .to_string()
     };
     (id, hold)
 }
@@ -2183,18 +2225,18 @@ fn a_run_held_at_the_crash_cap_clears_through_fleet_clear() {
         &cap_that_is_not_the_subject(),
     );
     let (id, hold) = a_run_held_at_the_cap(&rig, true);
-    assert!(open_holds(&rig).contains(&hold), "{hold} stands");
+    assert!(holds_open(&rig).contains(&hold), "{hold} stands");
 
     let from = rig.stream_length();
     let out = rig.run(&["clear", &id, "B", "--by", PERSON]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    assert!(!open_holds(&rig).contains(&hold), "the hold is cleared");
+    assert!(!holds_open(&rig).contains(&hold), "the hold is cleared");
 
     // The record: one held entry at the cap, by the controller, and the
     // person's clearance of it — which the stream's one signal names.
     use fleet_core::store::Store;
     let entries = fleet_core::store::bd::Bd::at(&rig.project)
-        .timeline(&id)
+        .timeline(&fleet_core::store::ItemId::from(id.as_str()))
         .expect("the record's timeline reads");
     assert_eq!(entries.len(), 2, "{entries:?}");
     let cleared = only(&rig, from, fleet_core::item::ITEM_ENTRY);
@@ -2237,7 +2279,7 @@ fn a_cancel_clears_the_hold_on_a_held_runs_record_and_closes_it() {
         &cap_that_is_not_the_subject(),
     );
     let (id, bare) = a_run_held_at_the_cap(&rig, false);
-    assert!(open_holds(&rig).contains(&bare), "{bare} stands");
+    assert!(holds_open(&rig).contains(&bare), "{bare} stands");
 
     let from = rig.stream_length();
     let out = rig.run(&["cancel", &id, "--by", PERSON]);
@@ -2248,7 +2290,7 @@ fn a_cancel_clears_the_hold_on_a_held_runs_record_and_closes_it() {
         "the line names the hold it cleared"
     );
     assert!(
-        !open_holds(&rig).contains(&bare),
+        !holds_open(&rig).contains(&bare),
         "the bare hold is cleared"
     );
     assert!(!is_open(&rig, &id), "and the record is closed");
@@ -2262,7 +2304,7 @@ fn a_cancel_clears_the_hold_on_a_held_runs_record_and_closes_it() {
     // stream's line, its letter null.
     use fleet_core::store::Store;
     let entries = fleet_core::store::bd::Bd::at(&rig.project)
-        .timeline(&id)
+        .timeline(&fleet_core::store::ItemId::from(id.as_str()))
         .expect("the closed record's timeline reads");
     let clearances: Vec<_> = entries
         .iter()

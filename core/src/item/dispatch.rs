@@ -28,8 +28,9 @@ use crate::item::{
 };
 use crate::seat::actor::Actor;
 use crate::seat::identity::{Directory, Kind, SeatId, SeatRef};
+use crate::store::bd::keys;
 use crate::store::{
-    self, keys, Filter, Item, ItemId, OrderState, Stamp, Status, Store, StoreError, Update,
+    self, Filter, Item, ItemId, OrderState, Stamp, Status, Store, StoreError, Update,
 };
 
 /// The kind of order this verb writes. The reference's other two grammars —
@@ -165,6 +166,9 @@ pub fn dispatch(
     // Before the first write: the brief refuses on the same reading, and an
     // order written ahead of a brief that cannot render is one nobody reads.
     wiring.project.refuse_moved().map_err(Refused::stopped)?;
+    // And the clock: an order is written with its stamp, so one given at a
+    // time that is no stamp is a question asked before anything is written.
+    stamp(order).map_err(Refused::stopped)?;
 
     // THE ITEM IS RESOLVED ONCE, HERE, and the order names the id the store
     // answered from this line on. The store resolves a partial id itself, so
@@ -503,13 +507,20 @@ fn announce(order: &Order, wiring: &Wiring, entry: &str) -> Result<(), Stop> {
     })
 }
 
-/// The order withdrawn: the index unset, one `order_withdrawn` entry naming
-/// the spawner's cause, and the withdrawal read back.
+/// The order withdrawn: the assignee cleared and the order taken away in one
+/// act, one `order_withdrawn` entry naming the spawner's cause, and the
+/// withdrawal read back. The transient path assigns nobody before its spawn
+/// answers, so the assignee the act clears is one nothing here wrote.
 fn withdraw(err: &mut dyn Write, order: &Order, wiring: &Wiring, cause: &str) -> Result<(), Stop> {
     wiring
         .store
-        .unset_orders(order.item, &order.by.to_string())
-        .map_err(|e| stands(order.item, &format!("the index could not be unset: {e}")))?;
+        .order_withdraw(&ItemId::from(order.item), order.by)
+        .map_err(|e| {
+            stands(
+                order.item,
+                &format!("the order could not be withdrawn: {e}"),
+            )
+        })?;
     let withdrawn = Body::OrderWithdrawn(OrderWithdrawn {
         why: Withdrawal::SpawnRefused,
         seat: None,
@@ -553,8 +564,8 @@ fn not_told(err: &mut dyn Write, order: &Order, wiring: &Wiring, cause: &str) ->
     Ok(())
 }
 
-/// The ordered entry, appended and read back, then the index, written as one
-/// object that replaces the key whole. Answers the entry's id.
+/// The ordered entry, appended and read back, then the order, which replaces
+/// the one the item carried whole. Answers the entry's id.
 ///
 /// Both passes append: the first names the seat where one was named and no
 /// seat on the transient path, and the transient path's second names the seat
@@ -583,38 +594,44 @@ fn write_order(
             Unrecorded::Unconfirmed(why) => stands(order.item, &why),
         }
     })?;
-    let seat = seat.map(SeatId::to_string);
-    let payload = index_payload(order, seat.as_deref());
+    let given = the_order(order, seat.copied())?;
     wiring
         .store
-        .set_orders(order.item, &payload, &order.by.to_string())
+        .order_set(&ItemId::from(order.item), &given, order.by)
         .map_err(|e| {
             stands(
                 order.item,
-                &format!("the index did not land: {e}\n  RERUN: bd update {} --metadata '{payload}' --actor {}", order.item, order.by),
+                &format!(
+                    "the order did not land: {e}\n  RERUN: {}",
+                    order_repair(order.item, &given)
+                ),
             )
         })?;
     Ok(entry)
 }
 
-/// The index as JSON, with the seat present only where one was named. A
-/// dispatch to a transient seat carries no seat until the spawn answers with
-/// one.
-pub fn index_payload(order: &Order, seat: Option<&str>) -> String {
-    index(&order.by.to_string(), KIND, seat, order.at)
+/// The order this dispatch gives, with the seat present only where one was
+/// named: a dispatch to a transient seat names no seat until the spawn answers
+/// with one. The one place it is built, so the order written and the order a
+/// repair names are the same value.
+fn the_order(order: &Order, seat: Option<SeatId>) -> Result<store::Order, Stop> {
+    Ok(store::Order {
+        kind: store::OrderKind::Dispatch,
+        by: order.by.clone(),
+        seat,
+        at: stamp(order)?,
+    })
 }
 
-/// The order index, as the one function that writes its shape: a second place
-/// that built it would be a second shape the read-back could disagree with.
-pub fn index(by: &str, kind: &str, seat: Option<&str>, at: &str) -> String {
-    let mut index = serde_json::Map::new();
-    index.insert("by".into(), by.into());
-    index.insert("kind".into(), kind.into());
-    if let Some(seat) = seat {
-        index.insert("seat".into(), seat.into());
-    }
-    index.insert("at".into(), at.into());
-    keys::stamped(keys::ORDERS, index).to_string()
+/// The order's clock as the stamp it is written with.
+fn stamp(order: &Order) -> Result<Stamp, Stop> {
+    Stamp::parse(order.at).ok_or_else(|| {
+        Stop::could_not_tell(format!(
+            "{} was ordered at `{}`, which is not a stamp — the form is YYYY-MM-DDTHH:MM:SSZ — so \
+             no order this fleet can read could be written with it",
+            order.item, order.at
+        ))
+    })
 }
 
 /// One read, asserting the assignee and the four fields of the order index
@@ -633,7 +650,8 @@ fn read_back(
 ) -> Result<(), Stop> {
     let item = read(wiring.store, order.item)?;
     let seat_text = seat.map(SeatId::to_string);
-    let repair = || index_repair(order, seat_text.as_deref());
+    let given = the_order(order, seat.copied())?;
+    let repair = || order_repair(order.item, &given);
 
     if let Some(wanted) = assignee {
         if item.assignee.as_deref() != Some(wanted) {
@@ -647,13 +665,7 @@ fn read_back(
         }
     }
 
-    let Some(at) = Stamp::parse(order.at) else {
-        return Err(Stop::could_not_tell(format!(
-            "{} was ordered at `{}`, which is not a stamp — the form is YYYY-MM-DDTHH:MM:SSZ — so \
-             the order index written with it is not one this fleet can read",
-            order.item, order.at
-        )));
-    };
+    let at = given.at.clone();
     let index = match &item.order {
         OrderState::Ordered(index) => index,
         OrderState::Unreadable => {
@@ -838,13 +850,14 @@ fn assignee_repair(order: &Order, seat: &str) -> String {
     )
 }
 
-/// The index written again whole, as the store's own command, naming the seat
-/// the read-back wanted: the id the argument resolved to, never the argument.
-fn index_repair(order: &Order, seat: Option<&str>) -> String {
+/// The order set again whole, naming the seat the read-back wanted: the id
+/// the argument resolved to, never the argument. The order is printed as the
+/// contract's own JSON, which is what a store is handed; the command a person
+/// runs to write it is fleet-0q4's to name.
+fn order_repair(item: &str, order: &store::Order) -> String {
     format!(
-        "bd update {} --metadata '{}' --actor {}",
-        order.item,
-        index_payload(order, seat),
-        order.by
+        "set the order on {item} to {}",
+        serde_json::to_string(order)
+            .unwrap_or_else(|e| format!("(an order that did not print: {e})"))
     )
 }

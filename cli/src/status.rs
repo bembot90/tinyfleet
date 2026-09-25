@@ -380,13 +380,13 @@ fn open_holds_on(machine_dir: &Path) -> Result<BTreeSet<String>, String> {
         let Ok(here) = resolve_from(&root, machine_dir.to_path_buf(), None) else {
             continue;
         };
-        let holds = open_store(&here.project.root).open_holds().map_err(|e| {
+        let holds = open_store(&here.project.root).holds_open().map_err(|e| {
             format!(
                 "the holds were not counted — {}'s store did not answer: {e}",
                 root.display()
             )
         })?;
-        open.extend(holds);
+        open.extend(holds.into_iter().map(|hold| hold.to_string()));
     }
     Ok(open)
 }

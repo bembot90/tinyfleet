@@ -44,7 +44,7 @@ use crate::item::{
 };
 use crate::seat::actor::Actor;
 use crate::store::bd::BD;
-use crate::store::{Item, Store};
+use crate::store::{HoldId, Item, ItemId, Store};
 
 /// What a run's park answers as its branch, where a seat's answers its work
 /// branch: a run's record has no branch at all, and a caller printing the park
@@ -88,8 +88,6 @@ pub struct Held {
 
 pub fn hold(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result<Held, Stop> {
     let item = held_item(wiring.store, question.by, question.item)?;
-    // The string form every write and the event carry.
-    let by = question.by.to_string();
     // WHICH OF THE TWO PARKS THIS IS, off the record the store already answers:
     // the run label is the only mark that tells a run's record from every other
     // item, and a run's park touches no git at all.
@@ -144,24 +142,28 @@ pub fn hold(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result
     // files both and exits 0, measured, but a bd off the pin still runs here —
     // and the listing names no item, so what the create left is what was not
     // there before it.
-    let before = wiring.store.open_holds().map_err(|e| {
+    let before = wiring.store.holds_open().map_err(|e| {
         parked(
             &item,
             &commit,
             &format!("the open holds could not be read before the hold was raised: {e}"),
         )
     })?;
-    let hold = wiring.store.hold(&item, &written, &by).map_err(|e| {
-        let stop = parked(&item, &commit, &format!("the hold was not raised: {e}"));
-        Stop {
-            message: format!(
-                "{}{}",
-                stop.message,
-                left_behind(wiring.store, &before, &by)
-            ),
-            ..stop
-        }
-    })?;
+    let hold = wiring
+        .store
+        .hold_raise(&ItemId::from(item.as_str()), &written, question.by)
+        .map_err(|e| {
+            let stop = parked(&item, &commit, &format!("the hold was not raised: {e}"));
+            Stop {
+                message: format!(
+                    "{}{}",
+                    stop.message,
+                    left_behind(wiring.store, &before, question.by)
+                ),
+                ..stop
+            }
+        })?
+        .to_string();
 
     // (c) THE HELD ENTRY, appended and read back through the one helper every
     // entry writer goes through, under the hold the store just answered.
@@ -270,9 +272,8 @@ pub struct Capped<'a> {
 pub fn park_at_the_cap(capped: &Capped, store: &dyn Store) -> Result<(String, String), Stop> {
     let record = store.show(capped.run)?;
     let question = cap_question(capped);
-    let by = capped.by.to_string();
     let hold = store
-        .hold(capped.run, &question_text(&question), &by)
+        .hold_raise(&record.id, &question_text(&question), capped.by)
         .map_err(|e| {
             Stop::could_not_tell(format!(
                 "the hold was not raised: {e}\n  {} carries no park",
@@ -280,20 +281,20 @@ pub fn park_at_the_cap(capped: &Capped, store: &dyn Store) -> Result<(String, St
             ))
         })?;
     let entry = Body::Held(question.into_held(
-        hold.clone(),
+        hold.to_string(),
         HoldReason::MaxCrashes,
         Standing::Run {
             hash: run_hash(&record),
         },
     ));
     recorded(store, capped.run, &entry, capped.by)
-        .map(|entry| (hold.clone(), entry))
+        .map(|entry| (hold.to_string(), entry))
         .map_err(|unrecorded| {
             let why = match unrecorded {
                 Unrecorded::NotWritten(e) => format!("the held entry did not land: {e}"),
                 Unrecorded::Unconfirmed(why) => why,
             };
-            let withdrawn = match store.clear_hold(&hold, &by) {
+            let withdrawn = match store.hold_clear(&hold, capped.by) {
                 Ok(()) => format!("the hold {hold} is withdrawn and the next poll parks it again"),
                 Err(e) => format!(
                     "the hold {hold} STANDS on {} with no held entry naming it, and withdrawing \
@@ -377,7 +378,7 @@ pub fn clear(out: &mut dyn Write, clearance: &Clearance, wiring: &Wiring) -> Res
     };
     // THE QUESTION IS THE TIMELINE'S OPEN HOLD: the last held entry no
     // cleared entry naming its hold came after.
-    let entries = wiring.store.timeline(clearance.item)?;
+    let entries = wiring.store.timeline(&read.id)?;
     let Some((_, held)) = Timeline(&entries).open_hold() else {
         return Err(Stop::refused(format!(
             "{} carries no open hold — a clearance settles a question somebody asked, and this \
@@ -390,8 +391,8 @@ pub fn clear(out: &mut dyn Write, clearance: &Clearance, wiring: &Wiring) -> Res
     // THE OPEN LIST IS FILTERED BY THE ENTRY'S OWN HOLD ID and by nothing else:
     // the listing answers which holds are open and never which item each one
     // blocks, so the item's own record is what ties the two together.
-    let open = wiring.store.open_holds()?;
-    if !open.contains(&hold) {
+    let open = wiring.store.holds_open()?;
+    if !open.iter().any(|held| *held == hold) {
         return Err(Stop::refused(format!(
             "{}'s hold {hold} is not one the store lists open — it has been cleared already, or \
              by hand",
@@ -423,7 +424,6 @@ pub fn clear(out: &mut dyn Write, clearance: &Clearance, wiring: &Wiring) -> Res
 
     // THE CLEARED ENTRY, by the clearer: the answer a run's landing reads its
     // licence off, appended and read back before the store's hold is cleared.
-    let by = clearance.by.to_string();
     let answer = Body::Cleared(entry::Cleared {
         hold: hold.clone(),
         how: entry::Clearance::Answer,
@@ -441,9 +441,11 @@ pub fn clear(out: &mut dyn Write, clearance: &Clearance, wiring: &Wiring) -> Res
             }
         })?;
 
-    wiring.store.clear_hold(&hold, &by)?;
-    let still = wiring.store.open_holds()?;
-    if still.contains(&hold) {
+    wiring
+        .store
+        .hold_clear(&HoldId::from(hold.as_str()), clearance.by)?;
+    let still = wiring.store.holds_open()?;
+    if still.iter().any(|held| *held == hold) {
         return Err(Stop::could_not_tell(format!(
             "{hold} is still on the store's open list after it was cleared — the answer on {} \
              STANDS and the item is still blocked",
@@ -504,8 +506,8 @@ fn parked(item: &str, commit: &str, why: &str) -> Stop {
 /// WHAT IS NEW ON THE OPEN LIST IS THIS PARK'S, because the listing never names
 /// the item a hold blocks. A hold open before the create is somebody else's and
 /// is left alone.
-fn left_behind(store: &dyn Store, before: &[String], by: &str) -> String {
-    let after = match store.open_holds() {
+fn left_behind(store: &dyn Store, before: &[HoldId], by: &Actor) -> String {
+    let after = match store.holds_open() {
         Ok(after) => after,
         Err(e) => {
             return format!(
@@ -517,7 +519,7 @@ fn left_behind(store: &dyn Store, before: &[String], by: &str) -> String {
     after
         .iter()
         .filter(|hold| !before.contains(hold))
-        .map(|hold| match store.clear_hold(hold, by) {
+        .map(|hold| match store.hold_clear(hold, by) {
             Ok(()) => {
                 format!("\n  the store raised the hold {hold} all the same, and it is withdrawn")
             }

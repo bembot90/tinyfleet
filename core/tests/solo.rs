@@ -88,7 +88,7 @@ fn every_rig_that_asserts_on_the_whole_board_is_in_the_solo_table() {
 
     let reads = set_reads(&read(&root.join("core/src/store/mod.rs")));
     assert!(
-        reads.contains("list") && reads.contains("open_holds"),
+        reads.contains("list") && reads.contains("holds_open"),
         "the set reads are parsed off the trait: {reads:?}"
     );
     assert!(
@@ -230,7 +230,7 @@ fn set_reads(store: &str) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for piece in body[..end].split("    fn ").skip(1) {
         let head = piece.split(';').next().unwrap_or(piece);
-        let item_scoped = head.contains("(&self, item: &str");
+        let item_scoped = head.contains("(&self, item: &");
         if head.contains("-> Result<Vec<") && !item_scoped {
             names.insert(head[..head.find('(').unwrap_or(0)].to_string());
         }

@@ -18,7 +18,7 @@ use fleet_core::seat::identity::SeatId;
 use fleet_core::seat::retire;
 use fleet_core::store::bd::Bd;
 use fleet_core::store::{
-    Filter, Item, ItemSummary, Order, OrderKind, OrderState, Stamp, Status, Store,
+    Filter, Item, ItemId, ItemSummary, Order, OrderKind, OrderState, Stamp, Status, Store,
 };
 use fleet_core::test_support::FakeStore;
 
@@ -102,7 +102,7 @@ fn read(store: &FakeStore, id: &str) -> Item {
 
 fn timeline(store: &dyn Store, id: &str) -> Vec<Entry> {
     store
-        .timeline(id)
+        .timeline(&ItemId::from(id))
         .expect("the store answers the item's timeline")
 }
 
@@ -299,9 +299,7 @@ fn a_retire_leaves_another_writers_orders_key_untouched() {
     let store = board();
     store.seed(item(THEIRS, "open", SEAT, false));
     for held in [THEIRS, HELD] {
-        store
-            .set_metadata(held, common::FOREIGN_ORDERS, "another-tool")
-            .expect("the other writer's key lands");
+        store.plant_metadata(held, common::FOREIGN_ORDERS);
     }
     let before = [
         common::foreign_of(&store, THEIRS),
@@ -407,7 +405,7 @@ fn a_retire_withdrawing_one_item_makes_one_update_and_one_append() {
         "two writes and no more for one withdrawn item: {wrote:?}"
     );
     assert!(
-        wrote[0].starts_with(&format!("withdraw_order {HELD}")),
+        wrote[0].starts_with(&format!("order_withdraw_from {HELD}")),
         "the assignee and the index move together: {wrote:?}"
     );
     assert!(

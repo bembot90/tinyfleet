@@ -42,7 +42,7 @@ use fleet_core::item::{
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
 use fleet_core::store::bd::Bd;
-use fleet_core::store::{Item, Store, StoreError};
+use fleet_core::store::{Item, ItemId, Store, StoreError};
 use fleet_core::test_support::{Board, EXPORT_DIR, EXPORT_FILE};
 
 const REVIEWER: &str = "a-reviewer";
@@ -366,7 +366,9 @@ fn one_line(text: &str) -> String {
 /// The item's last landed entry, off the timeline the store answers: the
 /// record a landing leaves, read where every reader of it reads it.
 fn landing_of(store: &dyn Store, item: &str) -> (Entry, LandedEntry) {
-    let entries = store.timeline(item).expect("the timeline reads");
+    let entries = store
+        .timeline(&ItemId::from(item))
+        .expect("the timeline reads");
     let (entry, landed) = Timeline(&entries)
         .last_landing()
         .unwrap_or_else(|| panic!("{item} carries no landed entry: {entries:?}"));
@@ -375,7 +377,9 @@ fn landing_of(store: &dyn Store, item: &str) -> (Entry, LandedEntry) {
 
 /// Whether the item's timeline carries no landed entry at all.
 fn no_landing(store: &dyn Store, item: &str) -> bool {
-    let entries = store.timeline(item).expect("the timeline reads");
+    let entries = store
+        .timeline(&ItemId::from(item))
+        .expect("the timeline reads");
     Timeline(&entries).last_landing().is_none()
 }
 
@@ -441,7 +445,7 @@ struct Doctored<'a> {
 }
 
 impl Store for Doctored<'_> {
-    fn resolve(&self, id: &str) -> Result<fleet_core::store::ItemId, StoreError> {
+    fn resolve(&self, id: &str) -> Result<ItemId, StoreError> {
         self.inner.resolve(id)
     }
 
@@ -456,7 +460,7 @@ impl Store for Doctored<'_> {
         &self,
         item: &fleet_core::store::NewItem,
         by: &fleet_core::seat::actor::Actor,
-    ) -> Result<fleet_core::store::ItemId, StoreError> {
+    ) -> Result<ItemId, StoreError> {
         self.inner.create(item, by)
     }
 
@@ -466,60 +470,78 @@ impl Store for Doctored<'_> {
 
     fn update(
         &self,
-        id: &fleet_core::store::ItemId,
+        id: &ItemId,
         change: &fleet_core::store::Update,
         by: &fleet_core::seat::actor::Actor,
     ) -> Result<(), StoreError> {
         self.inner.update(id, change, by)
     }
 
-    fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.set_orders(item, payload, by)
+    fn order_set(
+        &self,
+        id: &ItemId,
+        order: &fleet_core::store::Order,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.order_set(id, order, by)
     }
 
-    fn set_metadata(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.set_metadata(item, payload, by)
+    fn order_withdraw(
+        &self,
+        id: &ItemId,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.order_withdraw(id, by)
     }
 
-    fn unset_orders(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.unset_orders(item, by)
+    fn run_set(
+        &self,
+        id: &ItemId,
+        run: &fleet_core::store::RunRecord,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.run_set(id, run, by)
     }
 
     fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
         self.inner.reopen(item, by)
     }
 
-    fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
-        self.inner.hold(item, reason, by)
-    }
-
-    fn open_holds(&self) -> Result<Vec<String>, StoreError> {
-        self.inner.open_holds()
-    }
-
-    fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.clear_hold(hold, by)
-    }
-
-    fn close(
+    fn hold_raise(
         &self,
-        id: &fleet_core::store::ItemId,
+        id: &ItemId,
         reason: &str,
-        by: &str,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<fleet_core::store::HoldId, StoreError> {
+        self.inner.hold_raise(id, reason, by)
+    }
+
+    fn holds_open(&self) -> Result<Vec<fleet_core::store::HoldId>, StoreError> {
+        self.inner.holds_open()
+    }
+
+    fn hold_clear(
+        &self,
+        hold: &fleet_core::store::HoldId,
+        by: &fleet_core::seat::actor::Actor,
     ) -> Result<(), StoreError> {
+        self.inner.hold_clear(hold, by)
+    }
+
+    fn close(&self, id: &ItemId, reason: &str, by: &str) -> Result<(), StoreError> {
         self.inner.close(id, reason, by)
     }
 
     fn append(
         &self,
-        item: &str,
+        item: &ItemId,
         body: &fleet_core::entry::Body,
         by: &fleet_core::seat::actor::Actor,
     ) -> Result<String, StoreError> {
         self.inner.append(item, body, by)
     }
 
-    fn timeline(&self, item: &str) -> Result<Vec<fleet_core::entry::Entry>, StoreError> {
+    fn timeline(&self, item: &ItemId) -> Result<Vec<fleet_core::entry::Entry>, StoreError> {
         let mut entries = self.inner.timeline(item)?;
         if let (Some(id), Some(last)) = (&self.plant, entries.last().cloned()) {
             entries.push(Entry {
@@ -778,17 +800,21 @@ fn an_item_delivered_by(
         .to_string();
     store
         .update(
-            &fleet_core::store::ItemId::from(item.as_str()),
+            &ItemId::from(item.as_str()),
             &fleet_core::store::Update::assignee(reviewer().id),
             &seat_actor(REVIEWER),
         )
         .expect("the reviewer holds it");
     store
-        .append(&item, &Body::Delivered(delivery), by)
+        .append(&ItemId::from(item.as_str()), &Body::Delivered(delivery), by)
         .expect("the delivery is on it");
     if let Some((word, commit)) = verdict {
         store
-            .append(&item, &a_review(verdict_of(word), commit), &as_reviewer())
+            .append(
+                &ItemId::from(item.as_str()),
+                &a_review(verdict_of(word), commit),
+                &as_reviewer(),
+            )
             .expect("the verdict is on it");
     }
     item
@@ -1310,7 +1336,7 @@ fn an_accepted_item_delivered_only_as_prose_is_refused() {
     scratch
         .store
         .update(
-            &fleet_core::store::ItemId::from(item.as_str()),
+            &ItemId::from(item.as_str()),
             &fleet_core::store::Update::assignee(reviewer().id),
             &seat_actor(REVIEWER),
         )
@@ -1322,7 +1348,11 @@ fn an_accepted_item_delivered_only_as_prose_is_refused() {
     scratch.store.comment(&item, BUILDER, &prose);
     scratch
         .store
-        .append(&item, &a_review(Verdict::Accepted, SHA), &as_reviewer())
+        .append(
+            &ItemId::from(item.as_str()),
+            &a_review(Verdict::Accepted, SHA),
+            &as_reviewer(),
+        )
         .expect("the verdict is on it");
     let git = StubGit::clean();
 
@@ -1413,10 +1443,7 @@ fn another_writers_orders_key_and_run_label_ride_through_a_landing() {
         "an item another tool indexes too",
         Some(("ACCEPTED", SHA)),
     );
-    scratch
-        .store
-        .set_metadata(&item, common::FOREIGN_ORDERS, "another-tool")
-        .expect("the other writer's key lands");
+    scratch.set_metadata(&item, common::FOREIGN_ORDERS);
     scratch.label(&item, common::FOREIGN_LABEL);
     let before = common::foreign_of(&scratch.store, &item);
 
@@ -2740,7 +2767,7 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
     scratch
         .store
         .close(
-            &fleet_core::store::ItemId::from(elsewhere.as_str()),
+            &ItemId::from(elsewhere.as_str()),
             "closed by hand",
             REVIEWER,
         )
@@ -2767,7 +2794,11 @@ fn an_accept_another_seat_wrote_is_refused_before_the_trunk_is_touched() {
     let carol = seat_actor("a-carol");
     scratch
         .store
-        .append(&item, &a_review(Verdict::Accepted, SHA), &carol)
+        .append(
+            &ItemId::from(item.as_str()),
+            &a_review(Verdict::Accepted, SHA),
+            &carol,
+        )
         .expect("the accept is on it");
     let before = scratch.json(&item);
     let git = StubGit::clean();
@@ -2815,7 +2846,7 @@ fn a_runs_landing_lands_its_own_runs_accept_and_no_other_runs() {
     scratch
         .store
         .append(
-            &foreign,
+            &ItemId::from(foreign.as_str()),
             &a_review(Verdict::Accepted, SHA),
             &the_run(&other),
         )
@@ -2843,7 +2874,11 @@ fn a_runs_landing_lands_its_own_runs_accept_and_no_other_runs() {
     // THE CONTROL: the accept the landing's own run wrote.
     scratch
         .store
-        .append(&own, &a_review(Verdict::Accepted, SHA), &the_run(&record))
+        .append(
+            &ItemId::from(own.as_str()),
+            &a_review(Verdict::Accepted, SHA),
+            &the_run(&record),
+        )
         .expect("the accept is on it");
     let ran = run_as(
         scratch,
@@ -2912,7 +2947,10 @@ fn a_landing_handed_no_test_says_not_tested_on_the_record() {
         &StubEvents::default(),
     );
     assert_eq!(ran.code(), None, "{}", ran.why());
-    let entries = scratch.store.timeline(&item).expect("the timeline reads");
+    let entries = scratch
+        .store
+        .timeline(&ItemId::from(item.as_str()))
+        .expect("the timeline reads");
     let (_, landing) = Timeline(&entries)
         .last_landing()
         .expect("the landing is on the record");
@@ -3624,7 +3662,9 @@ fn a_held_local_delete_names_the_retire_and_its_own_entry_reads_back_as_a_delete
 
     // THE TIMELINE THE LANDING JUST WROTE, read back off the store the way the
     // retire reads it — never an entry typed here.
-    let timeline = bd.timeline(&item).expect("the timeline reads back");
+    let timeline = bd
+        .timeline(&ItemId::from(item.as_str()))
+        .expect("the timeline reads back");
     assert_eq!(
         land::release(&timeline, Some(WORK)),
         land::Release::Delete(WORK.to_string()),
@@ -3672,7 +3712,9 @@ fn a_landing_that_did_not_read_safe_releases_nothing() {
         }
         let ran = run(scratch, bd, &git, &item, SHA);
         assert!(ran.landed.is_ok(), "{}", ran.why());
-        let timeline = bd.timeline(&item).expect("the timeline reads back");
+        let timeline = bd
+            .timeline(&ItemId::from(item.as_str()))
+            .expect("the timeline reads back");
         assert_eq!(
             land::release(&timeline, Some(WORK)),
             land::Release::Keep(format!("`{WORK}` — the landing reads `{reads}`")),
@@ -4640,7 +4682,9 @@ fn a_behind_delivery_and_its_landing_carry_both_bases_whole() {
     );
     let ran = run(scratch, bd, &abbreviating(), &behind, SHA);
     assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
-    let entries = bd.timeline(&behind).expect("the timeline reads");
+    let entries = bd
+        .timeline(&ItemId::from(behind.as_str()))
+        .expect("the timeline reads");
     let timeline = Timeline(&entries);
     let (_, delivered) = timeline.last_delivery().expect("the delivery is on it");
     let (_, landed) = timeline.last_landing().expect("the landing is on it");
@@ -4659,7 +4703,9 @@ fn a_behind_delivery_and_its_landing_carry_both_bases_whole() {
     );
     let ran = run(scratch, bd, &abbreviating(), &current, SHA);
     assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
-    let entries = bd.timeline(&current).expect("the timeline reads");
+    let entries = bd
+        .timeline(&ItemId::from(current.as_str()))
+        .expect("the timeline reads");
     let timeline = Timeline(&entries);
     let (_, delivered) = timeline.last_delivery().expect("the delivery is on it");
     let (_, landed) = timeline.last_landing().expect("the landing is on it");
@@ -4941,7 +4987,7 @@ fn a_run_holding(store: &dyn Store, about: fleet_core::entry::About) -> String {
     };
     store
         .append(
-            &run,
+            &ItemId::from(run.as_str()),
             &Body::Held(fleet_core::entry::Held {
                 hold: A_HOLD.to_string(),
                 reason: fleet_core::entry::HoldReason::Ask,
@@ -4971,7 +5017,7 @@ fn cleared(store: &dyn Store, run: &str, by: &Actor, letter: Option<&str>) {
     };
     store
         .append(
-            run,
+            &ItemId::from(run),
             &Body::Cleared(fleet_core::entry::Cleared {
                 hold: A_HOLD.to_string(),
                 how,
@@ -5152,7 +5198,7 @@ fn a_runs_landing_is_refused_an_item_another_seat_holds() {
     scratch
         .store
         .update(
-            &fleet_core::store::ItemId::from(item.as_str()),
+            &ItemId::from(item.as_str()),
             &fleet_core::store::Update::assignee(seat_id(BUILDER)),
             &seat_actor(REVIEWER),
         )
@@ -5346,7 +5392,7 @@ fn a_runs_later_hold_about_the_item_is_the_one_its_licence_reads() {
     scratch
         .store
         .append(
-            &run,
+            &ItemId::from(run.as_str()),
             &Body::Held(fleet_core::entry::Held {
                 hold: later.to_string(),
                 reason: fleet_core::entry::HoldReason::Ask,
@@ -5364,7 +5410,7 @@ fn a_runs_later_hold_about_the_item_is_the_one_its_licence_reads() {
     scratch
         .store
         .append(
-            &run,
+            &ItemId::from(run.as_str()),
             &Body::Cleared(fleet_core::entry::Cleared {
                 hold: later.to_string(),
                 how: fleet_core::entry::Clearance::Answer,

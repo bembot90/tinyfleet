@@ -84,8 +84,6 @@ pub fn withdraw(
         seat: Some(*seat),
         cause: None,
     });
-    let seat = seat.to_string();
-    let writer = by.to_string();
     for row in items {
         let item = row.id.as_str();
         if !matches!(row.status, Status::Open | Status::InProgress) {
@@ -98,7 +96,7 @@ pub fn withdraw(
             ));
         }
         store
-            .withdraw_order(item, &seat, row.status.as_str(), &writer)
+            .order_withdraw_from(&row.id, seat, &row.status, by)
             .map_err(|e| match e {
                 StoreError::Moved(why) => moved_on(item, label, &why),
                 other => nothing_written(item, &other.to_string()),

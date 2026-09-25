@@ -872,7 +872,7 @@ fn item_show_prints_the_item_and_its_entries_and_refuses_what_it_cannot_read() {
     let store = Bd::at(&rig.project);
     let appended = store
         .append(
-            &item,
+            &fleet_core::store::ItemId::from(item.as_str()),
             &Body::Ordered(Ordered {
                 order: OrderKind::Dispatch,
                 seat: None,

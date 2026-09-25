@@ -176,32 +176,55 @@ impl Store for Swallowing<'_> {
         self.inner.update(id, change, by)
     }
 
-    fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.set_orders(item, payload, by)
+    fn order_set(
+        &self,
+        id: &fleet_core::store::ItemId,
+        order: &fleet_core::store::Order,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.order_set(id, order, by)
     }
 
-    fn set_metadata(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.set_metadata(item, payload, by)
+    fn order_withdraw(
+        &self,
+        id: &fleet_core::store::ItemId,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.order_withdraw(id, by)
     }
 
-    fn unset_orders(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.unset_orders(item, by)
+    fn run_set(
+        &self,
+        id: &fleet_core::store::ItemId,
+        run: &fleet_core::store::RunRecord,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.run_set(id, run, by)
     }
 
     fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
         self.inner.reopen(item, by)
     }
 
-    fn hold(&self, _item: &str, _reason: &str, _by: &str) -> Result<String, StoreError> {
-        Ok(String::from("fx-nothing"))
+    fn hold_raise(
+        &self,
+        _id: &fleet_core::store::ItemId,
+        _reason: &str,
+        _by: &fleet_core::seat::actor::Actor,
+    ) -> Result<fleet_core::store::HoldId, StoreError> {
+        Ok(fleet_core::store::HoldId::from("fx-nothing"))
     }
 
-    fn open_holds(&self) -> Result<Vec<String>, StoreError> {
-        self.inner.open_holds()
+    fn holds_open(&self) -> Result<Vec<fleet_core::store::HoldId>, StoreError> {
+        self.inner.holds_open()
     }
 
-    fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.clear_hold(hold, by)
+    fn hold_clear(
+        &self,
+        hold: &fleet_core::store::HoldId,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.hold_clear(hold, by)
     }
 
     fn close(
@@ -215,14 +238,17 @@ impl Store for Swallowing<'_> {
 
     fn append(
         &self,
-        _item: &str,
+        _item: &fleet_core::store::ItemId,
         _body: &Body,
         _by: &fleet_core::seat::actor::Actor,
     ) -> Result<String, StoreError> {
         Ok(String::from("c-nothing"))
     }
 
-    fn timeline(&self, item: &str) -> Result<Vec<fleet_core::entry::Entry>, StoreError> {
+    fn timeline(
+        &self,
+        item: &fleet_core::store::ItemId,
+    ) -> Result<Vec<fleet_core::entry::Entry>, StoreError> {
         self.inner.timeline(item)
     }
 
@@ -282,14 +308,12 @@ fn an_ordered_item(store: &dyn Store, title: &str, seat: &str) -> String {
         )
         .expect("the seat holds it");
     store
-        .set_orders(
-            &item,
-            &format!(
-                r#"{{"fleet.orders": {{"v": 1, "by": "run:a-flight", "kind": "dispatch", "seat": "{seat}", "at": "{AT}"}}}}"#
-            ),
-            "a-flight",
+        .order_set(
+            &fleet_core::store::ItemId::from(item.as_str()),
+            &common::a_dispatch("run:a-flight", Some(&seat), AT),
+            &fleet_core::test_support::the_test(),
         )
-        .expect("the order index lands");
+        .expect("the order lands");
     item
 }
 
@@ -322,7 +346,9 @@ fn asked(body: &str) -> QuestionInput {
 }
 
 fn timeline_of(store: &dyn Store, item: &str) -> Vec<Entry> {
-    store.timeline(item).expect("the timeline reads")
+    store
+        .timeline(&fleet_core::store::ItemId::from(item))
+        .expect("the timeline reads")
 }
 
 /// The one entry the store keeps under `id`, which the verb answered.
@@ -561,7 +587,7 @@ fn an_item_named_by_its_suffix_is_held_under_its_full_id() {
 
     assert_eq!(held.item, item);
     let wrote = scratch.store.wrote();
-    for verb in ["hold", "append"] {
+    for verb in ["hold_raise", "append"] {
         assert!(
             wrote
                 .iter()
@@ -981,9 +1007,10 @@ fn a_json_question_is_held_under_its_text_and_cleared_by_its_letter() {
     assert!(
         !scratch
             .store
-            .open_holds()
+            .holds_open()
             .expect("the open list answers")
-            .contains(&held.hold),
+            .iter()
+            .any(|open| *open == *held.hold),
         "the hold is cleared"
     );
 }
@@ -1453,9 +1480,10 @@ fn a_clearance_writes_the_cleared_entry_clears_the_hold_and_announces_it() {
     assert!(
         !scratch
             .store
-            .open_holds()
+            .holds_open()
             .expect("the open list answers")
-            .contains(&hold_id),
+            .iter()
+            .any(|open| *open == *hold_id),
         "the hold is cleared"
     );
     assert!(
@@ -1473,7 +1501,7 @@ fn a_clearance_writes_the_cleared_entry_clears_the_hold_and_announces_it() {
         .rposition(|line| line.starts_with(&format!("append {item} cleared ")));
     let resolved = wrote
         .iter()
-        .position(|line| line.starts_with(&format!("clear_hold {hold_id} ")));
+        .position(|line| line.starts_with(&format!("hold_clear {hold_id} ")));
     assert!(
         appended.is_some() && appended < resolved,
         "the entry is appended before the store's hold is cleared: {wrote:?}"
@@ -1599,7 +1627,11 @@ fn no_open_hold_and_a_hold_cleared_by_hand_are_both_refused() {
     let noted = scratch.item("an item prose alone parks");
     let hold = scratch
         .store
-        .hold(&noted, "a hold only prose names", "a-flight")
+        .hold_raise(
+            &fleet_core::store::ItemId::from(noted.as_str()),
+            "a hold only prose names",
+            &fleet_core::test_support::the_test(),
+        )
         .expect("the hold is raised");
     scratch.store.comment(
         &noted,
@@ -1632,7 +1664,10 @@ fn no_open_hold_and_a_hold_cleared_by_hand_are_both_refused() {
     let (item, hold_id) = a_held_item(scratch, "by-hand", seat);
     scratch
         .store
-        .clear_hold(&hold_id, "a-person")
+        .hold_clear(
+            &fleet_core::store::HoldId::from(hold_id.as_str()),
+            &fleet_core::test_support::the_test(),
+        )
         .expect("the hold is cleared by hand");
     let before = scratch.json(&item);
     let stop = clear_with(
@@ -1697,9 +1732,10 @@ fn a_cleared_entry_that_does_not_read_back_leaves_the_hold_standing() {
     assert!(
         scratch
             .store
-            .open_holds()
+            .holds_open()
             .expect("the open list answers")
-            .contains(&hold_id),
+            .iter()
+            .any(|open| *open == *hold_id),
         "the hold stands"
     );
     assert_eq!(events.count(), 0, "and nothing reached the stream");
@@ -1796,9 +1832,10 @@ fn a_run_held_at_the_crash_cap_is_cleared_like_any_other_park() {
     assert!(
         !scratch
             .store
-            .open_holds()
+            .holds_open()
             .expect("the open list answers")
-            .contains(&hold_id),
+            .iter()
+            .any(|open| *open == *hold_id),
         "and the store lists it open no longer"
     );
     let (_, payload) = events.one(ITEM_ENTRY);
@@ -1886,9 +1923,10 @@ fn a_crash_cap_park_whose_entry_is_refused_withdraws_its_hold() {
     assert!(
         !scratch
             .store
-            .open_holds()
+            .holds_open()
             .expect("the open list answers")
-            .contains(&String::from("hold-1")),
+            .iter()
+            .any(|open| *open == *String::from("hold-1")),
         "is withdrawn"
     );
     assert!(

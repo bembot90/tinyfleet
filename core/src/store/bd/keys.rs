@@ -1,5 +1,7 @@
-//! The metadata keys fleet owns on a board, and the version each one's object
-//! carries — named here once, for every reader and every writer.
+//! The metadata keys fleet owns on a bd board, and the version each one's
+//! object carries — named here once, for the adapter's readers and writers
+//! and for nothing outside it: a verb hands the store an [`Order`] or a
+//! [`RunRecord`], and which key holds it is bd's shape and not the verb's.
 //!
 //! A BOARD IS SHARED. A project that adds fleet may already keep its own
 //! `orders` or `run` key, so fleet's keys carry its name and nothing reads a
@@ -10,10 +12,13 @@
 //! metadata write at the top level and replaces one key's object whole —
 //! measured on bd 1.3.0, a nested `{"fleet":{"run":…}}` was lost to the next
 //! `{"fleet":{"orders":…}}` write, where `fleet.run` and `fleet.orders` kept
-//! each other — so each key keeps the one writer [`Store::set_metadata`]'s
-//! polarity needs.
+//! each other — so [`Store::order_set`] and [`Store::run_set`] each write the
+//! one key it owns, and neither ever erases the other.
 //!
-//! [`Store::set_metadata`]: super::Store::set_metadata
+//! [`Order`]: crate::store::Order
+//! [`RunRecord`]: crate::store::RunRecord
+//! [`Store::order_set`]: crate::store::Store::order_set
+//! [`Store::run_set`]: crate::store::Store::run_set
 
 /// The order index a dispatch writes.
 pub const ORDERS: &str = "fleet.orders";

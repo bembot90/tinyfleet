@@ -101,7 +101,7 @@ pub fn capped_bd(dir: &Fixture, seat: &str, rows: &[Held], log: &Path) -> PathBu
             log = log.display(),
             items = items.display(),
             comments = comments.display(),
-            orders_key = fleet_core::store::keys::ORDERS,
+            orders_key = fleet_core::store::bd::keys::ORDERS,
         ),
     )
     .expect("the fake is written");

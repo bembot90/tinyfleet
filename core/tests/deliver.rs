@@ -192,32 +192,55 @@ impl Store for Doctored<'_> {
         self.inner.update(id, change, by)
     }
 
-    fn set_orders(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.set_orders(item, payload, by)
+    fn order_set(
+        &self,
+        id: &fleet_core::store::ItemId,
+        order: &fleet_core::store::Order,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.order_set(id, order, by)
     }
 
-    fn set_metadata(&self, item: &str, payload: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.set_metadata(item, payload, by)
+    fn order_withdraw(
+        &self,
+        id: &fleet_core::store::ItemId,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.order_withdraw(id, by)
     }
 
-    fn unset_orders(&self, item: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.unset_orders(item, by)
+    fn run_set(
+        &self,
+        id: &fleet_core::store::ItemId,
+        run: &fleet_core::store::RunRecord,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.run_set(id, run, by)
     }
 
     fn reopen(&self, item: &str, by: &str) -> Result<(), StoreError> {
         self.inner.reopen(item, by)
     }
 
-    fn hold(&self, item: &str, reason: &str, by: &str) -> Result<String, StoreError> {
-        self.inner.hold(item, reason, by)
+    fn hold_raise(
+        &self,
+        id: &fleet_core::store::ItemId,
+        reason: &str,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<fleet_core::store::HoldId, StoreError> {
+        self.inner.hold_raise(id, reason, by)
     }
 
-    fn open_holds(&self) -> Result<Vec<String>, StoreError> {
-        self.inner.open_holds()
+    fn holds_open(&self) -> Result<Vec<fleet_core::store::HoldId>, StoreError> {
+        self.inner.holds_open()
     }
 
-    fn clear_hold(&self, hold: &str, by: &str) -> Result<(), StoreError> {
-        self.inner.clear_hold(hold, by)
+    fn hold_clear(
+        &self,
+        hold: &fleet_core::store::HoldId,
+        by: &fleet_core::seat::actor::Actor,
+    ) -> Result<(), StoreError> {
+        self.inner.hold_clear(hold, by)
     }
 
     fn close(
@@ -231,7 +254,7 @@ impl Store for Doctored<'_> {
 
     fn append(
         &self,
-        item: &str,
+        item: &fleet_core::store::ItemId,
         body: &fleet_core::entry::Body,
         by: &fleet_core::seat::actor::Actor,
     ) -> Result<String, StoreError> {
@@ -241,7 +264,10 @@ impl Store for Doctored<'_> {
         self.inner.append(item, body, by)
     }
 
-    fn timeline(&self, item: &str) -> Result<Vec<fleet_core::entry::Entry>, StoreError> {
+    fn timeline(
+        &self,
+        item: &fleet_core::store::ItemId,
+    ) -> Result<Vec<fleet_core::entry::Entry>, StoreError> {
         self.inner.timeline(item)
     }
 
@@ -290,16 +316,10 @@ fn an_ordered_item(graph: &Graph, title: &str, seat: &str) -> String {
     let item = graph.item(title);
     let seat = full(seat);
     graph.hand_to(&item, &seat);
-    graph
-        .store()
-        .set_orders(
-            &item,
-            &format!(
-                r#"{{"fleet.orders": {{"v": 1, "by": "run:an-architect", "kind": "dispatch", "seat": "{seat}", "at": "{AT}"}}}}"#
-            ),
-            "an-architect",
-        )
-        .expect("the order index lands");
+    graph.order(
+        &item,
+        &common::a_dispatch("run:an-architect", Some(&seat), AT),
+    );
     item
 }
 
@@ -358,7 +378,10 @@ fn expected(body: &serde_json::Value, commit: &str) -> Body {
 
 /// The item's timeline, as the store answers it.
 fn timeline(graph: &Graph, item: &str) -> Vec<Entry> {
-    graph.store().timeline(item).expect("the timeline reads")
+    graph
+        .store()
+        .timeline(&fleet_core::store::ItemId::from(item))
+        .expect("the timeline reads")
 }
 
 /// What an arm varies, gathered so the call below reads as the arm and not as
@@ -521,10 +544,7 @@ fn another_writers_orders_key_and_run_label_ride_through_a_delivery() {
     let theirs = scratch.item("an item only another tool ordered");
     scratch.hand_to(&theirs, &full(seat));
     for held in [&item, &theirs] {
-        scratch
-            .store()
-            .set_metadata(held, common::FOREIGN_ORDERS, "another-tool")
-            .expect("the other writer's key lands");
+        scratch.set_metadata(held, common::FOREIGN_ORDERS);
         scratch.label(held, common::FOREIGN_LABEL);
     }
     let before = common::foreign_of(scratch.store(), &item);

@@ -247,7 +247,7 @@ pub fn for_item(
         }
     };
     let order = order_text(index);
-    let text = show::render(&record, &store.timeline(item)?);
+    let text = show::render(&record, &store.timeline(&record.id)?);
     print(
         out,
         err,

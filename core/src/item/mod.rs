@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use crate::entry::{to_json, Body, Entry, Timeline};
 use crate::seat::actor::Actor;
-use crate::store::{Store, StoreError};
+use crate::store::{ItemId, Store, StoreError};
 
 /// The exits, one vocabulary shared by every verb. A verb answers with one of
 /// these and the cli does nothing but return it.
@@ -579,11 +579,12 @@ pub fn recorded(
     body: &Body,
     by: &Actor,
 ) -> Result<String, Unrecorded> {
+    let written = ItemId::from(item);
     let id = store
-        .append(item, body, by)
+        .append(&written, body, by)
         .map_err(Unrecorded::NotWritten)?;
     let entries = store
-        .timeline(item)
+        .timeline(&written)
         .map_err(|e| Unrecorded::Unconfirmed(e.to_string()))?;
     let timeline = Timeline(&entries);
     let kind = body.kind();

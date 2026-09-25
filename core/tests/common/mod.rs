@@ -831,6 +831,23 @@ pub fn seat_actor(name: &str) -> fleet_core::seat::actor::Actor {
     fleet_core::seat::actor::Actor::seat(seat_id(name))
 }
 
+/// The order a dispatch gives: by the actor, to the seat — a seat's full id,
+/// or none for a transient dispatch not yet answered — at the stamp, each as
+/// its text.
+pub fn a_dispatch(by: &str, seat: Option<&str>, at: &str) -> fleet_core::store::Order {
+    fleet_core::store::Order {
+        kind: fleet_core::store::OrderKind::Dispatch,
+        by: fleet_core::seat::actor::Actor::typed(by)
+            .expect("a typed actor")
+            .unwrap_or_else(|e| panic!("{by} is an actor: {e}")),
+        seat: seat.map(|seat| {
+            fleet_core::seat::identity::SeatId::parse(seat)
+                .unwrap_or_else(|e| panic!("{seat} is a seat id: {e}"))
+        }),
+        at: fleet_core::store::Stamp::parse(at).unwrap_or_else(|| panic!("{at} is a stamp")),
+    }
+}
+
 /// A fleet of agent seats by name, each listed and running here.
 pub fn fleet_of(names: &[&str]) -> fleet_core::seat::identity::Directory {
     let running: Vec<_> = names.iter().map(|name| agent(name)).collect();
@@ -944,6 +961,37 @@ impl Graph {
                 &fleet_core::test_support::the_test(),
             )
             .unwrap_or_else(|e| panic!("hand {item} to {seat}: {e}"));
+    }
+
+    /// The item's order, written as a dispatch writes one, as a rig's own
+    /// setup.
+    pub fn order(&self, item: &str, order: &fleet_core::store::Order) {
+        self.store()
+            .order_set(
+                &fleet_core::store::ItemId::from(item),
+                order,
+                &fleet_core::test_support::the_test(),
+            )
+            .unwrap_or_else(|e| panic!("the order on {item}: {e}"));
+    }
+
+    /// A metadata object merged onto the item as ANOTHER WRITER leaves one —
+    /// a key fleet does not own, or one of fleet's own at a shape no fleet
+    /// writer here makes. The trait writes only the contract's types, so the
+    /// real half writes it through the binary, under a writer that is no
+    /// fleet actor.
+    pub fn set_metadata(&self, item: &str, payload: &str) {
+        match self {
+            Graph::Memory(board) => board.set_metadata(item, payload),
+            Graph::Real(_, _) => self.wrote(&[
+                "update",
+                item,
+                "--metadata",
+                payload,
+                "--actor",
+                "another-tool",
+            ]),
+        }
     }
 
     /// The label the open-flight read finds a record by. The trait carries no

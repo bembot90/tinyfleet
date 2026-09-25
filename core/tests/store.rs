@@ -38,10 +38,12 @@ use common::{a_delivery, seat_actor, Fixture, A_COMMIT};
 use fleet_core::entry::{Body, OrderKind, Ordered};
 use fleet_core::item::{recorded, Stop, Unrecorded, COULD_NOT_TELL, REFUSED};
 use fleet_core::process::DRAIN_GRACE;
+use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
 use fleet_core::store::bd::{item_from, Bd};
 use fleet_core::store::{
-    Filter, ItemId, ItemSummary, NewItem, OrderState, Store, StoreError, Update,
+    self, Filter, HoldId, ItemId, ItemSummary, NewItem, Order, OrderState, RunRecord, Stamp, Store,
+    StoreError, Update,
 };
 use fleet_core::test_support::the_test;
 
@@ -285,11 +287,11 @@ fn open_holds_lifts_the_row_cap() {
 
     let root = dir.path("project");
     std::fs::create_dir_all(&root).expect("the project root is created");
-    let answered = with_path_ahead(&dir.root, || Bd::at(&root).open_holds());
+    let answered = with_path_ahead(&dir.root, || Bd::at(&root).holds_open());
 
     assert_eq!(
         answered.expect("the shim answers a list"),
-        Vec::<String>::new()
+        Vec::<HoldId>::new()
     );
     let argv: Vec<String> = std::fs::read_to_string(&log)
         .expect("the shim recorded its argv")
@@ -466,8 +468,8 @@ fn every_read_opens_the_envelope() {
     );
 
     assert_eq!(
-        store.open_holds().expect("the gate list decodes"),
-        vec![String::from("fx-gate")]
+        store.holds_open().expect("the gate list decodes"),
+        vec![HoldId::from("fx-gate")]
     );
     let filed = store
         .create(
@@ -483,9 +485,9 @@ fn every_read_opens_the_envelope() {
     assert_eq!(filed, "fx-new");
     assert_eq!(
         store
-            .hold("fx-held", "why", "the-test")
+            .hold_raise(&ItemId::from("fx-held"), "why", &the_test())
             .expect("the hold answer decodes"),
-        "fx-raised"
+        HoldId::from("fx-raised")
     );
 
     let asked = envelopes(&log);
@@ -513,9 +515,9 @@ fn an_empty_listing_inside_the_envelope_is_no_rows() {
 
     assert_eq!(
         Bd::at_bin(&root, &bin)
-            .open_holds()
+            .holds_open()
             .expect("an empty listing is an answer"),
-        Vec::<String>::new()
+        Vec::<HoldId>::new()
     );
 }
 
@@ -822,6 +824,181 @@ fn an_update_is_one_call_naming_each_field_it_moves() {
     );
 }
 
+/// The one metadata object an `update --metadata` call carried, off its argv.
+fn metadata_of(argv: &str) -> serde_json::Value {
+    let payload = argv
+        .strip_prefix("[update][fx-1][--metadata][")
+        .and_then(|rest| rest.strip_suffix("][--actor][run:the-test]"))
+        .unwrap_or_else(|| panic!("one metadata write on fx-1: {argv}"));
+    serde_json::from_str(payload).expect("the metadata is one JSON object")
+}
+
+/// AN ORDER AND A RUN'S RECORD ARE EACH ONE `--metadata` WRITE of fleet's own
+/// dotted key, the version stamped in beside the contract's fields — the shape
+/// bd merges at the top level, so neither write erases the other key. The
+/// verb hands the adapter the typed value; the key is the adapter's alone.
+#[test]
+fn an_order_and_a_run_record_are_one_metadata_write_of_fleets_own_key_each() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-order-run-argv");
+    let log = dir.path("argv");
+    let bin = argv_bd(&dir, &log, "");
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+    let store = Bd::at_bin(&root, &bin);
+    let id = ItemId::from("fx-1");
+    let at = "2026-09-24T10:00:00Z";
+
+    store
+        .order_set(
+            &id,
+            &Order {
+                kind: store::OrderKind::Dispatch,
+                by: Actor::typed("run:an-architect")
+                    .expect("typed")
+                    .expect("a run"),
+                seat: Some(SeatId::parse(SEAT).expect("the seat's id parses")),
+                at: Stamp::parse(at).expect("a stamp"),
+            },
+            &the_test(),
+        )
+        .expect("the order lands");
+    store
+        .order_set(
+            &id,
+            &Order {
+                kind: store::OrderKind::Review,
+                by: Actor::typed("run:an-architect")
+                    .expect("typed")
+                    .expect("a run"),
+                seat: None,
+                at: Stamp::parse(at).expect("a stamp"),
+            },
+            &the_test(),
+        )
+        .expect("an order naming no seat lands");
+    store
+        .run_set(
+            &id,
+            &RunRecord {
+                hash: String::from("h1"),
+                workflow: String::from("greet"),
+                pack: String::from("ts"),
+                entry: String::from("greet.ts"),
+                started_at: Stamp::parse(at).expect("a stamp"),
+            },
+            &the_test(),
+        )
+        .expect("the run's record lands");
+
+    let asked = argvs(&log, &root);
+    assert_eq!(asked.len(), 3, "one call per write: {asked:?}");
+    assert_eq!(
+        metadata_of(&asked[0]),
+        serde_json::json!({ "fleet.orders": {
+            "v": 1, "by": "run:an-architect", "kind": "dispatch", "seat": SEAT, "at": at,
+        }})
+    );
+    assert_eq!(
+        metadata_of(&asked[1]),
+        serde_json::json!({ "fleet.orders": {
+            "v": 1, "by": "run:an-architect", "kind": "review", "at": at,
+        }}),
+        "an order naming no seat carries no seat key"
+    );
+    assert_eq!(
+        metadata_of(&asked[2]),
+        serde_json::json!({ "fleet.run": {
+            "v": 1, "hash": "h1", "workflow": "greet", "pack": "ts", "entry": "greet.ts",
+            "started_at": at,
+        }})
+    );
+}
+
+/// A withdrawal is ONE update clearing the assignee and unsetting fleet's
+/// order key; the retire's fenced withdrawal is the same call, fenced on the
+/// seat and the status it listed, reopening the item beside it.
+#[test]
+fn a_withdrawal_is_one_update_clearing_the_assignee_and_the_order() {
+    let _guard = path_lock();
+    let dir = Fixture::new("store-withdraw-argv");
+    let log = dir.path("argv");
+    let bin = argv_bd(&dir, &log, "");
+    let root = dir.path("project");
+    std::fs::create_dir_all(&root).expect("the project root is created");
+    let store = Bd::at_bin(&root, &bin);
+    let id = ItemId::from("fx-1");
+    let seat = SeatId::parse(SEAT).expect("the seat's id parses");
+
+    store
+        .order_withdraw(&id, &the_test())
+        .expect("the withdrawal lands");
+    store
+        .order_withdraw_from(
+            &id,
+            &seat,
+            &fleet_core::store::Status::InProgress,
+            &the_test(),
+        )
+        .expect("the fenced withdrawal lands");
+    assert_eq!(
+        argvs(&log, &root),
+        [
+            String::from(
+                "[update][fx-1][--assignee][][--unset-metadata][fleet.orders][--actor][run:the-test]"
+            ),
+            format!(
+                "[update][fx-1][--if-assignee][{SEAT}][--if-status][in_progress][--assignee][]\
+                 [--unset-metadata][fleet.orders][--status][open][--actor][run:the-test]"
+            ),
+        ]
+    );
+}
+
+/// A CLEAR READS THE HOLD FIRST, because bd 1.3.0 answers a resolve of a
+/// resolved gate with exit 0 and writes nothing: an open hold is read and then
+/// resolved, and a closed one is Refused with nothing but the read run.
+#[test]
+fn a_hold_clear_reads_the_hold_and_resolves_only_an_open_one() {
+    let _guard = path_lock();
+    let root_of = |dir: &Fixture| {
+        let root = dir.path("project");
+        std::fs::create_dir_all(&root).expect("the project root is created");
+        root
+    };
+
+    let dir = Fixture::new("store-hold-clear-open");
+    let log = dir.path("argv");
+    let bin = argv_bd(&dir, &log, r#"[{"id": "fx-gate", "status": "open"}]"#);
+    let root = root_of(&dir);
+    Bd::at_bin(&root, &bin)
+        .hold_clear(&HoldId::from("fx-gate"), &the_test())
+        .expect("an open hold clears");
+    assert_eq!(
+        argvs(&log, &root),
+        [
+            String::from("[show][fx-gate][--json]"),
+            String::from("[gate][resolve][fx-gate][--actor][run:the-test]"),
+        ]
+    );
+
+    let dir = Fixture::new("store-hold-clear-cleared");
+    let log = dir.path("argv");
+    let bin = argv_bd(&dir, &log, r#"[{"id": "fx-gate", "status": "closed"}]"#);
+    let root = root_of(&dir);
+    assert_eq!(
+        Bd::at_bin(&root, &bin).hold_clear(&HoldId::from("fx-gate"), &the_test()),
+        Err(StoreError::Refused(String::from(
+            "fx-gate is already cleared"
+        )))
+    );
+    assert_eq!(
+        argvs(&log, &root),
+        [String::from("[show][fx-gate][--json]")],
+        "nothing but the read was run"
+    );
+}
+
 /// An update naming neither field is refused before the binary is asked.
 #[test]
 fn an_update_naming_nothing_runs_nothing() {
@@ -969,7 +1146,10 @@ fn the_fake_leaves_a_persons_comment_out_and_refuses_a_malformed_entry() {
         .store
         .comment(&item, "Alberto Vildosola", "a person's words");
     assert_eq!(
-        board.store.timeline(&item).expect("the timeline reads"),
+        board
+            .store
+            .timeline(&ItemId::from(item.as_str()))
+            .expect("the timeline reads"),
         Vec::new(),
         "a person's comment is not an entry"
     );
@@ -979,7 +1159,7 @@ fn the_fake_leaves_a_persons_comment_out_and_refuses_a_malformed_entry() {
         "Alberto Vildosola",
         r#"{"fleet.entry":1,"kind":"ordered","order":"dispatch"}"#,
     );
-    match board.store.timeline(&item) {
+    match board.store.timeline(&ItemId::from(item.as_str())) {
         Err(StoreError::Unreadable(why)) => assert!(
             why.contains(&comment) && why.contains("Alberto Vildosola"),
             "the refusal names the comment and its author: {why}"
@@ -996,7 +1176,10 @@ fn the_fake_refuses_an_entry_that_does_not_validate_and_an_item_it_does_not_hold
     let item = board.item("an item a short sha is appended to");
     let by = seat_actor("a-short-seat");
 
-    match board.store.append(&item, &a_delivery("1111111"), &by) {
+    match board
+        .store
+        .append(&ItemId::from(item.as_str()), &a_delivery("1111111"), &by)
+    {
         Err(StoreError::Unreadable(why)) => assert!(
             why.starts_with(&format!(
                 "the delivered entry for {item} does not validate: `commit`"
@@ -1006,12 +1189,18 @@ fn the_fake_refuses_an_entry_that_does_not_validate_and_an_item_it_does_not_hold
         other => panic!("a delivery naming a 7-character commit is refused: {other:?}"),
     }
     assert_eq!(
-        board.store.timeline(&item).expect("the timeline reads"),
+        board
+            .store
+            .timeline(&ItemId::from(item.as_str()))
+            .expect("the timeline reads"),
         Vec::new(),
         "and nothing was written"
     );
 
-    match board.store.append("fx-nobody-filed-this", &an_order(), &by) {
+    match board
+        .store
+        .append(&ItemId::from("fx-nobody-filed-this"), &an_order(), &by)
+    {
         Err(StoreError::Refused(_)) => {}
         other => panic!("an append to an item nobody filed is Refused: {other:?}"),
     }
@@ -1027,11 +1216,18 @@ fn a_deaf_store_answers_an_id_and_keeps_no_entry() {
 
     let id = board
         .store
-        .append(&item, &an_order(), &seat_actor("a-deaf-seat"))
+        .append(
+            &ItemId::from(item.as_str()),
+            &an_order(),
+            &seat_actor("a-deaf-seat"),
+        )
         .expect("the append answers");
     assert!(!id.is_empty(), "the store names what it was handed");
     assert_eq!(
-        board.store.timeline(&item).expect("the timeline reads"),
+        board
+            .store
+            .timeline(&ItemId::from(item.as_str()))
+            .expect("the timeline reads"),
         Vec::new(),
         "and the timeline holds nothing"
     );
@@ -1067,7 +1263,10 @@ fn recorded_answers_the_id_it_read_back() {
     board.forget_writes();
 
     let id = recorded(&board.store, &item, &an_order(), &by).expect("the entry is recorded");
-    let timeline = board.store.timeline(&item).expect("the timeline reads");
+    let timeline = board
+        .store
+        .timeline(&ItemId::from(item.as_str()))
+        .expect("the timeline reads");
     let read = fleet_core::entry::Timeline(&timeline)
         .entry(&id)
         .expect("the entry is on the timeline");
