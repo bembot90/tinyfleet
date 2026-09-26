@@ -67,7 +67,7 @@ Touches no store code, so it can fly beside flights 9 and 10.
 | ☑ | fleet-rge6.1 | The controller's tmux host behind one Host seam on socket `fleet`, a FakeHost and a `fleet-tmux-stub` | — (first: every row sits on it) |
 | ☑ | fleet-rge6.2 | A seat starts interactively as its own tmux session under a config dir seeded with onboarding and trust (measured first) | fleet-rge6.1 |
 | ☑ | fleet-rge6.3 | Presence from tmux, activity from the listing, Unknown on disagreement; the daemon's windows go | fleet-rge6.1 |
-| ☐ | fleet-rge6.4 | Stop, revive and remove act on the seat's session; revive resumes the full id with the start's flags; short ids stay in the adapter | fleet-rge6.2, fleet-rge6.3 |
+| ☑ | fleet-rge6.4 | Stop, revive and remove act on the seat's session; revive resumes the full id with the start's flags; short ids stay in the adapter | fleet-rge6.2, fleet-rge6.3 |
 | ☑ | fleet-rge6.5 | Nudge and feed are a paste into the pane, believed on busy, refused when blocked; `nudge_model` goes (closes fleet-nrl, fleet-fmver) | fleet-rge6.2 |
 | ☑ | fleet-2u3.13 | `fleet seat attach <seat>`: read-only `tmux attach`, `--write` takes the keyboard | fleet-rge6.1 |
 | ☐ | fleet-rge6.6 | A controller refuses seats the daemon still hosts, doctor checks tmux, the docs describe the tmux model | fleet-rge6.2–.5, fleet-2u3.13 |
