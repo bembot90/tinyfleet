@@ -243,17 +243,18 @@ fn no_source_and_no_version_are_usage_errors_and_not_refusals() {
 }
 
 /// fleet-4fw: tiny added alone brings ts, which the same checkout holds, and
-/// says so on its output.
+/// says so on its output. The checkout is shaped as the fleet-packs repository
+/// is: tiny at the root, and ts under `runtimes/`, imported as `../runtimes/ts`.
 #[test]
 fn an_import_the_same_checkout_holds_is_added_and_reported() {
     const TINY: &str = "[pack]\nname = \"tiny\"\nversion = \"0.1.0\"\nschema = 3\n\n\
-                        [imports.ts]\nsource = \"../ts\"\nversion = \"0.1.0\"\n";
+                        [imports.ts]\nsource = \"../runtimes/ts\"\nversion = \"0.1.0\"\n";
     let repo = a_repo(
         "import-repo",
         &[
-            ("packs/tiny/pack.toml", TINY),
+            ("tiny/pack.toml", TINY),
             (
-                "packs/ts/pack.toml",
+                "runtimes/ts/pack.toml",
                 "[pack]\nname = \"ts\"\nversion = \"0.1.0\"\nschema = 3\n",
             ),
         ],
@@ -264,7 +265,7 @@ fn an_import_the_same_checkout_holds_is_added_and_reported() {
     let out = run(&[
         "pack",
         "add",
-        &format!("{}//packs/tiny", repo.root.to_string_lossy()),
+        &format!("{}//tiny", repo.root.to_string_lossy()),
         "--version",
         "v1",
         "--packs-dir",

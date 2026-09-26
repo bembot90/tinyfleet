@@ -1378,6 +1378,19 @@ pub fn stub_path() -> PathBuf {
     stub
 }
 
+/// A fixture pack the suites run fleet's own code on, by its directory under
+/// this crate's `tests/fixtures/packs`: `tiny`, shaped as the doctrine pack
+/// (it imports `ts` from the folder beside it, shadows four of the defaults'
+/// paths and pins no runtime), and `ts`, shaped as the runtime pack (a
+/// `[runtime]` table and a doctor entry of its own). Each carries only what an
+/// arm reads off it. The real packs live in the fleet-packs repository, and
+/// the checks on their own content run there, against a pinned fleet.
+pub fn fixture_pack(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/packs")
+        .join(name)
+}
+
 pub fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).expect("the destination directory is created");
     for entry in std::fs::read_dir(from).expect("the source directory is readable") {

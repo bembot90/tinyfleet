@@ -463,14 +463,15 @@ impl AsRef<Path> for Defaults {
     }
 }
 
-/// The doctrine pack, read from the shipped folder the same way.
-pub fn bundled_tiny() -> PathBuf {
-    workspace().join("packs/tiny")
+/// The fixture shaped as the doctrine pack: it imports `ts` and shadows four
+/// of the defaults' paths ([`fleet_core::test_support::fixture_pack`]).
+pub fn fixture_tiny() -> PathBuf {
+    fleet_core::test_support::fixture_pack("tiny")
 }
 
-/// The TypeScript layer, the one shipped pack that pins a runtime.
-pub fn bundled_ts() -> PathBuf {
-    workspace().join("packs/ts")
+/// The fixture shaped as the runtime pack, the one that pins a runtime.
+pub fn fixture_ts() -> PathBuf {
+    fleet_core::test_support::fixture_pack("ts")
 }
 
 pub fn workspace() -> PathBuf {

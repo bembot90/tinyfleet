@@ -1,6 +1,0 @@
-description = "Whether the deno this pack pins in [runtime] is the one this box resolves — from PATH first, ~/.deno/bin second — at the pinned version."
-run = "run.sh"
-
-# The instance of the shape the binary's defaults ship under
-# doctor/runtime-version, carrying the one fact the shape cannot know: where
-# deno's installer puts the binary.

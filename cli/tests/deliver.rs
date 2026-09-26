@@ -681,10 +681,10 @@ fn review_land_writes_the_accept_on_the_record_and_the_event_on_the_stream() {
     );
 }
 
-/// `review --return` through the same binary, fed the findings file tiny's
-/// takeoff writes when a person answers B at its hold — the fixture its own
-/// suite asserts it writes byte for byte, because that suite runs a fake
-/// binary and never learns whether the real one reads the file.
+/// `review --return` through the same binary, fed a findings file of the
+/// shape `assets/findings.schema.json` declares: the one tiny's takeoff writes
+/// when a person answers B at its hold. That takeoff writes exactly this file
+/// is takeoff's own suite's to hold, in the fleet-packs repository.
 ///
 /// The control is the file takeoff wrote before its findings were JSON: a
 /// marker line and a sentence, numbering nothing, which the verb refuses with
@@ -732,8 +732,13 @@ fn review_return_takes_the_findings_file_takeoff_writes_on_b() {
         "a file that does not read hands nothing over"
     );
 
-    let takeoff = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../packs/ts/assets/sdk/testdata/takeoff_findings_b.json");
+    let takeoff = rig.root.join("findings.json");
+    std::fs::write(
+        &takeoff,
+        "{\n  \"findings\": [\n    {\n      \"text\": \"The person answered B at the run's hold: \
+         B. return to the builder.\"\n    }\n  ]\n}\n",
+    )
+    .expect("the findings file is written");
     let out = rig.run(&[
         "review",
         &item,

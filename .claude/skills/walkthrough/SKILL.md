@@ -20,10 +20,11 @@ read nothing else.
 `core/` (pack-and-project work that never reads the process table), then
 `controller/` (the process table and the platform layer: observe, decide,
 effect, the projection, the event stream), then `cli/` (the one binary,
-`fleet`). `packs/` holds what ships beside the binary: `packs/tiny` (the
-house rules, the skills, the takeoff workflow) and `packs/ts` (the TypeScript
-workflow SDK under `packs/ts/assets/sdk`). The work items live on the beads
-board and are read and written with `bd`; every id has the `fleet-` prefix.
+`fleet`). The packs a fleet installs live in the fleet-packs repository
+(`/Volumes/WorkBear/Code/fleet-packs`): `tiny` (the house rules, the skills,
+the takeoff workflow) and `runtimes/ts` (the TypeScript workflow SDK under
+`runtimes/ts/assets/sdk`). The work items live on the beads board and are
+read and written with `bd`; every id has the `fleet-` prefix.
 
 ## 1. Who runs this
 
@@ -176,9 +177,10 @@ entry points — and split it into sections that each fit under the ceiling and
 *make sense*: cut at subsystem boundaries, never mid-subsystem, and order them
 so that what a section needs already explained comes before it. For this
 repository that order is `core` (the store, policy, pack, resolve) before
-`controller` (observe, decide, effect, the projection) before `cli`, then the
-SDK (`packs/ts/assets/sdk`) and takeoff (`packs/tiny/workflows/takeoff.ts`) —
-core never depends on the controller, and the cli is where both meet. When
+`controller` (observe, decide, effect, the projection) before `cli` — core
+never depends on the controller, and the cli is where both meet. The SDK and
+takeoff are fleet-packs' (`runtimes/ts/assets/sdk`, `tiny/workflows/takeoff.ts`)
+and are walked from that checkout. When
 Alberto asks for the demo's code first, it comes first and the rest keep that
 order. Each section is a list of paths with its line count. Mapping the whole
 repository is work a subagent may do — **you re-run the measurement on every
@@ -346,7 +348,7 @@ the concision half his pointer added.
 **The five axes** (from the addyosmani review skill, ruling R10 on tinytown's
 health-check epic): *correctness* — does it do what its header and its doc
 claim, the error paths, the exit vocabulary every command shares (0–6, in
-`packs/tiny/assets/rules.md`), a check that cannot tell yes from no from
+tiny's `assets/rules.md`, fleet-packs' `tiny/assets/rules.md`), a check that cannot tell yes from no from
 COULD NOT TELL; *readability* — naming, control flow, dead code, a function
 that no longer fits on a screen; *architecture* — duplication inside the scope
 and against its siblings, with the canonical copy named, a refactor that
@@ -357,8 +359,8 @@ directory, a global config) without Alberto's hand; *performance* — a
 per-item loop where one query would do, a `bd` call per item where one
 listing would do, unbounded reads.
 
-**The house rules, each a finding class**: the rules in
-`packs/tiny/assets/rules.md` — read it once per sitting — the code itself
+**The house rules, each a finding class**: the rules in fleet-packs'
+`tiny/assets/rules.md` — read it once per sitting — the code itself
 breaks, above all its comment litmus, rule 5 of the seven: a comment states a
 constraint the code cannot show, and past tense about the code (what it used
 to do, how a bug happened, what was tried) is history that belongs on the
@@ -389,8 +391,8 @@ met in the walk is fixed where every caller routes through, so the finding
 greps the callers and names the shared point.
 
 **Product code and workshop code read to different clauses.** *Less is more*
-scopes to the product: every line of `controller/`, `core/`, `cli/` and
-`packs/` has to earn its place and the metric is lines removed. The workshop,
+scopes to the product: every line of `controller/`, `core/` and `cli/` has
+to earn its place and the metric is lines removed. The workshop,
 `tools/` and `.config/`, is judged by its own economy — a guard with a
 measured reason stays.
 
@@ -496,8 +498,8 @@ that walked it as the reason.
 
 Then **one paragraph in chat**: what was walked, the findings filed by full id,
 what he had right and what was corrected. It ends at the state of the sitting
-and never nominates the next thing (rule 4 of the seven in
-`packs/tiny/assets/rules.md`) — the next section is on the outline bead.
+and never nominates the next thing (rule 4 of the seven in tiny's
+`assets/rules.md`) — the next section is on the outline bead.
 
 ## What this skill never does
 

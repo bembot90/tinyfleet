@@ -1,0 +1,15 @@
+# A FIXTURE, shaped as the runtime pack is: it imports nothing, pins a runtime
+# in [runtime], and carries a doctor instance of its own. The version is the
+# workflows page's example and not the real ts pack's pin, which lives with ts
+# in the fleet-packs repository.
+[pack]
+name = "ts"
+version = "0.1.0"
+schema = 3
+description = "A fixture shaped as the runtime pack: a [runtime] table and one doctor entry."
+
+[runtime]
+name    = "deno"
+version = "2.4.5"
+bundle  = "deno bundle {entry} --output {bundle}"
+run     = "deno run --allow-run={fleet} --allow-read={run_dir} --allow-write={run_dir} --allow-env=FLEET_ {bundle}"

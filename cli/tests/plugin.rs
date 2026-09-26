@@ -1,9 +1,10 @@
 //! The plugin shape, and `fleet prime` through the shipped binary.
 //!
 //! The manifests, the hook wiring, the shim and the probe skill are read off
-//! the tree rather than retyped here — the overlay's command list especially,
-//! because the whole claim of the hook file is that it is that list addressed
-//! through the plugin root, and a retyped copy would agree with itself.
+//! the tree rather than retyped here — the hook file's command list
+//! especially, because its whole claim is that it is the binary's guard
+//! classes addressed through the plugin root, and a retyped copy would agree
+//! with itself.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -433,22 +434,22 @@ fn the_probe_skill_is_named_version() {
 }
 
 mod lessons {
-    //! `claude-code.md` D5's and D6's fixture tests: the hook file is the
-    //! overlay's command list addressed through the one variable a hook process
-    //! carries, and a pack's skills reach a session through a link the loader
-    //! follows rather than through a copy.
+    //! `claude-code.md` D5's fixture test: the hook file is a command list
+    //! addressed through the one variable a hook process carries.
     //!
-    //! WHICH OVERLAY IS THE DOCTRINE PACK'S. The plugin root is this repository's
-    //! and this repository's project is the doctrine pack's, so the list the
-    //! plugin must equal is that pack's shadow of the file — which is where the
-    //! two classes a pack wires are wired. The second arm holds the
-    //! relationship between the two lists, so a pack that dropped one of the
-    //! default classes is caught here rather than in a session that stopped
-    //! refusing.
+    //! WHICH LIST. The plugin root is this repository's, and it wires every
+    //! guard class the binary compiles: the two the defaults' overlay wires
+    //! first, in that file's order, and the two a pack wires after them. The
+    //! doctrine pack that shadows the overlay with the same four lives in the
+    //! fleet-packs repository, and its own suite holds its list to the
+    //! defaults'.
+    //!
+    //! The plugin root carries no pack's skills. Its one skill is the probe;
+    //! the doctrine pack's rituals reach a session through the pack's own
+    //! install, not through links in this tree.
 
     use super::*;
 
-    const OVERLAY: &str = "packs/tiny/overlay/per-provider/claude/hooks.json";
     const DEFAULT_OVERLAY: &str = "core/defaults/overlay/per-provider/claude/hooks.json";
 
     /// The Bash entry's command list out of one hooks document.
@@ -460,37 +461,6 @@ mod lessons {
         assert_eq!(pre.len(), 1, "{relative}: one entry, matching Bash");
         assert_eq!(pre[0]["matcher"].as_str(), Some("Bash"), "{relative}");
         commands(&pre[0])
-    }
-
-    #[test]
-    fn the_pack_wires_the_default_classes_first_and_its_own_after_them() {
-        let defaults = pre_tool_commands(DEFAULT_OVERLAY);
-        let pack = pre_tool_commands(OVERLAY);
-
-        // The control on the prefix test below: two empty lists share a prefix,
-        // and an overlay this test could not read would pass as agreement.
-        assert!(
-            !defaults.is_empty() && pack.len() > defaults.len(),
-            "both lists were read, and the pack adds to the defaults': {defaults:?} / {pack:?}"
-        );
-        assert_eq!(
-            pack[..defaults.len()],
-            defaults[..],
-            "the pack's list BEGINS with the defaults', in order — a pack wires its own \
-             classes on top and removes none"
-        );
-        for class in ["release-ref", "production-write"] {
-            assert!(
-                pack.iter().any(|c| c.ends_with(&format!("guard {class}"))),
-                "the pack wires {class}: {pack:?}"
-            );
-            assert!(
-                !defaults
-                    .iter()
-                    .any(|c| c.ends_with(&format!("guard {class}"))),
-                "and the defaults do not, which is why the pack has to: {defaults:?}"
-            );
-        }
     }
 
     #[test]
@@ -513,121 +483,59 @@ mod lessons {
             })
             .collect();
 
-        let want = pre_tool_commands(OVERLAY);
+        // Every class the binary compiles, in the order it lists them — read
+        // off the binary's own list rather than retyped, so a class added to
+        // it and not to the plugin reds this.
+        let want: Vec<String> = fleet_core::guard::CLASSES
+            .iter()
+            .map(|class| format!("fleet guard {}", class.name()))
+            .collect();
+        let defaults = pre_tool_commands(DEFAULT_OVERLAY);
 
-        // The control on the comparison below: two empty lists are equal, and
+        // The control on the comparisons below: two empty lists are equal, and
         // an overlay this test could not read would pass as agreement.
         assert!(
-            !want.is_empty(),
-            "the overlay's command list was read and is not empty"
+            !defaults.is_empty() && want.len() > defaults.len(),
+            "the defaults' list was read, and the binary compiles more classes than it wires: \
+             {defaults:?} / {want:?}"
+        );
+        assert_eq!(
+            want[..defaults.len()],
+            defaults[..],
+            "the defaults wire the binary's first classes, in its order"
         );
         assert_eq!(
             stripped, want,
-            "the plugin's commands are the overlay's, in order, addressed through the plugin root"
+            "the plugin's commands are every class the binary compiles, in order, addressed \
+             through the plugin root"
         );
     }
 
-    /// D6. The loader follows a symbolic link, so every ritual the doctrine pack
-    /// owns is LINKED into the plugin root rather than copied there. What this
-    /// pins is the shape that measurement licensed: one copy, in the pack, and
-    /// the plugin root pointing at it.
+    /// The plugin root's skills directory holds the probe and nothing else: a
+    /// real directory, not a link, so the one skill a `--plugin-dir` session
+    /// loads from this tree is this tree's own.
     #[test]
-    fn the_plugin_loader_follows_a_skill_link() {
-        let root = fleet_root();
-        let skills = root.join("skills");
-
-        let mut linked = 0;
-        let mut plain = 0;
-        for entry in std::fs::read_dir(&skills).expect("the plugin's skills directory is readable")
-        {
-            let entry = entry.expect("the entry is readable");
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let kind = std::fs::symlink_metadata(entry.path())
-                .expect("the entry's own kind is readable")
-                .file_type();
-            if !kind.is_symlink() {
-                // The probe skill is the plugin's own and is a real directory:
-                // it is the control that says the test below discriminates,
-                // rather than calling everything it finds a link.
-                assert_eq!(
-                    name, "version",
-                    "the only skill living in the plugin root itself is the probe"
-                );
-                plain += 1;
-                continue;
-            }
-
-            let target = std::fs::read_link(entry.path()).expect("the link's target is readable");
-            let target = target.to_string_lossy().into_owned();
-            assert_eq!(
-                target,
-                format!("../packs/tiny/skills/{name}"),
-                "{name} is linked at the pack's own path, relative, so the link \
-                 survives a checkout anywhere"
-            );
-
-            // The link is LIVE and not a stale copy: the bytes read through the
-            // plugin's path are the pack file's own.
-            let through = std::fs::read_to_string(entry.path().join("SKILL.md"))
-                .unwrap_or_else(|e| panic!("{name} resolves to a SKILL.md: {e}"));
-            let direct = read(&format!("packs/tiny/skills/{name}/SKILL.md"));
-            assert_eq!(
-                through, direct,
-                "{name} is read through the link, not copied"
-            );
-            assert!(
-                direct
-                    .lines()
-                    .any(|line| line.trim() == format!("name: {name}")),
-                "{name}'s frontmatter names it for the directory the link points at"
-            );
-            linked += 1;
-        }
-
-        assert_eq!(plain, 1, "the probe skill was found");
-        assert!(
-            linked >= 8,
-            "the pack's rituals reach the plugin root through links: {linked} found"
-        );
-    }
-
-    /// The converse of the arm above, which holds every link it finds and so
-    /// cannot see one that is missing. A skill the pack ships and the plugin
-    /// root does not link is a ritual no `--plugin-dir` session can invoke, and
-    /// nothing else fails for it: the pack installs, and every link that is
-    /// there resolves.
-    #[test]
-    fn every_pack_skill_is_linked_into_the_plugin_root() {
-        let root = fleet_root();
-        let pack = root.join("packs/tiny/skills");
-
-        let mut owned: Vec<String> = std::fs::read_dir(&pack)
-            .expect("the pack's skills directory is readable")
-            .map(|entry| entry.expect("the entry is readable"))
-            .filter(|entry| entry.path().is_dir())
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .collect();
-        owned.sort();
-
-        // The control on the loop below: a pack directory this test could not
-        // read would own nothing, and nothing would pass as all linked.
-        assert!(
-            owned.iter().any(|name| name == "wake"),
-            "the pack's skills were read: {owned:?}"
-        );
-
-        let unlinked: Vec<&String> = owned
-            .iter()
-            .filter(|name| {
-                std::fs::symlink_metadata(root.join("skills").join(name.as_str()))
-                    .map(|meta| !meta.file_type().is_symlink())
-                    .unwrap_or(true)
+    fn the_plugin_root_ships_the_probe_skill_alone() {
+        let skills = fleet_root().join("skills");
+        let mut found: Vec<(String, bool)> = std::fs::read_dir(&skills)
+            .expect("the plugin's skills directory is readable")
+            .map(|entry| {
+                let entry = entry.expect("the entry is readable");
+                let kind = std::fs::symlink_metadata(entry.path())
+                    .expect("the entry's own kind is readable")
+                    .file_type();
+                (
+                    entry.file_name().to_string_lossy().into_owned(),
+                    kind.is_symlink(),
+                )
             })
             .collect();
-        assert!(
-            unlinked.is_empty(),
-            "every skill the pack ships has a link under skills/, or a session \
-             loaded with the plugin has no fleet: ritual for it: {unlinked:?} unlinked"
+        found.sort();
+        assert_eq!(
+            found,
+            vec![("version".to_string(), false)],
+            "the probe is the plugin root's only skill, and it lives here rather than \
+             through a link"
         );
     }
 }
@@ -795,7 +703,7 @@ fn copy_dir(from: &Path, to: &Path) {
 fn git_fixture(root: &Path) {
     for args in [
         vec!["init", "--quiet", "-b", "main"],
-        vec!["add", "--", "fleet"],
+        vec!["add", "--all"],
         vec!["commit", "--quiet", "--no-gpg-sign", "-m", "the packs"],
         vec!["tag", "v1"],
     ] {
@@ -992,15 +900,16 @@ fn the_highest_layer_carrying_the_rules_file_is_the_one_printed() {
     );
 }
 
-/// `pack add` of the two shipped packs, then `prime` over what it installed.
+/// `pack add` of a pack and the pack it imports, then `prime` over what it
+/// installed.
 ///
-/// The source is a repository holding this tree's two pack directories at their
-/// own paths, and not a clone of the whole checkout: the verb clones what it is
-/// pointed at, and a local clone of this repository copied 1.6 GB in 8 seconds
-/// on the box this was written on, per run, growing with the history. What the
-/// arm is about — the subdirectory form, the layering check the DEFAULTS'
-/// registry gates, and the bytes that land — is carried by the pack
-/// directories, which are COPIED here rather than retyped.
+/// The source is a repository holding the two fixture packs — tiny, shaped as
+/// the doctrine pack, and ts, the runtime pack it imports — at paths of their
+/// own, COPIED from the fixture tree rather than retyped. What the arm is about
+/// is fleet's: the subdirectory form, the layering check the DEFAULTS'
+/// registry gates (tiny shadows four of the paths it lists), and the bytes
+/// that land. Whether the real doctrine pack passes the same gate is its own
+/// suite's, in the fleet-packs repository, against a pinned fleet.
 ///
 /// ts first, then tiny — one of the orders `check_layering` accepts, since it
 /// lays each add by the imports and not by the install sequence; the core
@@ -1008,27 +917,27 @@ fn the_highest_layer_carrying_the_rules_file_is_the_one_printed() {
 /// the binary's defaults are materialized first so the registry rule the adds
 /// pass is the shipped one.
 #[test]
-fn the_shipped_packs_install_from_a_checkout_and_prime_reads_them() {
+fn a_pack_and_its_import_install_from_a_checkout_and_prime_reads_them() {
     let s = Scratch::new("tiny-install");
     let cwd = s.dir("cwd");
     let fleet_dir = s.dir("fleet-dir");
     let source = s.dir("source");
     s.shipped_defaults();
 
-    const SHIPPED: [&str; 2] = ["ts", "tiny"];
-    for name in SHIPPED {
+    const PACKS: [&str; 2] = ["ts", "tiny"];
+    for name in PACKS {
         copy_dir(
-            &fleet_root().join("packs").join(name),
-            &source.join("fleet/packs").join(name),
+            &fleet_core::test_support::fixture_pack(name),
+            &source.join(name),
         );
     }
     git_fixture(&source);
 
     let packs_dir = fleet_dir.join("packs");
     let lock = fleet_dir.join("packs.lock");
-    for name in SHIPPED {
+    for name in PACKS {
         let out = pack_add(
-            &format!("{}//fleet/packs/{name}", text_of(&source)),
+            &format!("{}//{name}", text_of(&source)),
             &fleet_dir,
             &packs_dir,
             &lock,
@@ -1054,13 +963,13 @@ fn the_shipped_packs_install_from_a_checkout_and_prime_reads_them() {
     assert_eq!(
         names,
         vec!["tiny", "ts"],
-        "one lock line per shipped pack, in source order"
+        "one lock line per pack, in source order"
     );
     let ts = pinned
         .iter()
         .find(|e| e.name.as_deref() == Some("ts"))
         .expect("the lock records the ts pack");
-    assert!(ts.source.ends_with("//fleet/packs/ts"), "{}", ts.source);
+    assert!(ts.source.ends_with("//ts"), "{}", ts.source);
     assert_eq!(ts.version, "v1");
 
     let fleet_toml = s.write("fleet-root/fleet.toml", "");
@@ -1072,12 +981,15 @@ fn the_shipped_packs_install_from_a_checkout_and_prime_reads_them() {
     let (first, _, rest) = past_line_two(&text);
     assert!(
         first.contains("packs: tiny, ts"),
-        "the doctrine pack sits on top and the runtime pack it imports beneath it: {first}"
+        "the doctrine-shaped pack sits on top and the runtime pack it imports beneath it: {first}"
     );
 
-    // Read off the tree, not off the installed copy: a comparison against what
-    // `pack add` wrote would only prove that prime read the same file twice.
-    let rules = read("packs/tiny/assets/rules.md");
+    // Read off the fixture, not off the installed copy: a comparison against
+    // what `pack add` wrote would only prove that prime read the same file
+    // twice.
+    let rules_file = fleet_core::test_support::fixture_pack("tiny").join("assets/rules.md");
+    let rules = std::fs::read_to_string(&rules_file)
+        .unwrap_or_else(|e| panic!("{} is readable: {e}", rules_file.display()));
     assert!(!rules.is_empty(), "the pack's rules file was read");
     assert_eq!(rest, rules, "the pack's rules follow line 2 byte for byte");
 }

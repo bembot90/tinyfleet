@@ -1,0 +1,2 @@
+description = "The fixture's doctor entry: a path only the runtime pack carries."
+run = "run.sh"

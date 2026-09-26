@@ -819,17 +819,23 @@ fn a_version_the_repository_does_not_carry_refuses_naming_the_step() {
 
 // ------------------------------------------ fleet-4fw: the packs a pack imports
 
-/// A checkout shaped as this workspace ships its packs: tiny under `packs/tiny`
-/// importing ts from `../ts`, and ts beside it.
+/// A checkout shaped as the fleet-packs repository holds its packs: tiny at
+/// `tiny` importing ts from `../runtimes/ts`, and ts one level down, under
+/// `runtimes/`. The import climbs out of the importer's folder and back into
+/// another, and stays inside the one checkout.
 fn a_checkout_of_tiny_and_ts(label: &str) -> (common::Fixture, String) {
+    let tiny = format!(
+        "{}\n[imports.ts]\nsource = \"../runtimes/ts\"\nversion = \"0.1.0\"\n",
+        manifest("tiny")
+    );
     repo(
         label,
         &[
-            ("packs/tiny/pack.toml", &manifest_importing("tiny", &["ts"])),
-            ("packs/tiny/skills/review/SKILL.md", "# review\n"),
-            ("packs/ts/pack.toml", &manifest("ts")),
+            ("tiny/pack.toml", &tiny),
+            ("tiny/skills/review/SKILL.md", "# review\n"),
+            ("runtimes/ts/pack.toml", &manifest("ts")),
             (
-                "packs/ts/doctor/deno-version/doctor.toml",
+                "runtimes/ts/doctor/deno-version/doctor.toml",
                 "name = \"deno-version\"\n",
             ),
         ],
@@ -844,7 +850,7 @@ fn a_checkout_of_tiny_and_ts(label: &str) -> (common::Fixture, String) {
 fn an_import_the_same_checkout_holds_is_installed_with_its_importer() {
     let (checkout, sha) = a_checkout_of_tiny_and_ts("with-tiny");
     let machine = Machine::new("with-machine");
-    let tiny = format!("{}//packs/tiny", source_of(&checkout));
+    let tiny = format!("{}//tiny", source_of(&checkout));
 
     let added = add::add(
         &machine.packs(),
@@ -866,23 +872,23 @@ fn an_import_the_same_checkout_holds_is_installed_with_its_importer() {
         .join("ts/doctor/deno-version/doctor.toml")
         .is_file());
 
-    let ts = format!("{}//packs/ts", source_of(&checkout));
+    let ts = format!("{}//runtimes/ts", source_of(&checkout));
     let mut pinned = lock::read(&machine.lock()).expect("the lock parses");
     pinned.sort_by(|a, b| a.source.cmp(&b.source));
     assert_eq!(
         pinned,
         vec![
             lock::Entry {
-                source: tiny,
-                name: Some("tiny".into()),
+                source: ts,
+                name: Some("ts".into()),
                 version: "v1".into(),
                 commit: sha.clone(),
                 fetched: WHEN.into(),
                 tree: None,
             },
             lock::Entry {
-                source: ts,
-                name: Some("ts".into()),
+                source: tiny,
+                name: Some("tiny".into()),
                 version: "v1".into(),
                 commit: sha,
                 fetched: WHEN.into(),
@@ -903,12 +909,12 @@ fn an_import_already_installed_is_not_installed_again() {
     let (checkout, _) = a_checkout_of_tiny_and_ts("already-tiny");
     let machine = Machine::new("already-machine");
 
-    for subdir in ["ts", "tiny"] {
+    for subdir in ["runtimes/ts", "tiny"] {
         let added = add::add(
             &machine.packs(),
             &machine.defaults(),
             &machine.lock(),
-            &format!("{}//packs/{subdir}", source_of(&checkout)),
+            &format!("{}//{subdir}", source_of(&checkout)),
             "v1",
             WHEN,
         )
@@ -976,7 +982,7 @@ fn an_import_outside_the_checkout_is_named_with_the_line_that_adds_it() {
 fn an_import_the_checkout_does_not_hold_is_named_without_a_line() {
     let (checkout, _) = repo(
         "nothere-tiny",
-        &[("packs/tiny/pack.toml", &manifest_importing("tiny", &["ts"]))],
+        &[("tiny/pack.toml", &manifest_importing("tiny", &["ts"]))],
     );
     let machine = Machine::new("nothere-machine");
 
@@ -984,7 +990,7 @@ fn an_import_the_checkout_does_not_hold_is_named_without_a_line() {
         &machine.packs(),
         &machine.defaults(),
         &machine.lock(),
-        &format!("{}//packs/tiny", source_of(&checkout)),
+        &format!("{}//tiny", source_of(&checkout)),
         "v1",
         WHEN,
     )
@@ -1009,8 +1015,8 @@ fn an_import_that_calls_itself_another_name_refuses_and_leaves_nothing() {
     let (checkout, _) = repo(
         "misnamed-tiny",
         &[
-            ("packs/tiny/pack.toml", &manifest_importing("tiny", &["ts"])),
-            ("packs/ts/pack.toml", &manifest("typescript")),
+            ("tiny/pack.toml", &manifest_importing("tiny", &["ts"])),
+            ("ts/pack.toml", &manifest("typescript")),
         ],
     );
     let machine = Machine::new("misnamed-machine");
@@ -1019,7 +1025,7 @@ fn an_import_that_calls_itself_another_name_refuses_and_leaves_nothing() {
         &machine.packs(),
         &machine.defaults(),
         &machine.lock(),
-        &format!("{}//packs/tiny", source_of(&checkout)),
+        &format!("{}//tiny", source_of(&checkout)),
         "v1",
         WHEN,
     )
@@ -1043,8 +1049,8 @@ fn an_import_the_layering_refuses_leaves_neither_pack() {
     let (checkout, _) = repo(
         "deep-tiny",
         &[
-            ("packs/tiny/pack.toml", &manifest_importing("tiny", &["ts"])),
-            ("packs/ts/pack.toml", &manifest_importing("ts", &["deno"])),
+            ("tiny/pack.toml", &manifest_importing("tiny", &["ts"])),
+            ("ts/pack.toml", &manifest_importing("ts", &["deno"])),
         ],
     );
     let machine = Machine::new("deep-machine");
@@ -1053,7 +1059,7 @@ fn an_import_the_layering_refuses_leaves_neither_pack() {
         &machine.packs(),
         &machine.defaults(),
         &machine.lock(),
-        &format!("{}//packs/tiny", source_of(&checkout)),
+        &format!("{}//tiny", source_of(&checkout)),
         "v1",
         WHEN,
     )
@@ -1100,12 +1106,23 @@ fn an_import_source_is_read_against_its_importers_source() {
     };
     let tiny = at("https://example.invalid/o/fleet", Some("packs/tiny"));
     let root = at("https://example.invalid/o/tiny", None);
+    // The fleet-packs repository's own shape: tiny at the root, ts under
+    // `runtimes/`.
+    let packs_tiny = at("https://example.invalid/o/fleet-packs", Some("tiny"));
 
-    let cases: [(&Source, &str, add::Located); 8] = [
+    let cases: [(&Source, &str, add::Located); 9] = [
         (
             &tiny,
             "../ts",
             add::Located::Inside(at("https://example.invalid/o/fleet", Some("packs/ts"))),
+        ),
+        (
+            &packs_tiny,
+            "../runtimes/ts",
+            add::Located::Inside(at(
+                "https://example.invalid/o/fleet-packs",
+                Some("runtimes/ts"),
+            )),
         ),
         (
             &tiny,

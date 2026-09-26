@@ -241,20 +241,22 @@ its id), and run `fleet start`. See
 
 A fresh fleet runs on the defaults alone. The tiny pack is the doctrine layered
 over them, and its workflows run under the TypeScript runtime the `ts` pack
-declares. Adding tiny does not add ts, so add both, from a checkout of fleet,
-after `fleet create` has run on this machine:
+declares. Both live in the fleet-packs repository,
+`https://github.com/bembot90/fleet-packs`, written `<fleet-packs>` below: tiny
+at `tiny` and ts at `runtimes/ts`. tiny imports ts and the repository holds
+both, so one add installs the two, after `fleet create` has run on this
+machine:
 
 ```sh
-$ fleet pack add <checkout>//packs/tiny --version <version>
+$ fleet pack add <fleet-packs>//tiny --version <version>
 added tiny <version> at <sha> — <machine>/packs/tiny
-pinned in <machine>/packs.lock
-$ fleet pack add <checkout>//packs/ts --version <version>
-added ts <version> at <sha> — <machine>/packs/ts
+added ts <version> at <sha>, which tiny imports — <machine>/packs/ts
 pinned in <machine>/packs.lock
 ```
 
-Each exits 0. `<version>` is a tag, a branch, or `sha:` followed by a full
-40-character commit. The pack is fetched with git, so what installs is the
+It exits 0. `<version>` is a tag, a branch such as `main`, or `sha:` followed
+by a full 40-character commit, and ts is pinned at the same commit as tiny.
+The pack is fetched with git, so what installs is the
 committed pack at that version, not the working tree. The `ts` pack pins
 `deno` 2.9.7 as its runtime. With tiny installed and ts missing,
 `fleet run takeoff` refuses. How packs layer is in [Packs](packs.md).
@@ -359,11 +361,7 @@ With no project, it reads `store: none (no project here)`. Outside every fleet i
 prints one line, `fleet 0.1.0 — no fleet config found above <directory>`. When the directory
 is a seat's worktree, it also lists the items assigned to that seat.
 
-The plugin carries a `version` skill that runs `fleet --version`, and the
-tiny pack's rituals as skills: `wake`, `handoff`, `rest`, `clock-out`,
-`morning`, `corrections-review`, `praise`, `preboard`, `takeoff`, `report`
-and `runbook`. These skills come from the plugin's own checkout, not from
-the tiny pack installed in the machine directory.
+The plugin carries one skill, `version`, which runs `fleet --version`.
 
 ### Which fleet binary the plugin runs
 
@@ -405,7 +403,7 @@ A relative path is read from the directory `fleet.toml` is in. With no
 | `--fleet` names a directory with no `fleet.toml` | 1 | ``fleet create: --fleet <dir> holds no fleet.toml — name the directory of an embedded fleet, the one `fleet create --embedded` wrote that file in`` | Name the fleet's own directory. |
 | `--standalone` again, in a project whose declaration has no `item_prefix` | 1 | ``fleet create: <project>/.fleet/project.toml carries no `[project] item_prefix`, which a project declared to this fleet needs`` | Set `item_prefix` in `[project]`. |
 | `fleet pack add` before `fleet create` or `fleet start` has run on this machine | 1 | ``fleet pack add: the defaults this binary carries are not at <machine>/defaults — `fleet start` writes them, and every template resolves through them`` | Run `fleet create` first. |
-| `fleet run takeoff` with tiny installed and ts not | 1 | ``fleet run: `tiny` carries `workflows/takeoff.ts` and declares no [runtime] table, and no pack it imports declares one — core knows one thing about a workflow's language and that table is it, so there is no command to bundle this file with`` | Add `<checkout>//packs/ts`. |
+| `fleet run takeoff` with tiny installed and ts not | 1 | ``fleet run: `tiny` carries `workflows/takeoff.ts` and declares no [runtime] table, and no installed pack it imports declares one: `tiny` imports `ts`, which is not installed — `fleet pack add <fleet-packs>//runtimes/ts --version <version>` adds it`` | Run the `fleet pack add` it names. |
 | `fleet run` in a project with no `bd` store | 3 | `fleet run: the work graph could not be read: ...` | Run `bd init` in the project. |
 | `fleet start` with no `fleet.toml` above the directory and no fleet named by the seat list | 1 | ``fleet start: no fleet.toml above this directory and no fleet named by <machine>/config.json — `fleet create` writes one`` | Run it inside the fleet's project, or `fleet create` first. |
 | `fleet start` while the controller is running | 1 | `fleet start: the controller is already running as pid <pid>; its last tick was <stamp>` | Nothing to do, or `fleet stop` first. |

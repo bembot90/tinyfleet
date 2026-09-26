@@ -34,33 +34,30 @@ fn copy_tree(from: &Path, to: &Path) {
     }
 }
 
-/// One of the shipped packs, by name, from the workspace this crate sits in.
-fn shipped(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("the cli crate sits inside the workspace")
-        .join("packs")
-        .join(name)
+/// One of the fixture packs, by name: `tiny`, shaped as the doctrine pack, or
+/// `ts`, shaped as the runtime pack ([`fleet_core::test_support::fixture_pack`]).
+fn fixture(name: &str) -> PathBuf {
+    fleet_core::test_support::fixture_pack(name)
 }
 
-/// A copy of the shipped pack, so a defect is planted in something that was
+/// A copy of a fixture pack, so a defect is planted in something that was
 /// valid a moment ago rather than in a hand-built lookalike.
 struct Copy {
     root: PathBuf,
 }
 
 impl Copy {
-    fn of_shipped(label: &str) -> Copy {
+    fn of_fixture(label: &str) -> Copy {
         let n = NEXT.fetch_add(1, Ordering::SeqCst);
         let root =
             std::env::temp_dir().join(format!("fleet-cli-pack-{label}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         // The WHOLE pack, walked rather than listed: a hand-written list goes
-        // stale the first time the pack ships another slot. The RUNTIME pack is
-        // the one copied, because it declares no imports and publishes no
-        // registry — so a layering arm below reads the defect it planted and
+        // stale the first time the fixture carries another slot. The RUNTIME
+        // pack is the one copied, because it declares no imports and publishes
+        // no registry — so a layering arm below reads the defect it planted and
         // not a transitive import or a shadow rule.
-        copy_tree(&shipped("ts"), &root);
+        copy_tree(&fixture("ts"), &root);
         Copy { root }
     }
 
@@ -85,11 +82,11 @@ impl Drop for Copy {
 }
 
 #[test]
-fn the_doctrine_pack_checks_clean() {
+fn a_doctrine_shaped_pack_checks_clean() {
     let out = run(&[
         "pack",
         "check",
-        shipped("tiny").to_str().expect("a utf-8 path"),
+        fixture("tiny").to_str().expect("a utf-8 path"),
     ]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -103,23 +100,23 @@ fn the_doctrine_pack_checks_clean() {
     assert!(!stdout.contains("runtime"), "{stdout}");
 }
 
-/// The runtime pack, and the doctrine pack checked over it as a real fleet
+/// A runtime pack, and the doctrine-shaped pack checked over it as a fleet
 /// layers the two: clean, and the report carries the pin the manifest's
 /// [runtime] table declares.
 #[test]
-fn the_runtime_pack_reports_its_pin_and_the_doctrine_pack_resolves_over_it() {
-    let ts = shipped("ts");
+fn a_runtime_pack_reports_its_pin_and_the_doctrine_shaped_pack_resolves_over_it() {
+    let ts = fixture("ts");
     let out = run(&["pack", "check", ts.to_str().expect("a utf-8 path")]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("pack ts 0.1.0"), "{stdout}");
-    assert!(stdout.contains("runtime deno 2.9.7"), "{stdout}");
+    assert!(stdout.contains("runtime deno 2.4.5"), "{stdout}");
     assert!(stdout.contains("slot doctor: 1 entry"), "{stdout}");
 
     let out = run(&[
         "pack",
         "check",
-        shipped("tiny").to_str().expect("a utf-8 path"),
+        fixture("tiny").to_str().expect("a utf-8 path"),
         "--over",
         ts.to_str().expect("a utf-8 path"),
     ]);
@@ -134,7 +131,7 @@ fn the_runtime_pack_reports_its_pin_and_the_doctrine_pack_resolves_over_it() {
 
 #[test]
 fn a_ninth_top_level_name_exits_one_and_names_it() {
-    let copy = Copy::of_shipped("ninth");
+    let copy = Copy::of_fixture("ninth");
     copy.write("bin/dispatch", "#!/bin/sh\n");
     let out = run(&["pack", "check", copy.arg()]);
     assert_eq!(out.status.code(), Some(1));
@@ -147,7 +144,7 @@ fn a_ninth_top_level_name_exits_one_and_names_it() {
 
 #[test]
 fn an_agent_directory_holding_neither_form_exits_one_and_names_it() {
-    let copy = Copy::of_shipped("agent");
+    let copy = Copy::of_fixture("agent");
     copy.write("agents/dispatcher/notes.md", "nothing\n");
     let out = run(&["pack", "check", copy.arg()]);
     assert_eq!(out.status.code(), Some(1));
@@ -166,7 +163,7 @@ fn an_agent_directory_holding_neither_form_exits_one_and_names_it() {
 /// RED-PROOF: on the base `adapters` is an unknown top-level name.
 #[test]
 fn the_adapters_slot_is_counted_and_a_kind_out_of_place_exits_one() {
-    let copy = Copy::of_shipped("adapters");
+    let copy = Copy::of_fixture("adapters");
     let toml = |kind: &str| {
         format!(
             "[adapter]\nname = \"x\"\nkind = \"{kind}\"\nversion = \"0.1.0\"\n\
@@ -202,7 +199,7 @@ fn the_adapters_slot_is_counted_and_a_kind_out_of_place_exits_one() {
 
 #[test]
 fn a_manifest_at_the_previous_schema_exits_one_and_names_the_number() {
-    let copy = Copy::of_shipped("schema");
+    let copy = Copy::of_fixture("schema");
     copy.write(
         "pack.toml",
         "[pack]\nname = \"ts\"\nversion = \"0.1.0\"\nschema = 2\n",
@@ -218,13 +215,13 @@ fn a_manifest_at_the_previous_schema_exits_one_and_names_the_number() {
 
 #[test]
 fn over_runs_the_resolver_and_refuses_a_collision() {
-    let top = Copy::of_shipped("over-top");
+    let top = Copy::of_fixture("over-top");
     top.write(
         "pack.toml",
         "[pack]\nname = \"top\"\nversion = \"1\"\nschema = 3\n",
     )
     .write("agents/architect/agent.toml", "name = \"architect\"\n");
-    let base = Copy::of_shipped("over-base");
+    let base = Copy::of_fixture("over-base");
     base.write("agents/architect/agent.toml", "name = \"architect\"\n");
 
     let out = run(&["pack", "check", top.arg(), "--over", base.arg()]);
@@ -238,13 +235,13 @@ fn over_runs_the_resolver_and_refuses_a_collision() {
 
 #[test]
 fn over_resolves_two_clean_layers() {
-    let top = Copy::of_shipped("clean-top");
+    let top = Copy::of_fixture("clean-top");
     top.write(
         "pack.toml",
         "[pack]\nname = \"top\"\nversion = \"1\"\nschema = 3\n",
     )
     .write("agents/architect/agent.toml", "name = \"architect\"\n");
-    let base = Copy::of_shipped("clean-base");
+    let base = Copy::of_fixture("clean-base");
 
     let out = run(&["pack", "check", top.arg(), "--over", base.arg()]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));

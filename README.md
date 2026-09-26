@@ -109,25 +109,12 @@ nothing yet points at a binary — fails closed: each guard hook exits 2, which
 blocks the Bash command, and says what is missing and how to supply it, while
 the session-start hook says the same and lets the session come up.
 
-### The rituals a session gets
+### The skill a session gets
 
-`skills/version` is the plugin's own probe. Every other entry under `skills/`
-is a **symbolic link** into `packs/tiny/skills/`, so the pack keeps the only
-copy of its own opinion and the loader still finds a `SKILL.md` at the path it
-reads. The loader follows such a link — measured, with its controls, at
-`brain/lessons/claude-code.md` D6 — which is why nothing here is a pinned
-duplicate.
-
-The rituals, each resolving under the `fleet:` namespace: **wake**, a seat
-coming up for a session; **handoff**, the seat's day ending; **rest**, a
-mid-day handoff that asks the controller for a woken successor; **clock-out**,
-a spawned seat's last acts; **morning**, the first read of the open holds;
-**corrections-review**, a landing judged a second time for whether every line
-earns its place; **praise**, a laurel written into another seat's file;
-**preboard**, the next flight's list composed off the departure board;
-**takeoff**, a flight's two human phases, pre-flight and the reading of its
-report; and **report** and **runbook**, the two published-page house styles,
-each carrying its own `template.html`.
+`skills/version` is the plugin's own probe, and the only skill under
+`skills/`. The rituals a seat runs under the `fleet:` namespace — wake,
+handoff, rest, takeoff and the rest — are the tiny pack's, and live with it in
+the fleet-packs repository; this plugin carries none of them.
 
 ### The defaults and the packs
 
@@ -137,22 +124,22 @@ guards' wiring and their health checks, with no opinion about the work. It is
 not a pack — `core/build.rs` walks it into the executable, and `fleet create`
 and every `fleet start` materialize it into the machine directory's `defaults/`,
 a sibling of `packs/`, pinned by content hash. Every verb reads those files
-by path unless an installed pack shadows the path. `packs/tiny` is the
-opinion — the role documents, the builder manual, the values and the
+by path unless an installed pack shadows the path. tiny, in the fleet-packs
+repository (`https://github.com/bembot90/fleet-packs`), is the opinion — the role documents, the builder manual, the values and the
 every-turn rules — and it shadows
 `assets/rules.md` to add its own. The tiny pack and this binary together are
 the bundle **tinyfleet**; the binary on its own stays usable with anyone's
 packs, which is why the pack is not named after the bundle.
 
-Tiny installs from a checkout with the subdirectory form, which takes the
+Tiny installs from fleet-packs with the subdirectory form, which takes the
 repository and the path to the pack inside it:
 
-    fleet pack add <checkout>//packs/tiny --version <tag, branch or sha:…>
+    fleet pack add <fleet-packs>//tiny --version <tag, branch or sha:…>
 
 Tiny imports `ts`, the pack that pins Deno as the workflow runtime, and the
-same checkout holds it at `packs/ts`, so that one line installs both: ts comes
-out of the same clone, pinned at the same commit and keyed in `packs.lock` on
-`<checkout>//packs/ts`. An import that lives in another repository is not
+same repository holds it at `runtimes/ts`, so that one line installs both: ts
+comes out of the same clone, pinned at the same commit and keyed in
+`packs.lock` on `<fleet-packs>//runtimes/ts`. An import that lives in another repository is not
 fetched. `pack add` names it on stderr with the `fleet pack add` line that
 installs it, and still exits 0. Until it is added, `fleet prime`'s first line
 and `fleet run`'s refusal for a workflow with no runtime both name it with

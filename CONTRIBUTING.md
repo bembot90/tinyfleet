@@ -52,8 +52,9 @@ what they date:
 | bd | `PINNED_BD` | `core/src/store/bd/mod.rs`, the built-in store's adapter, beside every claim measured on it | `doctor/bd-version` |
 | Claude Code | `PINNED_CLAUDE_CODE` | `core/src/supported.rs` | `doctor/claude-code-version`, the controller's `substrate.moved` when a fleet pins none |
 
-Deno is a pack's, not the binary's: `packs/ts/pack.toml`'s `[runtime]` table,
-measured by `doctor/runtime-version`. git carries no pin.
+Deno is a pack's, not the binary's: the ts pack's `[runtime]` table
+(`runtimes/ts/pack.toml` in the fleet-packs repository), measured by
+`doctor/runtime-version`. git carries no pin.
 
 **A supported-version move is one constant plus a re-measure**, as one item:
 

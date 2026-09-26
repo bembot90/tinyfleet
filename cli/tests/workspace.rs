@@ -194,8 +194,9 @@ fn the_kinds_a_wake_names_are_core_s_entry_kinds() {
 
 /// The stream kinds the verbs wrote before every entry was one signal —
 /// retired, and spelled nowhere a writer or a reader of the stream lives: no
-/// string literal in core, the binary or the controller, and none in the SDK a
-/// workflow runs on. A line of one of them now would be a kind nothing reads.
+/// string literal in core, the binary or the controller. A line of one of them
+/// now would be a kind nothing reads. The SDK a workflow runs on is held to
+/// the same list by its own suite, in the fleet-packs repository.
 #[test]
 fn no_source_spells_a_retired_item_kind() {
     const RETIRED: [&str; 7] = [
@@ -231,7 +232,6 @@ fn no_source_spells_a_retired_item_kind() {
             .collect()
     };
     let rust = ["core/src", "cli/src", "controller/src"];
-    let sdk = ["packs/ts/assets/sdk/mod.ts"];
 
     // THE CONTROL: the kind that replaced them is found, as a literal, by the
     // same search — so an empty answer below is the tree's and not the
@@ -244,9 +244,6 @@ fn no_source_spells_a_retired_item_kind() {
     let mut found: Vec<String> = Vec::new();
     for kind in RETIRED {
         found.extend(grep(&format!("\"{kind}\""), &rust));
-        for quote in ['"', '\'', '`'] {
-            found.extend(grep(&format!("{quote}{kind}{quote}"), &sdk));
-        }
     }
     assert!(found.is_empty(), "retired kinds spelled: {found:#?}");
 }

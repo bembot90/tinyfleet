@@ -1,0 +1,2 @@
+description = "The fixture's shadow of the defaults' guard check."
+run = "run.sh"

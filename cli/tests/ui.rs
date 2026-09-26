@@ -89,13 +89,11 @@ fn on_a_pipe(args: &[&str]) -> Output {
         .expect("the built binary runs")
 }
 
-/// The doctrine pack, which is what these arms hand `pack check`: a real pack
-/// whose report has a line per slot and no runtime row.
-fn shipped_pack() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("the cli crate sits inside the workspace")
-        .join("packs/tiny")
+/// The fixture shaped as the doctrine pack, which is what these arms hand
+/// `pack check`: a whole pack whose report has a line per slot and no runtime
+/// row.
+fn a_whole_pack() -> PathBuf {
+    fleet_core::test_support::fixture_pack("tiny")
 }
 
 struct Temp {
@@ -175,7 +173,7 @@ fn a_pack_repo(label: &str) -> Temp {
 #[test]
 fn a_status_line_on_a_terminal_carries_escape_sequences() {
     let page = on_a_pty(
-        &["pack", "check", shipped_pack().to_str().expect("utf-8")],
+        &["pack", "check", a_whole_pack().to_str().expect("utf-8")],
         &[],
     );
     assert!(page.contains(ESC), "no styling on a terminal: {page:?}");
@@ -194,7 +192,7 @@ fn a_status_line_on_a_terminal_carries_escape_sequences() {
 /// module that always styles.
 #[test]
 fn the_same_invocation_on_a_pipe_carries_none() {
-    let out = on_a_pipe(&["pack", "check", shipped_pack().to_str().expect("utf-8")]);
+    let out = on_a_pipe(&["pack", "check", a_whole_pack().to_str().expect("utf-8")]);
     let page = String::from_utf8_lossy(&out.stdout);
     assert!(!page.contains(ESC), "a pipe is plain: {page:?}");
     assert!(page.contains("pack tiny 0.1.0 — schema 3"), "{page:?}");
@@ -206,7 +204,7 @@ fn the_same_invocation_on_a_pipe_carries_none() {
 fn no_color_and_a_dumb_term_are_plain_on_a_terminal() {
     for env in [[("NO_COLOR", "1")], [("TERM", "dumb")]] {
         let page = on_a_pty(
-            &["pack", "check", shipped_pack().to_str().expect("utf-8")],
+            &["pack", "check", a_whole_pack().to_str().expect("utf-8")],
             &env,
         );
         assert!(!page.contains(ESC), "{env:?} is plain: {page:?}");

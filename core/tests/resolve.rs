@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{bundled_tiny, bundled_ts, Defaults, Fixture};
+use common::{fixture_tiny, fixture_ts, Defaults, Fixture};
 use fleet_core::resolve::{Layer, Refusal};
 use fleet_core::{registry, resolve};
 
@@ -428,27 +428,28 @@ fn os_litter_in_two_layers_neither_resolves_nor_shadows() {
     );
 }
 
-/// The doctrine pack over the binary's defaults, resolved as two layers:
-/// nothing refuses, the doctrine pack carries the every-turn rules it shadows,
-/// and the defaults still carry the brief template nobody has shadowed. Read
-/// off the tree rather than from fixtures, so a registry entry withdrawn from
-/// the defaults reds this rather than passing against a copy. The third shipped
-/// pack, and the layering a real fleet installs both as, is the arm after this
-/// one.
+/// The fixture shaped as the doctrine pack over the binary's defaults,
+/// resolved as two layers: nothing refuses, the pack carries the every-turn
+/// rules it shadows, and the defaults still carry the brief template nobody
+/// has shadowed. The bottom layer is the binary's own set and not a fixture,
+/// so a registry entry withdrawn from the defaults for any of the four paths
+/// the pack shadows reds this rather than passing against a copy. The runtime
+/// pack beneath it, and the layering a fleet installs the two as, is the arm
+/// after this one.
 #[test]
-fn the_doctrine_pack_over_the_defaults_alone_resolves() {
-    let tiny = bundled_tiny();
+fn the_doctrine_shaped_pack_over_the_defaults_alone_resolves() {
+    let tiny = fixture_tiny();
     let held = Defaults::new("bottom");
     let bottom = held.path();
     let layers = vec![Layer::new("tiny", tiny.clone()), Layer::defaults(bottom)];
 
     let resolution = resolve::resolve(&layers)
-        .expect("the shipped layering resolves: the registry permits what tiny shadows");
+        .expect("the layering resolves: the registry permits what tiny shadows");
 
     assert_eq!(
         resolution.files.get("assets/rules.md").map(String::as_str),
         Some("tiny"),
-        "the doctrine pack carries the every-turn rules"
+        "the pack carries the every-turn rules"
     );
     assert_eq!(
         resolution.files.get("assets/brief.md").map(String::as_str),
@@ -484,23 +485,27 @@ fn the_doctrine_pack_over_the_defaults_alone_resolves() {
     );
 }
 
-/// The two shipped packs, as `installed` reads them off the tree and `ordered`
-/// lays them, over the binary's own defaults: tiny over ts, because tiny
-/// imports ts and ts imports nothing, and the defaults appended under both by
-/// the caller. tiny's import resolves to the ts folder beside it, the layering
-/// resolves with nothing refused, the doctor instance ts adds is carried by ts
-/// alone, and the shadow list is the doctrine pack's unchanged — so the middle
-/// layer adds a file and shadows none.
+/// The two fixture packs, as `installed` reads them off a packs directory and
+/// `ordered` lays them, over the binary's own defaults: tiny over ts, because
+/// tiny imports ts and ts imports nothing, and the defaults appended under both
+/// by the caller. tiny's import resolves to the ts folder beside it, the
+/// layering resolves with nothing refused, the doctor instance ts adds is
+/// carried by ts alone, and the shadow list is the doctrine-shaped pack's
+/// unchanged — so the middle layer adds a file and shadows none.
 #[test]
-fn the_shipped_packs_order_tiny_over_ts_over_the_defaults_and_resolve() {
-    let installed = resolve::installed(&common::workspace().join("packs"));
-    let mut ordered = resolve::ordered(installed).expect("the shipped packs order without a cycle");
+fn a_pack_and_its_import_order_tiny_over_ts_over_the_defaults_and_resolve() {
+    let packs_dir = fixture_tiny()
+        .parent()
+        .expect("the fixtures sit in one packs directory")
+        .to_path_buf();
+    let installed = resolve::installed(&packs_dir);
+    let mut ordered = resolve::ordered(installed).expect("the two packs order without a cycle");
     let held = Defaults::new("bottom");
     ordered.push(Layer::defaults(held.path()));
     let names: Vec<&str> = ordered.iter().map(|l| l.name.as_str()).collect();
     assert_eq!(names, vec!["tiny", "ts", fleet_core::defaults::LAYER]);
 
-    let tiny = std::fs::read_to_string(bundled_tiny().join(fleet_core::pack::MANIFEST))
+    let tiny = std::fs::read_to_string(fixture_tiny().join(fleet_core::pack::MANIFEST))
         .expect("tiny's manifest is readable");
     let manifest = fleet_core::pack::parse_manifest(&tiny).expect("tiny's manifest parses");
     let import = manifest
@@ -509,16 +514,16 @@ fn the_shipped_packs_order_tiny_over_ts_over_the_defaults_and_resolve() {
         .find(|i| i.name == "ts")
         .expect("tiny imports ts");
     assert_eq!(
-        bundled_tiny()
+        fixture_tiny()
             .join(&import.source)
             .canonicalize()
             .expect("the import's source is a folder beside tiny"),
-        bundled_ts()
+        fixture_ts()
             .canonicalize()
             .expect("the ts pack is a folder"),
-        "the import's source names the shipped ts folder"
+        "the import's source names the ts folder beside it"
     );
-    let ts = std::fs::read_to_string(bundled_ts().join(fleet_core::pack::MANIFEST))
+    let ts = std::fs::read_to_string(fixture_ts().join(fleet_core::pack::MANIFEST))
         .expect("ts's manifest is readable");
     let ts = fleet_core::pack::parse_manifest(&ts).expect("ts's manifest parses");
     assert_eq!(
@@ -526,7 +531,7 @@ fn the_shipped_packs_order_tiny_over_ts_over_the_defaults_and_resolve() {
         "the import pins the version ts declares"
     );
 
-    let resolution = resolve::resolve(&ordered).expect("the three-layer shipped layering resolves");
+    let resolution = resolve::resolve(&ordered).expect("the three-layer layering resolves");
     assert_eq!(
         resolution
             .files
@@ -555,6 +560,6 @@ fn the_shipped_packs_order_tiny_over_ts_over_the_defaults_and_resolve() {
             "doctor/guards-installed/run.sh",
             "overlay/per-provider/claude/hooks.json",
         ],
-        "the middle layer shadows nothing: the list is the doctrine pack's alone"
+        "the middle layer shadows nothing: the list is the doctrine-shaped pack's alone"
     );
 }

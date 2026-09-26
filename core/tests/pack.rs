@@ -1,9 +1,10 @@
 //! The pack format. One arm per defect class the check knows, each built as a
-//! real folder, plus the shipped pack read as it stands.
+//! real folder. The packs fleet's users install live in the fleet-packs
+//! repository, and the checks on their own content run there.
 
 mod common;
 
-use common::{bundled_tiny, bundled_ts, Defaults, Fixture};
+use common::{fixture_tiny, Defaults, Fixture};
 use fleet_core::pack::{self, Defect};
 
 fn defects(root: &std::path::Path) -> Vec<Defect> {
@@ -124,66 +125,6 @@ fn the_defaults_carry_no_note_template_and_the_registry_lists_none() {
         embedded.contains(&"assets/brief.md") && registry.lists("assets/brief.md"),
         "the brief is embedded and listed: {:?}",
         registry.shadows
-    );
-}
-
-#[test]
-fn the_doctrine_pack_is_valid_under_the_same_check() {
-    let report = pack::check(&bundled_tiny());
-    assert!(
-        report.is_valid(),
-        "the shipped doctrine pack must pass the format check: {:?}",
-        report.defects
-    );
-    let manifest = report
-        .manifest
-        .expect("the doctrine pack carries a manifest");
-    assert_eq!(manifest.name, "tiny");
-    assert_eq!(manifest.schema, pack::SCHEMA);
-    assert_eq!(
-        manifest.imports.iter().map(|i| &i.name).collect::<Vec<_>>(),
-        vec!["ts"],
-        "tiny imports the runtime pack and nothing else: the defaults are the \
-         binary's and are imported by nobody"
-    );
-    assert_eq!(
-        report.slots.iter().map(|s| s.name).collect::<Vec<_>>(),
-        vec!["agents", "assets", "doctor", "overlay", "skills", "workflows"],
-        "the doctrine lives in the six slots the format gives it: the role \
-         definitions under agents, the documents under assets, the health checks \
-         under doctor, under overlay the one file that says which guard classes \
-         a provider's sessions run, the seat's rituals under skills, and the workflow files under workflows"
-    );
-}
-
-/// The cost of shadowing a file whole: the copy has to carry the original. The
-/// arm reads BOTH files off the tree — neither text is retyped here, because a
-/// retyped copy would agree with itself — so a change to the default rules reds
-/// this until the doctrine pack's copy is re-synced.
-#[test]
-fn the_doctrine_pack_s_rules_open_with_the_defaults_byte_for_byte() {
-    let defaults = Defaults::new("rules");
-    let under = std::fs::read(defaults.path().join("assets/rules.md"))
-        .expect("the defaults publish the every-turn rules");
-    let over = std::fs::read(bundled_tiny().join("assets/rules.md"))
-        .expect("the doctrine pack shadows them");
-
-    // The control on the two assertions below: an empty prefix is a prefix of
-    // everything, and two identical files would make `starts_with` say nothing
-    // about ordering either.
-    assert!(
-        !under.is_empty(),
-        "the default rules file was read and is not empty"
-    );
-    assert!(
-        over.len() > under.len(),
-        "the shadow adds its own section: {} bytes over {}",
-        over.len(),
-        under.len()
-    );
-    assert!(
-        over.starts_with(&under),
-        "the doctrine pack's rules must open with the defaults', byte for byte"
     );
 }
 
@@ -679,13 +620,13 @@ fn a_manifest_carrying_the_runtime_table_parses_and_one_without_it_parses_too() 
         runtime.run
     );
 
-    // The control: the table is optional, and every pack this fleet ships today
-    // is on this side of it.
+    // The control: the table is optional, and a whole pack that carries no
+    // workflows — the fixture shaped as the doctrine pack — is on this side of it.
     let without = with_runtime("").expect("a pack that carries no workflows declares no runtime");
     assert_eq!(without.runtime, None);
-    let shipped = bundled_tiny();
-    let manifest = pack::check(&shipped).manifest.expect("a shipped manifest");
-    assert_eq!(manifest.runtime, None, "{}", shipped.display());
+    let tiny = fixture_tiny();
+    let manifest = pack::check(&tiny).manifest.expect("the fixture's manifest");
+    assert_eq!(manifest.runtime, None, "{}", tiny.display());
 }
 
 /// The four-key rule, both ways round: a fifth key is named and so is a missing
@@ -853,11 +794,11 @@ fn the_runtime_doctor_shape_reads_the_pinned_version_against_the_binary_on_path(
     assert_eq!(code, 1, "no runtime on PATH: {said}");
     assert!(said.contains("did not answer (exit 127)"), "{said}");
 
-    // The doctrine pack's reading: it pins no runtime, so the entry is the
-    // shape and not an instance, and a pack that carries no workflows is not
-    // red for it.
-    let (code, said) = run(&matching, &bundled_tiny());
-    assert_eq!(code, 0, "the doctrine pack pins no runtime: {said}");
+    // A pack that pins no runtime — the fixture shaped as the doctrine pack:
+    // the entry is the shape and not an instance, and a pack that carries no
+    // workflows is not red for it.
+    let (code, said) = run(&matching, &fixture_tiny());
+    assert_eq!(code, 0, "a pack that pins no runtime: {said}");
     assert!(said.contains("runtime-version: nothing pinned"), "{said}");
 }
 
@@ -1037,122 +978,6 @@ fn the_claude_code_doctor_check_reads_claude_version_against_the_pin() {
     assert!(said.contains("claude-code-version: holds"), "{said}");
 }
 
-/// The ts pack, read as it stands: the one shipped pack whose manifest carries
-/// the runtime table, and the doctor instance that measures it. The instance
-/// resolves the binary from PATH first and from the installer's bin second —
-/// the root deno's own installer names in `DENO_INSTALL`, which is the seam the
-/// arms move instead of HOME — printing which, so the arms move PATH and the
-/// root separately. The fifth arm puts a wrong version on PATH beside a right
-/// one under the root, because a check that looked in the root first would
-/// read green there and the order would be unproved.
-#[test]
-fn the_ts_pack_pins_deno_and_its_doctor_check_resolves_it_from_path_then_the_installers_directory()
-{
-    let ts = bundled_ts();
-    let report = pack::check(&ts);
-    assert!(
-        report.is_valid(),
-        "the ts pack checks clean: {:?}",
-        report.defects
-    );
-    let manifest = report.manifest.expect("the ts pack ships a manifest");
-    assert_eq!(manifest.name, "ts");
-    assert_eq!(
-        manifest.imports,
-        vec![],
-        "a middle layer declares no imports"
-    );
-    let runtime = manifest.runtime.expect("the ts pack pins a runtime");
-    assert_eq!(runtime.name, "deno");
-    assert_eq!(runtime.version, "2.9.7");
-    assert_eq!(runtime.bundle, "deno bundle -o {bundle} {entry}");
-    assert_eq!(
-        runtime.run,
-        "deno run --allow-run={fleet} --allow-read={run_dir} --allow-write={run_dir} \
-         --allow-env=FLEET_DIR,FLEET_RUN_ID,FLEET_STREAM,FLEET_STREAM_SEQ,FLEET_RUN_DIR,FLEET_BIN,FLEET_PROJECT {bundle}"
-    );
-
-    let check = ts.join("doctor/deno-version/run.sh");
-    assert!(
-        check.is_file(),
-        "the pack ships the instance: {}",
-        check.display()
-    );
-
-    let fixture = Fixture::new("deno-doctor");
-    fixture.dir("nothing");
-    fixture.dir("empty-install");
-    let empty_install = fixture.path("empty-install");
-
-    let fake = |label: &str, answer: &str| -> std::path::PathBuf {
-        let dir = fixture.path(label);
-        std::fs::create_dir_all(&dir).expect("the fake runtime's directory");
-        let bin = dir.join("deno");
-        std::fs::write(
-            &bin,
-            format!("#!/bin/sh\necho \"deno {answer} (stable, release, aarch64-apple-darwin)\"\necho \"v8 15.0.245.2-rusty\"\necho \"typescript 6.0.3\"\n"),
-        )
-        .expect("the fake runtime is written");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
-                .expect("the fake runtime is executable");
-        }
-        dir
-    };
-    let pinned = fake("pinned", "2.9.7");
-    let other = fake("other", "2.9.6");
-    fake("install/bin", "2.9.7");
-    let install = fixture.path("install");
-
-    let run = |path: &std::path::Path, install: &std::path::Path| -> (i32, String) {
-        let out = std::process::Command::new("/bin/sh")
-            .arg(&check)
-            .env("PATH", path)
-            .env("DENO_INSTALL", install)
-            .env("FLEET_PACK_DIR", &ts)
-            .output()
-            .expect("the check runs");
-        (
-            out.status
-                .code()
-                .expect("the check exits rather than signals"),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-        )
-    };
-
-    let (code, said) = run(&pinned, &empty_install);
-    assert_eq!(code, 0, "the pinned version on PATH: {said}");
-    assert!(said.contains("resolved from PATH"), "{said}");
-    assert!(said.contains("deno-version: holds"), "{said}");
-
-    let (code, said) = run(&fixture.path("nothing"), &install);
-    assert_eq!(code, 0, "off PATH, in the installer's bin: {said}");
-    assert!(said.contains("resolved from the installer's bin"), "{said}");
-    assert!(said.contains("deno-version: holds"), "{said}");
-
-    let (code, said) = run(&other, &empty_install);
-    assert_eq!(code, 1, "another version on PATH: {said}");
-    assert!(said.contains("is not the pinned 2.9.7"), "{said}");
-
-    // Absence: neither place holds it, and the reading says so in the word a
-    // reader greps for.
-    let (code, said) = run(&fixture.path("nothing"), &empty_install);
-    assert_eq!(code, 1, "no runtime anywhere: {said}");
-    assert!(said.contains("deno is absent"), "{said}");
-
-    // The order: PATH wins over the installer's bin, so a wrong version on PATH
-    // is reported even when the right one sits under the root.
-    let (code, said) = run(&other, &install);
-    assert_eq!(
-        code, 1,
-        "PATH is read before the installer's directory: {said}"
-    );
-    assert!(said.contains("resolved from PATH"), "{said}");
-    assert!(said.contains("is not the pinned 2.9.7"), "{said}");
-}
-
 // ---- the config table ---------------------------------------------------------
 
 fn with_config(body: &str) -> Result<pack::Manifest, Vec<Defect>> {
@@ -1318,31 +1143,6 @@ fn a_malformed_config_declaration_is_refused_naming_the_setting() {
     }
     .to_string();
     assert_eq!(twice, "[config.takeoff.test] is declared twice");
-}
-
-/// The doctrine pack declares the two commands its takeoff reads, each with a
-/// one-line description a person reads before setting it.
-#[test]
-fn the_doctrine_pack_declares_the_two_takeoff_settings() {
-    let manifest = pack::check(&bundled_tiny())
-        .manifest
-        .expect("the doctrine pack carries a manifest");
-    let keys: Vec<&str> = manifest.config.iter().map(|s| s.key.as_str()).collect();
-    assert_eq!(keys, vec!["takeoff.test", "takeoff.touched"]);
-    for setting in &manifest.config {
-        assert!(
-            !setting.description.trim().is_empty() && !setting.description.contains('\n'),
-            "{} carries a one-line description: {:?}",
-            setting.key,
-            setting.description
-        );
-        assert_eq!(
-            setting.kind.as_deref(),
-            Some("string"),
-            "{} is a command",
-            setting.key
-        );
-    }
 }
 
 mod lessons {

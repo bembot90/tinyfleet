@@ -104,20 +104,24 @@ the packs it imports that the same checkout holds (see
 [Imports](#imports-from-the-same-checkout)).
 
 ```sh
-$ fleet pack add <repo>//packs/ts --version v0.1.0
-added ts v0.1.0 at <sha> — <machine-dir>/packs/ts
+$ fleet pack add <fleet-packs>//runtimes/ts --version main
+added ts main at <sha> — <machine-dir>/packs/ts
 pinned in <machine-dir>/packs.lock
-$ fleet pack add <repo>//packs/tiny --version v0.1.0
-added tiny v0.1.0 at <sha> — <machine-dir>/packs/tiny
+$ fleet pack add <fleet-packs>//tiny --version main
+added tiny main at <sha> — <machine-dir>/packs/tiny
 pinned in <machine-dir>/packs.lock
 ```
+
+`<fleet-packs>` is the fleet-packs repository,
+`https://github.com/bembot90/fleet-packs`, which holds the tiny pack at `tiny`
+and the ts pack it imports at `runtimes/ts`.
 
 Each exits 0. The directory is named by the `name` in the pack's own
 `pack.toml`, not by the source.
 
 The source is a git URL or a local path to a repository. When the pack is not
 at the repository's root, add `//` and its directory inside the repository:
-`<repo>//packs/tiny`. The part after `//` stays inside the repository; a `..`
+`<fleet-packs>//runtimes/ts`. The part after `//` stays inside the repository; a `..`
 in it is refused.
 
 `--version` is required, and takes one of three forms:
@@ -144,9 +148,9 @@ are installed with it, out of the same clone and pinned at the same commit,
 one `added` line each:
 
 ```sh
-$ fleet pack add <repo>//packs/tiny --version v0.1.0
-added tiny v0.1.0 at <sha> — <machine-dir>/packs/tiny
-added ts v0.1.0 at <sha>, which tiny imports — <machine-dir>/packs/ts
+$ fleet pack add <fleet-packs>//tiny --version main
+added tiny main at <sha> — <machine-dir>/packs/tiny
+added ts main at <sha>, which tiny imports — <machine-dir>/packs/ts
 pinned in <machine-dir>/packs.lock
 ```
 
@@ -184,10 +188,10 @@ source.
 
 ```sh
 $ fleet pack list
-name      source              version  commit    fetched
-tiny      <repo>//packs/tiny  v0.1.0   <sha>     <fetched>
-ts        <repo>//packs/ts    v0.1.0   <sha>     <fetched>
-defaults  embedded:defaults   0.1.0    embedded  <fetched>
+name      source                      version  commit    fetched
+ts        <fleet-packs>//runtimes/ts  main     <sha>     <fetched>
+tiny      <fleet-packs>//tiny         main     <sha>     <fetched>
+defaults  embedded:defaults           0.1.0    embedded  <fetched>
 ```
 
 It exits 0. The defaults have their own row, with the source
@@ -203,9 +207,9 @@ row alone and exits 0. A lock fleet cannot read or parse prints
 ```toml
 schema = 1
 
-[packs."<repo>//packs/tiny"]
+[packs."<fleet-packs>//tiny"]
 name = "tiny"
-version = "v0.1.0"
+version = "main"
 commit = "<sha>"
 fetched = "<fetched>"
 ```
@@ -216,9 +220,9 @@ fetched = "<fetched>"
 `fleet pack add` — the `source` column of `fleet pack list`, not the name.
 
 ```sh
-$ fleet pack remove <repo>//packs/tiny
-removed tiny v0.1.0 — <machine-dir>/packs/tiny
-dropped <repo>//packs/tiny v0.1.0 from <machine-dir>/packs.lock
+$ fleet pack remove <fleet-packs>//tiny
+removed tiny main — <machine-dir>/packs/tiny
+dropped <fleet-packs>//tiny main from <machine-dir>/packs.lock
 ```
 
 It exits 0. It deletes the pack's directory first and then drops its line from
@@ -327,9 +331,9 @@ slot agents: 2 entries
 slot assets: 3 entries
 slot doctor: 3 entries
 slot overlay: 1 entry
-slot skills: 11 entries
+slot skills: 12 entries
 slot workflows: 1 entry
-resolved 42 paths and 2 agents across 2 layers, 0 shadowed
+resolved 43 paths and 2 agents across 2 layers, 0 shadowed
 ```
 
 It prints the pack's name, version and schema, a `runtime` line when the pack

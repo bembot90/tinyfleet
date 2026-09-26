@@ -1,0 +1,14 @@
+# A FIXTURE, shaped as the doctrine pack is: it imports a runtime pack from the
+# folder beside it and shadows four of the defaults' paths the registry lists.
+# The suites that exercise fleet's own code on a pack read this one. The real
+# tiny lives in the fleet-packs repository, and the checks on its own content
+# run there against a pinned fleet.
+[pack]
+name = "tiny"
+version = "0.1.0"
+schema = 3
+description = "A fixture shaped as the doctrine pack: one import, four shadows, no runtime."
+
+[imports.ts]
+source = "../ts"
+version = "0.1.0"

@@ -1,8 +1,0 @@
-description = "Remote branches whose item the work graph reports closed, with the line that would delete each."
-run = "run.sh"
-
-# A REPORT AND NOT A SWEEP. A branch outlives its item routinely — a ref may
-# still hold work that never landed, and the only reader who can tell is a
-# person — so this entry prints the delete line and never runs it. Reversing that
-# would make a health check the one thing in the fleet that destroys work while
-# reporting on it.
