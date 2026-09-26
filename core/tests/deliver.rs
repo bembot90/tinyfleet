@@ -1,9 +1,8 @@
-//! `fleet deliver` against a real work graph and a git seam that answers.
+//! `fleet deliver` against a work graph and a git seam that answers.
 //!
-//! One store for the whole binary and one item per arm, as the dispatch suite
-//! has it: `bd` serialises against itself on this box. Each arm also takes its
-//! own SEAT name, because the item a seat holds is a query across the whole
-//! store.
+//! One store for the ring and one item per arm, as the dispatch suite has it.
+//! Each arm also takes its own SEAT name, because the item a seat holds is a
+//! query across the whole store.
 //!
 //! The git seam is a stub with recorded calls rather than a repository: what
 //! deliver does with a dirty tree, an empty index and a commit that answers a
@@ -288,9 +287,10 @@ fn store() -> Graph {
     dressed(Graph::memory("deliver"))
 }
 
-/// The integration ring: the one arm of this suite that delivers through `bd`.
+/// The integration ring: the one arm of this suite that delivers through
+/// `Exec`, on the stub adapter's store.
 fn ring() -> Graph {
-    dressed(Graph::real("deliver"))
+    dressed(Graph::exec("deliver"))
 }
 
 fn dressed(graph: Graph) -> Graph {
@@ -434,8 +434,8 @@ fn read(graph: &Graph, item: &str) -> Item {
 // ---- the arms ----------------------------------------------------------------
 
 /// THE INTEGRATION RING of this suite, and the one arm here that delivers
-/// through `bd`: the reassignment and the delivered entry written and read
-/// back through the store the verb actually talks to.
+/// through `Exec`: the reassignment and the delivered entry written and read
+/// back through an adapter out of process, over the contract's JSON.
 #[test]
 fn a_clean_delivery_commits_reassigns_and_writes_the_delivered_entry() {
     let scratch = &ring();

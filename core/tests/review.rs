@@ -1,4 +1,5 @@
-//! `fleet review` against a real work graph.
+//! `fleet review` against a work graph held in memory, and through `Exec` on
+//! the stub adapter's store for the ring.
 //!
 //! The delivery each arm reads is appended as a delivered entry, because what
 //! review reads is the record and not the verb that wrote it: a review of an
@@ -28,7 +29,6 @@ use fleet_core::item::review::{self, Mode, Verdict, Wiring};
 use fleet_core::item::show::entry_lines;
 use fleet_core::item::{control_token, Change, Git, Project, Ring, RingOutcome, ITEM_ENTRY};
 use fleet_core::seat::actor::{Actor, ActorKind};
-use fleet_core::store::bd::Bd;
 use fleet_core::store::{Item, ItemId, OrderState, ReadProof, Store, StoreError};
 use fleet_core::test_support::Board;
 
@@ -362,7 +362,8 @@ fn store() -> Board {
     board
 }
 
-/// The integration ring: the one arm of this suite that reviews through `bd`.
+/// The integration ring: the one arm of this suite that reviews through
+/// `Exec`, on the stub adapter's store.
 fn ring() -> &'static Scratch {
     let scratch = shared_store("review");
     static ONCE: std::sync::Once = std::sync::Once::new();
@@ -827,15 +828,15 @@ fn a_finding_quoting_a_marker_is_carried_whole() {
     );
 }
 
-/// `--return` through `bd`: the timeline ends in the return — this commit, the
-/// size, no walk and the findings in the file's order — appended by the
+/// `--return` through `Exec`: the timeline ends in the return — this commit,
+/// the size, no walk and the findings in the file's order — appended by the
 /// reviewer, with the item handed to the seat the order index names.
 #[test]
 fn a_return_appends_the_findings_and_hands_the_item_back() {
     let scratch = ring();
-    let bd = &Bd::at(&scratch.root);
+    let through_exec = &scratch.store;
     let builder = "s-return";
-    let item = a_delivered_item(bd, "an item to return", builder);
+    let item = a_delivered_item(through_exec, "an item to return", builder);
     let findings = findings(
         scratch,
         "two",
@@ -849,7 +850,7 @@ fn a_return_appends_the_findings_and_hands_the_item_back() {
 
     let events = StubEvents::default();
     let (said, code) = run_through(
-        bd,
+        through_exec,
         scratch,
         &item,
         Mode::Return(&findings),
@@ -859,7 +860,7 @@ fn a_return_appends_the_findings_and_hands_the_item_back() {
     );
     assert_eq!(code, 0, "{}", said.err);
 
-    let entries = bd
+    let entries = through_exec
         .timeline(&ItemId::from(item.as_str()))
         .expect("the timeline reads");
     let last = entries.last().expect("the timeline carries entries");
@@ -897,7 +898,7 @@ fn a_return_appends_the_findings_and_hands_the_item_back() {
     assert_eq!(said.entry.as_deref(), Some(last.id.as_str()));
 
     assert_eq!(
-        bd.show(&item).expect("the item reads").assignee,
+        through_exec.show(&item).expect("the item reads").assignee,
         Some(seat_id(builder)),
         "the item goes back to the seat the order named, by its id"
     );

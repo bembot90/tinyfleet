@@ -1,10 +1,9 @@
-//! `fleet dispatch` against a real work graph.
+//! `fleet dispatch` against a work graph held in memory, and through `Exec` on
+//! the stub adapter's store for the ring.
 //!
-//! One store for the whole binary and one item per arm: `bd` serialises against
-//! itself on this box, so a store per arm buys isolation at a price and no
-//! speed. Each arm also takes its own SEAT name, because the seat-holds-an-item
-//! read is a query across the whole store and two arms sharing a seat would be
-//! reading each other's work.
+//! One store for the ring's arms and one item per arm. Each arm also takes its
+//! own SEAT name, because the seat-holds-an-item read is a query across the
+//! whole store and two arms sharing a seat would be reading each other's work.
 //!
 //! The read-back failures are forced through a store that answers something
 //! other than what was written: it is the one failure a real store will not
@@ -279,10 +278,10 @@ impl Rig {
         Rig::on(Graph::memory(label), label)
     }
 
-    /// The same rig on the store `bd` answers: THE INTEGRATION RING of this
-    /// suite, taken by one arm.
+    /// The same rig on the store the stub adapter keeps, through `Exec`: THE
+    /// INTEGRATION RING of this suite.
     fn ringed(label: &str) -> Rig {
-        Rig::on(Graph::real("dispatch"), label)
+        Rig::on(Graph::exec("dispatch"), label)
     }
 
     fn on(graph: Graph, label: &str) -> Rig {
@@ -382,23 +381,17 @@ impl Rig {
     }
 }
 
-/// THE STORE IS HANDED THE TYPED ACTOR. A dispatch by `seat:<id>` leaves bd's
-/// own audit actor `seat:<id>` on every mutation it makes of the item — read
-/// off bd's events journal, the only reader bd 1.3.0 gives that names who made
-/// an update — the index read back through `bd show --json` carries the same
-/// string, and the ordered entry's author is the same actor.
+/// THE STORE IS HANDED THE TYPED ACTOR. A dispatch by `seat:<id>` hands the
+/// adapter `seat:<id>` as the `by` of every write it makes of the item — read
+/// off the log the stub keeps of every write it is handed, since no read of the
+/// contract answers who asked for a write — the index read back carries the
+/// same actor, and the ordered entry's author is the same actor.
 #[test]
-fn a_dispatch_by_a_seat_leaves_bd_the_seats_typed_actor() {
+fn a_dispatch_by_a_seat_hands_the_store_the_seats_typed_actor() {
     let rig = Rig::ringed("audit");
-    let Graph::Real(scratch, _) = &rig.graph else {
-        unreachable!("the ring is bd");
+    let Graph::Exec(scratch) = &rig.graph else {
+        unreachable!("the ring is the store through Exec");
     };
-    let journal = scratch.bd(&["config", "set", "events-journal", "true"]);
-    assert!(
-        journal.status.success(),
-        "bd config set: {}",
-        String::from_utf8_lossy(&journal.stderr)
-    );
     let item = rig.graph.item("an item a seat dispatches");
     let answer = rig.run(
         &item,
@@ -410,13 +403,11 @@ fn a_dispatch_by_a_seat_leaves_bd_the_seats_typed_actor() {
     );
     assert_eq!(answer.code, None, "{}", answer.why);
 
-    let shown: serde_json::Value =
-        serde_json::from_str(scratch.json(&item).trim()).expect("bd show answers JSON");
-    let shown = shown.get(0).unwrap_or(&shown);
-    assert_eq!(
-        shown["metadata"]["fleet.orders"]["by"],
-        serde_json::json!(BY),
-        "the index read back through bd show --json: {shown}"
+    let read = rig.graph.store().show(&item).expect("the item reads back");
+    assert!(
+        matches!(&read.order, OrderState::Ordered(index) if index.by == by()),
+        "the index read back names the dispatcher: {:?}",
+        read.order
     );
     let entries = timeline_of(&rig, &item);
     assert_eq!(
@@ -425,25 +416,18 @@ fn a_dispatch_by_a_seat_leaves_bd_the_seats_typed_actor() {
         "the ordered entry is the typed actor's: {entries:?}"
     );
 
-    let exported = scratch.bd(&["events", "export"]);
-    assert!(
-        exported.status.success(),
-        "bd events export: {}",
-        String::from_utf8_lossy(&exported.stderr)
-    );
-    let actors: Vec<String> = String::from_utf8_lossy(&exported.stdout)
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter(|row| row["issue_id"] == serde_json::json!(item) && row["op"] != "create")
-        .map(|row| row["actor"].as_str().unwrap_or_default().to_string())
+    let writes: Vec<String> = scratch
+        .rig(|store| store.wrote())
+        .into_iter()
+        .filter(|line| line.split(' ').nth(1) == Some(item.as_str()))
         .collect();
     assert!(
-        actors.len() >= 2,
-        "the assignee and the index are each a mutation: {actors:?}"
+        writes.len() >= 2,
+        "the assignee and the index are each a write: {writes:?}"
     );
     assert!(
-        actors.iter().all(|actor| actor == BY),
-        "bd's audit actor on every write the dispatch made is {BY}: {actors:?}"
+        writes.iter().all(|line| line.ends_with(&format!(" {BY}"))),
+        "the actor handed with every write the dispatch made is {BY}: {writes:?}"
     );
 }
 
@@ -497,9 +481,10 @@ fn wanted_index(seat: Option<&str>) -> store::Order {
 
 #[test]
 fn a_named_dispatch_writes_the_assignee_the_ordered_entry_and_the_index() {
-    // THE INTEGRATION RING of this suite, and the one arm here that dispatches
-    // through `bd`: the assignee, the ordered entry and the four index fields
-    // written and read back through the store the verb actually talks to.
+    // THE INTEGRATION RING of this suite, and the arm here that dispatches
+    // through `Exec`: the assignee, the ordered entry and the four index fields
+    // written and read back through an adapter out of process, over the
+    // contract's JSON.
     //
     // THE ORDER NAMES THE SEAT BY ITS ID. `--to orla` is how a person names
     // Orla, and the assignee, the index's seat, the event and the ring all
@@ -1395,42 +1380,50 @@ fn a_suffix_is_dispatched_under_the_full_id_it_resolves_to() {
 }
 
 /// An argument naming more than one item is refused with the ones it named,
-/// read off `bd`'s own words — its JSON carries no more than "no issues found",
-/// and the matches are on stderr. Through `bd`, because that shape is `bd`'s.
+/// carried through `Exec` from the adapter's typed refusal: its reason and the
+/// ids it names as candidates, which the refusal reads back out.
 ///
-/// A parent and its child make the ambiguity certain whatever else the shared
-/// board holds: all but the last character of the parent's hash is in both ids,
-/// and too short to be anybody's whole hash.
+/// The two items are filed under ids of the arm's choosing, queued and filed
+/// under one hold of the stub's lock, so the ambiguity is certain whatever
+/// else the shared store holds: the suffix opens both hashes and is longer
+/// than any hash the stub mints of its own.
 #[test]
 fn an_ambiguous_suffix_is_refused_naming_the_items_it_matches() {
     let rig = Rig::ringed("ambiguous");
-    let parent = rig.graph.item("a parent a suffix matches");
-    let out = rig.graph.bd(&[
-        "create",
-        "--title",
-        "its child, which the same suffix matches",
-        "--description",
-        "a scratch item",
-        "--type",
-        "task",
-        "--parent",
-        &parent,
-        "--json",
-    ]);
-    assert!(
-        out.status.success(),
-        "bd create --parent: {}",
-        String::from_utf8_lossy(&out.stderr)
+    let Graph::Exec(scratch) = &rig.graph else {
+        unreachable!("the ring is the store through Exec");
+    };
+    let (first, second) = scratch.rig(|stub| {
+        stub.creates
+            .lock()
+            .expect("the queue is not poisoned")
+            .extend([String::from("fx-ambq1"), String::from("fx-ambq2")]);
+        let filed = |title: &str| {
+            stub.create(
+                &store::NewItem {
+                    title: title.to_string(),
+                    description: String::from("a scratch item"),
+                    item_type: String::from("task"),
+                    ..store::NewItem::default()
+                },
+                &fleet_core::test_support::the_test(),
+            )
+            .expect("the item is filed")
+            .to_string()
+        };
+        (
+            filed("one item a suffix matches"),
+            filed("another item the same suffix matches"),
+        )
+    });
+    assert_eq!(
+        (first.as_str(), second.as_str()),
+        ("fx-ambq1", "fx-ambq2"),
+        "the store files under the ids queued"
     );
-    let child = fleet_core::store::first_value(&String::from_utf8_lossy(&out.stdout))
-        .and_then(|value| value.get("id")?.as_str().map(str::to_string))
-        .expect("the child is filed with an id");
-    let hash = parent
-        .strip_prefix("fx-")
-        .expect("the board files under fx-");
-    let suffix = &hash[..hash.len() - 1];
+    let suffix = "ambq";
 
-    let before = rig.graph.json(&parent);
+    let before = rig.graph.json(&first);
     let seat = String::from("s-ambiguous");
     let ring = StubRing::answering(RingOutcome::Delivered);
     let spawner = StubSpawner::answering(SpawnOutcome::Refused(String::from("unused")));
@@ -1447,13 +1440,13 @@ fn an_ambiguous_suffix_is_refused_naming_the_items_it_matches() {
     assert!(
         answer
             .why
-            .contains(&format!("`{suffix}` matches more than one item"))
-            && answer.why.contains(&child)
-            && answer.why.matches(parent.as_str()).count() >= 2,
-        "the refusal names at least the parent and the child: {}",
+            .contains(&format!("{suffix} matches more than one item"))
+            && answer.why.contains(&first)
+            && answer.why.contains(&second),
+        "the refusal names both items: {}",
         answer.why
     );
-    assert_eq!(rig.graph.json(&parent), before, "the item is untouched");
+    assert_eq!(rig.graph.json(&first), before, "the item is untouched");
     assert!(ring.calls().is_empty());
     assert_eq!(rig.events.count(), 0, "a refusal appends nothing");
 }

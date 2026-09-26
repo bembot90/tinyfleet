@@ -9,16 +9,16 @@ pub mod board;
 pub mod capped;
 pub mod holding;
 
-pub use board::bd_init_server_args;
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use fleet_core::store::Store;
+use fleet_core::store::exec::Exec;
+use fleet_core::store::{ItemId, NewItem, Status, Store};
 // The applying fake store and the board over it are the CRATE's now, under its
 // `test-support` feature, so a dependent's suite can drive core's verbs on them
 // too. Every arm that wants them takes them from there.
-use fleet_core::test_support::{copy_tree, Board};
+use fleet_core::test_support::stub::with_state;
+use fleet_core::test_support::{copy_tree, stub_path, the_test, Board, FakeStore};
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -480,24 +480,19 @@ pub fn workspace() -> PathBuf {
         .to_path_buf()
 }
 
-/// A real work graph in a temporary directory.
+/// A store of its own in a temporary directory, kept by the stub adapter and
+/// reached through [`Exec`], one process per call: the path a project whose
+/// `[store] adapter` names an executable takes.
 ///
-/// The store is `bd` on this box against its own database, so every rule about
-/// what a read answers is asserted against the store the verbs actually talk
-/// to. It is a REAL init and not a hand-built directory: `bd init` writes a
-/// database, a git repository and its own files, and a lookalike would agree
-/// with it until the day one of them changed.
-///
-/// UNDER A RUN the init is the run's, made once by
-/// `fleet/tools/dolt-test-server` and copied in here — the same files, and the
-/// rows on the run's one database. The rigs that cannot share those rows are
-/// the `SOLO` table in `common/board.rs`. With no run, or with a board the
-/// wrapper did not make, this runs the init itself, so one binary under a bare
-/// `cargo test` still comes up.
+/// The store is the stub's scratch, asked for through the contract's own
+/// `scratch` verb as `fleet store check` asks for one, so every arm on it runs
+/// with no `bd` on the box. What no contract verb reaches — a label, a blocker,
+/// another writer's keys — the rig writes onto the stub's state under its lock.
 pub struct Scratch {
     pub root: PathBuf,
     pub packs_dir: PathBuf,
     pub defaults_dir: PathBuf,
+    pub store: Exec,
 }
 
 impl Scratch {
@@ -507,35 +502,19 @@ impl Scratch {
             std::env::temp_dir().join(format!("fleet-store-{label}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("the scratch root is created");
-        match board::run_board(label) {
-            Some(made) => copy_tree(&made, &root),
-            None => bd_init(&root, label),
-        }
-        Scratch::around(root)
-    }
-
-    /// A board of its own and never the run's shared one: a `bd init` here,
-    /// on the run's server where there is one.
-    ///
-    /// For the reading only an EMPTY store answers — the contract's first
-    /// check lists a store nothing has written to — which a copy of the run's
-    /// shared board, holding every other rig's rows, cannot give.
-    pub fn fresh(label: &str) -> Scratch {
-        let n = NEXT.fetch_add(1, Ordering::SeqCst);
-        let root =
-            std::env::temp_dir().join(format!("fleet-store-{label}-{}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("the scratch root is created");
-        bd_init(&root, label);
-        Scratch::around(root)
-    }
-
-    /// The packs and defaults directories beside an initialised store.
-    fn around(root: PathBuf) -> Scratch {
+        let stub = stub_path();
+        let made = Exec::at(&stub, &root)
+            .scratch(&root)
+            .unwrap_or_else(|e| panic!("the stub makes a store in {}: {e}", root.display()));
+        assert_eq!(
+            made, root,
+            "the stub's store is the directory it was handed"
+        );
         let packs_dir = root.join("packs");
         std::fs::create_dir_all(&packs_dir).expect("the packs dir is created");
         let defaults_dir = materialize(&root);
         Scratch {
+            store: Exec::at(&stub, &root),
             root,
             packs_dir,
             defaults_dir,
@@ -555,52 +534,63 @@ impl Scratch {
         self
     }
 
-    pub fn bd(&self, args: &[&str]) -> std::process::Output {
-        std::process::Command::new("bd")
-            .arg("-C")
-            .arg(&self.root)
-            .args(args)
-            .output()
-            .expect("bd runs")
-    }
-
     /// One item, by title, answered as its id.
     pub fn item(&self, title: &str) -> String {
-        let out = self.bd(&[
-            "create",
-            "--title",
-            title,
-            "--description",
-            "a scratch item",
-            "--type",
-            "task",
-            "--json",
-        ]);
-        assert!(
-            out.status.success(),
-            "bd create: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let text = String::from_utf8_lossy(&out.stdout);
-        let value: serde_json::Value =
-            serde_json::from_str(text.trim()).expect("bd create answers JSON");
-        value
-            .get("id")
-            .and_then(|id| id.as_str())
-            .expect("the created item has an id")
+        self.store
+            .create(
+                &NewItem {
+                    title: title.to_string(),
+                    description: String::from("a scratch item"),
+                    item_type: String::from("task"),
+                    ..NewItem::default()
+                },
+                &the_test(),
+            )
+            .unwrap_or_else(|e| panic!("the item `{title}` is filed: {e}"))
             .to_string()
     }
 
     /// The whole document, as text: what an arm compares before and after. A
     /// failed read panics, so two failures never compare equal.
     pub fn json(&self, item: &str) -> String {
-        let out = self.bd(&["show", item, "--json"]);
-        assert!(
-            out.status.success(),
-            "bd show {item}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).into_owned()
+        self.store
+            .show(item)
+            .unwrap_or_else(|e| panic!("show {item}: {e}"))
+            .proof
+            .as_str()
+            .to_string()
+    }
+
+    /// `act` on the stub's own state, under its lock: a rig putting the store
+    /// in a state no contract verb reaches, or reading what the store keeps
+    /// that no contract verb answers.
+    pub fn rig<T>(&self, act: impl FnOnce(&FakeStore) -> T) -> T {
+        with_state(&self.root, act)
+            .unwrap_or_else(|e| panic!("the stub's state at {}: {e}", self.root.display()))
+    }
+
+    /// ANOTHER WRITER'S KEYS put on the item — [`FakeStore::plant_metadata`].
+    pub fn set_metadata(&self, item: &str, payload: &str) {
+        self.rig(|store| store.plant_metadata(item, payload));
+    }
+
+    pub fn label(&self, item: &str, label: &str) {
+        self.rig(|store| store.amend(item, |held| held.labels.push(label.to_string())));
+    }
+
+    /// One open dependency between two items, which is what takes the first out
+    /// of the ready set.
+    pub fn blocked_by(&self, item: &str, blocker: &str) {
+        self.rig(|store| store.amend(item, |held| held.blockers.push(ItemId::from(blocker))));
+    }
+
+    pub fn status(&self, item: &str, status: &str) {
+        self.rig(|store| store.amend(item, |held| held.status = Status::from(status)));
+    }
+
+    /// The type, as the store spells it: a field no contract verb writes.
+    pub fn item_type(&self, item: &str, kind: &str) {
+        self.rig(|store| store.amend(item, |held| held.item_type = kind.to_string()));
     }
 }
 
@@ -610,28 +600,9 @@ impl Drop for Scratch {
     }
 }
 
-/// One `bd init` in `root`, on the run's server where there is one.
-fn bd_init(root: &Path, label: &str) {
-    let out = std::process::Command::new("bd")
-        .args(["init", "--prefix", "fx", "--quiet"])
-        .args(bd_init_server_args(label))
-        .current_dir(root)
-        .output()
-        .expect("bd is on the process PATH");
-    assert!(
-        out.status.success(),
-        "bd init: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-/// The one store a whole test binary shares.
-///
-/// `bd` serialises against itself on this box — eight arms driving eight
-/// SEPARATE stores in parallel measured slower than eight driving one, a
-/// reading taken 2026-09-08 and not retaken since — so a store per arm buys
-/// isolation at a price and no speed. Each arm takes its own item out of this
-/// one instead.
+/// The one store a test binary's ring arms share, each taking its own item out
+/// of it: a rig holds the store for the life of the process, and a static is
+/// what lives that long.
 ///
 /// It outlives the process: a shared handle has no owner to drop it, so the
 /// directory is left under the system temp directory. The name carries the
@@ -911,17 +882,17 @@ pub fn a_delivery(commit: &str) -> fleet_core::entry::Body {
 /// A whole sha, for [`a_delivery`] to name.
 pub const A_COMMIT: &str = "1111111111111111111111111111111111111111";
 
-/// The work graph a rig runs against: held in memory, or `bd` on a scratch
-/// board.
+/// The work graph a rig runs against: held in memory, or the stub adapter's
+/// store reached through [`Exec`].
 ///
-/// ONE TYPE FOR BOTH, so the one arm per suite that drives `bd` — the
-/// integration ring — runs through the same rig as every arm around it, and
-/// the two cannot drift apart unseen.
+/// ONE TYPE FOR BOTH, so the one arm per suite that drives the store out of
+/// process — the integration ring — runs through the same rig as every arm
+/// around it, and the two cannot drift apart unseen.
 pub enum Graph {
     /// Boxed because a board carries a whole store, and an enum is as big as
     /// its widest variant wherever it is held.
     Memory(Box<Board>),
-    Real(&'static Scratch, fleet_core::store::bd::Bd),
+    Exec(&'static Scratch),
 }
 
 impl Graph {
@@ -929,23 +900,23 @@ impl Graph {
         Graph::Memory(Box::new(Board::new(label)))
     }
 
-    /// The one `bd` board this binary drives, taken by its ring arm.
-    pub fn real(label: &'static str) -> Graph {
-        let scratch = shared_store(label);
-        Graph::Real(scratch, fleet_core::store::bd::Bd::at(&scratch.root))
+    /// The one store this binary drives through [`Exec`], taken by its ring
+    /// arm.
+    pub fn exec(label: &'static str) -> Graph {
+        Graph::Exec(shared_store(label))
     }
 
     pub fn store(&self) -> &dyn Store {
         match self {
             Graph::Memory(board) => &board.store,
-            Graph::Real(_, bd) => bd,
+            Graph::Exec(scratch) => &scratch.store,
         }
     }
 
     pub fn item(&self, title: &str) -> String {
         match self {
             Graph::Memory(board) => board.item(title),
-            Graph::Real(scratch, _) => scratch.item(title),
+            Graph::Exec(scratch) => scratch.item(title),
         }
     }
 
@@ -953,14 +924,14 @@ impl Graph {
     pub fn json(&self, item: &str) -> String {
         match self {
             Graph::Memory(board) => board.json(item),
-            Graph::Real(scratch, _) => scratch.json(item),
+            Graph::Exec(scratch) => scratch.json(item),
         }
     }
 
     pub fn install(&self, name: &str, from: &Path) -> PathBuf {
         match self {
             Graph::Memory(board) => board.install(name, from),
-            Graph::Real(scratch, _) => scratch.install(name, from),
+            Graph::Exec(scratch) => scratch.install(name, from),
         }
     }
 
@@ -969,7 +940,7 @@ impl Graph {
             Graph::Memory(board) => {
                 board.fleet_toml(body);
             }
-            Graph::Real(scratch, _) => {
+            Graph::Exec(scratch) => {
                 scratch.fleet_toml(body);
             }
         }
@@ -1002,29 +973,21 @@ impl Graph {
 
     /// A metadata object merged onto the item as ANOTHER WRITER leaves one —
     /// a key fleet does not own, or one of fleet's own at a shape no fleet
-    /// writer here makes. The trait writes only the contract's types, so the
-    /// real half writes it through the binary, under a writer that is no
-    /// fleet actor.
+    /// writer here makes. The contract writes only its own types, so both
+    /// halves plant it on the store's state.
     pub fn set_metadata(&self, item: &str, payload: &str) {
         match self {
             Graph::Memory(board) => board.set_metadata(item, payload),
-            Graph::Real(_, _) => self.wrote(&[
-                "update",
-                item,
-                "--metadata",
-                payload,
-                "--actor",
-                "another-tool",
-            ]),
+            Graph::Exec(scratch) => scratch.set_metadata(item, payload),
         }
     }
 
-    /// The label the open-flight read finds a record by. The trait carries no
-    /// label verb, so the real half writes it through the binary.
+    /// The label the open-flight read finds a record by. The contract carries
+    /// no label verb, so both halves write it on the store's state.
     pub fn label(&self, item: &str, label: &str) {
         match self {
             Graph::Memory(board) => board.label(item, label),
-            Graph::Real(_, _) => self.wrote(&["label", "add", item, label]),
+            Graph::Exec(scratch) => scratch.label(item, label),
         }
     }
 
@@ -1033,46 +996,24 @@ impl Graph {
     pub fn blocked_by(&self, item: &str, blocker: &str) {
         match self {
             Graph::Memory(board) => board.blocked_by(item, blocker),
-            Graph::Real(_, _) => self.wrote(&["dep", "add", item, blocker]),
+            Graph::Exec(scratch) => scratch.blocked_by(item, blocker),
         }
     }
 
     pub fn status(&self, item: &str, status: &str) {
         match self {
             Graph::Memory(board) => board.status(item, status),
-            Graph::Real(_, _) => {
-                self.wrote(&["update", item, "--status", status, "--actor", "the-test"])
-            }
+            Graph::Exec(scratch) => scratch.status(item, status),
         }
     }
 
-    /// The type, as the store spells it. The trait carries no verb for it, so
-    /// the real half writes it through the binary.
+    /// The type, as the store spells it. The contract carries no verb for it,
+    /// so both halves write it on the store's state.
     pub fn item_type(&self, item: &str, kind: &str) {
         match self {
             Graph::Memory(board) => board.amend(item, |held| held.item_type = kind.to_string()),
-            Graph::Real(_, _) => {
-                self.wrote(&["update", item, "--type", kind, "--actor", "the-test"])
-            }
+            Graph::Exec(scratch) => scratch.item_type(item, kind),
         }
-    }
-
-    /// A call to the binary itself, which a ring arm's own readings take: the
-    /// store's gate listing carries fields no trait method answers.
-    pub fn bd(&self, args: &[&str]) -> std::process::Output {
-        match self {
-            Graph::Real(scratch, _) => scratch.bd(args),
-            Graph::Memory(_) => panic!("only a ring's graph drives the binary"),
-        }
-    }
-
-    fn wrote(&self, args: &[&str]) {
-        let out = self.bd(args);
-        assert!(
-            out.status.success(),
-            "bd {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
     }
 }
 
@@ -1080,19 +1021,19 @@ impl Rooted for Graph {
     fn root(&self) -> &Path {
         match self {
             Graph::Memory(board) => &board.root,
-            Graph::Real(scratch, _) => &scratch.root,
+            Graph::Exec(scratch) => &scratch.root,
         }
     }
     fn packs_dir(&self) -> &Path {
         match self {
             Graph::Memory(board) => &board.packs_dir,
-            Graph::Real(scratch, _) => &scratch.packs_dir,
+            Graph::Exec(scratch) => &scratch.packs_dir,
         }
     }
     fn defaults_dir(&self) -> &Path {
         match self {
             Graph::Memory(board) => &board.defaults_dir,
-            Graph::Real(scratch, _) => &scratch.defaults_dir,
+            Graph::Exec(scratch) => &scratch.defaults_dir,
         }
     }
 }

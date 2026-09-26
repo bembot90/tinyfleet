@@ -1,18 +1,17 @@
-//! `fleet land` against a real work graph and a git seam that answers.
+//! `fleet land` against a work graph and a git seam that answers.
 //!
-//! One store for the whole binary and one item per arm, as the deliver suite
-//! has it: `bd` serialises against itself on this box. The git seam is a stub
-//! with recorded calls rather than a repository — what land does with a
-//! conflicted squash, a rejected push and a push that printed no range line is
-//! one seam value away here, and each of those is a state a real repository
-//! will not enter on demand. The live path is proven against a real bare remote
-//! in the cli's own suite.
+//! One store for the ring and one item per arm, as the deliver suite has it.
+//! The git seam is a stub with recorded calls rather than a repository — what
+//! land does with a conflicted squash, a rejected push and a push that printed
+//! no range line is one seam value away here, and each of those is a state a
+//! real repository will not enter on demand. The live path is proven against a
+//! real bare remote in the cli's own suite.
 //!
-//! THE STORE IS REAL. The landed entry, the close and their read-backs go
-//! through `bd` on the ring, because the one failure this verb has to survive —
-//! a write whose read-back disagrees — is asserted against the store the verb
-//! actually talks to, and forced through the fake's own knob and a wrapper over
-//! it.
+//! THE STORE IS OUT OF PROCESS ON THE RING. The landed entry, the close and
+//! their read-backs go through `Exec` to the stub adapter, over the contract's
+//! JSON, as they go to any adapter a project names; the one failure this verb
+//! has to survive — a write whose read-back disagrees — is forced through the
+//! fake's own knob and a wrapper over it.
 
 mod common;
 
@@ -41,7 +40,6 @@ use fleet_core::item::{
 };
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
-use fleet_core::store::bd::Bd;
 use fleet_core::store::{Item, ItemId, Store, StoreError};
 use fleet_core::test_support::{Board, EXPORT_DIR, EXPORT_FILE};
 
@@ -133,8 +131,8 @@ impl StubGit {
         StubGit::exporting(EXPORT_FILE)
     }
 
-    /// The same clean tree over a store whose export is `file`: the real
-    /// store's, for the one arm that lands through it.
+    /// The same clean tree over a store whose export is `file`: the one the
+    /// store declares, for the arm that lands through `Exec`.
     fn exporting(file: &str) -> StubGit {
         StubGit {
             linked: true,
@@ -580,9 +578,9 @@ fn store() -> Board {
     board
 }
 
-/// Serialises the two arms that resolve a name on the process's own `PATH` —
-/// the ring, which wants `bd` there, and the arm below that takes it away.
-/// `PATH` is process-wide and there is one of it.
+/// Serialises the arms that set the process's own `PATH` against the ring,
+/// whose store and gate children inherit it. `PATH` is process-wide and there
+/// is one of it.
 static PATH_LOCK: Mutex<()> = Mutex::new(());
 
 /// Runs `body` with `PATH` holding `dir` and nothing else, and puts `PATH` back
@@ -600,7 +598,8 @@ fn with_only_on_path<T>(dir: &Path, body: impl FnOnce() -> T) -> T {
     answer
 }
 
-/// The integration ring: the one arm of this suite that lands through `bd`.
+/// The integration ring: the one arm of this suite that lands through `Exec`,
+/// on the stub adapter's store.
 fn ring() -> &'static Scratch {
     let scratch = shared_store("land");
     static ONCE: std::sync::Once = std::sync::Once::new();
@@ -1049,19 +1048,27 @@ fn run_against_path(
 /// The whole act: the gates in the § 4 order, the landed entry, the close, and
 /// both read back.
 ///
-/// THE INTEGRATION RING of this suite, and the one arm here that drives `bd`:
-/// the whole landing against the store the verb actually talks to, so the
-/// in-memory board the arms below run on cannot drift from it unseen.
+/// THE INTEGRATION RING of this suite, and the one arm here that lands through
+/// `Exec`: the whole landing against an adapter out of process, its export the
+/// file the adapter declares, so the in-memory board the arms below run on
+/// cannot drift from the contract unseen.
 #[test]
 fn a_clean_landing_runs_the_gates_in_order_and_writes_the_landed_entry_and_closes() {
     let _path = PATH_LOCK.lock().expect("not poisoned");
     let scratch = ring();
-    let bd = &Bd::at(&scratch.root);
-    let item = an_item(bd, "an item to land", Some(("ACCEPTED", SHA)));
-    let git = StubGit::exporting(fleet_core::store::bd::EXPORT);
+    let through_exec = &scratch.store;
+    let item = an_item(through_exec, "an item to land", Some(("ACCEPTED", SHA)));
+    let declared = through_exec
+        .capabilities()
+        .expect("the store's capabilities read")
+        .export
+        .expect("the store declares an export")
+        .file;
+    assert_eq!(declared, EXPORT_FILE, "the stub declares the fake's export");
+    let git = StubGit::exporting(&declared);
 
     let events = StubEvents::default();
-    let ran = run_watched(scratch, bd, &git, &item, SHA, &[], None, &events);
+    let ran = run_watched(scratch, through_exec, &git, &item, SHA, &[], None, &events);
     let landed = ran.landed.as_ref().unwrap_or_else(|stop| {
         panic!("the landing was refused: {}\n{}", stop.message, ran.out);
     });
@@ -1116,7 +1123,7 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_landed_entry_and_close
         "fetch origin".to_string(),
         format!("branch_at land/{item}"),
         format!("squash_merge {SHA}"),
-        format!("add {}", fleet_core::store::bd::EXPORT),
+        format!("add {declared}"),
         "staged".to_string(),
         "commit_message_file".to_string(),
         "fetch origin".to_string(),
@@ -1153,7 +1160,7 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_landed_entry_and_close
     // THE LANDED ENTRY, WHOLE, off the timeline the store answers — every field
     // but the rows' evidence, which names a temporary path and a duration no
     // arm can know in advance.
-    let (entry, landing) = landing_of(bd, &item);
+    let (entry, landing) = landing_of(through_exec, &item);
     assert_eq!(
         entry.id, landed.entry,
         "the verb answers the entry it appended"
@@ -1187,7 +1194,7 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_landed_entry_and_close
     );
     // THE COMMANDS BLOCK, which `fleet item show` renders under the rows off
     // the entry's own shas and branch, verbatim.
-    let shown = shown(bd, &item);
+    let shown = shown(through_exec, &item);
     let commands: Vec<&str> = shown
         .lines()
         .skip_while(|line| *line != "commands:")
@@ -1207,12 +1214,23 @@ fn a_clean_landing_runs_the_gates_in_order_and_writes_the_landed_entry_and_close
         "the commands block is rendered whole:\n{shown}"
     );
 
-    let record = scratch.json(&item);
-    let read = bd.show(&item).expect("the item reads back");
+    let read = through_exec.show(&item).expect("the item reads back");
     assert_eq!(read.status, "closed", "the item is closed");
+    // The contract's item carries no close reason, so it is read off the
+    // stub's own record of why each item was closed.
+    let reason = scratch.rig(|store| {
+        store
+            .closed
+            .lock()
+            .expect("not poisoned")
+            .get(&item)
+            .cloned()
+    });
     assert!(
-        record.contains(&format!("landed {LANDED}")),
-        "the close reason names the landed sha: {record}"
+        reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains(&format!("landed {LANDED}"))),
+        "the close reason names the landed sha: {reason:?}"
     );
 
     // Every row the entry carries reached stdout as it was read, in the same

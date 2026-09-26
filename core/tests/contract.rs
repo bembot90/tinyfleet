@@ -16,13 +16,17 @@
 //! wants `bd` pays a `bd init` — 3.5 s on an idle box, three times that under
 //! the run's own parallelism. Twenty arms would buy twenty inits and the same
 //! twenty readings.
+//!
+//! The two `bd` arms are the only arms in core's verb suites that run the `bd`
+//! on `PATH`, and each answers green with the reason printed where there is
+//! none: `cargo nextest run -p fleet-core` is asked of a box with no `bd` on it.
 
 mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::board::note_bd_init;
-use common::{a_delivery, seat_actor, shared_store, Scratch};
+use common::board::{bd_init_server_args, note_bd_init};
+use common::{a_delivery, seat_actor, shared_store};
 use fleet_core::entry::{Body, Entry};
 use fleet_core::seat::actor::Actor;
 use fleet_core::store::bd::Bd;
@@ -144,6 +148,40 @@ fn planted_on(root: &Path) -> impl Fn(&str, &str) -> Result<(), String> + '_ {
             Err(String::from_utf8_lossy(&out.stderr).into_owned())
         }
     }
+}
+
+/// Whether a `bd` is on the process's `PATH`, and the line a `bd` arm prints
+/// where none is, before it answers green without asking anything.
+fn bd_on_path(arm: &str) -> bool {
+    let found = std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|dir| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(dir.join("bd"))
+                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        })
+    });
+    if !found {
+        println!("{arm}: skipped — no `bd` on PATH, so there is no real adapter to ask");
+    }
+    found
+}
+
+/// A `bd init` in a directory of its own, on the run's server where there is
+/// one: a board nothing has written to.
+fn bd_board(label: &str) -> Gone {
+    let dir = Gone::empty(label);
+    let out = std::process::Command::new("bd")
+        .args(["init", "--prefix", "fx", "--quiet"])
+        .args(bd_init_server_args(label))
+        .current_dir(&dir.0)
+        .output()
+        .expect("bd is on the process PATH");
+    assert!(
+        out.status.success(),
+        "bd init: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    dir
 }
 
 /// A directory under the system temp directory, removed when this is dropped —
@@ -363,8 +401,11 @@ fn another_writers_keys_are_named_foreign_and_fleets_own_never_are() {
 /// the whole reason this file exists.
 #[test]
 fn every_check_holds_against_bd_too() {
-    let scratch = Scratch::fresh("contract-checks");
-    let bd = Bd::at(&scratch.root);
+    if !bd_on_path("every_check_holds_against_bd_too") {
+        return;
+    }
+    let board = bd_board("contract-checks");
+    let bd = Bd::at(&board.0);
     // The file the export check reads is the one bd declares, and bd declares
     // its own.
     let declared = bd
@@ -374,7 +415,7 @@ fn every_check_holds_against_bd_too() {
         .expect("bd declares an export");
     assert_eq!(declared.file, ".beads/issues.jsonl");
     assert_eq!(declared.file, fleet_core::store::bd::EXPORT);
-    every_check_holds(&bd, &scratch.root, "bd", &planted_on(&scratch.root));
+    every_check_holds(&bd, &board.0, "bd", &planted_on(&board.0));
 }
 
 /// THE ADAPTER'S OWN SCRATCH: `bd init` in a directory of the caller's, on
@@ -385,6 +426,9 @@ fn every_check_holds_against_bd_too() {
 /// `fleet/tools/dolt-test-server` reads its run's count.
 #[test]
 fn the_bd_adapter_makes_a_scratch_store_every_check_holds_on() {
+    if !bd_on_path("the_bd_adapter_makes_a_scratch_store_every_check_holds_on") {
+        return;
+    }
     let dir = Gone::named("contract-scratch");
     let adapter = Bd::at(&dir.0);
     assert!(
@@ -601,110 +645,68 @@ impl Store for NoScratch {
     }
 }
 
-/// bd names itself `bd`, and its version is a whole token of the first line
-/// `bd --version` prints — asked of the binary beside it, so the arm holds on
-/// whatever bd this box has.
-#[test]
-fn bds_version_is_named_on_the_first_line_it_prints() {
-    let scratch = shared_store("contract");
-    let answered = Bd::at(&scratch.root).version().expect("bd's version reads");
-    let printed = scratch.bd(&["--version"]);
-    assert!(printed.status.success(), "bd --version runs");
-    let first = String::from_utf8_lossy(&printed.stdout)
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    assert!(!first.is_empty(), "bd --version prints a line");
-    assert_eq!(answered.name, "bd");
-    assert!(
-        first
-            .split_whitespace()
-            .any(|token| token.strip_prefix('v').unwrap_or(token) == answered.version),
-        "{:?} is a token of `{first}`",
-        answered.version
-    );
-}
-
-/// The JSON a call to the binary answered, opened out of its envelope where it
-/// carries one.
-fn answered(out: &std::process::Output, what: &str) -> serde_json::Value {
-    assert!(
-        out.status.success(),
-        "{what}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let answer = fleet_core::store::first_value(&String::from_utf8_lossy(&out.stdout))
-        .unwrap_or_else(|| panic!("{what} answers JSON"));
-    fleet_core::store::bd::opened(answer, String::new)
-}
-
-/// A COMMENT A PERSON WROTE ON THE BOARD IS NOT AN ENTRY, and one carrying
-/// fleet's key that does not read is never skipped. Both are planted through
-/// the binary, because the author is bd's own field: `--actor` with no
-/// `<kind>:` is what a person's own `bd comments add` writes.
+/// A COMMENT A PERSON WROTE ON THE ITEM IS NOT AN ENTRY, and one carrying
+/// fleet's key that does not read is never skipped — answered through `Exec`,
+/// where the refusal reaches the caller as the adapter's could not tell. Both
+/// are planted on the stub's state, because the contract has no verb that
+/// writes a comment and no author that is not an actor.
 #[test]
 fn a_persons_comment_is_left_out_and_a_malformed_entry_refuses_the_read() {
     let scratch = shared_store("contract");
-    let bd = Bd::at(&scratch.root);
     let item = scratch.item("an item a person commented on");
+    let id = ItemId::from(item.as_str());
 
-    answered(
-        &scratch.bd(&["comments", "add", &item, "a person's words", "--json"]),
-        "bd comments add",
-    );
+    scratch.rig(|store| store.comment(&item, "Alberto Vildosola", "a person's words"));
     assert_eq!(
-        bd.timeline(&ItemId::from(item.as_str()))
-            .expect("the timeline reads"),
+        scratch.store.timeline(&id).expect("the timeline reads"),
         Vec::new(),
         "a person's comment is not an entry"
     );
 
-    let planted = answered(
-        &scratch.bd(&[
-            "comments",
-            "add",
+    let comment = scratch.rig(|store| {
+        store.comment(
             &item,
-            r#"{"fleet.entry":1,"kind":"ordered","order":"dispatch"}"#,
-            "--actor",
             "Alberto Vildosola",
-            "--json",
-        ]),
-        "bd comments add",
-    );
-    let comment = planted["id"].as_str().expect("the comment has an id");
-    match bd.timeline(&ItemId::from(item.as_str())) {
+            r#"{"fleet.entry":1,"kind":"ordered","order":"dispatch"}"#,
+        )
+    });
+    match scratch.store.timeline(&id) {
         Err(StoreError::Unreadable(why)) => assert!(
-            why.contains(comment) && why.contains("Alberto Vildosola"),
+            why.contains(&comment) && why.contains("Alberto Vildosola"),
             "the refusal names the comment and its author: {why}"
         ),
         other => panic!("an entry whose author is no actor refuses the read: {other:?}"),
     }
 }
 
-/// An entry that breaks its kind's rules is refused BEFORE the binary is asked,
-/// so nothing is written and the item's comments are what they were.
+/// An entry that breaks its kind's rules is refused BEFORE the adapter is
+/// asked, so nothing is written and the item's timeline is what it was: the
+/// stub logs every append it is handed, valid or not, and its log is unmoved.
 #[test]
 fn an_entry_that_does_not_validate_is_refused_and_nothing_is_written() {
     let scratch = shared_store("contract");
-    let bd = Bd::at(&scratch.root);
     let item = scratch.item("an item a short sha is appended to");
-    let comments = || answered(&scratch.bd(&["comments", &item, "--json"]), "bd comments");
-    let before = comments();
+    let id = ItemId::from(item.as_str());
+    let timeline = || scratch.store.timeline(&id).expect("the timeline reads");
+    let before = timeline();
+    let handed = scratch.rig(|store| store.wrote());
 
-    match bd.append(
-        &ItemId::from(item.as_str()),
-        &a_delivery("1111111"),
-        &seat_actor("a-short-seat"),
-    ) {
+    match scratch
+        .store
+        .append(&id, &a_delivery("1111111"), &seat_actor("a-short-seat"))
+    {
         Err(StoreError::Unreadable(why)) => assert!(
             why.contains(&item) && why.contains("nothing was written"),
             "the refusal names the item and says nothing was written: {why}"
         ),
         other => panic!("a delivery naming a 7-character commit is refused: {other:?}"),
     }
-    assert_eq!(comments(), before, "and bd lists nothing new");
+    assert_eq!(timeline(), before, "and the timeline holds nothing new");
+    assert_eq!(
+        scratch.rig(|store| store.wrote()),
+        handed,
+        "and the adapter was never asked"
+    );
 }
 
 /// Every check on the table has an arm of its own above, and every arm names a

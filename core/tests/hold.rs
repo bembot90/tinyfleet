@@ -1,10 +1,9 @@
-//! `fleet hold` and `fleet clear` against a real work graph and a git seam that
+//! `fleet hold` and `fleet clear` against a work graph and a git seam that
 //! answers.
 //!
-//! One store for the whole binary and one item per arm, as the delivery suite
-//! has it: `bd` serialises against itself on this box. Each arm also takes its
-//! own SEAT name, because the item a seat holds is a query across the whole
-//! store.
+//! One store for the ring and one item per arm, as the delivery suite has it.
+//! Each arm also takes its own SEAT name, because the item a seat holds is a
+//! query across the whole store.
 //!
 //! The git seam is a stub with recorded calls rather than a repository: what a
 //! park does with a tree that has something to commit and with one that has
@@ -271,7 +270,8 @@ fn store() -> Board {
     board
 }
 
-/// The integration ring: the one arm of this suite that parks through `bd`.
+/// The integration ring: the one arm of this suite that parks through `Exec`,
+/// on the stub adapter's store.
 fn ring() -> &'static Scratch {
     let scratch = shared_store("hold");
     static ONCE: std::sync::Once = std::sync::Once::new();
@@ -441,16 +441,16 @@ fn a_held_item(scratch: &Board, label: &str, seat: &str) -> (String, String) {
 
 // ---- AC1: the hold -----------------------------------------------------------
 
-/// THE INTEGRATION RING of this suite, and the one arm here that drives `bd`:
-/// the hold is the store's OWN object, and what a real store does with one —
-/// carrying the reason and taking the item off the ready set — is the half an
-/// in-memory board could only agree with itself about.
+/// THE INTEGRATION RING of this suite, and the one arm here that parks through
+/// `Exec`: the hold is the store's OWN object, raised, listed open and taking
+/// the item off the ready set through an adapter out of process, over the
+/// contract's JSON.
 #[test]
 fn a_clean_hold_commits_the_whole_tree_raises_the_hold_and_parks() {
     let scratch = ring();
-    let bd = &Bd::at(&scratch.root);
+    let through_exec = &scratch.store;
     let seat = "g-clean";
-    let item = an_ordered_item(bd, "an item with a question on it", seat);
+    let item = an_ordered_item(through_exec, "an item with a question on it", seat);
     let question = a_question(scratch, "clean", QUESTION);
     let git = StubGit::holding_work();
     let events = StubEvents::default();
@@ -465,7 +465,7 @@ fn a_clean_hold_commits_the_whole_tree_raises_the_hold_and_parks() {
             at: AT,
         },
         &Wiring {
-            store: bd,
+            store: through_exec,
             git: &git,
             project: &project(scratch),
             events: &events,
@@ -499,32 +499,38 @@ fn a_clean_hold_commits_the_whole_tree_raises_the_hold_and_parks() {
     );
 
     // (b) THE HOLD, carrying the question's whole text, and the item off the
-    // ready set behind it.
-    // `-n 0` for the reason the store's own read carries it: this board is the
-    // run's, every ring arm on it contributes holds, and a capped listing drops
-    // rows without saying so.
-    let holds = String::from_utf8_lossy(&scratch.bd(&["gate", "list", "--json", "-n", "0"]).stdout)
-        .to_string();
+    // ready set behind it. The contract's listing answers ids alone, so the
+    // reason is read off the stub's own record of the holds it raised.
+    let open = through_exec.holds_open().expect("the open holds read");
     assert!(
-        holds.contains(&held.hold),
-        "the store lists the hold open: {holds}"
+        open.iter().any(|hold| *hold == held.hold),
+        "the store lists the hold open: {open:?}"
     );
-    // The text as the listing's JSON spells it, its newlines escaped.
-    let spelled = serde_json::to_string(&hold::question_text(&asked(QUESTION))).expect("it writes");
+    let raised = scratch.rig(|store| store.raised());
+    let (on, reason) = held
+        .hold
+        .as_str()
+        .strip_prefix("hold-")
+        .and_then(|n| n.parse::<usize>().ok())
+        .and_then(|n| raised.get(n - 1))
+        .unwrap_or_else(|| panic!("the store raised {}: {raised:?}", held.hold));
+    assert_eq!(on, &item, "the hold stands against the item");
     assert!(
-        holds.contains(spelled.trim_matches('"')),
-        "and carries the question's whole text as its reason, options and all: {holds}"
+        reason.contains(&hold::question_text(&asked(QUESTION))),
+        "and carries the question's whole text as its reason, options and all: {reason}"
     );
-    let ready = bd.list(&Filter::Ready).expect("the ready read answers");
+    let ready = through_exec
+        .list(&Filter::Ready)
+        .expect("the ready read answers");
     assert!(
         !ready.iter().any(|row| row.id == item),
         "the hold takes the item off the ready set"
     );
 
-    // (c) THE HELD ENTRY, by the seat, on bd's own comments: the hold, the
-    // question and its options, and the branch and the whole commit it stopped
-    // on.
-    let entry = entry_of(bd, &item, &held.entry);
+    // (c) THE HELD ENTRY, by the seat, on the store's own timeline: the hold,
+    // the question and its options, and the branch and the whole commit it
+    // stopped on.
+    let entry = entry_of(through_exec, &item, &held.entry);
     assert_eq!(entry.by, seat_actor(seat), "by the seat that asked");
     assert_eq!(
         entry.body,

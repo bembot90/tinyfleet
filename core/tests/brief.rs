@@ -4,7 +4,8 @@
 //!
 //! The store is held in memory here and the pack is a real folder, because the
 //! pack is this verb's subject and the store is not. The one arm that drives
-//! the real `bd` proves the two agree byte for byte.
+//! the store out of process, the stub adapter through `Exec`, proves the two
+//! agree byte for byte.
 
 mod common;
 
@@ -17,7 +18,6 @@ use fleet_core::item::{show, table_at, Project, Ring, RingOutcome, Spawn, SpawnO
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
 use fleet_core::seat::retire;
-use fleet_core::store::bd::Bd;
 use fleet_core::store::{self, Item, ItemSummary, OrderKind, OrderState, Stamp, Status, Store};
 use fleet_core::test_support::FakeStore;
 
@@ -1034,23 +1034,27 @@ fn a_layer_shadowing_the_question_schema_with_a_property_removed_is_no_brief() {
     assert!(rendered.body.is_empty(), "nothing on stdout");
 }
 
-/// The fidelity control on every arm above: the readings the fake answers are
-/// the readings `bd` answers, measured by rendering the same brief through both
+/// The fidelity control on every arm above: the readings the fake answers in
+/// memory are the readings a store answers through `Exec`, out of process and
+/// over the contract's JSON, measured by rendering the same brief through both
 /// and comparing the bytes.
 #[test]
-fn the_real_store_renders_the_same_brief_as_the_one_held_in_memory() {
+fn the_store_through_exec_renders_the_same_brief_as_the_one_held_in_memory() {
     let scratch = shared_store("brief");
     let item = scratch.item("a ready item");
-    let real = Bd::at(&scratch.root);
-    real.order_set(
-        &store::ItemId::from(item.as_str()),
-        &common::a_dispatch(BY, None, AT),
-        &by(),
-    )
-    .expect("the order is written");
+    let through_exec = &scratch.store;
+    through_exec
+        .order_set(
+            &store::ItemId::from(item.as_str()),
+            &common::a_dispatch(BY, None, AT),
+            &by(),
+        )
+        .expect("the order is written");
 
     let rig = Rig::new("fidelity");
-    let record = real.show(&item).expect("bd answers about the item");
+    let record = through_exec
+        .show(&item)
+        .expect("the store answers about the item");
 
     let fake = FakeStore::default();
     fake.seed(record.clone());
@@ -1072,46 +1076,49 @@ fn the_real_store_renders_the_same_brief_as_the_one_held_in_memory() {
         String::from_utf8(out).expect("utf-8")
     };
 
-    assert_eq!(through(&real), through(&fake), "byte for byte");
+    assert_eq!(through(through_exec), through(&fake), "byte for byte");
     assert_eq!(record.status, Status::Open);
     assert!(
         matches!(&record.order, OrderState::Ordered(index) if index.by == by()),
-        "the order index bd stored is the one that was written: {:?}",
+        "the order index the store kept is the one that was written: {:?}",
         record.order
     );
 }
 
 /// An item carrying an entry gets fleet's rendering of it in its brief, and
-/// never bd's: bd's own `show` text prints every comment under a `COMMENTS`
-/// header — measured on 1.3.0 — so the first entry a verb appended would reach
-/// every brief as the raw JSON the store keeps.
+/// never the store's: the entry is kept as the raw JSON of a comment, so a
+/// brief that printed the store's comments would hand every seat that JSON.
 ///
-/// The person's comment beside the entry is the control on "never bd's": it is
-/// on the item, and fleet's rendering leaves it out.
+/// The person's comment beside the entry is the control on "never the
+/// store's": it is on the item, and fleet's rendering leaves it out.
 #[test]
 fn an_item_carrying_an_entry_is_briefed_through_fleets_rendering() {
     let scratch = shared_store("brief");
     let item = scratch.item("an item with a record");
     let id = store::ItemId::from(item.as_str());
-    let real = Bd::at(&scratch.root);
-    real.order_set(&id, &common::a_dispatch(BY, None, AT), &by())
+    let through_exec = &scratch.store;
+    through_exec
+        .order_set(&id, &common::a_dispatch(BY, None, AT), &by())
         .expect("the order is written");
-    real.append(&id, &common::a_delivery(common::A_COMMIT), &by())
+    through_exec
+        .append(&id, &common::a_delivery(common::A_COMMIT), &by())
         .expect("the entry is appended");
-    let out = scratch.bd(&["comments", "add", &item, "a person's own words"]);
-    assert!(out.status.success(), "the person's comment is written");
+    scratch.rig(|store| store.comment(&item, "Alberto Vildosola", "a person's own words"));
 
     let rig = Rig::new("entry");
-    let rendered = rig.render_as(&real, &item, SEAT, Some(TOUCHED));
+    let rendered = rig.render_as(through_exec, &item, SEAT, Some(TOUCHED));
     assert_eq!(rendered.code, None, "{}", rendered.why);
     let body = &rendered.body;
-    assert!(!body.contains("COMMENTS"), "no bd header:\n{body}");
     assert!(!body.contains("{\"fleet.entry\""), "no raw entry:\n{body}");
     assert!(!body.contains("a person's own words"), "{body}");
 
     // The block is `fleet item show`'s text, whole, over the one entry.
-    let record = real.show(&item).expect("bd answers about the item");
-    let timeline = real.timeline(&id).expect("bd answers the timeline");
+    let record = through_exec
+        .show(&item)
+        .expect("the store answers about the item");
+    let timeline = through_exec
+        .timeline(&id)
+        .expect("the store answers the timeline");
     assert_eq!(timeline.len(), 1, "the entry, and not the person's comment");
     let block = format!(
         "## The item\n\n```\n{}\n```\n",
