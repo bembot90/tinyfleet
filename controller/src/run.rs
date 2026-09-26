@@ -633,7 +633,6 @@ impl<'a> Observer<'a> {
             if observation.state == RosterState::Stopped {
                 if let Some(row) = self.table.newest_for(&key) {
                     observation.session_id = row.session_id.clone();
-                    observation.short_id = row.short_id.clone();
                     if observation.worktree.is_none() {
                         observation.project = Some(row.project.clone());
                         observation.worktree = Some(row.worktree.clone());
@@ -704,13 +703,9 @@ impl<'a> Observer<'a> {
                 if let (Some(session_id), Some(worktree)) =
                     (&observation.session_id, &observation.worktree)
                 {
-                    table_moved |= self.table.sight(
-                        &key,
-                        dir_key(worktree),
-                        session_id,
-                        observation.short_id.as_deref(),
-                        now_ms,
-                    );
+                    table_moved |= self
+                        .table
+                        .sight(&key, dir_key(worktree), session_id, now_ms);
                 }
             }
             // The row names the seat as its object: the id, the seat's own name
@@ -1308,7 +1303,9 @@ fn act(
                 Verdict::SpawnWoken => {
                     effect::spawn_woken(agent, host, policy, &target, events_log, table, now_ms)
                 }
-                Verdict::Revive => effect::revive(agent, &target, events_log, table, now_ms),
+                Verdict::Revive => {
+                    effect::revive(agent, host, policy, &target, events_log, table, now_ms)
+                }
                 Verdict::Rest => {
                     match effect::rest(agent, host, policy, &target, events_log, table, now_ms) {
                         effect::Rested::Collected => Outcome::Rested,
@@ -1320,7 +1317,7 @@ fn act(
                             )) {
                                 eprintln!(
                                     "fleet observe: {}'s rest is not collected and stays pending; \
-                                 nothing was started and nothing was removed — {cause}",
+                                 its session was not stopped and nothing was started — {cause}",
                                     machine_name
                                 );
                             }
@@ -1334,19 +1331,11 @@ fn act(
                             )) {
                                 eprintln!(
                                     "fleet observe: {}'s predecessor was stopped and its successor \
-                                 did not start, so the rest is not collected and stays pending; \
-                                 nothing was removed — {cause}",
+                                 did not start, so the rest is not collected and stays pending \
+                                 — {cause}",
                                     machine_name
                                 );
                             }
-                            Outcome::Failed
-                        }
-                        effect::Rested::NoAddress => {
-                            eprintln!(
-                                "fleet observe: {} asked to rest and its row carries no short id, \
-                             which is the address a stop takes; nothing is done",
-                                machine_name
-                            );
                             Outcome::Failed
                         }
                     }
@@ -1441,7 +1430,6 @@ fn target_for<'a>(
         // service and the seats it wakes are the seat list's, not a workflow's.
         run: None,
         session_id: observation.session_id.as_deref(),
-        short_id: observation.short_id.as_deref(),
         context_tokens,
     })
 }

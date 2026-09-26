@@ -579,10 +579,6 @@ pub(crate) fn machine_of<'a>(
         // which is what keeps a variable out of a process that forks children
         // while its own threads are running.
         readings: transient::Readings::taken(),
-        // The binary's waits are the box's: `SystemClock::sleep` is the bare
-        // standard-library call, so a seamed site under it waits exactly as it
-        // did before the seam.
-        clock: &clock::SystemClock,
     }
 }
 

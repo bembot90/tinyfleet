@@ -733,12 +733,14 @@ mod effects {
         );
     }
 
-    /// AC3(b), AC7 and AC8 — the rest collection, in its fixed order of stop,
-    /// start the successor, remove the predecessor, and the same collection
-    /// with its stop failing.
+    /// AC3(b), AC7 and AC8 — the rest collection, in its fixed order of stop
+    /// then start the successor, both on the host, and the same collection with
+    /// its stop failing. Nothing is removed: the predecessor was the host's
+    /// session, and the stop took it.
     #[test]
-    fn a_rest_is_stop_then_start_then_remove_and_a_failed_stop_retries() {
+    fn a_rest_is_stop_then_start_and_a_failed_stop_retries() {
         let rig = Rig::new("effect-rest");
+        common::panes_die_on_interrupt(&rig.tmux_state_path());
         rig.write_roster(&live_row(&rig.worktree(), "ab12"));
         assert_eq!(rig.observe().status.code(), Some(0));
 
@@ -753,9 +755,9 @@ mod effects {
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         let calls = rig.calls();
         assert_eq!(calls.len(), 3, "three calls, no more: {calls:?}");
-        assert_eq!(calls[0], "stop ab12", "{calls:?}");
-        assert!(calls[1].starts_with("start "), "{calls:?}");
-        assert_eq!(calls[2], "rm ab12", "{calls:?}");
+        assert_eq!(calls[0], "interrupt", "{calls:?}");
+        assert_eq!(calls[1], "kill", "{calls:?}");
+        assert!(calls[2].starts_with("start --name "), "{calls:?}");
         assert_eq!(rig.events_of("session.rested"), 1);
         assert_eq!(seat_row(&rig)["decision"], "rest");
         assert_eq!(seat_row(&rig)["outcome"], "rested");
@@ -778,11 +780,13 @@ mod effects {
         );
         assert_eq!(rig.projection()["effects"]["state"], "on");
 
-        // The other half: a stop that does not exit 0.
+        // The other half: a stop that does not land — the host keeps the
+        // session its kill answered for, and the pane is the agent measured,
+        // which one interrupt does not end, so the stop waits out its grace.
         let rig = Rig::new("effect-rest-failed-stop");
         rig.write_roster(&live_row(&rig.worktree(), "ab12"));
         assert_eq!(rig.observe().status.code(), Some(0));
-        rig.set_seam(STOP_EXIT, Some(1));
+        rig.keep_kills(true);
         let out = rig
             .binary()
             .args(["event", "rest", SEAT, "--reason", "a nap"])
@@ -792,7 +796,10 @@ mod effects {
 
         let out = rig.observe();
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-        assert_eq!(rig.calls(), vec!["stop ab12".to_string()]);
+        assert_eq!(
+            rig.calls(),
+            vec!["interrupt".to_string(), "kill".to_string()]
+        );
         assert_eq!(rig.events_of("session.rested"), 0);
         assert_eq!(rig.events_of("session.spawned"), 0);
         assert_eq!(seat_row(&rig)["outcome"], "failed");
@@ -808,18 +815,18 @@ mod effects {
 
         // The retry: the same event is still standing, so the next poll takes it
         // again — and with the stop landing this time, the collection completes.
-        rig.set_seam(STOP_EXIT, None);
+        rig.keep_kills(false);
         let out = rig.observe();
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         let calls = rig.calls();
         assert_eq!(
             calls.len(),
-            4,
+            5,
             "the retry is a second collection: {calls:?}"
         );
-        assert_eq!(calls[1], "stop ab12", "{calls:?}");
-        assert!(calls[2].starts_with("start "), "{calls:?}");
-        assert_eq!(calls[3], "rm ab12", "{calls:?}");
+        assert_eq!(calls[2], "interrupt", "{calls:?}");
+        assert_eq!(calls[3], "kill", "{calls:?}");
+        assert!(calls[4].starts_with("start --name "), "{calls:?}");
         assert_eq!(rig.events_of("session.rested"), 1);
     }
 
@@ -828,6 +835,7 @@ mod effects {
     #[test]
     fn a_rest_whose_start_failed_says_its_predecessor_was_stopped() {
         let rig = Rig::new("effect-rest-failed-start");
+        common::panes_die_on_interrupt(&rig.tmux_state_path());
         rig.write_roster(&live_row(&rig.worktree(), "ab12"));
         assert_eq!(rig.observe().status.code(), Some(0));
         rig.set_start_exit(Some(1));
@@ -841,9 +849,14 @@ mod effects {
         let out = rig.observe();
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         let calls = rig.calls();
-        assert_eq!(calls.len(), 2, "a stop and a start, no removal: {calls:?}");
-        assert_eq!(calls[0], "stop ab12", "{calls:?}");
-        assert!(calls[1].starts_with("start "), "{calls:?}");
+        assert_eq!(
+            calls.len(),
+            4,
+            "a stop, a start, and the failed start's own session killed: {calls:?}"
+        );
+        assert_eq!(calls[..2], ["interrupt", "kill"], "{calls:?}");
+        assert!(calls[2].starts_with("start --name "), "{calls:?}");
+        assert_eq!(calls[3], "kill", "{calls:?}");
         assert_eq!(seat_row(&rig)["outcome"], "failed");
         let lines = stderr(&out);
         assert_eq!(
@@ -1043,36 +1056,53 @@ mod effects {
         );
     }
 
-    /// AC2 — a revive DISPATCHES an attach of the row's short id, emits one
-    /// `session.revived`, and publishes `revived` as its outcome.
+    /// AC2 — a revive is a NEW SESSION ON THE HOST whose command resumes the
+    /// session's FULL id with the start's flags, believed only when the listing
+    /// shows the new pane's process carrying that same id; it emits one
+    /// `session.revived` and publishes `revived` as its outcome.
     ///
-    /// The attach is addressed by the SHORT id and never by the session id: the
-    /// two are different values, and a call issued against the identity reaches
-    /// no row (lessons claude-code A6, A9).
-    ///
-    /// So the row carries an address and a session id that DIFFER, and the
-    /// transcript is keyed under the identity — the arm cannot measure its own
-    /// claim from a row that writes one value into both.
-    ///
-    /// The revive is still the attach until fleet-rge6.4 moves it onto the
-    /// host; what brings a seat here is now a DEAD PANE, whose session the
-    /// table names (ruling 3).
+    /// What brings a seat here is a DEAD PANE, whose session the table names
+    /// (ruling 3). The listing names the resume's pane — the first session this
+    /// host starts — under the session it resumed, and stands it in no seat's
+    /// worktree, so the row is the resume's by its pid and by nothing else.
     #[test]
-    fn a_revive_attaches_the_rows_short_id_and_says_so_once() {
+    fn a_revive_resumes_the_full_id_as_a_new_session_and_says_so_once() {
         let rig = Rig::new("effect-revive");
         // A dead pane with no deliberate end and a reading under the threshold
         // is a revive.
-        rig.a_dead_session("ab12", "a-session", Some(0));
+        rig.a_dead_session("a-session", Some(0));
         rig.write_transcript("a-session", &transcript_of(10));
+        rig.write_roster(&format!(
+            r#"[{{"sessionId":"a-session","cwd":"/nowhere/resumed","kind":"interactive",
+                  "pid":{FIRST_PANE_PID},"status":"idle"}}]"#
+        ));
 
         let out = rig.observe();
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         assert_eq!(seat_row(&rig)["decision"], "revive");
         assert_eq!(seat_row(&rig)["outcome"], "revived");
+        let calls = rig.calls();
         assert_eq!(
-            rig.calls(),
-            vec!["attach ab12".to_string()],
-            "the attach takes the row's ADDRESS and the poll issues nothing else"
+            calls.len(),
+            2,
+            "the dead pane cleared, then the resume, and nothing else: {calls:?}"
+        );
+        assert_eq!(calls[0], "kill", "{calls:?}");
+        let resumed: Vec<&str> = calls[1].split(' ').collect();
+        assert_eq!(
+            resumed[..3],
+            ["start", "--resume", "a-session"],
+            "the FULL id the table recorded: {calls:?}"
+        );
+        for flag in ["--model", "--permission-mode"] {
+            assert!(
+                resumed.contains(&flag),
+                "the start's {flag} rides: {calls:?}"
+            );
+        }
+        assert!(
+            !resumed.contains(&"--name"),
+            "and no name, which the session already has: {calls:?}"
         );
         assert_eq!(rig.events_of("session.revived"), 1);
         let revived = rig
@@ -1081,11 +1111,13 @@ mod effects {
             .find(|e| e["type"] == "session.revived")
             .expect("the event is in the stream");
         assert_eq!(revived["payload"]["session"], "a-session");
-        assert_eq!(revived["payload"]["address"], "ab12");
-        assert_eq!(revived["payload"]["outcome"], "dispatched");
+        assert!(
+            revived["payload"].get("address").is_none(),
+            "no address rides the line: {revived}"
+        );
 
         // The row is RE-OPENED as this dispatch's, so the arrival window is
-        // keyed to the attach and answered by a sighting. Without it the same
+        // keyed to the revive and answered by a sighting. Without it the same
         // row reads sighted and is revived again on the next poll.
         let row = &rig.sessions()["sessions"][0];
         assert!(
@@ -1095,15 +1127,17 @@ mod effects {
         assert_eq!(row["dispatch_id"], revived["id"]);
     }
 
-    /// AC2 — the revive counts toward the blind counter EVEN WHEN THE ATTACH
-    /// FAILS, because the call's own exit is not a witness either way (lessons
-    /// claude-code A7).
+    /// AC2 — a resume that comes up under ANOTHER id is a fork: the revive is
+    /// failed, its session killed, and it still counts toward the blind counter,
+    /// because a revive that keeps failing must reach the halt.
+    ///
+    /// The listing names the resume's pane only as the arrival every listing
+    /// here carries, whose id is not the session the table recorded.
     #[test]
-    fn a_revive_whose_attach_failed_still_counts_as_a_dispatch() {
-        let rig = Rig::new("effect-revive-failed");
-        rig.a_dead_session("ab12", "ab12", Some(0));
-        rig.write_transcript("ab12", &transcript_of(10));
-        rig.set_seam(ATTACH_EXIT, Some(1));
+    fn a_revive_that_forks_is_failed_killed_and_still_counts_as_a_dispatch() {
+        let rig = Rig::new("effect-revive-forked");
+        rig.a_dead_session("a-session", Some(0));
+        rig.write_transcript("a-session", &transcript_of(10));
 
         let out = rig.observe();
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -1117,10 +1151,28 @@ mod effects {
         );
         assert_eq!(rig.events_of("dispatch.blind"), 1);
         assert_eq!(rig.sessions()["seats"][SEAT_ID]["blind"], 1);
+        assert!(
+            !rig.host().sessions.contains_key(SEAT_ID),
+            "the fork was killed, and nothing of the revive is left on the host: {:?}",
+            rig.host().sessions
+        );
+        let crashed: Vec<serde_json::Value> = rig
+            .events()
+            .into_iter()
+            .filter(|e| e["type"] == "session.crashed")
+            .collect();
+        assert_eq!(crashed.len(), 1, "{crashed:?}");
+        assert_eq!(crashed[0]["payload"]["phase"], "revive");
+        assert_eq!(rig.events_of("session.revived"), 0);
 
-        // And the failed attach opened no window: the row still carries its
-        // session, so the next poll decides about the same dead pane again.
-        assert_eq!(rig.events_of("session.revived"), 1);
+        // And the failed revive opened no window: the row still carries its
+        // session, so the next poll decides about the seat again.
+        assert_eq!(
+            rig.sessions()["sessions"][0]["session_id"],
+            "a-session",
+            "{}",
+            rig.sessions()
+        );
     }
 
     /// AC3 — three consecutive blind dispatches halt the seat: one

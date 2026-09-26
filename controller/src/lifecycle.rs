@@ -1256,7 +1256,7 @@ mod tests {
     /// worktree is the one directory already standing that ends in
     /// the seat's short id — which is the part of the name a rename keeps.
     #[test]
-    fn a_renamed_seat_keeps_the_worktree_that_ends_in_its_short_id() {
+    fn a_renamed_seat_keeps_the_worktree_that_ends_in_its_short_form() {
         let dir = std::env::temp_dir().join(format!("fleet-worktree-for-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let worktrees = dir.join("a-project-worktrees");

@@ -154,6 +154,7 @@ impl Rig {
         for dir in [&rig.project, &rig.machine] {
             std::fs::create_dir_all(dir).expect("the fixture directory is created");
         }
+        common::panes_die_on_interrupt(&rig.tmux.with_file_name("tmux-stub.json"));
         // What a spawn's seed copies into the seat's own configuration
         // directory, from where the adapter reads the operator's own.
         fleet_controller::test_support::plant_operator_state(&rig.root.join("home"));
@@ -303,9 +304,9 @@ impl Rig {
 
     /// The drive suite's stub shape: the roster branch serves a file the arm
     /// writes — its busy twin once a pane has taken a submit, so a feed typed
-    /// into a seat is taken ([`common::listing_branch`]) — and a stop empties
-    /// it down to the arrivals every listing here carries. A start is no
-    /// branch of the stub's: the session comes up on the rig's tmux stub
+    /// into a seat is taken ([`common::listing_branch`]) — and every other call
+    /// is recorded and refused. A start and a stop are no branch of the
+    /// stub's: the session comes up and goes on the rig's tmux stub
     /// ([`Rig::host`]).
     fn write_stub(&self) {
         std::fs::write(
@@ -314,18 +315,14 @@ impl Rig {
                 "#!/bin/sh\n\
                  case \"$1\" in\n\
                  {agents}\
-                 \x20 stop) echo \"STOP $2\" >> '{calls}'; printf '%s' '{cleared}' > '{roster}' ;;\n\
-                 \x20 rm) echo \"RM $2\" >> '{calls}' ;;\n\
-                 \x20 *) exit 64 ;;\n\
+                 \x20 *) echo \"$@\" >> '{calls}'; exit 64 ;;\n\
                  esac\n",
                 agents = common::listing_branch(
                     &self.roster,
                     &self.roster.with_file_name("roster-taken.json"),
                     &self.tmux.with_file_name("tmux-stub.json"),
                 ),
-                roster = self.roster.display(),
                 calls = self.calls.display(),
-                cleared = fleet_controller::test_support::with_arrivals("[]"),
             ),
         )
         .expect("the stub is written");
@@ -616,7 +613,7 @@ fn the_three_verbs_run_end_to_end_through_the_shipped_binary() {
     ]);
     assert_eq!(fed.status.code(), Some(0), "{}", stderr(&fed));
 
-    // The retire: stopped, removed, both rows dropped, the reclaim printed.
+    // The retire: stopped on the host, both rows dropped, the reclaim printed.
     let retired = rig.run(&["seat", "retire", &seat]);
     assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
     assert!(
@@ -624,8 +621,23 @@ fn the_three_verbs_run_end_to_end_through_the_shipped_binary() {
         "the reclaim is printed: {}",
         stdout(&retired)
     );
-    assert!(rig.calls().contains("STOP ab12"), "{}", rig.calls());
-    assert!(rig.calls().contains("RM ab12"), "{}", rig.calls());
+    let host = rig.host();
+    assert!(
+        host.sessions.is_empty(),
+        "the retire left no session on fleet's host: {host:?}"
+    );
+    assert!(
+        host.invocations
+            .iter()
+            .any(|args| args.iter().any(|arg| arg == "kill-session")),
+        "the session was killed there: {:?}",
+        host.invocations
+    );
+    assert!(
+        rig.calls().is_empty(),
+        "and nothing but the listing was asked of the agent: {}",
+        rig.calls()
+    );
     assert!(!rig.worktrees.join(&seat).exists());
     assert_eq!(
         rig.seats()["children"].as_array().map(Vec::len),
@@ -2311,6 +2323,13 @@ fn the_json_feed_prints_the_seat_and_the_turn_that_replaced_the_last() {
 fn the_json_retire_prints_the_reclaim_and_what_became_of_the_work_branch() {
     let rig = Rig::new("json-retire", true);
     let seat = a_landed_seat(&rig, Some(Classification::Safe));
+    let pane = rig
+        .host()
+        .sessions
+        .values()
+        .map(|session| session.pid)
+        .next()
+        .expect("the seat's pane stands before the retire");
 
     let retired = rig.run(&["seat", "retire", &seat, "--json"]);
     assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
@@ -2327,7 +2346,11 @@ fn the_json_retire_prints_the_reclaim_and_what_became_of_the_work_branch() {
         parsed["data"]["bytes"].as_u64().is_some(),
         "the worktree was walked: {parsed}"
     );
-    assert_eq!(parsed["data"]["pid"], u64::from(rig.pid()));
+    assert_eq!(
+        parsed["data"]["pid"],
+        u64::from(pane),
+        "the pid is the seat's pane's, read off the host before the stop"
+    );
     assert_eq!(parsed["data"]["branch"]["name"], WORK);
     assert_eq!(parsed["data"]["branch"]["disposition"], "deleted");
     assert_eq!(

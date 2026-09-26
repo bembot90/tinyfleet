@@ -22,14 +22,14 @@
 //! measured in `cli/tests/seat.rs`, which sets them on the CHILD it drives.
 
 use fleet_controller::adapter::claude_code::ClaudeCode;
-use fleet_controller::adapter::{Agent, RemoveAnswer, RosterRead};
+use fleet_controller::adapter::{Agent, RosterRead};
 use fleet_controller::config;
 use fleet_controller::events;
 use fleet_controller::host::{Host, HostRead};
 use fleet_controller::platform;
 use fleet_controller::policy::{self, Policy};
 use fleet_controller::sessions;
-use fleet_controller::test_support::{self, FakeClock, FakeHost};
+use fleet_controller::test_support::{self, FakeHost};
 use fleet_controller::transient::{self, Machine, Readings, Refusal, Spawn};
 use fleet_core::seat::identity::SeatId;
 use std::path::{Path, PathBuf};
@@ -151,6 +151,14 @@ fn copy_tree(from: &Path, to: &Path) {
 /// the fleet's listing and in every seat's own under the machine directory —
 /// unless the arm planted `never_taken`, which is a session that leaves what
 /// was typed at its prompt.
+///
+/// A KILL is a retire's stop: logged, held while the gate stands, and then the
+/// session gone with every listed row carrying its pane's pid, because an
+/// interactive row leaves the listing with its process (lessons claude-code
+/// B10) — unless the arm made the fake keep its kills, which is a host whose
+/// kill answered and did not take. Its panes die on the interrupt
+/// ([`FakeHost::exit_on_interrupt`]), so a stop here is not a whole grace long:
+/// the grace is the effects suite's arm.
 struct RigHost {
     fake: FakeHost,
     roster: PathBuf,
@@ -165,6 +173,50 @@ struct RigHost {
     settings_at_start: PathBuf,
     start_exit: PathBuf,
     start_makes_branch: PathBuf,
+}
+
+impl RigHost {
+    /// Every listing the rig serves — the fleet's and each seat's own under
+    /// the machine directory — rewritten row by row, under the rewrite lock.
+    fn rewrite_listings(&self, edit: impl Fn(&mut Vec<serde_json::Value>)) {
+        let _held = self.rewriting.lock().expect("the rig host's own lock");
+        let seats = std::fs::read_dir(self.machine.join("config"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|dir| dir.path().join("roster.json"));
+        for listing in std::iter::once(self.roster.clone()).chain(seats) {
+            let Ok(body) = std::fs::read_to_string(&listing) else {
+                continue;
+            };
+            let Ok(mut rows) = serde_json::from_str::<Vec<serde_json::Value>>(&body) else {
+                continue;
+            };
+            edit(&mut rows);
+            // Renamed into place, so a listing read beside the rewrite meets
+            // the old rows or the new ones and never half of either.
+            let rows = serde_json::to_string(&rows).expect("the rows serialize");
+            platform::write_atomic(&listing, rows.as_bytes()).expect("the listing is rewritten");
+        }
+    }
+
+    fn log(&self, line: &str) {
+        let mut calls = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.calls)
+            .expect("the call log opens");
+        use std::io::Write as _;
+        writeln!(calls, "{line}").expect("the call is logged");
+    }
+
+    fn wait_at_the_gate(&self) {
+        let mut held = 0;
+        while self.gate.is_file() && held < 200 {
+            held += 1;
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
 }
 
 impl Host for RigHost {
@@ -188,18 +240,8 @@ impl Host for RigHost {
                 let _ = std::fs::remove_file(&self.settings_at_start);
             }
         }
-        let mut calls = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.calls)
-            .expect("the call log opens");
-        use std::io::Write as _;
-        writeln!(calls, "start").expect("the call is logged");
-        let mut held = 0;
-        while self.gate.is_file() && held < 200 {
-            held += 1;
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        self.log("start");
+        self.wait_at_the_gate();
         if let Ok(branch) = std::fs::read_to_string(&self.start_makes_branch) {
             if !branch.trim().is_empty() {
                 git_at(cwd, &["branch", branch.trim()]);
@@ -224,27 +266,11 @@ impl Host for RigHost {
         let Some(pid) = self.fake.session(name).map(|pane| pane.pid) else {
             return Ok(());
         };
-        let _held = self.rewriting.lock().expect("the rig host's own lock");
-        let seats = std::fs::read_dir(self.machine.join("config"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|dir| dir.path().join("roster.json"));
-        for listing in std::iter::once(self.roster.clone()).chain(seats) {
-            let Ok(body) = std::fs::read_to_string(&listing) else {
-                continue;
-            };
-            let Ok(mut rows) = serde_json::from_str::<Vec<serde_json::Value>>(&body) else {
-                continue;
-            };
+        self.rewrite_listings(|rows| {
             for row in rows.iter_mut().filter(|row| row["pid"] == pid) {
                 row["status"] = "busy".into();
             }
-            // Renamed into place, so a listing read beside the rewrite meets
-            // the old rows or the new ones and never half of either.
-            let rows = serde_json::to_string(&rows).expect("the rows serialize");
-            platform::write_atomic(&listing, rows.as_bytes()).expect("the listing is rewritten");
-        }
+        });
         Ok(())
     }
 
@@ -257,7 +283,14 @@ impl Host for RigHost {
     }
 
     fn kill(&self, name: &str) -> Result<(), String> {
-        self.fake.kill(name)
+        self.log(&format!("kill {name}"));
+        self.wait_at_the_gate();
+        let pid = self.fake.session(name).map(|pane| pane.pid);
+        self.fake.kill(name)?;
+        if let (Some(pid), None) = (pid, self.fake.session(name)) {
+            self.rewrite_listings(|rows| rows.retain(|row| row["pid"] != pid));
+        }
+        Ok(())
     }
 
     fn list(&self) -> HostRead {
@@ -293,7 +326,6 @@ struct Rig {
     /// line by the stub: the seam that says WHICH directory a read was made
     /// through.
     listing_dirs: PathBuf,
-    stop_keeps_the_roster: PathBuf,
     calls: PathBuf,
     start_argv: PathBuf,
     /// What the child could read of the seat's local settings when it came up,
@@ -302,19 +334,12 @@ struct Rig {
     /// Planted, a turn typed into a seat's pane is never taken ([`RigHost`]).
     never_taken: PathBuf,
     start_exit: PathBuf,
-    stop_exit: PathBuf,
-    rm_exit: PathBuf,
-    rm_stdout: PathBuf,
     start_makes_branch: PathBuf,
-    /// While this file stands, the stub's start and stop block in it — so an arm
-    /// can hold a verb inside one of its windows and read what a SECOND verb
-    /// gets done meanwhile. Absent by default, which is every other arm here.
+    /// While this file stands, the host's start and kill block in it — so an
+    /// arm can hold a verb inside one of its windows and read what a SECOND
+    /// verb gets done meanwhile. Absent by default, which is every other arm
+    /// here.
     gate: PathBuf,
-    /// The clock every verb driven against this rig spends its one duration-
-    /// subject wait on — `cleared`'s start-watch window. Fake, so the window
-    /// costs no wall clock; the listings inside it are real children and their
-    /// number is the same either way.
-    clock: FakeClock,
     host: RigHost,
 }
 
@@ -336,18 +361,13 @@ impl Rig {
             roster_fails: root.join("roster-fails"),
             fleet_roster_fails: root.join("fleet-roster-fails"),
             listing_dirs: root.join("listing-dirs"),
-            stop_keeps_the_roster: root.join("stop-keeps-the-roster"),
             calls: root.join("calls"),
             start_argv: root.join("start-argv"),
             settings_at_start: root.join("settings-at-start"),
             never_taken: root.join("never-taken"),
             start_exit: root.join("start-exit"),
-            stop_exit: root.join("stop-exit"),
-            rm_exit: root.join("rm-exit"),
-            rm_stdout: root.join("rm-stdout"),
             start_makes_branch: root.join("start-makes-branch"),
             gate: root.join("gate"),
-            clock: FakeClock::new(),
             host: RigHost {
                 fake: FakeHost::new(),
                 roster: root.join("roster.json"),
@@ -363,6 +383,7 @@ impl Rig {
             },
             root,
         };
+        rig.host.fake.exit_on_interrupt();
         for dir in [&rig.worktrees, &rig.machine, &rig.home] {
             std::fs::create_dir_all(dir).expect("the fixture directory is created");
         }
@@ -406,20 +427,12 @@ impl Rig {
     /// The stub. Every branch records the call it was given, so what a verb
     /// passed is read from what the child received.
     ///
-    /// A start is no branch of the stub's: the session comes up on the rig's
-    /// host ([`RigHost`]), which records what the start branch used to. A stop
-    /// clears the listing down to the arrivals every listing carries, so a
-    /// spawn after a retire is still believed.
+    /// A start is no branch of the stub's, and neither is a stop: both are the
+    /// rig's host's ([`RigHost`]), which records what the stub's branches used
+    /// to. The listing is the one thing the stub answers.
     fn write_stub(&self) {
         let body = format!(
             "#!/bin/sh\n\
-             gate() {{\n\
-             \x20 n=0\n\
-             \x20 while [ -f '{gate}' ] && [ $n -lt 200 ]; do\n\
-             \x20   n=$((n+1))\n\
-             \x20   sleep 0.05\n\
-             \x20 done\n\
-             }}\n\
              case \"$1\" in\n\
              \x20 agents)\n\
              \x20   [ -f '{roster_fails}' ] && exit 1\n\
@@ -431,21 +444,6 @@ impl Rig {
              \x20     /bin/cat '{roster}'\n\
              \x20   fi\n\
              \x20   ;;\n\
-             \x20 stop)\n\
-             \x20   echo \"stop $2\" >> '{calls}'\n\
-             \x20   gate\n\
-             \x20   if [ ! -f '{stop_keeps}' ]; then\n\
-             \x20     printf '%s' '{cleared}' > '{roster}'\n\
-             \x20     [ -f \"$CLAUDE_CONFIG_DIR/roster.json\" ] \\\n\
-             \x20       && printf '%s' '{cleared}' > \"$CLAUDE_CONFIG_DIR/roster.json\"\n\
-             \x20   fi\n\
-             \x20   exit $(/bin/cat '{stop_exit}' 2>/dev/null || echo 0)\n\
-             \x20   ;;\n\
-             \x20 rm)\n\
-             \x20   echo \"rm $2\" >> '{calls}'\n\
-             \x20   /bin/cat '{rm_stdout}' 2>/dev/null\n\
-             \x20   exit $(/bin/cat '{rm_exit}' 2>/dev/null || echo 0)\n\
-             \x20   ;;\n\
              \x20 *) exit 64 ;;\n\
              esac\n",
             roster = self.roster.display(),
@@ -453,13 +451,6 @@ impl Rig {
             fleet_roster_fails = self.fleet_roster_fails.display(),
             fleet_dir = self.home.join(".claude").display(),
             listing_dirs = self.listing_dirs.display(),
-            stop_keeps = self.stop_keeps_the_roster.display(),
-            calls = self.calls.display(),
-            gate = self.gate.display(),
-            cleared = test_support::with_arrivals("[]"),
-            stop_exit = self.stop_exit.display(),
-            rm_exit = self.rm_exit.display(),
-            rm_stdout = self.rm_stdout.display(),
         );
         std::fs::write(&self.stub, body).expect("the stub is written");
         use std::os::unix::fs::PermissionsExt;
@@ -728,12 +719,11 @@ impl Rig {
         path
     }
 
-    fn row(&self, session: &str, short: &str, cwd: &str, pid: u32, status: &str) -> String {
+    fn row(&self, session: &str, cwd: &str, pid: u32, status: &str) -> String {
         format!(
-            "{{\"sessionId\": {session}, \"id\": {short}, \"cwd\": {cwd}, \"pid\": {pid}, \
+            "{{\"sessionId\": {session}, \"cwd\": {cwd}, \"pid\": {pid}, \
              \"status\": {status}}}",
             session = json_string(session),
-            short = json_string(short),
             cwd = json_string(cwd),
             status = json_string(status),
         )
@@ -809,7 +799,6 @@ fn machine_reading<'a>(
         primary: &rig.primary,
         worktrees_dir: &rig.worktrees,
         readings,
-        clock: &rig.clock,
     }
 }
 
@@ -1047,17 +1036,11 @@ fn the_transient_cap_refuses_when_more_seats_are_mid_turn_than_the_cap() {
     let before = rig.config_bytes();
     rig.roster(&format!(
         "[{}, {}, {}]",
-        rig.row("s-one", "a1", &one, 11, "busy"),
-        rig.row("s-two", "b2", &two, 22, "busy"),
+        rig.row("s-one", &one, 11, "busy"),
+        rig.row("s-two", &two, 22, "busy"),
         // The control inside the fixture: a NAMED seat mid-turn is not counted,
         // so the number the belt reads is transient seats and not sessions.
-        rig.row(
-            "s-named",
-            "c3",
-            &rig.primary.display().to_string(),
-            33,
-            "busy"
-        ),
+        rig.row("s-named", &rig.primary.display().to_string(), 33, "busy"),
     ));
 
     let refusal = spawned(&rig, &policy, 0.1, 8, "/work")
@@ -1094,8 +1077,8 @@ fn the_transient_cap_refuses_when_more_seats_are_mid_turn_than_the_cap() {
     // The control, one unit down: with one of the two idle the spawn proceeds.
     rig.roster(&format!(
         "[{}, {}]",
-        rig.row("s-one", "a1", &one, 11, "busy"),
-        rig.row("s-two", "b2", &two, 22, "idle"),
+        rig.row("s-one", &one, 11, "busy"),
+        rig.row("s-two", &two, 22, "idle"),
     ));
     let spawn = spawned(&rig, &policy, 0.1, 8, "/work").expect("one mid-turn is not over one");
     assert_agent_name(&spawn.seat);
@@ -1582,23 +1565,19 @@ fn a_start_that_fails_rolls_back_the_worktree_and_the_row_and_never_the_branch()
 
 // ---- AC3: the feed ----------------------------------------------------------
 
-/// A spawned transient seat with a live idle row on the roster, for the feed and
-/// retire arms to act on.
+/// A spawned transient seat with a live row on the roster, for the feed and
+/// retire arms to act on: the row carries the seat's pane's pid, which is what
+/// it is the seat's by, and the pid a retire's last probe reads — one no
+/// process can hold ([`test_support::FIRST_PANE_PID`]), so `process_alive`
+/// answers a measured `false` rather than an unknown.
 fn a_spawned_seat(rig: &Rig, policy: &Policy, status: &str) -> (String, u32) {
     let spawn = spawned(rig, policy, 0.1, 8, "the turn it came up with")
         .expect("the fixture's spawn lands");
     let worktree = rig.worktrees.join(&spawn.seat).display().to_string();
-    // A pid this process has already reaped, so `process_alive` answers a
-    // measured `false` at the retire's last probe rather than an unknown.
-    let mut child = std::process::Command::new("/bin/sh")
-        .args(["-c", "exit 0"])
-        .spawn()
-        .expect("a child spawns");
-    let pid = child.id();
-    child.wait().expect("the child is reaped");
+    let pid = pane_pid(rig, &spawn.seat);
     rig.roster(&format!(
         "[{}]",
-        rig.row("a-session", "ab12", &worktree, pid, status)
+        rig.row("a-session", &worktree, pid, status)
     ));
     (spawn.seat, pid)
 }
@@ -1668,7 +1647,7 @@ fn feed_refuses_a_named_row_an_absent_session_an_unreadable_roster_and_a_busy_on
     let worktree = rig.worktrees.join(&seat).display().to_string();
     rig.roster(&format!(
         "[{}]",
-        rig.row("a-session", "ab12", &worktree, pid, "busy")
+        rig.row("a-session", &worktree, pid, "busy")
     ));
     let busy = transient::feed(&machine, &seat, "a turn").expect_err("a seat holding a turn");
     assert_eq!(busy.code, 1, "{}", busy.message);
@@ -1678,7 +1657,7 @@ fn feed_refuses_a_named_row_an_absent_session_an_unreadable_roster_and_a_busy_on
     // The row stopped in front of a person: 1, before any byte.
     rig.roster(&format!(
         "[{}]",
-        rig.row("a-session", "ab12", &worktree, pid, "waiting")
+        rig.row("a-session", &worktree, pid, "waiting")
     ));
     let blocked = transient::feed(&machine, &seat, "a turn").expect_err("a seat at a dialog");
     assert_eq!(blocked.code, 1, "{}", blocked.message);
@@ -1839,19 +1818,21 @@ fn a_retire_stops_removes_prunes_drops_both_rows_and_prints_the_reclaim() {
         reclaimed.bytes
     );
     assert_eq!(
-        reclaimed.removal.as_deref(),
-        Some("removed ab12"),
-        "the reclaim names the address the removal was issued against"
+        reclaimed.removal,
+        Some(format!("killed {id}")),
+        "the reclaim names the session the stop killed: the seat's own, by its id"
     );
 
+    // STOPPED ON THE HOST, BY THE SEAT: one interrupt into its session, then
+    // the kill, and nothing the agent issued addresses it.
+    let pressed = rig.host.fake.calls_of(FakeHost::KEYS);
+    assert_eq!(pressed.len(), 1, "{:?}", rig.host.fake.verbs());
+    assert_eq!(pressed[0].about, id);
     let calls = rig.calls();
+    assert!(calls.contains(&format!("kill {id}")), "{calls}");
     assert!(
-        calls.contains("stop ab12"),
-        "stopped BY ITS SHORT ID: {calls}"
-    );
-    assert!(
-        calls.contains("rm ab12"),
-        "and removed by the same: {calls}"
+        rig.host.fake.session(&id).is_none(),
+        "the host holds no session for the seat"
     );
 
     assert!(!worktree.exists(), "the worktree is gone");
@@ -1935,17 +1916,18 @@ fn a_spawn_after_a_retire_mints_a_seat_the_retired_one_never_was() {
 /// names it, every listing about the seat is asked UNDER it, and the retire
 /// takes it back — after the outside probes, which read through it.
 ///
-/// The two listings are made to DIFFER: the fleet's names no live row and the
-/// row's own names the session. On the fleet's answer alone the retire takes its
-/// no-live-session branch, never stops anything, and removes the worktree of a
-/// running session — so the assertions below are the difference and not a
-/// restatement.
+/// The two listings are made to DIFFER: the fleet's names no row and the row's
+/// own names the session by its pane's pid. A probe read under the fleet's
+/// finds no row whatever is still running, which is a probe that cannot fail —
+/// so the assertions below that every listing went through the row's own
+/// directory are the difference and not a restatement.
 #[test]
 fn a_retire_reads_and_acts_under_the_rows_own_configuration_directory() {
     let rig = Rig::new("retire-per-row-directory");
     let policy = a_policy();
     let (seat, pid) = a_spawned_seat(&rig, &policy, "idle");
     let config_dir = rig.config_dir_of(&seat);
+    let id = rig.id_of(&seat);
     let worktree = rig.worktrees.join(&seat).display().to_string();
 
     // The spawn made it, and the row names it.
@@ -1967,7 +1949,7 @@ fn a_retire_reads_and_acts_under_the_rows_own_configuration_directory() {
     rig.roster("[]");
     rig.roster_under(
         &config_dir,
-        &format!("[{}]", rig.row("a-session", "ab12", &worktree, pid, "idle")),
+        &format!("[{}]", rig.row("a-session", &worktree, pid, "idle")),
     );
 
     // The listings the SPAWN already made — its belt reads the fleet's — so the
@@ -1978,17 +1960,14 @@ fn a_retire_reads_and_acts_under_the_rows_own_configuration_directory() {
     let machine = machine_of(&rig, &agent, &policy);
     let reclaimed = transient::retire(&machine, &seat, false).expect("the retire lands");
 
-    // It SAW the session, which the fleet's listing does not carry: the pid and
-    // the address both come off the row's own listing.
-    assert_eq!(
-        reclaimed.pid,
-        Some(pid),
-        "the live row was seen through the row's own directory"
+    // The pid is the host's pane, and the session was stopped there.
+    assert_eq!(reclaimed.pid, Some(pid), "the pid is the seat's pane's");
+    assert_eq!(reclaimed.removal, Some(format!("killed {id}")));
+    assert!(
+        rig.calls().contains(&format!("kill {id}")),
+        "and stopped on the host: {}",
+        rig.calls()
     );
-    assert_eq!(reclaimed.removal.as_deref(), Some("removed ab12"));
-    let calls = rig.calls();
-    assert!(calls.contains("stop ab12"), "and stopped: {calls}");
-    assert!(calls.contains("rm ab12"), "and removed: {calls}");
 
     // Every listing was asked UNDER that directory and none under the fleet's,
     // which is what the fold has to get right for the probes above to mean
@@ -2020,10 +1999,11 @@ fn a_retire_reads_and_acts_under_the_rows_own_configuration_directory() {
     );
 }
 
-/// The retire's refusals: a named seat, an unreadable roster, and a row the
-/// stop does not clear — the last of which removes NOTHING.
+/// The retire's refusals: a named seat, an unreadable host, an unreadable
+/// roster, and a session the kill does not clear — the last of which removes
+/// NOTHING.
 #[test]
-fn retire_refuses_a_named_seat_an_unreadable_roster_and_a_row_the_stop_does_not_clear() {
+fn retire_refuses_a_named_seat_an_unreadable_host_or_roster_and_a_session_the_kill_leaves() {
     let rig = Rig::new("retire-refusals");
     let policy = a_policy();
     let (seat, _) = a_spawned_seat(&rig, &policy, "idle");
@@ -2051,52 +2031,98 @@ fn retire_refuses_a_named_seat_an_unreadable_roster_and_a_row_the_stop_does_not_
         .expect_err("a named seat rests, it does not retire");
     assert_eq!(named.code, 6, "{}", named.message);
 
+    // A host nobody could read is a question about the session, and never an
+    // absence of one.
+    rig.host
+        .fake
+        .fail(FakeHost::LIST, Some("the arm blinded the host"));
+    let blind = transient::retire(&machine, &seat, false).expect_err("an unreadable host");
+    assert_eq!(blind.code, 3, "{}", blind.message);
+    assert!(
+        blind.message.contains("the arm blinded the host"),
+        "{}",
+        blind.message
+    );
+    rig.host.fake.fail(FakeHost::LIST, None);
+
     rig.seam(&rig.roster_fails, "");
     let unreadable =
         transient::retire(&machine, &seat, false).expect_err("an unreadable roster is a question");
     assert_eq!(unreadable.code, 3, "{}", unreadable.message);
     let _ = std::fs::remove_file(&rig.roster_fails);
+    assert!(
+        rig.host.fake.calls_of(FakeHost::KILL).is_empty(),
+        "neither reading that could not be taken stopped anything: {:?}",
+        rig.host.fake.verbs()
+    );
 
-    // A stop the roster does not answer: the row stays, and nothing is removed.
-    //
-    // The ONE arm here that spends its whole start-watch window on purpose —
-    // the wait ends only at the deadline, because the roster never clears — so
-    // it runs on a one-second policy of its own rather than on `a_policy`'s ten.
-    // The window costs no wall clock under the rig's fake clock; what it does
-    // bound is the NUMBER OF ROSTER LISTINGS inside it, and each of those is a
-    // real child. One second is five; ten would be fifty.
-    let brief =
-        policy::parse("[controller]\nstart_watch_seconds = 1\n").expect("the policy parses");
-    let machine = machine_of(&rig, &agent, &brief);
+    // A kill the host answers and does not take: the session stays, and
+    // nothing is removed — the host's own reading after the kill is the
+    // witness, and it still names the session.
     let worktree = rig.worktrees.join(&seat);
     let config_before = rig.config_bytes();
     let table_before = rig.table_bytes();
-    rig.seam(&rig.stop_keeps_the_roster, "");
+    rig.host.fake.keep_kills(true);
     let stuck = transient::retire(&machine, &seat, false)
-        .expect_err("a row the stop does not clear is a refusal");
+        .expect_err("a session the kill does not clear is a refusal");
     assert_eq!(stuck.code, 1, "{}", stuck.message);
     assert!(
-        stuck.message.contains("nothing was removed"),
+        stuck.message.contains("nothing was removed")
+            && stuck.message.contains("still holds the session"),
         "{}",
         stuck.message
     );
     assert!(worktree.exists(), "the worktree stands");
     assert_eq!(rig.config_bytes(), config_before, "the seat list stands");
     assert_eq!(rig.table_bytes(), table_before, "the table stands");
+}
+
+/// A session the host holds again by the time the retire looks from outside
+/// FAILS THE HOST PROBE, even though the stop's own witness said it was gone.
+///
+/// The session is put back by the withdrawal, which is the one seam that runs
+/// between the stop and the probes: a start racing the retire, as a person or
+/// a second controller could make one. The refusal comes after both rows are
+/// dropped, and says so.
+#[test]
+fn a_session_back_on_the_host_after_the_stop_fails_the_host_probe() {
+    let rig = Rig::new("retire-host-probe");
+    let policy = a_policy();
+    let (seat, _) = a_spawned_seat(&rig, &policy, "idle");
+    let id = rig.id_of(&seat);
+    let agent = rig.agent();
+    let machine = machine_of(&rig, &agent, &policy);
+
+    let refusal = transient::retire_with(&machine, &seat, false, &|_| {
+        rig.host
+            .fake
+            .new_session(
+                &id,
+                &rig.primary,
+                &["/nowhere/a-racing-start".to_string()],
+                &[],
+            )
+            .expect("the racing start lands");
+        Ok(Vec::new())
+    })
+    .expect_err("a session on the host after the retire");
+    assert_eq!(refusal.code, 1, "{}", refusal.message);
     assert!(
-        !rig.calls().contains("rm "),
-        "and the removal was never issued: {}",
-        rig.calls()
+        refusal
+            .message
+            .contains(&format!("the host still holds `{seat}`'s session {id}")),
+        "the host probe names what it found: {}",
+        refusal.message
     );
-    // The whole window, and not one slice more: five 200 ms slices against the
-    // one-second policy above. Fake time is the witness that the wait HAPPENED
-    // while costing none of the box's, so a wait that quietly stopped being
-    // spent — or one spent against the thread instead of the clock — reds here.
-    assert_eq!(
-        rig.clock.spent(),
-        Duration::from_secs(1),
-        "the refusal came at the end of the start-watch window"
+    assert!(
+        refusal.message.contains("ARE ALREADY DROPPED"),
+        "{}",
+        refusal.message
     );
+
+    // The control: the same retire with nothing racing it verifies.
+    let (other, _) = a_spawned_seat(&rig, &policy, "idle");
+    transient::retire(&machine, &other, false).expect("a host that holds nothing verifies");
 }
 
 /// The withdrawal seam, on both sides: the record's half of a retire is the
@@ -2154,25 +2180,19 @@ fn a_retire_whose_withdrawal_refuses_never_frees_the_name() {
     );
 }
 
-/// `--dead` licenses the removal by a COMPLETED roster read that names no live
-/// row, and refuses over one that does.
 /// The pid probe's THIRD answer: a reading the platform cannot take is
 /// could-not-tell and refuses at 3, never rounded to clean.
 ///
 /// The specimen is pid 0, which the process read answers `None` for on both
 /// platforms — 0 addresses the caller's own process group rather than a
-/// process. The row is live by the roster's rule (it carries a pid), so the
-/// retire runs its whole sequence and stops at the last probe.
+/// process. The seat's pane is live and carries it, so the retire runs its
+/// whole sequence and stops at the last probe.
 #[test]
 fn a_pid_the_platform_cannot_read_refuses_at_could_not_tell_and_never_clean() {
     let rig = Rig::new("retire-unknown-pid");
     let policy = a_policy();
     let (seat, _) = a_spawned_seat(&rig, &policy, "idle");
-    let worktree = rig.worktrees.join(&seat).display().to_string();
-    rig.roster(&format!(
-        "[{}]",
-        rig.row("a-session", "ab12", &worktree, 0, "idle")
-    ));
+    rig.host.fake.set_pid(&rig.id_of(&seat), 0);
     let agent = rig.agent();
     let machine = machine_of(&rig, &agent, &policy);
 
@@ -2190,16 +2210,20 @@ fn a_pid_the_platform_cannot_read_refuses_at_could_not_tell_and_never_clean() {
     transient::retire(&machine, &other, false).expect("a readable pid verifies");
 }
 
+/// `--dead` licenses the retire by a COMPLETED host read that holds no live
+/// pane for the seat, and refuses over one that does. A dead pane is still
+/// killed: it is no session, and it holds the seat's name.
 #[test]
-fn dead_retires_without_a_stop_and_refuses_over_a_live_row() {
+fn dead_retires_a_dead_pane_and_refuses_over_a_live_one() {
     let rig = Rig::new("retire-dead");
     let policy = a_policy();
     let (seat, _) = a_spawned_seat(&rig, &policy, "idle");
+    let id = rig.id_of(&seat);
     let agent = rig.agent();
     let machine = machine_of(&rig, &agent, &policy);
 
     let live = transient::retire(&machine, &seat, true)
-        .expect_err("--dead over a roster naming a live row");
+        .expect_err("--dead over a host holding the session live");
     assert_eq!(live.code, 1, "{}", live.message);
     assert!(
         live.message.contains("--dead was the wrong flag"),
@@ -2207,21 +2231,26 @@ fn dead_retires_without_a_stop_and_refuses_over_a_live_row() {
         live.message
     );
     assert!(rig.worktrees.join(&seat).exists(), "nothing was removed");
+    assert!(
+        rig.host.fake.calls_of(FakeHost::KEYS).is_empty(),
+        "and nothing was typed into the live session: {:?}",
+        rig.host.fake.verbs()
+    );
 
-    rig.roster("[]");
-    let reclaimed = transient::retire(&machine, &seat, true).expect("--dead over an empty roster");
+    rig.host.fake.end(&id, Some(0));
+    let reclaimed = transient::retire(&machine, &seat, true).expect("--dead over a dead pane");
     assert!(
         reclaimed.dead,
         "the reclaim records that --dead licensed it"
     );
     assert_eq!(
         reclaimed.pid, None,
-        "there was no live row to read one from"
+        "a dead pane's pid names a process that has already ended"
     );
+    assert_eq!(reclaimed.removal, Some(format!("killed {id}")));
     assert!(
-        !rig.calls().contains("stop "),
-        "and no stop was issued at all: {}",
-        rig.calls()
+        rig.host.fake.session(&id).is_none(),
+        "the dead pane is gone"
     );
     assert!(!rig.worktrees.join(&seat).exists(), "the worktree is gone");
     assert_eq!(
@@ -2371,14 +2400,12 @@ fn two_verbs_writing_the_session_table_lose_no_row() {
         "[{}, {}]",
         rig.row(
             "session-one",
-            "aa11",
             &rig.worktrees.join(&one).display().to_string(),
             4242,
             "idle"
         ),
         rig.row(
             "session-two",
-            "bb22",
             &rig.worktrees.join(&two).display().to_string(),
             4343,
             "idle"
@@ -2522,8 +2549,8 @@ fn a_spawn_in_its_watch_window_does_not_block_a_feed() {
 /// A RETIRE'S critical section is its own write and not its stop: a feed issued
 /// while a retire sits in its stop lands inside it.
 ///
-/// The same gate, on the stub's `stop` and BEFORE the branch that empties the
-/// roster — so the feed this arm runs meanwhile still reads the roster the
+/// The same gate, on the host's kill and BEFORE the listing drops the going
+/// seat's rows — so the feed this arm runs meanwhile still reads the roster the
 /// fixture wrote, and what it is waiting on can only be the table's lock.
 ///
 /// The last two assertions are the re-read: the feed's move is on the file and
@@ -2542,8 +2569,8 @@ fn a_retire_in_its_stop_does_not_block_a_feed() {
     let staying = rig.worktrees.join(&fed).display().to_string();
     rig.roster(&format!(
         "[{}, {}]",
-        rig.row("a-session", "ab12", &leaving, pid, "idle"),
-        rig.row("another-session", "cd34", &staying, pid, "idle"),
+        rig.row("a-session", &leaving, pid, "idle"),
+        rig.row("another-session", &staying, pid, "idle"),
     ));
 
     rig.hold();
@@ -2563,7 +2590,7 @@ fn a_retire_in_its_stop_does_not_block_a_feed() {
         });
 
         assert!(
-            rig.until(Duration::from_secs(10), || rig.calls().contains("stop ")),
+            rig.until(Duration::from_secs(10), || rig.calls().contains("kill ")),
             "the retire reached its stop: {}",
             rig.calls()
         );
@@ -2677,55 +2704,6 @@ fn a_feed_moves_the_newest_row_for_the_seat_and_not_the_first_in_file_order() {
     );
 }
 
-// ---- the retire's two missing acts -----------------------------------------
-
-/// A retire over a roster that names no live row still issues the adapter's
-/// REMOVE, addressed by the short id the session table remembers.
-///
-/// A seat whose session is already gone still has a session row to delete, and
-/// a retire that skipped it would leave the agent holding one per dead seat.
-#[test]
-fn a_dead_seats_retire_removes_the_session_row_by_the_address_the_table_holds() {
-    let rig = Rig::new("retire-dead-removes");
-    let policy = a_policy();
-    let (seat, _) = a_spawned_seat(&rig, &policy, "idle");
-
-    // The table's row gets the address a sighting would have written onto it.
-    let mut table = rig.table();
-    let row = table
-        .newest_for_mut(&rig.id_of(&seat))
-        .expect("the row is there");
-    row.session_id = Some("a-session".to_string());
-    row.short_id = Some("ab12".to_string());
-    sessions::write(&rig.table_path(), &table).expect("the table is written");
-
-    rig.roster("[]");
-    let agent = rig.agent();
-    let machine = machine_of(&rig, &agent, &policy);
-    let reclaimed = transient::retire(&machine, &seat, true).expect("--dead over an empty roster");
-
-    let calls = rig.calls();
-    assert!(
-        calls.contains("rm ab12"),
-        "the removal is issued by the table's address: {calls}"
-    );
-    assert!(
-        !calls.contains("stop "),
-        "and no stop is issued, because there was nothing live to stop: {calls}"
-    );
-    assert_eq!(reclaimed.removal.as_deref(), Some("removed ab12"));
-
-    // The control: a seat whose table row carries NO address issues no removal
-    // at all and says so, rather than issuing one against an empty string.
-    let (bare, _) = a_spawned_seat(&rig, &policy, "idle");
-    rig.roster("[]");
-    let reclaimed = transient::retire(&machine, &bare, true).expect("--dead over an empty roster");
-    assert_eq!(
-        reclaimed.removal, None,
-        "no address anywhere is no removal, not a removal of nothing"
-    );
-}
-
 /// AC4's last clause: a worktree a forced removal cannot delete is exit 1
 /// NAMING IT, with both rows still standing.
 ///
@@ -2743,6 +2721,7 @@ fn a_worktree_a_forced_removal_cannot_delete_is_a_refusal_naming_it() {
 
     let config_before = rig.config_bytes();
     let table_before = rig.table_bytes();
+    let id = rig.id_of(&seat);
     let agent = rig.agent();
     let machine = machine_of(&rig, &agent, &policy);
 
@@ -2760,16 +2739,15 @@ fn a_worktree_a_forced_removal_cannot_delete_is_a_refusal_naming_it() {
         "the refusal opens by naming the worktree that survives: {}",
         refusal.message
     );
-    // WHAT IT SAYS IS GONE IS WHAT WENT: the stop ran and the session row was
-    // removed before the worktree was reached, so a refusal claiming nothing
-    // else was removed would be describing a machine in a state this one is not
-    // in. The removal's own answer is quoted, which is the line `rm ab12` in the
-    // stub's call log.
+    // WHAT IT SAYS IS GONE IS WHAT WENT: the session was stopped before the
+    // worktree was reached, so a refusal claiming nothing else was done would
+    // be describing a machine in a state this one is not in. The stop's own
+    // answer is quoted, which is the kill in the host's call log.
     assert!(
         refusal
             .message
-            .contains("the session is stopped and its session row is already gone (removed ab12)"),
-        "the refusal names the two acts that already landed: {}",
+            .contains(&format!("its session is already gone (killed {id})")),
+        "the refusal names the act that already landed: {}",
         refusal.message
     );
     assert!(
@@ -2780,8 +2758,8 @@ fn a_worktree_a_forced_removal_cannot_delete_is_a_refusal_naming_it() {
         refusal.message
     );
     assert!(
-        rig.calls().contains("rm ab12"),
-        "the removal it reports really was issued: {}",
+        rig.calls().contains(&format!("kill {id}")),
+        "the kill it reports really was issued: {}",
         rig.calls()
     );
     assert!(worktree.exists(), "and it is still there");
@@ -2800,10 +2778,7 @@ fn a_refusal_after_the_rows_are_dropped_says_they_are_gone_and_what_stands() {
     let worktree = rig.worktrees.join(&seat).display().to_string();
     // pid 0 is the probe the platform cannot answer, which lands in the
     // verification below the two drops.
-    rig.roster(&format!(
-        "[{}]",
-        rig.row("a-session", "ab12", &worktree, 0, "idle")
-    ));
+    rig.host.fake.set_pid(&rig.id_of(&seat), 0);
     let agent = rig.agent();
     let machine = machine_of(&rig, &agent, &policy);
 
@@ -2871,70 +2846,6 @@ fn a_journal_line_that_cannot_land_is_a_refusal_naming_the_event() {
         "{}",
         retired.message
     );
-}
-
-mod lessons {
-    use super::*;
-
-    /// A8 — removing a session answers three ways, and one of them deletes a
-    /// checkout.
-    ///
-    /// The adapter's three answers are read from the exit AND the stdout,
-    /// because two of them share an exit status; the retire then carries each
-    /// one through to its own outcome. THE THIRD IS AN ALARM AND NOT A FAILURE:
-    /// no discard flag is ever passed, so it must not be reachable — and a
-    /// reader meets the deleted path in the report rather than meeting the
-    /// missing directory.
-    #[test]
-    fn remove_answers_three_ways() {
-        let rig = Rig::new("remove-three");
-        let policy = a_policy();
-        let agent = rig.agent();
-
-        // 1. Succeeds and keeps the worktree: rc 0, nothing printed.
-        assert!(matches!(agent.remove(None, "ab12"), RemoveAnswer::Removed));
-
-        // 2. Refuses: rc 1, both the row and the worktree left standing. The
-        //    cause travels, because "worktree has commits that are not pushed
-        //    anywhere" is what the operator has to act on.
-        rig.seam(&rig.rm_exit, "1\n");
-        let refused = agent.remove(None, "ab12");
-        let RemoveAnswer::Refused { cause } = &refused else {
-            panic!("a non-zero exit is a refusal: {refused:?}");
-        };
-        assert!(cause.contains("exited 1"), "{cause}");
-
-        // 3. Succeeds AND deletes the worktree: rc 0, printing the path. Told
-        //    apart from (1) by the stdout alone, which is why the answer is not
-        //    the exit status.
-        rig.seam(&rig.rm_exit, "0\n");
-        rig.seam(
-            &rig.rm_stdout,
-            "Removed session and its worktree at /some/checkout\n",
-        );
-        let deleted = agent.remove(None, "ab12");
-        let RemoveAnswer::RemovedAWorktree { path } = &deleted else {
-            panic!("a printed path is the third answer: {deleted:?}");
-        };
-        assert_eq!(path, "/some/checkout");
-
-        // And the retire carries that third answer through as an ALARM naming
-        // the path, rather than as a silent success.
-        let (seat, _) = a_spawned_seat(&rig, &policy, "idle");
-        let machine = machine_of(&rig, &agent, &policy);
-        let reclaimed = transient::retire(&machine, &seat, false).expect("the retire lands");
-        let removal = reclaimed.removal.expect("the removal answered");
-        assert!(
-            removal.starts_with("ALARM"),
-            "the third answer reaches the report as an alarm: {removal}"
-        );
-        assert!(removal.contains("/some/checkout"), "{removal}");
-        assert_eq!(
-            rig.events_of(events::SESSION_STOPPED)[0]["payload"]["removal"],
-            removal,
-            "and it is on the stream, where a person reading the morning's lines finds it"
-        );
-    }
 }
 
 /// The roster read every verb takes is the WHOLE-FLEET one, and an unreadable

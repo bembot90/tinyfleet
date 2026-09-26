@@ -468,7 +468,6 @@ fn table_row(
         dispatch_id: dispatch_id.to_string(),
         dispatched_at,
         session_id: None,
-        short_id: None,
         first_seen_at: None,
         last_seen_at: None,
         adopted: None,

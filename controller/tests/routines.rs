@@ -459,7 +459,6 @@ fn a_nudge_to_a_seat_by_its_name_fires_at_that_seats_row() {
             .iter()
             .map(|id| AgentRow {
                 session_id: format!("{id}-session"),
-                id: None,
                 cwd: "/anywhere".to_string(),
                 pid: fake.session(&session(id)).map(|pane| pane.pid),
                 state: None,

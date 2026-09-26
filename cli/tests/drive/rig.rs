@@ -143,14 +143,6 @@ const ESCAPEE: &str = "escapee";
 /// marks on the attempt that is then discarded and not on the retry.
 const PREAMBLE: &str = "preamble";
 
-/// The effect branches' exit statuses, one seam each. A failed start is the
-/// host's and not the stub's ([`Rig::set_start_exit`]), so a failed stop and a
-/// failed start are still one call apart, which is what lets an arm drive the
-/// half of a collection that fails without a second stub.
-const STOP_EXIT: &str = "stop-exit";
-const RM_EXIT: &str = "rm-exit";
-const ATTACH_EXIT: &str = "attach-exit";
-
 /// The environment and the standard streams are the PROCESS's, so one
 /// in-process poll runs at a time. Under `cargo test` the arms of this binary
 /// share a process across threads, and two of them redirecting fd 2 together
@@ -1083,51 +1075,53 @@ impl Rig {
         self.root.join(format!("seam-{name}"))
     }
 
-    /// Every effect call the stub received, one line each, in the order they
-    /// arrived. APPENDED and never rewritten: the rest collection's whole
-    /// contract is an order, and a file that held only the latest call could not
-    /// say what came before it.
+    /// Every call the stub received that is no listing and no version, one
+    /// line each: an agent verb nothing should issue any more.
     fn calls_path(&self) -> PathBuf {
         self.root.join("calls.log")
     }
 
-    /// The calls in the order they arrived, the host's session starts among
-    /// them.
-    ///
-    /// A start is no call of the stub's any more: the session comes up on the
-    /// rig's tmux stub. So each line the stub writes carries, ahead of it, how
-    /// many sessions the host had been asked to start at that moment, and a
-    /// `start <args>` line is put in for each start at the place that count
-    /// says it happened — the args read off the host's own record of the
-    /// start ([`Rig::host_starts`]). The order is the witnesses', never an
-    /// assumption: a start the host recorded after a line is after it here.
+    /// The effects carried out on the seat's session, in the order the host
+    /// received them — read off the tmux stub's own record of every call it
+    /// was run with: `start <args>` for a session started, `interrupt` for the
+    /// `C-c` a stop types, `kill` for a session killed. A start or a stop is the
+    /// host's alone now (fleet-rge6.4), so the host's record is the whole
+    /// order; any call the stub itself received follows it, which on a green
+    /// run is none.
     fn calls(&self) -> Vec<String> {
-        let starts = self.host_starts();
-        let start_line = |k: usize| {
-            let args = starts[k].argv.iter().skip(1).cloned();
-            format!("start {}", args.collect::<Vec<_>>().join(" "))
-        };
-        let mut calls = Vec::new();
-        let mut emitted = 0;
-        for line in std::fs::read_to_string(self.calls_path())
-            .unwrap_or_default()
-            .lines()
-        {
-            let (count, call) = line
-                .split_once(' ')
-                .and_then(|(count, call)| Some((count.parse::<usize>().ok()?, call)))
-                .unwrap_or_else(|| panic!("a call line carries its start count: {line:?}"));
-            while emitted < count.min(starts.len()) {
-                calls.push(start_line(emitted));
-                emitted += 1;
-            }
-            calls.push(call.to_string());
-        }
-        while emitted < starts.len() {
-            calls.push(start_line(emitted));
-            emitted += 1;
-        }
+        let mut calls: Vec<String> = self
+            .host()
+            .invocations
+            .iter()
+            .filter_map(|args| {
+                if let Some(start) = HostStart::of(args) {
+                    let argv = start.argv.iter().skip(1).cloned();
+                    return Some(format!("start {}", argv.collect::<Vec<_>>().join(" ")));
+                }
+                if args.iter().any(|arg| arg == "kill-session") {
+                    return Some("kill".to_string());
+                }
+                (args.iter().any(|arg| arg == "send-keys") && args.iter().any(|arg| arg == "C-c"))
+                    .then(|| "interrupt".to_string())
+            })
+            .collect();
+        calls.extend(
+            std::fs::read_to_string(self.calls_path())
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string),
+        );
         calls
+    }
+
+    /// Make every kill the host takes from now on answer and keep its session,
+    /// or take it again where `false` — a stop that did not land, which only
+    /// the host's own reading after it can tell (`FakeServer::kill_keeps`).
+    fn keep_kills(&self, keep: bool) {
+        let mut host = self.host();
+        host.kill_keeps = keep;
+        host.save(&self.tmux_state_path())
+            .expect("the tmux stub's state is written");
     }
 
     /// The link `FLEET_TMUX_BIN` names for every fleet this rig runs: this
@@ -1569,13 +1563,13 @@ impl Rig {
     }
 
     /// A session of the seat's that this controller started, sighted and then
-    /// ENDED: its row on the session table carrying the session id and the
-    /// address a sighting wrote, dispatched long enough ago that the arrival
+    /// ENDED: its row on the session table carrying the session id a sighting
+    /// wrote, dispatched long enough ago that the arrival
     /// window is closed, and its pane on the host dead with `status`. The
     /// listing names nothing — an interactive row leaves with its process
     /// (lessons claude-code B10) — so the table is where the loop reads the
     /// session from, as a real poll after a real end does.
-    fn a_dead_session(&self, short_id: &str, session: &str, status: Option<i32>) {
+    fn a_dead_session(&self, session: &str, status: Option<i32>) {
         write(
             &self.machine().join("sessions.json"),
             &serde_json::json!({
@@ -1592,7 +1586,6 @@ impl Rig {
                     "dispatch_id": "an-earlier-dispatch",
                     "dispatched_at": 1000,
                     "session_id": session,
-                    "short_id": short_id,
                     "first_seen_at": 1000,
                     "last_seen_at": 1000,
                 }],
@@ -1600,6 +1593,19 @@ impl Rig {
             .to_string(),
         );
         self.end_the_seat(status);
+    }
+
+    /// The seat HELD DOWN on the session table — its halt latch set at the
+    /// blind limit, as three blind dispatches leave it — so a poll decides
+    /// nothing for it until a clear-halt.
+    fn hold_the_seat(&self) {
+        let path = self.machine().join("sessions.json");
+        let mut table: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&path).expect("the session table is written"),
+        )
+        .expect("the session table parses");
+        table["seats"] = serde_json::json!({ SEAT_ID: { "blind": 3, "halted": true } });
+        write(&path, &table.to_string());
     }
 
     /// The seat's pane on the host ended with `status`, kept dead as
@@ -1753,16 +1759,8 @@ impl Rig {
         let tmux_state = tmux_state.display();
         let roster_taken = self.roster_taken_path();
         let roster_taken = roster_taken.display();
-        let seam_stop_exit = self.seam_path(STOP_EXIT);
-        let seam_stop_exit = seam_stop_exit.display();
-        let seam_rm_exit = self.seam_path(RM_EXIT);
-        let seam_rm_exit = seam_rm_exit.display();
-        let seam_attach_exit = self.seam_path(ATTACH_EXIT);
-        let seam_attach_exit = seam_attach_exit.display();
         let listing_dirs = self.listing_dirs_path();
         let listing_dirs = listing_dirs.display();
-        let tmux = self.tmux_link();
-        let tmux = tmux.display();
         write(
             &self.stub_path(),
             &format!(
@@ -1771,7 +1769,6 @@ impl Rig {
                  p=$({cat} '{seam_preamble}' 2>/dev/null)\n\
                  : > '{seam_preamble}'\n\
                  [ -n \"$p\" ] && sleep \"$p\"\n\
-                 starts() {{ n=$(grep -c '\"new-session\"' '{tmux_state}' 2>/dev/null); echo \"${{n:-0}}\"; }}\n\
                  case \"$1\" in\n\
                  \x20 --version)\n\
                  \x20   : > '{version_started}'\n\
@@ -1803,21 +1800,7 @@ impl Rig {
                  \x20     {cat} '{roster}'\n\
                  \x20   fi\n\
                  \x20   ;;\n\
-                 \x20 stop)\n\
-                 \x20   echo \"$(starts) stop $2\" >> '{calls}'\n\
-                 \x20   c=$({cat} '{seam_stop_exit}' 2>/dev/null || echo 0)\n\
-                 \x20   [ \"$c\" = 0 ] && '{tmux}' end {SEAT_ID} 0 >/dev/null 2>&1\n\
-                 \x20   exit $c\n\
-                 \x20   ;;\n\
-                 \x20 rm)\n\
-                 \x20   echo \"$(starts) rm $2\" >> '{calls}'\n\
-                 \x20   exit $({cat} '{seam_rm_exit}' 2>/dev/null || echo 0)\n\
-                 \x20   ;;\n\
-                 \x20 attach)\n\
-                 \x20   echo \"$(starts) attach $2\" >> '{calls}'\n\
-                 \x20   exit $({cat} '{seam_attach_exit}' 2>/dev/null || echo 0)\n\
-                 \x20   ;;\n\
-                 \x20 *) exit 64;;\n\
+                 \x20 *) echo \"$*\" >> '{calls}'; exit 64;;\n\
                  esac\n"
             ),
         );

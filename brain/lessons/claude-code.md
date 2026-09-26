@@ -161,6 +161,11 @@ the requirement owed it.
 
 ### A6. `stop` takes the short id and refuses the full session id
 
+- **Retired by:** fleet-rge6.4 (2026-09-26). A seat's session is stopped on
+  fleet's own tmux server, by the seat's own session name: one interrupt, a
+  grace, then the session killed, and the host's own listing read after the
+  kill is the witness. No short id is carried outside the adapter and nothing
+  is issued at the daemon's address. Kept here as history.
 - **Fact:** Identity and invocation address are different values. Stopping a
   session by its full session id exits 1 with "No job matching"; stopping it by
   the short id on its roster row succeeds. A controller that stores the session
@@ -177,6 +182,12 @@ the requirement owed it.
 
 ### A7. `attach` exits 0 whether or not it revived anything
 
+- **Retired by:** fleet-rge6.4 (2026-09-26). A revive is a new tmux session
+  whose command resumes the session's full id (A9), believed only when the
+  listing shows the new pane's own process under that same id; nothing is
+  attached. The rule this entry taught — an act's own return is not its
+  witness — is the one the stop and the revive now keep against the host and
+  the listing. Kept here as history.
 - **Fact:** An attach that revived a row and an attach that did nothing both
   exit 0. Exit status is not a witness here; only the next roster read
   separates them. The stderr line the tool prints ("Waking session …") is
@@ -198,6 +209,11 @@ the requirement owed it.
 
 ### A8. Removing a session answers three ways, and one of them deletes a checkout
 
+- **Retired by:** fleet-rge6.4 (2026-09-26). No daemon row is left to remove:
+  a seat's session was the host's, and the stop took it. A rest writes no
+  removal and a retire removes the seat's worktree with fleet's own
+  `git worktree remove --force`, as it always did, then verifies from outside
+  that the host holds no session for the seat. Kept here as history.
 - **Fact:** Removing a background session **refuses** (rc 1, "worktree has
   commits that are not pushed anywhere", leaving both the row and the
   worktree); or **succeeds and deletes the worktree** (rc 0, printing the
@@ -229,22 +245,35 @@ the requirement owed it.
   the delete outcome can reach.
 - **Test:** `lessons::remove_answers_three_ways`
 
-### A9. Only one of three resume shapes continues the session
+### A9. A resume by the full id keeps the session, flags and all, when the session is interactive
 
-- **Fact:** Resuming by SHORT id forks a copy. Resuming by FULL id WITH any
-  flag forks a copy that inherits the original's name. Resuming by FULL id with
-  NO flags continues the session in place — same id, same name, new pid. The
-  CLI names each outcome in its own notice, which is why they are quoted rather
-  than summarised. The consequence is on the roster: three of four revive
-  shapes forked, two of the three gave the copy the original's name, and the
-  roster ended with four rows, three carrying one name and one of them alive.
-- **Version:** Claude Code 2.1.257 and 2.1.261, identical on both.
-- **Date:** 2026-09-04.
-- **Implies:** R17 — startup **adopts** by session id, never by name and never
-  by re-issuing a resume: a controller that resumed with its own flags would
-  fork the session it meant to reclaim, and then hold a table row pointing at a
-  dead twin.
-- **Test:** `lessons::resume_continues_only_a_flagless_full_id`
+- **Fact:** An INTERACTIVE session started as the pane's own process in a tmux
+  session, with `--plugin-dir`, `--model haiku` and
+  `--permission-mode acceptEdits`, took a turn, had a second turn interrupted
+  and was killed with `kill-session`. A NEW tmux session whose command was
+  `--resume <full id>` with the same three flags came back as the SAME
+  session: listed 0.67 s after it was made under the same `sessionId`, on the
+  new pane's pid, idle, and under the name the first start gave it though no
+  `--name` was passed; `Haiku 4.5` on the header and `accept edits on` on the
+  footer; the plugin's `SessionStart` hook fired with `source: resume` and the
+  same `session_id`, and its `UserPromptSubmit` hook on the next turn read
+  `permission_mode: acceptEdits`; that turn was answered by
+  `claude-haiku-4-5-20251001` into the SAME transcript file — no second one
+  appeared — and it recalled the first turn's answer. The earlier reading was
+  of BACKGROUND sessions: there, resuming by short id forked a copy, by full
+  id with any flag forked a copy under the original's name, and only a
+  flagless full-id resume continued in place, the CLI naming each outcome in
+  its own notice. That fork is the daemon's, and it is why a revive's watch
+  still refuses a resumed row under any other id.
+- **Version:** Claude Code 2.1.280 and tmux 3.7b for the interactive reading;
+  2.1.257 and 2.1.261, identical on both, for the background one.
+- **Date:** 2026-09-26 (fleet-rge6.4); 2026-09-04 for the background reading.
+- **Implies:** a revive is a new session on the host whose command is the
+  full-id resume carrying the start's flags (reviewer call 2026-09-25, E2,
+  E3), believed only when the listing shows the pane's own process under the
+  resumed id — any other id is a fork, failed and killed. R17 is unchanged:
+  startup adopts a LIVE session by its session id and issues nothing at it.
+- **Test:** `lessons::a_resume_by_full_id_keeps_the_session`
 
 ### A10. A newer client replaces the daemon and re-hosts the sessions under it
 
@@ -973,10 +1002,10 @@ name.
 | `lessons::hibernation_reads_as_a_deliberate_stop` | A3 (retired by fleet-rge6.3) |
 | `lessons::a_dead_host_has_two_shapes` | A4 (retired by fleet-rge6.3) |
 | `lessons::start_names_the_model` | A5 |
-| `lessons::stop_takes_the_short_id` | A6 |
-| `lessons::attach_exit_is_not_a_witness` | A7 |
-| `lessons::remove_answers_three_ways` | A8 |
-| `lessons::resume_continues_only_a_flagless_full_id` | A9 |
+| `lessons::stop_takes_the_short_id` | A6 (retired by fleet-rge6.4) |
+| `lessons::attach_exit_is_not_a_witness` | A7 (retired by fleet-rge6.4) |
+| `lessons::remove_answers_three_ways` | A8 (retired by fleet-rge6.4) |
+| `lessons::a_resume_by_full_id_keeps_the_session` | A9 |
 | `lessons::a_newer_client_replaces_the_daemon_and_rehosts` | A10 (retired by fleet-rge6.3) |
 | `lessons::the_config_dir_scopes_the_daemon` | A11 |
 | `lessons::an_mcp_call_backgrounds_at_120s` | A12 |

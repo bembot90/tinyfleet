@@ -1,6 +1,6 @@
 //! The Claude Code adapter — the first implementation of the seam.
 
-use super::{transcript_path, Agent, AgentRow, Launch, RemoveAnswer, RosterRead, StartSpec};
+use super::{transcript_path, Agent, AgentRow, Launch, RosterRead, StartSpec};
 use crate::platform::run_bounded;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,16 +28,16 @@ pub struct ClaudeCode {
     /// is that input as the operator's own login left it: empty restores the
     /// unsuffixed name, and a directory here is a third, different credential.
     pub credential_dir: String,
-    /// The ABSOLUTE binary the four effect verbs exec, resolved once by
-    /// [`ClaudeCode::resolve_effect_bin`] against the constructed `PATH` and
-    /// handed in.
+    /// The ABSOLUTE binary the two effect verbs name as the pane's process,
+    /// resolved once by [`ClaudeCode::resolve_effect_bin`] against the
+    /// constructed `PATH` and handed in.
     ///
     /// Separate from `bin`, which is observe's and may be a bare name: the two
     /// answer different questions, and a controller that gated on one and
     /// exec'd the other would act through a binary nothing checked. `None` is a
-    /// binary that did not resolve, which is effects OFF — every verb below
-    /// refuses rather than falling back to a name it would discover at the
-    /// spawn.
+    /// binary that did not resolve, which is effects OFF — `launch` and
+    /// `resume` refuse rather than falling back to a name the host would
+    /// discover at the spawn.
     effect_bin: Option<PathBuf>,
     /// This process's own executable, which every child is handed as
     /// [`FLEET_BIN_VAR`] so the plugin's hooks in a session this fleet spawns run
@@ -89,7 +89,7 @@ impl ClaudeCode {
     ///
     /// Handed in rather than resolved here, so the ONE resolution the loop
     /// already made — the one whose failure turns effects off and whose cause
-    /// the projection publishes — is the same value the four verbs run.
+    /// the projection publishes — is the same value the two verbs name.
     pub fn with_effect_bin(mut self, bin: PathBuf) -> Self {
         self.effect_bin = Some(bin);
         self
@@ -239,32 +239,27 @@ impl ClaudeCode {
         self.with_environment(&resolved, config_dir)
     }
 
-    /// The four EFFECTS against the absolute binary `resolve_effect_bin`
-    /// returned, and against nothing else.
-    ///
-    /// It asks the process's search path nothing. The binary the gate checked
-    /// and the binary an effect execs have to be one value, or a controller
-    /// whose own `PATH` carries a different `claude` — which a service-launched
-    /// one does, since its environment is not the operator's shell — acts
-    /// through the one nothing checked. `Err` is effects off, and it refuses
-    /// rather than falling back to `bin`.
-    ///
-    /// `config_dir` is the child's own configuration directory where the act is
-    /// about a session that came up under one, and `None` is the adapter's.
-    fn effect_command_under(&self, config_dir: Option<&Path>) -> Result<Command, String> {
-        let bin = self.effect_bin.as_ref().ok_or_else(|| {
-            "no agent binary is resolved for effects, so this call issues nothing".to_string()
-        })?;
-        Ok(self.with_environment(&bin.display().to_string(), config_dir))
+    /// The whole environment a SESSION's pane carries: every child's
+    /// ([`ClaudeCode::environment`]) under the start's own configuration
+    /// directory, and WHO THE SESSION ACTS AS [ASSUMES D7] — its own bare
+    /// verbs are the seat's. A start and a resume set it alike, and no other
+    /// call sets it at all.
+    fn session_environment(&self, spec: &StartSpec) -> Vec<(String, String)> {
+        let mut env = self.environment(spec.config_dir.as_deref().map(Path::new));
+        env.push((FLEET_ACTOR_VAR.to_string(), spec.actor.clone()));
+        env
     }
 
-    /// The binary an effect names in its own causes: the resolved one, or the
-    /// seam's spelling when nothing resolved.
-    fn effect_bin_name(&self) -> String {
-        match &self.effect_bin {
-            Some(bin) => bin.display().to_string(),
-            None => self.bin.clone(),
-        }
+    /// The binary a session's pane runs, or the refusal a verb with none
+    /// resolved answers: effects off, and never a bare name the host would
+    /// discover at the spawn.
+    fn session_bin(&self) -> Result<String, String> {
+        self.effect_bin
+            .as_ref()
+            .map(|bin| bin.display().to_string())
+            .ok_or_else(|| {
+                "no agent binary is resolved for effects, so this call issues nothing".to_string()
+            })
     }
 }
 
@@ -290,7 +285,7 @@ impl ClaudeCode {
 ///
 /// `FLEET_ACTOR` is not here for the second of those reasons: a controller
 /// started from inside a seat would make every session it starts that seat. A
-/// start sets it from its own spec, and no other call sets it at all.
+/// start and a resume set it from their spec, and no other call sets it at all.
 pub const PASSED_THROUGH: [&str; 4] = ["HOME", "USER", "TMPDIR", "LANG"];
 
 /// The binary the adapter runs, with the environment passed in, so the order is
@@ -450,39 +445,46 @@ impl Agent for ClaudeCode {
     /// checkout is a person's, and fleet trusts only worktrees it created
     /// (ruling 13).
     fn launch(&self, spec: &StartSpec) -> Result<Launch, String> {
-        let bin = self.effect_bin.as_ref().ok_or_else(|| {
-            "no agent binary is resolved for effects, so this call issues nothing".to_string()
-        })?;
-        let config_dir = spec.config_dir.as_deref().map(Path::new);
-        if let Some(dir) = config_dir {
+        let bin = self.session_bin()?;
+        if let Some(dir) = spec.config_dir.as_deref().map(Path::new) {
             seed_config(
                 dir,
                 &operator_file(&self.credential_dir, &self.config_dir),
                 Path::new(&spec.worktree),
             )?;
         }
-        let mut argv = vec![
-            bin.display().to_string(),
-            "--name".to_string(),
-            spec.name.clone(),
-            "--model".to_string(),
-            spec.model.clone(),
-            "--permission-mode".to_string(),
-            spec.posture.clone(),
-        ];
-        // Only a loaded plugin root gives the session the overlay's hooks and
-        // the root's bin on its `PATH` (lessons claude-code D5), and a fleet
-        // that names none passes no such element.
-        if let Some(plugin_dir) = spec.plugin_dir.as_deref() {
-            argv.push("--plugin-dir".to_string());
-            argv.push(plugin_dir.to_string());
-        }
+        let mut argv = vec![bin, "--name".to_string(), spec.name.clone()];
+        argv.extend(start_flags(spec));
         argv.push(spec.first_turn.clone());
-        let mut env = self.environment(config_dir);
-        // WHO THE SESSION ACTS AS, on the start and on nothing else [ASSUMES
-        // D7]: its own bare verbs are the seat's.
-        env.push((FLEET_ACTOR_VAR.to_string(), spec.actor.clone()));
-        Ok(Launch { argv, env })
+        Ok(Launch {
+            argv,
+            env: self.session_environment(spec),
+        })
+    }
+
+    /// `--resume <full id>` with the start's own model, posture and plugin
+    /// root, as the pane's own process under the start's environment — and no
+    /// name and no first turn, because both are the session's already.
+    ///
+    /// MEASURED ON 2.1.280 AND TMUX 3.7b (fleet-rge6.4, 2026-09-26): a session
+    /// killed after a turn and resumed this way, as a new tmux session, was
+    /// listed under the SAME session id on the new pane's pid, under the name
+    /// its start gave it, on the model and in the posture the flags named; the
+    /// plugin's session-start hook fired with source `resume`, and the next turn
+    /// went to the same transcript and remembered the first. A9's fork was a
+    /// background session's reading and not this one's, so the flags ride, and
+    /// the watch still refuses a row under any other id as a fork.
+    ///
+    /// The configuration directory is not seeded again: the start seeded it,
+    /// and the session resumes where it ran.
+    fn resume(&self, session_id: &str, spec: &StartSpec) -> Result<Launch, String> {
+        let bin = self.session_bin()?;
+        let mut argv = vec![bin, "--resume".to_string(), session_id.to_string()];
+        argv.extend(start_flags(spec));
+        Ok(Launch {
+            argv,
+            env: self.session_environment(spec),
+        })
     }
 
     /// Down, then Enter, when the screen is the workspace-trust question: its
@@ -490,30 +492,6 @@ impl Agent for ClaudeCode {
     /// claude-code D8, A15).
     fn trust_keys(&self, screen: &str) -> Option<Vec<String>> {
         trust_keys(screen)
-    }
-
-    fn stop(&self, config_dir: Option<&Path>, short_id: &str) -> Result<(), String> {
-        self.answered(config_dir, &["stop", short_id]).map(|_| ())
-    }
-
-    /// `attach <short id>`: the row is reached by its ADDRESS, exactly as a stop
-    /// reaches it, and no flag is passed. A resume that carried this fleet's own
-    /// flags would fork the session it meant to continue (lessons claude-code
-    /// A9), and the table row would then point at a dead twin.
-    fn revive(&self, config_dir: Option<&Path>, short_id: &str) -> Result<(), String> {
-        self.answered(config_dir, &["attach", short_id]).map(|_| ())
-    }
-
-    /// The three answers, read from the exit AND the stdout (lessons claude-code
-    /// A8), because two of them share an exit status.
-    fn remove(&self, config_dir: Option<&Path>, short_id: &str) -> RemoveAnswer {
-        match self.answered(config_dir, &["rm", short_id]) {
-            Err(cause) => RemoveAnswer::Refused { cause },
-            Ok(stdout) => match worktree_path_in(&stdout) {
-                Some(path) => RemoveAnswer::RemovedAWorktree { path },
-                None => RemoveAnswer::Removed,
-            },
-        }
     }
 
     fn status(&self, config_dir: Option<&Path>) -> RosterRead {
@@ -587,48 +565,23 @@ impl Agent for ClaudeCode {
     }
 }
 
-impl ClaudeCode {
-    /// One bounded call whose STDOUT is the answer, or the refusal with why.
-    ///
-    /// The status is read from the command itself and never through a pipe:
-    /// `stop` against the wrong address exits 1 with "No job matching", and a
-    /// caller that lost that would believe it had stopped a seat it never
-    /// touched (lessons claude-code A6).
-    fn answered(&self, config_dir: Option<&Path>, args: &[&str]) -> Result<String, String> {
-        let mut cmd = self.effect_command_under(config_dir)?;
-        cmd.args(args);
-        let run = run_bounded(cmd, self.timeout)?;
-        if run.status.success() {
-            return Ok(String::from_utf8_lossy(&run.stdout).into_owned());
-        }
-        // The binary that RAN, which is the effect one and not `bin`: a cause
-        // naming a file this call did not exec sends the operator to the wrong
-        // one.
-        Err(format!(
-            "`{} {}` exited {}: {}",
-            self.effect_bin_name(),
-            args.join(" "),
-            run.status
-                .code()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "on a signal".to_string()),
-            String::from_utf8_lossy(&run.stderr).trim()
-        ))
+/// The flags a start and a resume both carry: the model and the posture the
+/// fleet names (lessons claude-code A5, D3), then the plugin root where one is
+/// named. Only a loaded plugin root gives the session the overlay's hooks and
+/// the root's bin on its `PATH` (lessons claude-code D5), and a fleet that names
+/// none passes no such element.
+fn start_flags(spec: &StartSpec) -> Vec<String> {
+    let mut flags = vec![
+        "--model".to_string(),
+        spec.model.clone(),
+        "--permission-mode".to_string(),
+        spec.posture.clone(),
+    ];
+    if let Some(plugin_dir) = spec.plugin_dir.as_deref() {
+        flags.push("--plugin-dir".to_string());
+        flags.push(plugin_dir.to_string());
     }
-}
-
-/// The worktree path a removal printed, if it printed one.
-///
-/// A path is what separates the two exit-0 answers, and only one of them is
-/// benign (lessons claude-code A8). Read as the first absolute path anywhere in
-/// the output, because the sentence around it is the agent's to change and a
-/// match on that sentence would read a rewording as "no path printed" — which
-/// is the answer that must never be given wrongly.
-pub fn worktree_path_in(stdout: &str) -> Option<String> {
-    stdout
-        .split_whitespace()
-        .find(|token| token.starts_with('/') && token.len() > 1)
-        .map(|token| token.trim_end_matches(['.', ',']).to_string())
+    flags
 }
 
 /// The listing's answer, or why it is not one.

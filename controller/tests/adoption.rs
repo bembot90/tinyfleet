@@ -103,9 +103,14 @@ impl Rig {
             owned: root.join("wt").join(OWNED),
             unowned: root.join("wt").join(UNOWNED),
             host: FakeHost::new(),
+            // The agent builds no resume: a revive here is DECIDED and never
+            // carried out, so a dead pane stays where the next poll reads it
+            // — which is what these arms are about. What a revive does is the
+            // effects suite's.
             stub: StubAgent::answering(Answers {
                 transcript: Some(A_LIGHT_TRANSCRIPT.to_string()),
                 ended_at: Some(now_ms()),
+                resume: Err("this rig's agent resumes nothing".to_string()),
                 ..Answers::default()
             }),
             root,

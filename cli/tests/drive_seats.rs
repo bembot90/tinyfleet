@@ -24,7 +24,11 @@ mod common;
 #[test]
 fn a_dead_pane_reads_stopped_with_its_status_its_end_and_its_context() {
     let rig = Rig::new("dead-pane");
-    rig.a_dead_session("a-session", "a-session", Some(3));
+    rig.a_dead_session("a-session", Some(3));
+    // Held down, so the poll decides nothing for the seat and the next one
+    // reads the same dead pane: what is measured here is what a poll READS. A
+    // revive would replace the pane, and that is the effects suite's.
+    rig.hold_the_seat();
     rig.write_transcript(
         "a-session",
         "{\"type\":\"assistant\",\"message\":{\"usage\":{\"input_tokens\":18}}}\n",

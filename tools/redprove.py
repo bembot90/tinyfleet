@@ -307,10 +307,12 @@ MUTATIONS = [
 
     ("wiring: revive's effect is carried out",
      "controller/src/run.rs",
-     "                Verdict::Revive => effect::revive(agent, &target, events_log, table, now_ms),",
+     "                Verdict::Revive => {\n"
+     "                    effect::revive(agent, host, policy, &target, events_log, table, now_ms)\n"
+     "                }",
      "                Verdict::Revive => Outcome::None,",
-     ["-p", "fleet-cli", "--test", "drive"],
-     "effects::a_revive_attaches_the_rows_short_id_and_says_so_once"),
+     ["-p", "fleet-cli", "--test", "drive_effects"],
+     "effects::a_revive_resumes_the_full_id_as_a_new_session_and_says_so_once"),
 
     ("wiring: adoption runs at startup",
      "controller/src/run.rs",
@@ -381,14 +383,15 @@ MUTATIONS = [
 
     # ----------------------------------------------------------- the effects
     #
-    # The drive fixture's roster row carries one value as its id and its session
-    # id, so only the lesson fixture, whose two differ, can tell them apart.
-    ("R10  a revive attaches the ADDRESS, never the identity",
+    # A revive is a RESUME of the session the table recorded, and a fresh start
+    # in its place would come up under a new id — which the lesson fixture's
+    # argv and its believed row both tell apart.
+    ("R10  a revive resumes the session's own full id, never a fresh start",
      "controller/src/effect.rs",
-     "    let attached = agent.revive(target.config_dir(), short_id);",
-     "    let attached = agent.revive(target.config_dir(), session_id);",
+     "    match bring_up(agent, host, policy, target, Some(session_id)) {",
+     "    match bring_up(agent, host, policy, target, None) {",
      ["-p", "fleet-controller", "--test", "effects"],
-     "lessons::resume_continues_only_a_flagless_full_id"),
+     "lessons::a_resume_by_full_id_keeps_the_session"),
 
     ("R17  an adoption writes one line per claimed session",
      "controller/src/effect.rs",

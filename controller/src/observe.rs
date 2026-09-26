@@ -86,10 +86,6 @@ pub struct SeatObservation {
     pub activity: Option<String>,
     /// The session whose transcript answers for this seat, when there is one.
     pub session_id: Option<String>,
-    /// That session's ADDRESS, which is a different value from its id (lessons
-    /// claude-code A6). An interactive row carries none, so this is `None` on
-    /// every seat the host runs.
-    pub short_id: Option<String>,
     pub project: Option<String>,
     pub worktree: Option<String>,
     /// The pid of the pane the host holds for this seat — the agent itself,
@@ -328,7 +324,6 @@ fn hosted(
             waiting_for: blocked,
             activity: row.status.clone(),
             session_id: Some(row.session_id.clone()),
-            short_id: row.id.clone(),
             project,
             worktree,
             pane_pid: pane.pid,
@@ -401,7 +396,6 @@ fn unmatched(seat: &Seat) -> SeatObservation {
         waiting_for: None,
         activity: None,
         session_id: None,
-        short_id: None,
         project,
         worktree,
         pane_pid: None,

@@ -254,10 +254,11 @@ pub fn blind_after(previous: u32, state: RosterState, verdict: Verdict) -> u32 {
         // reason the dispatch did not take.
         //
         // A REVIVE COUNTS AS A DISPATCH, and that is load-bearing rather than
-        // tidy: an attach exits 0 and prints the same line whether it revived
-        // the row or did nothing (lessons claude-code A7), so a revive that
-        // silently fails would otherwise be retried every poll forever and never
-        // reach the guard — a runaway that is quiet instead of loud.
+        // tidy: a resume that came up and died again, or never came up as the
+        // session it resumed, leaves the seat reading stopped or absent once
+        // more, so a revive that keeps failing would otherwise be retried every
+        // poll forever and never reach the guard — a runaway that is quiet
+        // instead of loud.
         RosterState::Stopped | RosterState::Absent => {
             if verdict.creates_a_session() {
                 previous + 1

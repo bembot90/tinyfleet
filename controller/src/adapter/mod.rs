@@ -2,13 +2,15 @@
 //! through one trait, so the second agent is a second module and not a
 //! rewrite.
 //!
-//! Observe needs four of the seven verbs — the listing, the transcript, the
-//! end stamp and the version; `launch`, `stop`, `remove` and `revive` are the
-//! four an effect issues. A turn for a live seat is none of them: it is typed
-//! into the seat's pane by core (`crate::effect::type_turn`), and this trait's
-//! listing is what says whether it was taken. Whether a session is THERE is not
-//! a verb here at all: presence is the host's reading (`crate::host`, ruling
-//! 3), and what this trait's listing answers is what the session is DOING.
+//! Observe needs four of the verbs — the listing, the transcript, the end
+//! stamp and the version; `launch` and `resume` are the two an effect asks for.
+//! A turn for a live seat is none of them: it is typed into the seat's pane by
+//! core (`crate::effect::type_turn`), and this trait's listing is what says
+//! whether it was taken. Whether a session is THERE is not a verb here at all:
+//! presence is the host's reading (`crate::host`, ruling 3), and what this
+//! trait's listing answers is what the session is DOING. Nor is ending one: a
+//! session is stopped on the host, by its seat (`crate::effect::stop_session`),
+//! and never by an address the agent issued (reviewer call 2026-09-25, E6).
 //!
 //! A START IS TWO HALVES AND ONLY ONE OF THEM IS HERE (ruling 2). The adapter
 //! answers WHAT to run — the argv and the environment, in [`Launch`] — and
@@ -72,20 +74,6 @@ pub struct Launch {
     pub env: Vec<(String, String)>,
 }
 
-/// The three answers a removal has, and one of them is an alarm.
-///
-/// A remove that prints a worktree path DELETED it, and a seat's checkout has a
-/// remote — which is measured to make the refusal the expected answer on one
-/// (lessons claude-code A8). No discard flag is ever passed, so this arm must
-/// not be reachable; it is a variant here rather than an assumption so a reader
-/// meets the path in the log instead of meeting the missing directory.
-#[derive(Clone, Debug)]
-pub enum RemoveAnswer {
-    Removed,
-    Refused { cause: String },
-    RemovedAWorktree { path: String },
-}
-
 pub trait Agent {
     /// What to run to bring a fresh woken session up in the seat's worktree.
     ///
@@ -95,6 +83,18 @@ pub trait Agent {
     /// 2026-09-25, E8) — and `Err` is a start that must not be attempted,
     /// carrying why.
     fn launch(&self, spec: &StartSpec) -> Result<Launch, String>;
+
+    /// What to run to bring a seat's ENDED session back, context intact, as a
+    /// fresh session on the host: the resume of `session_id`, the FULL id the
+    /// table recorded, carrying the start's own flags from `spec` (reviewer
+    /// call 2026-09-25, E2, E3).
+    ///
+    /// It runs nothing, exactly as [`Agent::launch`] runs nothing, and it is
+    /// believed the same way: core starts it and watches for the pane's row —
+    /// which must carry `session_id` itself, because a row under any other id
+    /// is a fork and not the session this meant to continue (lessons
+    /// claude-code A9).
+    fn resume(&self, session_id: &str, spec: &StartSpec) -> Result<Launch, String>;
 
     /// The keys that answer the question a starting session's screen is
     /// stopped at, where this agent knows the question and a start may answer
@@ -118,25 +118,6 @@ pub trait Agent {
     /// why the path is the adapter's and not the spawn's: it is the one fact in
     /// that write that belongs to one provider.
     fn local_settings(&self) -> &'static str;
-
-    /// Stop a live session BY ITS SHORT ID. The full session id exits 1 with
-    /// "No job matching" (lessons claude-code A6), so the address and the key
-    /// are different values and this takes the address.
-    fn stop(&self, config_dir: Option<&Path>, short_id: &str) -> Result<(), String>;
-
-    /// Delete a stopped session's row, by the same address.
-    fn remove(&self, config_dir: Option<&Path>, short_id: &str) -> RemoveAnswer;
-
-    /// Bring a hibernated session back IN PLACE, by the same short id a stop
-    /// takes — same session, same id, context intact.
-    ///
-    /// An ATTACH and never a resume: only a flagless full-id resume continues a
-    /// session and a flagged one forks it (lessons claude-code A9), and the row
-    /// this reaches is a live one addressed by its short id exactly as a stop
-    /// is. `Ok` is a DISPATCH and not a witness: the call exits 0 whether it
-    /// revived the row or silently did nothing (A7), so the roster's next read
-    /// is the only thing that says which.
-    fn revive(&self, config_dir: Option<&Path>, short_id: &str) -> Result<(), String>;
 
     /// The listing under one configuration directory, or the adapter's own when
     /// `config_dir` is `None`.
@@ -185,11 +166,6 @@ pub trait Agent {
 pub struct AgentRow {
     #[serde(rename = "sessionId")]
     pub session_id: String,
-    /// The SHORT id: the address every subcommand accepts, and never the
-    /// identity (lessons claude-code A6). Absent on an interactive row, which
-    /// carries no address of its own.
-    #[serde(default)]
-    pub id: Option<String>,
     pub cwd: String,
     /// The session's process. An interactive row always carries it, and it is
     /// what a row is attributed to a seat BY: the pane's own pid (E2). A row

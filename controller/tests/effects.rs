@@ -4,7 +4,7 @@
 //! `fleet/brain/lessons/*.md` § Test inventory: each fact the code in this slice
 //! exercises owes a test under the exact name the inventory carries.
 //!
-//! The four verbs are driven against a STUB AGENT — a shell script this file
+//! The adapter is driven against a STUB AGENT — a shell script this file
 //! writes, which records the argv, the cwd and the `PATH` it received into files
 //! the arms read. What a call passed is then a reading of what the child got and
 //! never of what a log line said it sent.
@@ -17,7 +17,7 @@
 //! here is believed unless an arm says otherwise.
 
 use fleet_controller::adapter::claude_code::{self, ClaudeCode};
-use fleet_controller::adapter::{Agent, AgentRow, RemoveAnswer, RosterRead, StartSpec};
+use fleet_controller::adapter::{Agent, AgentRow, RosterRead, StartSpec};
 use fleet_controller::decide::{self, decide, SeatInput, Verdict};
 use fleet_controller::effect::{self, Target, Watched};
 use fleet_controller::events::{self, EventLog};
@@ -199,15 +199,6 @@ impl Rig {
         leaked
     }
 
-    /// The argv the stub received, one element per line.
-    fn argv(&self) -> Vec<String> {
-        std::fs::read_to_string(self.argv_path())
-            .unwrap_or_else(|e| panic!("the stub recorded no argv: {e}"))
-            .lines()
-            .map(str::to_string)
-            .collect()
-    }
-
     fn recorded_path(&self) -> String {
         std::fs::read_to_string(self.path_path()).expect("the stub recorded its PATH")
     }
@@ -257,7 +248,7 @@ fn s1() -> SeatId {
     SeatId::parse(S1).expect("the fixture's id parses")
 }
 
-fn a_target<'a>(worktree: &'a str, short: Option<&'a str>) -> Target<'a> {
+fn a_target(worktree: &str) -> Target<'_> {
     Target {
         seat: s1(),
         session_name: "orla".to_string(),
@@ -273,7 +264,6 @@ fn a_target<'a>(worktree: &'a str, short: Option<&'a str>) -> Target<'a> {
         belt: None,
         run: None,
         session_id: Some("a-session"),
-        short_id: short,
         context_tokens: Some(1_000),
     }
 }
@@ -294,7 +284,6 @@ fn a_row_for(seat: &str, worktree: &str, dispatched_at: u64, session: Option<&st
         dispatch_id: format!("dispatch-{dispatched_at}"),
         dispatched_at,
         session_id: session.map(str::to_string),
-        short_id: None,
         first_seen_at: None,
         last_seen_at: None,
         adopted: None,
@@ -365,54 +354,6 @@ mod lessons {
         other.model = "claude-sonnet-5".to_string();
         let argv = rig.agent().launch(&other).expect("it launches").argv;
         assert_eq!(flag_value(&argv, "--model"), "claude-sonnet-5");
-    }
-
-    /// claude-code A6 — identity and invocation address are different values:
-    /// stopping by the full session id exits 1 with "No job matching", and only
-    /// the short id on the roster row works.
-    ///
-    /// The subject is what the rest collection ISSUES: the session id is on the
-    /// target beside the short id, and the argv the child received has to carry
-    /// the address and not the key.
-    #[test]
-    fn stop_takes_the_short_id() {
-        let rig = Rig::new("stop-takes-the-short-id");
-        rig.agent()
-            .stop(None, "ab12")
-            .expect("a stub that exits 0 is a stop that landed");
-        assert_eq!(rig.argv(), vec!["stop".to_string(), "ab12".to_string()]);
-
-        // Through the collection, where the two values sit side by side: the
-        // target carries `a-session` as its id and `ab12` as its address.
-        let worktree = rig.worktree().display().to_string();
-        let mut table = Table::default();
-        let mut log = rig.log();
-        let collected = effect::rest(
-            &rig.agent(),
-            &rig.host,
-            &a_policy(),
-            &a_target(&worktree, Some("ab12")),
-            &mut log,
-            &mut table,
-            1_000,
-        );
-        assert!(matches!(collected, effect::Rested::Collected));
-        let last = rig.argv();
-        assert_eq!(
-            last,
-            vec!["rm".to_string(), "ab12".to_string()],
-            "the removal takes the same address the stop did"
-        );
-        let rested = rig
-            .events()
-            .into_iter()
-            .find(|e| e["type"] == events::SESSION_RESTED)
-            .expect("the collection wrote its event");
-        assert_eq!(rested["payload"]["predecessor"], "a-session");
-        assert_eq!(
-            rested["payload"]["predecessor_address"], "ab12",
-            "the event carries both, because they are two values"
-        );
     }
 
     /// The operator's own state file as a seed reads it: the three onboarding
@@ -595,7 +536,7 @@ mod lessons {
         let session = rig.session();
         let quick =
             policy::parse("[controller]\nstart_watch_seconds = 1\n").expect("the policy parses");
-        let target = a_target(&worktree, None);
+        let target = a_target(&worktree);
         let listed = StubAgent::answering(Answers {
             status: RosterRead::Readable(vec![test_support::arrived(test_support::FIRST_PANE_PID)]),
             ..Answers::default()
@@ -695,8 +636,15 @@ mod lessons {
         host.new_session(&session, &rig.worktree(), &["/a/program".to_string()], &[])
             .expect("the fake starts it");
         host.fail(FakeHost::KILL, Some("kept for the arm"));
-        let watched =
-            effect::watch_start(&silent, &host, &session, None, true, Duration::from_secs(1));
+        let watched = effect::watch_start(
+            &silent,
+            &host,
+            &session,
+            None,
+            true,
+            Duration::from_secs(1),
+            None,
+        );
         assert!(matches!(watched, Watched::Failed { .. }), "{watched:?}");
         assert_eq!(
             host.sends(&session),
@@ -717,6 +665,7 @@ mod lessons {
             None,
             false,
             Duration::from_secs(1),
+            None,
         );
         assert!(
             host.sends(&session).is_empty(),
@@ -825,7 +774,7 @@ mod lessons {
 
         // And what a command child actually got, spawned through the adapter,
         // which builds its environment from the same list.
-        rig.agent().stop(None, "ab12").expect("the stub exits 0");
+        let _ = rig.agent().version();
         assert_eq!(rig.recorded_path(), built);
 
         // The control: this process's own PATH is not what the child got. A
@@ -958,90 +907,174 @@ mod lessons {
         );
     }
 
-    /// claude-code A7 — an attach EXITS ZERO whether it revived the row or
-    /// silently did nothing, so its own return is not a witness that the session
-    /// came back.
+    /// claude-code A9 — a resume by the FULL id keeps the session. Re-measured
+    /// on 2.1.280 and tmux 3.7b for an INTERACTIVE session (fleet-rge6.4,
+    /// 2026-09-26): killed after a turn and resumed as a new tmux session with
+    /// the start's `--model`, `--permission-mode` and `--plugin-dir`, it was
+    /// listed under the same session id on the new pane's pid, on the flags'
+    /// model and posture, its plugin's session-start hook firing with source
+    /// `resume` and its next turn going to the same transcript. The fork A9 read
+    /// off a flagged resume was a background session's.
     ///
-    /// Two halves. The effect's: a revive against a stub that exits 0 leaves the
-    /// row UNSIGHTED, waiting on the roster. The counter's: a poll that still
-    /// reads the row pid-less after that revive counts it as a blind dispatch —
-    /// which is what stops a silently failing revive being retried forever.
+    /// Three halves. What the resume asks for: the full id and the start's own
+    /// flags, no name and no first turn, under the start's environment. What a
+    /// revive does with it: the dead pane cleared, a new session whose command
+    /// is that argv, believed on the pane's row carrying the SAME id. And the
+    /// fork a resume can still be: a row under any other id is Failed, killed,
+    /// and moves no row.
     #[test]
-    fn attach_exit_is_not_a_witness() {
-        let rig = Rig::new("lesson-a7");
+    fn a_resume_by_full_id_keeps_the_session() {
+        // ---- THE ARGV.
+        let rig = Rig::new("lesson-a9");
+        test_support::plant_operator_state(&rig.home());
         let worktree = rig.worktree().display().to_string();
-        let mut table = Table::default();
-        let mut log = rig.log();
+        let spec = StartSpec {
+            plugin_dir: Some("/a/plugin/root".to_string()),
+            config_dir: Some(rig.root.join("seat-config").display().to_string()),
+            ..a_spec(&worktree)
+        };
+        const FULL_ID: &str = "663267a3-2b6e-44ac-b0f1-cbfd24bbbc5d";
+        let resumed = rig.agent().resume(FULL_ID, &spec).expect("it resumes");
+        assert_eq!(
+            resumed.argv,
+            [
+                rig.stub_path().display().to_string().as_str(),
+                "--resume",
+                FULL_ID,
+                "--model",
+                "claude-opus-5",
+                "--permission-mode",
+                "auto",
+                "--plugin-dir",
+                "/a/plugin/root",
+            ],
+            "the full id and the start's three flags, and nothing else: no --name and no \
+             first turn, both of which the session already has"
+        );
+        let launched = rig.agent().launch(&spec).expect("it launches");
+        assert_eq!(
+            resumed.env, launched.env,
+            "a resume comes up under the start's own environment, actor and configuration \
+             directory included"
+        );
 
+        // ---- THE REVIVE: a seat whose pane died, and the table's row for it.
+        let rig = Rig::new("lesson-a9-kept");
+        let worktree = rig.worktree().display().to_string();
+        let dead = a_live_pane(&rig);
+        rig.host.end(&rig.session(), Some(0));
+        let resumed_pane = test_support::FIRST_PANE_PID + 1;
+        write(
+            &rig.roster_path(),
+            &resumed_listing(resumed_pane, "a-session"),
+        );
+        let mut table = Table::default();
+        table.push(a_row_for(S1, &worktree, 500, Some("a-session")));
+        let mut log = rig.log();
         let outcome = effect::revive(
             &rig.agent(),
-            &a_target(&worktree, Some("ab12")),
+            &rig.host,
+            &a_policy(),
+            &a_target(&worktree),
             &mut log,
             &mut table,
             1_000,
         );
         assert_eq!(outcome, effect::Outcome::Revived);
-        assert_eq!(rig.argv(), vec!["attach".to_string(), "ab12".to_string()]);
         assert_eq!(
-            table.sessions[0].session_id, None,
-            "the exit is a dispatch and not an arrival: the row waits on a sighting"
+            rig.started_argv(),
+            [
+                rig.stub_path().display().to_string().as_str(),
+                "--resume",
+                "a-session",
+                "--model",
+                "claude-opus-5",
+                "--permission-mode",
+                "auto",
+            ],
+            "the seat's session is now the resume, as the pane's own process"
         );
-        assert_eq!(table.sessions[0].first_seen_at, None);
+        let pane = rig.host.session(&rig.session()).expect("the resume stands");
+        assert_eq!(pane.pid, resumed_pane, "a NEW session, and not pane {dead}");
+        let revived = rig
+            .events()
+            .into_iter()
+            .find(|e| e["type"] == events::SESSION_REVIVED)
+            .expect("the revive wrote its line");
+        assert_eq!(revived["payload"]["session"], "a-session");
+        assert!(
+            revived["payload"].get("address").is_none(),
+            "no address rides the line: {revived}"
+        );
+        assert_eq!(
+            (
+                table.sessions[0].dispatch_id.as_str(),
+                table.sessions[0].session_id.as_deref()
+            ),
+            (revived["id"].as_str().unwrap_or_default(), None),
+            "the row is re-opened as this dispatch, and waits on a sighting"
+        );
 
-        // The counter's half: the revive is a dispatch, so a roster that still
-        // reads pid-less afterwards counts it.
-        assert_eq!(
-            decide::blind_after(0, RosterState::Stopped, Verdict::Revive),
-            1
-        );
-        assert_eq!(
-            decide::blind_after(0, RosterState::Present, Verdict::Revive),
-            0,
-            "and a sighting is what does not count it"
-        );
-    }
-
-    /// claude-code A9 — only a FLAGLESS FULL-ID resume continues a session; a
-    /// flagged one forks it, and the fork is a session the controller then holds
-    /// a row pointing away from.
-    ///
-    /// So a revive reaches its row through the attach the address takes, and the
-    /// argv it sends carries the address and NOTHING else. Read from what the
-    /// child received and never from a log line.
-    #[test]
-    fn resume_continues_only_a_flagless_full_id() {
-        let rig = Rig::new("lesson-a9");
+        // ---- THE FORK: the same revive, with the resume's pane listed under
+        // another id.
+        let rig = Rig::new("lesson-a9-fork");
         let worktree = rig.worktree().display().to_string();
+        a_live_pane(&rig);
+        rig.host.end(&rig.session(), Some(0));
+        write(
+            &rig.roster_path(),
+            &resumed_listing(test_support::FIRST_PANE_PID + 1, "a-fork"),
+        );
         let mut table = Table::default();
+        table.push(a_row_for(S1, &worktree, 500, Some("a-session")));
+        let before = table.sessions.clone();
         let mut log = rig.log();
-        effect::revive(
+        let outcome = effect::revive(
             &rig.agent(),
-            &a_target(&worktree, Some("ab12")),
+            &rig.host,
+            &a_policy(),
+            &a_target(&worktree),
             &mut log,
             &mut table,
             1_000,
         );
-
-        let argv = rig.argv();
-        assert_eq!(argv, vec!["attach".to_string(), "ab12".to_string()]);
+        assert_eq!(outcome, effect::Outcome::Failed);
         assert!(
-            !argv.iter().any(|word| word.starts_with('-')),
-            "no flag rides along, because a flagged resume forks: {argv:?}"
+            rig.host.session(&rig.session()).is_none(),
+            "the fork is killed, and nothing of the revive is left on the host"
         );
+        let crashed: Vec<serde_json::Value> = rig
+            .events()
+            .into_iter()
+            .filter(|e| e["type"] == events::SESSION_CRASHED)
+            .collect();
+        assert_eq!(crashed.len(), 1, "{crashed:?}");
+        assert_eq!(crashed[0]["payload"]["phase"], effect::PHASE_REVIVE);
+        assert_eq!(crashed[0]["payload"]["session"], "a-session");
+        let cause = crashed[0]["payload"]["cause"].as_str().unwrap_or_default();
         assert!(
-            !argv.iter().any(|word| word == "a-session"),
-            "and the ADDRESS is what it takes, never the identity: {argv:?}"
+            cause.contains("a-fork") && cause.contains("fork"),
+            "the cause names the fork: {cause}"
         );
+        assert_eq!(rig.events_of(events::SESSION_REVIVED), 0);
+        assert_eq!(table.sessions, before, "and no row moved");
 
-        // A row with no address cannot be revived and nothing is issued for it.
-        let rig = Rig::new("lesson-a9-no-address");
+        // ---- A seat whose table names no session has nothing to resume, and
+        // nothing is started for it.
+        let rig = Rig::new("lesson-a9-no-session");
         let worktree = rig.worktree().display().to_string();
         let mut table = Table::default();
         let mut log = rig.log();
+        let target = Target {
+            session_id: None,
+            ..a_target(&worktree)
+        };
         assert_eq!(
             effect::revive(
                 &rig.agent(),
-                &a_target(&worktree, None),
+                &rig.host,
+                &a_policy(),
+                &target,
                 &mut log,
                 &mut table,
                 1_000
@@ -1049,8 +1082,9 @@ mod lessons {
             effect::Outcome::None
         );
         assert!(
-            !rig.argv_path().exists(),
-            "a row with no address issues nothing"
+            rig.host.calls_of(FakeHost::NEW_SESSION).is_empty(),
+            "{:?}",
+            rig.host.verbs()
         );
     }
 
@@ -1096,7 +1130,15 @@ mod lessons {
             Some(5_000),
             "the claimed row is sighted from the roster this poll read"
         );
-        assert_eq!(table.sessions[0].short_id.as_deref(), Some("ab12"));
+        let adopted = rig
+            .events()
+            .into_iter()
+            .find(|e| e["type"] == events::SESSION_ADOPTED)
+            .expect("the claim wrote its line");
+        assert!(
+            adopted["payload"].get("short_id").is_none(),
+            "the listing's address rides nowhere, though the row carried one: {adopted}"
+        );
         assert_eq!(
             table.sessions[1].first_seen_at, None,
             "a pid-less row is left to the discriminator: nobody saw this session running"
@@ -1111,7 +1153,7 @@ mod lessons {
         );
         assert!(
             !rig.argv_path().exists(),
-            "and adoption issues nothing: no start, no attach"
+            "and adoption runs nothing of the agent's"
         );
     }
 
@@ -1211,7 +1253,7 @@ fn a_start_carries_the_plugin_root_the_policy_names() {
         &rig.agent(),
         &rig.host,
         &named,
-        &a_target(&worktree, None),
+        &a_target(&worktree),
         &mut log,
         &mut table,
         1_000,
@@ -1240,7 +1282,7 @@ fn a_start_carries_the_plugin_root_the_policy_names() {
         &bare.agent(),
         &bare.host,
         &a_policy(),
-        &a_target(&elsewhere, None),
+        &a_target(&elsewhere),
         &mut log,
         &mut table,
         1_000,
@@ -1258,7 +1300,7 @@ fn a_start_carries_the_plugin_root_the_policy_names() {
 /// falling back to the one the reads use.
 ///
 /// The fallback is the shape the gate exists to prevent: effects read `off` in
-/// the projection exactly when this binary did not resolve, so a verb that ran
+/// the projection exactly when this binary did not resolve, so a session started
 /// anyway would act while the published document says nothing is being acted on.
 ///
 /// The control is the same rig with the effect binary handed in, which is every
@@ -1277,28 +1319,24 @@ fn an_adapter_with_no_effect_binary_refuses_every_verb_and_execs_nothing() {
         ),
         Ok(launch) => panic!("a start with no resolved binary must not launch: {launch:?}"),
     }
-    let stopped = ungated.stop(None, "ab12");
-    assert!(stopped.is_err(), "{stopped:?}");
-    let revived = ungated.revive(None, "ab12");
-    assert!(revived.is_err(), "{revived:?}");
-    assert!(matches!(
-        ungated.remove(None, "ab12"),
-        RemoveAnswer::Refused { .. }
-    ));
-
-    // NOTHING RAN. The stub records its argv on every branch, so a file that is
-    // not there is the reading: no verb reached a program.
-    assert!(
-        !rig.argv_path().exists(),
-        "a refused verb exec'd something: {:?}",
-        std::fs::read_to_string(rig.argv_path())
-    );
+    match ungated.resume("a-session", &a_spec(&worktree)) {
+        Err(cause) => assert!(
+            cause.contains("no agent binary is resolved"),
+            "the refusal says why: {cause}"
+        ),
+        Ok(launch) => panic!("a resume with no resolved binary must not launch: {launch:?}"),
+    }
 
     // The control: the same rig, the same stub, with the effect binary handed
-    // in — every verb runs and the stub records it.
+    // in — both verbs answer, naming that binary as the pane's process.
     let gated = rig.agent();
-    gated.stop(None, "ab12").expect("the stub exits 0");
-    assert_eq!(rig.argv(), vec!["stop".to_string(), "ab12".to_string()]);
+    let stub = rig.stub_path().display().to_string();
+    let launched = gated.launch(&a_spec(&worktree)).expect("it launches");
+    assert_eq!(launched.argv[0], stub);
+    let resumed = gated
+        .resume("a-session", &a_spec(&worktree))
+        .expect("it resumes");
+    assert_eq!(resumed.argv[0], stub);
 
     // And the reads never depended on it: `version` answers through `bin` with
     // the effect binary absent, which is what keeps a controller that cannot
@@ -1310,49 +1348,114 @@ fn an_adapter_with_no_effect_binary_refuses_every_verb_and_execs_nothing() {
     );
 }
 
-/// The removal's three answers, read from the exit AND the stdout (lessons
-/// claude-code A8), because two of them share an exit status and only one of
-/// those two is benign.
-#[test]
-fn a_removal_that_printed_a_path_is_told_from_one_that_did_not() {
-    let rig = Rig::new("remove-answers");
-    assert!(matches!(
-        rig.agent().remove(None, "ab12"),
-        RemoveAnswer::Removed
-    ));
-
-    rig.write_stub(1);
-    assert!(matches!(
-        rig.agent().remove(None, "ab12"),
-        RemoveAnswer::Refused { .. }
-    ));
-
-    // The alarm: exit 0 with a worktree path printed, which is the outcome that
-    // DELETED a checkout. No discard flag is ever passed, so this must not be
-    // reachable — and a reader meets the path in the log rather than the missing
-    // directory.
-    let body = format!(
-        "#!/bin/sh\necho 'Removed session and worktree {}'\n",
-        rig.worktree().display()
-    );
-    write(&rig.stub_path(), &body);
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(rig.stub_path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-    match rig.agent().remove(None, "ab12") {
-        RemoveAnswer::RemovedAWorktree { path } => {
-            assert_eq!(path, rig.worktree().display().to_string())
-        }
-        other => panic!("a printed path is the third answer: {other:?}"),
-    }
+/// The listing a revive's watch reads: one row, the resume's pane's own
+/// process, carrying `session` and a status.
+fn resumed_listing(pid: u32, session: &str) -> String {
+    format!(
+        r#"[{{"sessionId": "{session}", "cwd": "/nowhere/resumed", "kind": "interactive",
+             "pid": {pid}, "status": "idle"}}]"#
+    )
 }
 
-/// A stop that does not exit 0 leaves the rest PENDING: nothing is started,
-/// nothing is removed, and no `session.rested` is written — which is the alarm,
-/// a `seat.resting` with no collection after it.
+/// A stop whose interrupt leaves the pane alive is KILLED once the grace has
+/// run out, and it is `Ok` only on the host's word that the session is gone.
+///
+/// The default fake is the agent measured: on Claude Code 2.1.280 one `C-c`
+/// ended a busy session's turn and left an idle one asking for a second press,
+/// and neither pane died (fleet-rge6.4, 2026-09-26). So the wait is the whole
+/// grace, and the kill after it is what ends the session. The control is a
+/// program that dies on the interrupt: killed at once, which says the grace is
+/// a bound and not a sleep.
 #[test]
-fn a_rest_whose_stop_failed_starts_nothing_and_removes_nothing() {
+fn a_stop_whose_interrupt_leaves_the_pane_alive_is_killed_after_the_grace() {
+    let rig = Rig::new("stop-grace");
+    a_live_pane(&rig);
+    let started = std::time::Instant::now();
+    effect::stop_session(&rig.host, &rig.session()).expect("the kill lands and the host says so");
+    let spent = started.elapsed();
+    assert!(
+        spent >= effect::STOP_GRACE,
+        "the pane stayed alive, so the whole grace was given: {spent:?}"
+    );
+    let verbs = rig.host.verbs();
+    let pressed = rig.host.calls_of(FakeHost::KEYS);
+    assert_eq!(
+        pressed.len(),
+        1,
+        "one interrupt, into the seat's session: {verbs:?}"
+    );
+    assert_eq!(pressed[0].about, rig.session());
+    let killed = verbs
+        .iter()
+        .position(|verb| *verb == FakeHost::KILL)
+        .expect("the session was killed");
+    assert!(
+        verbs.iter().position(|verb| *verb == FakeHost::KEYS) < Some(killed),
+        "the interrupt first, the kill after: {verbs:?}"
+    );
+    assert_eq!(
+        &verbs[killed + 1..],
+        [FakeHost::LIST],
+        "and the host read after the kill is the witness: {verbs:?}"
+    );
+    assert!(rig.host.session(&rig.session()).is_none());
+
+    // The control: a program that dies on the interrupt is killed at once.
+    let rig = Rig::new("stop-grace-exits");
+    rig.host.exit_on_interrupt();
+    a_live_pane(&rig);
+    let started = std::time::Instant::now();
+    effect::stop_session(&rig.host, &rig.session()).expect("the stop lands");
+    assert!(
+        started.elapsed() < effect::STOP_GRACE,
+        "a pane that died on the interrupt is not waited on: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        rig.host.calls_of(FakeHost::KILL).len(),
+        1,
+        "a dead pane is killed too: it is no session, and it holds the seat's name"
+    );
+    assert!(rig.host.session(&rig.session()).is_none());
+
+    // A kill the host refuses is a stop that did not land, and says why.
+    let rig = Rig::new("stop-refused");
+    rig.host.exit_on_interrupt();
+    a_live_pane(&rig);
+    rig.host
+        .fail(FakeHost::KILL, Some("the arm kept the session"));
+    let cause = effect::stop_session(&rig.host, &rig.session()).expect_err("a kill that failed");
+    assert!(cause.contains("the arm kept the session"), "{cause}");
+
+    // A host nobody can read after the kill is no witness either.
+    rig.host.fail(FakeHost::KILL, None);
+    rig.host
+        .fail(FakeHost::LIST, Some("the arm blinded the host"));
+    let cause = effect::stop_session(&rig.host, &rig.session()).expect_err("an unread host");
+    assert!(
+        cause.contains("could not be read") && cause.contains("the arm blinded the host"),
+        "{cause}"
+    );
+
+    // And a session already gone is stopped: the ask is that it not be there.
+    let rig = Rig::new("stop-gone");
+    effect::stop_session(&rig.host, &rig.session()).expect("nothing to stop is a landed stop");
+}
+
+/// A stop that did not land leaves the rest PENDING: nothing is started and no
+/// `session.rested` is written — which is the alarm, a `seat.resting` with no
+/// collection after it.
+///
+/// The control collects the rest, and its line names the predecessor and the
+/// successor's dispatch and NO removal of any kind: the predecessor was the
+/// host's session, and the stop took it.
+#[test]
+fn a_rest_whose_stop_failed_starts_nothing() {
     let rig = Rig::new("rest-stop-failed");
-    rig.write_stub(1);
+    rig.host.exit_on_interrupt();
+    a_live_pane(&rig);
+    rig.host
+        .fail(FakeHost::KILL, Some("the arm kept the session"));
     let worktree = rig.worktree().display().to_string();
     let mut table = Table::default();
     let mut log = rig.log();
@@ -1360,24 +1463,32 @@ fn a_rest_whose_stop_failed_starts_nothing_and_removes_nothing() {
         &rig.agent(),
         &rig.host,
         &a_policy(),
-        &a_target(&worktree, Some("ab12")),
+        &a_target(&worktree),
         &mut log,
         &mut table,
         1_000,
     );
-    assert!(matches!(answer, effect::Rested::StopFailed(_)));
-    assert_eq!(rig.argv(), vec!["stop".to_string(), "ab12".to_string()]);
+    let effect::Rested::StopFailed(cause) = answer else {
+        panic!("a kill that failed is a stop that failed");
+    };
+    assert!(cause.contains("the arm kept the session"), "{cause}");
     assert_eq!(rig.events_of(events::SESSION_RESTED), 0);
     assert_eq!(rig.events_of(events::SESSION_SPAWNED), 0);
+    assert_eq!(
+        rig.host.calls_of(FakeHost::NEW_SESSION).len(),
+        1,
+        "the pane's own start and no successor: {:?}",
+        rig.host.verbs()
+    );
     assert!(table.sessions.is_empty());
 
-    // The control: the same call with the stop exiting 0 collects the rest.
-    rig.write_stub(0);
+    // The control: the same call with the kill landing collects the rest.
+    rig.host.fail(FakeHost::KILL, None);
     let answer = effect::rest(
         &rig.agent(),
         &rig.host,
         &a_policy(),
-        &a_target(&worktree, Some("ab12")),
+        &a_target(&worktree),
         &mut log,
         &mut table,
         1_000,
@@ -1385,25 +1496,36 @@ fn a_rest_whose_stop_failed_starts_nothing_and_removes_nothing() {
     assert!(matches!(answer, effect::Rested::Collected));
     assert_eq!(rig.events_of(events::SESSION_RESTED), 1);
     assert_eq!(rig.events_of(events::SESSION_SPAWNED), 1);
+    let rested = rig
+        .events()
+        .into_iter()
+        .find(|e| e["type"] == events::SESSION_RESTED)
+        .expect("the collection wrote its line");
+    assert_eq!(rested["payload"]["predecessor"], "a-session");
+    for gone in ["removed", "predecessor_address"] {
+        assert!(
+            rested["payload"].get(gone).is_none(),
+            "a rest writes no {gone}: {rested}"
+        );
+    }
+    assert_eq!(
+        rig.host.session(&rig.session()).map(|pane| pane.pid),
+        Some(test_support::FIRST_PANE_PID + 1),
+        "the successor holds the seat's name on the host"
+    );
 }
 
-/// A stop that exits 0 followed by a start that does not is its own answer: the
-/// predecessor is down, its row stays, nothing is removed and no rest is written.
+/// A stop that landed followed by a start that did not is its own answer: the
+/// predecessor is gone from the host, its row stays, and no rest is written.
 #[test]
-fn a_rest_whose_start_failed_after_its_stop_landed_removes_nothing() {
+fn a_rest_whose_start_failed_after_its_stop_landed_keeps_the_predecessors_row() {
     let rig = Rig::new("rest-start-failed");
-    write(
-        &rig.stub_path(),
-        "#!/bin/sh\n[ \"$1\" = stop ] && exit 0\nexit 1\n",
-    );
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(rig.stub_path(), std::fs::Permissions::from_mode(0o755)).unwrap();
     let worktree = rig.worktree().display().to_string();
     let mut table = Table::default();
-    let mut predecessor = a_row_for(S1, &worktree, 500, Some("a-session"));
-    predecessor.short_id = Some("ab12".to_string());
-    table.push(predecessor);
+    table.push(a_row_for(S1, &worktree, 500, Some("a-session")));
     let mut log = rig.log();
+    rig.host.exit_on_interrupt();
+    a_live_pane(&rig);
     // The start fails at the host, before any session is made.
     rig.host
         .fail(FakeHost::NEW_SESSION, Some("the arm refused this session"));
@@ -1411,12 +1533,16 @@ fn a_rest_whose_start_failed_after_its_stop_landed_removes_nothing() {
         &rig.agent(),
         &rig.host,
         &a_policy(),
-        &a_target(&worktree, Some("ab12")),
+        &a_target(&worktree),
         &mut log,
         &mut table,
         1_000,
     );
     assert!(matches!(answer, effect::Rested::StartFailed(_)));
+    assert!(
+        rig.host.session(&rig.session()).is_none(),
+        "the stop landed: the predecessor is gone from the host"
+    );
     let crashed: Vec<serde_json::Value> = rig
         .events()
         .into_iter()
@@ -1465,7 +1591,6 @@ fn a_live_pane(rig: &Rig) -> u32 {
 fn a_row_reading(pid: u32, status: &str) -> AgentRow {
     AgentRow {
         session_id: "a-session".to_string(),
-        id: None,
         cwd: "/anywhere".to_string(),
         pid: Some(pid),
         state: None,
@@ -1526,7 +1651,7 @@ fn an_idle_seat_that_turns_busy_is_delivered_with_one_paste_and_one_submit() {
         ],
         "one paste, whole, and one submit"
     );
-    for verb in [StubAgent::START, StubAgent::REVIVE] {
+    for verb in [StubAgent::START, StubAgent::RESUME] {
         assert!(
             agent.calls_of(verb).is_empty(),
             "a turn for a live seat makes no {verb} call: {:?}",
@@ -1668,14 +1793,7 @@ fn a_nudge_marks_its_session_and_states_what_it_carried() {
     let pid = a_live_pane(&rig);
     let mut log = rig.log();
     let nudged = |agent: &StubAgent, table: &mut Table, log: &mut EventLog| {
-        let outcome = effect::nudge(
-            agent,
-            &rig.host,
-            &policy,
-            &a_target(&worktree, Some("ab12")),
-            log,
-            table,
-        );
+        let outcome = effect::nudge(agent, &rig.host, &policy, &a_target(&worktree), log, table);
         let event = rig
             .events()
             .into_iter()
@@ -1709,7 +1827,7 @@ fn a_nudge_marks_its_session_and_states_what_it_carried() {
     for needle in ["orla", "700000", "fleet event rest orla"] {
         assert!(text.contains(needle), "{needle}: {text}");
     }
-    for verb in [StubAgent::START, StubAgent::REVIVE] {
+    for verb in [StubAgent::START, StubAgent::RESUME] {
         assert!(agent.calls_of(verb).is_empty(), "{:?}", agent.verbs());
     }
 
@@ -1761,7 +1879,7 @@ fn a_child_carries_the_built_environment_and_nothing_this_process_exported() {
     let rig = Rig::new("built-environment");
     let leaked = rig.write_env_recording_stub();
 
-    rig.agent().stop(None, "ab12").expect("the stub exits 0");
+    let _ = rig.agent().version();
     let env = std::fs::read_to_string(&leaked).expect("the child recorded its environment");
     let names: Vec<&str> = env
         .lines()
@@ -1806,7 +1924,7 @@ fn a_child_carries_the_configured_credential_scope_and_not_the_resolved_config_d
     // the line's presence and its emptiness are both the claim — and the
     // assertion is on the exact line, because `contains` on the name alone is
     // satisfied by any value at all.
-    rig.agent().stop(None, "ab12").expect("the stub exits 0");
+    let _ = rig.agent().version();
     let env = std::fs::read_to_string(&leaked).expect("the child recorded its environment");
     let lines: Vec<&str> = env.lines().collect();
     assert!(
@@ -1817,9 +1935,7 @@ fn a_child_carries_the_configured_credential_scope_and_not_the_resolved_config_d
 
     // Configured: the value the operator gave, beside a config directory that
     // is a different path. One child, two readings.
-    rig.agent_with_credential_seam("/opt/cfg")
-        .stop(None, "ab12")
-        .expect("the stub exits 0");
+    let _ = rig.agent_with_credential_seam("/opt/cfg").version();
     let env = std::fs::read_to_string(&leaked).expect("the child recorded its environment");
     let lines: Vec<&str> = env.lines().collect();
     assert!(
@@ -1870,7 +1986,7 @@ fn every_child_carries_this_processs_own_executable_as_fleet_bin() {
         &rig.agent(),
         &rig.host,
         &a_policy(),
-        &a_target(&worktree, None),
+        &a_target(&worktree),
         &mut log,
         &mut table,
         1_000,
@@ -1934,7 +2050,7 @@ fn a_rebuilt_row_carries_the_dispatch_the_live_table_holds() {
             &rig.agent(),
             &rig.host,
             &a_policy(),
-            &a_target(&worktree, None),
+            &a_target(&worktree),
             &mut log,
             &mut table,
             spawn_ms,
@@ -1964,13 +2080,22 @@ fn a_rebuilt_row_carries_the_dispatch_the_live_table_holds() {
     );
 
     // The revive, on the row a sighting filled — which is how every row the
-    // controller opened gets its session id, the roster being the only source.
-    assert!(table.sight(S1, &worktree, "a-session", Some("ab12"), spawn_ms + 10));
+    // controller opened gets its session id, the roster being the only source —
+    // of a session whose pane has since died. The resume's pane is the host's
+    // second, and the listing shows it carrying the session it resumed.
+    assert!(table.sight(S1, &worktree, "a-session", spawn_ms + 10));
+    rig.host.end(&rig.session(), Some(0));
+    write(
+        &rig.roster_path(),
+        &resumed_listing(test_support::FIRST_PANE_PID + 1, "a-session"),
+    );
     let revive_ms = fleet_controller::clock::now_ms();
     assert_eq!(
         effect::revive(
             &rig.agent(),
-            &a_target(&worktree, Some("ab12")),
+            &rig.host,
+            &a_policy(),
+            &a_target(&worktree),
             &mut log,
             &mut table,
             revive_ms,
@@ -1980,7 +2105,7 @@ fn a_rebuilt_row_carries_the_dispatch_the_live_table_holds() {
     let live = table.sessions[0].clone();
     assert_ne!(
         live.dispatch_id, rebuilt.sessions[0].dispatch_id,
-        "the attach moved the live row onto a dispatch of its own"
+        "the revive moved the live row onto a dispatch of its own"
     );
 
     let rebuilt = sessions::rebuild(&stream);
@@ -2035,5 +2160,46 @@ fn a_rebuilt_row_carries_the_dispatch_the_live_table_holds() {
             Some(live.transient),
         ),
         "the revived line carries what a row opened from it needs: {revived}"
+    );
+}
+
+/// A session table written while it still kept each session's short address
+/// READS: the key is ignored, the row it sat on is read whole, and the table
+/// written back carries no such key. No table is migrated and none is refused
+/// over a field this build no longer keeps (ruling 17).
+#[test]
+fn a_table_written_with_the_retired_short_address_still_reads() {
+    let rig = Rig::new("retired-address");
+    let path = rig.machine().join("sessions.json");
+    write(
+        &path,
+        &serde_json::json!({
+            "schema": sessions::SCHEMA,
+            "sessions": [{
+                "seat": S1, "project": "demo", "worktree": "/wt/s1", "name": "orla",
+                "model": "a-model", "posture": "auto", "first_turn": "/wake orla",
+                "transient": false, "dispatch_id": "a-dispatch", "dispatched_at": 1000,
+                "session_id": "a-session", "short_id": "ab12", "first_seen_at": 1000,
+            }],
+        })
+        .to_string(),
+    );
+
+    let (table, cause) = sessions::read(&path);
+    assert_eq!(cause, None, "the table is no defect");
+    let table = table.expect("the table reads");
+    assert_eq!(
+        table
+            .newest_for(S1)
+            .and_then(|row| row.session_id.as_deref()),
+        Some("a-session"),
+        "and the row the retired key sat on is read whole"
+    );
+
+    sessions::write(&path, &table).expect("the table is written back");
+    let written = std::fs::read_to_string(&path).expect("the table is on disk");
+    assert!(
+        !written.contains("ab12"),
+        "and the address does not ride back out: {written}"
     );
 }

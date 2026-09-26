@@ -28,11 +28,11 @@
 //! because setting a variable in a process that is forking children races the
 //! fork.
 
-use crate::adapter::{dir_key, Agent, RemoveAnswer, RosterRead};
-use crate::clock::Clock;
+use crate::adapter::{dir_key, Agent, RosterRead};
 use crate::config::{self, Seat};
 use crate::effect::{self, Outcome, Target, Typed};
 use crate::events::{self, ActorRef, EventLog};
+use crate::host::{self, HostRead, PaneState};
 use crate::platform;
 use crate::policy::Policy;
 use crate::projection::SeatView;
@@ -106,10 +106,6 @@ pub struct Machine<'a> {
     /// the process's own environment, shared by every thread — out of a suite
     /// that runs arms in parallel and forks children while they run.
     pub readings: Readings,
-    /// The clock the one wait here whose subject is a DURATION is spent
-    /// against — [`cleared`]'s start-watch window. Every other wait a verb
-    /// reaches is on a real child's exit and stays the thread's.
-    pub clock: &'a dyn Clock,
 }
 
 impl Machine<'_> {
@@ -773,7 +769,6 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
         // started from a shell is not.
         run: crate::runs::of_this_process(),
         session_id: None,
-        short_id: None,
         context_tokens: None,
     };
     // INTO A TABLE OF ITS OWN: what this call produces is the ROW, and the file
@@ -1330,11 +1325,12 @@ pub struct Reclaimed {
     /// The worktree's bytes, measured BEFORE the removal. `None` is a directory
     /// this verb could not walk, which is stated rather than reported as zero.
     pub bytes: Option<u64>,
-    /// The pid the roster carried before the stop, and `None` where no live row
-    /// named one.
+    /// The pid of the seat's live pane before the stop — the agent itself —
+    /// and `None` where the host held no live pane for the seat.
     pub pid: Option<u32>,
     pub dead: bool,
-    /// What the adapter's removal answered, including the alarm.
+    /// What the stop did on the host: `killed <session>` where the host held a
+    /// session for the seat, live or dead, and `None` where it held none.
     pub removal: Option<String>,
     /// The branch the seat's worktree stood on, read BEFORE the removal took
     /// the worktree with it. `None` is a detached HEAD or a tree git would not
@@ -1372,10 +1368,11 @@ pub fn withdraws_nothing(_seat: &str) -> Result<Vec<String>, Refusal> {
 /// End a transient seat and verify from OUTSIDE that nothing of it holds RAM or
 /// disk.
 ///
-/// The roster is read once, whole, at the top: an unreadable one is
-/// could-not-tell, because a session nobody could ask is a question and not an
-/// absence. Every probe at the end is its own reading and none of them is this
-/// verb's own earlier report.
+/// The host is read once, whole, at the top: an unreadable one is
+/// could-not-tell, because a session nobody could ask about is a question and
+/// not an absence. The session is stopped on the host by the seat's own name,
+/// the worktree is fleet's own to remove, and every probe at the end is its own
+/// reading and none of them is this verb's own earlier report.
 pub fn retire(machine: &Machine, seat: &str, dead: bool) -> Result<Reclaimed, Refusal> {
     retire_with(machine, seat, dead, &withdraws_nothing)
 }
@@ -1398,96 +1395,88 @@ pub fn retire_with(
     let key = dir_key(&worktree).to_string();
 
     // THE DIRECTORY THIS SEAT'S SESSION IS HELD UNDER, read off its own row.
-    // Every listing, stop and removal below is made under it: a spawned seat is
-    // named by its own directory's listing and by no other, so the fleet's read
-    // would find no live row, take the no-session branch, and delete the
-    // worktree out from under a session still running in it.
+    // Every listing below is made under it: a spawned seat is named by its own
+    // directory's listing and by no other, so the fleet's read would find no
+    // row whatever was still running.
     let config_dir = machine.recorded_config_dir(&seat_id);
     let under = config_dir.as_deref().map(Path::new);
 
-    let rows = machine.roster_under(under)?;
-    let live = rows
-        .iter()
-        .find(|row| row.is_live() && row.cwd_key() == key)
-        .cloned();
-
-    // Measured before anything is removed, because both readings are gone the
-    // instant the removal lands.
-    let bytes = bytes_under(Path::new(&worktree));
-    let branch = branch_of(Path::new(&worktree));
-    let pid = live.as_ref().and_then(|row| row.pid);
-
-    // THE ADDRESS A REMOVAL TAKES, from the table where the roster names no
-    // live row. A seat whose session is already gone still has a session row to
-    // delete, and a retire that skipped it would leave the agent holding one
-    // per dead seat.
-    //
-    // READ WITHOUT THE LOCK, and an unreadable table refuses here, before the
-    // stop. What the lock guards is the read-modify-write at the end; held from
-    // here it would span the stop, the roster poll bounded by the start-watch
-    // window, the removal and two git calls, and every other verb on this
-    // machine would wait out a whole retire.
-    let recorded_short_id = {
-        let table = machine.table_now()?;
-        table
-            .newest_for(&seat_id)
-            .and_then(|row| row.short_id.clone())
-    };
-
-    let short_id = match (&live, dead) {
-        // `--dead` licenses the removal by a COMPLETED roster read that names no
-        // live row — never by silence, which is what the could-not-tell above
-        // keeps out of this branch.
-        (Some(row), true) => {
-            return Err(Refusal::refused(format!(
-                "`{seat}` is not dead — the roster names a live session {} in {worktree}, so \
-                 --dead was the wrong flag; retire it without --dead to stop it first",
-                row.session_id
+    // THE SEAT'S SESSION, BY THE SEAT: its name on the host is its id
+    // (reviewer call 2026-09-25, E1), so nothing the agent issued addresses it.
+    // Read once, whole, here: a host nobody could read is could-not-tell,
+    // because a session nobody could ask about is a question and not an
+    // absence.
+    let session = host::session_for(&row.id);
+    let pane = match machine.host.list() {
+        HostRead::Readable(panes) => panes.into_iter().find(|pane| pane.session == session),
+        HostRead::Unreadable { cause } => {
+            return Err(Refusal::could_not_tell(format!(
+                "the host could not be read, so whether `{seat}`'s session {session} is still \
+                 running cannot be told and nothing was removed: {cause}"
             )))
         }
-        // No live row: nothing to stop, and the removal is addressed by what the
-        // table remembers.
-        (None, _) => recorded_short_id,
-        (Some(row), false) => {
-            let Some(short_id) = row.id.clone() else {
-                return Err(Refusal::could_not_tell(format!(
-                    "the roster's live row for `{seat}` carries no short id, which is the \
-                     address a stop takes (lessons claude-code A6); nothing was removed"
-                )));
-            };
-            machine.agent.stop(under, &short_id).map_err(|cause| {
-                Refusal::refused(format!("`{seat}` could not be stopped: {cause}"))
-            })?;
-            // THE STOP'S OWN EXIT IS NEVER THE WITNESS (A6, A7). The roster is
-            // re-read until it names no row in that directory.
-            if !cleared(machine, under, &key)? {
-                return Err(Refusal::refused(format!(
-                    "the roster still names a session in {worktree} after the stop, so nothing \
-                     was removed: the worktree, the seat-list row and the session table all \
-                     stand"
-                )));
+    };
+    let live = pane.as_ref().filter(|pane| pane.state == PaneState::Alive);
+
+    // Measured before anything is removed, because every reading is gone the
+    // instant the stop or the removal lands. The pid is the LIVE pane's — the
+    // agent itself, since nothing sits between (E2) — and never a dead one's,
+    // which names a process that has already ended and whose number the
+    // system may since have handed to another.
+    let bytes = bytes_under(Path::new(&worktree));
+    let branch = branch_of(Path::new(&worktree));
+    let pid = live.and_then(|pane| pane.pid);
+
+    // The listing under the seat's own directory, read ONCE before anything is
+    // touched — an unreadable one is could-not-tell here rather than after the
+    // stop — and asked for the row the live pane's process carries: a row is
+    // the seat's by that pid and never by the directory it stands in (lessons
+    // claude-code B5).
+    let rows = machine.roster_under(under)?;
+    let listed = pid.and_then(|pid| rows.iter().find(|row| row.pid == Some(pid)));
+
+    // READ WITHOUT THE LOCK, and an unreadable table refuses here, before the
+    // stop: the row comes off it at the end, and a table found unreadable only
+    // then would leave the session stopped and every row standing. What the
+    // lock guards is the read-modify-write at the end; held from here it would
+    // span the stop's grace and two git calls, and every other verb on this
+    // machine would wait out a whole retire.
+    machine.table_now()?;
+
+    // `--dead` licenses the retire by a COMPLETED host read that holds no live
+    // pane for the seat — never by silence, which is what the could-not-tell
+    // above keeps out of this branch.
+    if let (Some(live), true) = (live, dead) {
+        return Err(Refusal::refused(format!(
+            "`{seat}` is not dead — the host holds its session {session} live{}{}, so --dead \
+             was the wrong flag; retire it without --dead to stop it first",
+            match live.pid {
+                Some(pid) => format!(" as pid {pid}"),
+                None => String::new(),
+            },
+            match listed {
+                Some(row) => format!(", listed as {}", row.session_id),
+                None => String::new(),
             }
-            Some(short_id)
+        )));
+    }
+
+    // THE STOP IS THE HOST'S, AND SO IS ITS WITNESS: `stop_session` answers Ok
+    // only once a listing read after the kill names no session for the seat.
+    // A dead pane is killed the same way — it is no session, and it holds the
+    // seat's name. `None` is a seat the host holds nothing for.
+    let removal = match &pane {
+        None => None,
+        Some(_) => {
+            effect::stop_session(machine.host, &session).map_err(|cause| {
+                Refusal::refused(format!(
+                    "`{seat}` could not be stopped, so nothing was removed — the worktree, the \
+                     seat-list row and the session table all stand: {cause}"
+                ))
+            })?;
+            Some(format!("killed {session}"))
         }
     };
-
-    // In order: the session row, the worktree, the seat-list row, the table.
-    //
-    // `None` is not "nothing happened": it is a seat whose roster row is gone
-    // AND whose table row carries no address, so there is no session row
-    // anywhere for a removal to delete.
-    let removal = short_id.as_ref().map(|short_id| {
-        match machine.agent.remove(under, short_id) {
-            RemoveAnswer::Removed => format!("removed {short_id}"),
-            RemoveAnswer::Refused { cause } => format!("removing {short_id} refused: {cause}"),
-            // A8's alarm: no discard flag is ever passed, so this arm must not
-            // be reachable — and a reader meets the path in the report rather
-            // than meeting the missing directory.
-            RemoveAnswer::RemovedAWorktree { path } => {
-                format!("ALARM — the removal DELETED a worktree at {path}")
-            }
-        }
-    });
 
     if Path::new(&worktree).exists() {
         git(
@@ -1496,22 +1485,17 @@ pub fn retire_with(
             &["worktree", "remove", "--force", &worktree],
         )
         .map_err(|cause| {
-            // WHAT THIS REFUSAL SAYS IS GONE IS WHAT THE TWO ACTS ABOVE DID:
-            // the stop ran only where the roster named a live row, and the
-            // session row is already removed by the time a worktree can be
-            // found stuck.
-            let stopped = match &live {
-                Some(_) => "the session is stopped",
-                None => "there was no live session to stop",
-            };
-            let session_row = match &removal {
-                Some(answer) => format!("its session row is already gone ({answer})"),
-                None => "there was no session row to remove".to_string(),
+            // WHAT THIS REFUSAL SAYS IS GONE IS WHAT THE STOP ABOVE DID: it
+            // ran wherever the host held a session for the seat, and that
+            // session is gone by the time a worktree can be found stuck.
+            let stopped = match &removal {
+                Some(answer) => format!("its session is already gone ({answer})"),
+                None => "there was no session on the host to stop".to_string(),
             };
             Refusal::refused(format!(
-                "{worktree} could not be removed: {cause}\n  {stopped} and {session_row}; the \
-                 seat-list row and the session table both stand — so re-running this after \
-                 clearing the cause is safe"
+                "{worktree} could not be removed: {cause}\n  {stopped}; the seat-list row and \
+                 the session table both stand — so re-running this after clearing the cause is \
+                 safe"
             ))
         })?;
     }
@@ -1547,7 +1531,8 @@ pub fn retire_with(
     // FROM HERE THE TWO ROWS ARE ALREADY GONE, so every refusal below says so:
     // a re-run would be refused at the seat list with "names no seat", which
     // tells the person nothing about what is still standing.
-    verify_from_outside(machine, seat, under, &worktree, &key, pid).map_err(|refusal| Refusal {
+    let verified = verify_from_outside(machine, seat, &session, &worktree, &key, pid);
+    verified.map_err(|refusal| Refusal {
         code: refusal.code,
         message: format!(
             "{}\n  the seat-list row and the session-table row for `{seat}` ARE ALREADY DROPPED, \
@@ -1562,10 +1547,9 @@ pub fn retire_with(
 
     // LAST, and only once the probes above have answered: the seat's
     // configuration directory, which holds that one session's whole
-    // configuration space and which the roster probe reads THROUGH — so a
-    // removal before it would leave that probe with nothing to ask and passing
-    // vacuously. A refused verification leaves the directory standing, which is
-    // right: something is still running under it.
+    // configuration space — its transcript and its listing's scope included.
+    // A refused verification leaves the directory standing, which is right:
+    // something may still be running under it.
     let held_config = machine.config_dir_for(&row);
     if held_config.exists() {
         std::fs::remove_dir_all(&held_config).map_err(|e| {
@@ -1673,11 +1657,11 @@ pub struct Priced {
 /// says so; only the retire itself refuses.
 ///
 /// `--dead` IS NOT PASSED, and that is a reading rather than an omission: the
-/// flag REFUSES when the roster names a live row and changes nothing when it
-/// names none, so a flagless call reclaims a seat whose session is already gone
-/// exactly as `--dead` would and stops one that is still up. A flight retiring a
-/// crashed seat and a flight retiring a delivered one therefore take the same
-/// call.
+/// flag REFUSES when the host holds the seat's session live and changes nothing
+/// when it does not, so a flagless call reclaims a seat whose session is already
+/// gone exactly as `--dead` would and stops one that is still up. A flight
+/// retiring a crashed seat and a flight retiring a delivered one therefore take
+/// the same call.
 pub fn priced(machine: &Machine, seat: &str, item: &str, now_ms: u64) -> Result<Priced, Refusal> {
     priced_with(machine, seat, item, now_ms, &withdraws_nothing)
 }
@@ -1797,29 +1781,13 @@ fn head_of(worktree: &Path) -> Option<String> {
     (!sha.is_empty()).then_some(sha)
 }
 
-/// Re-read the roster until it names no session in this directory, bounded by
-/// the policy's start-watch window.
+/// The three probes — the host, the worktree, the pane's process — each its
+/// own reading and none of them this verb's own earlier report.
 ///
-/// The window and the slice are both [`Machine::clock`]'s, so the number of
-/// listings this takes is the same under any clock and only the waiting between
-/// them is the box's.
-fn cleared(machine: &Machine, under: Option<&Path>, key: &str) -> Result<bool, Refusal> {
-    let deadline =
-        machine.clock.now() + Duration::from_secs(machine.policy.start_watch_seconds.max(1));
-    loop {
-        let rows = machine.roster_under(under)?;
-        if !rows.iter().any(|row| row.is_live() && row.cwd_key() == key) {
-            return Ok(true);
-        }
-        if machine.clock.now() >= deadline {
-            return Ok(false);
-        }
-        machine.clock.sleep(Duration::from_millis(200));
-    }
-}
-
-/// The three probes, each its own reading and none of them this verb's own
-/// earlier report.
+/// No listing is among them. The session was the host's and the row is only
+/// the agent's account of its process, so a row left behind by a process the
+/// pid probe reads as gone is an account and not a session; and one whose
+/// process is alive is the pid probe's to refuse.
 ///
 /// A probe that CANNOT ANSWER is could-not-tell and refuses at 3, never rounded
 /// to clean: the whole point of verifying from outside is that a retire which
@@ -1827,23 +1795,27 @@ fn cleared(machine: &Machine, under: Option<&Path>, key: &str) -> Result<bool, R
 fn verify_from_outside(
     machine: &Machine,
     seat: &str,
-    under: Option<&Path>,
+    session: &str,
     worktree: &str,
     key: &str,
     pid: Option<u32>,
 ) -> Result<(), Refusal> {
-    // UNDER THE SEAT'S OWN DIRECTORY, which is the only listing that could name
-    // its session: the fleet's would answer "no live row" for a spawned seat
-    // whatever was running, which is a probe that cannot fail.
-    let rows = machine.roster_under(under)?;
-    if let Some(row) = rows
-        .iter()
-        .find(|row| row.is_live() && row.cwd_key() == key)
-    {
-        return Err(Refusal::refused(format!(
-            "a live session {} still names {worktree} after the retire",
-            row.session_id
-        )));
+    // THE HOST, which is where the seat's session ran and the one reading of
+    // whether it still does (ruling 3).
+    match machine.host.list() {
+        HostRead::Readable(panes) => {
+            if panes.iter().any(|pane| pane.session == session) {
+                return Err(Refusal::refused(format!(
+                    "the host still holds `{seat}`'s session {session} after the retire"
+                )));
+            }
+        }
+        HostRead::Unreadable { cause } => {
+            return Err(Refusal::could_not_tell(format!(
+                "the host could not be read, so whether `{seat}`'s session {session} is gone is \
+                 unknown: {cause}"
+            )))
+        }
     }
 
     if Path::new(worktree).exists() {
@@ -1877,8 +1849,8 @@ fn verify_from_outside(
             Some(false) => {}
             Some(true) => {
                 return Err(Refusal::refused(format!(
-                    "pid {pid}, which the roster gave for `{seat}` before the stop, is still a \
-                     live process"
+                    "pid {pid}, which the host gave for `{seat}`'s pane before the stop, is \
+                     still a live process"
                 )))
             }
             None => {

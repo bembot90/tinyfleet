@@ -53,7 +53,7 @@ pub struct SessionRow {
     /// under its own. Absent on a named seat, which takes the fleet's.
     ///
     /// It is on the row because every later act about the session — the listing
-    /// that can see it, its transcript, the stop and the removal that address it
+    /// that can see it, its transcript, and the resume that brings it back
     /// — has to be made under the same directory, and the row is the only place
     /// the controller remembers what a dispatch chose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -72,15 +72,13 @@ pub struct SessionRow {
     /// parse. Every other stamp in the fleet's published documents is a UTC
     /// string; this file is not published.
     pub dispatched_at: u64,
-    /// The agent's own session id: the KEY, because the short id and the display
-    /// name are both unstable (lessons claude-code A6).
+    /// The agent's own session id: the KEY, because the display name is
+    /// unstable (lessons claude-code B3), and the one value a revive resumes.
+    ///
+    /// A row written when the table also kept the session's short address
+    /// still reads: that key is ignored (fleet-rge6.4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    /// The ADDRESS every subcommand accepts, carried separately from the id
-    /// because stopping by the full session id exits 1 (A6). Absent on an
-    /// interactive row, which carries no short id at all.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub short_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_seen_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -358,8 +356,8 @@ impl Table {
             .max_by_key(|row| row.dispatched_at)
     }
 
-    /// The newest row for a seat that is standing on a live session — the one a
-    /// stop is addressed to.
+    /// The newest row for a seat that a sighting has put on a session: the
+    /// newest one carrying a session id.
     pub fn newest_sighted_for(&self, seat: &str) -> Option<&SessionRow> {
         self.sessions
             .iter()
@@ -395,29 +393,13 @@ impl Table {
     /// A sighting that matches no row at all changes nothing and is not an
     /// error: a session this controller did not start is still observed and
     /// published, it is simply not the controller's own.
-    pub fn sight(
-        &mut self,
-        seat: &str,
-        worktree: &str,
-        session_id: &str,
-        short_id: Option<&str>,
-        now_ms: u64,
-    ) -> bool {
+    pub fn sight(&mut self, seat: &str, worktree: &str, session_id: &str, now_ms: u64) -> bool {
         if let Some(row) = self
             .sessions
             .iter_mut()
             .find(|row| row.session_id.as_deref() == Some(session_id))
         {
             row.last_seen_at = Some(now_ms);
-            // A short id the first sighting could not read is still owed: the
-            // address is what a stop needs, and a row that never gets one is a
-            // session this controller can observe and cannot act on.
-            if row.short_id.is_none() {
-                if let Some(short) = short_id {
-                    row.short_id = Some(short.to_string());
-                    return true;
-                }
-            }
             return true;
         }
         let candidate = self
@@ -428,7 +410,6 @@ impl Table {
         match candidate {
             Some(row) => {
                 row.session_id = Some(session_id.to_string());
-                row.short_id = short_id.map(str::to_string);
                 row.first_seen_at = Some(now_ms);
                 row.last_seen_at = Some(now_ms);
                 true
@@ -437,8 +418,8 @@ impl Table {
         }
     }
 
-    /// Re-open a row as a fresh dispatch — what a revive does to the row it
-    /// attaches to.
+    /// Re-open a row as a fresh dispatch — what a revive does to the row of the
+    /// session it resumed.
     ///
     /// The four sighting fields are cleared and the dispatch stamp is moved, so
     /// the arrival window is keyed to THIS dispatch and a sighting is what
@@ -457,7 +438,6 @@ impl Table {
         row.dispatch_id = dispatch_id;
         row.dispatched_at = now_ms;
         row.session_id = None;
-        row.short_id = None;
         row.first_seen_at = None;
         row.last_seen_at = None;
         true
@@ -560,7 +540,6 @@ pub fn rebuild(events_path: &Path) -> Table {
             dispatch_id: record.id.clone(),
             dispatched_at: stamp_ms,
             session_id: text("session"),
-            short_id: text("short_id"),
             first_seen_at: None,
             last_seen_at: None,
             adopted: None,
@@ -571,8 +550,7 @@ pub fn rebuild(events_path: &Path) -> Table {
             crate::events::SESSION_ADOPTED => {
                 let session_id = text("session").unwrap_or_default();
                 let worktree = text("worktree").unwrap_or_default();
-                let short_id = text("short_id");
-                if !table.sight(&seat, &worktree, &session_id, short_id.as_deref(), stamp_ms) {
+                if !table.sight(&seat, &worktree, &session_id, stamp_ms) {
                     table.push(SessionRow {
                         first_seen_at: Some(stamp_ms),
                         last_seen_at: Some(stamp_ms),
@@ -589,8 +567,8 @@ pub fn rebuild(events_path: &Path) -> Table {
             }
             // The same two calls the live revive makes (`effect::revive`):
             // re-open the row this session is carried through as a fresh
-            // dispatch, and where the seat has no row at all, open one — an
-            // attach is its own dispatch either way.
+            // dispatch, and where the seat has no row at all, open one — a
+            // revive is its own dispatch either way.
             //
             // A SIGHTING MOVES THE TABLE AND WRITES NO EVENT, so a stream that
             // carried no `session.adopted` for this session has no row the id
@@ -603,8 +581,7 @@ pub fn rebuild(events_path: &Path) -> Table {
             crate::events::SESSION_REVIVED => {
                 let session_id = text("session").unwrap_or_default();
                 let worktree = text("worktree").unwrap_or_default();
-                let address = text("address");
-                table.sight(&seat, &worktree, &session_id, address.as_deref(), stamp_ms);
+                table.sight(&seat, &worktree, &session_id, stamp_ms);
                 if !table.redispatch(&session_id, record.id.clone(), stamp_ms) {
                     table.push(SessionRow {
                         session_id: None,
@@ -695,7 +672,6 @@ mod tests {
             dispatch_id: format!("dispatch-{dispatched_at}"),
             dispatched_at,
             session_id: None,
-            short_id: None,
             first_seen_at: None,
             last_seen_at: None,
             adopted: None,
@@ -768,14 +744,13 @@ mod tests {
         table.push(a_row("s1", "/wt/s1", 100));
         table.push(a_row("s1", "/wt/s1", 200));
 
-        assert!(table.sight("s1", "/wt/s1", "the-session", Some("ab12"), 300));
+        assert!(table.sight("s1", "/wt/s1", "the-session", 300));
         let newest = table
             .sessions
             .iter()
             .find(|row| row.dispatched_at == 200)
             .expect("the newer row is there");
         assert_eq!(newest.session_id.as_deref(), Some("the-session"));
-        assert_eq!(newest.short_id.as_deref(), Some("ab12"));
         assert_eq!(newest.first_seen_at, Some(300));
         let older = table
             .sessions
@@ -788,7 +763,7 @@ mod tests {
         );
 
         // The same session again moves the last sighting and nothing else.
-        assert!(table.sight("s1", "/wt/s1", "the-session", Some("ab12"), 400));
+        assert!(table.sight("s1", "/wt/s1", "the-session", 400));
         let newest = table
             .sessions
             .iter()
@@ -799,8 +774,8 @@ mod tests {
 
         // A directory this seat has no row for changes nothing: a session the
         // controller did not start is observed and published, not adopted.
-        assert!(!table.sight("s1", "/wt/elsewhere", "another", Some("cd34"), 500));
-        assert!(!table.sight("s2", "/wt/s1", "another", Some("cd34"), 500));
+        assert!(!table.sight("s1", "/wt/elsewhere", "another", 500));
+        assert!(!table.sight("s2", "/wt/s1", "another", 500));
     }
 
     /// The two lookups the loop and the collection use, and the forget that ends
@@ -820,12 +795,12 @@ mod tests {
             "a row nothing has sighted is not one a stop can be aimed at"
         );
 
-        table.sight("s1", "/wt/s1", "the-session", Some("ab12"), 400);
+        table.sight("s1", "/wt/s1", "the-session", 400);
         assert_eq!(
             table
                 .newest_sighted_for("s1")
-                .and_then(|r| r.short_id.clone()),
-            Some("ab12".to_string())
+                .and_then(|r| r.session_id.clone()),
+            Some("the-session".to_string())
         );
 
         assert!(table.forget("the-session"));
@@ -1068,7 +1043,7 @@ mod tests {
             "posture": "auto", "first_turn": "/wake s1", "transient": false, "output": "",
         });
         let adopted = serde_json::json!({
-            "session": "a-session", "short_id": "ab12", "worktree": "/wt/s1",
+            "session": "a-session", "worktree": "/wt/s1",
             "project": "demo", "name": "orla", "model": "a-model", "posture": "auto",
             "first_turn": "/wake s1", "transient": false,
         });
@@ -1093,7 +1068,6 @@ mod tests {
         let rows = rebuild(&path).sessions;
         assert_eq!(rows.len(), 1, "one session is one row: {rows:?}");
         assert_eq!(rows[0].session_id.as_deref(), Some("a-session"));
-        assert_eq!(rows[0].short_id.as_deref(), Some("ab12"));
         assert!(rows[0].first_seen_at.is_some(), "the adoption sighted it");
         assert_eq!(
             rows[0].adopted.as_deref(),
@@ -1202,10 +1176,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A `session.revived` moves the row it attaches to onto THIS dispatch —
-    /// the revived line's id and its stamp — because the arrival window is
-    /// arithmetic over that stamp and a window keyed to the spawn would have
-    /// closed long before the attach.
+    /// A `session.revived` moves the row of the session it resumed onto THIS
+    /// dispatch — the revived line's id and its stamp — because the arrival
+    /// window is arithmetic over that stamp and a window keyed to the spawn
+    /// would have closed long before the revive.
     ///
     /// BOTH SEQUENCES THE STREAM CAN CARRY, because they reach the row by
     /// different rules: a spawn and then a revive, which is the ordinary one and
@@ -1220,13 +1194,12 @@ mod tests {
         let adopt_ts = "2026-09-12T10:00:30Z";
         let revive_ts = "2026-09-12T11:15:00Z";
         let adopted = serde_json::json!({
-            "session": "a-session", "short_id": "ab12", "worktree": "/wt/s1",
+            "session": "a-session", "worktree": "/wt/s1",
             "project": "demo", "name": "orla", "model": "a-model", "posture": "auto",
             "first_turn": "/wake s1", "transient": false,
         });
         let revived = serde_json::json!({
-            "session": "a-session", "address": "ab12", "worktree": "/wt/s1",
-            "project": "demo", "outcome": "dispatched",
+            "session": "a-session", "worktree": "/wt/s1", "project": "demo",
         });
         let spawned_line = line(
             1,
@@ -1271,12 +1244,12 @@ mod tests {
             );
             assert_eq!(
                 rows[0].dispatch_id, "ev-revived",
-                "{name}: the attach is its own dispatch and the row is keyed on it"
+                "{name}: the revive is its own dispatch and the row is keyed on it"
             );
             assert_eq!(
                 rows[0].dispatched_at,
                 ms_of(revive_ts),
-                "{name}: and the window is keyed to the attach, not to the spawn"
+                "{name}: and the window is keyed to the revive, not to the spawn"
             );
             assert!(
                 rows[0].session_id.is_none() && rows[0].first_seen_at.is_none(),
@@ -1303,15 +1276,15 @@ mod tests {
     /// session name is an argv defect at the next start, not a cosmetic gap
     /// (`effect::Target::session_name`'s doc). Reachable from a TRIMMED stream:
     /// this fold reads from sequence 0 and the live loop always writes a
-    /// row-opening line before the revive that attaches to it.
+    /// row-opening line before the revive that moves it.
     #[test]
     fn a_revived_line_alone_opens_a_row_carrying_the_lines_identity_fields() {
         let dir = scratch("revived-alone");
         let ts = "2026-09-12T11:15:00Z";
         let revived = serde_json::json!({
-            "session": "a-session", "address": "ab12", "worktree": "/wt/s1",
-            "project": "demo", "name": "orla", "model": "a-model", "posture": "auto",
-            "first_turn": "/wake s1", "transient": false, "outcome": "dispatched",
+            "session": "a-session", "worktree": "/wt/s1", "project": "demo",
+            "name": "orla", "model": "a-model", "posture": "auto",
+            "first_turn": "/wake s1", "transient": false,
         });
         let path = stream_of(
             &dir,
@@ -1344,7 +1317,7 @@ mod tests {
         );
         assert_eq!(
             rows[0].dispatch_id, "ev-revived",
-            "and the attach is its own dispatch, so the row is keyed on it"
+            "and the revive is its own dispatch, so the row is keyed on it"
         );
         assert!(
             rows[0].session_id.is_none() && rows[0].first_seen_at.is_none(),
@@ -1364,7 +1337,7 @@ mod tests {
         let dir = scratch("adopted-dispatch-id");
         let ts = "2026-09-12T10:00:00Z";
         let adopted = serde_json::json!({
-            "session": "a-session", "short_id": "ab12", "worktree": "/wt/s1",
+            "session": "a-session", "worktree": "/wt/s1",
             "project": "demo", "name": "orla", "model": "a-model", "posture": "auto",
             "first_turn": "/wake s1", "transient": false,
         });

@@ -3,7 +3,7 @@
 //! which a dependent's DEV-dependency turns on: under resolver 2 that keeps it
 //! out of the binary a release build produces.
 
-use crate::adapter::{Agent, AgentRow, Launch, RemoveAnswer, RosterRead, StartSpec};
+use crate::adapter::{Agent, AgentRow, Launch, RosterRead, StartSpec};
 use crate::clock::Clock;
 use std::path::Path;
 use std::sync::Mutex;
@@ -94,9 +94,8 @@ pub struct Answers {
     /// `Ok` is a launch built from the start's own spec ([`StubAgent::launched`]),
     /// and `Err` a launch the agent refuses, with its cause.
     pub launch: Result<(), String>,
-    pub stop: Result<(), String>,
-    pub revive: Result<(), String>,
-    pub remove: RemoveAnswer,
+    /// The same for a resume ([`StubAgent::resumed`]).
+    pub resume: Result<(), String>,
     pub transcript: Option<String>,
     pub ended_at: Option<u64>,
 }
@@ -109,9 +108,7 @@ impl Default for Answers {
             status: RosterRead::Readable(Vec::new()),
             version: Some(StubAgent::VERSION.to_string()),
             launch: Ok(()),
-            stop: Ok(()),
-            revive: Ok(()),
-            remove: RemoveAnswer::Removed,
+            resume: Ok(()),
             transcript: None,
             ended_at: None,
         }
@@ -135,9 +132,7 @@ pub struct StubAgent {
 
 impl StubAgent {
     pub const START: &'static str = "start";
-    pub const STOP: &'static str = "stop";
-    pub const REMOVE: &'static str = "remove";
-    pub const REVIVE: &'static str = "revive";
+    pub const RESUME: &'static str = "resume";
     pub const STATUS: &'static str = "status";
     pub const TRANSCRIPT: &'static str = "transcript";
     pub const ENDED_AT: &'static str = "ended_at";
@@ -258,11 +253,45 @@ impl StubAgent {
             argv.push(plugin_dir.clone());
         }
         argv.push(spec.first_turn.clone());
+        Launch {
+            argv,
+            env: StubAgent::session_env(spec),
+        }
+    }
+
+    /// The resume the stub answers for `session_id` under `spec`, in the shape
+    /// the one real adapter builds: the full id, then the model, the posture
+    /// and the plugin root where one is named — no name and no first turn —
+    /// under the start's environment.
+    pub fn resumed(session_id: &str, spec: &StartSpec) -> Launch {
+        let mut argv: Vec<String> = [
+            StubAgent::PROGRAM,
+            "--resume",
+            session_id,
+            "--model",
+            &spec.model,
+            "--permission-mode",
+            &spec.posture,
+        ]
+        .iter()
+        .map(|a| a.to_string())
+        .collect();
+        if let Some(plugin_dir) = &spec.plugin_dir {
+            argv.push("--plugin-dir".to_string());
+            argv.push(plugin_dir.clone());
+        }
+        Launch {
+            argv,
+            env: StubAgent::session_env(spec),
+        }
+    }
+
+    fn session_env(spec: &StartSpec) -> Vec<(String, String)> {
         let mut env = vec![("FLEET_ACTOR".to_string(), spec.actor.clone())];
         if let Some(dir) = &spec.config_dir {
             env.push(("CLAUDE_CONFIG_DIR".to_string(), dir.clone()));
         }
-        Launch { argv, env }
+        env
     }
 }
 
@@ -305,7 +334,6 @@ pub const ARRIVED_CWD: &str = "/nowhere/arrived";
 pub fn arrived(pid: u32) -> AgentRow {
     AgentRow {
         session_id: format!("arrived-{pid}"),
-        id: None,
         cwd: ARRIVED_CWD.to_string(),
         pid: Some(pid),
         state: None,
@@ -376,23 +404,15 @@ impl Agent for StubAgent {
         crate::adapter::claude_code::trust_keys(screen)
     }
 
+    fn resume(&self, session_id: &str, spec: &StartSpec) -> Result<Launch, String> {
+        self.record(StubAgent::RESUME, session_id);
+        self.answers()
+            .resume
+            .map(|()| StubAgent::resumed(session_id, spec))
+    }
+
     fn local_settings(&self) -> &'static str {
         StubAgent::LOCAL_SETTINGS
-    }
-
-    fn stop(&self, _config_dir: Option<&Path>, short_id: &str) -> Result<(), String> {
-        self.record(StubAgent::STOP, short_id);
-        self.answers().stop
-    }
-
-    fn remove(&self, _config_dir: Option<&Path>, short_id: &str) -> RemoveAnswer {
-        self.record(StubAgent::REMOVE, short_id);
-        self.answers().remove
-    }
-
-    fn revive(&self, _config_dir: Option<&Path>, short_id: &str) -> Result<(), String> {
-        self.record(StubAgent::REVIVE, short_id);
-        self.answers().revive
     }
 
     fn status(&self, config_dir: Option<&Path>) -> RosterRead {
@@ -479,9 +499,14 @@ pub struct FakeSession {
     pub sent: Vec<Sent>,
 }
 
-/// The first pid a fake pane is given. Far above anything an arm would read as
-/// a real process of its own.
-pub const FIRST_PANE_PID: u32 = 90_000;
+/// The first pid a fake pane is given: above the highest pid either platform
+/// ever hands out (99 998 on macOS, and Linux's ceiling of 4 194 304), so a
+/// retire's probe of a fake pane's pid reads a process that cannot exist —
+/// never some other process that happens to hold the number.
+pub const FIRST_PANE_PID: u32 = 4_200_000;
+
+/// The key an interrupt is pressed as.
+pub const INTERRUPT: &str = "C-c";
 
 /// A host server with no process behind it.
 ///
@@ -523,6 +548,23 @@ pub struct FakeServer {
     pub end_every_start: Option<Option<i32>>,
     #[serde(default)]
     pub screen_every_start: Option<String>,
+    /// Where set, a `C-c` pressed into a live pane ends it, as a program that
+    /// dies on the interrupt does: dead with no status, since a process ended by
+    /// a signal carries none.
+    ///
+    /// Unset, the interrupt ends nothing, which is the agent measured: on Claude
+    /// Code 2.1.280 one `C-c` ended a busy session's turn and left an idle one
+    /// asking for a second press, and neither pane died (fleet-rge6.4,
+    /// 2026-09-26). So a stop against the default waits out its whole grace;
+    /// a suite whose arms stop sessions without being about that wait sets
+    /// this, and the arm about the grace does not.
+    #[serde(default)]
+    pub exit_on_interrupt: bool,
+    /// Where set, a kill answers and takes nothing: the session stays, as on a
+    /// host whose kill did not land — which only the host's own reading after
+    /// it can tell from one that did.
+    #[serde(default)]
+    pub kill_keeps: bool,
 }
 
 impl FakeServer {
@@ -599,8 +641,19 @@ impl FakeServer {
     }
 
     pub fn press(&mut self, name: &str, keys: &[String]) -> Result<(), String> {
+        let exits = self.exit_on_interrupt;
         let pane = self.pane(name)?;
         pane.sent.push(Sent::Keys(keys.to_vec()));
+        if exits && pane.ended.is_none() && keys.iter().any(|key| key == INTERRUPT) {
+            pane.ended = Some(None);
+        }
+        Ok(())
+    }
+
+    /// Give the session's pane `pid`, as a host whose pane runs a process the
+    /// arm chose — the pid a retire's last probe reads.
+    pub fn set_pid(&mut self, name: &str, pid: u32) -> Result<(), String> {
+        self.pane(name)?.pid = pid;
         Ok(())
     }
 
@@ -614,8 +667,12 @@ impl FakeServer {
         Ok(())
     }
 
-    /// Whether there was a session to kill.
+    /// Whether there was a session to kill ([`FakeServer::kill_keeps`] keeps
+    /// it all the same).
     pub fn kill(&mut self, name: &str) -> bool {
+        if self.kill_keeps {
+            return self.sessions.contains_key(name);
+        }
         self.sessions.remove(name).is_some()
     }
 
@@ -728,6 +785,25 @@ impl FakeHost {
             .lock()
             .expect("the fake host's own lock")
             .screen = Some(screen.to_string());
+    }
+
+    /// Make every `C-c` pressed into a live pane end it from now on
+    /// ([`FakeServer::exit_on_interrupt`]).
+    pub fn exit_on_interrupt(&self) {
+        self.server().exit_on_interrupt = true;
+    }
+
+    /// Make every kill from now on answer and keep its session, or take it
+    /// again where `false` ([`FakeServer::kill_keeps`]).
+    pub fn keep_kills(&self, keep: bool) {
+        self.server().kill_keeps = keep;
+    }
+
+    /// Give the session's pane `pid` ([`FakeServer::set_pid`]).
+    pub fn set_pid(&self, name: &str, pid: u32) {
+        self.server()
+            .set_pid(name, pid)
+            .unwrap_or_else(|why| panic!("the fake host has no session to renumber: {why}"));
     }
 
     /// End the session's pane with `status`, and keep it dead in the listing.
@@ -866,7 +942,11 @@ impl crate::host::Host for FakeHost {
         // An attach never fails here: the command is built, not run.
         let _ = self.asked(FakeHost::ATTACH, name);
         let mut cmd = std::process::Command::new(FakeHost::ATTACH_PROGRAM);
-        cmd.args(["attach", name, if write { "write" } else { "read-only" }]);
+        cmd.args([
+            FakeHost::ATTACH,
+            name,
+            if write { "write" } else { "read-only" },
+        ]);
         cmd
     }
 

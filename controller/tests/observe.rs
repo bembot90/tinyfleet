@@ -238,8 +238,11 @@ mod lessons {
         match mixed {
             RosterRead::Readable(rows) => {
                 assert_eq!(rows.len(), 2, "both kinds survive one read");
-                assert_eq!(rows[0].id.as_deref(), Some("aa"));
-                assert_eq!(rows[1].id, None, "an interactive row carries no address");
+                assert_eq!(rows[0].state.as_deref(), Some("running"));
+                assert_eq!(
+                    rows[1].state, None,
+                    "an interactive row carries no state word"
+                );
                 assert_eq!(rows[1].pid, Some(RECORDED_PID));
             }
             RosterRead::Unreadable { cause } => panic!("the listing must parse: {cause}"),
@@ -455,7 +458,10 @@ mod lessons {
             };
             assert_eq!(rows.len(), 1);
             let row = &rows[0];
-            assert_eq!(row.id, None, "no address on an interactive row: {body}");
+            assert!(
+                !body.contains("\"id\""),
+                "no address on an interactive row: {body}"
+            );
             assert_eq!(row.state, None, "and none of A3's state words: {body}");
             assert_eq!(
                 row.pid,
@@ -470,7 +476,7 @@ mod lessons {
             );
 
             // And decided by the pid: the seat is live, its activity is the
-            // status, and no address rides out of it.
+            // status.
             let seen = observe_seat(&parse_roster(body), &alive, &recorded, at);
             assert!(
                 matches!(
@@ -480,7 +486,6 @@ mod lessons {
                 "{word}: {seen:?}"
             );
             assert_eq!(seen.activity.as_deref(), Some(word));
-            assert_eq!(seen.short_id, None);
             assert_eq!(seen.pane_pid, Some(RECORDED_PID));
             assert_eq!(seen.project.as_deref(), Some("measured"));
         }

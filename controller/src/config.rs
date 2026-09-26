@@ -550,7 +550,7 @@ mod tests {
     /// machine name, eight hex digits of the id and the whole id each find the
     /// same row, and the row found by id is that one too.
     #[test]
-    fn resolve_finds_a_row_by_name_short_id_machine_name_and_full_id() {
+    fn resolve_finds_a_row_by_name_short_form_machine_name_and_full_id() {
         let config = parse(&format!(
             r#"{{"fleet_toml":"/f.toml","children":[
                  {{"id":"{ORLA}","name":"Orla","worktrees":{{"p":"/wt/o"}}}},

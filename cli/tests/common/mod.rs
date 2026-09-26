@@ -109,6 +109,19 @@ pub fn live_pane(state: &Path, seat_id: &str, cwd: &Path) -> u32 {
     server.sessions[seat_id].pid
 }
 
+/// Every pane on the tmux stub whose state is `state` dies on the interrupt a
+/// stop types into it (`FakeServer::exit_on_interrupt`), so a retire or a rest
+/// driven through the built binary is not a whole stop grace long. The grace
+/// itself is the controller suite's arm; the agent measured ends on no single
+/// interrupt.
+pub fn panes_die_on_interrupt(state: &Path) {
+    let mut server = FakeServer::load(state).expect("the tmux stub's state reads");
+    server.exit_on_interrupt = true;
+    server
+        .save(state)
+        .expect("the tmux stub's state is written");
+}
+
 /// Everything typed into `seat_id`'s session on the tmux stub, in order.
 pub fn typed_into(state: &Path, seat_id: &str) -> Vec<Sent> {
     FakeServer::load(state)
