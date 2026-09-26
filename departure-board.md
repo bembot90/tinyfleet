@@ -85,7 +85,7 @@ Touches no store code, so it can fly beside flights 9 and 10.
 | ☐ | fleet-14p8.6 | `[agent] adapter` names an executable by path or a pack's name, spoken to one process per call | fleet-14p8.1, .3, .4 |
 | ☐ | fleet-14p8.7 | `fleet-agent-stub`: the suites run on the contract with no claude and no tmux | fleet-14p8.6, fleet-rge6.1 |
 | ☐ | fleet-14p8.8 | `fleet agent check`: offline against shipped fixtures, `--live` against the real agent on a scratch socket | fleet-14p8.7 |
-| ☐ | fleet-14p8.9 | A pack turns on core's guard classes with `[pack] guard_classes`; `fleet guard` with no class runs them | fleet-14p8.4 |
+| ☑ | fleet-14p8.9 | A pack turns on core's guard classes with `[pack] guard_classes`; `fleet guard` with no class runs them | fleet-14p8.4 |
 | ☐ | fleet-14p8.10 | `fleet doctor` asks the configured store and agent adapters to answer: two built-in read-only rows | fleet-14p8.6 |
 
 ## Flight 13 — the Claude Code agent adapter as a TypeScript pack in fleet-packs, carrying its plugin, lessons and fixtures (`fleet-jymr`)
@@ -94,7 +94,7 @@ Builds in the fleet-packs repository; the beads stay here.
 
 | Landed | Bead | What | Blocked by |
 | --- | --- | --- | --- |
-| ☐ | fleet-jymr.1 | The claude-code pack's skeleton: manifest with its hook mapping, `main.ts`, generated types, least Deno grant | fleet-rsia.1, fleet-14p8.4, .5 |
+| ☑ | fleet-jymr.1 | The claude-code pack's skeleton: manifest with its hook mapping, `main.ts`, generated types, least Deno grant | fleet-rsia.1, fleet-14p8.4, .5 |
 | ☐ | fleet-jymr.2 | capabilities, version, launch and resume: the onboarding and trust seed, three posture words, the two doctor checks | fleet-jymr.1, fleet-031, fleet-rge6.2, .4 |
 | ☐ | fleet-jymr.4 | context: tokens, turns and last write from the transcript, with recorded fixtures | fleet-jymr.1 |
 | ☐ | fleet-jymr.3 | read: one listing per config dir, status and waitingFor as activity, logged-out as blocked, recorded fixtures | fleet-jymr.1, fleet-jymr.4 |
