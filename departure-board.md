@@ -7,7 +7,11 @@ the beads and in `git log`. Flights 8–10 are the store side of the adapters
 design (`fleet-notes/adapters-and-sessions.md`, brainstormed and ruled
 2026-09-25): epics `fleet-wpf0`, `fleet-rsia` and `fleet-3krx`, whose
 descriptions carry the rulings and the global constraints every row builds
-under. The next flight is the first `## Flight N` that still has an unticked
+under. Flights 11–14 are the agent side of the same design (brainstormed and
+ruled 2026-09-25 in a second sitting): epics `fleet-rge6`, `fleet-14p8`,
+`fleet-jymr` and `fleet-x93d`; `fleet-rge6`'s description carries all sixteen
+rulings and the global constraints for the four, and its notes the reviewer
+calls E1–E18 the children cite. The next flight is the first `## Flight N` that still has an unticked
 row. Tick a row (`☑`) when its item lands. The Blocked-by cell is a note
 written by hand; the item's own dependencies are the real blockers.
 
@@ -54,6 +58,58 @@ Builds in the fleet-packs repository; the beads stay here.
 | ☐ | fleet-3krx.2 | Delete core/src/store/bd: the built-in branch, the defaults' bd-version check, the bd arms and tools go | fleet-3krx.1 |
 | ☐ | fleet-3krx.3 | Docs pass: store.md, packs.md, getting-started, README, conventions and CONTRIBUTING | fleet-3krx.1, fleet-3krx.2 |
 
+## Flight 11 — fleet owns the session: seats run interactively in tmux on fleet's own socket, the daemon verbs go, the nudge is typing, a seat can be attached (`fleet-rge6`)
+
+Touches no store code, so it can fly beside flights 9 and 10.
+
+| Landed | Bead | What | Blocked by |
+| --- | --- | --- | --- |
+| ☐ | fleet-rge6.1 | The controller's tmux host behind one Host seam on socket `fleet`, a FakeHost and a `fleet-tmux-stub` | — (first: every row sits on it) |
+| ☐ | fleet-rge6.2 | A seat starts interactively as its own tmux session under a config dir seeded with onboarding and trust (measured first) | fleet-rge6.1 |
+| ☐ | fleet-rge6.3 | Presence from tmux, activity from the listing, Unknown on disagreement; the daemon's windows go | fleet-rge6.1 |
+| ☐ | fleet-rge6.4 | Stop, revive and remove act on the seat's session; revive resumes the full id with the start's flags; short ids stay in the adapter | fleet-rge6.2, fleet-rge6.3 |
+| ☐ | fleet-rge6.5 | Nudge and feed are a paste into the pane, believed on busy, refused when blocked; `nudge_model` goes (closes fleet-nrl, fleet-fmver) | fleet-rge6.2 |
+| ☐ | fleet-2u3.13 | `fleet seat attach <seat>`: read-only `tmux attach`, `--write` takes the keyboard | fleet-rge6.1 |
+| ☐ | fleet-rge6.6 | A controller refuses seats the daemon still hosts, doctor checks tmux, the docs describe the tmux model | fleet-rge6.2–.5, fleet-2u3.13 |
+
+## Flight 12 — the agent contract complete for an external adapter: six verbs over a shared exec, neutral postures, a declared hook mapping, the schema verb, a stub and `fleet agent check` (`fleet-14p8`)
+
+| Landed | Bead | What | Blocked by |
+| --- | --- | --- | --- |
+| ☐ | fleet-14p8.1 | One `adapter::exec` serves the store and the agent: spawn, bound, group kill, exit table, stderr's last line | flight 8 (fleet-wpf0) |
+| ☐ | fleet-14p8.2 | The agent contract written down: six verbs, their types in core, docs/agent.md | fleet-14p8.1 |
+| ☐ | fleet-14p8.3 | The Agent trait is the six verbs, the in-process Claude Code answers them, one `agent::open` | fleet-14p8.2, flight 11 |
+| ☐ | fleet-1jr1e | Posture is fleet's word (ask, auto, unattended), old words read as aliases, the rest refused | fleet-14p8.3 |
+| ☐ | fleet-14p8.4 | `fleet guard` reads the adapter's declared `[hook]` mapping; cli/src/claude.rs goes | fleet-14p8.2 |
+| ☐ | fleet-14p8.5 | `fleet agent schema` prints the contract as JSON Schema, committed with a drift test | fleet-14p8.2 |
+| ☐ | fleet-14p8.6 | `[agent] adapter` names an executable by path or a pack's name, spoken to one process per call | fleet-14p8.1, .3, .4 |
+| ☐ | fleet-14p8.7 | `fleet-agent-stub`: the suites run on the contract with no claude and no tmux | fleet-14p8.6, fleet-rge6.1 |
+| ☐ | fleet-14p8.8 | `fleet agent check`: offline against shipped fixtures, `--live` against the real agent on a scratch socket | fleet-14p8.7 |
+| ☐ | fleet-14p8.9 | A pack turns on core's guard classes with `[pack] guard_classes`; `fleet guard` with no class runs them | fleet-14p8.4 |
+| ☐ | fleet-14p8.10 | `fleet doctor` asks the configured store and agent adapters to answer: two built-in read-only rows | fleet-14p8.6 |
+
+## Flight 13 — the Claude Code agent adapter as a TypeScript pack in fleet-packs, carrying its plugin, lessons and fixtures (`fleet-jymr`)
+
+Builds in the fleet-packs repository; the beads stay here.
+
+| Landed | Bead | What | Blocked by |
+| --- | --- | --- | --- |
+| ☐ | fleet-jymr.1 | The claude-code pack's skeleton: manifest with its hook mapping, `main.ts`, generated types, least Deno grant | fleet-rsia.1, fleet-14p8.4, .5 |
+| ☐ | fleet-jymr.2 | capabilities, version, launch and resume: the onboarding and trust seed, three posture words, the two doctor checks | fleet-jymr.1, fleet-031, fleet-rge6.2, .4 |
+| ☐ | fleet-jymr.4 | context: tokens, turns and last write from the transcript, with recorded fixtures | fleet-jymr.1 |
+| ☐ | fleet-jymr.3 | read: one listing per config dir, status and waitingFor as activity, logged-out as blocked, recorded fixtures | fleet-jymr.1, fleet-jymr.4 |
+| ☐ | fleet-jymr.5 | The pack carries fleet's plugin and renders fleet's neutral permissions; launch loads it (closes fleet-78r, fleet-bz9) | fleet-jymr.1, .2, fleet-14p8.2, .4, .9 |
+| ☐ | fleet-jymr.6 | The lessons split: the pack's entries move beside its fixtures, the daemon-era ones stay in brain/ as history | fleet-jymr.2–.4, fleet-031 |
+| ☐ | fleet-jymr.7 | CI: offline check every push, live check nightly and on demand on a macOS runner | fleet-jymr.2–.5, fleet-14p8.8, fleet-rsia.5 |
+
+## Flight 14 — Claude Code leaves the repository (`fleet-x93d`)
+
+| Landed | Bead | What | Blocked by |
+| --- | --- | --- | --- |
+| ☐ | fleet-x93d.1 | `fleet create` asks which agent, installs its pack from the pinned fleet-packs tag, writes `[agent] adapter` | flight 13, fleet-3krx.1, fleet-14p8.6 |
+| ☐ | fleet-x93d.2 | Delete the in-process adapter, its pin, doctor checks, per-provider overlay, `FLEET_CLAUDE_BIN` and the root plugin | fleet-x93d.1 |
+| ☐ | fleet-x93d.3 | Docs pass, and a workspace arm keeps Claude Code out of core, cli, controller and docs except as the pack | fleet-x93d.1, .2 |
+
 ## The walkthrough
 
 | Landed | Bead | What | Blocked by |
@@ -68,8 +124,9 @@ rest grants, review size tiers, a pack registry, signed packs, a second agent
 runtime, CI on macOS and Linux, per-platform measurements, SSE, the row-moves
 journal, incidents, idle reclaim, attach, remote seats). None is specced, and
 none is on a flight until someone boards it. The agent side of the adapters
-design (fleet-2u3.6, .8 and .13 are the beads it absorbs) is brainstormed
-after flight 10.
+design is flights 11–14: fleet-2u3.13 (attach) is a flight 11 row,
+fleet-jymr.6 answers fleet-2u3.8's per-version half, and fleet-2u3.6 (a second
+agent runtime) stays here.
 
 ## Held for fleet-zlk
 
