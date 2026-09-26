@@ -44,7 +44,7 @@ Builds in the fleet-packs repository; the beads stay here.
 | ☑ | fleet-rsia.2 | The bd pack's skeleton, generated contract types, and the read verbs over bd 1.3.0 with their quirks and fixtures | fleet-wpf0.5, fleet-wpf0.2, fleet-rsia.1 |
 | ☑ | fleet-rsia.3 | The bd pack's plain writes: create, update with the fences, append, close with the actor stripped | fleet-rsia.2 |
 | ☑ | fleet-rsia.4 | The bd pack's orders, runs, holds, export and scratch | fleet-rsia.2 |
-| ☐ | fleet-rsia.5 | The bd pack's doctor check and CI: fleet store check and a smoke ring on a pinned fleet | fleet-rsia.2–4 |
+| ☑ | fleet-rsia.5 | The bd pack's doctor check and CI: fleet store check and a smoke ring on a pinned fleet | fleet-rsia.2–4 |
 
 ## Flight 10 — bd leaves the repository (`fleet-3krx`)
 
