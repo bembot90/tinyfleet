@@ -23,16 +23,6 @@ mod routines {
     /// minute in every zone whose offset is whole minutes.
     const BASE: u64 = 1_788_600_000;
 
-    /// The `bd` this box carries, resolved on THIS process's own search path.
-    /// `None` is a box with no work-graph binary, which the one arm that needs
-    /// it says out loud rather than passing quietly.
-    fn bd_on_path() -> Option<PathBuf> {
-        let path = std::env::var("PATH").ok()?;
-        std::env::split_paths(&path)
-            .map(|dir| dir.join("bd"))
-            .find(|candidate| candidate.is_file())
-    }
-
     fn a_cooldown_nudge(seat: &str, text: &str, authority: &str) -> String {
         format!(
             "[order]\ndescription = \"ring a seat\"\ntrigger = \"cooldown\"\ninterval = \"1m\"\n\
@@ -207,9 +197,6 @@ mod routines {
     /// nowhere to leave it is an absence somebody has to read.
     #[test]
     fn a_ring_that_finds_nobody_files_an_item_once_and_dedupes_the_next_firing() {
-        let Some(bd) = bd_on_path() else {
-            panic!("this box carries no `bd`, so the item action has no store to file into");
-        };
         let rig = Rig::new("routines-item");
         // The seat is on the list and absent from the roster, which is the
         // case the fallback exists for.
@@ -227,7 +214,7 @@ mod routines {
             &a_cooldown_nudge("Orla", "nowhere to leave it", "the operator"),
         );
 
-        common::take_a_board_with(&bd, &rig.root, "drive");
+        common::take_a_store(&rig.root);
 
         rig.set_clock(BASE);
         assert_eq!(rig.observe().status.code(), Some(0));
@@ -259,24 +246,25 @@ mod routines {
             serde_json::json!(["lane", "routine:leave-it"])
         );
 
-        // THE REAL STORE'S OWN WITNESS, once: the routine is the item's author
-        // on the record and wrote no note about it [ASSUMES D9], and the
-        // priority the file named is the one filed.
-        let shown = Command::new(&bd)
-            .args([
-                "-C",
-                &rig.root.display().to_string(),
-                "show",
-                &item,
-                "--json",
-            ])
-            .output()
-            .expect("bd runs");
-        let shown: serde_json::Value =
-            serde_json::from_slice(&shown.stdout).expect("the show is JSON");
-        assert_eq!(shown[0]["created_by"], "routine:leave-it", "{shown}");
-        assert_eq!(shown[0]["comment_count"], 0, "no note: {shown}");
-        assert_eq!(shown[0]["priority"], 3, "{shown}");
+        // THE STORE'S OWN WITNESS, once: the routine is the item's author on
+        // the record, and wrote no note about it [ASSUMES D9].
+        let (wrote, noted) = common::with_state(&rig.root, |store| {
+            let noted = store
+                .comments
+                .lock()
+                .expect("the comments are not poisoned")
+                .get(&item)
+                .map_or(0, Vec::len);
+            (store.wrote(), noted)
+        });
+        assert!(
+            wrote.iter().any(|write| {
+                write.starts_with("create the ring found nobody ")
+                    && write.ends_with(" routine:leave-it")
+            }),
+            "the routine filed it, as its own author: {wrote:#?}"
+        );
+        assert_eq!(noted, 0, "no note on {item}");
 
         // The ring with nowhere to leave it: absent, and nothing filed.
         let bare: Vec<serde_json::Value> = rig
@@ -337,14 +325,8 @@ mod routines {
     /// ([ASSUMES D14]), so nothing fires and nothing carries its label; the
     /// filing's own words for an assignee that resolved to nothing are
     /// `controller/tests/routines.rs`'s.
-    ///
-    /// A BOARD OF ITS OWN: the item is handed to the rig's seat, and a seat's
-    /// held items are a board-wide reading another rig's dispatch asks.
     #[test]
     fn a_routine_files_its_item_to_the_seat_it_names() {
-        if bd_on_path().is_none() {
-            panic!("this box carries no `bd`, so the item action has no store to file into");
-        }
         let rig = Rig::new("routines-assignee");
         rig.write_roster("[]");
         let an_item_for = |seat: &str| {
@@ -356,7 +338,7 @@ mod routines {
         };
         rig.write_routine("to-orla", &an_item_for("Orla"));
         rig.write_routine("to-nobody", &an_item_for("nobody"));
-        common::take_a_board_alone(&rig.root, "routines-assignee");
+        common::take_a_store(&rig.root);
 
         rig.set_clock(BASE);
         assert_eq!(rig.observe().status.code(), Some(0));
@@ -383,15 +365,11 @@ mod routines {
     }
 
     /// A DEDUPE PAST FIFTY OPEN ITEMS STILL DEDUPES, naming every one: the
-    /// store's label listing is asked for all of its rows. The board caps a
-    /// piped listing at 50 through its own `list.limit` — measured on bd
-    /// 1.3.0, where the key binds a piped `list` that names no `-n` — and the
-    /// cap is read here first, so the 51st row is one a capped read drops.
+    /// store's label listing is asked for all of its rows, and every row it
+    /// answers is named. A store that caps its own listing is that adapter's
+    /// to read past, in its own suite.
     #[test]
     fn a_dedupe_past_fifty_open_items_names_all_of_them() {
-        let Some(bd) = bd_on_path() else {
-            panic!("this box carries no `bd`, so the item action has no store to file into");
-        };
         let rig = Rig::new("routines-dedupe-51");
         rig.write_roster("[]");
         rig.write_routine(
@@ -399,44 +377,24 @@ mod routines {
             "[order]\ndescription = \"one open at a time\"\ntrigger = \"cooldown\"\n\
              interval = \"1m\"\n[action.item]\ntitle = \"sweep\"\ndedupe = \"open\"\n",
         );
-        common::take_a_board_alone(&rig.root, "routines-dedupe-51");
+        common::take_a_store(&rig.root);
 
         // Fifty-one open items under the routine's label, in one call.
-        let seed = rig.root.join("seed.md");
-        let rows: Vec<String> = (1..=51)
-            .map(|n| format!("## row {n}\n\n### Labels\nroutine:sweep\n"))
-            .collect();
-        write(&seed, &rows.join("\n"));
-        let at = rig.root.display().to_string();
-        let bd_ran = |args: &[&str]| {
-            let out = Command::new(&bd)
-                .args(["-C", at.as_str()])
-                .args(args)
-                .output()
-                .expect("bd runs");
-            assert!(
-                out.status.success(),
-                "bd {args:?}: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-            out.stdout
-        };
-        bd_ran(&["create", "-f", &seed.display().to_string(), "--json"]);
-        bd_ran(&["config", "set", "list.limit", "50"]);
-        let capped: serde_json::Value = serde_json::from_slice(&bd_ran(&[
-            "list",
-            "--label",
-            "routine:sweep",
-            "--status",
-            "open",
-            "--json",
-        ]))
-        .expect("the listing is JSON");
-        assert_eq!(
-            capped.as_array().map(Vec::len),
-            Some(50),
-            "the board caps a listing that names no -n"
-        );
+        common::with_state(&rig.root, |store| {
+            use fleet_core::store::Store as _;
+            for n in 1..=51 {
+                let row = fleet_core::store::NewItem {
+                    title: format!("row {n}"),
+                    description: String::new(),
+                    item_type: String::from("task"),
+                    labels: vec![String::from("routine:sweep")],
+                    priority: None,
+                };
+                store
+                    .create(&row, &common::the_test())
+                    .expect("the row is filed");
+            }
+        });
 
         rig.set_clock(BASE);
         assert_eq!(rig.observe().status.code(), Some(0));

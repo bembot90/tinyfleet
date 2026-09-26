@@ -5,11 +5,10 @@
 //! the commit the verb makes is read back out of it with git, and the delivered
 //! entry the store holds names that commit.
 //!
-//! One repository per arm, because an arm's subject is the state of a working
-//! tree. `bd init` writes the repository and its first commit; the fixture adds
-//! the trunk ref a delivery records its base from, and points `core.hooksPath`
-//! at nothing, so what the commit runs is this verb and not the store's own
-//! hooks.
+//! One repository and one store per arm, because an arm's subject is the state
+//! of a working tree. The fixture adds the trunk ref a delivery records its
+//! base from, and points `core.hooksPath` at nothing, so what the commit runs
+//! is this verb and no hook of the box's.
 
 mod common;
 
@@ -76,11 +75,8 @@ struct Rig {
     /// The delivery file, beside the project and never in it: a file in the
     /// tree would be one the delivery left unstaged.
     delivery: PathBuf,
-    /// One seat name per arm. The store is the run's shared board, and `which
-    /// item does this seat hold` is a query across the whole of it, so two arms
-    /// on one seat name would each be refused for the other's ordered item.
-    /// The REVIEWER needs no such treatment: every arm names the item it
-    /// reviews, so no read of theirs goes through the assignee.
+    /// One seat name per arm, which the policy lists and the item is ordered
+    /// to.
     seat: String,
 }
 
@@ -133,7 +129,8 @@ impl Rig {
     /// The policy, listing the delivering seat and the reviewer: `deliver`
     /// finds the item a seat holds by resolving its actor among the seats the
     /// fleet lists, and hands it to the one listed seat `[core] reviewer`
-    /// names, by that seat's id.
+    /// names, by that seat's id. Then the store the policy names, and the
+    /// repository, which never versions the store.
     fn init_store(&self) {
         std::fs::write(
             self.project.join("fleet.toml"),
@@ -143,7 +140,9 @@ impl Rig {
             ),
         )
         .expect("the policy is written");
-        common::take_a_board(&self.project, "deliver");
+        common::take_a_store(&self.project);
+        self.git(&["init", "--quiet", "--initial-branch", "main"]);
+        common::store_outside_git(&self.project);
     }
 
     /// The delivering seat's full id, which its items are assigned to.
@@ -155,18 +154,16 @@ impl Rig {
     /// trunk, a trunk ref to record a base from, and a work branch with one
     /// file staged.
     ///
-    /// The store's own files are committed HERE, after the item has been made,
-    /// so the tree a seat starts a delivery from is clean and this fixture is
-    /// one that has actually been used. bd 1.2.2 appended to a log this
-    /// repository versions on every call; bd 1.3.0 keeps no such log and
-    /// commits its own files at `bd init`, so the board may add nothing.
+    /// Made HERE, after the item has been made, so this fixture is one that
+    /// has actually been used and the tree a seat starts a delivery from is
+    /// still clean.
     fn init_repo(&self) {
         self.git(&[
             "config",
             "core.hooksPath",
             &self.root.join("hooks").display().to_string(),
         ]);
-        self.git(&["add", "--", "fleet.toml", ".beads"]);
+        self.git(&["add", "--", "fleet.toml"]);
         self.git(&["commit", "--quiet", "--no-gpg-sign", "-m", "the policy"]);
         self.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
         self.git(&["checkout", "--quiet", "-b", "a-seat/feat/the-work"]);
@@ -176,9 +173,13 @@ impl Rig {
     }
 
     /// The repository as a TRANSIENT SEAT finds it (the transient-seat resolution spec): the
-    /// policy file written but never committed, the board and the trunk ref on
-    /// the trunk, and the work staged in a linked worktree cut beside the
-    /// primary — so nothing above that checkout carries a `fleet.toml`.
+    /// policy file written but never committed, the trunk ref on the trunk,
+    /// and the work staged in a linked worktree cut beside the primary — so
+    /// nothing above that checkout carries a `fleet.toml`.
+    ///
+    /// THE CHECKOUT SHARES THE PRIMARY'S STORE. With the policy committed, a
+    /// verb run there resolves the checkout as its project, and the store is
+    /// one per project whichever checkout reaches it.
     ///
     /// Returns the seat's checkout, as the binary will be handed it.
     fn init_repo_in_a_linked_worktree(&self, commit_the_policy: bool) -> PathBuf {
@@ -190,17 +191,15 @@ impl Rig {
         if commit_the_policy {
             self.git(&["add", "--", "fleet.toml"]);
         }
-        self.git(&["add", "--", ".beads"]);
-        // `--allow-empty`: on bd 1.3.0 the board has nothing to add where the
-        // policy is left out — its `bd init` committed its own files, and no
-        // call since changed one — and the arms want the commit either way.
+        // `--allow-empty`: where the policy is left out there is nothing to
+        // add, and the arms want the trunk's commit either way.
         self.git(&[
             "commit",
             "--quiet",
             "--no-gpg-sign",
             "--allow-empty",
             "-m",
-            "the board",
+            "the trunk",
         ]);
         self.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
         let seat = self.root.join("a-project-worktrees/agent-1b7e4c09");
@@ -213,6 +212,7 @@ impl Rig {
             &seat.display().to_string(),
             "HEAD",
         ]);
+        common::share_store(&self.project, &seat);
         std::fs::write(seat.join("the-work.txt"), "the work\n").expect("the work is written");
         self.git_in(&seat, &["add", "--", "the-work.txt"]);
         seat
@@ -243,15 +243,6 @@ impl Rig {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    fn bd(&self, args: &[&str]) -> Output {
-        Command::new("bd")
-            .arg("-C")
-            .arg(&self.project)
-            .args(args)
-            .output()
-            .expect("bd runs")
-    }
-
     /// One item, ordered and held by the delivering seat, with the repository
     /// in the shape a delivery finds it.
     fn an_ordered_item(&self) -> String {
@@ -260,65 +251,25 @@ impl Rig {
         item
     }
 
-    /// The order note `brief` refuses to render without. `deliver` reads the
-    /// metadata key instead, so only an arm that also briefs needs this.
-    fn an_order_note_on(&self, item: &str) {
-        assert!(self
-            .bd(&[
-                "note",
-                item,
-                "dispatched by an-architect — orders given",
-                "--actor",
-                "an-architect",
-            ])
-            .status
-            .success());
-    }
-
-    /// The record half alone, for an arm that builds its own working tree.
+    /// The record half alone, for an arm that builds its own working tree:
+    /// the item held by the seat and carrying the order index `brief`
+    /// refuses to render without.
     fn an_item_ordered_to_the_seat(&self) -> String {
-        let out = self.bd(&[
-            "create",
-            "--title",
-            "an item to deliver",
-            "--description",
-            "a scratch item",
-            "--type",
-            "task",
-            "--json",
-        ]);
-        assert!(
-            out.status.success(),
-            "bd create: {}",
-            String::from_utf8_lossy(&out.stderr)
+        let item = common::filed(&self.project, "an item to deliver", &[]);
+        common::hand_to(&self.project, &item, &self.seat_id());
+        common::ordered(
+            &self.project,
+            &item,
+            fleet_core::store::OrderKind::Dispatch,
+            "run:an-architect",
+            Some(&self.seat_id()),
         );
-        let value: serde_json::Value =
-            serde_json::from_str(stdout(&out).trim()).expect("bd create answers JSON");
-        let item = value["id"].as_str().expect("an id").to_string();
-        assert!(self
-            .bd(&[
-                "update",
-                &item,
-                "--assignee",
-                &self.seat_id(),
-                "--metadata",
-                &format!(
-                    r#"{{"fleet.orders": {{"v": 1, "by": "run:an-architect", "kind": "dispatch", "seat": "{seat}", "at": "2026-09-09T00:00:00Z"}}}}"#,
-                    seat = self.seat_id()
-                ),
-                "--actor",
-                "an-architect",
-            ])
-            .status
-            .success());
         item
     }
 
+    /// The item as the store answers it.
     fn item_json(&self, item: &str) -> serde_json::Value {
-        let out = self.bd(&["-q", "show", item, "--json"]);
-        let value: serde_json::Value =
-            serde_json::from_str(stdout(&out).trim()).expect("bd show answers JSON");
-        value[0].clone()
+        common::shown(&self.project, item)
     }
 
     /// The item's last delivered entry as `fleet item show --json` lists it:
@@ -452,24 +403,17 @@ fn a_live_reviewer_is_rung_with_the_item_and_the_commit_the_delivery_made() {
         rig.git(&["log", "-1", "--format=%s"]).starts_with(&item),
         "the commit subject names the item by its full id"
     );
-    // The delivered file is in the commit and nothing of it is left over. The
-    // whole tree is NOT asserted clean: this verb's own store calls append to a
-    // log this repository versions, which is the tree the next verb reads.
+    // The delivered file is in the commit and nothing is left over: the store
+    // is kept outside the repository, so the verb's own store calls leave the
+    // tree the next verb reads as clean as the delivery did.
     assert_eq!(
-        rig.git(&["status", "--porcelain", "--", "the-work.txt"]),
+        rig.git(&["status", "--porcelain"]),
         "",
-        "nothing of the delivered file is left unstaged"
+        "nothing of the delivery is left unstaged"
     );
 
     let record = rig.item_json(&item);
     assert_eq!(record["assignee"], serde_json::json!(REVIEWER_ID));
-    assert!(
-        !record["notes"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("DELIVERED"),
-        "no note carries the delivery: {record}"
-    );
     let delivered = rig.delivered(&item);
     assert_eq!(
         delivered["commit"].as_str(),
@@ -701,14 +645,6 @@ fn review_land_writes_the_accept_on_the_record_and_the_event_on_the_stream() {
     assert_eq!(
         document["data"]["entry"], accept["id"],
         "--json names the entry it wrote: {document}"
-    );
-    let notes = rig.item_json(&item)["notes"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
-    assert!(
-        !notes.contains("ACCEPTED"),
-        "and no verdict note is written: {notes}"
     );
 
     let last = rig
@@ -961,7 +897,6 @@ fn review_does_not_count_a_moved_trunk_against_the_delivery() {
 fn a_seat_worktree_beside_an_uncommitted_policy_delivers_through_the_machine_config() {
     let rig = Rig::new("fallback");
     let item = rig.an_item_ordered_to_the_seat();
-    rig.an_order_note_on(&item);
     let seat = rig.init_repo_in_a_linked_worktree(false);
 
     let out = rig.run_from(&seat, &["brief", &item, "--touched", "make check"]);

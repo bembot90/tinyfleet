@@ -20,6 +20,11 @@
 //! ITS OWN `bd init` AND NOT THE RUN'S SHARED BOARD: the check reads the whole
 //! ready set and counts it, so a neighbour's rows would move every number.
 //!
+//! A REAL `bd`, AND ONLY WHERE ONE IS: the check reads a board someone else
+//! wrote, which no fleet verb writes and so no store stub can hold. Every arm
+//! here runs the `bd` on the process `PATH`, and on a box with none each arm
+//! says it skipped and runs nothing.
+//!
 //! Every rc is read from the child's own status and never off anything it
 //! printed.
 
@@ -52,28 +57,21 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// The `bd` a person's shell would run, as an absolute path: the store the
-/// verbs open resolves `FLEET_BD_BIN` before any search path, so the rig names
-/// the one its own `bd init` ran.
-fn bd_on_path() -> PathBuf {
-    std::env::var_os("PATH")
-        .and_then(|path| {
-            std::env::split_paths(&path)
-                .map(|dir| dir.join("bd"))
-                .find(|bd| bd.is_file())
-        })
-        .expect("bd is on the process PATH")
-}
-
 struct Rig {
     root: PathBuf,
     project: PathBuf,
     machine: PathBuf,
+    /// The `bd` a person's shell would run, as an absolute path: the store the
+    /// verbs open resolves `FLEET_BD_BIN` before any search path, so the rig
+    /// names the one its own `bd init` ran.
+    bd: PathBuf,
 }
 
 impl Rig {
-    /// A project with its `fleet.toml` and the binary's defaults, and no board.
-    fn new(label: &str) -> Rig {
+    /// A project with its `fleet.toml` and the binary's defaults, and no board
+    /// — or `None`, the skip said, on a box with no `bd`.
+    fn new(label: &str) -> Option<Rig> {
+        let bd = common::bd_or_skip(&format!("adopt::{label}"))?;
         let n = NEXT.fetch_add(1, Ordering::SeqCst);
         let root = std::env::temp_dir().join(format!(
             "fleet-cli-adopt-{label}-{}-{n}",
@@ -84,23 +82,30 @@ impl Rig {
             project: root.join("project"),
             machine: root.join("machine"),
             root,
+            bd,
         };
         std::fs::create_dir_all(&rig.project).expect("the project is made");
         std::fs::create_dir_all(rig.machine.join("packs")).expect("the packs dir is made");
         defaults_into(&rig.machine);
         std::fs::write(rig.project.join("fleet.toml"), POLICY).expect("the policy is written");
-        rig
+        Some(rig)
     }
 
-    /// The same, over a board of its own.
-    fn with_a_board(label: &str) -> Rig {
-        let rig = Rig::new(label);
-        common::take_a_board_alone(&rig.project, &format!("adopt-{label}"));
-        rig
+    /// The same, over a board of its own: one `bd init`, on bd's embedded
+    /// engine.
+    fn with_a_board(label: &str) -> Option<Rig> {
+        let rig = Rig::new(label)?;
+        let out = Command::new(&rig.bd)
+            .args(["init", "--prefix", "fx", "--quiet"])
+            .current_dir(&rig.project)
+            .output()
+            .expect("bd runs");
+        assert!(out.status.success(), "bd init: {}", stderr(&out));
+        Some(rig)
     }
 
     fn bd(&self, args: &[&str]) -> Output {
-        let out = Command::new("bd")
+        let out = Command::new(&self.bd)
             .arg("-C")
             .arg(&self.project)
             .args(args)
@@ -145,7 +150,7 @@ impl Rig {
             .current_dir(&self.project)
             .hermetic(&self.root.join("home"), &self.machine, None)
             .env("NO_COLOR", "1")
-            .env("FLEET_BD_BIN", bd_on_path())
+            .env("FLEET_BD_BIN", &self.bd)
             .env("PATH", path)
             .output()
             .expect("the built binary runs")
@@ -227,7 +232,9 @@ fn names(line: &str, id: &str) -> bool {
 /// resolved: exit 2 from a directory holding no project at all.
 #[test]
 fn a_list_naming_no_read_is_usage() {
-    let rig = Rig::new("usage");
+    let Some(rig) = Rig::new("usage") else {
+        return;
+    };
     let nowhere = rig.root.join("nowhere");
     std::fs::create_dir_all(&nowhere).expect("the directory is made");
     let out = Command::new(env!("CARGO_BIN_EXE_fleet"))
@@ -255,7 +262,9 @@ fn a_list_naming_no_read_is_usage() {
 /// rig's cost is its bd calls.
 #[test]
 fn the_check_names_each_class_on_a_fixture_board_with_its_count_and_ids() {
-    let rig = Rig::with_a_board("fixture");
+    let Some(rig) = Rig::with_a_board("fixture") else {
+        return;
+    };
 
     let plain = rig.filed("a plain task", "task", &[]);
     let bare_orders = rig.filed("ordered the board's own way", "task", &[]);
@@ -479,7 +488,9 @@ fn a_run_record() -> serde_json::Value {
 /// the board, and says so with the list's refusal under the row.
 #[test]
 fn a_run_record_fleet_does_not_read_refuses_the_list_and_the_check_could_not_tell() {
-    let rig = Rig::with_a_board("run-version");
+    let Some(rig) = Rig::with_a_board("run-version") else {
+        return;
+    };
     let odd = rig.filed("a run at another version", "task", &["fleet:run"]);
     rig.metadata(
         &odd,
@@ -512,7 +523,9 @@ fn a_run_record_fleet_does_not_read_refuses_the_list_and_the_check_could_not_tel
 /// and still nothing — the types listing is a reading and never a finding.
 #[test]
 fn an_empty_board_and_a_plain_one_have_nothing_to_adopt() {
-    let rig = Rig::with_a_board("empty");
+    let Some(rig) = Rig::with_a_board("empty") else {
+        return;
+    };
     let out = rig.doctor();
     let said = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{said}{}", stderr(&out));
@@ -540,7 +553,9 @@ fn an_empty_board_and_a_plain_one_have_nothing_to_adopt() {
 /// could not tell.
 #[test]
 fn a_project_whose_board_cannot_be_read_could_not_tell() {
-    let rig = Rig::new("unread");
+    let Some(rig) = Rig::new("unread") else {
+        return;
+    };
 
     let out = rig.fleet(&["item", "list", "--ready", "--json"]);
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));

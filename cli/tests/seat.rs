@@ -20,6 +20,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use fleet_controller::platform;
 use fleet_core::entry::{Body, CheckRow, Classification, Landed, NotTested, SuiteRun, WorkBranch};
 use fleet_core::item::land::{SAFE, UNTESTED};
+use fleet_core::seat::actor::Actor;
+use fleet_core::store::{Filter, ItemId, Status, Store as _};
 
 use common::hermetic::Hermetic;
 
@@ -109,9 +111,6 @@ impl Drop for ShippedDefaults {
 }
 
 struct Rig {
-    /// This arm's own name, which is also the name of the board it takes: no
-    /// two arms here share one.
-    label: String,
     root: PathBuf,
     project: PathBuf,
     worktrees: PathBuf,
@@ -136,7 +135,6 @@ impl Rig {
             std::env::temp_dir().join(format!("fleet-cli-seat-{label}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let rig = Rig {
-            label: label.to_string(),
             project: root.join("a-project"),
             // The DERIVED answer's own spelling, so the arm that declares
             // nothing and the arm that declares this path land in one place.
@@ -227,50 +225,21 @@ impl Rig {
         self.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
     }
 
-    /// The work graph, for the arms that dispatch. Made after the repository so
-    /// the store's own files are not what the trunk commit carries, and the
-    /// repository the rig committed into is the one it keeps.
-    ///
-    /// A BOARD OF ITS OWN and never the run's shared one. A SEAT NAME IS
-    /// BOARD-WIDE: a retire asks the board which open ordered items that name
-    /// holds and clears them. A spawn mints its seat fresh, so two arms here no
-    /// longer meet on one name; what the board of its own still buys an arm is
-    /// one no neighbour's rows reach. What it costs the run is one `bd init`
-    /// for each arm here that has a store, which the wrapper's own count line
-    /// names.
+    /// The store, for the arms whose verbs reach one — a dispatch, and a
+    /// retire, which withdraws what the seat still holds: the stub, named in
+    /// the policy and committed on the trunk with it, so a worktree a spawn
+    /// cuts names the same store the primary does. The store's own files stay
+    /// out of the repository, whose trunk ref moves to the commit naming it.
     fn init_store(&self) {
-        common::take_a_board_alone(&self.project, &self.label);
-    }
-
-    fn bd(&self, args: &[&str]) -> Output {
-        Command::new("bd")
-            .arg("-C")
-            .arg(&self.project)
-            .args(args)
-            .output()
-            .expect("bd runs")
+        common::take_a_store(&self.project);
+        common::store_outside_git(&self.project);
+        self.git(&["add", "--", "fleet.toml"]);
+        self.git(&["commit", "--quiet", "--no-gpg-sign", "-m", "the store"]);
+        self.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
     }
 
     fn item(&self, title: &str) -> String {
-        let out = self.bd(&[
-            "create",
-            "--title",
-            title,
-            "--description",
-            "a scratch item",
-            "--type",
-            "task",
-            "--json",
-        ]);
-        assert!(
-            out.status.success(),
-            "bd create: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let value: serde_json::Value =
-            serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
-                .expect("bd create answers JSON");
-        value["id"].as_str().expect("an id").to_string()
+        common::filed(&self.project, title, &[])
     }
 
     /// The item's timeline as `fleet item show --json` lists it.
@@ -296,24 +265,14 @@ impl Rig {
             .collect()
     }
 
-    /// The assignee and the index, with the item's `notes` beside them —
-    /// `None` where `bd show --json` carries no such key, which is what an
-    /// item no verb noted answers.
-    fn order_of(&self, item: &str) -> (Option<String>, Option<String>, serde_json::Value) {
-        let out = self.bd(&["-q", "show", item, "--json"]);
-        let value: serde_json::Value =
-            serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
-                .expect("bd show answers JSON");
-        let row = &value[0];
+    /// The assignee and the index, read back off the store: the seat's full
+    /// id, or `None` where nobody holds the item, and the order's own JSON, or
+    /// `null` where the item carries none.
+    fn order_of(&self, item: &str) -> (Option<String>, serde_json::Value) {
+        let shown = common::shown(&self.project, item);
         (
-            row.get("assignee")
-                .and_then(|a| a.as_str())
-                .map(str::to_string),
-            row.get("notes").map(|notes| notes.to_string()),
-            row.get("metadata")
-                .and_then(|m| m.get("fleet.orders"))
-                .cloned()
-                .unwrap_or(serde_json::Value::Null),
+            shown["assignee"].as_str().map(str::to_string),
+            common::order_in(&shown),
         )
     }
 
@@ -551,6 +510,7 @@ fn the_seat(out: &Output) -> String {
 #[test]
 fn the_three_verbs_run_end_to_end_through_the_shipped_binary() {
     let rig = Rig::new("end-to-end", true);
+    rig.init_store();
     let policy = std::fs::read(rig.project.join("fleet.toml")).expect("the policy is readable");
 
     let spawned = rig.run(&[
@@ -623,6 +583,7 @@ fn the_three_verbs_run_end_to_end_through_the_shipped_binary() {
 #[test]
 fn feed_and_retire_take_the_full_id_the_short_id_and_the_machine_name() {
     let rig = Rig::new("resolve", true);
+    rig.init_store();
     let spawned = rig.run(&[
         "seat",
         "spawn",
@@ -1493,7 +1454,7 @@ fn dispatch_without_a_seat_spawns_through_the_real_spawner_and_assigns_the_name(
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert!(rig.calls().contains("START"), "{}", rig.calls());
 
-    let (assignee, notes, orders) = rig.order_of(&item);
+    let (assignee, orders) = rig.order_of(&item);
     let id = assignee.expect("the item is assigned");
     let seat = machine_name_of(&id);
     assert_eq!(
@@ -1506,7 +1467,6 @@ fn dispatch_without_a_seat_spawns_through_the_real_spawner_and_assigns_the_name(
         serde_json::json!(id),
         "the index carries the id"
     );
-    assert_eq!(notes, None, "nothing was noted");
     // The order before the spawn, to no seat, and the one naming the seat the
     // spawn made.
     let timeline = rig.timeline(&item);
@@ -1780,10 +1740,9 @@ fn dispatch_under_the_load_override_refuses_and_withdraws_the_order() {
         "and no worktree was made"
     );
 
-    let (assignee, notes, orders) = rig.order_of(&item);
+    let (assignee, orders) = rig.order_of(&item);
     assert_eq!(assignee, None, "nobody was ever assigned");
     assert_eq!(orders, serde_json::Value::Null, "no orders key survives");
-    assert_eq!(notes, None, "nothing was noted");
     let timeline = rig.timeline(&item);
     assert_eq!(
         timeline
@@ -1806,10 +1765,10 @@ const WORK: &str = "a-seat/feat/the-work";
 /// land` appends its entry.
 const LANDER: &str = "seat:01a0d1f1-0aec-765f-9abe-d4f993b9739a";
 
-/// The landed entry a reviewer's `fleet land` leaves on the item, as the text
-/// the store keeps: whole shas, one row, and the work branch it classified.
-fn a_landing(classification: Classification, branch: &str) -> String {
-    fleet_core::entry::encode(&Body::Landed(Landed {
+/// The landed entry a reviewer's `fleet land` leaves on the item: whole shas,
+/// one row, and the work branch it classified.
+fn a_landing(classification: Classification, branch: &str) -> Body {
+    Body::Landed(Landed {
         sha: "4444444444444444444444444444444444444444".to_string(),
         old: "5555555555555555555555555555555555555555".to_string(),
         squash_of: "1111111111111111111111111111111111111111".to_string(),
@@ -1826,10 +1785,10 @@ fn a_landing(classification: Classification, branch: &str) -> String {
             branch: Some(branch.to_string()),
             classification,
         },
-    }))
+    })
 }
 
-/// A seat the board has dispatched an item to: the store, the item ORDERED to
+/// A seat a dispatch has given an item to: the store, the item ORDERED to
 /// the seat the spawn made and open, and the worktree the spawn cut. It is the
 /// state a seat is in while it works, and the one a retire has an order to
 /// answer for. The item, and the seat read off its assignee.
@@ -1900,39 +1859,23 @@ fn a_landed_seat(rig: &Rig, landed: Option<Classification>) -> String {
         rig.git(&["branch", "--list"])
     );
 
+    let store = common::store_at(&rig.project);
+    let lander = Actor::typed(LANDER)
+        .and_then(Result::ok)
+        .expect("the lander is a typed actor");
+    let id = ItemId::from(item.as_str());
     if let Some(classification) = landed {
-        let appended = rig.bd(&[
-            "comments",
-            "add",
-            &item,
-            &a_landing(classification, WORK),
-            "--actor",
-            LANDER,
-        ]);
-        assert!(
-            appended.status.success(),
-            "bd comments add: {}",
-            String::from_utf8_lossy(&appended.stderr)
-        );
+        store
+            .append(&id, &a_landing(classification, WORK), &lander)
+            .expect("the landed entry is appended");
     }
-    // `--force`, because this fixture skips the delivery: bd 1.3.0 refuses a
-    // close by an actor that is not the item's assignee, and `fleet land` only
-    // ever closes as the assignee — the reviewer its delivery handed the item
-    // to — while here the item is still the seat's.
-    let closed = rig.bd(&[
-        "close",
-        &item,
-        "--reason",
-        "landed 4444444444444444444444444444444444444444",
-        "--actor",
-        "a-reviewer",
-        "--force",
-    ]);
-    assert!(
-        closed.status.success(),
-        "bd close: {}",
-        String::from_utf8_lossy(&closed.stderr)
-    );
+    store
+        .close(
+            &id,
+            "landed 4444444444444444444444444444444444444444",
+            &lander,
+        )
+        .expect("the item is closed");
     rig.live(&seat, "idle");
     seat
 }
@@ -2028,8 +1971,8 @@ fn a_retire_keeps_a_branch_whose_item_carries_no_landing() {
 
 // ---- the order a retire withdraws -------------------------------------------
 
-/// The record's half of the retire, through the shipped binary and a real work
-/// graph: the seat is retired while the item it was dispatched is still OPEN,
+/// The record's half of the retire, through the shipped binary and the store
+/// it opens: the seat is retired while the item it was dispatched is still OPEN,
 /// and that item reads unassigned, with no orders key, carrying the withdrawal
 /// entry.
 ///
@@ -2044,7 +1987,8 @@ fn a_retire_keeps_a_branch_whose_item_carries_no_landing() {
 ///
 /// ONE ARM AND NOT TWO. Which items the query does and does not name is the
 /// core suite's, over a store with four shapes on it; what only this arm can
-/// say is that real `bd` empties the assignee and drops the key.
+/// say is that the shipped binary's retire, through the adapter seam, leaves
+/// the item held by nobody and ordered to nobody.
 #[test]
 fn a_retire_withdraws_the_order_the_seat_still_holds() {
     let rig = Rig::new("retire-withdraws", true);
@@ -2054,13 +1998,12 @@ fn a_retire_withdraws_the_order_the_seat_still_holds() {
     let retired = rig.run(&["seat", "retire", &seat]);
     assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
 
-    let (assignee, notes, orders) = rig.order_of(&item);
+    let (assignee, orders) = rig.order_of(&item);
     assert!(
         assignee.as_deref().unwrap_or("").trim().is_empty(),
         "the item reads unassigned: {assignee:?}"
     );
     assert!(orders.is_null(), "and carries no orders key: {orders}");
-    assert_eq!(notes, None, "nothing was noted");
     withdrawn_at_retire(&rig, &item, &seat);
 }
 
@@ -2091,56 +2034,45 @@ fn withdrawn_at_retire(rig: &Rig, item: &str, seat: &str) {
     );
 }
 
-/// fleet-reb: the same retire over an item the seat CLAIMED. bd 1.3.0 refuses
-/// a plain `--assignee` from anyone but the holder on an `in_progress` item —
-/// `cannot reassign X: held by "<seat>" (in_progress)` — and a retire's
-/// actor is never the seat it retires, so only the withdrawal's
-/// `--if-assignee <seat>` lets it through. The fence is bd's, so the arm is
-/// the real binary's.
+/// fleet-reb: the same retire over an item the seat CLAIMED — `in_progress`,
+/// a status the seat set through the store's own command, which no contract
+/// verb writes. A retire's actor is never the seat it retires, so only the
+/// withdrawal's fence on that seat lets it through; which store refuses what
+/// without the fence is that adapter's own suite's.
 #[test]
 fn a_retire_withdraws_an_item_the_seat_marked_in_progress() {
     let rig = Rig::new("retire-in-progress", true);
     let (item, seat) = a_dispatched_seat(&rig);
-    let claimed = rig.bd(&["update", &item, "--status", "in_progress", "--actor", &seat]);
-    assert!(
-        claimed.status.success(),
-        "bd update: {}",
-        String::from_utf8_lossy(&claimed.stderr)
-    );
+    common::with_state(&rig.project, |store| {
+        store.amend(&item, |held| held.status = Status::InProgress);
+    });
     rig.live(&seat, "idle");
 
     let retired = rig.run(&["seat", "retire", &seat]);
     assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
 
-    let (assignee, notes, orders) = rig.order_of(&item);
+    let (assignee, orders) = rig.order_of(&item);
     assert!(
         assignee.as_deref().unwrap_or("").trim().is_empty(),
         "the claimed item reads unassigned: {assignee:?}"
     );
     assert!(orders.is_null(), "and carries no orders key: {orders}");
-    assert_eq!(notes, None, "nothing was noted");
     withdrawn_at_retire(&rig, &item, &seat);
     // fleet-3e6: AND IT IS OPEN AGAIN. An item left `in_progress` with nobody
-    // holding it is out of bd's ready set, so no dispatch would ever reach it
+    // holding it is out of the ready set, so no dispatch would ever reach it
     // again without somebody reopening it by hand.
-    let shown = rig.bd(&["-q", "show", &item, "--json"]);
-    let shown: serde_json::Value =
-        serde_json::from_str(String::from_utf8_lossy(&shown.stdout).trim())
-            .expect("bd show answers JSON");
+    let shown = common::shown(&rig.project, &item);
     assert_eq!(
-        shown[0]["status"].as_str(),
+        shown["status"].as_str(),
         Some("open"),
         "the claimed item reads open: {shown}"
     );
-    let ready = rig.bd(&["ready", "--json", "-n", "0"]);
-    let ready: serde_json::Value =
-        serde_json::from_str(String::from_utf8_lossy(&ready.stdout).trim())
-            .expect("bd ready answers JSON");
+    let ready = common::store_at(&rig.project)
+        .list(&Filter::Ready)
+        .expect("the ready set reads");
     assert!(
-        ready
-            .as_array()
-            .is_some_and(|rows| rows.iter().any(|row| row["id"].as_str() == Some(&item))),
-        "and bd calls it ready: {ready}"
+        ready.iter().any(|row| row.id.as_str() == item),
+        "and the store calls it ready: {ready:?}"
     );
 }
 

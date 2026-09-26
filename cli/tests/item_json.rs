@@ -11,14 +11,12 @@
 //! `clear` cleared. A document carrying the right keys and another verb's
 //! values would pass an arm that only counted them.
 //!
-//! One repository, work graph and machine directory per arm, the way
+//! One repository, store and machine directory per arm, the way
 //! `tests/deliver.rs` builds them: an arm's subject is the state of a working
-//! tree. AN ARM DRIVES EVERY VERB ITS RIG CAN, because a rig's cost is its bd
-//! calls and they queue on the run's one board: the dispatch arm carries the
-//! rendering claims on the calls it makes anyway, the review arm reads the
-//! commit off the delivery it needs first, and the usage arm owns no rig at all.
-//! Every seat name here is prefixed `ij-`, because "which item does this seat
-//! hold" is a query across the whole of the run's shared board.
+//! tree. AN ARM DRIVES EVERY VERB ITS RIG CAN, because a rig's cost is the
+//! binary's calls: the dispatch arm carries the rendering claims on the calls
+//! it makes anyway, the review arm reads the commit off the delivery it needs
+//! first, and the usage arm owns no rig at all.
 //!
 //! Every rc is read from the child's own status and never off anything it
 //! printed.
@@ -136,8 +134,7 @@ struct Rig {
     roster: PathBuf,
     delivery: PathBuf,
     question: PathBuf,
-    /// The seat that delivers and asks. One per arm: the store is the run's
-    /// shared board and "which item does this seat hold" reads all of it.
+    /// The seat that delivers and asks.
     seat: String,
     /// The seat a dispatch names, which is never the one holding the work.
     target: String,
@@ -197,7 +194,19 @@ impl Rig {
             ),
         )
         .expect("the policy is written");
-        common::take_a_board(&rig.project, "item-json");
+        common::take_a_store(&rig.project);
+        // The repository with a first commit on the trunk, so a verb run
+        // before `init_repo` reads a branch and not an unborn HEAD.
+        rig.git(&["init", "--quiet", "--initial-branch", "main"]);
+        rig.git(&[
+            "commit",
+            "--quiet",
+            "--no-gpg-sign",
+            "--allow-empty",
+            "-m",
+            "the repository",
+        ]);
+        common::store_outside_git(&rig.project);
         std::fs::write(&rig.delivery, DELIVERY).expect("the delivery is written");
         std::fs::write(&rig.question, QUESTION).expect("the question is written");
         std::fs::write(
@@ -234,7 +243,7 @@ impl Rig {
             "core.hooksPath",
             &self.root.join("hooks").display().to_string(),
         ]);
-        self.git(&["add", "--", "fleet.toml", ".beads"]);
+        self.git(&["add", "--", "fleet.toml"]);
         self.git(&["commit", "--quiet", "--no-gpg-sign", "-m", "the policy"]);
         self.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
         self.git(&["checkout", "--quiet", "-b", "ij-a-seat/feat/the-work"]);
@@ -264,35 +273,9 @@ impl Rig {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    fn bd(&self, args: &[&str]) -> Output {
-        Command::new("bd")
-            .arg("-C")
-            .arg(&self.project)
-            .args(args)
-            .output()
-            .expect("bd runs")
-    }
-
     /// One item nobody has been given yet: what a dispatch takes.
     fn a_ready_item(&self) -> String {
-        let out = self.bd(&[
-            "create",
-            "--title",
-            "an item the SDK will drive",
-            "--description",
-            "a scratch item",
-            "--type",
-            "task",
-            "--json",
-        ]);
-        assert!(
-            out.status.success(),
-            "bd create: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let value: serde_json::Value =
-            serde_json::from_str(stdout(&out).trim()).expect("bd create answers JSON");
-        value["id"].as_str().expect("an id").to_string()
+        common::filed(&self.project, "an item the SDK will drive", &[])
     }
 
     /// The same item, held by this arm's seat under a standing order: what
@@ -301,21 +284,14 @@ impl Rig {
         let item = self.a_ready_item();
         // Assigned to the seat's id, as every dispatch assigns.
         let seat = common::seat_id_of(&self.seat);
-        assert!(self
-            .bd(&[
-                "update",
-                &item,
-                "--assignee",
-                &seat,
-                "--metadata",
-                &format!(
-                    r#"{{"fleet.orders": {{"v": 1, "by": "{BY}", "kind": "dispatch", "seat": "{seat}", "at": "2026-09-18T00:00:00Z"}}}}"#
-                ),
-                "--actor",
-                BY,
-            ])
-            .status
-            .success());
+        common::hand_to(&self.project, &item, &seat);
+        common::ordered(
+            &self.project,
+            &item,
+            fleet_core::store::OrderKind::Dispatch,
+            BY,
+            Some(&seat),
+        );
         item
     }
 
@@ -327,10 +303,7 @@ impl Rig {
     }
 
     fn item_json(&self, item: &str) -> serde_json::Value {
-        let out = self.bd(&["-q", "show", item, "--json"]);
-        let value: serde_json::Value =
-            serde_json::from_str(stdout(&out).trim()).expect("bd show answers JSON");
-        value[0].clone()
+        common::shown(&self.project, item)
     }
 
     /// The stub: `agents` is the roster read, `-p` is the one print-mode turn.
@@ -863,13 +836,12 @@ impl Rig {
 fn item_show_prints_the_item_and_its_entries_and_refuses_what_it_cannot_read() {
     use fleet_core::entry::{Body, Ordered};
     use fleet_core::seat::actor::Actor;
-    use fleet_core::store::bd::Bd;
     use fleet_core::store::{OrderKind, Store};
 
     let rig = Rig::new("show");
     let item = rig.a_ready_item();
     let by = Actor::typed(BY).expect("typed").expect("a seat");
-    let store = Bd::at(&rig.project);
+    let store = common::store_at(&rig.project);
     let appended = store
         .append(
             &fleet_core::store::ItemId::from(item.as_str()),
@@ -881,8 +853,9 @@ fn item_show_prints_the_item_and_its_entries_and_refuses_what_it_cannot_read() {
         )
         .expect("the entry is appended");
     let words = "a person's own words, never an entry";
-    let out = rig.bd(&["comments", "add", &item, words]);
-    assert!(out.status.success(), "bd comments add: {}", stderr(&out));
+    common::with_state(&rig.project, |store| {
+        store.comment(&item, "a-person", words)
+    });
 
     let hash = item
         .split_once('-')
@@ -930,15 +903,13 @@ fn item_show_prints_the_item_and_its_entries_and_refuses_what_it_cannot_read() {
     );
 
     let broken = rig.a_ready_item();
-    let out = rig.bd(&[
-        "comments",
-        "add",
-        &broken,
-        r#"{"fleet.entry":1,"kind":"ordered","order":"dispatch","bogus":1}"#,
-        "--actor",
-        BY,
-    ]);
-    assert!(out.status.success(), "bd comments add: {}", stderr(&out));
+    common::with_state(&rig.project, |store| {
+        store.comment(
+            &broken,
+            BY,
+            r#"{"fleet.entry":1,"kind":"ordered","order":"dispatch","bogus":1}"#,
+        )
+    });
     let out = rig.item_show(&[&broken, "--json"]);
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     assert_eq!(
@@ -953,15 +924,66 @@ fn item_show_prints_the_item_and_its_entries_and_refuses_what_it_cannot_read() {
         "{}",
         stderr(&out)
     );
+}
 
-    // An item a person holds: `show` and a listing that reaches it are both
-    // could-not-tell, naming the holder, and never an item held by nobody.
-    let person = rig.a_person_held_item("alice", PERSON_HELD);
+/// An item a person holds: `show` and a listing that reaches it are both
+/// could-not-tell, naming the holder, and never an item held by nobody.
+///
+/// ON A REAL `bd`, AND ONLY WHERE ONE IS: a holder that is no seat is a board a
+/// project brought, which no fleet verb writes and the store stub cannot hold
+/// — its holder is a seat's id or nobody. The project is a `bd init` of its
+/// own, naming no adapter, and the verbs run the `bd` this process found.
+#[test]
+fn an_item_a_person_holds_is_could_not_tell_naming_the_holder() {
+    let Some(bd) = common::bd_or_skip("an_item_a_person_holds_is_could_not_tell_naming_the_holder")
+    else {
+        return;
+    };
+    let rig = Named::new("person-held");
+    std::fs::write(rig.project.join("fleet.toml"), POLICY).expect("the policy is written");
+    let init = Command::new(&bd)
+        .args(["init", "--prefix", "fx", "--quiet"])
+        .current_dir(&rig.project)
+        .output()
+        .expect("bd runs");
+    assert!(init.status.success(), "bd init: {}", stderr(&init));
+    let made = Command::new(&bd)
+        .arg("-C")
+        .arg(&rig.project)
+        .args([
+            "create",
+            "--title",
+            "an item a person holds",
+            "--type",
+            "task",
+            "--assignee",
+            "alice",
+            "--labels",
+            PERSON_HELD,
+            "--json",
+        ])
+        .output()
+        .expect("bd runs");
+    assert!(made.status.success(), "bd create: {}", stderr(&made));
+    let value: serde_json::Value =
+        serde_json::from_str(stdout(&made).trim()).expect("bd create answers JSON");
+    let person = value["id"].as_str().expect("an id").to_string();
+    let item = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_fleet"))
+            .arg("item")
+            .args(args)
+            .current_dir(&rig.project)
+            .hermetic(&rig.root.join("home"), &rig.machine, None)
+            .env("FLEET_BD_BIN", &bd)
+            .output()
+            .expect("the built binary runs")
+    };
+
     let refused = format!(
         "{person} is held by alice, which is not a seat of this fleet — a person holds it, and \
          fleet reads only seat holders"
     );
-    let out = rig.item_show(&[&person, "--json"]);
+    let out = item(&["show", &person, "--json"]);
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     let refusal = refusal_of(&out, "item show");
     assert_eq!(refusal["code"], serde_json::json!("could_not_tell"));
@@ -971,7 +993,7 @@ fn item_show_prints_the_item_and_its_entries_and_refuses_what_it_cannot_read() {
             .is_some_and(|why| why.contains(&refused)),
         "{refusal}"
     );
-    let out = rig.item_list(&["--label", PERSON_HELD]);
+    let out = item(&["list", "--label", PERSON_HELD]);
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     assert!(out.stdout.is_empty(), "{}", stdout(&out));
     assert!(
@@ -981,60 +1003,8 @@ fn item_show_prints_the_item_and_its_entries_and_refuses_what_it_cannot_read() {
     );
 }
 
-/// The label the person-held item carries: a listing of this arm's own.
+/// The label the person-held item carries.
 const PERSON_HELD: &str = "ij-person-held";
-
-impl Rig {
-    /// An open item a person holds, under `label` and out of the ready set:
-    /// the rigs share one board, and an item a person holds in its ready set
-    /// would refuse every other arm's `item list --ready`. The blocker is
-    /// filed second, as the item it blocks — bd 1.3.0's `--deps
-    /// blocks:<id>` blocks `<id>` by the item being filed.
-    fn a_person_held_item(&self, person: &str, label: &str) -> String {
-        let filed = |args: &[&str]| {
-            let out = self.bd(args);
-            assert!(out.status.success(), "bd create: {}", stderr(&out));
-            let value: serde_json::Value =
-                serde_json::from_str(stdout(&out).trim()).expect("bd create answers JSON");
-            value["id"].as_str().expect("an id").to_string()
-        };
-        let item = filed(&[
-            "create",
-            "--title",
-            "an item a person holds",
-            "--type",
-            "task",
-            "--assignee",
-            person,
-            "--labels",
-            label,
-            "--json",
-        ]);
-        let blocks = format!("blocks:{item}");
-        filed(&[
-            "create",
-            "--title",
-            "what the person's item waits on",
-            "--type",
-            "task",
-            "--deps",
-            &blocks,
-            "--json",
-        ]);
-        item
-    }
-
-    /// `fleet item list`, which takes no `--packs-dir` either.
-    fn item_list(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_fleet"))
-            .args(["item", "list"])
-            .args(args)
-            .current_dir(&self.project)
-            .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub))
-            .output()
-            .expect("the built binary runs")
-    }
-}
 
 // ---- the store a project names: `[store] adapter` in its own file ----------
 

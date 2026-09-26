@@ -491,7 +491,7 @@ fn executable(path: &Path) {
 /// A scratch pack with one workflow, on the rig's machine: the binary's own
 /// defaults materialized beside it for the runtime check, a runtime stub where
 /// the CONSTRUCTED child
-/// path looks (`~/.local/bin`, never this process's `PATH`), and a board in
+/// path looks (`~/.local/bin`, never this process's `PATH`), and a store in
 /// the fleet root for the run's record.
 fn scratch_pack(rig: &Rig, workflow: &str, script: &str) {
     let defaults = rig.machine().join(fleet_core::defaults::DIR);
@@ -516,7 +516,7 @@ fn scratch_pack(rig: &Rig, workflow: &str, script: &str) {
             bundler.display()
         ),
     );
-    common::take_a_board(&rig.fleet_root(), "routines");
+    common::take_a_store(&rig.fleet_root());
 }
 
 fn stream_of(rig: &Rig) -> Vec<serde_json::Value> {

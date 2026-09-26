@@ -694,7 +694,7 @@ fn row_of(section: &str, run: &str) -> String {
 /// failure before the window, which is counted and not listed.
 ///
 /// THE PARKS ARE THE RECORDS'. Each run whose last line is `run.could_not_tell`
-/// is a record on a registered board, and the two held carry the crash cap's
+/// is a record in a registered store, and the two held carry the crash cap's
 /// park, one of them cleared by hand — so the page says cleared on the one the
 /// store no longer lists open, and the stream carries no park line at all.
 #[test]
@@ -705,7 +705,7 @@ fn the_runs_section_reads_every_standing_off_the_stream() {
         &fleet_controller::clock::now_stamp(),
         vec![seat("builder-1")],
     ));
-    rig.a_registered_board();
+    rig.a_registered_store();
     let [crash, park, heard] = [rig.a_run_record(), rig.a_run_record(), rig.a_run_record()];
     let now = fleet_controller::clock::now_stamp();
     let now = now.as_str();
@@ -751,8 +751,7 @@ fn the_runs_section_reads_every_standing_off_the_stream() {
     );
     let park_hold = rig.parked_at_the_cap(&park);
     let heard_hold = rig.parked_at_the_cap(&heard);
-    let out = rig.bd(&["gate", "resolve", &heard_hold]);
-    assert!(out.status.success(), "bd gate resolve: {}", stderr(&out));
+    rig.cleared_by_hand(&heard_hold);
 
     let out = rig.run(&["status"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -1003,7 +1002,7 @@ fn a_run_that_exits_one_is_on_the_page() {
         &rig.project.join("fleet.toml"),
         "[core.run]\nmax_open = 1000\n",
     );
-    common::take_a_board(&rig.project, "status");
+    common::take_a_store(&rig.project);
 
     let path = match std::env::var("PATH") {
         Ok(held) => format!("{}:{held}", stubs.display()),
@@ -1055,14 +1054,11 @@ const QUESTION: &str = r#"{
 }"#;
 
 impl Rig {
-    /// A board at the project, registered on the rig's machine as `fleet
+    /// A store at the project, registered on the rig's machine as `fleet
     /// create --standalone` registers one: the store status asks for the open
     /// holds.
-    ///
-    /// ITS OWN `bd init` AND NOT THE RUN'S SHARED BOARD: the count is of every
-    /// hold the board holds open, so a neighbour's hold would move it.
-    fn a_registered_board(&self) {
-        common::take_a_board_alone(&self.project, "status-holds");
+    fn a_registered_store(&self) {
+        common::take_a_store(&self.project);
         self.registered();
     }
 
@@ -1071,32 +1067,23 @@ impl Rig {
             .expect("the project is registered on the machine");
     }
 
-    fn bd(&self, args: &[&str]) -> Output {
-        Command::new("bd")
-            .arg("-C")
-            .arg(&self.project)
-            .args(args)
-            .output()
-            .expect("bd runs")
-    }
-
-    /// A run's record on the board: an item carrying the run label, which a
+    /// A run's record in the store: an item carrying the run label, which a
     /// hold parks without touching git.
     fn a_run_record(&self) -> String {
-        let out = self.bd(&[
-            "create",
-            "--title",
+        common::filed(
+            &self.project,
             "a run's record",
-            "--type",
-            "task",
-            "--labels",
-            fleet_core::item::run::LABEL,
-            "--json",
-        ]);
-        assert!(out.status.success(), "bd create: {}", stderr(&out));
-        let value: serde_json::Value =
-            serde_json::from_str(stdout(&out).trim()).expect("bd create answers JSON");
-        value["id"].as_str().expect("an id").to_string()
+            &[fleet_core::item::run::LABEL],
+        )
+    }
+
+    /// A hold cleared by hand, by a writer that is not fleet: through the
+    /// store itself, which writes no line on the stream.
+    fn cleared_by_hand(&self, hold: &str) {
+        use fleet_core::store::Store as _;
+        common::store_at(&self.project)
+            .hold_clear(&fleet_core::store::HoldId::from(hold), &common::the_test())
+            .unwrap_or_else(|e| panic!("{hold} is cleared: {e}"));
     }
 
     /// The run's record held through `fleet hold`, by the run itself, and the
@@ -1142,17 +1129,17 @@ impl Rig {
                 directory: &self.machine.join("runs").join(run),
                 by: &controller,
             },
-            &fleet_core::store::bd::Bd::at(&self.project),
+            &common::store_at(&self.project),
         )
         .unwrap_or_else(|stop| panic!("the park is made: {}", stop.message));
         hold
     }
 }
 
-/// Two runs parked at the crash cap on a registered board, and the FIRST one's
-/// hold cleared by hand with bd's own verb — which writes no line on the
-/// stream. Each run's own `run.started` and `run.could_not_tell` go on first,
-/// so the park lands on a run the fold holds.
+/// Two runs parked at the crash cap in a registered store, and the FIRST
+/// one's hold cleared by hand through the store itself — which writes no
+/// line on the stream. Each run's own `run.started` and `run.could_not_tell`
+/// go on first, so the park lands on a run the fold holds.
 ///
 /// Answers the page and the two `(run, hold)` pairs, the cleared one first.
 fn two_parks_one_cleared_by_hand(rig: &Rig) -> (String, [(String, String); 2]) {
@@ -1161,7 +1148,7 @@ fn two_parks_one_cleared_by_hand(rig: &Rig) -> (String, [(String, String); 2]) {
         &fleet_controller::clock::now_stamp(),
         vec![seat("builder-1")],
     ));
-    rig.a_registered_board();
+    rig.a_registered_store();
     let runs = [rig.a_run_record(), rig.a_run_record()];
     let now = fleet_controller::clock::now_stamp();
     stream(
@@ -1178,8 +1165,7 @@ fn two_parks_one_cleared_by_hand(rig: &Rig) -> (String, [(String, String); 2]) {
         (run, hold)
     });
 
-    let out = rig.bd(&["gate", "resolve", &parks[0].1]);
-    assert!(out.status.success(), "bd gate resolve: {}", stderr(&out));
+    rig.cleared_by_hand(&parks[0].1);
     let lines =
         std::fs::read_to_string(rig.machine.join("events.jsonl")).expect("the stream is there");
     assert!(
@@ -1194,7 +1180,7 @@ fn two_parks_one_cleared_by_hand(rig: &Rig) -> (String, [(String, String); 2]) {
 
 /// AC1: the hold count is the STORE's open holds, off every project the
 /// machine registers — two raised at the cap and one of them cleared by hand
-/// with `bd gate resolve` is one open. RED-PROOF: the stream's fold counted
+/// through the store is one open. RED-PROOF: the stream's fold counted
 /// two, because the stream never saw the hand clear.
 #[test]
 fn the_hold_count_is_the_stores_and_sees_a_hold_cleared_by_hand() {
@@ -1240,7 +1226,7 @@ fn a_run_whose_record_carries_only_its_own_ask_reads_could_not_tell() {
         &fleet_controller::clock::now_stamp(),
         vec![seat("builder-1")],
     ));
-    rig.a_registered_board();
+    rig.a_registered_store();
     let run = rig.a_run_record();
     let now = fleet_controller::clock::now_stamp();
     stream(&rig, &[started(&now, &run), crashed(&now, &run)]);
@@ -1300,27 +1286,36 @@ fn a_run_whose_park_cannot_be_read_leaves_the_runs_not_all_read_at_exit_3() {
     assert!(page.contains("\nholds  0 open\n"), "{page}");
 }
 
-/// AC2: a registered project whose bd cannot run leaves the holds uncounted,
-/// named on the page and on stderr, and the exit is could-not-tell, 3 — the
-/// page around it still prints.
+/// AC2: a registered project whose store cannot tell leaves the holds
+/// uncounted, named on the page and on stderr, and the exit is
+/// could-not-tell, 3 — the page around it still prints.
+///
+/// The store is an adapter that answers every verb could not tell, which the
+/// project's own file names.
 #[test]
-fn a_registered_project_whose_bd_cannot_run_leaves_the_holds_uncounted_at_exit_3() {
+fn a_registered_project_whose_store_cannot_tell_leaves_the_holds_uncounted_at_exit_3() {
     let rig = Rig::new("holds-unread");
     rig.publish(&document(
         &rig.policy_file(),
         &fleet_controller::clock::now_stamp(),
         vec![seat("builder-1")],
     ));
+    let adapter = rig.root.join("stubs/adapter");
+    written(
+        &adapter,
+        "#!/bin/sh\necho '{\"schema_version\":1,\"error\":\"this store cannot tell\"}'\nexit 3\n",
+    );
+    executable(&adapter);
+    let policy = rig.project.join("fleet.toml");
+    let mut file = std::fs::read_to_string(&policy).expect("the project's own file reads");
+    file.push_str(&format!(
+        "\n[store]\nadapter = {}\n",
+        serde_json::Value::String(adapter.display().to_string())
+    ));
+    written(&policy, &file);
     rig.registered();
-    let bd = rig.root.join("stubs/bd");
-    written(&bd, "#!/bin/sh\necho 'this bd cannot run' >&2\nexit 1\n");
-    executable(&bd);
 
-    let out = rig
-        .command(&["status"])
-        .env("FLEET_BD_BIN", &bd)
-        .output()
-        .expect("the built binary runs");
+    let out = rig.run(&["status"]);
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     let page = stdout(&out);
     let why = format!(

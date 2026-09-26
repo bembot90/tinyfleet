@@ -837,6 +837,9 @@ fn create_embedded_writes_the_smallest_file_that_runs_and_materializes_the_defau
     // And what a person reads after it: `prime` names the installed packs, of
     // which there are none, and never the defaults — which resolve all the same,
     // or the rules file below line 1 would be missing.
+    // Line 2 is the store's own version, and the file `create` wrote names
+    // none: the project is kept on the stub before it is asked.
+    common::take_a_store(&rig.project);
     let primed = rig.run(&["prime"]);
     assert_eq!(code(&primed), 0, "{}", stderr(&primed));
     let page = stdout(&primed);
@@ -1562,6 +1565,7 @@ fn create_retires_the_bundled_core_pack_a_previous_binary_installed() {
     );
 
     // What a person reads afterwards: the added pack alone, over the defaults.
+    common::take_a_store(&rig.project);
     let primed = rig.run(&["prime"]);
     assert_eq!(code(&primed), 0, "{}", stderr(&primed));
     let page = stdout(&primed);
@@ -1690,7 +1694,8 @@ fn start_refuses_an_unresolvable_agent_binary_and_loads_nothing() {
 /// engine, and the engine resolves a run by asking each registered project's
 /// store for its record. The run named here is in no store, so the advance the
 /// fold decided on is visible as the run pass's own refusal, naming that run —
-/// a reading that needs no workflow to execute and no store to be seeded. A
+/// a reading that needs no workflow to execute and nothing in the project's
+/// store, which is an empty one on the stub. A
 /// foreground loop wired with no seam never folds the stream at all: it prints
 /// nothing about any run, which is the failure this arm answers with.
 #[test]
@@ -1701,6 +1706,7 @@ fn the_foreground_loop_advances_a_waiting_run() {
 
     let rig = Rig::new("foreground-runs");
     rig.created();
+    common::take_a_store(&rig.project);
 
     // `run.waiting` recording position 0, so the controller's own
     // `controller.started` is a line above what the run left behind — which is

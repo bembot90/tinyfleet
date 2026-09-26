@@ -212,11 +212,15 @@ fn read(out: &Output, adapter: &str) -> Read {
 /// plant another writer's keys, since the verb hands no other writer in.
 ///
 /// This costs one `bd init`, the bd adapter's own scratch, on bd's embedded
-/// engine inside the verb's temp dir.
+/// engine inside the verb's temp dir. Its subject is the verb against a real
+/// adapter, so it runs only where a `bd` is on the process `PATH`, and says
+/// it skipped where there is none.
 #[test]
 fn a_project_naming_no_store_is_checked_on_the_built_in_bd() {
+    if common::bd_or_skip("a_project_naming_no_store_is_checked_on_the_built_in_bd").is_none() {
+        return;
+    }
     let rig = Rig::new("bd");
-    common::note_bd_init("store-check");
     let out = rig.check(&[]);
     assert_eq!(
         out.status.code(),
@@ -526,13 +530,14 @@ fn the_store_stub_passes_every_check_it_is_asked() {
     );
 }
 
-/// Arm 9. A project `stub_store` keeps on the stub is checked on the stub with
-/// no flag — its own file names it — and the project's own store is the empty
-/// one the helper made, which the run never writes to.
+/// Arm 9. A project `take_a_store` keeps on the stub is checked on the stub
+/// with no flag — its own file names it — and the project's own store is the
+/// empty one the helper made, which the run never writes to.
 #[test]
 fn a_project_kept_on_the_stub_is_checked_on_it() {
     let rig = Rig::new("stub-store");
-    let stub = common::stub_store(&rig.project());
+    common::take_a_store(&rig.project());
+    let stub = common::stub_path();
     let policy = std::fs::read_to_string(rig.project().join("fleet.toml"))
         .expect("the project's file reads");
     assert!(

@@ -6,13 +6,13 @@
 //! is read from what the stub was given rather than from the code that passed
 //! it.
 //!
-//! One project and one store per arm process; under a `make fleet-test` run the
-//! store is the run's own shared board, copied in. Nothing here reads the board
-//! as a whole: each arm names its own item and its own seat, so a neighbour's
-//! rows move no answer this file asserts on. The machine directory, the roster
-//! and the stub's seams are per arm, because they are what each arm varies. The
-//! shared project outlives the process — a shared handle has no owner to drop it
-//! — so it is left under the system temp directory, named by this process's id.
+//! One project and one store per test process, on the store stub. Nothing here
+//! reads the store as a whole: each arm names its own item and its own seat, so
+//! a neighbour's rows move no answer this file asserts on where one process
+//! runs every arm. The machine directory, the roster and the stub's seams are
+//! per arm, because they are what each arm varies. The shared project outlives
+//! the process — a shared handle has no owner to drop it — so it is left under
+//! the system temp directory, named by this process's id.
 
 mod common;
 
@@ -29,7 +29,7 @@ const MODEL: &str = "a-cheap-model";
 
 /// The id every arm's one seat row is keyed by. Each arm's seat carries a name
 /// of its own, which is what `--to` names it by and what the order is written
-/// against, so the shared board still holds one seat's work per arm.
+/// against, so the shared store still holds one seat's work per arm.
 const SEAT_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
 
 /// The person every arm dispatches as: a human seat on the fleet's roster, so
@@ -119,91 +119,43 @@ impl Project {
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).expect("the project directory is created");
             std::fs::write(root.join("fleet.toml"), POLICY).expect("the policy file is written");
-            common::take_a_board(&root, "dispatch");
+            common::take_a_store(&root);
             Project { root }
         })
     }
 
-    fn bd(&self, args: &[&str]) -> Output {
-        Command::new("bd")
-            .arg("-C")
-            .arg(&self.root)
-            .args(args)
-            .output()
-            .expect("bd runs")
-    }
-
     fn item(&self, title: &str) -> String {
-        let out = self.bd(&[
-            "create",
-            "--title",
-            title,
-            "--description",
-            "a scratch item",
-            "--type",
-            "task",
-            "--json",
-        ]);
-        assert!(
-            out.status.success(),
-            "bd create: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let text = String::from_utf8_lossy(&out.stdout);
-        let value: serde_json::Value =
-            serde_json::from_str(text.trim()).expect("bd create answers JSON");
-        value["id"].as_str().expect("an id").to_string()
+        common::filed(&self.root, title, &[])
     }
 
     /// An item carrying the order index `brief` refuses to render without, and
     /// renders its order from.
     fn ordered(&self, title: &str) -> String {
         let item = self.item(title);
-        assert!(self
-            .bd(&[
-                "update",
-                &item,
-                "--metadata",
-                r#"{"fleet.orders": {"v": 1, "by": "run:lead-1", "kind": "dispatch", "at": "2026-09-09T00:00:00Z"}}"#,
-                "--actor",
-                "lead-1",
-            ])
-            .status
-            .success());
+        common::ordered(
+            &self.root,
+            &item,
+            fleet_core::store::OrderKind::Dispatch,
+            "run:lead-1",
+            None,
+        );
         item
     }
 
     /// The item closed, so the seat it was given to holds nothing again: an arm
     /// that dispatches to its one seat more than once frees it in between.
     fn done(&self, item: &str) {
-        let closed = self.bd(&[
-            "close", item, "--reason", "done", "--actor", "an-arm", "--force",
-        ]);
-        assert!(
-            closed.status.success(),
-            "bd close: {}",
-            String::from_utf8_lossy(&closed.stderr)
-        );
+        common::closed(&self.root, item);
     }
 
-    /// The assignee and the index a dispatch writes, read back off the store,
-    /// with the item's `notes` beside them — `None` where `bd show --json`
-    /// carries no such key, which is what an item no verb noted answers.
-    fn order_of(&self, item: &str) -> (Option<String>, Option<String>, serde_json::Value) {
-        let out = self.bd(&["-q", "show", item, "--json"]);
-        let text = String::from_utf8_lossy(&out.stdout);
-        let value: serde_json::Value =
-            serde_json::from_str(text.trim()).expect("bd show answers JSON");
-        let row = &value[0];
+    /// The assignee and the index a dispatch writes, read back off the store:
+    /// the seat's full id, or `None` where nobody holds the item, and the
+    /// order's own JSON, or `null` where the item carries none.
+    fn order_of(&self, item: &str) -> (Option<String>, serde_json::Value) {
+        let shown = common::shown(&self.root, item);
         (
-            row.get("assignee")
-                .and_then(|a| a.as_str())
-                .map(str::to_string),
-            row.get("notes").map(|notes| notes.to_string()),
-            row.get("metadata")
-                .and_then(|m| m.get("fleet.orders"))
-                .cloned()
-                .unwrap_or(serde_json::Value::Null),
+            shown["assignee"].as_str().map(str::to_string),
+            common::order_in(&shown),
         )
     }
 }
@@ -217,10 +169,9 @@ struct Rig {
     roster: PathBuf,
     nudge_argv: PathBuf,
     nudge_exit: PathBuf,
-    /// One seat name per arm, under a prefix no other crate's rigs use. The
-    /// store is the run's one board, and `seat holds an item` is a query across
-    /// the whole of it, so two arms on one seat name — in this file or in
-    /// another crate's — would each be refused for the other's work.
+    /// One seat name per arm. The store is the process's one, and `seat holds
+    /// an item` is a query across the whole of it, so two arms on one seat name
+    /// would each be refused for the other's work.
     seat: String,
 }
 
@@ -454,9 +405,8 @@ fn a_live_row_in_the_seats_worktree_is_rung_with_the_item_and_the_brief() {
 
     // The record carries the seat's FULL ID, whatever name the `--to` said: in
     // the assignee, the index and the ordered entry.
-    let (assignee, notes, orders) = project.order_of(&item);
+    let (assignee, orders) = project.order_of(&item);
     assert_eq!(assignee.as_deref(), Some(SEAT_ID));
-    assert_eq!(notes, None, "no note is written");
     assert_eq!(orders["seat"], serde_json::json!(SEAT_ID));
     assert_eq!(timeline[0]["seat"], serde_json::json!(SEAT_ID));
     assert_eq!(timeline[0]["order"], serde_json::json!("dispatch"));
@@ -468,8 +418,8 @@ fn a_live_row_in_the_seats_worktree_is_rung_with_the_item_and_the_brief() {
 
 /// ACCEPTANCE 8 of fleet-zlk.5: the order is an entry, and the document says
 /// which. `dispatch --json` answers `data.entry`, the id of the one ordered
-/// entry `fleet item show --json` lists, and `bd show --json` carries no
-/// `notes` key at all — no verb here writes a note.
+/// entry `fleet item show --json` lists, and that entry is the one thing the
+/// store holds on the item's timeline — no verb here writes a note beside it.
 #[test]
 fn a_dispatch_answers_the_ordered_entry_item_show_lists_and_writes_no_note() {
     let project = Project::shared();
@@ -491,13 +441,24 @@ fn a_dispatch_answers_the_ordered_entry_item_show_lists_and_writes_no_note() {
     assert_eq!(data["entry"], timeline[0]["id"], "{data}");
     assert!(data["entry"].is_string(), "{data}");
 
-    let shown = project.bd(&["-q", "show", &item, "--json"]);
-    let shown: serde_json::Value =
-        serde_json::from_str(String::from_utf8_lossy(&shown.stdout).trim())
-            .expect("bd show answers JSON");
-    assert!(
-        shown[0].get("notes").is_none(),
-        "bd show carries no notes key: {shown}"
+    let held = common::with_state(&project.root, |store| {
+        store
+            .comments
+            .lock()
+            .expect("the comments are not poisoned")
+            .get(&item)
+            .map(|comments| {
+                comments
+                    .iter()
+                    .map(|comment| comment.id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    });
+    assert_eq!(
+        held,
+        [data["entry"].as_str().expect("the entry's id")],
+        "the ordered entry and nothing beside it"
     );
 }
 
@@ -560,9 +521,8 @@ fn an_empty_roster_exits_four_and_the_three_writes_stand() {
         "an absent seat is not rung at all"
     );
 
-    let (assignee, notes, orders) = project.order_of(&item);
+    let (assignee, orders) = project.order_of(&item);
     assert_eq!(assignee.as_deref(), Some(SEAT_ID), "the assignment stands");
-    assert_eq!(notes, None, "nothing was noted");
     assert_eq!(
         kinds(&rig.timeline(&item)),
         ["ordered"],
@@ -602,9 +562,8 @@ fn a_ring_the_provider_refuses_exits_one_and_the_three_writes_stand() {
         "the turn was attempted, and it is its exit that refused"
     );
 
-    let (assignee, notes, orders) = project.order_of(&item);
+    let (assignee, orders) = project.order_of(&item);
     assert_eq!(assignee.as_deref(), Some(SEAT_ID));
-    assert_eq!(notes, None, "nothing was noted");
     assert_eq!(kinds(&rig.timeline(&item)), ["ordered"]);
     assert_eq!(orders["by"], serde_json::json!(lead()));
 }
@@ -631,10 +590,9 @@ fn a_spawn_the_controller_refuses_withdraws_the_order() {
         stderr(&out)
     );
 
-    let (assignee, notes, orders) = project.order_of(&item);
+    let (assignee, orders) = project.order_of(&item);
     assert_eq!(assignee, None, "nobody was ever assigned");
     assert_eq!(orders, serde_json::Value::Null, "no orders key survives");
-    assert_eq!(notes, None, "nothing was noted");
     let timeline = rig.timeline(&item);
     assert_eq!(
         kinds(&timeline),
@@ -684,14 +642,13 @@ fn an_unresolvable_agent_binary_exits_three_and_the_order_stands() {
         stderr(&out)
     );
 
-    let (assignee, notes, orders) = project.order_of(&item);
+    let (assignee, orders) = project.order_of(&item);
     assert_eq!(assignee, None, "no seat came up, so nobody was assigned");
     assert_eq!(
         orders["kind"],
         serde_json::json!("dispatch"),
         "the order stands: {orders}"
     );
-    assert_eq!(notes, None, "nothing was noted");
     assert_eq!(
         kinds(&rig.timeline(&item)),
         ["ordered"],
@@ -750,7 +707,7 @@ fn an_inherited_fleet_actor_is_stripped_by_the_hermetic_block() {
     .output()
     .expect("the built binary runs");
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    let (_, _, orders) = project.order_of(&item);
+    let (_, orders) = project.order_of(&item);
     assert_ne!(
         orders["by"],
         serde_json::json!(inherited),
@@ -789,7 +746,7 @@ fn a_dispatcher_the_call_does_not_name_is_this_machines_identity() {
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
 
     let id = identity_of(&rig);
-    let (_, _, orders) = project.order_of(&item);
+    let (_, orders) = project.order_of(&item);
     assert_eq!(orders["by"], serde_json::json!(format!("seat:{id}")));
 
     let said = stderr(&out);
@@ -822,7 +779,7 @@ fn a_dispatcher_the_call_does_not_name_is_this_machines_identity() {
         "{}",
         stderr(&out)
     );
-    let (_, _, orders) = project.order_of(&item);
+    let (_, orders) = project.order_of(&item);
     assert_eq!(orders["by"], serde_json::json!(format!("seat:{id}")));
 }
 
@@ -845,7 +802,7 @@ fn the_retired_actor_variable_is_not_read() {
         .output()
         .expect("the built binary runs");
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    let (_, _, orders) = project.order_of(&item);
+    let (_, orders) = project.order_of(&item);
     assert_eq!(
         orders["by"],
         serde_json::json!(format!("seat:{}", identity_of(&rig)))
@@ -883,7 +840,7 @@ fn an_actor_is_a_seat_argument_or_a_typed_actor() {
     let (item, out) = given(&["--by", "orla"], None);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(
-        project.order_of(&item).2["by"],
+        project.order_of(&item).1["by"],
         serde_json::json!(format!("seat:{ORLA_ID}"))
     );
     assert!(
@@ -896,14 +853,14 @@ fn an_actor_is_a_seat_argument_or_a_typed_actor() {
     let (item, out) = given(&[], Some("orla"));
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(
-        project.order_of(&item).2["by"],
+        project.order_of(&item).1["by"],
         serde_json::json!(format!("seat:{ORLA_ID}"))
     );
     project.done(&item);
 
     let (item, out) = given(&["--by", "run:fleet-abc"], None);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    assert_eq!(project.order_of(&item).2["by"], "run:fleet-abc");
+    assert_eq!(project.order_of(&item).1["by"], "run:fleet-abc");
     project.done(&item);
 
     let (item, out) = given(&["--by", "nobody"], None);
@@ -916,7 +873,7 @@ fn an_actor_is_a_seat_argument_or_a_typed_actor() {
     for id in [LEAD_ID, ORLA_ID, TWIN_A, TWIN_B] {
         assert!(said.contains(id), "the seats are listed: {said}");
     }
-    assert_eq!(project.order_of(&item).2, serde_json::Value::Null);
+    assert_eq!(project.order_of(&item).1, serde_json::Value::Null);
 
     let (item, out) = given(&[], Some("nobody"));
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
@@ -925,14 +882,14 @@ fn an_actor_is_a_seat_argument_or_a_typed_actor() {
         "{}",
         stderr(&out)
     );
-    assert_eq!(project.order_of(&item).2, serde_json::Value::Null);
+    assert_eq!(project.order_of(&item).1, serde_json::Value::Null);
 
     let (item, out) = given(&["--by", "twin"], None);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     let said = stderr(&out);
     assert!(said.contains("--by twin names 2 seats"), "{said}");
     assert!(said.contains(TWIN_A) && said.contains(TWIN_B), "{said}");
-    assert_eq!(project.order_of(&item).2, serde_json::Value::Null);
+    assert_eq!(project.order_of(&item).1, serde_json::Value::Null);
 
     let (item, out) = given(&["--by", "seat:not-a-uuid"], None);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
@@ -941,7 +898,7 @@ fn an_actor_is_a_seat_argument_or_a_typed_actor() {
         "{}",
         stderr(&out)
     );
-    assert_eq!(project.order_of(&item).2, serde_json::Value::Null);
+    assert_eq!(project.order_of(&item).1, serde_json::Value::Null);
 }
 
 /// An identity the roster lists is a person the fleet knows: the verb acts as
@@ -973,7 +930,7 @@ fn a_listed_identity_acts_without_the_once_line() {
         stderr(&out)
     );
     assert_eq!(
-        project.order_of(&item).2["by"],
+        project.order_of(&item).1["by"],
         serde_json::json!(format!("seat:{LISTED_IDENTITY}"))
     );
 }
