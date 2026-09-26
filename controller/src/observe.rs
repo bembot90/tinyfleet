@@ -1,52 +1,30 @@
-//! What one poll saw: a seat's slice of the roster, and the context its session
-//! is carrying.
+//! What one poll saw: a seat's presence on the host, its activity on the
+//! agent's listing, and the context its session is carrying.
+//!
+//! TWO READS, SPLIT BY QUESTION (ruling 3). Whether a seat's session is THERE
+//! is the host's answer: the session fleet started for the seat exists and its
+//! pane is alive, or it is dead and holds the exit status the agent left. What
+//! the session is DOING — starting, idle, busy, stopped in front of a human —
+//! is the agent's listing's answer. Neither stands in for the other, and where
+//! the two disagree the seat is Unknown with both pieces of evidence rather
+//! than whichever one a rule happened to read first.
 
 use crate::adapter::{dir_key, AgentRow, RosterRead};
 use crate::config::Seat;
+use crate::host::{self, HostRead, Pane, PaneState};
 use fleet_core::seat::identity::SeatId;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// How long a pid-less row that carries no end marker may claim to be starting.
+/// How long a live pane the listing does not name yet may claim to be starting.
 ///
-/// The birth window is well under a second against a five-second poll, so this
-/// is deliberately far larger than the phenomenon: being generous costs a few
-/// polls before a genuinely stuck row is noticed, being tight reads a newborn as
-/// absent, which is the defect the split exists to prevent.
+/// An interactive row was listed 0.5–0.75 s after its session was made
+/// (measured on 2.1.280, 2026-09-26), against a five-second poll, so this is
+/// deliberately far larger than the phenomenon: being generous costs a few
+/// polls before a session that never lists is noticed, and being tight reads a
+/// newborn as a disagreement between the host and the listing.
 pub const STARTING_GRACE_MS: u64 = 30_000;
-
-/// How far back an ended row is still reported rather than treated as history,
-/// and WHERE THAT DISTANCE IS MEASURED FROM.
-///
-/// The window is measured from the session's END. Keyed on the start instead, a
-/// 25-hour session that ended a minute ago is history and its transcript is
-/// discarded, while one that started and ended 23 hours ago ranks as freshly
-/// stopped — the reading is about how long a session RAN and not about how long
-/// ago it finished.
-///
-/// THE LISTING CARRIES NO END STAMP. Measured 2026-09-08 on 2.1.261: `agents
-/// --json --all` answers cwd, id, kind, name, pid, sessionId, startedAt, state
-/// and status, on stopped rows included, and `AgentRow` parses none that could
-/// serve. The end this controller has in hand is the session TRANSCRIPT's last
-/// write: the same file `observe` already resolves to read context, which
-/// outlives the process that wrote it. A transcript that does not resolve
-/// leaves the start stamp as the only reading there is, and a row filtered on
-/// it says so in its own cause rather than passing for an end-keyed one.
-pub struct Recency<'a> {
-    /// The window itself, from policy — `controller.stopped_recency_hours`,
-    /// rendered to milliseconds by the caller that read it.
-    pub window_ms: u64,
-    /// When this session last wrote, by worktree and session id. `None` is a
-    /// transcript that did not resolve, which is the fallback's whole trigger.
-    pub ended_at: &'a dyn Fn(&str, &str) -> Option<u64>,
-}
-
-/// What a stopped row was filtered on, for the row that carries the reading.
-/// A fallback nobody can see is a start-keyed window under another name.
-pub const FELL_BACK_TO_START: &str =
-    "the stopped-row window was measured from this session's START: its transcript did not \
-     resolve, so no end is known for it";
 
 /// What the roster said about one seat.
 ///
@@ -93,47 +71,44 @@ impl RosterState {
 #[derive(Clone, Debug)]
 pub struct SeatObservation {
     pub state: RosterState,
+    /// Set exactly when `state` is `Unknown`, and naming BOTH readings where it
+    /// is the two of them disagreeing: what the host holds and what the listing
+    /// names.
     pub unknown_cause: Option<String>,
     /// The agent's own cause string for a seat stopped in front of a human,
-    /// carried verbatim and never matched on.
+    /// carried verbatim and never matched on — or `status waiting` for a row
+    /// that says it waits and names no cause (`AgentRow::blocked_on`).
     pub waiting_for: Option<String>,
-    /// Set exactly when this row survived the stopped-row window on its START
-    /// stamp because no end was known for it. `None` on every other row,
-    /// stopped ones with a resolved end included.
-    pub recency_fallback: Option<String>,
+    /// What the listing says the session is doing, in the agent's own word
+    /// (`idle`, `busy`, `waiting` on 2.1.280), carried verbatim. It is ACTIVITY
+    /// and never presence: no liveness decision keys on it, and a row that
+    /// carries none is a reading nobody has rather than an idle session.
+    pub activity: Option<String>,
     /// The session whose transcript answers for this seat, when there is one.
     pub session_id: Option<String>,
     /// That session's ADDRESS, which is a different value from its id (lessons
-    /// claude-code A6) and is what an effect issues against. Absent on a row
-    /// that carries none.
+    /// claude-code A6). An interactive row carries none, so this is `None` on
+    /// every seat the host runs.
     pub short_id: Option<String>,
     pub project: Option<String>,
     pub worktree: Option<String>,
-    /// Whether this seat's worktrees held a pid-less row at all this poll,
-    /// including one the recency window aged out of the reading above. `Absent`
-    /// collapses "no row anywhere" and "only rows too old to answer" into one
-    /// state, and the replacement window has to tell them apart: the row a
-    /// replacement is re-hosting can be older than the bound (lessons
-    /// claude-code A10, the 2026-09-04 outage).
-    pub pidless_row: bool,
-    /// Whether the row this reading came from names an end the ROSTER can name
-    /// — `stopped` or `failed`, the two words it reaches only from a non-idle
-    /// prior state. Hibernation, a stop from idle and a kill from outside the
-    /// fleet read identically on every roster field (lessons claude-code A3),
-    /// so none of them is here: an end the listing cannot name is one the
-    /// controller's own record answers for. False on a seat no row matched,
-    /// which is a reading nobody took rather than a session that ended.
-    pub state_names_an_end: bool,
+    /// The pid of the pane the host holds for this seat — the agent itself,
+    /// since nothing sits between (E2) — alive or dead. `None` where the host
+    /// holds no session for the seat.
+    pub pane_pid: Option<u32>,
+    /// The status the pane's process exited with, on a `Stopped` seat; `None`
+    /// on every other state, and on a pane that died with no status to report.
+    pub exit_status: Option<i32>,
 }
 
 /// The listings one poll read: the fleet's own, and one per seat that comes up
 /// under its own configuration directory.
 ///
-/// A session started under its own configuration directory is held by its own
-/// daemon, and THAT DAEMON'S LISTING IS THE ONLY ONE THAT NAMES IT — the
-/// fleet's answers as if the session did not exist. So a poll reads once per
-/// distinct directory rather than once, and each seat is decided against the
-/// listing that could see it.
+/// A session started under its own configuration directory is LISTED under
+/// that directory and under no other (lessons claude-code A11, B10) — the
+/// fleet's listing answers as if the session did not exist. So a poll reads
+/// once per distinct directory rather than once, and each seat is decided
+/// against the listing that could see it.
 ///
 /// The listings are kept APART rather than concatenated into one vector: a
 /// per-seat read that could not be made has to leave that seat Unknown while
@@ -149,7 +124,7 @@ impl Rosters {
     ///
     /// `config_dir_of` answers the directory a seat's own row names, or `None`
     /// for a seat that comes up under the fleet's. `read` is the listing under
-    /// one directory. Both are seams so the fold is exercised without a daemon:
+    /// one directory. Both are seams so the fold is exercised without an agent:
     /// the defect this shape exists to prevent is reading every row under the
     /// adapter's own directory, which is invisible in any rig where the two
     /// reads answer alike.
@@ -210,154 +185,211 @@ impl Rosters {
     }
 }
 
-/// One seat's view of one roster read.
+/// One seat's reading, from the host's listing and the agent's.
 ///
-/// Rows are matched to seats by working directory and never by the short id.
-/// A working directory NAMES a seat and proves nothing about who dispatched the
-/// session (lessons claude-code B5), so two live rows in one worktree are
-/// Unknown rather than a contest: there is no honest way to pick, and picking
-/// arbitrarily is how unattributed sessions get handed to a seat as its own.
+/// PRESENCE IS THE HOST'S. The seat's session is the one named by
+/// [`host::session_for`] on fleet's own server, and nothing else is: a session
+/// the host does not hold for the seat is not the seat's, wherever it stands.
+/// A dead pane is an END — a session the host keeps cannot hibernate or be
+/// re-hosted under it — and reads `Stopped` with the status it exited with.
+///
+/// ACTIVITY IS THE LISTING'S, and a row is the seat's by its PID: the pane's
+/// process is the agent (E2), so the row whose pid is the pane's is this
+/// session and no other. A working directory names a seat and proves nothing
+/// about who started the session in it (lessons claude-code B5), so no row is
+/// attributed by where it stands.
+///
+/// WHERE THE TWO DISAGREE THE SEAT IS UNKNOWN, carrying both readings: a live
+/// pane the listing names no row for once the start's grace is spent, a live
+/// row in the seat's worktree with no session on the host behind it, and a
+/// live pane beside a listing that could not be read. None of them is a seat
+/// to spawn over and none of them is a seat to believe present.
 pub fn observe_seat(
     read: &RosterRead,
+    host: &HostRead,
     seat: &Seat,
     now_ms: u64,
-    recency: &Recency,
 ) -> SeatObservation {
+    let session = host::session_for(&seat.id);
+    let panes = match host {
+        HostRead::Unreadable { cause } => return unknown(seat, None, cause.clone()),
+        HostRead::Readable(panes) => panes,
+    };
+    let Some(pane) = panes.iter().find(|pane| pane.session == session) else {
+        return unhosted(read, seat, &session);
+    };
+    match pane.state {
+        // An end, and the reading does not need the listing: an interactive
+        // row is gone by the next read after its process is (lessons
+        // claude-code B10), so there is no row left to read it from.
+        PaneState::Dead { status } => {
+            let mut stopped = unmatched(seat);
+            stopped.state = RosterState::Stopped;
+            stopped.pane_pid = pane.pid;
+            stopped.exit_status = status;
+            stopped
+        }
+        PaneState::Alive => hosted(read, seat, &session, pane, now_ms),
+    }
+}
+
+/// A seat the host holds no session for: `Absent`, unless the listing names a
+/// live session standing in one of its worktrees — which is a session fleet
+/// does not host, and so not the seat's (B5), and not a seat to start a second
+/// session beside either.
+fn unhosted(read: &RosterRead, seat: &Seat, session: &str) -> SeatObservation {
     let rows = match read {
+        // Nothing on the host, and nothing to say whether a live session stands
+        // in the worktree regardless: a start into that is a second session,
+        // so the seat is left unread rather than read absent.
         RosterRead::Unreadable { cause } => {
-            let mut unknown = unmatched(seat);
-            unknown.state = RosterState::Unknown;
-            unknown.unknown_cause = Some(cause.clone());
-            return unknown;
+            return unknown(
+                seat,
+                None,
+                format!(
+                    "no tmux session {session} on {}, and the listing could not be read: {cause}",
+                    host::SOCKET
+                ),
+            )
         }
         RosterRead::Readable(rows) => rows,
     };
-
-    // Every row standing in one of this seat's worktrees, carrying the project
-    // whose path it matched: a seat has a worktree per project and the published
-    // row names the one the session is actually in.
-    let matched: Vec<Match> = rows
-        .iter()
-        .filter_map(|row| {
-            seat.worktrees
-                .iter()
-                .find(|(_, path)| dir_key(path) == row.cwd_key())
-                .map(|(project, path)| Match {
-                    row,
-                    project,
-                    worktree: path,
-                })
-        })
-        .collect();
-
-    // Partition by pid, never by count: two ended rows beside a live one is a
-    // seat working normally beside its own history, and the unattributable case
-    // is competing LIVE claims.
-    let (live, pidless): (Vec<Match>, Vec<Match>) =
-        matched.into_iter().partition(|m| m.row.is_live());
-    // Held before the window filter below consumes the rows: a seat whose only
-    // rows aged out reads `Absent`, and the replacement hold needs to know the
-    // rows were there.
-    let a_pidless_row_stands = !pidless.is_empty();
-
-    if live.len() > 1 {
-        let mut unknown = live[0].seen(RosterState::Unknown);
-        unknown.session_id = None;
-        // And its address with it: an unattributable pair leaves no session to
-        // name, so it must leave nothing to act against either.
-        unknown.short_id = None;
-        unknown.unknown_cause = Some(format!(
-            "{} live rows stand in {}'s worktrees; a seat is one session, and a \
-             working directory names a seat without proving a session is that \
-             seat's, so these are unattributed rather than the seat's",
-            live.len(),
-            seat.machine_name()
-        ));
-        return unknown;
+    let standing = rows.iter().filter(|row| row.is_live()).find_map(|row| {
+        seat.worktrees
+            .iter()
+            .find(|(_, path)| dir_key(path) == row.cwd_key())
+            .map(|(_, path)| (row, path))
+    });
+    match standing {
+        None => unmatched(seat),
+        Some((row, worktree)) => unknown(
+            seat,
+            None,
+            format!(
+                "no tmux session {session} on {}; the listing names session {}, pid {}, in {}",
+                host::SOCKET,
+                row.session_id,
+                row.pid.map(|pid| pid.to_string()).unwrap_or_default(),
+                dir_key(worktree)
+            ),
+        ),
     }
-    if let [only] = live.as_slice() {
+}
+
+/// A seat whose pane is alive: the listing's row with the pane's pid is its
+/// activity, a young session the listing has not named yet is starting, and an
+/// older one it still does not name is the two reads disagreeing.
+fn hosted(
+    read: &RosterRead,
+    seat: &Seat,
+    session: &str,
+    pane: &Pane,
+    now_ms: u64,
+) -> SeatObservation {
+    let alive = match pane.pid {
+        Some(pid) => format!("tmux holds pid {pid} alive for {}", seat.machine_name()),
+        None => format!(
+            "tmux holds {session} alive for {} with no pid to read",
+            seat.machine_name()
+        ),
+    };
+    let rows = match read {
+        // Reviewer call 2026-09-25 (1): never Present on a listing nobody read.
+        // Nothing is spawned beside a live pane or revived over it either way.
+        RosterRead::Unreadable { cause } => {
+            return unknown(
+                seat,
+                pane.pid,
+                format!("{alive}, and the listing could not be read: {cause}"),
+            )
+        }
+        RosterRead::Readable(rows) => rows,
+    };
+    if let Some(row) = pane
+        .pid
+        .and_then(|pid| rows.iter().find(|row| row.pid == Some(pid)))
+    {
         // PRESENCE of the field, never its value: an unrecognised cause is still
-        // a seat that cannot act, and reading it as healthy is the whole defect.
-        let state = match only.row.waiting_for {
+        // a seat that cannot act, and reading it as healthy is the whole defect
+        // (lessons claude-code B8, and B10 on the interactive row). Read through
+        // the row's one definition of a block, which a turn typed into the seat
+        // reads too (`crate::effect::type_turn`), so the seat the projection
+        // calls blocked and the one a turn refuses are the same seat — a
+        // `waiting` status with no cause beside it included.
+        let blocked = row.blocked_on();
+        let state = match blocked {
             Some(_) => RosterState::PromptBlocked,
             None => RosterState::Present,
         };
-        return only.seen(state);
-    }
-
-    // No live row. A starting row outranks the ended ones: it is the only one
-    // about to become live, and reading it as absent is what puts a second
-    // session in one worktree.
-    let (starting, stopped): (Vec<Match>, Vec<Match>) = pidless
-        .into_iter()
-        .partition(|m| m.row.is_starting(now_ms, STARTING_GRACE_MS));
-    if let Some(newborn) = newest(&starting) {
-        return newborn.seen(RosterState::Starting);
-    }
-    // The window, measured from each row's own END. A row whose transcript
-    // resolves is ranked on its last write; one whose transcript does not is
-    // ranked on its start, and carries that reading with it so the projection
-    // can say which of the two it is.
-    // The end is asked for ONCE per row: it is a filesystem read, and two calls
-    // could answer differently across a write.
-    let recent: Vec<(Match, u64, Option<String>)> = stopped
-        .into_iter()
-        .filter_map(|m| {
-            let (stamp, fell_back) = match (recency.ended_at)(m.worktree, &m.row.session_id) {
-                Some(end) => (Some(end), None),
-                None => (m.row.started_at, Some(FELL_BACK_TO_START.to_string())),
-            };
-            match stamp {
-                Some(t) if now_ms.saturating_sub(t) <= recency.window_ms => Some((m, t, fell_back)),
-                _ => None,
-            }
-        })
-        .collect();
-    // Newest by the stamp each row was JUDGED on, so the row that answers is the
-    // one that finished last and not the one that started last.
-    match recent.iter().max_by_key(|(_, stamp, _)| *stamp) {
-        // An ended row still answers for context: the transcript outlives the
-        // process that wrote it (lessons claude-code C4).
-        Some((newest, _, fell_back)) => {
-            let mut seen = newest.seen(RosterState::Stopped);
-            seen.recency_fallback = fell_back.clone();
-            seen
-        }
-        None => {
-            let mut nothing_recent = unmatched(seat);
-            nothing_recent.pidless_row = a_pidless_row_stands;
-            nothing_recent
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct Match<'a> {
-    row: &'a AgentRow,
-    project: &'a str,
-    worktree: &'a str,
-}
-
-impl Match<'_> {
-    fn seen(&self, state: RosterState) -> SeatObservation {
-        SeatObservation {
+        let (project, worktree) = placed(seat, &[row.cwd.as_str(), pane.path.as_str()]);
+        return SeatObservation {
             state,
             unknown_cause: None,
-            waiting_for: self.row.waiting_for.clone(),
-            recency_fallback: None,
-            session_id: Some(self.row.session_id.clone()),
-            short_id: self.row.id.clone(),
-            project: Some(self.project.to_string()),
-            worktree: Some(self.worktree.to_string()),
-            pidless_row: !self.row.is_live(),
-            state_names_an_end: self.row.names_an_end(),
-        }
+            waiting_for: blocked,
+            activity: row.status.clone(),
+            session_id: Some(row.session_id.clone()),
+            short_id: row.id.clone(),
+            project,
+            worktree,
+            pane_pid: pane.pid,
+            exit_status: None,
+        };
     }
+    // The age is the SESSION's, which the host counts in whole seconds: a start
+    // is younger than the grace for every read inside it, and one the host
+    // cannot date is no newborn anybody can vouch for.
+    let young = pane
+        .created_ms
+        .is_some_and(|created| now_ms.saturating_sub(created) < STARTING_GRACE_MS);
+    if young {
+        let mut starting = unmatched(seat);
+        starting.state = RosterState::Starting;
+        starting.pane_pid = pane.pid;
+        return starting;
+    }
+    unknown(
+        seat,
+        pane.pid,
+        match pane.pid {
+            Some(_) => format!("{alive}; the listing names no row with that pid"),
+            None => format!("{alive}; the listing can name no row for it"),
+        },
+    )
 }
 
-/// A seat no row matched. It still names where it would be found, but only when
-/// that is unambiguous: a seat registered on several projects has no one answer,
-/// and the fields are absent rather than guessed.
+/// The project and worktree a seat's session stands in: the first of `paths`
+/// that one of the seat's worktrees is, and the seat's one worktree where none
+/// is. Named, never guessed — the row's directory and the pane's are the two
+/// readings of where the session is, and a seat on several projects with
+/// neither matching has no one answer.
+fn placed(seat: &Seat, paths: &[&str]) -> (Option<String>, Option<String>) {
+    paths
+        .iter()
+        .find_map(|path| {
+            seat.worktrees
+                .iter()
+                .find(|(_, worktree)| dir_key(worktree) == dir_key(path))
+        })
+        .map(|(project, worktree)| (Some(project.clone()), Some(worktree.clone())))
+        .unwrap_or_else(|| {
+            let fallback = unmatched(seat);
+            (fallback.project, fallback.worktree)
+        })
+}
+
+/// A seat nobody could read, with why — both readings, where it is the two of
+/// them disagreeing.
+fn unknown(seat: &Seat, pane_pid: Option<u32>, cause: String) -> SeatObservation {
+    let mut unknown = unmatched(seat);
+    unknown.state = RosterState::Unknown;
+    unknown.unknown_cause = Some(cause);
+    unknown.pane_pid = pane_pid;
+    unknown
+}
+
+/// A seat no session answers for. It still names where it would be found, but
+/// only when that is unambiguous: a seat registered on several projects has no
+/// one answer, and the fields are absent rather than guessed.
 fn unmatched(seat: &Seat) -> SeatObservation {
     let (project, worktree) = match seat.worktrees.as_slice() {
         [(project, path)] => (Some(project.clone()), Some(path.clone())),
@@ -367,18 +399,14 @@ fn unmatched(seat: &Seat) -> SeatObservation {
         state: RosterState::Absent,
         unknown_cause: None,
         waiting_for: None,
-        recency_fallback: None,
+        activity: None,
         session_id: None,
         short_id: None,
         project,
         worktree,
-        pidless_row: false,
-        state_names_an_end: false,
+        pane_pid: None,
+        exit_status: None,
     }
-}
-
-fn newest<'a, 'b>(rows: &'b [Match<'a>]) -> Option<&'b Match<'a>> {
-    rows.iter().max_by_key(|m| m.row.started_at.unwrap_or(0))
 }
 
 // ------------------------------------------------------------------ transcript

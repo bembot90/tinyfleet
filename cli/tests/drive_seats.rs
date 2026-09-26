@@ -11,87 +11,51 @@ include!("drive/rig.rs");
 
 mod common;
 
-/// The window is measured from the session's END, and this is the reading that
-/// separates that from the start: a session that RAN for 25 hours and finished
-/// a minute ago. Keyed on the start it is a day-old row and its transcript goes
-/// with it; keyed on the end it is the freshest stopped row there is.
+/// A DEAD PANE is a stopped seat (ruling 3): the host keeps the pane with the
+/// status its agent exited with, the listing names nothing — the row went with
+/// the process (lessons claude-code B10) — and the session the table recorded
+/// still answers for context, because its transcript outlives it (C4).
 ///
-/// The end is the transcript's last write, so the transcript is written here
-/// and left at its own mtime — writing it IS the session's last act.
+/// Each `observe --once` is a controller's FIRST poll, which did not see the
+/// pane die, so the one `session.ended` it writes is dated by the transcript;
+/// the second poll finds the end latched and writes none. There is no stopped
+/// window left to age the row out: it reads stopped for as long as the pane is
+/// kept.
 #[test]
-fn a_long_session_that_just_ended_reads_stopped_and_not_history() {
-    let rig = Rig::new("recency-just-ended");
-    rig.write_roster(&ended_row(
-        &rig.worktree(),
-        "a-session",
-        now_ms() - 25 * HOUR_MS,
-    ));
+fn a_dead_pane_reads_stopped_with_its_status_its_end_and_its_context() {
+    let rig = Rig::new("dead-pane");
+    rig.a_dead_session("a-session", "a-session", Some(3));
     rig.write_transcript(
         "a-session",
         "{\"type\":\"assistant\",\"message\":{\"usage\":{\"input_tokens\":18}}}\n",
     );
 
-    assert_eq!(
-        rig.observe().status.code(),
-        Some(0),
-        "{}",
-        rig.root.display()
-    );
+    let out = rig.observe();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let row = &rig.projection()["seats"][0];
-    assert_eq!(
-        row["roster_state"], "stopped",
-        "a session that ended a minute ago is stopped however long it ran: {row}"
-    );
-    assert!(
-        row["roster_recency_fallback"].is_null(),
-        "and it was ranked on its END, so nothing fell back: {row}"
-    );
-    // The transcript is the evidence the row keeps by staying stopped: an absent
-    // row publishes no reading at all, so this is the same claim from the side a
-    // reader of the document cares about.
+    assert_eq!(row["roster_state"], "stopped", "{row}");
+    assert_eq!(row["exit_status"], 3, "{row}");
     assert_eq!(
         row["context_tokens"], 18,
         "the stopped row still answers for context: {row}"
     );
-}
+    let ends: Vec<serde_json::Value> = rig
+        .events()
+        .into_iter()
+        .filter(|e| e["type"] == "session.ended")
+        .collect();
+    assert_eq!(ends.len(), 1, "{ends:?}");
+    assert_eq!(ends[0]["payload"]["session"], "a-session");
+    assert_eq!(ends[0]["payload"]["status"], 3);
+    assert_eq!(ends[0]["payload"]["source"], "transcript");
+    assert!(ends[0]["payload"]["at"].is_string(), "{}", ends[0]);
+    assert_eq!(row["ended_at"], ends[0]["payload"]["at"], "{row}");
 
-/// The window itself is POLICY, read from `fleet.toml` like the poll interval.
-/// One row, one end, two files: the same 23-hour-old session is inside a 24 h
-/// window and outside a 12 h one.
-///
-/// Both readings are taken on the SAME rig so nothing but the policy figure
-/// moves between them.
-#[test]
-fn the_stopped_window_is_the_policys_and_not_a_constant() {
-    let rig = Rig::new("recency-policy");
-    rig.write_roster(&ended_row(
-        &rig.worktree(),
-        "a-session",
-        now_ms() - 23 * HOUR_MS,
-    ));
-    rig.write_transcript(
-        "a-session",
-        "{\"type\":\"assistant\",\"message\":{\"usage\":{\"input_tokens\":18}}}\n",
-    );
-    rig.age_transcript("a-session", 23 * HOUR_MS);
-
-    rig.write_policy("[controller]\npoll_seconds = 1\nstopped_recency_hours = 24\n");
-    assert_eq!(rig.observe().status.code(), Some(0));
-    assert_eq!(
-        rig.projection()["seats"][0]["roster_state"],
-        "stopped",
-        "23 hours is inside a 24 hour window: {}",
-        rig.projection()["seats"][0]
-    );
-
-    rig.write_policy("[controller]\npoll_seconds = 1\nstopped_recency_hours = 12\n");
-    assert_eq!(rig.observe().status.code(), Some(0));
-    assert_eq!(
-        rig.projection()["seats"][0]["roster_state"],
-        "absent",
-        "and outside a 12 hour one — the figure is the file's: {}",
-        rig.projection()["seats"][0]
-    );
+    // The next poll reads the same dead pane and writes no second end.
+    let out = rig.observe();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(rig.events_of("session.ended"), 1);
+    assert_eq!(rig.projection()["seats"][0]["roster_state"], "stopped");
 }
 
 #[test]

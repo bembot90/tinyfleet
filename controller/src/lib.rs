@@ -51,11 +51,11 @@
 //! beside it at the value the operator configured, which is what keeps such a
 //! seat logged in.
 //!
-//! THAT DIRECTORY SCOPES THE PROVIDER'S DAEMON, and a per-seat daemon holds a
-//! per-seat roster (lessons claude-code A11): the fleet's listing does not name
-//! a session started under one. So the directory is on the session-table row and
-//! every act about that session is made under it — the listing, the transcript,
-//! the end stamp, the stop, the removal, the revive and the nudge. A poll reads
+//! THAT DIRECTORY SCOPES THE PROVIDER'S LISTING (lessons claude-code A11): the
+//! fleet's listing does not name a session started under one. So the directory
+//! is on the session-table row and every act about that session is made under
+//! it — the listing, the transcript, the end stamp, the stop, the removal, the
+//! revive and the nudge. A poll reads
 //! one listing per distinct directory and decides each seat against the listing
 //! that could see it; a per-row listing nobody could read leaves that row Unknown
 //! and the rest decided.

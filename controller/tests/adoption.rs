@@ -1,35 +1,34 @@
-//! A CLAIMED SESSION IS NEVER ATTACHED TO, ON ANY POLL.
+//! A CLAIM IS TAKEN ONCE, ON A LIVE PANE, AND HOLDS NOTHING PAST ITS END.
 //!
 //! A test binary of its own, because these arms drive the loop in this process
-//! and it reads the PROCESS's environment for the machine directory and the
-//! agent binary: an arm setting those beside arms that do not would be setting
-//! them for every thread in the binary. Inside this one they are serialised on
-//! the lock below, which each rig holds for its whole life.
+//! and it reads the PROCESS's environment for the machine directory: an arm
+//! setting it beside arms that do not would be setting it for every thread in
+//! the binary. Inside this one they are serialised on the lock below, which
+//! each rig holds for its whole life.
 //!
 //! What it measures is the thing neither `effect::adopt` nor `decide` can say
-//! alone: that the claim adoption takes ONCE is in hand on every later poll's
-//! verdicts, so a seat standing on a session the fleet already owns is not
-//! attached to as though it were gone — not on the poll that claimed it, and
-//! not on the poll after that.
+//! alone: that adoption claims a session the table names on the first poll that
+//! sees it LIVE — its pane alive on the host and its row, by the pane's pid, on
+//! the listing — once per session and never again; and that the claim holds
+//! nothing once the pane is dead. A dead pane is an END (ruling 3): the session
+//! a host keeps cannot hibernate or be re-hosted under it, so the hold a claim
+//! used to buy a pid-less row (lessons claude-code A3, A10, both retired) has
+//! nothing left to hold, and a claimed seat and an unclaimed one are decided
+//! alike on the poll their panes read dead.
 //!
-//! TWO SHAPES FOR THE CARRY, because the claim travels two ways. The first arm
-//! drives two separate polls, where the only carrier between them is the
-//! session table on disk. The second drives two ticks of ONE loop, where
-//! adoption runs on the first tick and never again — which is the shape the
-//! hourly revives were recorded in.
-//!
-//! THEN ONE ARM PER ROW SHAPE, because the claim is taken and released on what
-//! the row reads: a live idle session is claimed at its first sighting, the
-//! claim holds it through the pid-less stretch that follows, an end the roster
-//! can NAME releases it, and a pid-less row no claim covers is revived as it
-//! always was.
+//! And the end itself: the first poll that reads a pane dead writes ONE
+//! `session.ended`, dated by that poll when the controller saw the pane alive
+//! an interval before, and by the transcript when the pane was dead before
+//! the controller was looking.
 
 use fleet_controller::adapter::claude_code::parse_roster;
-use fleet_controller::adapter::{dir_key, transcript_path, DaemonRead};
 use fleet_controller::clock::Clock;
+use fleet_controller::events;
+use fleet_controller::host::{session_for, Host};
 use fleet_controller::platform::{self, Grant};
 use fleet_controller::run::{self, Options, Seams, StopHandler};
-use fleet_controller::test_support::{Answers, FakeClock, FakeHost, StubAgent};
+use fleet_controller::test_support::{Answers, FakeClock, FakeHost, StubAgent, FIRST_PANE_PID};
+use fleet_core::seat::identity::SeatId;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -43,62 +42,25 @@ mod common;
 /// refusing it here would fail every other arm for it.
 static ENV: Mutex<()> = Mutex::new(());
 
-/// The seat whose session the table names — the one an adoption can claim. Its
-/// row is keyed by the id, and the table and the stream name it by the machine
-/// name that id gives.
+/// The seat whose session an arm claims, or finds claimed.
 const OWNED_ID: &str = "01a0d1f1-0aec-765f-9abe-5c21e8a04b17";
 const OWNED: &str = "agent-e8a04b17";
-/// The seat standing on the same shaped row with nothing in the table naming its
-/// session. It is the control: no claim can cover it, so the revive it gets is
-/// what the other seat would have got.
+/// The seat beside it whose session the table names and no claim covers. It is
+/// the control: whatever the claimed seat gets on a dead pane, this one gets
+/// too, because the claim is not what decides a dead pane.
 const UNOWNED_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
 const UNOWNED: &str = "agent-93b9739a";
 const PROJECT: &str = "a-project";
 const OWNED_SESSION: &str = "a-session";
-const OWNED_ADDRESS: &str = "ab12";
 const UNOWNED_SESSION: &str = "b-session";
-const UNOWNED_ADDRESS: &str = "cd34";
-
-/// What the owned seat's row reads this poll, in the shapes the live daemon
-/// produces (lessons claude-code A3, re-read on 2.1.261).
-///
-/// `done` spans the first two: a live idle session carries it with a pid and
-/// `status: idle` beside it, and a session that has hibernated, been stopped
-/// from idle or been killed from outside carries it pid-less with no status —
-/// which is why the word answers no question about whether a session is over.
-/// `stopped` is reached only from a non-idle prior state, and is one of the two
-/// ends the roster can name on its own.
-#[derive(Clone, Copy)]
-enum Owned {
-    LiveIdle,
-    PidlessDone,
-    Stopped,
-}
-
-impl Owned {
-    /// The fields this shape adds to the row, in the daemon's own spelling. A
-    /// pid-less row carries NO status: the field is present only while a pid
-    /// is.
-    fn fields(self) -> &'static str {
-        match self {
-            Owned::LiveIdle => ",\"pid\":4242,\"state\":\"done\",\"status\":\"idle\"",
-            Owned::PidlessDone => ",\"state\":\"done\"",
-            Owned::Stopped => ",\"state\":\"stopped\"",
-        }
-    }
-}
 
 /// The poll interval the rigs' policy file carries, and the fake time one nap
-/// spends against the clock that ends the two-tick run.
+/// spends against the clock that ends a run of ticks.
 const POLL_SECONDS: u64 = 1;
 
-/// How many ticks the second arm drives. Two is the whole of its subject: the
-/// tick adoption runs on, and the one after it that has no claim of its own.
-const TICKS: u64 = 2;
-
 /// One main-chain assistant turn carrying a window well under the rest
-/// threshold, which is what makes a pid-less row's verdict a revive rather than
-/// a spawn: the listing carries no token field, so the transcript is the only
+/// threshold, which is what makes a dead pane's verdict a revive rather than a
+/// spawn: the listing carries no token field, so the transcript is the only
 /// surface that reading comes from.
 const A_LIGHT_TRANSCRIPT: &str =
     "{\"type\":\"assistant\",\"message\":{\"usage\":{\"input_tokens\":1000}}}\n";
@@ -110,12 +72,6 @@ fn write(path: &Path, body: &str) {
     std::fs::write(path, body).expect("the fixture file is written");
 }
 
-fn executable(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-        .expect("the stub is executable");
-}
-
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -123,20 +79,16 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// A machine directory naming two seats, a listing carrying a pid-less row in
-/// each of their worktrees, and a session table that names one of the two
-/// sessions and not the other.
+/// A machine directory naming two seats and a session table naming a sighted
+/// session for each — one of them claimed where the arm asks for it — plus the
+/// host their sessions run on and the agent whose listing names them.
 struct Rig {
     root: PathBuf,
     machine: PathBuf,
     owned: PathBuf,
     unowned: PathBuf,
-    argv: PathBuf,
-    /// Whether the owned seat's row starts out ALREADY claimed — the state a
-    /// poll after the one that adopted it reads back off disk.
-    owned_claimed: bool,
-    /// The shape the owned seat's row reads on the listing.
-    owned_row: Owned,
+    host: FakeHost,
+    stub: StubAgent,
     _held: MutexGuard<'static, ()>,
 }
 
@@ -150,9 +102,12 @@ impl Rig {
             machine: root.join("machine"),
             owned: root.join("wt").join(OWNED),
             unowned: root.join("wt").join(UNOWNED),
-            argv: root.join("agent-argv"),
-            owned_claimed: false,
-            owned_row: Owned::PidlessDone,
+            host: FakeHost::new(),
+            stub: StubAgent::answering(Answers {
+                transcript: Some(A_LIGHT_TRANSCRIPT.to_string()),
+                ended_at: Some(now_ms()),
+                ..Answers::default()
+            }),
             root,
             _held: held,
         };
@@ -174,143 +129,112 @@ impl Rig {
                 rig.unowned.display()
             ),
         );
-
-        rig.write_the_table();
+        rig.write_the_table(false);
+        common::hermetic::export(common::hermetic::in_process_vars(
+            &rig.root,
+            &rig.machine,
+            None,
+        ));
+        platform::clear_stop();
         rig
     }
 
-    /// The table as a poll before this one left it: the owned seat's row carries
-    /// the session id a live sighting wrote onto it. `adopted` is present only
-    /// where the rig was asked for a claim an earlier poll took; absent is the
-    /// state of every row no adoption has reached yet.
+    /// The table as a poll before this one left it: each seat's row carries
+    /// the session id a sighting wrote onto it, and the owned seat's is
+    /// `adopted` where `claimed` — the state a poll after the one that adopted
+    /// it reads back off disk.
     ///
-    /// Its dispatch is far enough back that the arrival window is closed, so the
-    /// hold that keeps a fresh dispatch from being re-issued says nothing here
-    /// and the verdict is reached on the row itself.
-    fn write_the_table(&self) {
-        let claim = match self.owned_claimed {
+    /// Both dispatches are far enough back that the arrival window is closed,
+    /// so the hold that keeps a fresh dispatch from being re-issued says
+    /// nothing here and the verdict is reached on the seat itself.
+    fn write_the_table(&self, claimed: bool) {
+        let claim = match claimed {
             true => format!(", \"adopted\": \"{OWNED_SESSION}\""),
             false => String::new(),
+        };
+        let row = |seat: &str, name: &str, worktree: &Path, session: &str, extra: &str| {
+            format!(
+                "{{\"seat\": \"{seat}\", \"project\": \"{PROJECT}\", \"worktree\": \"{}\", \
+                 \"name\": \"{name}\", \"model\": \"claude-opus-5\", \"posture\": \"auto\", \
+                 \"first_turn\": \"/wake {name}\", \"transient\": false, \
+                 \"dispatch_id\": \"dispatch-{name}\", \"dispatched_at\": 1000, \
+                 \"session_id\": \"{session}\"{extra}}}",
+                worktree.display()
+            )
         };
         write(
             &self.machine.join("sessions.json"),
             &format!(
-                "{{\"schema\": 2, \"sessions\": [{{\
-                 \"seat\": \"{OWNED_ID}\", \"project\": \"{PROJECT}\", \"worktree\": \"{}\", \
-                 \"name\": \"A Seat\", \"model\": \"claude-opus-5\", \"posture\": \"auto\", \
-                 \"first_turn\": \"/wake {OWNED}\", \"transient\": false, \
-                 \"dispatch_id\": \"an-earlier-dispatch\", \"dispatched_at\": 1000, \
-                 \"session_id\": \"{OWNED_SESSION}\", \"short_id\": \"{OWNED_ADDRESS}\"{claim}\
-                 }}]}}\n",
-                self.owned.display()
+                "{{\"schema\": 2, \"sessions\": [{}, {}]}}\n",
+                row(OWNED_ID, OWNED, &self.owned, OWNED_SESSION, &claim),
+                row(UNOWNED_ID, UNOWNED, &self.unowned, UNOWNED_SESSION, "")
             ),
         );
     }
 
-    /// The rig where the claim was taken by an earlier poll: the table names
-    /// the session as this fleet's, which is what a controller reads back off
-    /// disk after a restart.
-    fn with_the_claim_taken(mut self) -> Rig {
-        self.owned_claimed = true;
-        self.write_the_table();
+    fn with_the_claim_taken(self) -> Rig {
+        self.write_the_table(true);
         self
     }
 
-    /// The rig whose owned row reads `shape` on the listing.
-    fn with_the_owned_row(mut self, shape: Owned) -> Rig {
-        self.owned_row = shape;
-        self
+    /// A live session for `seat` on the host, as a start leaves one, and the
+    /// pid its pane was given.
+    fn start(&self, seat: &str, worktree: &Path) -> u32 {
+        let before = self.host.calls_of(FakeHost::NEW_SESSION).len() as u32;
+        self.host
+            .new_session(
+                &session_of(seat),
+                worktree,
+                &["/nowhere/agent".to_string()],
+                &[],
+            )
+            .expect("the fake host starts the session");
+        FIRST_PANE_PID + before
     }
 
-    /// The listing every arm answers with: one row per seat, both started long
-    /// enough ago to be past the newborn grace. The control's is always the
-    /// pid-less row nothing claims; the owned seat's takes whichever shape the
-    /// arm asked for.
-    fn roster_body(&self) -> String {
-        self.roster_of(self.owned_row)
+    /// The listing naming each `(session, pid, worktree)` as the recorded
+    /// interactive row reads (lessons claude-code B10): a pid, a status, no
+    /// address.
+    fn list(&self, rows: &[(&str, u32, &Path)]) {
+        let body = rows
+            .iter()
+            .map(|(session, pid, worktree)| {
+                format!(
+                    "{{\"sessionId\":\"{session}\",\"cwd\":\"{}\",\"kind\":\"interactive\",\
+                     \"pid\":{pid},\"status\":\"idle\",\"startedAt\":1000}}",
+                    worktree.display()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let listing = parse_roster(&format!("[{body}]"));
+        self.stub.set(|answers| answers.status = listing);
     }
 
-    /// The same listing with the owned row in a shape this rig is not in — what
-    /// an arm needs when it holds two listings at once.
-    fn roster_of(&self, owned_row: Owned) -> String {
-        format!(
-            "[{{\"id\":\"{OWNED_ADDRESS}\",\"sessionId\":\"{OWNED_SESSION}\",\"cwd\":\"{}\",\
-             \"kind\":\"background\",\"startedAt\":1000{owned}}},\
-             {{\"id\":\"{UNOWNED_ADDRESS}\",\"sessionId\":\"{UNOWNED_SESSION}\",\"cwd\":\"{}\",\
-             \"kind\":\"background\",\"startedAt\":1000}}]",
-            self.owned.display(),
-            self.unowned.display(),
-            owned = owned_row.fields(),
-        )
+    /// One poll, from a loop that starts again knowing only what the session
+    /// table on disk carries — which is what a restarted controller is.
+    fn poll_once(&self) {
+        let clock = FakeClock::new();
+        assert_eq!(
+            run::observe_seamed(
+                &Options { once: true },
+                self.grant(),
+                None,
+                self.seams(&clock)
+            ),
+            0
+        );
     }
 
-    /// The listing the NEXT poll reads. The stub answers out of a file rather
-    /// than a body baked into it, so a run of two polls can stage a session
-    /// that was live when the claim was taken and is pid-less now — the
-    /// sequence the hold exists for, and one a fixed listing cannot express.
-    fn relist(&mut self, shape: Owned) {
-        self.owned_row = shape;
-        write(&self.roster_path(), &self.roster_body());
-    }
-
-    fn roster_path(&self) -> PathBuf {
-        self.root.join("roster.json")
-    }
-
-    /// The environment with an agent BINARY behind it: what the arm driving
-    /// `run::observe_with` needs, because that path resolves its own adapter.
-    fn with_an_agent_binary(self) -> Rig {
-        // A context reading under the rest threshold for each session. The
-        // adapter reads it off disk, and its mtime is the end the stopped-row
-        // window judges each row on.
-        for (worktree, session) in [
-            (&self.owned, OWNED_SESSION),
-            (&self.unowned, UNOWNED_SESSION),
-        ] {
-            write(
-                &transcript_path(
-                    &self.root.join(".claude"),
-                    dir_key(&worktree.display().to_string()),
-                    session,
-                ),
-                A_LIGHT_TRANSCRIPT,
-            );
+    fn seams<'a>(&'a self, clock: &'a dyn Clock) -> Seams<'a> {
+        Seams {
+            clock,
+            agent: &self.stub,
+            host: &self.host,
+            child_path: "",
+            effects_off: None,
+            stop_handler: StopHandler::Unarmed,
         }
-        // `daemon status` refuses, so no replacement window opens and nothing is
-        // held for one.
-        let stub = self.root.join("agent.sh");
-        write(&self.roster_path(), &self.roster_body());
-        write(
-            &stub,
-            &format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {argv}\ncase \"$*\" in\n  \
-                 *--version*) echo 2.1.261 ;;\n  \
-                 *daemon*) exit 1 ;;\n  \
-                 *) cat {roster} ;;\nesac\nexit 0\n",
-                argv = self.argv.display(),
-                roster = self.roster_path().display(),
-            ),
-        );
-        executable(&stub);
-        self.take_the_environment(Some(&stub));
-        self
-    }
-
-    /// The same environment with NO agent binary: what the arm driving
-    /// `run::observe_seamed` needs, because it hands the agent in itself and a
-    /// binary on the process PATH must not be reachable from there.
-    fn with_the_agent_handed_in(self) -> Rig {
-        self.take_the_environment(None);
-        self
-    }
-
-    fn take_the_environment(&self, claude_bin: Option<&Path>) {
-        common::hermetic::export(common::hermetic::in_process_vars(
-            &self.root,
-            &self.machine,
-            claude_bin,
-        ));
-        platform::clear_stop();
     }
 
     fn grant(&self) -> Grant {
@@ -346,32 +270,36 @@ impl Rig {
             .count()
     }
 
+    /// The `session.ended` lines for one seat, whole.
+    fn ends_of(&self, seat: &str) -> Vec<serde_json::Value> {
+        self.stream()
+            .into_iter()
+            .filter(|event| event["type"] == events::SESSION_ENDED && event["actor"]["id"] == seat)
+            .collect()
+    }
+
     fn projection(&self) -> serde_json::Value {
         let body = std::fs::read_to_string(self.machine.join("projection.json"))
             .expect("a projection is published");
         serde_json::from_str(&body).expect("the projection parses")
     }
 
-    fn decision(&self, seat: &str) -> String {
+    fn row(&self, seat: &str) -> serde_json::Value {
         let document = self.projection();
         document["seats"]
             .as_array()
             .expect("the projection carries seats")
             .iter()
             .find(|row| row["seat"]["id"] == seat)
-            .unwrap_or_else(|| panic!("{seat} is published: {document}"))["decision"]
-            .as_str()
-            .unwrap_or_else(|| panic!("{seat}'s decision is published: {document}"))
-            .to_string()
+            .unwrap_or_else(|| panic!("{seat} is published: {document}"))
+            .clone()
     }
 
-    fn attaches(&self) -> Vec<String> {
-        std::fs::read_to_string(&self.argv)
-            .unwrap_or_default()
-            .lines()
-            .filter(|call| call.starts_with("attach"))
-            .map(str::to_string)
-            .collect()
+    fn decision(&self, seat: &str) -> String {
+        self.row(seat)["decision"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{seat}'s decision is published"))
+            .to_string()
     }
 }
 
@@ -382,19 +310,20 @@ impl Drop for Rig {
     }
 }
 
+fn session_of(seat: &str) -> String {
+    session_for(&SeatId::parse(seat).expect("a hand-written seat id parses"))
+}
+
 /// The clock a run of ticks is driven on: fake time, and a stop asked for once
-/// [`TICKS`] whole poll intervals have been napped away.
+/// `after` has been napped away.
 ///
 /// A nap that ENDS with the flag raised returns false and the loop leaves, so
 /// the run is one tick per nap that finished quietly plus the tick before the
-/// nap that raised it: two intervals of fake time is exactly two ticks. Nothing
-/// here waits on the wall clock, so the interval's length costs the arm
-/// nothing.
+/// nap that raised it. Nothing here waits on the wall clock.
 ///
 /// THE NAP IS ALSO THE TICK BOUNDARY, which is the only place a seamed run can
 /// be told something new: `at_first_nap` runs once, between the first tick and
-/// the second, so an arm can hand the second tick a listing the first one did
-/// not read.
+/// the second.
 struct NapThenStop<'a> {
     inner: FakeClock,
     after: Duration,
@@ -421,6 +350,10 @@ impl<'a> NapThenStop<'a> {
 impl Clock for NapThenStop<'_> {
     fn now(&self) -> Instant {
         self.inner.now()
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.inner.now_ms()
     }
 
     fn sleep(&self, d: Duration) {
@@ -473,329 +406,241 @@ impl Drop for Watchdog {
     }
 }
 
-/// A SESSION THE DAEMON STILL LISTS IS CLAIMED, NEVER ATTACHED TO — AND THE
-/// CLAIM OUTLIVES THE POLL THAT TOOK IT.
+/// A RESTART CLAIMS THE LIVE SESSION ONCE, AND THE DEAD PANE IT LEAVES IS
+/// REVIVED ON THE NEXT POLL, CLAIM AND ALL.
 ///
-/// A pid-less row is the one reading the roster cannot tell apart on its own: a
-/// session that ended looks exactly like one the daemon is still holding. The
-/// session table is what separates them — it names the sessions this fleet has
-/// claimed — so a row whose session the table names and the daemon still lists
-/// is left alone, and reviving it instead re-attaches to a session that is
-/// already there, spending a whole wake on a seat whose first turn is one.
-///
-/// TWO POLLS, and the listing MOVES between them, because that is the sequence
-/// the claim exists to carry: the first poll sights a live session and claims
-/// it, the second reads the same session pid-less and holds it on the claim
-/// alone. The second poll starts from nothing but the session table on disk,
-/// exactly as a restarted controller does.
-///
-/// TWO SEATS ON ONE LISTING. `UNOWNED` stands on a pid-less row the whole way
-/// with nothing in the table naming its session; it is the control and it IS
-/// revived — which is what makes the other seat's leave-alone a reading of the
-/// claim rather than a fixture that never reached the revive arm at all.
+/// TWO POLLS, each from a loop that starts again knowing only the session table
+/// on disk, and the host MOVES between them: the first sees the owned seat's
+/// pane alive with its row on the listing by the pane's pid and claims it; the
+/// second finds the pane dead and the row gone (lessons claude-code B10). The
+/// claim is on the table by then and holds nothing: the seat is revived, and
+/// its end is written once, dated by the transcript, because the controller
+/// that read it dead had not seen it alive.
 #[test]
-fn a_restart_leaves_a_claimed_pid_less_row_alone_and_revives_the_one_it_does_not_own() {
-    let mut rig = Rig::new("claimed-across-a-restart")
-        .with_the_owned_row(Owned::LiveIdle)
-        .with_an_agent_binary();
+fn a_restart_claims_a_live_pane_once_and_revives_it_once_the_pane_is_dead() {
+    let rig = Rig::new("claimed-across-a-restart");
+    let pid = rig.start(OWNED_ID, &rig.owned);
+    // The control stays live and listed the whole way, so nothing is started
+    // for it and what moves is the owned seat alone.
+    let other = rig.start(UNOWNED_ID, &rig.unowned);
+    rig.list(&[
+        (OWNED_SESSION, pid, &rig.owned),
+        (UNOWNED_SESSION, other, &rig.unowned),
+    ]);
 
-    assert_eq!(run::observe_with(&Options { once: true }, rig.grant()), 0);
+    rig.poll_once();
     let after_one = rig.session_lines();
     assert!(
         after_one.contains(&format!("session.adopted {OWNED_ID}")),
         "the first poll claimed the live session the table names: {after_one:?}"
     );
     assert_eq!(rig.decision(OWNED_ID), "leave-alone");
-    assert_eq!(
-        rig.decision(UNOWNED_ID),
-        "revive",
-        "the control took the arm the claimed seat was spared: {after_one:?}"
-    );
+    assert_eq!(rig.row(OWNED_ID)["roster_state"], "present");
 
-    // The session hibernates: pid gone, and the state word unchanged from the
-    // one it carried while it was live.
-    rig.relist(Owned::PidlessDone);
+    // The session ends: the pane stays dead with its status, and the row
+    // leaves the listing with its process.
+    rig.host.end(&session_of(OWNED_ID), Some(0));
+    rig.list(&[(UNOWNED_SESSION, other, &rig.unowned)]);
 
-    // The second poll, from a loop that starts again knowing only what the
-    // session table on disk carries — which is where the claim now lives.
-    assert_eq!(run::observe_with(&Options { once: true }, rig.grant()), 0);
-    assert_eq!(rig.decision(OWNED_ID), "leave-alone");
-
+    rig.poll_once();
     let lines = rig.session_lines();
+    assert_eq!(rig.row(UNOWNED_ID)["roster_state"], "present");
+    assert!(rig.ends_of(UNOWNED_ID).is_empty(), "a live pane has no end");
+    assert_eq!(rig.row(OWNED_ID)["roster_state"], "stopped");
+    assert_eq!(rig.row(OWNED_ID)["exit_status"], 0);
     assert_eq!(
-        rig.lines_reading(&format!("session.revived {OWNED_ID}")),
-        0,
-        "neither poll attached to the claimed session: {lines:?}"
-    );
-    assert_eq!(
-        rig.lines_reading(&format!("session.spawned {OWNED_ID}")),
-        0,
-        "nor started a second session beside it: {lines:?}"
+        rig.decision(OWNED_ID),
+        "revive",
+        "a claim holds nothing past the pane's end: {lines:?}"
     );
     assert_eq!(
         rig.lines_reading(&format!("session.adopted {OWNED_ID}")),
         1,
         "and the claim was taken once, not once per poll: {lines:?}"
     );
-
-    // The attaches the control's revive issued are the ONLY ones: the claimed
-    // seat's address never reached the agent.
+    let ends = rig.ends_of(OWNED_ID);
+    assert_eq!(ends.len(), 1, "one end for one dead pane: {lines:?}");
+    assert_eq!(ends[0]["payload"]["session"], OWNED_SESSION);
+    assert_eq!(ends[0]["payload"]["status"], 0);
     assert_eq!(
-        rig.attaches(),
-        vec![format!("attach {UNOWNED_ADDRESS}")],
-        "one attach, and it is the control's"
+        ends[0]["payload"]["source"],
+        events::ENDED_FROM_TRANSCRIPT,
+        "a pane this controller never saw alive is dated by its transcript"
+    );
+    assert!(ends[0]["payload"]["at"].is_string(), "{}", ends[0]);
+    assert_eq!(
+        rig.row(OWNED_ID)["ended_at"],
+        ends[0]["payload"]["at"],
+        "and the stopped row publishes the end the line carries"
     );
 }
 
-/// THE RECORDED SHAPE: ONE CONTROLLER, POLLING ON.
+/// ONE CONTROLLER, POLLING ON: A PANE DYING BETWEEN TWO TICKS WRITES ONE
+/// `session.ended`.
 ///
-/// Adoption runs once per process, so every tick after the first has no claim of
-/// its own to read — and a verdict that learned the claim only from the tick
-/// that took it would attach to the same session on every tick after, which is
-/// the hourly revive this bug was filed on. Two ticks of ONE loop: the first
-/// sights the session live and claims it, the second reads it hibernated, and
-/// the claimed seat is left alone on both.
-///
-/// The control revives on the FIRST tick only, and that is the arrival window
-/// rather than anything about ownership — its revive opened a row whose sighting
-/// the next tick is still waiting on. What the control is here for is the same
-/// as above: a fixture observed reaching the revive arm.
+/// Three ticks of ONE loop. The first sees the pane alive and claims it; the
+/// pane dies in the nap after it; the second reads it dead and writes the end,
+/// dated by that poll because this controller saw it alive one interval
+/// before; the third reads the same dead pane and writes nothing, because the
+/// end is latched on the table.
 #[test]
-fn one_controller_polling_twice_revives_a_claimed_pid_less_row_on_neither_tick() {
-    let rig = Rig::new("claimed-across-two-ticks")
-        .with_the_owned_row(Owned::LiveIdle)
-        .with_the_agent_handed_in();
-    let stub = StubAgent::answering(Answers {
-        status: parse_roster(&rig.roster_body()),
-        daemon: DaemonRead::Readable(None),
-        transcript: Some(A_LIGHT_TRANSCRIPT.to_string()),
-        ended_at: Some(now_ms()),
-        ..Answers::default()
+fn a_pane_dying_between_two_ticks_writes_one_session_ended() {
+    let rig = Rig::new("ended-between-ticks");
+    let pid = rig.start(OWNED_ID, &rig.owned);
+    let other = rig.start(UNOWNED_ID, &rig.unowned);
+    rig.list(&[
+        (OWNED_SESSION, pid, &rig.owned),
+        (UNOWNED_SESSION, other, &rig.unowned),
+    ]);
+    let clock = NapThenStop::new(Duration::from_secs(POLL_SECONDS * 3)).then(|| {
+        rig.host.end(&session_of(OWNED_ID), Some(1));
+        rig.list(&[(UNOWNED_SESSION, other, &rig.unowned)]);
     });
-    // The session hibernates between the ticks, which is where the claim taken
-    // on the first one has to still be in hand.
-    let hibernated = parse_roster(&rig.roster_of(Owned::PidlessDone));
-    let clock = NapThenStop::new(Duration::from_secs(POLL_SECONDS * TICKS))
-        .then(|| stub.set(|answers| answers.status = hibernated.clone()));
     let watchdog = Watchdog::armed();
-
-    let host = FakeHost::new();
-
     let status = run::observe_seamed(
         &Options { once: false },
         rig.grant(),
         None,
-        Seams {
-            clock: &clock,
-            agent: &stub,
-            host: &host,
-            child_path: "",
-            effects_off: None,
-            stop_handler: StopHandler::Unarmed,
-        },
+        rig.seams(&clock),
     );
     drop(watchdog);
     assert_eq!(status, 0, "the loop ended on the stop it was asked for");
 
-    // TWO TICKS RAN, read from the agent rather than assumed: both seats are
-    // decided against the fleet's own listing, so a tick is one roster read.
+    // THREE TICKS RAN, read from the agent rather than assumed: both seats are
+    // decided against the fleet's own listing, so a tick is one listing read.
     assert_eq!(
-        stub.calls_of(StubAgent::STATUS).len() as u64,
-        TICKS,
-        "the loop polled twice: {:?}",
-        stub.verbs()
+        rig.stub.calls_of(StubAgent::STATUS).len(),
+        3,
+        "the loop polled three times: {:?}",
+        rig.stub.verbs()
+    );
+    assert_eq!(
+        rig.host.calls_of(FakeHost::LIST).len(),
+        3,
+        "and read the host once per poll"
     );
 
     let lines = rig.session_lines();
-    assert_eq!(
-        rig.lines_reading(&format!("session.revived {OWNED_ID}")),
-        0,
-        "no tick attached to the claimed session: {lines:?}"
-    );
     assert_eq!(
         rig.lines_reading(&format!("session.adopted {OWNED_ID}")),
         1,
         "the claim was taken on the first tick and not retaken: {lines:?}"
     );
-    assert_eq!(rig.decision(OWNED_ID), "leave-alone");
-
-    // The control, and with it the only attach the whole run issued.
+    let ends = rig.ends_of(OWNED_ID);
     assert_eq!(
-        rig.lines_reading(&format!("session.revived {UNOWNED_ID}")),
+        ends.len(),
         1,
-        "the seat no claim covers took the revive: {lines:?}"
+        "one end across two polls of a dead pane: {lines:?}"
     );
-    let attached: Vec<String> = stub
-        .calls_of(StubAgent::REVIVE)
-        .into_iter()
-        .map(|call| call.about)
-        .collect();
-    assert_eq!(attached, vec![UNOWNED_ADDRESS.to_string()]);
+    assert_eq!(ends[0]["payload"]["status"], 1);
+    assert_eq!(
+        ends[0]["payload"]["source"],
+        events::ENDED_OBSERVED,
+        "a pane seen alive an interval before is dated by the poll that saw it dead"
+    );
+    assert_eq!(rig.decision(OWNED_ID), "revive");
+
+    // The control on the latch: the table carries it, so the rebuild the next
+    // lost table would make carries it too.
+    let rebuilt = fleet_controller::sessions::rebuild(&rig.machine.join("events.jsonl"));
+    let row = rebuilt
+        .newest_for(OWNED_ID)
+        .expect("the rebuild opens the owned seat's row");
+    assert_eq!(
+        row.ended.as_ref().map(|ended| ended.source.as_str()),
+        Some(events::ENDED_OBSERVED)
+    );
 }
 
-/// A LIVE IDLE SESSION IS CLAIMED AT ITS FIRST SIGHTING, AND THE WORD ON ITS
-/// ROW HAS NO SAY IN IT.
+/// A LIVE IDLE SESSION IS CLAIMED AT ITS FIRST SIGHTING, BY THE PANE'S PID.
 ///
-/// The row a live idle session stands on reads `state: done` with its pid and
-/// `status: idle` beside it, so a claim that consulted the state word would
-/// pass over every seat the fleet keeps idle — and then have nothing in hand
-/// when that seat hibernates, which is the revive this bug was filed on. The
-/// claim is taken on the SIGHTING: a pid is there, so the session is running,
-/// so it is this fleet's.
-///
-/// The control is the same as the arms above: `UNOWNED`, pid-less and unclaimed,
-/// reaching the revive the claimed seat is spared.
+/// The row carries no address and no state word (lessons claude-code B10), so
+/// nothing but the pid can say it is the seat's: the pane the host holds for
+/// the seat is the agent's own process (E2). The control is a seat whose table
+/// row names a session the listing carries in its worktree with NO pane
+/// behind it — a session fleet does not host, so not claimed, and the seat is
+/// left unread rather than started beside it.
 #[test]
 fn a_live_idle_session_is_claimed_at_its_first_sighting() {
-    let rig = Rig::new("live-idle-adopted")
-        .with_the_owned_row(Owned::LiveIdle)
-        .with_an_agent_binary();
+    let rig = Rig::new("live-idle-adopted");
+    let pid = rig.start(OWNED_ID, &rig.owned);
+    rig.list(&[
+        (OWNED_SESSION, pid, &rig.owned),
+        (UNOWNED_SESSION, 4242, &rig.unowned),
+    ]);
 
-    assert_eq!(run::observe_with(&Options { once: true }, rig.grant()), 0);
+    rig.poll_once();
 
     let lines = rig.session_lines();
     assert_eq!(
         rig.lines_reading(&format!("session.adopted {OWNED_ID}")),
         1,
-        "the live row was claimed, `done` on it and all: {lines:?}"
+        "the live row was claimed: {lines:?}"
     );
+    assert_eq!(rig.decision(OWNED_ID), "leave-alone");
     assert_eq!(
         rig.lines_reading(&format!("session.revived {OWNED_ID}")),
         0,
         "and nothing was attached to a session that is already up: {lines:?}"
     );
+
+    // The control: listed live, named by the table, and never the seat's.
+    assert_eq!(rig.row(UNOWNED_ID)["roster_state"], "unknown");
+    assert_eq!(rig.decision(UNOWNED_ID), "leave-alone");
     assert_eq!(
-        rig.decision(UNOWNED_ID),
-        "revive",
-        "the control reached the arm the sighting spared the other seat: {lines:?}"
+        rig.lines_reading(&format!("session.spawned {UNOWNED_ID}")),
+        0,
+        "no second session beside one the listing names: {lines:?}"
     );
 }
 
-/// AND THE OTHER HALF OF THE TERM: THE CLAIM HOLDS THROUGH A HIBERNATION.
+/// A CLAIMED SESSION WHOSE PANE IS DEAD IS REVIVED, EXACTLY AS AN UNCLAIMED ONE.
 ///
-/// A session this fleet claimed while it was live goes pid-less, and its row
-/// still reads the `done` it read while it was live. Nothing on the roster
-/// separates that from a session stopped from idle or killed from outside
-/// (lessons claude-code A3), so the claim is what answers: the daemon still
-/// lists the row, the fleet still owns it, and attaching would spend a whole
-/// wake to reach a session that is already there.
-///
-/// The fixture is the sequence that produces it and no shorter one: a table row
-/// an earlier poll already claimed, and a listing that now carries the row
-/// pid-less. What releases the hold instead is the arm below.
+/// Both seats' panes died before this controller started, the owned seat's
+/// session claimed by an earlier poll and the control's never. The claim used
+/// to hold a pid-less row the daemon still listed; a dead pane is no such row,
+/// and the two seats take the same verdict, each writing its one end.
 #[test]
-fn a_claimed_session_that_has_gone_pid_less_is_left_alone() {
-    let rig = Rig::new("claimed-then-hibernated")
-        .with_the_claim_taken()
-        .with_the_owned_row(Owned::PidlessDone)
-        .with_an_agent_binary();
+fn a_claimed_session_whose_pane_is_dead_is_revived_exactly_as_an_unclaimed_one() {
+    let rig = Rig::new("claimed-then-dead").with_the_claim_taken();
+    rig.start(OWNED_ID, &rig.owned);
+    rig.start(UNOWNED_ID, &rig.unowned);
+    rig.host.end(&session_of(OWNED_ID), Some(0));
+    rig.host.end(&session_of(UNOWNED_ID), Some(0));
+    rig.list(&[]);
 
-    assert_eq!(run::observe_with(&Options { once: true }, rig.grant()), 0);
+    rig.poll_once();
 
     let lines = rig.session_lines();
     assert_eq!(
         rig.decision(OWNED_ID),
-        "leave-alone",
-        "the claim holds a session the daemon still lists: {lines:?}"
-    );
-    assert_eq!(
-        rig.lines_reading(&format!("session.revived {OWNED_ID}")),
-        0,
-        "and no attach was issued: {lines:?}"
-    );
-    assert!(
-        !rig.attaches().contains(&format!("attach {OWNED_ADDRESS}")),
-        "the claimed seat's address never reached the agent: {:?}",
-        rig.attaches()
+        "revive",
+        "the claim does not hold a dead pane: {lines:?}"
     );
     assert_eq!(
         rig.decision(UNOWNED_ID),
         "revive",
-        "the control reached the revive arm: {lines:?}"
-    );
-}
-
-/// AN END THE ROSTER CAN NAME RELEASES THE CLAIM.
-///
-/// `stopped` and `failed` are the two words the listing reaches only from a
-/// non-idle prior state, so they are the ends it can name on its own — and a
-/// claim is not a lease: a row reading one of them is not a session anyone owns,
-/// whatever the table still says, and the seat takes the revive arm.
-#[test]
-fn a_claimed_session_whose_row_names_an_end_is_revived() {
-    let rig = Rig::new("claimed-then-stopped")
-        .with_the_claim_taken()
-        .with_the_owned_row(Owned::Stopped)
-        .with_an_agent_binary();
-
-    assert_eq!(run::observe_with(&Options { once: true }, rig.grant()), 0);
-
-    let lines = rig.session_lines();
-    assert_eq!(
-        rig.decision(OWNED_ID),
-        "revive",
-        "the claim does not hold a seat whose row names an end: {lines:?}"
-    );
-    assert_eq!(
-        rig.lines_reading(&format!("session.revived {OWNED_ID}")),
-        1,
-        "and the attach was issued: {lines:?}"
+        "and the control takes the same arm: {lines:?}"
     );
     assert_eq!(
         rig.lines_reading(&format!("session.adopted {OWNED_ID}")),
         0,
-        "a pid-less row is not claimed again either: {lines:?}"
+        "a dead pane is not claimed again: {lines:?}"
     );
-    assert!(
-        rig.attaches().contains(&format!("attach {OWNED_ADDRESS}")),
-        "the address the listing carried reached the agent: {:?}",
-        rig.attaches()
-    );
-}
-
-/// AND THE ARM THE HOLD MUST NOT SWALLOW: a pid-less `done` row NO claim covers
-/// is revived, exactly as before.
-///
-/// The hold is the claim plus the listing, and a fixture that only ever watched
-/// the claimed seat could not tell a hold that reads the claim from one that
-/// reads the state word and holds every idle-looking row in the fleet.
-#[test]
-fn an_unclaimed_pid_less_done_row_is_revived() {
-    let rig = Rig::new("unclaimed-then-hibernated")
-        .with_the_owned_row(Owned::PidlessDone)
-        .with_an_agent_binary();
-
-    assert_eq!(run::observe_with(&Options { once: true }, rig.grant()), 0);
-
-    let lines = rig.session_lines();
-    assert_eq!(
-        rig.decision(OWNED_ID),
-        "revive",
-        "nothing claims this session, so the discriminator takes it: {lines:?}"
-    );
-    assert_eq!(
-        rig.lines_reading(&format!("session.adopted {OWNED_ID}")),
-        0,
-        "and a pid-less row is not claimed on the way past: {lines:?}"
-    );
-    assert!(
-        rig.attaches().contains(&format!("attach {OWNED_ADDRESS}")),
-        "the attach was addressed at the row's own id: {:?}",
-        rig.attaches()
-    );
+    assert_eq!(rig.ends_of(OWNED_ID).len(), 1, "{lines:?}");
+    assert_eq!(rig.ends_of(UNOWNED_ID).len(), 1, "{lines:?}");
 }
 
 /// A seat's own shell carries the agent's config directory, set by the
-/// controller on every child it spawns, and the adapter reads it before the
-/// home beside it — so a rig that leaves it standing reads its transcripts out
-/// of the operator's real one. The bare witness: the two adoption arms above
-/// answer the same only when the rig has shadowed it, and this arm reds bare
-/// when the shadow is lost, where those two red only under the variable.
+/// controller on every child it spawns, and a rig that leaves it standing
+/// reads its transcripts out of the operator's real one. The bare witness: the
+/// arms above answer the same only when the rig has shadowed it, and this arm
+/// reds bare when the shadow is lost.
 #[test]
 fn the_rig_shadows_the_config_directory_a_seats_shell_carries() {
     let decoy = std::env::temp_dir().join("adoption-decoy-config-dir");
     std::env::set_var(common::hermetic::CONFIG_DIR, &decoy);
-    let rig = Rig::new("shadows-the-config-dir").with_the_agent_handed_in();
+    let rig = Rig::new("shadows-the-config-dir");
     assert_eq!(
         std::env::var_os(common::hermetic::CONFIG_DIR),
         Some(rig.root.join(".claude").into_os_string()),

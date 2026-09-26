@@ -195,8 +195,11 @@ mod routines {
     fn a_ring_that_finds_nobody_files_an_item_once_and_dedupes_the_next_firing() {
         let rig = Rig::new("routines-item");
         // The seat is on the list and absent from the roster, which is the
-        // case the fallback exists for.
+        // case the fallback exists for — and it STAYS absent: every start the
+        // loop makes for it ends at once, so no session the host holds is
+        // there for the next poll to find it present on by its pane's pid.
         rig.write_roster("[]");
+        rig.set_start_exit(Some(1));
         rig.write_routine(
             "leave-it",
             &format!(

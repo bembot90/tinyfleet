@@ -2,12 +2,13 @@
 //! through one trait, so the second agent is a second module and not a
 //! rewrite.
 //!
-//! Observe needs four of the eight verbs — the listing, the transcript, the end
-//! stamp and the version, plus the daemon's own account of itself; `launch`,
-//! `stop`, `remove` and `revive` are the four an effect issues. A turn for a
-//! live seat is none of them: it is typed into the seat's pane by core
-//! (`crate::effect::type_turn`), and this trait's listing is what says whether
-//! it was taken.
+//! Observe needs four of the seven verbs — the listing, the transcript, the
+//! end stamp and the version; `launch`, `stop`, `remove` and `revive` are the
+//! four an effect issues. A turn for a live seat is none of them: it is typed
+//! into the seat's pane by core (`crate::effect::type_turn`), and this trait's
+//! listing is what says whether it was taken. Whether a session is THERE is not
+//! a verb here at all: presence is the host's reading (`crate::host`, ruling
+//! 3), and what this trait's listing answers is what the session is DOING.
 //!
 //! A START IS TWO HALVES AND ONLY ONE OF THEM IS HERE (ruling 2). The adapter
 //! answers WHAT to run — the argv and the environment, in [`Launch`] — and
@@ -48,9 +49,9 @@ pub struct StartSpec {
     ///
     /// A directory here is the session's whole configuration space: nothing
     /// from the person's home directory — settings, memory, instructions,
-    /// servers — reaches it. It scopes the agent's daemon with it, so a session
-    /// started under one is listed by that daemon and by no other, and every
-    /// read about this session is made under the same value.
+    /// servers — reaches it. It scopes the agent's listing with it, so a
+    /// session started under one is listed under that directory and no other,
+    /// and every read about this session is made under the same value.
     ///
     /// It is also the one mark of a start whose worktree fleet CREATED: a named
     /// seat comes up in a person's own checkout and carries `None`, so a start
@@ -137,22 +138,15 @@ pub trait Agent {
     /// is the only thing that says which.
     fn revive(&self, config_dir: Option<&Path>, short_id: &str) -> Result<(), String>;
 
-    /// The agent daemon's own account of itself, read once per poll.
-    ///
-    /// A whole-poll read like the roster, and for the same reason: two seats
-    /// must not decide against different beliefs about whether the fleet is
-    /// mid-replacement.
-    fn daemon(&self) -> DaemonRead;
-
     /// The listing under one configuration directory, or the adapter's own when
     /// `config_dir` is `None`.
     ///
     /// The fleet's own read is one command per poll shared by every seat: two
     /// seats must not decide against different readings of the same moment. A
-    /// session under its own configuration directory is held by its own daemon
-    /// and appears in NO other listing, so a row started that way is asked for
-    /// under that directory and is invisible to every other read this trait
-    /// has.
+    /// session under its own configuration directory appears in NO other
+    /// listing (lessons claude-code A11, B10), so a row started that way is
+    /// asked for under that directory and is invisible to every other read this
+    /// trait has.
     fn status(&self, config_dir: Option<&Path>) -> RosterRead;
 
     /// The session's transcript body, or `None` when there is nothing to read,
@@ -167,9 +161,10 @@ pub trait Agent {
     /// When this session last wrote, in epoch milliseconds — the end the
     /// listing does not carry. The transcript's last write is the session's own
     /// final act, and it outlives the process (lessons claude-code C4), so it
-    /// is an end a controller still has in hand long after the row went
-    /// pid-less. `None` when the transcript does not resolve, which is a
-    /// reading nobody has rather than a session that never ended.
+    /// is an end a controller still has in hand long after the row left the
+    /// listing: what dates a dead pane this controller did not see die.
+    /// `None` when the transcript does not resolve, which is a reading nobody
+    /// has rather than a session that never ended.
     ///
     /// It reads the same file [`Agent::transcript`] does, so it takes the same
     /// directory: a row asked for under the wrong one resolves no transcript at
@@ -196,11 +191,13 @@ pub struct AgentRow {
     #[serde(default)]
     pub id: Option<String>,
     pub cwd: String,
-    /// `None` means the agent daemon holds no process for this session, which
-    /// happens for two different reasons — the session has ENDED, or it has not
-    /// finished STARTING — and `state` is what tells them apart (B/A2).
+    /// The session's process. An interactive row always carries it, and it is
+    /// what a row is attributed to a seat BY: the pane's own pid (E2). A row
+    /// without one is a background shape no seat the host runs can produce.
     #[serde(default)]
     pub pid: Option<u32>,
+    /// A background row's five-word state (lessons claude-code A3). An
+    /// interactive row never carries it (B10), and nothing decides on it.
     #[serde(default)]
     pub state: Option<String>,
     /// What the agent says this session is DOING right now, in the agent's own
@@ -231,17 +228,6 @@ pub const BUSY: &str = "busy";
 /// one nothing is typed into.
 pub const WAITING: &str = "waiting";
 
-/// The state word a live IDLE session carries, alongside every pid-less shape
-/// the roster holds — hibernated, deliberately stopped from idle, and killed
-/// from outside the fleet (lessons claude-code A3). It is therefore a reading
-/// of the state field and never a reading of end-of-life.
-pub const DONE: &str = "done";
-
-/// The two state words the roster reaches only from a NON-IDLE prior state, and
-/// so the only ends it can name on its own (lessons claude-code A3).
-pub const STOPPED: &str = "stopped";
-pub const FAILED: &str = "failed";
-
 impl AgentRow {
     pub fn is_live(&self) -> bool {
         self.pid.is_some()
@@ -259,32 +245,6 @@ impl AgentRow {
         self.waiting_for.clone().or_else(|| {
             (self.status.as_deref() == Some(WAITING)).then(|| format!("status {WAITING}"))
         })
-    }
-
-    /// Whether the row carries [`DONE`], which is a reading of the state field
-    /// and nothing more: a live idle session carries it with a pid beside it.
-    /// The one question it answers is whether a PID-LESS row is a newborn — a
-    /// newborn reads `working` (A2) — and no caller may read it as an end.
-    pub fn marked_done(&self) -> bool {
-        self.state.as_deref() == Some(DONE)
-    }
-
-    /// Whether the row names an end the ROSTER can name. End-of-life otherwise
-    /// cannot be read off the listing at all: the controller's own record — the
-    /// deliberate-end event, and the fleet's own stop and retire — is what says
-    /// a session this fleet owns is over (lessons claude-code A3).
-    pub fn names_an_end(&self) -> bool {
-        matches!(self.state.as_deref(), Some(STOPPED) | Some(FAILED))
-    }
-
-    pub fn is_starting(&self, now_ms: u64, grace_ms: u64) -> bool {
-        if self.is_live() || self.marked_done() {
-            return false;
-        }
-        match self.started_at {
-            Some(t) => now_ms.saturating_sub(t) <= grace_ms,
-            None => false,
-        }
     }
 
     /// The row's working directory in the form seat matching compares.
@@ -316,48 +276,6 @@ pub fn dir_key(path: &str) -> &str {
 pub enum RosterRead {
     Readable(Vec<AgentRow>),
     Unreadable { cause: String },
-}
-
-/// What the daemon said about itself, or the reason there is nothing to say.
-///
-/// `Unreadable` carries why, and is NOT rounded to "not running": a non-zero
-/// exit and an unparseable body are indistinguishable from a daemon that is
-/// down, and the safe direction is the one that changes no seat's verdict.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DaemonRead {
-    /// A read that answered — with a status, or with a body carrying no pid,
-    /// which is a daemon that is not running.
-    Readable(Option<DaemonStatus>),
-    Unreadable {
-        cause: String,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DaemonStatus {
-    pub pid: u32,
-    /// `None` when the uptime line was absent or spelled in units this parser
-    /// does not know. Never guessed: an unknown age must not read as a fresh
-    /// one, which would open a replacement window nothing measured.
-    pub uptime_ms: Option<u64>,
-}
-
-impl DaemonRead {
-    /// The pid, when one was read. `None` covers both "not running" and "could
-    /// not read", which is what the pid-change test needs: neither is a change.
-    pub fn pid(&self) -> Option<u32> {
-        match self {
-            DaemonRead::Readable(Some(status)) => Some(status.pid),
-            _ => None,
-        }
-    }
-
-    pub fn uptime_ms(&self) -> Option<u64> {
-        match self {
-            DaemonRead::Readable(Some(status)) => status.uptime_ms,
-            _ => None,
-        }
-    }
 }
 
 /// The transcript path encoding (lessons claude-code C1): the agent keys a

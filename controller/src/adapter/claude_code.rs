@@ -1,9 +1,6 @@
 //! The Claude Code adapter — the first implementation of the seam.
 
-use super::{
-    transcript_path, Agent, AgentRow, DaemonRead, DaemonStatus, Launch, RemoveAnswer, RosterRead,
-    StartSpec,
-};
+use super::{transcript_path, Agent, AgentRow, Launch, RemoveAnswer, RosterRead, StartSpec};
 use crate::platform::run_bounded;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -174,13 +171,13 @@ impl ClaudeCode {
     /// holds the session it lists agree on every value.
     ///
     /// NOTHING IS INHERITED (lessons claude-code D1). A service-launched process
-    /// carries a minimal `PATH`, and a `claude` that inherits it starts a daemon
-    /// in that environment — after which every session claimed from that daemon
-    /// carries the collapsed search path, long after the start that caused it.
-    /// So the environment is cleared and rebuilt: the constructed `PATH`, the
-    /// four values a shell needs to be a shell, the agent's own configuration
-    /// directory when this adapter is scoped to one, the credential scope that
-    /// directory would otherwise move off the operator's own login, and this
+    /// carries a minimal `PATH`, and a `claude` that inherits it hands the
+    /// collapsed search path to every tool call the session makes, long after
+    /// the start that caused it. So the environment is cleared and rebuilt: the
+    /// constructed `PATH`, the four values a shell needs to be a shell, the
+    /// agent's own configuration directory when this adapter is scoped to one,
+    /// the credential scope that directory would otherwise move off the
+    /// operator's own login, the agent's auto-updater turned off, and this
     /// process's own executable as the binary the plugin's hooks run.
     ///
     /// `config_dir` is the ONE per-child override: a start that names its own
@@ -206,10 +203,17 @@ impl ClaudeCode {
             "CLAUDE_SECURESTORAGE_CONFIG_DIR".to_string(),
             self.credential_dir.clone(),
         ));
+        // Set on EVERY child, the pane's process above all: an interactive
+        // session runs the agent's auto-updater, which installed a newer
+        // release and re-pointed the operator's own `claude` under them during
+        // fleet-rge6.2's measurement (2026-09-26). A seat must not move the pin
+        // under the person (lessons claude-code A1): a release is installed by
+        // someone who then re-measures, and never by a seat.
+        env.push((AUTOUPDATER_VAR.to_string(), "1".to_string()));
         // Set on EVERY child and not only the start, for the reason the PATH
-        // above is: any call can be the one that starts the agent's background
-        // daemon (lessons claude-code D1), and a session holds what its own
-        // process was handed. Without it the plugin's shim looks for a build
+        // above is: a session holds what its own process was handed (lessons
+        // claude-code D1), and every child is one the agent can start more
+        // processes from. Without it the plugin's shim looks for a build
         // under its own root, and a root holding none blocks every Bash command
         // the session makes.
         if let Some(bin) = &self.fleet_bin {
@@ -322,6 +326,10 @@ pub const FLEET_BIN_VAR: &str = "FLEET_BIN";
 /// start's own `seat:<id>`.
 pub const FLEET_ACTOR_VAR: &str = "FLEET_ACTOR";
 
+/// The variable that turns the agent's own auto-updater off, set to `1` on
+/// every child this adapter makes.
+pub const AUTOUPDATER_VAR: &str = "DISABLE_AUTOUPDATER";
+
 /// This process's own executable, as the absolute path the shim requires.
 ///
 /// Whatever the operating system answers, and nothing when it answers nothing
@@ -387,7 +395,7 @@ pub fn timeout_from(configured: Option<&str>) -> Duration {
     }
 }
 
-/// The agent's configuration directory scopes its daemon and its transcripts
+/// The agent's configuration directory scopes its listing and its transcripts
 /// (lessons claude-code A11), so a fleet whose agent runs under a named one and
 /// a reader that assumes the default read different machines.
 ///
@@ -429,7 +437,7 @@ impl Agent for ClaudeCode {
     /// The resolved binary, the name, the model, the posture and the plugin
     /// root the fleet names, then the first turn as the positional prompt
     /// (lessons claude-code A5, D3, D5) — an INTERACTIVE session, with no
-    /// `--bg`: the pane is the session's host now and not the agent's daemon.
+    /// `--bg`: the pane is the session's host now, and the agent hosts nothing.
     /// The wake rides the start: one act, one channel, so the instruction
     /// cannot be lost without also losing the session. The positional turn
     /// submits on its own (lessons claude-code D8, measured on 2.1.280).
@@ -494,30 +502,6 @@ impl Agent for ClaudeCode {
     /// A9), and the table row would then point at a dead twin.
     fn revive(&self, config_dir: Option<&Path>, short_id: &str) -> Result<(), String> {
         self.answered(config_dir, &["attach", short_id]).map(|_| ())
-    }
-
-    fn daemon(&self) -> DaemonRead {
-        let mut cmd = self.read_command(&self.bin, None);
-        cmd.args(["daemon", "status"]);
-        let run = match run_bounded(cmd, self.timeout) {
-            Ok(run) => run,
-            Err(cause) => return DaemonRead::Unreadable { cause },
-        };
-        // The status is read from the command itself and never through a pipe.
-        if !run.status.success() {
-            return DaemonRead::Unreadable {
-                cause: format!(
-                    "`{} daemon status` exited {}: {}",
-                    self.bin,
-                    run.status
-                        .code()
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|| "on a signal".to_string()),
-                    String::from_utf8_lossy(&run.stderr).trim()
-                ),
-            };
-        }
-        DaemonRead::Readable(parse_daemon_status(&String::from_utf8_lossy(&run.stdout)))
     }
 
     /// The three answers, read from the exit AND the stdout (lessons claude-code
@@ -665,43 +649,6 @@ pub fn parse_roster(stdout: &str) -> RosterRead {
             cause: format!("the listing did not parse as JSON rows: {e}"),
         },
     }
-}
-
-/// One `<n><unit>` token of an uptime string, in milliseconds.
-fn duration_token_ms(token: &str) -> Option<u64> {
-    let at = token.find(|c: char| !c.is_ascii_digit())?;
-    let (digits, unit) = token.split_at(at);
-    let n: u64 = digits.parse().ok()?;
-    let scale = match unit {
-        "s" => 1_000,
-        "m" => 60 * 1_000,
-        "h" => 60 * 60 * 1_000,
-        "d" => 24 * 60 * 60 * 1_000,
-        _ => return None,
-    };
-    n.checked_mul(scale)
-}
-
-/// Parse the daemon's status. Split from the read so both shapes are provable
-/// without a daemon.
-///
-/// The uptime is SUMMED over `<n>[dhms]` tokens rather than matched against the
-/// one spelling a long-lived daemon prints: the humanised spellings a YOUNG
-/// daemon might print are exactly the ones the replacement window depends on. A
-/// token this does not know makes the whole reading `None`, which closes the
-/// window rather than opening it on an invented number.
-pub fn parse_daemon_status(body: &str) -> Option<DaemonStatus> {
-    let field = |name: &str| -> Option<String> {
-        body.lines()
-            .find_map(|line| line.trim().strip_prefix(name).map(|v| v.trim().to_string()))
-    };
-    let pid: u32 = field("pid:")?.parse().ok()?;
-    let uptime_ms = field("uptime:").and_then(|v| {
-        v.split_whitespace()
-            .map(duration_token_ms)
-            .try_fold(0u64, |acc, token| Some(acc + token?))
-    });
-    Some(DaemonStatus { pid, uptime_ms })
 }
 
 /// `claude --version` prints the version and then what produced it; the first
@@ -886,6 +833,42 @@ mod tests {
             own_executable(),
             "the executable this process is, which every child is handed"
         );
+    }
+
+    /// Every child carries the agent's auto-updater OFF — the one a start
+    /// launches into a pane and the one a read runs alike, under the adapter's
+    /// own configuration directory and under a seat's.
+    ///
+    /// The incident this answers (fleet-rge6.2's measurement, 2026-09-26): an
+    /// interactive session with the updater on installed a newer release and
+    /// re-pointed the operator's own binary under them, which is the pin moved
+    /// by nobody (lessons claude-code A1). The control is the variable's value:
+    /// present and set to anything but `1` is an updater that still runs.
+    #[test]
+    fn every_child_carries_the_auto_updater_off() {
+        let agent = ClaudeCode::with_seams(
+            "claude".to_string(),
+            PathBuf::from("/nowhere/.claude"),
+            DEFAULT_TIMEOUT,
+            PathBuf::from("/nowhere/.fleet"),
+            "/usr/bin:/bin".to_string(),
+            None,
+            String::new(),
+        );
+        for under in [None, Some(Path::new("/nowhere/seats/a-seat"))] {
+            let env = agent.environment(under);
+            let set: Vec<&str> = env
+                .iter()
+                .filter(|(key, _)| key == AUTOUPDATER_VAR)
+                .map(|(_, value)| value.as_str())
+                .collect();
+            assert_eq!(
+                set,
+                vec!["1"],
+                "exactly one {AUTOUPDATER_VAR}=1 under {under:?}: {env:?}"
+            );
+        }
+        assert_eq!(AUTOUPDATER_VAR, "DISABLE_AUTOUPDATER");
     }
 
     /// The deadline the controller runs on when nothing sets one. Asserted as

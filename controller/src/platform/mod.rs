@@ -101,8 +101,8 @@ fn env_dir(key: &str) -> Option<PathBuf> {
 ///
 /// CONSTRUCTED, never inherited. A service-launched process carries a minimal
 /// search path that holds neither a package manager's prefix nor the user's
-/// local bin, and a daemon started under it hands every later session a `PATH`
-/// that collapses mid-run (lessons claude-code D1). So this is built from the
+/// local bin, and a session started under it carries a `PATH` that collapses
+/// mid-run (lessons claude-code D1). So this is built from the
 /// platform's own list and the home passed in, and the process's own `PATH`
 /// contributes nothing to it.
 pub fn child_path(home: &Path) -> String {

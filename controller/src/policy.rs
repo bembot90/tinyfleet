@@ -9,11 +9,6 @@ use std::path::{Path, PathBuf};
 
 pub const DEFAULT_POLL_SECONDS: u64 = 5;
 
-/// How far back an ended session is still reported rather than treated as
-/// history, when the file names no window. The figure the constant carried
-/// before it was policy, so a fleet that says nothing keeps what it had.
-pub const DEFAULT_STOPPED_RECENCY_HOURS: u64 = 24;
-
 /// Where a seat is told it is heavy. A fraction of the agent's context window,
 /// which is the agent's to change (lessons claude-code C5), so it is policy and
 /// never a constant this code owns.
@@ -105,10 +100,6 @@ pub struct Policy {
     pub auto_capable_models: Vec<String>,
     /// The template, with `{seat}` still in it — rendered per seat at the start.
     pub first_turn: String,
-    /// The stopped-row window, in hours as the file writes it. A fleet whose
-    /// sessions are long-lived wants a different figure from one whose seats
-    /// turn over hourly, and neither is a number this code can choose.
-    pub stopped_recency_hours: u64,
     /// The load belt's two ceilings, read here and nowhere else.
     pub load_ceiling_per_cpu: f64,
     pub max_transient_busy: u32,
@@ -160,8 +151,6 @@ struct RawCoreRun {
 struct RawController {
     #[serde(default)]
     poll_seconds: Option<u64>,
-    #[serde(default)]
-    stopped_recency_hours: Option<u64>,
     #[serde(default)]
     rest_threshold_tokens: Option<u64>,
     #[serde(default)]
@@ -237,14 +226,6 @@ pub fn parse(body: &str) -> Result<Policy, String> {
         .and_then(|c| c.poll_seconds)
         .filter(|&s| s > 0)
         .unwrap_or(DEFAULT_POLL_SECONDS);
-    // Zero falls to the default the way a zero interval does, and for the same
-    // reason: it is not a window an operator can have meant, and honouring it
-    // would treat every ended session as history the instant it ended.
-    let stopped_recency_hours = controller
-        .as_ref()
-        .and_then(|c| c.stopped_recency_hours)
-        .filter(|&h| h > 0)
-        .unwrap_or(DEFAULT_STOPPED_RECENCY_HOURS);
     let c = controller.as_ref();
     // A list that is present and empty is refused too: it would gate every
     // model out and leave a fleet that can start nothing under posture `auto`,
@@ -291,7 +272,6 @@ pub fn parse(body: &str) -> Result<Policy, String> {
         ),
         auto_capable_models,
         first_turn: named(c.and_then(|c| c.first_turn.as_deref()), DEFAULT_FIRST_TURN),
-        stopped_recency_hours,
         // A ceiling of zero or less refuses every spawn, and one that is not a
         // number at all is no reading: both fall to the default, the way a zero
         // interval does.
@@ -454,9 +434,8 @@ pub fn overrides_in(value: Option<&serde_json::Value>) -> Overrides {
 
 /// The keys the object above may carry — `[controller]`'s own, listed once so a
 /// key the reader does not wire is named rather than silently kept.
-pub const CONTROLLER_KEYS: [&str; 13] = [
+pub const CONTROLLER_KEYS: [&str; 12] = [
     "poll_seconds",
-    "stopped_recency_hours",
     "rest_threshold_tokens",
     "arrival_window_seconds",
     "start_watch_seconds",
@@ -503,7 +482,6 @@ impl Policy {
                 .filter(|models| !models.is_empty())
                 .unwrap_or_else(|| self.auto_capable_models.clone()),
             first_turn: named(c.first_turn.as_deref(), &self.first_turn),
-            stopped_recency_hours: positive(c.stopped_recency_hours, self.stopped_recency_hours),
             load_ceiling_per_cpu: c
                 .load_ceiling_per_cpu
                 .filter(|n| n.is_finite() && *n > 0.0)
@@ -770,7 +748,6 @@ mod tests {
         let file = parse(
             "[controller]\n\
              poll_seconds = 7\n\
-             stopped_recency_hours = 7\n\
              rest_threshold_tokens = 7\n\
              arrival_window_seconds = 7\n\
              start_watch_seconds = 7\n\
@@ -788,7 +765,6 @@ mod tests {
 
         let over = overrides_in(Some(&serde_json::json!({
             "poll_seconds": 11,
-            "stopped_recency_hours": 11,
             "rest_threshold_tokens": 11,
             "arrival_window_seconds": 11,
             "start_watch_seconds": 11,
@@ -805,7 +781,6 @@ mod tests {
 
         let effective = file.overlaid(&over);
         assert_eq!(effective.poll_seconds, 11);
-        assert_eq!(effective.stopped_recency_hours, 11);
         assert_eq!(effective.rest_threshold_tokens, 11);
         assert_eq!(effective.arrival_window_seconds, 11);
         assert_eq!(effective.start_watch_seconds, 11);
@@ -834,7 +809,7 @@ mod tests {
 
         // Every key in the census is one the object above named, so a key added
         // to `[controller]` and forgotten here is a failure and not a silence.
-        assert_eq!(CONTROLLER_KEYS.len(), 13);
+        assert_eq!(CONTROLLER_KEYS.len(), 12);
         for key in CONTROLLER_KEYS {
             let named = overrides_in(Some(&serde_json::json!({ key: 1 })));
             assert!(

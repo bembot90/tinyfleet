@@ -153,6 +153,7 @@ fn open_row(table: &mut Table, target: &Target, dispatch_id: String, now_ms: u64
         first_seen_at: None,
         last_seen_at: None,
         adopted: None,
+        ended: None,
     });
 }
 
@@ -643,15 +644,6 @@ pub fn revive(
 /// Claim, at startup, every session the table names that the roster still
 /// LISTS.
 ///
-/// LISTED AND NOT ENDED, and never the pid: a row the daemon carries without one
-/// is a session it still holds — hibernated, or between hosts — and a session
-/// the table already names is this controller's to claim whichever of the two it
-/// is, because adoption issues nothing and costs nothing. Only the agent's own
-/// end-of-life marker puts a row out of reach, which leaves a session that has
-/// finished to the discriminator. Claiming on the pid instead hands every
-/// pid-less row of a session the fleet already owns to the revive arm, which
-/// spends a dispatch re-attaching to a session that is already there.
-///
 /// BY SESSION ID, never by name and never by re-issuing a start: a controller
 /// that resumed with its own flags would fork the session it meant to reclaim
 /// and then hold a row pointing at a dead twin (lessons claude-code A9). Nothing
@@ -665,15 +657,11 @@ pub fn revive(
 /// restart — or a `--once` poll, which is a process per poll — writes nothing
 /// for a session an earlier start claimed.
 ///
-/// A row is claimed when it is LIVE and never by its state (gas-city G7:
-/// "adopts every live session it names"). The state word cannot carry the
-/// question — a live idle session reads `done` (lessons claude-code A3), so a
-/// claim keyed on it takes no idle seat at all — and liveness is a sighting
-/// this controller made: what is claimed is a session observed running, which
-/// is then held through the pid-less stretches that follow it. A session the
-/// roster no longer carries, and one it carries pid-less with no sighting
-/// behind it, are both left alone: those rows fall to the discriminator on this
-/// same poll.
+/// A row is claimed when it is LIVE — listed with a pid, a session observed
+/// running — and never by any word on it (gas-city G7: "adopts every live
+/// session it names"). A claim holds nothing past the session's end: a session
+/// the listing no longer carries is one whose pane is dead or gone, and the
+/// seat's verdict on this same poll is the host's reading of that.
 pub fn adopt(
     rows: &[crate::adapter::AgentRow],
     table: &mut Table,

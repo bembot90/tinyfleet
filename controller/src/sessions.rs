@@ -89,6 +89,32 @@ pub struct SessionRow {
     /// a row whose value equals `session_id` is never claimed again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adopted: Option<String>,
+    /// The end the loop recorded for this row's session, once per PANE: the
+    /// latch that makes `session.ended` one line per end rather than one per
+    /// poll the pane reads dead. Absent on every row whose session nobody has
+    /// seen end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<Ended>,
+}
+
+/// How a row's session ended, as its `session.ended` line said it.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct Ended {
+    /// The status the pane's process exited with; `None` for one ended on a
+    /// signal, which carries no status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<i32>,
+    /// When, in epoch milliseconds; `None` where nothing could date it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<u64>,
+    /// Which reading dated it: `crate::events::ENDED_OBSERVED` or
+    /// `crate::events::ENDED_FROM_TRANSCRIPT`.
+    pub source: String,
+    /// The dead pane's pid, which is what the latch is keyed on: a row carried
+    /// onto a new session (a revive re-opens its row) whose new pane dies is a
+    /// second end, and the same dead pane read again is not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
 }
 
 /// What the controller remembers about one seat ACROSS its sessions.
@@ -125,10 +151,6 @@ pub struct Table {
     /// the same thing a fresh table says.
     #[serde(default)]
     pub seats: BTreeMap<String, SeatState>,
-    /// The agent daemon's pid at the last poll, once for the table. `None` is a
-    /// reading nobody has, which reads as NO replacement rather than as one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub daemon_pid: Option<u32>,
     #[serde(default)]
     pub sessions: Vec<SessionRow>,
 }
@@ -140,7 +162,6 @@ impl Default for Table {
             consumed_seq: 0,
             nudged: BTreeMap::new(),
             seats: BTreeMap::new(),
-            daemon_pid: None,
             sessions: Vec::new(),
         }
     }
@@ -245,16 +266,13 @@ pub fn write_under_lock(_held: &std::fs::File, path: &Path, table: &Table) -> Re
 /// reads here as the drop of the old key beside the push of the new, which is
 /// what it is.
 ///
-/// The cursor, the daemon's pid, the nudge ledger and the per-seat latches are
+/// The cursor, the nudge ledger and the per-seat latches are
 /// the loop's alone — no verb writes one — so `mine`'s value stands wherever it
 /// has moved off `base`.
 pub fn merge(base: &Table, mine: &Table, fresh: Table) -> Table {
     let mut merged = fresh;
     merged.schema = SCHEMA;
     merged.consumed_seq = merged.consumed_seq.max(mine.consumed_seq);
-    if mine.daemon_pid != base.daemon_pid {
-        merged.daemon_pid = mine.daemon_pid;
-    }
     for (seat, session) in &mine.nudged {
         if base.nudged.get(seat) != Some(session) {
             merged.nudged.insert(seat.clone(), session.clone());
@@ -492,16 +510,15 @@ impl Table {
 /// the seat's counter to the count it carries; a `session.halted` sets the
 /// latch; a `seat.clear_halt` clears both; and a `session.nudged` the loop's
 /// own threshold wrote marks its session nudged, so a lost table does not nudge
-/// a session twice. The cursor is the last sequence folded, so the next tick
-/// reads from the line after it and no event is consumed twice.
+/// a session twice. A `session.ended` latches the end on the seat's newest row,
+/// by the rule the live loop wrote it under, so a lost table does not write a
+/// second one for the same dead pane. The cursor is the last sequence folded,
+/// so the next tick reads from the line after it and no event is consumed
+/// twice.
 ///
 /// Every line is keyed on its ACTOR, which on these types is the seat, by its
 /// id. A line whose actor is of another kind names no seat and folds nothing,
 /// though its sequence still moves the cursor.
-///
-/// The daemon pid is deliberately NOT folded and starts at `None`: the stream
-/// carries no daemon reading, and `None` reads as no replacement rather than as
-/// a false one.
 pub fn rebuild(events_path: &Path) -> Table {
     let mut table = Table::default();
     for record in crate::events::read_after(events_path, 0) {
@@ -547,6 +564,7 @@ pub fn rebuild(events_path: &Path) -> Table {
             first_seen_at: None,
             last_seen_at: None,
             adopted: None,
+            ended: None,
         };
         match record.kind.as_str() {
             crate::events::SESSION_SPAWNED => table.push(opened()),
@@ -592,6 +610,30 @@ pub fn rebuild(events_path: &Path) -> Table {
                         session_id: None,
                         ..opened()
                     });
+                }
+            }
+            // The live loop latches the seat's NEWEST row, so the replay does
+            // too: the line carries no dispatch id, and the newest row at this
+            // point in the stream is the one that was newest when it was
+            // written.
+            crate::events::SESSION_ENDED => {
+                let ended = Ended {
+                    status: payload
+                        .get("status")
+                        .and_then(serde_json::Value::as_i64)
+                        .and_then(|status| i32::try_from(status).ok()),
+                    at: text("at")
+                        .as_deref()
+                        .and_then(crate::clock::secs_of_stamp)
+                        .map(|secs| secs * 1000),
+                    source: text("source").unwrap_or_default(),
+                    pid: payload
+                        .get("pid")
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|pid| u32::try_from(pid).ok()),
+                };
+                if let Some(row) = table.newest_for_mut(&seat) {
+                    row.ended = Some(ended);
                 }
             }
             crate::events::SESSION_RESTED => {
@@ -657,6 +699,7 @@ mod tests {
             first_seen_at: None,
             last_seen_at: None,
             adopted: None,
+            ended: None,
         }
     }
 

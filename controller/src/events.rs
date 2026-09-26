@@ -139,6 +139,15 @@ pub const SESSION_SPAWNED: &str = "session.spawned";
 pub const SESSION_RESTED: &str = "session.rested";
 pub const SESSION_NUDGED: &str = "session.nudged";
 pub const SESSION_CRASHED: &str = "session.crashed";
+/// A seat's session ENDED: the host holds its pane dead (ruling 3). Written
+/// once per session, by the loop, on the first poll that reads the pane dead,
+/// and carrying the session, the status the pane kept, when the end was, and
+/// which reading dated it ([`ENDED_OBSERVED`] or [`ENDED_FROM_TRANSCRIPT`]).
+///
+/// The listing carries no end stamp and an interactive row leaves it with its
+/// process (lessons claude-code B10), so this line is the one record a
+/// controller keeps of when a session stopped.
+pub const SESSION_ENDED: &str = "session.ended";
 /// The four this slice adds. Each is written once by the layer that did
 /// the thing: the effect layer revives, adopt at startup claims, the halt
 /// transition latches, and a counted blind dispatch says so.
@@ -191,7 +200,7 @@ pub const ROUTINE_TYPES: [&str; 4] = [
     ROUTINE_COULD_NOT_TELL,
 ];
 
-pub const CONTROLLER_TYPES: [&str; 19] = [
+pub const CONTROLLER_TYPES: [&str; 20] = [
     CONTROLLER_STARTED,
     CONTROLLER_STOPPED,
     SUBSTRATE_MOVED,
@@ -199,6 +208,7 @@ pub const CONTROLLER_TYPES: [&str; 19] = [
     SESSION_RESTED,
     SESSION_NUDGED,
     SESSION_CRASHED,
+    SESSION_ENDED,
     SESSION_REVIVED,
     SESSION_ADOPTED,
     SESSION_HALTED,
@@ -228,8 +238,39 @@ pub fn dispatch_failed_payload(
     serde_json::json!({ "seat": seat, "item": item, "cause": cause })
 }
 
+/// A [`SESSION_ENDED`] dated by the poll that saw the pane dead: this
+/// controller read it alive, or had not started, one interval before.
+pub const ENDED_OBSERVED: &str = "observed";
+
+/// A [`SESSION_ENDED`] dated by the session's transcript, its last write (lessons
+/// claude-code C4): a dead pane met on a controller's first poll, which saw no
+/// earlier one and so cannot say the end fell inside its own interval.
+pub const ENDED_FROM_TRANSCRIPT: &str = "transcript";
+
+/// What a [`SESSION_ENDED`] line carries: the agent's session id where the
+/// table knows it, the dead pane's pid, the status the pane exited with, the
+/// end as a UTC stamp, and which reading dated it. `at` is null where nothing
+/// could date the end — a transcript that did not resolve — and `status` where
+/// the pane died on a signal; every key is present either way, so a reader
+/// meets one shape.
+pub fn session_ended_payload(
+    session: Option<&str>,
+    pid: Option<u32>,
+    status: Option<i32>,
+    at: Option<&str>,
+    source: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "session": session,
+        "pid": pid,
+        "status": status,
+        "at": at,
+        "source": source,
+    })
+}
+
 /// Whether a `seat.resting` or a `seat.exited` — the two the discriminator for a
-/// pid-less row reads as a deliberate end (lessons claude-code A3).
+/// dead pane reads as a deliberate end, which the pane itself cannot say.
 pub fn is_deliberate_end(kind: &str) -> bool {
     kind == SEAT_RESTING || kind == SEAT_EXITED
 }
@@ -910,6 +951,20 @@ mod tests {
             unordered.get("item").is_some_and(|item| item.is_null()),
             "{unordered}"
         );
+
+        // A session's end is the controller's reading of the host, never a
+        // seat's word about itself: a seat that says goodbye says `seat.exited`,
+        // and a pane that died said nothing at all.
+        assert!(CONTROLLER_TYPES.contains(&SESSION_ENDED));
+        assert!(!SEAT_TYPES.contains(&SESSION_ENDED));
+        assert_ne!(SESSION_ENDED, SEAT_EXITED);
+        let ended = session_ended_payload(None, None, None, None, ENDED_FROM_TRANSCRIPT);
+        for key in ["session", "pid", "status", "at", "source"] {
+            assert!(
+                ended.get(key).is_some(),
+                "{key} is present even when it carries null: {ended}"
+            );
+        }
 
         // The cost line is the controller's too, and it is a DIFFERENT line
         // from the reclaim: one retire writes both, and a reader looking for

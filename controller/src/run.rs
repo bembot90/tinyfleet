@@ -12,7 +12,7 @@ use crate::platform;
 use crate::policy::{self, Policy};
 use crate::projection::{self, InFlight, PolicyView, Projection, SeatRow, SeatView};
 use crate::routines;
-use crate::sessions::{self, SeatState, Table};
+use crate::sessions::{self, Ended, SeatState, Table};
 use fleet_core::seat::identity::SeatId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -296,31 +296,7 @@ pub struct Observer<'a> {
     /// poll.
     table_said: Option<String>,
     adopted: bool,
-    /// The seats standing in a hold, whichever of the two holds it is: the line
-    /// is written once per transition into one and not once per poll.
-    held: BTreeSet<SeatId>,
-    /// When this controller last read a LIVE row for each seat, in epoch
-    /// milliseconds.
-    ///
-    /// THIS PROCESS'S OWN MEMORY and not the table's: the table records what
-    /// this fleet DISPATCHED, and the session whose host is replaced under a
-    /// controller is typically one another manager started, which no row names
-    /// and `Table::sight` therefore records nothing for. A restart starts this
-    /// empty, which is the seat's own pre-hold verdict and never a hold nobody
-    /// can account for.
-    live_seen: BTreeMap<SeatId, u64>,
-    /// When this controller read the FIRST pid-less poll of the run of them each
-    /// seat is currently standing in, in epoch milliseconds.
-    ///
-    /// Written at the poll a seat's row goes pid-less and REMOVED at the poll it
-    /// is live again, so the value is always the start of an unbroken run and
-    /// never the start of an older one. It is the clock the re-host hold's
-    /// window is measured on, because the interval between two polls is not the
-    /// poll interval: a run's steps execute on this thread, and the poll after a
-    /// twenty-minute land step holds a live sighting twenty minutes old for
-    /// every seat on the fleet — the reading the poll after a run's land step turns on.
-    pidless_since: BTreeMap<SeatId, u64>,
-    upgrade_shape: Option<FleetShape>,
+    fleet_shape: Option<FleetShape>,
     rest_failed_said: BTreeSet<String>,
     routines_state_said: BTreeSet<String>,
     grant_said: Option<String>,
@@ -411,16 +387,10 @@ impl<'a> Observer<'a> {
         // Every session the table names that the roster still holds live is claimed
         // on the FIRST poll and never again — a restart re-hosts nothing.
         let adopted = false;
-        // Once per transition into a hold, and once per transition into the
-        // upgrade shape: both are observations, not decisions, and a line per
-        // poll would drown the one a person came to read.
-        let held: BTreeSet<SeatId> = BTreeSet::new();
-        // No seat has been seen live before the first poll, so the first poll
-        // decides every seat exactly as it did before this memory existed.
-        let live_seen: BTreeMap<SeatId, u64> = BTreeMap::new();
-        // And no seat is standing in a run of pid-less polls until one is read.
-        let pidless_since: BTreeMap<SeatId, u64> = BTreeMap::new();
-        let upgrade_shape: Option<FleetShape> = None;
+        // Once per transition into the fleet shape: an observation, not a
+        // decision, and a line per poll would drown the one a person came to
+        // read.
+        let fleet_shape: Option<FleetShape> = None;
         // For a rest whose stop failed: the retry is silent and the first
         // failure is loud.
         let rest_failed_said: BTreeSet<String> = BTreeSet::new();
@@ -476,10 +446,7 @@ impl<'a> Observer<'a> {
             table_said: None,
             table,
             adopted,
-            held,
-            live_seen,
-            pidless_since,
-            upgrade_shape,
+            fleet_shape,
             rest_failed_said,
             routines_state_said,
             grant_said,
@@ -560,9 +527,9 @@ impl<'a> Observer<'a> {
         }
 
         // ONE LISTING PER DISTINCT CONFIGURATION DIRECTORY, and the fleet's own
-        // beside them. A seat started under its own directory is held by its
-        // own daemon and named by no other listing, so a poll that read once
-        // would publish every spawned seat absent.
+        // beside them. A seat started under its own directory is named by that
+        // directory's listing and by no other, so a poll that read once would
+        // read every spawned seat's activity off a listing that cannot see it.
         //
         // The directories come off the session table, which is what the
         // controller remembers about what it started: the seat list carries no
@@ -584,31 +551,16 @@ impl<'a> Observer<'a> {
             &|seat: &SeatId| recorded_dirs.get(seat).cloned(),
             &|dir: Option<&Path>| agent.status(dir),
         );
+        // And ONE READ OF THE HOST (reviewer call 2026-09-25, E1): fleet's own
+        // server, whose sessions are every seat's presence. Once per poll and
+        // shared by every seat, for the listing's reason — two seats must not
+        // decide against different readings of the same moment.
+        let host_read = self.seams.host.list();
         let agent_version = agent.version();
         // Through the clock seam, so the windows a rig drives the loop across
         // age with the fake time its naps spend.
         let now_ms = self.seams.clock.now_ms();
         let mut table_moved = false;
-
-        // The daemon, read ONCE for the whole poll exactly as the roster is: two
-        // seats must not decide against different beliefs about whether the
-        // fleet is mid-replacement.
-        //
-        // A pid this read could not take does not overwrite the one the last
-        // poll recorded: forgetting it would make the next good read compare
-        // against nothing and miss the replacement it is there to catch.
-        let daemon = agent.daemon();
-        let daemon_pid_changed = match (self.table.daemon_pid, daemon.pid()) {
-            (Some(was), Some(now)) => was != now,
-            // Neither "not running" nor "could not read" is a change.
-            _ => false,
-        };
-        if let Some(pid) = daemon.pid() {
-            if self.table.daemon_pid != Some(pid) {
-                self.table.daemon_pid = Some(pid);
-                table_moved = true;
-            }
-        }
 
         // Adoption, on the first poll and against the roster this poll read.
         // Not gated on effects: it issues none, and a controller that could not
@@ -618,6 +570,10 @@ impl<'a> Observer<'a> {
         // the row, and the verdicts below ask the table for it every poll. A
         // term filled from what this call claimed would be false on every poll
         // after the first, which is the whole of the defect it exists to close.
+        // This controller's FIRST poll, read before adoption marks it taken: a
+        // dead pane it meets here died before this process was looking, so its
+        // end is dated by the transcript rather than by this poll.
+        let startup = !self.adopted;
         if !self.adopted {
             self.adopted = true;
             // EVERY listing's rows, folded: a session under a per-row directory
@@ -636,10 +592,6 @@ impl<'a> Observer<'a> {
                 }
             }
         }
-
-        // The stopped-row window, from policy, with the end each row is judged
-        // on resolved through the same adapter and the same worktree spelling
-        // the context read below uses.
 
         // The stream, from the line after the cursor. Read BEFORE deciding, so
         // what a seat asked for between polls is in hand when its verdict is
@@ -667,20 +619,37 @@ impl<'a> Observer<'a> {
             // What the session table and the projection key this seat on.
             let key = seat.id.to_string();
             // The seat's own directory, threaded through every read about it:
-            // the listing that can see it, the end its stopped-row window is
-            // judged on, and the transcript its context is read from.
+            // the listing that can see it, the transcript its context is read
+            // from, and the end a dead pane met at startup is dated by.
             let under: Option<PathBuf> = recorded_dirs.get(&seat.id).map(PathBuf::from);
-            // The stopped-row window, from policy, with the end each row is
-            // judged on resolved through the same adapter and the same worktree
-            // spelling the context read below uses.
-            let recency = observe::Recency {
-                window_ms: self.policy.stopped_recency_hours * 60 * 60 * 1000,
-                ended_at: &|worktree: &str, session_id: &str| {
-                    agent.ended_at(under.as_deref(), dir_key(worktree), session_id)
-                },
-            };
-            let observation =
-                observe::observe_seat(rosters.for_seat(&seat.id), seat, now_ms, &recency);
+            let mut observation =
+                observe::observe_seat(rosters.for_seat(&seat.id), &host_read, seat, now_ms);
+            // A dead pane's session is the one this controller started there,
+            // and its row is gone from the listing by the next read after its
+            // process (lessons claude-code B10) — so the session, and where it
+            // stood, are the table's, which recorded both when it was sighted.
+            // The context read below, and the discriminator's revive, need the
+            // id; nothing else on this poll can supply it.
+            if observation.state == RosterState::Stopped {
+                if let Some(row) = self.table.newest_for(&key) {
+                    observation.session_id = row.session_id.clone();
+                    observation.short_id = row.short_id.clone();
+                    if observation.worktree.is_none() {
+                        observation.project = Some(row.project.clone());
+                        observation.worktree = Some(row.worktree.clone());
+                    }
+                }
+                table_moved |= ended(
+                    agent,
+                    &mut self.table,
+                    &mut self.events_log,
+                    &key,
+                    &observation,
+                    under.as_deref(),
+                    startup,
+                    now_ms,
+                );
+            }
             // Context comes from the transcript and never from the listing,
             // which carries no token field (lessons claude-code B2). An ended
             // row still answers, because the transcript outlives the process.
@@ -725,20 +694,13 @@ impl<'a> Observer<'a> {
             }
             // A sighting answers a dispatch's arrival window, and it is the
             // ROSTER's answer rather than the start's own return (A7). Only a
-            // LIVE row is one: a pid-less row is a session that has ended or has
-            // not started, and neither is a seat that arrived.
+            // LIVE session is one: a dead pane is a session that has ended and
+            // a starting one has not arrived yet, and neither is a seat that
+            // arrived.
             if matches!(
                 observation.state,
                 RosterState::Present | RosterState::PromptBlocked
             ) {
-                // The same reading the sighting below is taken on, kept for
-                // every seat rather than for the rows this controller opened:
-                // the session whose host is replaced under a poll is usually
-                // one another manager started, and `sight` records nothing for
-                // a session no row names. It is written BEFORE the verdicts and
-                // only on a live row, so the seat it decides about — a pid-less
-                // one — reads the stamp an earlier poll left.
-                self.live_seen.insert(seat.id, now_ms);
                 if let (Some(session_id), Some(worktree)) =
                     (&observation.session_id, &observation.worktree)
                 {
@@ -751,27 +713,20 @@ impl<'a> Observer<'a> {
                     );
                 }
             }
-            // The run of pid-less polls this seat stands in, opened at the poll
-            // its row goes pid-less and closed at the poll the row reads
-            // anything else. The hold's window is measured from the open, so a
-            // row that came back and went again is a new run rather than the old
-            // one's tail — and a seat the loop did not look at for twenty
-            // minutes opens its run at the poll that finally looked.
-            match observation.state {
-                RosterState::Stopped | RosterState::Absent => {
-                    self.pidless_since.entry(seat.id).or_insert(now_ms);
-                }
-                _ => {
-                    self.pidless_since.remove(&seat.id);
-                }
-            }
             // The row names the seat as its object: the id, the seat's own name
             // where it has one, and its kind.
-            seats.push(SeatRow::from_observation(
-                seat,
-                &observation,
-                context_tokens,
-            ));
+            let mut row = SeatRow::from_observation(seat, &observation, context_tokens);
+            // The end, as the table latched it: a stopped seat's pane carries
+            // its status and no clock, and the latch is the one record of when.
+            if observation.state == RosterState::Stopped {
+                row.ended_at = self
+                    .table
+                    .newest_for(&key)
+                    .and_then(|row| row.ended.as_ref())
+                    .and_then(|ended| ended.at)
+                    .map(|at| clock::stamp_secs(at / 1000));
+            }
+            seats.push(row);
             observations.push((index, observation, context_tokens));
         }
 
@@ -800,8 +755,8 @@ impl<'a> Observer<'a> {
         // here is a restored belief, so the answer survives a restart. The halt
         // latch and the blind count are slice 4's, so they are passed as the
         // constants they are here rather than left unstated.
-        // The upgrade shape: one line rather than N independent absences, once
-        // per transition into it. Reported like an observation and not
+        // The server-gone shape: one line rather than N independent absences,
+        // once per transition into it. Reported like an observation and not
         // like a decision, and threaded into no seat's verdict.
         let shape = decide::fleet_shape(
             &observations
@@ -809,11 +764,11 @@ impl<'a> Observer<'a> {
                 .map(|(_, observation, _)| observation.state)
                 .collect::<Vec<_>>(),
         );
-        if shape != self.upgrade_shape {
+        if shape != self.fleet_shape {
             if let Some(shape) = &shape {
                 eprintln!("fleet observe: {}", shape.describe());
             }
-            self.upgrade_shape = shape;
+            self.fleet_shape = shape;
         }
 
         // The clear-halt requests, consumed BEFORE the verdicts, so a halt
@@ -867,47 +822,11 @@ impl<'a> Observer<'a> {
                     .unwrap_or(false),
                 dispatch_age_ms: newest.map(|row| now_ms.saturating_sub(row.dispatched_at)),
                 sighted: newest.map(|row| row.session_id.is_some()).unwrap_or(false),
-                // The claim from the table, which carries it across polls and
-                // across restarts, and the listing from THIS poll's own row:
-                // a session whose row NAMES an end is not owned any more,
-                // however long ago it was claimed. A pid-less row reading
-                // `done` is not such a row — it is hibernation, a stop from
-                // idle and a kill in one reading — so the claim holds it and
-                // the controller's own record ends it.
-                adopted_and_listed: !observation.state_names_an_end
-                    && observation
-                        .session_id
-                        .as_deref()
-                        .map(|id| self.table.is_adopted(id))
-                        .unwrap_or(false),
                 arrival_window_ms: self.policy.arrival_window_seconds * 1000,
                 halted: carried.halted,
                 blind: carried.blind,
-                pidless_row: observation.pidless_row,
-                daemon_pid_changed,
-                daemon_uptime_ms: daemon.uptime_ms(),
-                // This controller's own earlier sighting, which is what tells a
-                // session being re-hosted from one that is gone while the
-                // daemon holding it stands unchanged — and the age of the
-                // pid-less run itself, which is what the window is spent on.
-                seen_live: self.live_seen.contains_key(&seat.id),
-                since_pidless_ms: self
-                    .pidless_since
-                    .get(&seat.id)
-                    .map(|at| now_ms.saturating_sub(*at)),
             };
             let verdict = decide::decide(&input);
-            // The hold's own line, from the same function the arm reaches its
-            // verdict through, once per transition into it.
-            match decide::hold(&input) {
-                Some(why) if self.held.insert(seat.id) => {
-                    eprintln!("fleet observe: {why}")
-                }
-                None => {
-                    self.held.remove(&seat.id);
-                }
-                _ => {}
-            }
             seats[*index].decision = verdict.as_str().to_string();
             seats[*index].blind = carried.blind;
             seats[*index].halted = carried.halted;
@@ -983,9 +902,9 @@ impl<'a> Observer<'a> {
             &self.machine_dir,
         );
         // The directory holding the policy file in force, which is this
-        // machine's fleet root. A daemon's own working directory is the service
-        // manager's and names nothing, so the walk-up the CLI does is not a
-        // reading here.
+        // machine's fleet root. A service's own working directory is the
+        // service manager's and names nothing, so the walk-up the CLI does is
+        // not a reading here.
         let routines_root = self.policy_path.parent().map(Path::to_path_buf);
         let registry = match &routines_root {
             Some(root) => routines::load::load(
@@ -1185,10 +1104,10 @@ impl<'a> Observer<'a> {
     /// row another writer pushed, edited or dropped under the lock — a flight's
     /// spawn, `fleet seat` spawn, feed or retire — is not in that copy, and a
     /// rename of it would take the row with it — and the seat that row names is
-    /// then polled against the fleet's own daemon rather than its own
-    /// configuration directory, which reads absent while it works. The fresh
-    /// read is merged against the copy this tick started from: this loop's moves
-    /// are this loop's, every other row is the file's.
+    /// then polled against the fleet's own listing rather than its own
+    /// configuration directory, which names no row for it while it works. The
+    /// fresh read is merged against the copy this tick started from: this
+    /// loop's moves are this loop's, every other row is the file's.
     ///
     /// RUN ON EVERY POLL AND WRITTEN ONLY ON A MOVE. The merged table is what
     /// the next poll reads its configuration directories off, so a poll that
@@ -1269,6 +1188,76 @@ impl<'a> Observer<'a> {
         }
         0
     }
+}
+
+/// The one `session.ended` a dead pane owes, written on the first poll that
+/// reads it dead and latched on the seat's newest row, keyed on the pane's pid,
+/// so no later poll writes it again (ruling 3). Answers whether the table
+/// moved.
+///
+/// DATED BY WHAT THIS PROCESS SAW. A pane read dead on any poll after the
+/// first died inside the interval since the last one, so the end is this
+/// poll's own time, `observed`. On the FIRST poll the pane died before
+/// anyone was looking — a controller restarted over it, or a machine that
+/// rebooted — and the one end anyone has is the transcript's last write
+/// (lessons claude-code C4), `transcript`, or none where it does not
+/// resolve.
+///
+/// A seat with no row is a pane no dispatch of this fleet recorded, and it
+/// has nothing to latch on: no line, rather than one per poll.
+#[allow(clippy::too_many_arguments)]
+fn ended(
+    agent: &dyn Agent,
+    table: &mut Table,
+    events_log: &mut EventLog,
+    key: &str,
+    observation: &SeatObservation,
+    under: Option<&Path>,
+    startup: bool,
+    now_ms: u64,
+) -> bool {
+    let Some(row) = table.newest_for_mut(key) else {
+        return false;
+    };
+    if row
+        .ended
+        .as_ref()
+        .is_some_and(|ended| ended.pid == observation.pane_pid)
+    {
+        return false;
+    }
+    let (at, source) = if startup {
+        let at = match (&row.session_id, &observation.worktree) {
+            (Some(session_id), Some(worktree)) => {
+                agent.ended_at(under, dir_key(worktree), session_id)
+            }
+            _ => None,
+        };
+        (at, events::ENDED_FROM_TRANSCRIPT)
+    } else {
+        (Some(now_ms), events::ENDED_OBSERVED)
+    };
+    row.ended = Some(Ended {
+        status: observation.exit_status,
+        at,
+        source: source.to_string(),
+        pid: observation.pane_pid,
+    });
+    let seat = row.seat.clone();
+    let payload = events::session_ended_payload(
+        row.session_id.as_deref(),
+        observation.pane_pid,
+        observation.exit_status,
+        at.map(|at| clock::stamp_secs(at / 1000)).as_deref(),
+        source,
+    );
+    log_event(
+        events_log,
+        events::SESSION_ENDED,
+        &ActorRef::seat(&seat),
+        payload,
+    );
+    true
 }
 
 /// Carry one verdict out, with `in_flight` published around the blocking call.

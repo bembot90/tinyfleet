@@ -16,10 +16,10 @@ pub fn machine_dir_under(home: &Path, xdg_state: Option<&Path>) -> PathBuf {
 ///
 /// Built from this list and the home passed in, never from the process's own
 /// `PATH`: a service-launched process carries a minimal one, and every session
-/// claimed from a daemon started under it inherits that (lessons claude-code
-/// D1). There is no `sbin` pair here and no package-manager prefix: a systemd
-/// user unit's own environment holds neither, and the agent installs under the
-/// home's local bin.
+/// started under it inherits that (lessons claude-code D1). There is no `sbin`
+/// pair here and no package-manager prefix: a systemd user unit's own
+/// environment holds neither, and the agent installs under the home's local
+/// bin.
 pub fn child_path_dirs(home: &Path) -> Vec<PathBuf> {
     vec![
         home.join(".local").join("bin"),

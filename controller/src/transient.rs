@@ -262,8 +262,8 @@ impl Machine<'_> {
     /// sessions are live must not read as an empty fleet.
     ///
     /// `config_dir` is one row's own configuration directory, and `None` the
-    /// fleet's. A session started under its own is held by its own daemon and
-    /// named by no other listing, so a verb about such a seat reads there or
+    /// fleet's. A session started under its own is named by that directory's
+    /// listing and by no other, so a verb about such a seat reads there or
     /// sees nothing at all — which is a probe that cannot fail.
     fn roster_under(
         &self,
@@ -370,7 +370,7 @@ impl Belt {
     /// Both legs, read once.
     ///
     /// An unreadable roster makes the cap leg could-not-tell and REFUSES
-    /// NOTHING — a daemon nobody can ask must not wedge every spawn in the
+    /// NOTHING — a listing nobody can read must not wedge every spawn in the
     /// fleet — while the load leg keeps its teeth.
     pub fn read(machine: &Machine, seats: &[Seat]) -> Belt {
         let Readings {
@@ -387,14 +387,14 @@ impl Belt {
         };
 
         // THE FLEET'S LISTING, and one more per transient seat that came up under
-        // its own configuration directory. Such a seat is held by its own daemon
-        // and appears in no other listing, so a cap counted off the fleet's
+        // its own configuration directory. Such a seat is named by that
+        // directory's listing and appears in no other, so a cap counted off the fleet's
         // read alone would be zero however many were mid-turn — a ceiling that
         // refuses nothing, which is what this leg exists to prevent.
         //
         // ONE UNREADABLE LISTING makes the whole leg could-not-tell, as one
         // unreadable roster did: a count short by an unknown number is not a
-        // count, and a daemon nobody can ask must not wedge every spawn.
+        // count, and a listing nobody can read must not wedge every spawn.
         //
         // The table is read ONCE, not once per seat: the directories all come
         // out of the same file and a second read could answer differently.
@@ -410,8 +410,8 @@ impl Belt {
                 .count() as u32;
         };
 
-        // The seats whose sessions the fleet's own daemon holds: every transient
-        // row that named no directory of its own.
+        // The seats whose sessions the fleet's own listing names: every
+        // transient row that named no directory of its own.
         let shared: Vec<String> = seats
             .iter()
             .filter(|seat| seat.transient)
@@ -1399,7 +1399,7 @@ pub fn retire_with(
 
     // THE DIRECTORY THIS SEAT'S SESSION IS HELD UNDER, read off its own row.
     // Every listing, stop and removal below is made under it: a spawned seat is
-    // named by its own daemon's listing and by no other, so the fleet's read
+    // named by its own directory's listing and by no other, so the fleet's read
     // would find no live row, take the no-session branch, and delete the
     // worktree out from under a session still running in it.
     let config_dir = machine.recorded_config_dir(&seat_id);

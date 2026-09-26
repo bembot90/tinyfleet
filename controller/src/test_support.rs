@@ -3,7 +3,7 @@
 //! which a dependent's DEV-dependency turns on: under resolver 2 that keeps it
 //! out of the binary a release build produces.
 
-use crate::adapter::{Agent, AgentRow, DaemonRead, Launch, RemoveAnswer, RosterRead, StartSpec};
+use crate::adapter::{Agent, AgentRow, Launch, RemoveAnswer, RosterRead, StartSpec};
 use crate::clock::Clock;
 use std::path::Path;
 use std::sync::Mutex;
@@ -91,7 +91,6 @@ pub struct Call {
 pub struct Answers {
     pub status: RosterRead,
     pub version: Option<String>,
-    pub daemon: DaemonRead,
     /// `Ok` is a launch built from the start's own spec ([`StubAgent::launched`]),
     /// and `Err` a launch the agent refuses, with its cause.
     pub launch: Result<(), String>,
@@ -104,12 +103,11 @@ pub struct Answers {
 
 impl Default for Answers {
     /// A fleet the agent can see and nothing is running in: an empty roster that
-    /// READ, a daemon that is not running, and every effect succeeding.
+    /// READ, and every effect succeeding.
     fn default() -> Self {
         Self {
             status: RosterRead::Readable(Vec::new()),
             version: Some(StubAgent::VERSION.to_string()),
-            daemon: DaemonRead::Readable(None),
             launch: Ok(()),
             stop: Ok(()),
             revive: Ok(()),
@@ -140,7 +138,6 @@ impl StubAgent {
     pub const STOP: &'static str = "stop";
     pub const REMOVE: &'static str = "remove";
     pub const REVIVE: &'static str = "revive";
-    pub const DAEMON: &'static str = "daemon";
     pub const STATUS: &'static str = "status";
     pub const TRANSCRIPT: &'static str = "transcript";
     pub const ENDED_AT: &'static str = "ended_at";
@@ -300,9 +297,11 @@ pub const ARRIVED_CWD: &str = "/nowhere/arrived";
 /// [`FakeHost`], found by the pane's pid and carrying a status, which is what
 /// a start's watch believes (lessons claude-code B10).
 ///
-/// It stands in [`ARRIVED_CWD`] and not in the seat's worktree, so an arm whose
-/// subject is not the start can list its arrival without also handing the
-/// seat a live session on the next poll's read.
+/// It stands in [`ARRIVED_CWD`] and not in the seat's worktree. A row is a
+/// seat's by the pane's pid and never by where it stands (fleet-rge6.3), so
+/// the next poll reads it as the seat's live session all the same; the
+/// directory only keeps a listed arrival from reading as a session the host
+/// does not hold standing in some seat's worktree.
 pub fn arrived(pid: u32) -> AgentRow {
     AgentRow {
         session_id: format!("arrived-{pid}"),
@@ -394,11 +393,6 @@ impl Agent for StubAgent {
     fn revive(&self, _config_dir: Option<&Path>, short_id: &str) -> Result<(), String> {
         self.record(StubAgent::REVIVE, short_id);
         self.answers().revive
-    }
-
-    fn daemon(&self) -> DaemonRead {
-        self.record(StubAgent::DAEMON, "");
-        self.answers().daemon
     }
 
     fn status(&self, config_dir: Option<&Path>) -> RosterRead {

@@ -218,6 +218,11 @@ fn run_nudge(nudge: &super::file::Nudge, machine: &Machine) -> Done {
             ),
         );
     };
+    // A BLOCKED seat passes this pre-check on purpose. The state is this
+    // poll's reading, and `type_turn` reads the pane and its pid-attributed
+    // row again, fresh, and refuses a block before any byte is typed — so the
+    // refusal is taken on the newer reading and carries the agent's own cause,
+    // where a refusal here would be the older one's.
     match seat.state {
         RosterState::Present | RosterState::PromptBlocked => {}
         RosterState::Unknown => {

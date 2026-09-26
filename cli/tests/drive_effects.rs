@@ -513,7 +513,10 @@ mod effects {
             "a row nothing has sighted carries neither: {row}"
         );
 
-        // The window: a second poll with the row still absent starts nothing.
+        // The second poll finds the session the start made: the pane the host
+        // holds for the seat, and the listing's row carrying that pane's pid
+        // (ruling 3). It starts nothing, and the row is the sighting the
+        // arrival window was waiting for.
         let out = rig.observe();
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         assert_eq!(seat_row(&rig)["decision"], "leave-alone");
@@ -528,14 +531,15 @@ mod effects {
             rig.calls()
         );
 
-        // And a sighting fills the row it opened, which is what the window was
-        // waiting for.
-        rig.write_roster(&live_row(&rig.worktree(), "the-successor"));
-        let out = rig.observe();
-        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        // And that sighting filled the row the dispatch opened — by the pane's
+        // pid, the row carrying no address of its own (lessons claude-code B10).
+        assert_eq!(seat_row(&rig)["roster_state"], "present");
         let row = &rig.sessions()["sessions"][0];
-        assert_eq!(row["session_id"], "the-successor");
-        assert_eq!(row["short_id"], "the-successor");
+        assert_eq!(
+            row["session_id"],
+            format!("arrived-{}", fleet_controller::test_support::FIRST_PANE_PID)
+        );
+        assert!(row.get("short_id").is_none(), "{row}");
         assert!(row["first_seen_at"].as_u64().is_some());
     }
 
@@ -1046,20 +1050,19 @@ mod effects {
     /// two are different values, and a call issued against the identity reaches
     /// no row (lessons claude-code A6, A9).
     ///
-    /// So the row carries an `id` and a `sessionId` that DIFFER, and the
+    /// So the row carries an address and a session id that DIFFER, and the
     /// transcript is keyed under the identity — the arm cannot measure its own
     /// claim from a row that writes one value into both.
+    ///
+    /// The revive is still the attach until fleet-rge6.4 moves it onto the
+    /// host; what brings a seat here is now a DEAD PANE, whose session the
+    /// table names (ruling 3).
     #[test]
     fn a_revive_attaches_the_rows_short_id_and_says_so_once() {
         let rig = Rig::new("effect-revive");
-        // A pid-less row with no deliberate end and a reading under the
-        // threshold is a revive.
-        rig.write_roster(&ended_row_addressed(
-            &rig.worktree(),
-            "ab12",
-            "a-session",
-            now_ms(),
-        ));
+        // A dead pane with no deliberate end and a reading under the threshold
+        // is a revive.
+        rig.a_dead_session("ab12", "a-session", Some(0));
         rig.write_transcript("a-session", &transcript_of(10));
 
         let out = rig.observe();
@@ -1098,7 +1101,7 @@ mod effects {
     #[test]
     fn a_revive_whose_attach_failed_still_counts_as_a_dispatch() {
         let rig = Rig::new("effect-revive-failed");
-        rig.write_roster(&ended_row(&rig.worktree(), "ab12", now_ms()));
+        rig.a_dead_session("ab12", "ab12", Some(0));
         rig.write_transcript("ab12", &transcript_of(10));
         rig.set_seam(ATTACH_EXIT, Some(1));
 
@@ -1116,7 +1119,7 @@ mod effects {
         assert_eq!(rig.sessions()["seats"][SEAT_ID]["blind"], 1);
 
         // And the failed attach opened no window: the row still carries its
-        // session, so the next poll decides about the same pid-less row again.
+        // session, so the next poll decides about the same dead pane again.
         assert_eq!(rig.events_of("session.revived"), 1);
     }
 
@@ -1229,49 +1232,6 @@ mod effects {
         );
     }
 
-    /// AC4 — a pid-less row is held with the replacement-held reason while the
-    /// daemon is young, and dispatched against once the window closes.
-    #[test]
-    fn a_pidless_row_is_held_while_the_stub_daemon_is_young() {
-        let rig = Rig::new("effect-replacement");
-        rig.write_roster(&ended_row(&rig.worktree(), "ab12", now_ms()));
-        rig.write_transcript("ab12", &transcript_of(10));
-        // The arrival window is 45s by default, so a two-second daemon is inside
-        // it and a one-hour one is not.
-        rig.write_daemon(4242, "2s");
-
-        let out = rig.observe();
-        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-        assert_eq!(seat_row(&rig)["decision"], "leave-alone");
-        assert!(
-            stderr(&out).contains("replacement window: held"),
-            "the hold names itself: {}",
-            stderr(&out)
-        );
-        assert!(
-            rig.calls().is_empty(),
-            "and nothing was dispatched: {:?}",
-            rig.calls()
-        );
-
-        // The window closes and the same row is revived.
-        rig.write_daemon(4242, "1h");
-        let out = rig.observe();
-        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-        assert_eq!(seat_row(&rig)["decision"], "revive");
-        assert_eq!(rig.calls(), vec!["attach ab12".to_string()]);
-
-        // And an unreadable daemon read opens NO window on its own: the same row
-        // with the status call failing is dispatched against.
-        let rig = Rig::new("effect-replacement-unreadable");
-        rig.write_roster(&ended_row(&rig.worktree(), "cd34", now_ms()));
-        rig.write_transcript("cd34", &transcript_of(10));
-        rig.set_seam(DAEMON_EXIT, Some(1));
-        let out = rig.observe();
-        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-        assert_eq!(seat_row(&rig)["decision"], "revive");
-    }
-
     /// AC2, AC7 — a restart ADOPTS the live sessions its table names, and a
     /// table that will not parse is rebuilt from the stream rather than lost.
     #[test]
@@ -1374,20 +1334,18 @@ mod effects {
 
     /// AC7 — the rebuild folds a STANDING halt out of the stream: a
     /// `session.halted` with no clear after it is a hold that survives the table
-    /// being lost, and the daemon pid starts at none.
+    /// being lost.
     #[test]
-    fn a_rebuilt_table_carries_a_standing_halt_and_no_daemon_pid() {
+    fn a_rebuilt_table_carries_a_standing_halt() {
         let rig = Rig::new("effect-rebuild-halt");
         rig.write_roster("[]");
         rig.set_start_exit(Some(1));
-        rig.write_daemon(4242, "1h");
         for _ in 0..3 {
             let out = rig.observe();
             assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         }
         assert_eq!(rig.events_of("session.halted"), 1);
         assert_eq!(rig.sessions()["seats"][SEAT_ID]["halted"], true);
-        assert_eq!(rig.sessions()["daemon_pid"], 4242);
 
         write(&rig.machine().join("sessions.json"), "{not json at all");
         let out = rig.observe();
@@ -1435,7 +1393,6 @@ mod effects {
         let rig = Rig::new("effect-deleted-table");
         rig.write_roster("[]");
         rig.set_start_exit(Some(1));
-        rig.write_daemon(4242, "1h");
         for _ in 0..3 {
             let out = rig.observe();
             assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -1779,8 +1736,8 @@ mod isolation {
         let config_dir = rig.machine().join("config").join(SEAT);
         std::fs::create_dir_all(&config_dir).expect("the per-row directory is made");
         rig.write_config(&one_transient_seat(&rig));
-        // The FLEET's listing names nothing, which is what a per-row daemon
-        // leaves it saying.
+        // The FLEET's listing names nothing, which is what a session under a
+        // directory of its own leaves it saying.
         rig.write_roster("[]");
         // The row's own listing names the session, served by the stub out of the
         // directory it was asked under.
@@ -1788,6 +1745,8 @@ mod isolation {
             &config_dir.join("roster.json"),
             &live_row(&rig.worktree(), "a-session"),
         );
+        // And the session it names on the host, by the row's pid (ruling 3).
+        rig.host_the_listed_seat(&live_row(&rig.worktree(), "a-session"));
         write(
             &rig.machine().join("sessions.json"),
             &table_naming(&config_dir, "an-item", &rig.worktree()),
@@ -1834,6 +1793,8 @@ mod isolation {
             &config_dir.join("roster.json"),
             &live_row(&rig.worktree(), "a-session"),
         );
+        // And the session it names on the host, by the row's pid (ruling 3).
+        rig.host_the_listed_seat(&live_row(&rig.worktree(), "a-session"));
         write(
             &rig.machine().join("sessions.json"),
             &table_naming(&config_dir, "an-item", &rig.worktree()),
@@ -1893,6 +1854,8 @@ mod isolation {
             &config_dir.join("roster.json"),
             &live_row(&rig.worktree(), "a-session"),
         );
+        // And the session it names on the host, by the row's pid (ruling 3).
+        rig.host_the_listed_seat(&live_row(&rig.worktree(), "a-session"));
         write(
             &rig.machine().join("sessions.json"),
             &table_naming(&config_dir, "an-item", &rig.worktree()),

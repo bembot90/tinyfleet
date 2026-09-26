@@ -193,13 +193,15 @@ pub struct SeatRow {
     /// `prompt-blocked`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting_for: Option<String>,
-    /// Why this stopped row was ranked on its START rather than on its end:
-    /// present exactly when the recency window fell back, and absent on every
-    /// row it did not — including every row that is not stopped. A reader
-    /// deciding whether a `stopped` row is fresh needs to know which reading it
-    /// is, because the two answer different questions about a long session.
+    /// The status the seat's session exited with, on a `stopped` row whose
+    /// process left one. Absent on every other row, and on an end by a signal,
+    /// which carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub roster_recency_fallback: Option<String>,
+    pub exit_status: Option<i32>,
+    /// When a `stopped` row's session ended, as its `session.ended` line dated
+    /// it. Absent on every other row, and on an end nothing could date.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<String>,
     /// Null is a measured absence — nothing was read — and never a zero.
     pub context_tokens: Option<u64>,
     pub project: Option<String>,
@@ -231,7 +233,11 @@ impl SeatRow {
             roster_state: observation.state.as_str().to_string(),
             roster_unknown_cause: observation.unknown_cause.clone(),
             waiting_for: observation.waiting_for.clone(),
-            roster_recency_fallback: observation.recency_fallback.clone(),
+            exit_status: observation.exit_status,
+            // Filled by the loop from the session table, which is where the end
+            // is recorded: the observation reads the pane, and a pane carries no
+            // clock.
+            ended_at: None,
             context_tokens,
             project: observation.project.clone(),
             worktree: observation
@@ -304,13 +310,13 @@ mod tests {
                     state: RosterState::Present,
                     unknown_cause: None,
                     waiting_for: None,
-                    recency_fallback: None,
+                    activity: Some("idle".to_string()),
                     session_id: Some("a-session".to_string()),
                     short_id: Some("aa".to_string()),
                     project: Some("demo".to_string()),
                     worktree: Some("/wt/builder-1".to_string()),
-                    pidless_row: false,
-                    state_names_an_end: false,
+                    pane_pid: Some(4242),
+                    exit_status: None,
                 },
                 Some(42),
             )],
@@ -343,13 +349,13 @@ mod tests {
                 state: RosterState::Absent,
                 unknown_cause: None,
                 waiting_for: None,
-                recency_fallback: None,
+                activity: None,
                 session_id: None,
                 short_id: None,
                 project: Some("demo".to_string()),
                 worktree: Some("/wt/builder-1/".to_string()),
-                pidless_row: false,
-                state_names_an_end: false,
+                pane_pid: None,
+                exit_status: None,
             },
             None,
         );
@@ -361,13 +367,13 @@ mod tests {
                 state: RosterState::Absent,
                 unknown_cause: None,
                 waiting_for: None,
-                recency_fallback: None,
+                activity: None,
                 session_id: None,
                 short_id: None,
                 project: None,
                 worktree: None,
-                pidless_row: false,
-                state_names_an_end: false,
+                pane_pid: None,
+                exit_status: None,
             },
             None,
         );
@@ -389,7 +395,8 @@ mod tests {
         for elided in [
             "roster_unknown_cause",
             "waiting_for",
-            "roster_recency_fallback",
+            "exit_status",
+            "ended_at",
             "grant_detail",
         ] {
             assert!(
@@ -398,7 +405,7 @@ mod tests {
             );
         }
         // The control for the loop above: a key the same row DOES carry is
-        // found by the same search, so the four absences are the attribute's
+        // found by the same search, so the five absences are the attribute's
         // doing and not a `contains` that matches nothing.
         assert!(body.contains("\"name\""), "{body}");
 

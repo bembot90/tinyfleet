@@ -16,8 +16,7 @@ pub fn machine_dir_under(home: &Path, _xdg_state: Option<&Path>) -> PathBuf {
 /// Built from this list and the home passed in, never from the process's own
 /// `PATH`: a service-launched process carries a minimal one that holds neither
 /// the package manager's prefix nor the user's local bin, and every session
-/// claimed from a daemon started under it inherits that (lessons claude-code
-/// D1).
+/// started under it inherits that (lessons claude-code D1).
 ///
 /// THE SYSTEM DIRECTORIES COME FIRST, ahead of the package manager's prefix and
 /// the user's local bin, so a name the platform also ships resolves to the

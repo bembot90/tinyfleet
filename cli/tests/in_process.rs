@@ -195,15 +195,10 @@ impl Drop for Watchdog {
     }
 }
 
-/// Every verb one tick of the loop must reach the agent for. The roster read,
-/// the version and the daemon are the observation; the start is the effect the
-/// absent seat's verdict asks for.
-const A_TICKS_VERBS: [&str; 4] = [
-    StubAgent::STATUS,
-    StubAgent::VERSION_CALL,
-    StubAgent::DAEMON,
-    StubAgent::START,
-];
+/// Every verb one tick of the loop must reach the agent for. The roster read
+/// and the version are the observation; the start is the effect the absent
+/// seat's verdict asks for.
+const A_TICKS_VERBS: [&str; 3] = [StubAgent::STATUS, StubAgent::VERSION_CALL, StubAgent::START];
 
 /// A stub whose listing shows the one session a start on a fresh [`FakeHost`]
 /// brings up, by its pane's pid, so the start is believed at its first read

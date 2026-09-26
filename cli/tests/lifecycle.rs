@@ -2466,7 +2466,7 @@ fn the_seat_list_overrides_policy_per_key_and_a_zero_falls_back_to_it() {
     let mut seats = rig.seat_list();
     seats["controller"] = serde_json::json!({
         "poll_seconds": 11,
-        "stopped_recency_hours": "a string where a count goes",
+        "rest_threshold_tokens": "a string where a count goes",
     });
     write(
         &rig.machine.join("config.json"),
@@ -2483,7 +2483,7 @@ fn the_seat_list_overrides_policy_per_key_and_a_zero_falls_back_to_it() {
         "the good key beside the bad one still lands: {published}"
     );
     assert!(
-        stderr(&out).contains("stopped_recency_hours"),
+        stderr(&out).contains("rest_threshold_tokens"),
         "the bad key is named: {}",
         stderr(&out)
     );

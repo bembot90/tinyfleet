@@ -278,34 +278,6 @@ fn a_target<'a>(worktree: &'a str, short: Option<&'a str>) -> Target<'a> {
     }
 }
 
-/// A seat input with every term at the reading that decides nothing, so an arm
-/// that moves ONE of them is measuring that one.
-fn a_seat(state: RosterState) -> SeatInput<'static> {
-    SeatInput {
-        seat_dir: "s1",
-        state,
-        unknown_cause: None,
-        transient: false,
-        pending_rest: false,
-        pending_deliberate_end: false,
-        context_tokens: Some(1_000),
-        rest_threshold_tokens: 700_000,
-        session_id: Some("a-session"),
-        already_nudged: false,
-        dispatch_age_ms: None,
-        sighted: false,
-        adopted_and_listed: false,
-        arrival_window_ms: 45_000,
-        halted: false,
-        blind: 0,
-        pidless_row: matches!(state, RosterState::Stopped),
-        daemon_pid_changed: false,
-        daemon_uptime_ms: None,
-        seen_live: false,
-        since_pidless_ms: None,
-    }
-}
-
 /// A table row for a seat, sighted or not.
 fn a_row_for(seat: &str, worktree: &str, dispatched_at: u64, session: Option<&str>) -> SessionRow {
     SessionRow {
@@ -326,6 +298,7 @@ fn a_row_for(seat: &str, worktree: &str, dispatched_at: u64, session: Option<&st
         first_seen_at: None,
         last_seen_at: None,
         adopted: None,
+        ended: None,
     }
 }
 
@@ -357,96 +330,6 @@ fn flag_value<'a>(argv: &'a [String], flag: &str) -> &'a str {
 
 mod lessons {
     use super::*;
-
-    /// claude-code A3 — a hibernated session and a deliberately stopped one are
-    /// identical across every roster field, so the discriminator cannot come
-    /// from the row.
-    ///
-    /// Measured HERE as the property the table has to have: two inputs equal in
-    /// every roster-derived term and differing only in the EVENT get different
-    /// verdicts, and no roster state produces that difference on its own.
-    #[test]
-    fn hibernation_reads_as_a_deliberate_stop() {
-        let stopped = SeatInput {
-            seat_dir: "s1",
-            state: RosterState::Stopped,
-            unknown_cause: None,
-            transient: false,
-            pending_rest: false,
-            pending_deliberate_end: false,
-            context_tokens: Some(1_000),
-            rest_threshold_tokens: 700_000,
-            session_id: Some("a-session"),
-            already_nudged: false,
-            dispatch_age_ms: None,
-            sighted: false,
-            adopted_and_listed: false,
-            arrival_window_ms: 45_000,
-            halted: false,
-            blind: 0,
-            pidless_row: true,
-            daemon_pid_changed: false,
-            daemon_uptime_ms: None,
-            seen_live: false,
-            since_pidless_ms: None,
-        };
-        // The hibernated one: nothing was asked for, so the session comes back
-        // in place with its context intact.
-        assert_eq!(decide(&stopped), Verdict::Revive);
-
-        // The deliberately stopped one: FIELD FOR FIELD the same row, and the
-        // only thing that moved is the event the ending ritual emitted.
-        let mut ended = stopped.clone();
-        ended.pending_deliberate_end = true;
-        assert_eq!(decide(&ended), Verdict::SpawnWoken);
-
-        // THE 2.1.261 RE-READ, and the reason the discriminator cannot move to
-        // the row: `done` is what a live IDLE session carries, with its pid and
-        // status beside it, and what a hibernated, a stopped-from-idle and a
-        // killed session carry pid-less. One word, four sessions, and only two
-        // of the five state words name an end at all — each reached only from a
-        // non-idle prior state.
-        let rows: Vec<AgentRow> = serde_json::from_str(
-            r#"[{"sessionId":"live-idle","id":"aa","cwd":"/wt/s1","pid":4242,
-                 "state":"done","status":"idle"},
-                {"sessionId":"hibernated","id":"bb","cwd":"/wt/s2","state":"done"},
-                {"sessionId":"stopped-from-blocked","id":"cc","cwd":"/wt/s3","state":"stopped"},
-                {"sessionId":"failed-mid-start","id":"dd","cwd":"/wt/s4","state":"failed"}]"#,
-        )
-        .expect("the roster parses");
-        assert!(
-            rows[0].is_live() && rows[0].marked_done(),
-            "a live idle session carries the same word a finished one does"
-        );
-        assert!(!rows[1].is_live() && rows[1].marked_done());
-        assert!(
-            !rows[0].names_an_end() && !rows[1].names_an_end(),
-            "so the word names no end, on either side of the pid"
-        );
-        assert!(
-            rows[2].names_an_end() && rows[3].names_an_end(),
-            "and the two the roster CAN name are the ones idle never reaches"
-        );
-
-        // And the event is a term of its own: a controller that tried to read
-        // the difference off the row would have to find a roster state that
-        // produces the spawn without it, and there is none among the six.
-        for state in [
-            RosterState::Present,
-            RosterState::PromptBlocked,
-            RosterState::Starting,
-            RosterState::Stopped,
-            RosterState::Unknown,
-        ] {
-            let mut row = stopped.clone();
-            row.state = state;
-            assert_ne!(
-                decide(&row),
-                Verdict::SpawnWoken,
-                "{state:?} produced a spawn with no deliberate-end event"
-            );
-        }
-    }
 
     /// claude-code A5 — a start with no model flag comes up on the cheapest
     /// available model, so the model is mandatory on every call and is what
@@ -875,15 +758,9 @@ mod lessons {
             already_nudged: false,
             dispatch_age_ms: None,
             sighted: false,
-            adopted_and_listed: false,
             arrival_window_ms: 45_000,
             halted: false,
             blind: 0,
-            pidless_row: false,
-            daemon_pid_changed: false,
-            daemon_uptime_ms: None,
-            seen_live: false,
-            since_pidless_ms: None,
         };
         assert_eq!(decide(&seat), Verdict::SuggestRest);
         seat.rest_threshold_tokens = silent.rest_threshold_tokens;
@@ -1081,62 +958,6 @@ mod lessons {
         );
     }
 
-    /// claude-code A10 — a newer client REPLACES the daemon and re-hosts the
-    /// sessions under it, leaving every row pid-less for a window that was 21–61
-    /// seconds on one replacement and under 7 on another.
-    ///
-    /// So the window is not a constant to code against, and the rule is to HOLD
-    /// a pid-less row while the daemon's pid has moved or its uptime is under
-    /// the arrival window. Measured here as the property the table has to have:
-    /// the row a spawn would otherwise be issued over is held, and the SAME row
-    /// with the daemon quiet is dispatched against — so the arm reads the daemon
-    /// and not the row.
-    #[test]
-    fn a_newer_client_replaces_the_daemon_and_rehosts() {
-        let mut aged_out = a_seat(RosterState::Absent);
-        // The outage's own shape: a row older than the recency bound, which
-        // reads Absent, standing in the worktree while the daemon re-hosts it.
-        aged_out.pidless_row = true;
-
-        // The control FIRST: with no daemon reading at all this is the spawn
-        // that put two live rows in one worktree on 2026-09-04.
-        assert_eq!(decide(&aged_out), Verdict::SpawnWoken);
-
-        aged_out.daemon_uptime_ms = Some(1_000);
-        assert_eq!(
-            decide(&aged_out),
-            Verdict::LeaveAlone,
-            "a row in transit is not one to spawn over"
-        );
-        assert!(decide::replacement_hold(&aged_out)
-            .expect("the hold names itself")
-            .starts_with(decide::REPLACEMENT_HELD));
-
-        // The pid half covers the poll loop that was stalled or slept across the
-        // replacement and arrives after the uptime has elapsed.
-        let mut stalled = aged_out.clone();
-        stalled.daemon_uptime_ms = Some(60 * 60 * 1000);
-        assert_eq!(decide(&stalled), Verdict::SpawnWoken);
-        stalled.daemon_pid_changed = true;
-        assert_eq!(decide(&stalled), Verdict::LeaveAlone);
-
-        // And the reading itself: the pid and the uptime come from the daemon's
-        // own account, summed over its tokens, with an unknown unit refusing the
-        // whole uptime rather than inventing a young one.
-        let read = claude_code::parse_daemon_status("pid: 4242\nuptime: 1m 30s\n")
-            .expect("the status parses");
-        assert_eq!(read.pid, 4242);
-        assert_eq!(read.uptime_ms, Some(90_000));
-        assert_eq!(
-            claude_code::parse_daemon_status("pid: 4242\nuptime: 3 fortnights\n")
-                .expect("the pid still parses")
-                .uptime_ms,
-            None,
-            "an age nobody can read is not a fresh one"
-        );
-        assert!(claude_code::parse_daemon_status("running\n").is_none());
-    }
-
     /// claude-code A7 — an attach EXITS ZERO whether it revived the row or
     /// silently did nothing, so its own return is not a witness that the session
     /// came back.
@@ -1318,10 +1139,6 @@ mod lessons {
         let rebuilt = sessions::rebuild(&stream);
         assert!(rebuilt.seat_state(S1).halted);
         assert_eq!(rebuilt.seat_state(S1).blind, decide::BLIND_LIMIT);
-        assert_eq!(
-            rebuilt.daemon_pid, None,
-            "and the daemon pid starts at none, which reads as no replacement"
-        );
 
         // The control: a clear after it, and the same fold reads no hold. It is
         // the ORDER that decides — a clear before the halt leaves the hold
@@ -2068,13 +1885,23 @@ fn every_child_carries_this_processs_own_executable_as_fleet_bin() {
         env.contains(&("FLEET_BIN".to_string(), own.display().to_string())),
         "the start carries {owed}: {env:?}"
     );
+    // And the auto-updater off, on the pane that is the session itself: the
+    // process whose updater moved the operator's pin (lessons claude-code A1).
+    assert!(
+        env.contains(&(claude_code::AUTOUPDATER_VAR.to_string(), "1".to_string())),
+        "the start carries the updater off: {env:?}"
+    );
 
-    let _ = rig.agent().daemon();
+    let _ = rig.agent().version();
     let env = std::fs::read_to_string(&leaked).expect("the read recorded its environment");
     let lines: Vec<&str> = env.lines().collect();
     assert!(
         lines.contains(&owed.as_str()),
-        "the daemon read carries {owed} too: {lines:?}"
+        "a read carries {owed} too: {lines:?}"
+    );
+    assert!(
+        lines.contains(&"DISABLE_AUTOUPDATER=1"),
+        "and the updater off: {lines:?}"
     );
 }
 

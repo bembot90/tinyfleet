@@ -195,7 +195,8 @@ fn seat(id: &str) -> SeatRow {
         roster_state: "present".to_string(),
         roster_unknown_cause: None,
         waiting_for: None,
-        roster_recency_fallback: None,
+        exit_status: None,
+        ended_at: None,
         context_tokens: None,
         project: Some("demo".to_string()),
         worktree: Some(format!("/wt/{id}")),
@@ -343,6 +344,44 @@ fn the_page_prints_every_section() {
 
 /// AC1's other half: a STALE projection, a pending grant and a policy naming
 /// no rules.
+/// An unknown seat says WHY on its own roster line — the cause the loop
+/// published, which names what the host holds and what the listing names where
+/// the two disagree (fleet-rge6.3) — and a seat that is not unknown prints no
+/// dash and no cause.
+#[test]
+fn an_unknown_seat_prints_its_cause_on_its_own_line() {
+    let rig = Rig::new("unknown-cause");
+    let cause = "tmux holds pid 4242 alive for agent-1d0e4f58; the listing names no row with \
+                 that pid";
+    let mut blind = seat(BUILDER_2);
+    blind.roster_state = "unknown".to_string();
+    blind.roster_unknown_cause = Some(cause.to_string());
+    let doc = document(
+        &rig.policy_file(),
+        &fleet_controller::clock::now_stamp(),
+        vec![seat_named(BUILDER_1, "Orla"), blind],
+    );
+    rig.publish(&doc);
+
+    let out = rig.run(&["status"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let page = stdout(&out);
+    let roster: Vec<&str> = page
+        .lines()
+        .skip_while(|line| *line != "roster")
+        .skip(1)
+        .take(2)
+        .collect();
+    assert!(
+        roster[1].starts_with(&format!("  agent-1d0e4f58  unknown — {cause}")),
+        "{roster:?}"
+    );
+    assert!(
+        roster[0].starts_with("  orla-e8a04b17  present  decision"),
+        "the control prints no cause: {roster:?}"
+    );
+}
+
 #[test]
 fn a_stale_projection_a_pending_grant_and_no_rules() {
     let rig = Rig::new("stale");

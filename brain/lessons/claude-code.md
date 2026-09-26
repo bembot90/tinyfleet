@@ -53,6 +53,11 @@ the requirement owed it.
 
 ### A2. A row with no pid is two different states
 
+- **Retired by:** fleet-rge6.3 (2026-09-26). A seat's session is an
+  interactive one in fleet's own tmux pane, and its row always carries the
+  pane's pid (B10); a session the host holds with no row yet is starting by
+  the pane's age, and one that ended is a dead pane. No pid-less row is
+  read any more. Kept here as history.
 - **Fact:** A roster row carrying no `pid` means either the session has ENDED
   or it has not finished STARTING, and `state` is the only field that separates
   them. The newborn window was measured at 277–737 ms across 4 spawns of 4: no
@@ -71,6 +76,12 @@ the requirement owed it.
 
 ### A3. No end of life can be read off the roster, and `done` least of all
 
+- **Retired by:** fleet-rge6.3 (2026-09-26). The end is the host's: a
+  dead pane holding its exit status, dated by the first poll that reads it
+  dead or by the transcript (`session.ended`). The state vocabulary is
+  background-only and nothing reads it; the deliberate-end event is still
+  what tells a goodbye from a crash, because a dead pane cannot. Kept here
+  as history.
 - **Fact:** Hibernation was absent from the roster on 2.1.233 and returned in
   2.1.234, and a hibernated session and a deliberately stopped one are
   identical across every roster field. Nothing the agent reports separates
@@ -107,6 +118,10 @@ the requirement owed it.
 
 ### A4. A dead terminal host has two shapes and neither carries a status
 
+- **Retired by:** fleet-rge6.3 (2026-09-26). The terminal host is fleet's
+  own tmux server, and the agent is its pane's process: a dead one is a
+  dead pane carrying its status under remain-on-exit, and nothing
+  respawns it. Kept here as history.
 - **Fact:** Killing a session's terminal-host process produces a row that is
   field-for-field a deliberately stopped one when the session was idle, and a
   self-respawning pid-null `state: working` row for 10.8–12.1 s (n=4) when it
@@ -233,6 +248,10 @@ the requirement owed it.
 
 ### A10. A newer client replaces the daemon and re-hosts the sessions under it
 
+- **Retired by:** fleet-rge6.3 (2026-09-26). Fleet's seats are no longer
+  hosted by the agent's daemon, so no replacement ends them or re-hosts
+  them, and the replacement window, the re-host hold and the daemon read
+  are gone with it. Kept here as history.
 - **Fact:** One background daemon per user hosts every background session.
   Starting a session with a NEWER binary REPLACES that daemon. The replacement
   ends the hosted processes — leaving every row pid-less — and the sessions then
@@ -950,15 +969,15 @@ name.
 | Test | Entry |
 | --- | --- |
 | `lessons::version_pin_is_published_beside_the_live_version` | A1 |
-| `lessons::pid_null_is_two_states` | A2 |
-| `lessons::hibernation_reads_as_a_deliberate_stop` | A3 |
-| `lessons::a_dead_host_has_two_shapes` | A4 |
+| `lessons::pid_null_is_two_states` | A2 (retired by fleet-rge6.3) |
+| `lessons::hibernation_reads_as_a_deliberate_stop` | A3 (retired by fleet-rge6.3) |
+| `lessons::a_dead_host_has_two_shapes` | A4 (retired by fleet-rge6.3) |
 | `lessons::start_names_the_model` | A5 |
 | `lessons::stop_takes_the_short_id` | A6 |
 | `lessons::attach_exit_is_not_a_witness` | A7 |
 | `lessons::remove_answers_three_ways` | A8 |
 | `lessons::resume_continues_only_a_flagless_full_id` | A9 |
-| `lessons::a_newer_client_replaces_the_daemon_and_rehosts` | A10 |
+| `lessons::a_newer_client_replaces_the_daemon_and_rehosts` | A10 (retired by fleet-rge6.3) |
 | `lessons::the_config_dir_scopes_the_daemon` | A11 |
 | `lessons::an_mcp_call_backgrounds_at_120s` | A12 |
 | `lessons::a_session_locks_only_a_worktree_it_created` | A13 |

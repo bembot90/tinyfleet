@@ -472,5 +472,6 @@ fn table_row(
         first_seen_at: None,
         last_seen_at: None,
         adopted: None,
+        ended: None,
     }
 }

@@ -47,7 +47,7 @@ use fleet_controller::adapter::claude_code::ClaudeCode;
 use fleet_controller::adapter::{encode_project_dir, Agent, RosterRead};
 use fleet_controller::platform::child_path;
 use fleet_controller::run;
-use fleet_controller::test_support::{FakeClock, FakeServer};
+use fleet_controller::test_support::{FakeClock, FakeServer, FakeSession, FIRST_PANE_PID};
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
@@ -150,7 +150,6 @@ const PREAMBLE: &str = "preamble";
 const STOP_EXIT: &str = "stop-exit";
 const RM_EXIT: &str = "rm-exit";
 const ATTACH_EXIT: &str = "attach-exit";
-const DAEMON_EXIT: &str = "daemon-exit";
 
 /// The environment and the standard streams are the PROCESS's, so one
 /// in-process poll runs at a time. Under `cargo test` the arms of this binary
@@ -1084,21 +1083,6 @@ impl Rig {
         self.root.join(format!("seam-{name}"))
     }
 
-    /// The body `daemon status` prints. Absent is an empty body, which parses to
-    /// no status at all — a read that answered and named no daemon, which opens
-    /// no replacement window.
-    fn daemon_status_path(&self) -> PathBuf {
-        self.root.join("daemon-status")
-    }
-
-    /// A daemon of this pid, up this long, as the agent prints it.
-    fn write_daemon(&self, pid: u32, uptime: &str) {
-        write(
-            &self.daemon_status_path(),
-            &format!("pid: {pid}\nuptime: {uptime}\n"),
-        );
-    }
-
     /// Every effect call the stub received, one line each, in the order they
     /// arrived. APPENDED and never rewritten: the rest collection's whole
     /// contract is an order, and a file that held only the latest call could not
@@ -1516,11 +1500,130 @@ impl Rig {
     /// The listing the stub serves: the arm's rows, then the rows a start's
     /// watch believes the tmux stub's panes by (`test_support::with_arrivals`),
     /// which stand in no seat's worktree.
+    ///
+    /// And the HOST beside it (ruling 3): a live row the arm lists in the
+    /// seat's worktree is the seat's session only where the host holds a live
+    /// pane for the seat with that pid, so the pane is put there — see
+    /// [`Rig::host_the_listed_seat`].
     fn write_roster(&self, body: &str) {
         write(
             &self.roster_path(),
             &fleet_controller::test_support::with_arrivals(body),
         );
+        self.host_the_listed_seat(body);
+    }
+
+    /// The seat's session on the rig's tmux stub, standing for the live row an
+    /// arm lists in the seat's worktree: a pane alive under the seat's session
+    /// name, carrying the row's pid, which is what attributes the row to the
+    /// seat (lessons claude-code B10). A pane a start already left there takes
+    /// the row's pid rather than a second pane being made.
+    ///
+    /// A listing with NO live row in the worktree takes away a pane the rig
+    /// planted — the session went, and its row with it — and leaves one a start
+    /// made (its pid is the stub's own, from [`FIRST_PANE_PID`] up), which the
+    /// controller's own start owns.
+    fn host_the_listed_seat(&self, body: &str) {
+        let Ok(mut host) = FakeServer::load(&self.tmux_state_path()) else {
+            return;
+        };
+        let rows: Vec<serde_json::Value> = serde_json::from_str(body).unwrap_or_default();
+        let worktree = self.worktree().display().to_string();
+        let listed = rows.iter().find_map(|row| {
+            let cwd = row["cwd"].as_str()?;
+            (cwd.trim_end_matches('/') == worktree.trim_end_matches('/'))
+                .then(|| row["pid"].as_u64())
+                .flatten()
+        });
+        match listed {
+            Some(pid) => {
+                let now = now_ms();
+                let pane = host
+                    .sessions
+                    .entry(SEAT_ID.to_string())
+                    .or_insert_with(|| FakeSession {
+                        cwd: worktree.clone(),
+                        argv: Vec::new(),
+                        env: Vec::new(),
+                        pid: 0,
+                        ended: None,
+                        created_ms: now - now % 1000 - 60_000,
+                        screen: String::new(),
+                        sent: Vec::new(),
+                    });
+                pane.pid = pid as u32;
+                pane.ended = None;
+            }
+            None => {
+                let planted = host
+                    .sessions
+                    .get(SEAT_ID)
+                    .is_some_and(|pane| pane.pid < FIRST_PANE_PID && pane.ended.is_none());
+                if planted {
+                    host.sessions.remove(SEAT_ID);
+                }
+            }
+        }
+        host.save(&self.tmux_state_path())
+            .expect("the tmux stub's state is written");
+    }
+
+    /// A session of the seat's that this controller started, sighted and then
+    /// ENDED: its row on the session table carrying the session id and the
+    /// address a sighting wrote, dispatched long enough ago that the arrival
+    /// window is closed, and its pane on the host dead with `status`. The
+    /// listing names nothing — an interactive row leaves with its process
+    /// (lessons claude-code B10) — so the table is where the loop reads the
+    /// session from, as a real poll after a real end does.
+    fn a_dead_session(&self, short_id: &str, session: &str, status: Option<i32>) {
+        write(
+            &self.machine().join("sessions.json"),
+            &serde_json::json!({
+                "schema": 2,
+                "sessions": [{
+                    "seat": SEAT_ID,
+                    "project": "demo",
+                    "worktree": self.worktree().display().to_string(),
+                    "name": SEAT,
+                    "model": "claude-opus-5",
+                    "posture": "auto",
+                    "first_turn": format!("/wake {SEAT}"),
+                    "transient": false,
+                    "dispatch_id": "an-earlier-dispatch",
+                    "dispatched_at": 1000,
+                    "session_id": session,
+                    "short_id": short_id,
+                    "first_seen_at": 1000,
+                    "last_seen_at": 1000,
+                }],
+            })
+            .to_string(),
+        );
+        self.end_the_seat(status);
+    }
+
+    /// The seat's pane on the host ended with `status`, kept dead as
+    /// remain-on-exit keeps it: the end of a seat's session, as the host reads
+    /// it (ruling 3). The pane is made first where the host holds none.
+    fn end_the_seat(&self, status: Option<i32>) {
+        let mut host = self.host();
+        let now = now_ms();
+        let pane = host
+            .sessions
+            .entry(SEAT_ID.to_string())
+            .or_insert_with(|| FakeSession {
+                cwd: self.worktree().display().to_string(),
+                argv: Vec::new(),
+                env: Vec::new(),
+                pid: 4242,
+                ended: None,
+                created_ms: now - now % 1000 - 60_000,
+                screen: String::new(),
+                sent: Vec::new(),
+            });
+        pane.ended = Some(status);
+        host.save(&self.tmux_state_path())
+            .expect("the tmux stub's state is written");
     }
 
     /// The session's transcript, under the agent's configuration directory at
@@ -1609,6 +1712,11 @@ impl Rig {
     /// the platform's own list and `HOME`. So an arm that breaks the search path
     /// varies what the CONTROLLER resolves its own binary on and nothing the stub
     /// sees, and it is free to set any seam here.
+    ///
+    /// A `stop` that lands ENDS the seat's pane on the rig's tmux stub, as a
+    /// stop ends a session's process: the host keeps the pane dead (ruling 3),
+    /// and the successor a rest starts next clears it rather than being refused
+    /// over a live one.
     fn write_stub_agent(&self) {
         let cat = cat_bin();
         let started = self.stub_started_path();
@@ -1651,12 +1759,10 @@ impl Rig {
         let seam_rm_exit = seam_rm_exit.display();
         let seam_attach_exit = self.seam_path(ATTACH_EXIT);
         let seam_attach_exit = seam_attach_exit.display();
-        let seam_daemon_exit = self.seam_path(DAEMON_EXIT);
-        let seam_daemon_exit = seam_daemon_exit.display();
-        let daemon_status = self.daemon_status_path();
-        let daemon_status = daemon_status.display();
         let listing_dirs = self.listing_dirs_path();
         let listing_dirs = listing_dirs.display();
+        let tmux = self.tmux_link();
+        let tmux = tmux.display();
         write(
             &self.stub_path(),
             &format!(
@@ -1699,7 +1805,9 @@ impl Rig {
                  \x20   ;;\n\
                  \x20 stop)\n\
                  \x20   echo \"$(starts) stop $2\" >> '{calls}'\n\
-                 \x20   exit $({cat} '{seam_stop_exit}' 2>/dev/null || echo 0)\n\
+                 \x20   c=$({cat} '{seam_stop_exit}' 2>/dev/null || echo 0)\n\
+                 \x20   [ \"$c\" = 0 ] && '{tmux}' end {SEAT_ID} 0 >/dev/null 2>&1\n\
+                 \x20   exit $c\n\
                  \x20   ;;\n\
                  \x20 rm)\n\
                  \x20   echo \"$(starts) rm $2\" >> '{calls}'\n\
@@ -1708,10 +1816,6 @@ impl Rig {
                  \x20 attach)\n\
                  \x20   echo \"$(starts) attach $2\" >> '{calls}'\n\
                  \x20   exit $({cat} '{seam_attach_exit}' 2>/dev/null || echo 0)\n\
-                 \x20   ;;\n\
-                 \x20 daemon)\n\
-                 \x20   {cat} '{daemon_status}' 2>/dev/null\n\
-                 \x20   exit $({cat} '{seam_daemon_exit}' 2>/dev/null || echo 0)\n\
                  \x20   ;;\n\
                  \x20 *) exit 64;;\n\
                  esac\n"
@@ -1995,6 +2099,13 @@ impl Rig {
             "FLEET_ORDERS_CLOCK",
             Some(self.clock_path().into_os_string()),
         );
+        // The rig's own tmux stub, as the binary routes are given it: the loop
+        // reads every seat's presence off the host (ruling 3), so a loop with
+        // no host reads every seat unknown.
+        env.set(
+            common::hermetic::TMUX_BIN,
+            Some(self.tmux_link().into_os_string()),
+        );
         env.set(
             "CLAUDE_CONFIG_DIR",
             self.scoped_config_dir
@@ -2086,6 +2197,13 @@ impl Rig {
         env.set(
             "FLEET_ORDERS_CLOCK",
             Some(self.clock_path().into_os_string()),
+        );
+        // The rig's own tmux stub, as the binary routes are given it: the loop
+        // reads every seat's presence off the host (ruling 3), so a loop with
+        // no host reads every seat unknown.
+        env.set(
+            common::hermetic::TMUX_BIN,
+            Some(self.tmux_link().into_os_string()),
         );
         env.set(
             "CLAUDE_CONFIG_DIR",
@@ -2777,29 +2895,6 @@ fn live_row(cwd: &Path, session: &str) -> String {
               "pid":4242,"status":"idle","startedAt":1000}}]"#,
         cwd.display()
     )
-}
-
-/// A row the agent has finished with: pid-less and carrying the end marker, so
-/// the recency window is what decides whether it is still reported.
-///
-/// The ADDRESS and the IDENTITY are separate parameters because the controller
-/// reads them from separate fields — `id` is what an attach is addressed by,
-/// `sessionId` is what the transcript and the end stamp are keyed under. A row
-/// writing one value into both cannot fail an arm that issues a call against
-/// the wrong one, so an arm whose subject is that distinction takes this
-/// spelling and not `ended_row`.
-fn ended_row_addressed(cwd: &Path, short_id: &str, session: &str, started_at_ms: u64) -> String {
-    format!(
-        r#"[{{"id":"{short_id}","sessionId":"{session}","cwd":"{}","kind":"background",
-              "state":"done","startedAt":{started_at_ms}}}]"#,
-        cwd.display()
-    )
-}
-
-/// The same row for an arm that is not about the address: one value answers for
-/// both fields, which is what the agent writes when the short id IS the session.
-fn ended_row(cwd: &Path, session: &str, started_at_ms: u64) -> String {
-    ended_row_addressed(cwd, session, session, started_at_ms)
 }
 
 /// Wall-clock milliseconds, the same origin the built binary stamps its rows

@@ -19,7 +19,7 @@ use fleet_controller::routines::trigger::Due;
 use fleet_controller::routines::{self, action, load, state, trigger, Outcome, SeatView};
 use fleet_controller::{clock, config, events, observe, platform, policy, sessions};
 use fleet_core::seat::identity::SeatId;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::exit::Exit;
 
@@ -195,11 +195,14 @@ fn seat_views(fleet: &Fleet, needs_roster: bool) -> Vec<SeatView> {
             agent = agent.with_effect_bin(bin);
         }
         // One listing per distinct directory, the same fold the loop makes: a
-        // spawned seat is named by its own daemon's listing alone, so a pass that
-        // read once would rank every such seat absent and ring nobody.
+        // spawned seat is named by its own directory's listing alone, so a pass
+        // that read once would find no row for any such seat and ring nobody.
         let rosters =
             observe::Rosters::gather(&fleet.seats, &config_dir_of, &|dir| agent.status(dir));
-        Some((rosters, agent))
+        // And the host, read once beside them, as the loop reads it: presence
+        // is the host's, so a seat is only ever rung in a session it holds.
+        let host = crate::transient::verb_host(&home).list();
+        Some((rosters, host))
     } else {
         None
     };
@@ -209,25 +212,9 @@ fn seat_views(fleet: &Fleet, needs_roster: bool) -> Vec<SeatView> {
         .filter_map(|seat| {
             let (_, worktree) = seat.worktrees.first()?;
             let state = match &read {
-                Some((rosters, agent)) => {
-                    let under = config_dir_of(&seat.id);
-                    let recency = observe::Recency {
-                        window_ms: fleet.policy.stopped_recency_hours * 60 * 60 * 1000,
-                        ended_at: &|worktree: &str, session: &str| {
-                            agent.ended_at(
-                                under.as_deref().map(Path::new),
-                                dir_key(worktree),
-                                session,
-                            )
-                        },
-                    };
-                    observe::observe_seat(
-                        rosters.for_seat(&seat.id),
-                        seat,
-                        clock::now_ms(),
-                        &recency,
-                    )
-                    .state
+                Some((rosters, host)) => {
+                    observe::observe_seat(rosters.for_seat(&seat.id), host, seat, clock::now_ms())
+                        .state
                 }
                 None => observe::RosterState::Absent,
             };

@@ -1,7 +1,7 @@
 //! Routines: standing duties the controller's own tick evaluates and fires.
 //!
-//! One clock and one record. There is no second daemon and no per-routine service
-//! job: every routine from the fleet install, from every installed pack and from
+//! One clock and one record. There is no second service and no per-routine
+//! service job: every routine from the fleet install, from every installed pack and from
 //! every project is read on the tick, and a controller that is down fires
 //! nothing and says so by the absence of its own events.
 //!

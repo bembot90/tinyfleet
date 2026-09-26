@@ -472,6 +472,12 @@ fn first_line(out: &mut dyn Write, document: &Projection, read: &Read) -> std::i
 fn roster_row(row: &SeatRow) -> String {
     let mut line = row.seat.machine_name();
     line.push_str(&format!("  {}", row.roster_state));
+    // An unknown seat says WHY on its own line: the cause names what the host
+    // holds and what the listing names where the two disagree, and a bare
+    // `unknown` leaves the person to go and read the projection for it.
+    if let Some(cause) = &row.roster_unknown_cause {
+        line.push_str(&format!(" — {cause}"));
+    }
     if let Some(waiting) = &row.waiting_for {
         line.push_str(&format!(", waiting for {waiting}"));
     }

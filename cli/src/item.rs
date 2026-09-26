@@ -1301,9 +1301,10 @@ impl SeatRing {
         let home = platform::home_dir();
         let agent = ClaudeCode::new(&home, &self.machine_dir);
         let host = fleet_controller::host::resolve(&platform::child_path(&home));
-        // A spawned seat's session is listed under the configuration directory
-        // that seat alone starts with, and named by no other listing, so the
-        // ring reads under the directory that seat's own session row recorded.
+        // A spawned seat's session runs under the configuration directory
+        // that seat alone starts with, and is named by no other listing, so
+        // the ring reads under the directory that seat's own session row
+        // recorded.
         let table = sessions::read(&sessions::path_in(&self.machine_dir)).0;
         let config_dir = table
             .as_ref()
