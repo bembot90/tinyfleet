@@ -5,8 +5,9 @@
 //! IN THE LIBRARY AND NOT IN A SUITE, because a store is asked these where it
 //! runs: `fleet store check` runs [`run`] against an adapter on a scratch store
 //! it made, and `core/tests/contract.rs` runs every check against the store
-//! held in memory, one arm each, and the whole table against the built-in
-//! store.
+//! held in memory, one arm each, and the whole table against the stub adapter
+//! over it. A real store's pack runs the table against its own adapter, where
+//! it is published.
 //!
 //! EACH CHECK ANSWERS AND NONE PANICS. A check passes, fails with a text naming
 //! what the store answered, or is skipped with why — a store that declares no
@@ -56,8 +57,8 @@ pub enum Passed {
 /// merged at the top level, the way a project's own tooling writes beside
 /// fleet's keys. The trait writes only the contract's types, so a caller that
 /// can plant one some way of its own — the board held in memory through its
-/// rig, the built-in store through its binary — hands it in, and the check
-/// that needs one is skipped where none was handed.
+/// rig — hands it in, and the check that needs one is skipped where none was
+/// handed.
 pub struct Ctx<'a> {
     pub store: &'a dyn Store,
     pub root: &'a Path,
@@ -140,8 +141,7 @@ const LATER: &str = "2026-09-13T01:00:00Z";
 
 /// How many items the ambiguity check files before it gives up: one more than
 /// the 36 characters a base-36 hash can open with, so two of them always share
-/// a first character — the built-in store mints ids that way, measured on its
-/// pinned release.
+/// a first character, as a store minting base-36 hashes does.
 const AMBIGUOUS_WITHIN: usize = 37;
 
 /// Who the checks write as: a run, because the suite is no seat's act.
@@ -474,9 +474,8 @@ fn missing_is_refused(ctx: &Ctx) -> Answer {
 ///
 /// THE FRAGMENT IS A COMMON PREFIX of two filed items' hashes, longest first,
 /// and equal to neither. A prefix is what the contract's partial-id rule reads
-/// as a match, and the built-in store at its pinned release reads the same —
-/// measured on a scratch board, `yc` answered not found beside `fx-0yc` and
-/// `fx-cyc` while `0` answered both of `fx-0li` and `fx-0yc`. A fragment some
+/// as a match — `yc` is not found beside `fx-0yc` and `fx-cyc`, while `0`
+/// names both of `fx-0li` and `fx-0yc`. A fragment some
 /// other item's hash IS resolves to that item, which is no ambiguity: the next
 /// is tried.
 fn ambiguous_is_refused(ctx: &Ctx) -> Answer {
@@ -638,8 +637,8 @@ fn label_filter(ctx: &Ctx) -> Answer {
 /// of every item it holds, whatever its status.
 ///
 /// The close is by the seat itself, because a store may close an assigned
-/// item only for its assignee — the built-in store at its pinned release
-/// does, and its adapter matches the seat actor to the assignee it wrote.
+/// item only for its assignee, and its adapter then matches the seat actor
+/// to the assignee it wrote.
 fn assignee_filter(ctx: &Ctx) -> Answer {
     let seat = SeatId::mint();
     let id = filed(ctx, "an item a seat holds", &[])?;
@@ -743,7 +742,7 @@ fn update(ctx: &Ctx) -> Answer {
 /// run.set R, order.set O1, order.set O2, and the item answers O2 and R: an
 /// order write replaces the order whole and keeps the run's record — a store
 /// nesting both under one object loses the record to the first order written
-/// over it, measured on the built-in store at its pinned release (fleet-4j6).
+/// over it (fleet-4j6).
 fn order_keeps_the_run(ctx: &Ctx) -> Answer {
     let id = filed(ctx, "an item whose order is given twice", &[])?;
     let record = a_record("h1", "greet")?;

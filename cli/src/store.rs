@@ -1,4 +1,4 @@
-//! `fleet store check [--adapter <path>]` and `fleet store schema`.
+//! `fleet store check [--adapter <path|name>]` and `fleet store schema`.
 //!
 //! One family module and one arm in the dispatch. `check` runs every check of
 //! the store contract ([`conformance::run`]) against an adapter, and prints one
@@ -15,9 +15,9 @@
 //!
 //! NO OTHER WRITER IS HANDED IN. Planting another tool's keys on an item takes
 //! a way in beside the contract, which only the suites own (the board held in
-//! memory through its rig, bd through the binary), so the two checks that
-//! plant them, "another writer's keys" and "another writer's keys are listed
-//! as foreign", are printed as SKIP here, saying why.
+//! memory through its rig), so the two checks that plant them, "another
+//! writer's keys" and "another writer's keys are listed as foreign", are
+//! printed as SKIP here, saying why.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fleet_controller::platform;
+use fleet_core::defaults;
 use fleet_core::policy::{self, Value};
 use fleet_core::store::conformance::{self, Ctx, Passed};
 use fleet_core::store::schema;
@@ -40,19 +41,22 @@ pub enum Verb {
     #[command(long_about = "\
 run every check of the store contract (docs/store.md) against an adapter, on a
 scratch store the adapter makes through its `scratch` verb and fleet removes
-after. Without --adapter it checks the adapter this project selects ([store]
-adapter, else the built-in bd). Exits 0 when every check passes, 1 when one
+after. --adapter names the adapter as [store] adapter does: an absolute path
+to an executable, or the name of a store adapter an installed pack carries.
+Without it, it checks the adapter this project selects ([store] adapter, else
+the default name, the bd pack's). Exits 0 when every check passes, 1 when one
 fails or the adapter declares no scratch, 2 on usage, 3 when the adapter could
-not be run.")]
+not be opened or run.")]
     Check {
         // The help is broken by hand where clap would run it past 80 columns:
         // this build of clap wraps nothing.
         #[arg(
             long,
-            value_name = "PATH",
-            help = "an absolute path to an adapter executable,\nchecked instead of this project's"
+            value_name = "PATH|NAME",
+            help = "an absolute path to an adapter executable, or\nthe name of one an installed \
+                    pack carries,\nchecked instead of this project's"
         )]
-        adapter: Option<PathBuf>,
+        adapter: Option<String>,
     },
     /// print the store contract as a JSON Schema document
     #[command(long_about = "\
@@ -91,45 +95,51 @@ fn said(exit: Exit, why: impl std::fmt::Display) -> Exit {
     exit
 }
 
-fn check(adapter: Option<&Path>) -> Exit {
-    if let Some(path) = adapter.filter(|path| !path.is_absolute()) {
+fn check(adapter: Option<&str>) -> Exit {
+    // Either form `[store] adapter` takes, and nothing else: a path that is
+    // not absolute is a separator in a name, which no pack's adapter carries.
+    if let Some(given) =
+        adapter.filter(|given| !given.starts_with('/') && (given.is_empty() || given.contains('/')))
+    {
         return said(
             Exit::Usage,
             format!(
-                "--adapter takes an absolute path to an executable, and {} is not one",
-                path.display()
+                "--adapter takes an absolute path to an executable or the name of a store \
+                 adapter an installed pack carries, and `{given}` is neither"
             ),
         );
     }
-    // The policy the store is opened with: `[store] adapter` naming the path
+    // The policy the store is opened with: `[store] adapter` naming what was
     // handed in; else the project's own file, where one resolves; else
-    // nothing, which is the built-in bd.
-    let here = match adapter {
-        Some(_) => None,
-        None => item::resolve_at(None).ok(),
+    // nothing, which is the default name.
+    let here = item::resolve_at(None).ok();
+    let mut policy = match (adapter, &here) {
+        (None, Some(here)) => here.project.policy.clone(),
+        _ => Default::default(),
     };
-    let mut policy = here
-        .as_ref()
-        .map(|here| here.project.policy.clone())
-        .unwrap_or_default();
-    // A name resolves through the packs the project's machine installs, and a
-    // path handed in names no packs at all.
-    let packs = here.as_ref().map(|here| PackDirs {
-        packs_dir: &here.packs_dir,
-        defaults_dir: &here.defaults_dir,
+    // A name resolves through the packs the project's machine installs, or
+    // this machine's where no project resolves.
+    let machine_dir = platform::machine_dir();
+    let (packs_dir, defaults_dir) = match &here {
+        Some(here) => (here.packs_dir.clone(), here.defaults_dir.clone()),
+        None => (machine_dir.join("packs"), machine_dir.join(defaults::DIR)),
+    };
+    let packs = Some(PackDirs {
+        packs_dir: &packs_dir,
+        defaults_dir: &defaults_dir,
     });
     let mut source = AdapterSource::Setting;
-    if let Some(path) = adapter {
-        let named = Value::from(path.display().to_string());
+    if let Some(given) = adapter {
+        let named = Value::from(given.to_string());
         let table = Value::from(BTreeMap::from([("adapter", named)]));
         policy.insert(String::from("store"), table);
         source = AdapterSource::Flag;
     }
     let policy = &policy;
-    // The adapter by what selects it: the path, or the built-in store's name.
+    // The adapter by what selects it: the path or the name, else the default.
     let named = match policy::read("store", "adapter", policy) {
         Ok(Some(Value::String(named))) => named.clone(),
-        _ => String::from(store::bd::NAME),
+        _ => String::from(store::DEFAULT_ADAPTER),
     };
 
     let n = NEXT.fetch_add(1, Ordering::SeqCst);
@@ -154,7 +164,6 @@ fn check(adapter: Option<&Path>) -> Exit {
             policy,
             source,
             search_path: &search_path,
-            strict: true,
             timeout: STORE_TIMEOUT,
             packs,
         })
@@ -230,7 +239,7 @@ mod tests {
     fn the_temp_dir_is_removed_on_a_panic() {
         let dir =
             std::env::temp_dir().join(format!("fleet-store-check-guard-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join("store/.beads")).expect("the dir is made");
+        std::fs::create_dir_all(dir.join("store/.tracker")).expect("the dir is made");
         let held = dir.clone();
         let unwound = std::panic::catch_unwind(move || {
             let _scratch = Scratch(held);

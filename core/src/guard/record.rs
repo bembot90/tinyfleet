@@ -246,7 +246,7 @@ fn sql_denial(keyword: String, unreadable: bool, cli: &str) -> Denial {
 ///
 /// A comment is where every entry lives, so the comment verbs are the one
 /// route by which an entry can reach the record without the verb that owns its
-/// act: `comments add`, and `comment`, which bd names its shorthand. The text
+/// act: `comments add`, and `comment`, its shorthand in the store's CLI. The text
 /// is refused where it carries the entry key anywhere in it, and so is a text
 /// the reader cannot see — one read from a file, or from the input.
 fn entry_forge(tokens: &[Token], cli: &str) -> Option<String> {

@@ -926,92 +926,12 @@ fn item_show_prints_the_item_and_its_entries_and_refuses_what_it_cannot_read() {
     );
 }
 
-/// An item a person holds: `show` and a listing that reaches it are both
-/// could-not-tell, naming the holder, and never an item held by nobody.
-///
-/// ON A REAL `bd`, AND ONLY WHERE ONE IS: a holder that is no seat is a board a
-/// project brought, which no fleet verb writes and the store stub cannot hold
-/// — its holder is a seat's id or nobody. The project is a `bd init` of its
-/// own, naming no adapter, and the verbs run the `bd` this process found.
-#[test]
-fn an_item_a_person_holds_is_could_not_tell_naming_the_holder() {
-    let Some(bd) = common::bd_or_skip("an_item_a_person_holds_is_could_not_tell_naming_the_holder")
-    else {
-        return;
-    };
-    let rig = Named::new("person-held");
-    std::fs::write(rig.project.join("fleet.toml"), POLICY).expect("the policy is written");
-    let init = Command::new(&bd)
-        .args(["init", "--prefix", "fx", "--quiet"])
-        .current_dir(&rig.project)
-        .output()
-        .expect("bd runs");
-    assert!(init.status.success(), "bd init: {}", stderr(&init));
-    let made = Command::new(&bd)
-        .arg("-C")
-        .arg(&rig.project)
-        .args([
-            "create",
-            "--title",
-            "an item a person holds",
-            "--type",
-            "task",
-            "--assignee",
-            "alice",
-            "--labels",
-            PERSON_HELD,
-            "--json",
-        ])
-        .output()
-        .expect("bd runs");
-    assert!(made.status.success(), "bd create: {}", stderr(&made));
-    let value: serde_json::Value =
-        serde_json::from_str(stdout(&made).trim()).expect("bd create answers JSON");
-    let person = value["id"].as_str().expect("an id").to_string();
-    let item = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_fleet"))
-            .arg("item")
-            .args(args)
-            .current_dir(&rig.project)
-            .hermetic(&rig.root.join("home"), &rig.machine, None)
-            .env("FLEET_BD_BIN", &bd)
-            .output()
-            .expect("the built binary runs")
-    };
-
-    let refused = format!(
-        "{person} is held by alice, which is not a seat of this fleet — a person holds it, and \
-         fleet reads only seat holders"
-    );
-    let out = item(&["show", &person, "--json"]);
-    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
-    let refusal = refusal_of(&out, "item show");
-    assert_eq!(refusal["code"], serde_json::json!("could_not_tell"));
-    assert!(
-        refusal["why"]
-            .as_str()
-            .is_some_and(|why| why.contains(&refused)),
-        "{refusal}"
-    );
-    let out = item(&["list", "--label", PERSON_HELD]);
-    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
-    assert!(out.stdout.is_empty(), "{}", stdout(&out));
-    assert!(
-        stderr(&out).starts_with("fleet item list: ") && stderr(&out).contains(&refused),
-        "{}",
-        stderr(&out)
-    );
-}
-
-/// The label the person-held item carries.
-const PERSON_HELD: &str = "ij-person-held";
-
 // ---- the store a project names: `[store] adapter` in its own file ----------
 
 /// A project with no board of its own and the adapter it names: its
 /// `fleet.toml` carrying `[store] adapter = <adapter>`, a machine directory
-/// with the defaults in it, and nothing else. No `bd init`: the store the
-/// file names is the only one these arms can reach.
+/// with the defaults in it, and nothing else: the store the file names is the
+/// only one these arms can reach.
 struct Named {
     root: PathBuf,
     project: PathBuf,
@@ -1103,9 +1023,9 @@ const SHOWN: &str = r#"{"schema_version":1,"item":{"id":"fx-c3d4","title":"an it
 /// The `show` request names the project's root — the contract's envelope,
 /// which only the opener that picked this adapter for this project can fill.
 ///
-/// RED BEFORE THE OPENER: a verb that opens the built-in store whatever the
-/// file says never calls the adapter, and reads no item on a project with no
-/// board of its own.
+/// RED BEFORE THE OPENER: a verb that opens one store whatever the file says
+/// never calls the adapter, and reads no item on a project with no board of
+/// its own.
 #[test]
 fn a_project_naming_an_adapter_executable_is_read_through_it() {
     let named = Named::new("adapter");
@@ -1140,11 +1060,11 @@ fn a_project_naming_an_adapter_executable_is_read_through_it() {
     assert_eq!(request["id"], "c3d4", "and the id as typed: {request}");
 }
 
-/// `[store] adapter` naming neither the built-in store, a name nor a path is a
-/// store fleet cannot open: the item verb exits 3, could not tell, naming the
-/// value and the three forms the key takes.
+/// `[store] adapter` naming neither a name nor a path is a store fleet cannot
+/// open: the item verb exits 3, could not tell, naming the value and the two
+/// forms the key takes.
 #[test]
-fn an_adapter_that_is_neither_bd_a_name_nor_a_path_is_could_not_tell() {
+fn an_adapter_that_is_neither_a_name_nor_a_path_is_could_not_tell() {
     let named = Named::new("sqlite");
     let out = named
         .naming("tools/sqlite")
@@ -1153,8 +1073,8 @@ fn an_adapter_that_is_neither_bd_a_name_nor_a_path_is_could_not_tell() {
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     let refusal = refusal_of(&out, "item show");
     assert_eq!(refusal["code"], serde_json::json!("could_not_tell"));
-    let said = "[store] adapter is `tools/sqlite` — it is \"bd\", the name of a store adapter \
-                an installed pack carries, or an absolute path to an adapter executable";
+    let said = "[store] adapter is `tools/sqlite` — it is the name of a store adapter an \
+                installed pack carries, or an absolute path to an adapter executable";
     assert_eq!(refusal["why"], said, "{refusal}");
     assert!(
         stderr(&out).contains(&format!("fleet item show: {said}")),

@@ -1,8 +1,8 @@
 //! The store contract answered by an executable over [`FakeStore`]:
 //! `fleet-store-stub <verb>`, the request on stdin and the answer on stdout,
 //! one process per call as [`crate::store::exec::Exec`] runs one — so every
-//! `Exec` path, and the conformance suite through it, runs with no bd on the
-//! box.
+//! `Exec` path, and the conformance suite through it, runs with no store
+//! installed on the box.
 //!
 //! THE STORE LIVES IN A FILE, [`STATE_FILE`] under the request's root: each call
 //! loads the fake's [`State`] from it, answers the verb from `impl Store for

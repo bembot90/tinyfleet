@@ -207,41 +207,43 @@ fn read(out: &Output, adapter: &str) -> Read {
     read
 }
 
-/// Arm 1. A project whose file names no store is checked on the built-in bd:
-/// every check passes or is skipped, and the two skipped are the ones that
-/// plant another writer's keys, since the verb hands no other writer in.
+/// The binary's defaults under the rig's machine directory, which a name is
+/// resolved over.
+fn defaults_under(rig: &Rig) {
+    let defaults = rig.root.join("machine").join(fleet_core::defaults::DIR);
+    std::fs::create_dir_all(&defaults).expect("the defaults dir is made");
+    fleet_core::embedded::write_all(&defaults).expect("the embedded defaults are written");
+}
+
+/// The refusal a name no installed pack carries is answered with: the line
+/// that installs the pack fleet-packs carries under it, at the pinned tag.
+fn nowhere(name: &str) -> String {
+    format!(
+        "fleet store check: no store adapter named `{name}` in the installed packs — `{}` \
+         installs the one fleet-packs carries\n",
+        fleet_core::store::pack_line(
+            fleet_core::supported::PINNED_PACKS_SOURCE,
+            name,
+            fleet_core::supported::PINNED_PACKS
+        )
+    )
+}
+
+/// Arm 1. A project whose file names no store is checked on the default name,
+/// resolved through the installed packs as any name is — and on a machine
+/// where no pack carries it, the run could not open one: exit 3, naming the
+/// line that installs it, with nothing made.
 ///
-/// This costs one `bd init`, the bd adapter's own scratch, on bd's embedded
-/// engine inside the verb's temp dir. Its subject is the verb against a real
-/// adapter, so it runs only where a `bd` is on the process `PATH`, and says
-/// it skipped where there is none.
+/// RED-PROOF: on the base a file naming no store was checked on the built-in
+/// store, and no pack was looked for.
 #[test]
-fn a_project_naming_no_store_is_checked_on_the_built_in_bd() {
-    if common::bd_or_skip("a_project_naming_no_store_is_checked_on_the_built_in_bd").is_none() {
-        return;
-    }
-    let rig = Rig::new("bd");
+fn a_project_naming_no_store_is_checked_on_the_default_name_through_the_packs() {
+    let rig = Rig::new("default");
+    defaults_under(&rig);
     let out = rig.check(&[]);
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "stdout:\n{}\nstderr:\n{}",
-        stdout(&out),
-        stderr(&out)
-    );
-    let read = read(&out, "bd");
-    assert!(read.fail.is_empty(), "no check failed: {:?}", read.fail);
-    assert_eq!(
-        read.skip,
-        [
-            "another writer's keys: no other writer was handed to this run, so nothing plants \
-          another tool's keys",
-            "another writer's keys are listed as foreign: no other writer was handed to this \
-             run, so nothing plants another tool's keys"
-        ],
-        "{}",
-        read.summary
-    );
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert_eq!(stderr(&out), nowhere(fleet_core::store::DEFAULT_ADAPTER));
+    assert_eq!(stdout(&out), "", "no check line was printed");
     assert!(
         rig.left().is_empty(),
         "the temp dir is gone: {:?}",
@@ -327,19 +329,72 @@ fn every_check_is_asked_of_an_adapter_that_answers_nothing_back() {
     );
 }
 
-/// Arm 4. `--adapter` takes an absolute path, and a relative one is usage,
-/// with nothing made.
+/// Arm 4. `--adapter` takes an absolute path or a name, and a relative path —
+/// a separator in what would be a name — is usage, with nothing made.
 #[test]
 fn a_relative_adapter_path_is_usage() {
     let rig = Rig::new("relative");
-    let out = rig.check(&["--adapter", "relative/path"]);
-    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    for given in ["relative/path", "./x", ""] {
+        let out = rig.check(&["--adapter", given]);
+        assert_eq!(out.status.code(), Some(2), "{given}: {}", stderr(&out));
+        assert_eq!(
+            stderr(&out),
+            format!(
+                "fleet store check: --adapter takes an absolute path to an executable or the \
+                 name of a store adapter an installed pack carries, and `{given}` is neither\n"
+            )
+        );
+    }
+    assert!(rig.left().is_empty(), "nothing was made: {:?}", rig.left());
+}
+
+/// Arm 4b. `--adapter` naming an adapter BY NAME checks the one the installed
+/// packs carry under it, as `[store] adapter` naming it would: the pack's
+/// entry is asked. A name no pack carries could not be opened: exit 3, naming
+/// the line that installs it.
+///
+/// RED-PROOF: on the base a name was a relative path, and both runs were usage.
+#[test]
+fn an_adapter_named_by_the_flag_resolves_through_the_packs() {
+    let rig = Rig::new("flag-named");
+    defaults_under(&rig);
+    let pack = rig.root.join("machine/packs/tracker");
+    let adapter = pack.join("adapters/store/x");
+    std::fs::create_dir_all(&adapter).expect("the adapter's directory is made");
+    std::fs::write(
+        pack.join("pack.toml"),
+        "[pack]\nname = \"tracker\"\nversion = \"0.1.0\"\nschema = 3\n",
+    )
+    .expect("the pack's manifest is written");
+    std::fs::write(
+        adapter.join("adapter.toml"),
+        "[adapter]\nname = \"x\"\nkind = \"store\"\nversion = \"0.1.0\"\nentry = \"main.sh\"\n",
+    )
+    .expect("the adapter's manifest is written");
+    let stub = rig.stub(
+        "capabilities) echo '{\"schema_version\":1,\"scratch\":false}' ;;\n\
+         *) echo '{\"schema_version\":1}' ;;",
+    );
+    std::fs::rename(&stub, adapter.join("main.sh")).expect("the stub is the adapter's entry");
+
+    let out = rig.check(&["--adapter", "x"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert_eq!(
         stderr(&out),
-        "fleet store check: --adapter takes an absolute path to an executable, and \
-         relative/path is not one\n"
+        "fleet store check: x declares no scratch capability, and the check runs only on a \
+         store it makes for the purpose — nothing was run\n"
     );
-    assert!(rig.left().is_empty(), "nothing was made: {:?}", rig.left());
+    assert_eq!(rig.argv(), ["capabilities"], "the pack's entry was asked");
+
+    let out = rig.check(&["--adapter", "nowhere"]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert_eq!(stderr(&out), nowhere("nowhere"));
+    assert_eq!(rig.argv(), ["capabilities"], "and nothing else was asked");
+    assert!(
+        rig.left().is_empty(),
+        "the temp dir is gone: {:?}",
+        rig.left()
+    );
 }
 
 /// Arm 5. An adapter path nothing is at could not be run: exit 3, naming the
@@ -500,7 +555,7 @@ const NO_OTHER_WRITER: [&str; 2] = [
 
 /// Arm 8. The store stub, handed by path, passes every check the run asks of
 /// it: one PASS line for every check but the two that plant another writer's
-/// keys, and those two skipped. Nothing of bd is run.
+/// keys, and those two skipped.
 #[test]
 fn the_store_stub_passes_every_check_it_is_asked() {
     let rig = Rig::new("stub");

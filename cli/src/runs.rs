@@ -45,8 +45,8 @@ pub trait Stores {
 /// The opener the binary runs on: the store `[store] adapter` names in each
 /// project's own file, through the one opener every verb takes.
 ///
-/// THE SEARCH PATH IS CONSTRUCTED ONCE, HERE, and every store this opener
-/// hands back resolves its binary on it. The pass's own process is a launchd
+/// THE SEARCH PATH IS CONSTRUCTED ONCE, HERE, and every pack's adapter this
+/// opener hands back runs on it. The pass's own process is a launchd
 /// service whose `PATH` holds neither a package manager's prefix nor the
 /// user's local bin, so a store that searched that `PATH` would find nothing
 /// and refuse every tick (lessons claude-code D1). It is the verbs' own search
@@ -71,7 +71,6 @@ impl Stores for ProjectStores {
             policy: &here.project.policy,
             source: AdapterSource::Setting,
             search_path: &self.search_path,
-            strict: false,
             timeout: STORE_TIMEOUT,
             packs: Some(PackDirs {
                 packs_dir: &here.packs_dir,

@@ -342,7 +342,7 @@ fn a_delivery_carrying_an_empty_string_is_refused_naming_the_field() {
 #[test]
 fn a_two_line_question_is_refused() {
     let text = edited(QUESTION_SCHEMA, |example| {
-        example["question"] = Value::from("Which store?\nThe bd one or the fake?");
+        example["question"] = Value::from("Which store?\nThe real one or the fake?");
     });
     let message = refused::<QuestionInput>("two-lines", "question", QUESTION_SCHEMA, &text);
     assert!(

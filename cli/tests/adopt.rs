@@ -4,26 +4,27 @@
 //!
 //! THE FIXTURE IS WHAT A PROJECT BRINGS: an item carrying the board's own bare
 //! `orders` and a `reviewer`, a record-like task under a run label and a run
-//! key that are not fleet's, a `fleet.orders` at a version this binary does
-//! not read beside a `fleet.` key fleet never writes, `fleet:run` on a bug
-//! that is no run's record, and a person's comment in fleet's old marker words
-//! — beside a plain task, a run record fleet would have filed and an item held
-//! against a seat, which the report must NOT name. Every row is written with
-//! `bd` on the rig's own scratch board, never through fleet: the subject is a
-//! board fleet did not write.
+//! key that are not fleet's, an order index at a version this binary does not
+//! read beside a `fleet.` key fleet never writes, `fleet:run` on a bug that is
+//! no run's record, and a person's comment in fleet's old marker words —
+//! beside a plain task, a run record fleet would have filed and an item held
+//! against a seat, which the report must NOT name.
+//!
+//! THE BOARD IS THE STUB'S STATE, planted as the adapter would answer it: the
+//! keys another writer keeps are what the store names under `foreign`
+//! (fleet-urp), and that name list is what the check reads. An order index
+//! this fleet does not read is the adapter's reading, so it is planted as the
+//! contract answers one — unreadable — and so is a run's record at a version
+//! this fleet does not read. Which of a real store's shapes read so is its
+//! pack's to test.
 //!
 //! A ROW IS THE FIELDS FLEET READS and no raw metadata: the board's own keys
 //! are named under `foreign`, and what they hold is in no row. The check counts
-//! them by name. And a `fleet.run` this binary does not read is no row at all
+//! them by name. And a run's record this binary does not read is no row at all
 //! — it refuses the list, and the check could not tell.
 //!
-//! ITS OWN `bd init` AND NOT THE RUN'S SHARED BOARD: the check reads the whole
-//! ready set and counts it, so a neighbour's rows would move every number.
-//!
-//! A REAL `bd`, AND ONLY WHERE ONE IS: the check reads a board someone else
-//! wrote, which no fleet verb writes and so no store stub can hold. Every arm
-//! here runs the `bd` on the process `PATH`, and on a box with none each arm
-//! says it skipped and runs nothing.
+//! A STORE OF ITS OWN PER RIG: the check reads the whole ready set and counts
+//! it, so a neighbour's rows would move every number.
 //!
 //! Every rc is read from the child's own status and never off anything it
 //! printed.
@@ -35,6 +36,7 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::hermetic::Hermetic;
+use fleet_core::store::{ItemId, NewItem, OrderState, RunRecord, Stamp, Store as _};
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -61,17 +63,12 @@ struct Rig {
     root: PathBuf,
     project: PathBuf,
     machine: PathBuf,
-    /// The `bd` a person's shell would run, as an absolute path: the store the
-    /// verbs open resolves `FLEET_BD_BIN` before any search path, so the rig
-    /// names the one its own `bd init` ran.
-    bd: PathBuf,
 }
 
 impl Rig {
-    /// A project with its `fleet.toml` and the binary's defaults, and no board
-    /// — or `None`, the skip said, on a box with no `bd`.
-    fn new(label: &str) -> Option<Rig> {
-        let bd = common::bd_or_skip(&format!("adopt::{label}"))?;
+    /// A project with its `fleet.toml` and the binary's defaults, and no store
+    /// — the file names none, and no pack carries the default's.
+    fn new(label: &str) -> Rig {
         let n = NEXT.fetch_add(1, Ordering::SeqCst);
         let root = std::env::temp_dir().join(format!(
             "fleet-cli-adopt-{label}-{}-{n}",
@@ -82,60 +79,43 @@ impl Rig {
             project: root.join("project"),
             machine: root.join("machine"),
             root,
-            bd,
         };
         std::fs::create_dir_all(&rig.project).expect("the project is made");
         std::fs::create_dir_all(rig.machine.join("packs")).expect("the packs dir is made");
         defaults_into(&rig.machine);
         std::fs::write(rig.project.join("fleet.toml"), POLICY).expect("the policy is written");
-        Some(rig)
+        rig
     }
 
-    /// The same, over a board of its own: one `bd init`, on bd's embedded
-    /// engine.
-    fn with_a_board(label: &str) -> Option<Rig> {
-        let rig = Rig::new(label)?;
-        let out = Command::new(&rig.bd)
-            .args(["init", "--prefix", "fx", "--quiet"])
-            .current_dir(&rig.project)
-            .output()
-            .expect("bd runs");
-        assert!(out.status.success(), "bd init: {}", stderr(&out));
-        Some(rig)
-    }
-
-    fn bd(&self, args: &[&str]) -> Output {
-        let out = Command::new(&self.bd)
-            .arg("-C")
-            .arg(&self.project)
-            .args(args)
-            .output()
-            .expect("bd runs");
-        assert!(
-            out.status.success(),
-            "bd {args:?}: {}{}",
-            stdout(&out),
-            stderr(&out)
-        );
-        out
+    /// The same, over an empty store of its own on the stub.
+    fn with_a_board(label: &str) -> Rig {
+        let rig = Rig::new(label);
+        common::take_a_store(&rig.project);
+        rig
     }
 
     /// One item filed as a project would have filed it, answered as its id.
     fn filed(&self, title: &str, kind: &str, labels: &[&str]) -> String {
-        let mut args = vec!["create", "--title", title, "--type", kind];
-        let joined = labels.join(",");
-        if !labels.is_empty() {
-            args.extend(["--labels", joined.as_str()]);
-        }
-        args.push("--json");
-        let out = self.bd(&args);
-        let value: serde_json::Value =
-            serde_json::from_str(stdout(&out).trim()).expect("bd create answers JSON");
-        value["id"].as_str().expect("an id").to_string()
+        common::store_at(&self.project)
+            .create(
+                &NewItem {
+                    title: title.to_string(),
+                    description: String::from("an item the project brought"),
+                    item_type: kind.to_string(),
+                    labels: labels.iter().map(|label| label.to_string()).collect(),
+                    priority: None,
+                },
+                &common::the_test(),
+            )
+            .unwrap_or_else(|e| panic!("`{title}` is filed: {e}"))
+            .to_string()
     }
 
+    /// Another writer's keys on `item`, which the store names under `foreign`.
     fn metadata(&self, item: &str, payload: serde_json::Value) {
-        self.bd(&["update", item, "--metadata", &payload.to_string()]);
+        common::with_state(&self.project, |store| {
+            store.plant_metadata(item, &payload.to_string())
+        });
     }
 
     fn fleet(&self, args: &[&str]) -> Output {
@@ -150,7 +130,6 @@ impl Rig {
             .current_dir(&self.project)
             .hermetic(&self.root.join("home"), &self.machine, None)
             .env("NO_COLOR", "1")
-            .env("FLEET_BD_BIN", &self.bd)
             .env("PATH", path)
             .output()
             .expect("the built binary runs")
@@ -232,9 +211,7 @@ fn names(line: &str, id: &str) -> bool {
 /// resolved: exit 2 from a directory holding no project at all.
 #[test]
 fn a_list_naming_no_read_is_usage() {
-    let Some(rig) = Rig::new("usage") else {
-        return;
-    };
+    let rig = Rig::new("usage");
     let nowhere = rig.root.join("nowhere");
     std::fs::create_dir_all(&nowhere).expect("the directory is made");
     let out = Command::new(env!("CARGO_BIN_EXE_fleet"))
@@ -258,13 +235,10 @@ fn a_list_naming_no_read_is_usage() {
 
 // ---- the fixture board ------------------------------------------------------
 
-/// The fixture board, listed and then checked. One rig carries both, because a
-/// rig's cost is its bd calls.
+/// The fixture board, listed and then checked. One rig carries both.
 #[test]
 fn the_check_names_each_class_on_a_fixture_board_with_its_count_and_ids() {
-    let Some(rig) = Rig::with_a_board("fixture") else {
-        return;
-    };
+    let rig = Rig::with_a_board("fixture");
 
     let plain = rig.filed("a plain task", "task", &[]);
     let bare_orders = rig.filed("ordered the board's own way", "task", &[]);
@@ -281,22 +255,29 @@ fn the_check_names_each_class_on_a_fixture_board_with_its_count_and_ids() {
         serde_json::json!({ "takeoff.run": { "started": "monday" } }),
     );
     let odd_version = rig.filed("an order at another version", "task", &[]);
-    rig.metadata(
-        &odd_version,
-        serde_json::json!({ "fleet.orders": { "v": 2, "seat": "s9" }, "fleet.lane": "b" }),
-    );
+    rig.metadata(&odd_version, serde_json::json!({ "fleet.lane": "b" }));
+    common::with_state(&rig.project, |store| {
+        store.amend(&odd_version, |item| item.order = OrderState::Unreadable)
+    });
     let stray_label = rig.filed("a bug under the run label", "bug", &["fleet:run"]);
     let record = rig.filed("a run fleet filed", "task", &["fleet:run"]);
-    rig.metadata(&record, serde_json::json!({ "fleet.run": a_run_record() }));
+    common::store_at(&rig.project)
+        .run_set(
+            &ItemId::from(record.as_str()),
+            &a_run_record(),
+            &common::the_test(),
+        )
+        .expect("the record is written");
     let marked = rig.filed("delivered by hand", "task", &[]);
-    rig.bd(&[
-        "comments",
-        "add",
-        &marked,
-        "DELIVERED abc1234 on fx-branch, then ACCEPTED — a person's words",
-    ]);
+    common::with_state(&rig.project, |store| {
+        store.comment(
+            &marked,
+            "Alberto Vildosola",
+            "DELIVERED abc1234 on fx-branch, then ACCEPTED — a person's words",
+        )
+    });
     let held = rig.filed("held against a seat", "task", &[]);
-    rig.bd(&["update", &held, "--assignee", SEAT]);
+    common::hand_to(&rig.project, &held, SEAT);
 
     // The list: each read, and two of them together.
     let ready = rig.listed(&["--ready"]);
@@ -352,12 +333,11 @@ fn the_check_names_each_class_on_a_fixture_board_with_its_count_and_ids() {
         row(&odd_version)["order"],
         serde_json::json!({ "unreadable": true })
     );
-    let mut read_back = a_run_record();
-    read_back
-        .as_object_mut()
-        .expect("a record is an object")
-        .remove("v");
-    assert_eq!(row(&record)["run"], read_back, "the record, as it reads");
+    assert_eq!(
+        row(&record)["run"],
+        serde_json::to_value(a_run_record()).expect("a record is JSON"),
+        "the record, as it reads"
+    );
     assert_eq!(row(&stray_label)["run"], serde_json::Value::Null);
     assert_eq!(row(&stray_label)["type"], "bug");
     for listed in &ready {
@@ -456,7 +436,7 @@ fn the_check_names_each_class_on_a_fixture_board_with_its_count_and_ids() {
     );
     assert_eq!(
         line_for(&lines, "types on the items read"),
-        "adopt-board:    types on the items read, for [[core.flight.rules]] to match: task 7, bug 1"
+        "adopt-board:    types on the items read, for [[core.flight.rules]] to match: bug 1, task 7"
     );
     let third = line_for(&lines, "3. the marker words fleet once wrote");
     assert!(third.contains("DELIVERED"), "{third}");
@@ -475,31 +455,29 @@ fn the_check_names_each_class_on_a_fixture_board_with_its_count_and_ids() {
     }
 }
 
-/// A run record as fleet writes one, its version stamped in.
-fn a_run_record() -> serde_json::Value {
-    serde_json::json!({
-        "v": 1, "hash": "h1", "workflow": "greet", "pack": "ts", "entry": "greet.ts",
-        "started_at": "2026-09-25T00:00:00Z",
-    })
+/// A run record as fleet writes one.
+fn a_run_record() -> RunRecord {
+    RunRecord {
+        hash: String::from("h1"),
+        workflow: String::from("greet"),
+        pack: String::from("ts"),
+        entry: String::from("greet.ts"),
+        started_at: Stamp::parse("2026-09-25T00:00:00Z").expect("a stamp"),
+    }
 }
 
-/// A `fleet.run` at a version this binary does not read refuses the list that
-/// reaches it, naming the item and the version — so the check could not read
-/// the board, and says so with the list's refusal under the row.
+/// A run's record this binary does not read refuses the list that reaches
+/// it, naming the item — so the check could not read the board, and says so
+/// with the list's refusal under the row.
 #[test]
 fn a_run_record_fleet_does_not_read_refuses_the_list_and_the_check_could_not_tell() {
-    let Some(rig) = Rig::with_a_board("run-version") else {
-        return;
-    };
+    let rig = Rig::with_a_board("run-version");
     let odd = rig.filed("a run at another version", "task", &["fleet:run"]);
-    rig.metadata(
-        &odd,
-        serde_json::json!({ "fleet.run": { "v": 2, "hash": "h1" } }),
-    );
+    common::with_state(&rig.project, |store| store.unreadable_run(&odd));
 
     let out = rig.fleet(&["item", "list", "--label", "fleet:run", "--json"]);
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
-    let named = format!("{odd}'s run record is not one this fleet reads (fleet.run, v 2)");
+    let named = format!("{odd}'s run record is not one this fleet reads");
     assert!(stderr(&out).contains(&named), "{}", stderr(&out));
 
     let out = rig.doctor();
@@ -523,9 +501,7 @@ fn a_run_record_fleet_does_not_read_refuses_the_list_and_the_check_could_not_tel
 /// and still nothing — the types listing is a reading and never a finding.
 #[test]
 fn an_empty_board_and_a_plain_one_have_nothing_to_adopt() {
-    let Some(rig) = Rig::with_a_board("empty") else {
-        return;
-    };
+    let rig = Rig::with_a_board("empty");
     let out = rig.doctor();
     let said = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{said}{}", stderr(&out));
@@ -549,13 +525,15 @@ fn an_empty_board_and_a_plain_one_have_nothing_to_adopt() {
 
 // ---- could not read ---------------------------------------------------------
 
-/// A project with no board: the list cannot be read, and the check says so and
-/// could not tell.
+/// A project whose file names no store, on a machine where no pack carries
+/// the default's adapter: the list cannot be read and names the pack that
+/// would carry it, and the check says so and could not tell.
+///
+/// RED-PROOF: on the base a file naming no store opened the built-in store,
+/// and its refusal named no pack.
 #[test]
 fn a_project_whose_board_cannot_be_read_could_not_tell() {
-    let Some(rig) = Rig::new("unread") else {
-        return;
-    };
+    let rig = Rig::new("unread");
 
     let out = rig.fleet(&["item", "list", "--ready", "--json"]);
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
@@ -572,10 +550,18 @@ fn a_project_whose_board_cannot_be_read_could_not_tell() {
          `fleet item list --ready --json` exited 3, so nothing was scanned",
         "{said}"
     );
+    let refusal = format!(
+        "fleet item list: no store adapter named `{}` in the installed packs — `{}` installs the \
+         one fleet-packs carries",
+        fleet_core::store::DEFAULT_ADAPTER,
+        fleet_core::store::pack_line(
+            fleet_core::supported::PINNED_PACKS_SOURCE,
+            fleet_core::store::DEFAULT_ADAPTER,
+            fleet_core::supported::PINNED_PACKS
+        )
+    );
     assert!(
-        report(&said).iter().any(
-            |line| line.starts_with("fleet item list: the store's ready set could not be read")
-        ),
+        stderr(&out).contains(&refusal) || report(&said).iter().any(|line| *line == refusal),
         "the list's own refusal is printed under the row: {said}"
     );
 }

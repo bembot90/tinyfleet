@@ -944,19 +944,17 @@ pub fn derived_worktrees_dir(root: &Path) -> PathBuf {
 /// The project's store, as `[store] adapter` in its own file names it: the one
 /// way a verb opens it.
 ///
-/// The store's binary is resolved on the constructed child PATH, as `fleet
-/// prime` and the controller's run pass resolve it, so the binary a session
-/// is told about, the one a verb writes through and the one the pass reads are
-/// the same file (lessons claude-code D1). NOT STRICT: where that resolution
-/// fails, the bare name is tried and its refusal names it, so a verb fails the
-/// way it always has. A store that cannot be opened at all is could not tell.
+/// A pack's adapter runs on the constructed child PATH, as `fleet prime` and
+/// the controller's run pass run it, so the store a session is told about, the
+/// one a verb writes through and the one the pass reads resolve the same files
+/// (lessons claude-code D1). A store that cannot be opened at all is could not
+/// tell.
 pub(crate) fn open_store(here: &Here) -> Result<Box<dyn Store>, Stop> {
     Ok(store::open(&Opening {
         root: &here.project.root,
         policy: &here.project.policy,
         source: AdapterSource::Setting,
         search_path: &platform::child_path(&platform::home_dir()),
-        strict: false,
         timeout: STORE_TIMEOUT,
         packs: Some(PackDirs {
             packs_dir: &here.packs_dir,

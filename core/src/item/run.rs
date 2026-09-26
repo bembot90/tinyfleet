@@ -840,49 +840,11 @@ fn read_the_runtime(
     wiring: &Wiring,
     machine_dir: &Path,
 ) -> Result<Pinned, Stop> {
-    let own = manifest_of(&resolved.pack)?;
-    if let Some(runtime) = own.runtime {
-        return Ok(Pinned {
-            runtime,
-            pack: resolved.pack.clone(),
-        });
-    }
-
-    let layers = &wiring.packs.layers;
-    let beneath = layers
-        .iter()
-        .position(|layer| layer.name == resolved.pack.name)
-        .map(|at| at + 1)
-        .unwrap_or(layers.len());
-    let mut imported: BTreeSet<String> = own.imports.into_iter().map(|i| i.name).collect();
-    let mut frontier: Vec<String> = imported.iter().cloned().collect();
-    while let Some(name) = frontier.pop() {
-        let Some(layer) = layers.iter().find(|layer| layer.name == name) else {
-            continue;
-        };
-        for import in manifest_of(layer)?.imports {
-            if imported.insert(import.name.clone()) {
-                frontier.push(import.name);
-            }
-        }
-    }
-
-    let mut declaring: Vec<Pinned> = Vec::new();
-    for layer in layers.iter().skip(beneath) {
-        if !imported.contains(&layer.name) {
-            continue;
-        }
-        if let Some(runtime) = manifest_of(layer)?.runtime {
-            declaring.push(Pinned {
-                runtime,
-                pack: layer.clone(),
-            });
-        }
-    }
+    let (mut declaring, imported) = declaring(&resolved.pack, &wiring.packs.layers)?;
     match declaring.len() {
         0 => {
             let unanswered: Vec<String> =
-                add::missing_imports(layers, &machine_dir.join(lock::LOCK))
+                add::missing_imports(&wiring.packs.layers, &machine_dir.join(lock::LOCK))
                     .into_iter()
                     .filter(|missing| {
                         missing.importer == resolved.pack.name
@@ -958,6 +920,69 @@ pub fn child_path_for(runtime: &str, base: &str) -> String {
         Some(dir) => format!("{}:{base}", dir.display()),
         None => base.to_string(),
     }
+}
+
+/// Every layer whose `[runtime]` the files `carrier` carries run under, by the
+/// rule [`read_the_runtime`] reads a workflow's by: the carrier's own table
+/// alone where it has one, else each pack it imports that declares one, in the
+/// resolved order — and the names the carrier imports, which a refusal of none
+/// reads the missing ones against.
+fn declaring(carrier: &Layer, layers: &[Layer]) -> Result<(Vec<Pinned>, BTreeSet<String>), Stop> {
+    let own = manifest_of(carrier)?;
+    if let Some(runtime) = own.runtime {
+        let pinned = Pinned {
+            runtime,
+            pack: carrier.clone(),
+        };
+        return Ok((vec![pinned], BTreeSet::new()));
+    }
+
+    let beneath = layers
+        .iter()
+        .position(|layer| layer.name == carrier.name)
+        .map(|at| at + 1)
+        .unwrap_or(layers.len());
+    let mut imported: BTreeSet<String> = own.imports.into_iter().map(|i| i.name).collect();
+    let mut frontier: Vec<String> = imported.iter().cloned().collect();
+    while let Some(name) = frontier.pop() {
+        let Some(layer) = layers.iter().find(|layer| layer.name == name) else {
+            continue;
+        };
+        for import in manifest_of(layer)?.imports {
+            if imported.insert(import.name.clone()) {
+                frontier.push(import.name);
+            }
+        }
+    }
+
+    let mut declaring: Vec<Pinned> = Vec::new();
+    for layer in layers.iter().skip(beneath) {
+        if !imported.contains(&layer.name) {
+            continue;
+        }
+        if let Some(runtime) = manifest_of(layer)?.runtime {
+            declaring.push(Pinned {
+                runtime,
+                pack: layer.clone(),
+            });
+        }
+    }
+    Ok((declaring, imported))
+}
+
+/// The names of the runtimes a file `carrier` carries runs under, as
+/// [`declaring`] finds them: none for a pack that declares none and imports
+/// none that does, which is a file that execs no runtime of a pack's.
+///
+/// What the store opener puts in front of an adapter's search path, through
+/// [`child_path_for`], so a pack's adapter finds the runtime its entry execs
+/// where a run line would.
+pub(crate) fn runtimes_of(carrier: &Layer, layers: &[Layer]) -> Result<Vec<String>, Stop> {
+    let (declaring, _) = declaring(carrier, layers)?;
+    Ok(declaring
+        .into_iter()
+        .map(|pinned| pinned.runtime.name)
+        .collect())
 }
 
 /// The installer's bin for a runtime of this name, as its own doctor check

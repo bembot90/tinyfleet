@@ -97,9 +97,24 @@ fn refused(class: &str, command: &str, scratch: &Scratch) -> Option<String> {
 }
 
 const TRAP: &str = "git show \"$S:tools/land\"";
-const REPLACE: &str = "bd update x-1 --notes n";
-const SQL: &str = "bd sql \"UPDATE issues SET a = 1\"";
-const BARE: &str = "bd note x-1 \"see a1b2\"";
+/// `rest` after the command word a guard polices where the project's store
+/// declares none it could read: the default store adapter's name, which is
+/// also the command the bd pack's adapter declares.
+fn word(rest: &str) -> &'static str {
+    Box::leak(format!("{} {rest}", fleet_core::store::DEFAULT_ADAPTER).into_boxed_str())
+}
+
+fn replace() -> &'static str {
+    word("update x-1 --notes n")
+}
+
+fn sql() -> &'static str {
+    word("sql \"UPDATE issues SET a = 1\"")
+}
+
+fn bare() -> &'static str {
+    word("note x-1 \"see a1b2\"")
+}
 
 /// The refusal as the hook contract carries it, checked as a document rather
 /// than as a substring: a decision the agent cannot parse refuses nothing.
@@ -147,7 +162,7 @@ fn a_guard_switched_off_in_the_policy_refuses_nothing_and_its_sibling_still_does
         "the class switched off refuses nothing"
     );
     assert!(
-        refused("record", REPLACE, &scratch).is_some(),
+        refused("record", replace(), &scratch).is_some(),
         "its sibling, left on, still refuses"
     );
 
@@ -160,7 +175,7 @@ fn a_guard_switched_off_in_the_policy_refuses_nothing_and_its_sibling_still_does
         "and the reverse"
     );
     assert!(
-        refused("record", REPLACE, &scratch).is_none(),
+        refused("record", replace(), &scratch).is_none(),
         "and the reverse"
     );
 
@@ -172,7 +187,7 @@ fn a_guard_switched_off_in_the_policy_refuses_nothing_and_its_sibling_still_does
         "no table, still on"
     );
     assert!(
-        refused("record", REPLACE, &scratch).is_some(),
+        refused("record", replace(), &scratch).is_some(),
         "no table, still on"
     );
 }
@@ -184,9 +199,9 @@ fn each_escape_licenses_its_own_act_through_the_binary_and_no_other() {
 
     let acts = [
         ("shell-trap", TRAP, "FLEET_TRAP_OK"),
-        ("record", REPLACE, "FLEET_NOTES_REPLACE_OK"),
-        ("record", SQL, "FLEET_SQL_WRITE_OK"),
-        ("record", BARE, "FLEET_BARE_ID_OK"),
+        ("record", replace(), "FLEET_NOTES_REPLACE_OK"),
+        ("record", sql(), "FLEET_SQL_WRITE_OK"),
+        ("record", bare(), "FLEET_BARE_ID_OK"),
     ];
     let escapes = [
         "FLEET_TRAP_OK",
@@ -212,7 +227,7 @@ fn the_bare_id_check_is_silent_without_its_target_and_loud_with_it() {
     let scratch = Scratch::new("prefix");
     scratch.write("fleet.toml", "[guards]\nrecord = { enabled = true }\n");
     assert!(
-        refused("record", BARE, &scratch).is_none(),
+        refused("record", bare(), &scratch).is_none(),
         "no item prefix, nothing refused"
     );
 
@@ -220,7 +235,8 @@ fn the_bare_id_check_is_silent_without_its_target_and_loud_with_it() {
         "fleet.toml",
         "[guards]\nrecord = { enabled = true }\n\n[project]\nitem_prefix = \"acme\"\n",
     );
-    let text = refused("record", BARE, &scratch).expect("with the target set, the suffix is named");
+    let text =
+        refused("record", bare(), &scratch).expect("with the target set, the suffix is named");
     let reason = decision_of(&text)["permissionDecisionReason"]
         .as_str()
         .expect("the reason is a string")
@@ -276,17 +292,17 @@ fn a_project_with_no_fleet_toml_above_it_reads_the_machine_directory_and_its_own
         "the machine's policy switched this class off"
     );
     assert!(
-        judge_with_machine("record", REPLACE).is_some(),
+        judge_with_machine("record", replace()).is_some(),
         "the class the machine's policy leaves on still refuses"
     );
     assert!(
-        judge_with_machine("record", BARE).is_none(),
+        judge_with_machine("record", bare()).is_none(),
         "no project file, so the bare-id check has no target"
     );
 
     project.write(".fleet/project.toml", "[project]\nitem_prefix = \"acme\"\n");
     assert!(
-        judge_with_machine("record", BARE).is_some(),
+        judge_with_machine("record", bare()).is_some(),
         "the project's own file is where the target lives in this mode"
     );
 }
@@ -343,7 +359,7 @@ fn a_declaration_beside_a_fleet_toml_reads_the_machines_switches_and_its_own_tar
         judge_with_machine("shell-trap", TRAP).is_none(),
         "the switch is the machine's, which has this class off — the neighbour leaves it on"
     );
-    let text = judge_with_machine("record", BARE).expect("the target is the declaration's");
+    let text = judge_with_machine("record", bare()).expect("the target is the declaration's");
     let reason = decision_of(&text)["permissionDecisionReason"]
         .as_str()
         .expect("the reason is a string")
@@ -420,18 +436,20 @@ fn a_store_declaring(scratch: &Scratch, capabilities: &str) {
 }
 
 /// THE STORE'S COMMAND IS THE ONE POLICED. A project whose store declares
-/// `tk` has `tk`'s calls refused and `bd`'s let through; one whose store
-/// declares no command has neither refused by the checks that read one; and a
-/// store that will not answer leaves `bd` policed, never nothing. A text no
-/// check reads a store call by is judged without asking the store at all.
+/// `tk` has `tk`'s calls refused and the default word's let through; one whose
+/// store declares no command has neither refused by the checks that read one;
+/// and a store that will not answer leaves the default word policed, never
+/// nothing. A text no check reads a store call by is judged without asking the
+/// store at all.
 ///
-/// RED-PROOF: with the command fixed at `bd`, the `tk` project refuses `bd`
-/// and lets `tk` through, and the project declaring none refuses `bd`.
+/// RED-PROOF: with the command fixed at the default word, the `tk` project
+/// refuses it and lets `tk` through, and the project declaring none refuses
+/// it.
 #[test]
 fn the_command_the_projects_store_declares_is_the_one_the_guards_police() {
     let tk_notes = "tk update x-1 --notes n";
     let tk_backtick = "tk note acme-x1 \"a `b` c\"";
-    let bd_backtick = "bd note acme-x1 \"a `b` c\"";
+    let default_backtick = word("note acme-x1 \"a `b` c\"");
 
     let scratch = Scratch::new("store-cli-tk");
     a_store_declaring(&scratch, r#"echo '{"schema_version":1,"cli":"tk"}'"#);
@@ -446,18 +464,18 @@ fn the_command_the_projects_store_declares_is_the_one_the_guards_police() {
     );
     assert!(refused("shell-trap", tk_backtick, &scratch).is_some());
     assert!(
-        refused("record", REPLACE, &scratch).is_none(),
-        "bd is a command like any other here"
+        refused("record", replace(), &scratch).is_none(),
+        "the default word is a command like any other here"
     );
-    assert!(refused("shell-trap", bd_backtick, &scratch).is_none());
+    assert!(refused("shell-trap", default_backtick, &scratch).is_none());
 
     let scratch = Scratch::new("store-cli-none");
     a_store_declaring(&scratch, r#"echo '{"schema_version":1}'"#);
     for (class, command) in [
-        ("record", REPLACE),
-        ("record", SQL),
-        ("record", BARE),
-        ("shell-trap", bd_backtick),
+        ("record", replace()),
+        ("record", sql()),
+        ("record", bare()),
+        ("shell-trap", default_backtick),
     ] {
         assert!(
             refused(class, command, &scratch).is_none(),
@@ -472,10 +490,10 @@ fn the_command_the_projects_store_declares_is_the_one_the_guards_police() {
     let scratch = Scratch::new("store-cli-unanswered");
     a_store_declaring(&scratch, "echo 'the index is locked' >&2; exit 3");
     assert!(
-        refused("record", REPLACE, &scratch).is_some(),
-        "a store that does not answer leaves the built-in store's command policed"
+        refused("record", replace(), &scratch).is_some(),
+        "a store that does not answer leaves the default adapter's command policed"
     );
-    assert!(refused("shell-trap", bd_backtick, &scratch).is_some());
+    assert!(refused("shell-trap", default_backtick, &scratch).is_some());
 
     let scratch = Scratch::new("store-cli-unasked");
     a_store_declaring(&scratch, r#"echo '{"schema_version":1,"cli":"tk"}'"#);
@@ -898,7 +916,7 @@ fn the_classes_are_callable_through_fleet_core_with_no_payload_at_all() {
         ),
         (
             fleet_core::guard::Class::Record,
-            REPLACE,
+            replace(),
             "notes-replace",
             &policy,
         ),

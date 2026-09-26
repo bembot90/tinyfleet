@@ -244,8 +244,8 @@ fn a_row_carries_the_fields_the_run_record_and_the_boards_own_keys_by_name() {
 
 /// A run's record this binary does not read is no row: it refuses the listing
 /// it is in, and so the list, naming the item — never a row that reads as
-/// though the item carried no run. Which records bd holds that fleet does not
-/// read is the adapter's, and cli's `adopt.rs` asks it of a real board.
+/// though the item carried no run. Which of a store's records fleet does not
+/// read is the adapter's to say.
 #[test]
 fn a_run_record_this_fleet_does_not_read_refuses_the_list() {
     let store = a_store();

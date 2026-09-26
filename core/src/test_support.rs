@@ -3,9 +3,10 @@
 //! which a dependent's DEV-dependency turns on: under resolver 2 that keeps it
 //! out of the binary a release build produces.
 //!
-//! It holds the APPLYING fake store and the in-memory board over it. A suite
-//! that wants a real `bd` board builds one in its own `tests/common`, which is
-//! where everything needing a subprocess stays.
+//! It holds the APPLYING fake store and the in-memory board over it, and the
+//! stub that answers the contract over the fake as an adapter executable. A
+//! real store's own behaviour is its pack's to test, in the repository the
+//! pack is published from.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -19,10 +20,28 @@ use crate::seat::actor::Actor;
 use crate::seat::identity::SeatId;
 use crate::store::types::{Capabilities, ExportSpec, Refusal, RefusalReason, Vocabulary};
 use crate::store::{
-    already_cleared, already_closed, holder_named, validated_new, writable, Filter, HoldId, Item,
-    ItemId, ItemSummary, NewItem, Order, OrderState, ReadProof, RunRecord, Status, Store,
-    StoreError, Update, Version, WithdrawFence,
+    validated_new, writable, Filter, HoldId, Item, ItemId, ItemSummary, NewItem, Order, OrderState,
+    ReadProof, RunRecord, Status, Store, StoreError, Update, Version, WithdrawFence,
 };
+
+/// The refusal a close of an item already closed answers.
+fn already_closed(id: &ItemId) -> StoreError {
+    StoreError::Refused(format!("{id} is already closed"))
+}
+
+/// The refusal a clear of a hold already cleared answers.
+fn already_cleared(hold: &HoldId) -> StoreError {
+    StoreError::Refused(format!("{hold} is already cleared"))
+}
+
+/// A holder as a refusal names one: the seat, or nobody for `""`.
+fn holder_named(seat: &str) -> String {
+    if seat.is_empty() {
+        String::from("nobody")
+    } else {
+        format!("`{seat}`")
+    }
+}
 
 pub mod stub;
 
@@ -43,7 +62,7 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 /// IT APPLIES WHAT IT IS TOLD. A write moves the stored item, so the read
 /// beside it answers the write, and `export` writes a file whose bytes move
 /// when an item moves — which is what lets a landing's export check run here
-/// with no `bd` on the box at all. The recorded log is kept beside that, so an
+/// with no store installed on the box at all. The recorded log is kept beside that, so an
 /// arm can still assert the line a verb wrote.
 ///
 /// The one failure a real store will not produce on demand — a read-back that
@@ -455,7 +474,7 @@ impl FakeStore {
 
     /// The fence a fenced update and a fenced withdrawal write behind: the
     /// item held by `holder` (`""` for nobody), or [`StoreError::Moved`] and
-    /// nothing written — the rule bd's `--if-assignee` keeps.
+    /// nothing written — the rule the contract's `if_assignee` fence names.
     fn held_by(&self, item: &str, holder: &str) -> Result<(), StoreError> {
         let items = self.items.lock().expect("the items are not poisoned");
         let held = items.get(item).ok_or_else(|| self.not_here(item))?;
@@ -470,8 +489,8 @@ impl FakeStore {
     }
 
     /// The fence beside it: the item reading `status`, or
-    /// [`StoreError::Moved`] and nothing written — the rule bd's `--if-status`
-    /// keeps.
+    /// [`StoreError::Moved`] and nothing written — the rule the contract's
+    /// `if_status` fence names.
     fn status_is(&self, item: &str, status: &str) -> Result<(), StoreError> {
         let items = self.items.lock().expect("the items are not poisoned");
         let held = items.get(item).ok_or_else(|| self.not_here(item))?;
@@ -567,8 +586,8 @@ impl FakeStore {
     /// open, with no dependency standing and no hold raised against it. A
     /// store computes its own ready set and never holds a second copy of it.
     ///
-    /// OPEN AND NOT MERELY UNCLOSED: `bd ready` leaves an `in_progress` item
-    /// out, measured on 1.3.0, and a fake that listed one would pass an arm
+    /// OPEN AND NOT MERELY UNCLOSED: a store's ready set leaves an
+    /// `in_progress` item out, and a fake that listed one would pass an arm
     /// asserting a withdrawal put its item back in the ready set.
     fn ready_ids(&self) -> Vec<String> {
         let mut ids = self.ready.clone();
@@ -694,8 +713,8 @@ fn logged(holder: &Option<SeatId>) -> String {
         .unwrap_or_else(|| String::from("nobody"))
 }
 
-/// The ids a `show` argument names, by the contract's three rules — which bd
-/// 1.3.0 answered alike on a scratch board. A whole id names itself. Else a
+/// The ids a `show` argument names, by the contract's three rules. A whole
+/// id names itself. Else a
 /// whole HASH, the part after the prefix, names its item (`7cx` is `fx-7cx`,
 /// even with a child `fx-7cx.1` beside it). Else every id whose hash OPENS
 /// WITH the argument is named, with a leading prefix taken off the argument
@@ -865,8 +884,8 @@ impl Store for FakeStore {
     /// One log line and every move, which is what the real store's one call
     /// leaves: nobody holding the item, no order and, where the fence says
     /// `reopen`, the status open. No move is made
-    /// while the item misses a fence the caller named — bd's `--if-assignee`
-    /// and `--if-status`.
+    /// while the item misses a fence the caller named — `if_assignee` and
+    /// `if_status`.
     fn order_withdraw(
         &self,
         id: &ItemId,
@@ -919,8 +938,9 @@ impl Store for FakeStore {
         Ok(HoldId::from(format!("hold-{}", raised.len())))
     }
 
-    /// A hold this store never raised is Refused as bd refuses a gate it does
-    /// not hold, and one already cleared is Refused in the adapter's words.
+    /// A hold this store never raised is Refused, as the contract refuses a
+    /// hold the store does not keep, and one already cleared is Refused in the
+    /// contract's words.
     fn hold_clear(&self, hold: &HoldId, by: &Actor) -> Result<(), StoreError> {
         self.log(format!("hold_clear {hold} {by}"))?;
         let raised = self.holds.lock().expect("the holds are not poisoned").len();
@@ -955,7 +975,7 @@ impl Store for FakeStore {
     /// it in a field of its own that no read here decodes.
     ///
     /// An item already closed is Refused and its first reason stands, which is
-    /// what bd's adapter answers after its own read.
+    /// what the contract's `close` answers.
     fn close(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<(), StoreError> {
         self.log(format!("close {id} {reason} {by}"))?;
         let closed = self
@@ -977,7 +997,7 @@ impl Store for FakeStore {
         Ok(())
     }
 
-    /// Held to the rules bd's append holds it to, with the same refusal, and
+    /// Held to the rules every store's append holds it to, with the same refusal, and
     /// kept as one comment whose text is the entry's encoding. A deaf store
     /// answers the id it minted and keeps nothing, which is the disagreement
     /// the read-back is there to catch.
@@ -1006,8 +1026,8 @@ impl Store for FakeStore {
         Ok(id)
     }
 
-    /// Every comment read through [`entry::read_row`], the function bd's
-    /// timeline reads its rows with, in the order they were added.
+    /// Every comment read through [`entry::read_row`], the function a store's
+    /// timeline row is read with, in the order they were added.
     fn timeline(&self, item: &ItemId) -> Result<Vec<Entry>, StoreError> {
         if let Some(refused) = self.refuse() {
             return refused;
@@ -1123,8 +1143,8 @@ fn json_of<T: Serialize>(value: &T) -> serde_json::Value {
 }
 
 /// The refusal the fake answers where a write fenced on its holder finds
-/// another holding the item. The fake's words and no store's: bd's are its
-/// adapter's, and an adapter's are its own.
+/// another holding the item. The fake's words and no store's: an adapter's
+/// are its own.
 fn moved(item: &str, expected: &str, held: &str) -> String {
     format!(
         "{item} is held by {} and not by {} — nothing was written",
@@ -1208,10 +1228,9 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
 
 /// A work graph held in memory, with a directory on disk beside it.
 ///
-/// The shape a `bd` scratch board has — a root, a packs directory, one item by title, a
-/// document as text — over [`FakeStore`] instead of over a `bd` subprocess. A
-/// rig takes one of these where its subject is a verb's logic; the one arm per
-/// suite whose subject is the store itself takes a a `bd` scratch board.
+/// The shape a scratch board has — a root, a packs directory, one item by
+/// title, a document as text — over [`FakeStore`] instead of over a store's
+/// subprocess. A rig takes one of these where its subject is a verb's logic.
 pub struct Board {
     pub root: PathBuf,
     pub packs_dir: PathBuf,

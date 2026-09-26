@@ -880,7 +880,7 @@ fn a_projects_declared_tool_commands_are_rules_after_the_packs_own() {
 
     // The project's, in the order declared, after the pack's own.
     let at = |rule: &str| allow.iter().position(|held| held == rule);
-    let default = at("Bash(bd:*)").expect("the pack's own rule is still in the list");
+    let default = at("Bash(fleet:*)").expect("the pack's own rule is still in the list");
     let make = at("Bash(make:*)").expect("the declared `make` is a rule");
     let cargo = at("Bash(cargo:*)").expect("the declared `cargo` is a rule");
     assert!(
@@ -1082,7 +1082,7 @@ const SHADOW_RULES: &str = r#"{
 /// One rule out of each document, so an arm can say which one was read rather
 /// than only that the documents differ.
 const SHADOW_MARK: &str = "Bash(the-shadowing-packs-own-verb:*)";
-const DEFAULT_MARK: &str = "Bash(bd:*)";
+const DEFAULT_MARK: &str = "Bash(fleet:*)";
 
 /// The five trunk-push shapes the default permissions document denies, spelled
 /// exactly as `tools/spawn-builder`'s `SPAWN_DENY` spells them — the

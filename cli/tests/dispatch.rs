@@ -786,9 +786,9 @@ fn a_dispatcher_the_call_does_not_name_is_this_machines_identity() {
 /// The retired variable is spelled in two halves so this suite, like the
 /// code, carries the whole name nowhere (`git grep` over the crates finds
 /// none of it).
-const RETIRED_ACTOR_VARIABLE: &str = concat!("BEADS", "_ACTOR");
+const RETIRED_ACTOR_VARIABLE: &str = concat!("BE", "ADS_ACTOR");
 
-/// The variable bd once read for its actor is read by no verb: set alone, the
+/// The variable a store once read for its actor is read by no verb: set alone, the
 /// verb acts as the machine's identity and never as the name it holds.
 #[test]
 fn the_retired_actor_variable_is_not_read() {

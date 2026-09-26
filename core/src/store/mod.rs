@@ -16,10 +16,8 @@ use std::time::Duration;
 
 use crate::entry::{Body, Entry};
 use crate::seat::actor::Actor;
-use crate::seat::identity::SeatId;
 use types::Capabilities;
 
-pub mod bd;
 pub mod conformance;
 pub mod exec;
 pub mod schema;
@@ -212,8 +210,7 @@ pub trait Store {
     ///
     /// `by` is an [`Actor`] as every write's is, and a landing closes as the
     /// seat that holds the item. A store that fences a close on the assignee
-    /// matches that seat to its own assignee inside its adapter: the built-in
-    /// adapter's `close` says how, and where it was measured.
+    /// matches that seat to its own assignee inside its adapter.
     fn close(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<(), StoreError>;
 
     /// One entry appended to the item's timeline, answered as the entry's id.
@@ -296,14 +293,17 @@ pub struct Opening<'a> {
     /// Where the `[store] adapter` in `policy` was written, which a refusal
     /// of it names: the project's own file, or a flag a verb carried into it.
     pub source: AdapterSource,
-    /// The search path the built-in store's binary is resolved on: the
-    /// caller's constructed child `PATH`, and never this process's own, which
-    /// under a service holds neither a package manager's prefix nor the user's
-    /// local bin (lessons claude-code D1).
+    /// The `PATH` a pack's store adapter runs on: the caller's constructed
+    /// child `PATH`, and never this process's own, which under a service holds
+    /// neither a package manager's prefix nor the user's local bin (lessons
+    /// claude-code D1) — so an entry that execs its runtime, and the store's
+    /// own binary, would find neither. The directory of the runtime the
+    /// adapter's pack runs under goes in front where this misses it, as a run
+    /// line's does ([`child_path_for`](crate::item::run::child_path_for)).
+    ///
+    /// EMPTY is a caller with no controller behind it, and the adapter then
+    /// carries this process's own `PATH`, as a run line's children do.
     pub search_path: &'a str,
-    /// Whether a binary nothing resolves is could not tell. Not strict, it is
-    /// the bare name, which the process's own `PATH` then answers or does not.
-    pub strict: bool,
     /// The bound on each call of the store opened: [`STORE_TIMEOUT`], or less
     /// for a caller that cannot wait that long.
     pub timeout: Duration,
@@ -336,29 +336,39 @@ impl AdapterSource {
 /// [`Packs::under`](crate::item::brief::Packs::under) reads them.
 ///
 /// DIRECTORIES AND NOT A RESOLUTION: the layers are resolved only when the
-/// setting is a name, so the built-in store and an adapter's path open
-/// whatever the packs hold, a layering that refuses included.
+/// setting is a name, so an adapter's path opens whatever the packs hold, a
+/// layering that refuses included.
 #[derive(Debug, Clone, Copy)]
 pub struct PackDirs<'a> {
     pub packs_dir: &'a Path,
     pub defaults_dir: &'a Path,
 }
 
-/// The project's store, as `[store] adapter` in its own file names it: the
-/// built-in store's name, or no key at all, is that store; an absolute path to
-/// an executable file is an adapter that answers the contract at that path;
-/// any other name is the store adapter the installed packs carry under it.
-/// Anything else is could not tell, naming what was written where it was
+/// The store adapter a project's file that names none opens, by name through
+/// the installed packs like any other: the one the bd pack carries, which
+/// `fleet create` installs unless it is told otherwise.
+pub const DEFAULT_ADAPTER: &str = "bd";
+
+/// The project's store, as `[store] adapter` in its own file names it: an
+/// absolute path to an executable file is an adapter that answers the contract
+/// at that path; a name is the store adapter the installed packs carry under
+/// it; and no key at all is [`DEFAULT_ADAPTER`], resolved as a name. Anything
+/// else is could not tell, naming what was written where it was
 /// ([`AdapterSource`]), and nothing is run.
 ///
 /// ONE OPENER FOR EVERY CALLER — the verbs, the run pass and `fleet prime` —
 /// so the store a verb writes to and the one the pass reads are one store.
+///
+/// AN ADAPTER NAMED BY PATH RUNS ON THIS PROCESS'S OWN `PATH`: no pack
+/// declares what it runs under, so there is no runtime to put in front of the
+/// caller's search path, and an entry that execs one finds it only where the
+/// person's own shell does. A named adapter runs on the search path
+/// ([`Opening::search_path`]).
 pub fn open(at: &Opening) -> Result<Box<dyn Store>, StoreError> {
     let named = crate::policy::read("store", "adapter", at.policy)
         .map_err(|unlisted| StoreError::Unreadable(unlisted.to_string()))?;
     match named {
-        None => bd::open(at),
-        Some(toml::Value::String(name)) if name == bd::NAME => bd::open(at),
+        None => by_name(at, DEFAULT_ADAPTER),
         Some(toml::Value::String(path)) if path.starts_with('/') => {
             let adapter = Path::new(path);
             if !executable_file(adapter) {
@@ -381,8 +391,8 @@ pub fn open(at: &Opening) -> Result<Box<dyn Store>, StoreError> {
     }
 }
 
-/// The adapter `[store] adapter` names, as a line names it to a person: the
-/// built-in store's name where the key names nothing, and otherwise the file
+/// The adapter `[store] adapter` names, as a line names it to a person:
+/// [`DEFAULT_ADAPTER`] where the key names nothing, and otherwise the file
 /// name of what it names, which for a bare name is that name.
 ///
 /// A NAME AND NOT A CHECK: read beside a store [`open`] opened, which has
@@ -393,13 +403,17 @@ pub fn adapter_name(policy: &toml::Table) -> String {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| named.clone()),
-        _ => String::from(bd::NAME),
+        _ => String::from(DEFAULT_ADAPTER),
     }
 }
 
 /// The store adapter the installed packs carry under `name`: the highest
 /// layer holding `adapters/store/<name>/adapter.toml` carries the adapter
 /// WHOLE, so its entry is the file beside that one and never another layer's.
+///
+/// It runs on [`Opening::search_path`], with the directory of each runtime
+/// that layer runs under — its own `[runtime]`, else the ones the packs it
+/// imports declare — put in front where the path misses it.
 fn by_name(at: &Opening, name: &str) -> Result<Box<dyn Store>, StoreError> {
     let Some(installed) = at.packs else {
         return Err(unopened(at.source, Unopened::NoPacks(name)));
@@ -412,9 +426,15 @@ fn by_name(at: &Opening, name: &str) -> Result<Box<dyn Store>, StoreError> {
         crate::pack::AdapterKind::Store.as_str(),
         crate::pack::ADAPTER_MANIFEST
     );
-    let Some(dir) = crate::resolve::slot_path(&packs.resolution, &packs.layers, &declared)
-        .and_then(|file| file.parent().map(Path::to_path_buf))
+    let Some(carrier) = packs
+        .resolution
+        .files
+        .get(&declared)
+        .and_then(|carrier| packs.layers.iter().find(|layer| &layer.name == carrier))
     else {
+        return Err(unopened(at.source, Unopened::Nowhere(name)));
+    };
+    let Some(dir) = carrier.root.join(&declared).parent().map(Path::to_path_buf) else {
         return Err(unopened(at.source, Unopened::Nowhere(name)));
     };
     // The manifest is held to the format here, its entry's executable bit
@@ -422,9 +442,18 @@ fn by_name(at: &Opening, name: &str) -> Result<Box<dyn Store>, StoreError> {
     let manifest = crate::pack::adapter_manifest(&dir)
         .map_err(|defect| unopened(at.source, Unopened::Defect(name, defect)))?;
     let entry = dir.join(&manifest.entry);
-    Ok(Box::new(
-        exec::Exec::at(&entry, at.root).with_timeout(at.timeout),
-    ))
+    let store = exec::Exec::at(&entry, at.root).with_timeout(at.timeout);
+    if at.search_path.is_empty() {
+        return Ok(Box::new(store));
+    }
+    let runtimes = crate::item::run::runtimes_of(carrier, &packs.layers)
+        .map_err(|stop| unopened(at.source, Unopened::Unrun(name, stop.message)))?;
+    let path = runtimes
+        .iter()
+        .fold(at.search_path.to_string(), |base, runtime| {
+            crate::item::run::child_path_for(runtime, &base)
+        });
+    Ok(Box::new(store.on_path(path)))
 }
 
 /// Where the pack carrying the store adapter `name` sits in a repository laid
@@ -457,6 +486,7 @@ enum Unopened<'s> {
     Layers(&'s str, String),
     Nowhere(&'s str),
     Defect(&'s str, crate::pack::Defect),
+    Unrun(&'s str, String),
 }
 
 /// EVERY REFUSAL OF THE SETTING IS WORDED HERE, and nowhere else, so what a
@@ -468,8 +498,8 @@ fn unopened(source: AdapterSource, why: Unopened) -> StoreError {
             format!("{written} names `{path}`, which is not an executable file")
         }
         Unopened::NeitherForm(said) => format!(
-            "{written} is `{said}` — it is \"bd\", the name of a store adapter an installed \
-             pack carries, or an absolute path to an adapter executable"
+            "{written} is `{said}` — it is the name of a store adapter an installed pack \
+             carries, or an absolute path to an adapter executable"
         ),
         Unopened::NoPacks(name) => format!(
             "no store adapter named `{name}` resolves: no packs are installed here to carry one"
@@ -489,13 +519,17 @@ fn unopened(source: AdapterSource, why: Unopened) -> StoreError {
         Unopened::Defect(name, defect) => {
             format!("the store adapter `{name}` cannot be opened: {defect}")
         }
+        Unopened::Unrun(name, why) => {
+            format!("the store adapter `{name}` cannot be opened: {why}")
+        }
     })
 }
 
 /// The project's own file as a table, for a caller that has resolved no
 /// project around the root: `<root>/.fleet/project.toml` where it is a file,
-/// else `<root>/fleet.toml`, else an empty table — which opens the built-in
-/// store. A file that will not read or parse is could not tell, naming it.
+/// else `<root>/fleet.toml`, else an empty table — which opens
+/// [`DEFAULT_ADAPTER`]. A file that will not read or parse is could not tell,
+/// naming it.
 pub fn project_policy(root: &Path) -> Result<toml::Table, StoreError> {
     let Some(file) = [root.join(".fleet/project.toml"), root.join("fleet.toml")]
         .into_iter()
@@ -511,9 +545,8 @@ pub fn project_policy(root: &Path) -> Result<toml::Table, StoreError> {
     })
 }
 
-/// A file that is there and executable. Beside the opener and not inside an
-/// adapter: the opener asks it of an adapter's path, and the built-in adapter
-/// of a binary it resolves.
+/// A file that is there and executable: the opener asks it of an adapter's
+/// path.
 pub(crate) fn executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path)
@@ -522,7 +555,7 @@ pub(crate) fn executable_file(path: &Path) -> bool {
 }
 
 /// The body an append is handed, held to its kind's rules before anything is
-/// written — the one refusal both stores answer, word for word.
+/// written — the one refusal every store answers, word for word.
 pub(crate) fn validated(item: &str, body: &Body) -> Result<(), StoreError> {
     body.validate().map_err(|why| {
         StoreError::Unreadable(format!(
@@ -533,7 +566,7 @@ pub(crate) fn validated(item: &str, body: &Body) -> Result<(), StoreError> {
 }
 
 /// The item a create is handed, held to [`NewItem::validate`] before anything
-/// is sent — the one refusal both stores answer, word for word.
+/// is sent — the one refusal every store answers, word for word.
 pub(crate) fn validated_new(item: &NewItem) -> Result<(), StoreError> {
     item.validate().map_err(|why| {
         StoreError::Unreadable(format!(
@@ -561,46 +594,11 @@ pub(crate) fn writable(change: &Update) -> Result<(), StoreError> {
     }
 }
 
-/// The refusal a close of an item already closed answers.
-pub(crate) fn already_closed(id: &ItemId) -> StoreError {
-    StoreError::Refused(format!("{id} is already closed"))
-}
-
-/// The refusal a clear of a hold already cleared answers.
-pub(crate) fn already_cleared(hold: &HoldId) -> StoreError {
-    StoreError::Refused(format!("{hold} is already cleared"))
-}
-
-/// The refusal a read answers for an item whose holder is no seat id: a
-/// person holds it, and it is never read as held by nobody. `held` is the
-/// holder as the store spells it.
-pub(crate) fn not_a_seat(item: &str, held: &str) -> StoreError {
-    StoreError::Unreadable(format!(
-        "{item} is held by {held}, which is not a seat of this fleet — a person holds it, and \
-         fleet reads only seat holders"
-    ))
-}
-
-/// The holder a fence compares as text, where a fenced write names its holder
-/// as text: the seat's id, or `""` for nobody.
-fn held_text(held: Option<SeatId>) -> String {
-    held.map(|seat| seat.to_string()).unwrap_or_default()
-}
-
-/// A holder as a refusal names one: the seat, or nobody for `""`.
-pub(crate) fn holder_named(seat: &str) -> String {
-    if seat.is_empty() {
-        String::from("nobody")
-    } else {
-        format!("`{seat}`")
-    }
-}
-
 /// What a call said last: the last line of its stderr that is not blank, else
 /// of its stdout, cut to 160 characters.
 ///
-/// Beside the trait and not inside an adapter: the built-in store and an
-/// adapter executable both carry it into their refusals.
+/// Beside the trait and not inside an adapter, where any adapter's caller
+/// can carry it into its refusals.
 pub(crate) fn tail(out: &Output) -> String {
     let stderr = String::from_utf8_lossy(&out.stderr);
     let body = if stderr.trim().is_empty() {

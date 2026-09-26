@@ -17,7 +17,7 @@ path = "src/lib.rs"
 test-support = ["dep:regex-lite"]
 
 # The store contract answered from the fake, as an adapter executable, for the
-# suites that run every Exec path with no bd on the box. Under the feature
+# suites that run every Exec path with no store installed on the box. Under the feature
 # alone: this crate's own tests turn it on through the dev-dependency below, so
 # `cargo test -p fleet-core` builds it beside the test binaries, and a plain
 # build of the workspace never does.
@@ -36,9 +36,9 @@ required-features = ["test-support"]
 # toml: a pack manifest, an order and the shadow registry are all
 # TOML, and this crate is their reader.
 #
-# serde_path_to_error: the bd adapter decodes bd's rows into its wire types, and
-# a row that fails names the key it failed at — serde's own error names only
-# the type it expected.
+# serde_path_to_error: a seat's delivery, question or findings file is read
+# into its type, and a file that fails names the key it failed at — serde's
+# own error names only the type it expected.
 #
 # schemars: the store contract's JSON Schema document is generated from the
 # contract's own types (store::schema), so what `fleet store schema` prints is

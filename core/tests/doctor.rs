@@ -91,7 +91,6 @@ fn the_defaults_alone_resolve_every_check_they_ship() {
         names(&entries),
         [
             "adopt-board",
-            "bd-version",
             "claude-code-version",
             "fleet-packs-version",
             "guards-installed",

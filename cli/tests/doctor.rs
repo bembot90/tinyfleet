@@ -6,11 +6,11 @@
 //! writes them with, so the rows an arm reads are the ones a person's first
 //! `fleet doctor` prints. Every tool those checks ask is a stub this rig puts
 //! first on `PATH`: the agent binary answers its version at the supported pin
-//! and the isolation pair by whether the credential knob is set, bd answers
-//! its version at the pin and an empty list to every read the adopt-board
-//! check's `fleet item list` makes, and the pinned runtime prints one line.
-//! Nothing here reads a board, starts a session or asks a real tool anything;
-//! the adopt-board check over a real board is `adopt.rs`'s.
+//! and the isolation pair by whether the credential knob is set, and the
+//! pinned runtime prints one line. The project keeps its store on the stub
+//! adapter, empty, which the adopt-board check's `fleet item list` reads.
+//! Nothing here starts a session or asks a real tool anything; the
+//! adopt-board check over a board with foreign keys is `adopt.rs`'s.
 //!
 //! THE PINS ARE READ FROM CORE and not spelled here, so a supported-version
 //! move leaves this suite green and the doctor's own copies are core's suite
@@ -36,9 +36,8 @@ const CONFIGURED: &str = "[project]\nitem_prefix = \"fx\"\n";
 const UNCONFIGURED: &str = "[project]\n";
 
 /// Every check the binary's defaults carry, in the order the verb runs them.
-const DEFAULTS: [&str; 7] = [
+const DEFAULTS: [&str; 6] = [
     "adopt-board",
-    "bd-version",
     "claude-code-version",
     "fleet-packs-version",
     "guards-installed",
@@ -96,6 +95,7 @@ impl Rig {
         std::fs::create_dir_all(rig.machine.join("packs")).expect("the packs dir is made");
         defaults_into(&rig.machine);
         write(&rig.project.join("fleet.toml"), policy);
+        common::take_a_store(&rig.project);
 
         // The agent binary: its version at the supported pin, and the
         // isolation pair's two arms told apart by whether the credential knob
@@ -113,19 +113,6 @@ impl Rig {
                  echo '{{\"loggedIn\": false}}'\n\
                  exit 1",
                 fleet_core::supported::PINNED_CLAUDE_CODE
-            ),
-        );
-        // bd: its version at the pin, and an empty board to any other call —
-        // `-C <root> ready …` and `-C <root> list …` are the adopt-board
-        // check's two reads, through `fleet item list`.
-        rig.stub(
-            "bd",
-            &format!(
-                "case \"${{1:-}}\" in\n\
-                 version) echo \"bd version {} (stub)\" ;;\n\
-                 *) echo '[]' ;;\n\
-                 esac",
-                fleet_core::store::bd::PINNED_BD
             ),
         );
         rig.stub(RUNTIME, &format!("echo \"{RUNTIME} {VERSION}\""));
@@ -213,10 +200,6 @@ impl Rig {
             )
             .env("NO_COLOR", "1")
             .env_remove("CLAUDE_SECURESTORAGE_CONFIG_DIR")
-            // bd-version asks the binary this names before any bd on PATH, and
-            // the store `fleet item list` opens asks nothing else: the stub,
-            // so neither reaches a real bd.
-            .env("FLEET_BD_BIN", self.stubs.join("bd"))
             .env("PATH", path)
             .output()
             .expect("the built binary runs")
@@ -319,7 +302,7 @@ fn the_defaults_pass_on_a_configured_project() {
     );
     assert_eq!(
         last_line(&said),
-        "doctor 7 checks — 7 pass, 0 finding, 0 could not tell"
+        "doctor 6 checks — 6 pass, 0 finding, 0 could not tell"
     );
     assert!(
         !said.lines().any(|line| line.starts_with("  ")),
@@ -357,7 +340,7 @@ fn an_unconfigured_guard_is_a_finding_with_its_lines_below_the_row() {
     }
     assert_eq!(
         last_line(&said),
-        "doctor 7 checks — 6 pass, 1 finding, 0 could not tell"
+        "doctor 6 checks — 5 pass, 1 finding, 0 could not tell"
     );
 }
 
@@ -375,7 +358,7 @@ fn a_pack_from_fleet_packs_at_another_tag_is_a_finding() {
         write(
             &rig.machine.join("packs.lock"),
             &format!(
-                "schema = 1\n\n[packs.\"{source}//adapters/store/bd\"]\nname = \"bd\"\n\
+                "schema = 1\n\n[packs.\"{source}//adapters/store/tk\"]\nname = \"tk\"\n\
                  version = \"{version}\"\ncommit = \"{commit}\"\nfetched = \"2026-09-25T00:00:00Z\"\n",
                 commit = "0".repeat(40)
             ),
@@ -396,8 +379,8 @@ fn a_pack_from_fleet_packs_at_another_tag_is_a_finding() {
         followed_by(&said, "fleet-packs-version (defaults)")
             .iter()
             .any(|line| line.contains(&format!(
-                "bd is pinned at v0.0.9, not the supported {pin} — `fleet pack remove \
-                 {source}//adapters/store/bd`"
+                "tk is pinned at v0.0.9, not the supported {pin} — `fleet pack remove \
+                 {source}//adapters/store/tk`"
             ))),
         "the pack that moved is named below the row: {said}"
     );
@@ -408,7 +391,7 @@ fn a_pack_from_fleet_packs_at_another_tag_is_a_finding() {
     assert_eq!(out.status.code(), Some(0), "{said}{}", stderr(&out));
     assert_eq!(
         row(&said, "fleet-packs-version (defaults)"),
-        format!("pass fleet-packs-version (defaults) — fleet-packs-version: holds — bd at {pin}")
+        format!("pass fleet-packs-version (defaults) — fleet-packs-version: holds — tk at {pin}")
     );
 }
 
@@ -443,7 +426,7 @@ fn a_check_that_could_not_tell_wins_over_a_finding() {
     );
     assert_eq!(
         last_line(&said),
-        "doctor 10 checks — 7 pass, 1 finding, 2 could not tell"
+        "doctor 9 checks — 6 pass, 1 finding, 2 could not tell"
     );
 
     rig.uncheck("scratch", "fx-unread");
@@ -638,7 +621,7 @@ fn json_carries_every_row_and_the_exit_carries_the_aggregate() {
     assert_eq!(document["data"]["verdict"], "finding");
     assert_eq!(
         document["data"]["counts"],
-        serde_json::json!({ "pass": 6, "finding": 1, "could_not_tell": 0 })
+        serde_json::json!({ "pass": 5, "finding": 1, "could_not_tell": 0 })
     );
     let checks = document["data"]["checks"]
         .as_array()

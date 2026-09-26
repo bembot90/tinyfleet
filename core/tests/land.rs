@@ -1267,10 +1267,10 @@ fn the_marker_and_the_two_trailers_ride_the_commit_subject() {
         "an item whose subject carries a marker",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let git = StubGit::clean();
 
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert!(ran.landed.is_ok(), "{}", ran.why());
 
     let message = git
@@ -1407,11 +1407,11 @@ fn a_landing_handed_no_test_lands_and_says_not_tested() {
         "an item landed with no test command",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let git = StubGit::clean();
 
     let events = StubEvents::default();
-    let ran = run_untested(&scratch, bd, &git, &item, &events);
+    let ran = run_untested(&scratch, graph, &git, &item, &events);
     let landed = ran
         .landed
         .as_ref()
@@ -1430,7 +1430,7 @@ fn a_landing_handed_no_test_lands_and_says_not_tested() {
         signal(&item, &landed.entry, "landed"),
         "the signal names the landed entry, which is what records that no test ran"
     );
-    let (_, landing) = landing_of(bd, &item);
+    let (_, landing) = landing_of(graph, &item);
     assert_eq!(
         landing.test,
         untested(),
@@ -1440,7 +1440,7 @@ fn a_landing_handed_no_test_lands_and_says_not_tested() {
         UNTESTED.contains("no test command was handed to this landing"),
         "{UNTESTED}"
     );
-    let shown = shown(bd, &item);
+    let shown = shown(graph, &item);
     assert!(
         shown.contains("4. suite            NOT TESTED"),
         "and so does the row:\n{shown}"
@@ -1710,7 +1710,7 @@ fn also_widens_the_delivered_set_and_reason_rides_the_close() {
         "an item landed with a path of the reviewer's own",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let mut git = StubGit::clean();
     git.staged = vec![
         ".store/export.jsonl".to_string(),
@@ -1722,7 +1722,7 @@ fn also_widens_the_delivered_set_and_reason_rides_the_close() {
 
     let ran = run_with(
         &scratch,
-        bd,
+        graph,
         &git,
         &item,
         SHA,
@@ -1734,7 +1734,7 @@ fn also_widens_the_delivered_set_and_reason_rides_the_close() {
         .as_ref()
         .unwrap_or_else(|stop| panic!("{}\n{}", stop.message, ran.out));
     assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
-    let shown = shown(bd, &item);
+    let shown = shown(graph, &item);
     assert!(
         shown.contains("plus --also the-log.md"),
         "the staged-set row names what was admitted:\n{shown}"
@@ -1754,11 +1754,11 @@ fn also_widens_the_delivered_set_and_reason_rides_the_close() {
 
 /// A project whose store git IGNORES stages nothing of it and lands anyway.
 ///
-/// `bd init` writes that ignore itself, so this is the standalone shape and not
-/// an edge: measured on a scratch repository, `git add .beads
-/// ':(exclude).beads/hooks'` there exits 128 with `pathspec '.beads' did not
-/// match any files`. The verb reads the porcelain to tell the two projects
-/// apart rather than staging blind.
+/// A store whose own init writes that ignore makes this the standalone shape
+/// and not an edge: measured on a scratch repository, `git add <dir>
+/// ':(exclude)<dir>/hooks'` over an ignored `<dir>` exits 128 with `pathspec
+/// '<dir>' did not match any files`. The verb reads the porcelain to tell the
+/// two projects apart rather than staging blind.
 #[test]
 fn a_project_whose_store_git_ignores_stages_none_of_it() {
     let scratch = &store();
@@ -1767,13 +1767,13 @@ fn a_project_whose_store_git_ignores_stages_none_of_it() {
         "an item in a project whose store git ignores",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let mut git = StubGit::clean();
     // Nothing under the store's directory appears in the porcelain, ever.
     *git.statuses.lock().expect("not poisoned") = [Vec::new(), Vec::new()].into();
     git.staged = vec![FILE.to_string()];
 
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
     let calls = git.calls();
     assert!(
@@ -1789,7 +1789,7 @@ fn a_project_whose_store_git_ignores_stages_none_of_it() {
         "an item in a project that versions its store",
         Some(("ACCEPTED", SHA)),
     );
-    let ran = run(scratch, bd, &versioned, &other, SHA);
+    let ran = run(scratch, graph, &versioned, &other, SHA);
     assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
     assert!(
         versioned
@@ -1814,7 +1814,7 @@ fn a_dirty_board_does_not_wedge_the_gate_or_the_re_run() {
         "an item landed over a board that was already dirty",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let git = StubGit::clean();
     // The export is already modified when the landing starts, which is what a
     // re-run after any refusal at (e) or later looks like.
@@ -1824,7 +1824,7 @@ fn a_dirty_board_does_not_wedge_the_gate_or_the_re_run() {
     ]
     .into();
 
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
 
     // The control: the same line under any OTHER path still refuses, so what
@@ -1836,7 +1836,7 @@ fn a_dirty_board_does_not_wedge_the_gate_or_the_re_run() {
     );
     let git = StubGit::clean();
     *git.statuses.lock().expect("not poisoned") = [vec![" M a/loose.rs".to_string()]].into();
-    let ran = run(scratch, bd, &git, &other, SHA);
+    let ran = run(scratch, graph, &git, &other, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert!(ran.why().contains("a/loose.rs"), "{}", ran.why());
 }
@@ -1852,7 +1852,7 @@ fn a_dirty_board_does_not_wedge_the_gate_or_the_re_run() {
 #[test]
 fn the_tree_gate_exempts_the_export_alone_and_refuses_the_rest_of_the_store() {
     let scratch = &store();
-    let bd = &scratch.store;
+    let graph = &scratch.store;
 
     // TOO WIDE, refused: a tracked file under the store that is not the export.
     let hook = scratch.root().join(".store/hooks/x");
@@ -1860,14 +1860,14 @@ fn the_tree_gate_exempts_the_export_alone_and_refuses_the_rest_of_the_store() {
         .expect("the hooks directory is made");
     std::fs::write(&hook, "a seat's own uncommitted edit\n").expect("the hook is written");
     let item = an_item(
-        bd,
+        graph,
         "an item landed over a dirty tracked hook",
         Some(("ACCEPTED", SHA)),
     );
     let git = StubGit::clean();
     *git.statuses.lock().expect("not poisoned") = [vec![" M .store/hooks/x".to_string()]].into();
 
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}\n{}", ran.why(), ran.out);
     assert!(
         ran.why().contains(".store/hooks/x"),
@@ -1895,7 +1895,7 @@ fn the_tree_gate_exempts_the_export_alone_and_refuses_the_rest_of_the_store() {
     // is untracked but unignored.
     for spelling in [" M .store/export.jsonl", "?? .store/"] {
         let item = an_item(
-            bd,
+            graph,
             &format!("an item landed over `{spelling}`"),
             Some(("ACCEPTED", SHA)),
         );
@@ -1905,7 +1905,7 @@ fn the_tree_gate_exempts_the_export_alone_and_refuses_the_rest_of_the_store() {
             vec![" M .store/export.jsonl".to_string()],
         ]
         .into();
-        let ran = run(scratch, bd, &git, &item, SHA);
+        let ran = run(scratch, graph, &git, &item, SHA);
         assert!(
             ran.landed.is_ok(),
             "`{spelling}` is the verb's own bookkeeping: {}\n{}",
@@ -1917,31 +1917,31 @@ fn the_tree_gate_exempts_the_export_alone_and_refuses_the_rest_of_the_store() {
 
 /// The store's directory a landing exempts is the one the ADAPTER names, and
 /// no other: on the board held in memory, whose store keeps its export under
-/// `.store/`, a `.beads/` path is a seat's change like any other.
+/// `.store/`, a `.tracker/` path is a seat's change like any other.
 ///
 /// Three spellings of it, one per place a directory constant decides: a
-/// tracked `.beads/x` at the tree gate, the untracked `.beads/` directory the
-/// porcelain names whole at the same gate, and a `.beads/x` in the index at the
+/// tracked `.tracker/x` at the tree gate, the untracked `.tracker/` directory the
+/// porcelain names whole at the same gate, and a `.tracker/x` in the index at the
 /// staged-set check — each refused. The control is the adapter's own export,
 /// regenerated, which passes.
 #[test]
 fn the_store_directory_the_adapter_names_is_the_one_the_gates_exempt() {
     let scratch = &store();
-    let bd = &scratch.store;
+    let graph = &scratch.store;
 
-    // A TRACKED `.beads/x`, refused at (b) by name.
+    // A TRACKED `.tracker/x`, refused at (b) by name.
     let item = an_item(
-        bd,
-        "an item landed over a dirty .beads/x",
+        graph,
+        "an item landed over a dirty .tracker/x",
         Some(("ACCEPTED", SHA)),
     );
     let git = StubGit::clean();
-    *git.statuses.lock().expect("not poisoned") = [vec![" M .beads/x".to_string()]].into();
-    let ran = run(scratch, bd, &git, &item, SHA);
+    *git.statuses.lock().expect("not poisoned") = [vec![" M .tracker/x".to_string()]].into();
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}\n{}", ran.why(), ran.out);
     assert!(
         ran.why()
-            .contains("`.beads/x` is changed in the working tree"),
+            .contains("`.tracker/x` is changed in the working tree"),
         "the refusal names the path: {}",
         ran.why()
     );
@@ -1950,17 +1950,17 @@ fn the_store_directory_the_adapter_names_is_the_one_the_gates_exempt() {
     // too, because the directory the gate exempts is the adapter's and this
     // is not it.
     let item = an_item(
-        bd,
-        "an item landed over an untracked .beads/",
+        graph,
+        "an item landed over an untracked .tracker/",
         Some(("ACCEPTED", SHA)),
     );
     let git = StubGit::clean();
-    *git.statuses.lock().expect("not poisoned") = [vec!["?? .beads/".to_string()]].into();
-    let ran = run(scratch, bd, &git, &item, SHA);
+    *git.statuses.lock().expect("not poisoned") = [vec!["?? .tracker/".to_string()]].into();
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}\n{}", ran.why(), ran.out);
     assert!(
         ran.why()
-            .contains("`.beads/` is changed in the working tree"),
+            .contains("`.tracker/` is changed in the working tree"),
         "the refusal names the directory: {}",
         ran.why()
     );
@@ -1968,28 +1968,28 @@ fn the_store_directory_the_adapter_names_is_the_one_the_gates_exempt() {
     // IN THE INDEX, beside the delivery: the staged-set check counts it, so the
     // staged set is not the delivered one.
     let item = an_item(
-        bd,
-        "an item landed with .beads/x staged",
+        graph,
+        "an item landed with .tracker/x staged",
         Some(("ACCEPTED", SHA)),
     );
     let mut git = StubGit::clean();
     git.staged = vec![
         EXPORT_FILE.to_string(),
         FILE.to_string(),
-        ".beads/x".to_string(),
+        ".tracker/x".to_string(),
     ];
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}\n{}", ran.why(), ran.out);
     assert!(
         ran.out
-            .contains("STAGED (outside .store/):\n  .beads/x\n  a/file.rs\n"),
-        "the staged set names `.beads/x` beside the delivery:\n{}",
+            .contains("STAGED (outside .store/):\n  .tracker/x\n  a/file.rs\n"),
+        "the staged set names `.tracker/x` beside the delivery:\n{}",
         ran.out
     );
 
     // The control: the adapter's own export, regenerated, passes both gates.
     let item = an_item(
-        bd,
+        graph,
         "an item landed over a regenerated .store/export.jsonl",
         Some(("ACCEPTED", SHA)),
     );
@@ -1999,7 +1999,7 @@ fn the_store_directory_the_adapter_names_is_the_one_the_gates_exempt() {
         vec![format!(" M {EXPORT_FILE}")],
     ]
     .into();
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert!(
         ran.landed.is_ok(),
         "the adapter's own export is the landing's bookkeeping: {}\n{}",
@@ -2020,16 +2020,16 @@ fn the_store_directory_the_adapter_names_is_the_one_the_gates_exempt() {
 #[test]
 fn a_quoted_octal_path_decodes_to_the_name_also_admits() {
     let scratch = &store();
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let quoted = " M \"a/caf\\303\\251.rs\"";
     let plain = "a/café.rs";
 
     // Refused, and the refusal names the DECODED path: a reviewer reads this
     // line and types what it says into `--also`.
-    let item = an_item(bd, "an item over a quoted path", Some(("ACCEPTED", SHA)));
+    let item = an_item(graph, "an item over a quoted path", Some(("ACCEPTED", SHA)));
     let git = StubGit::clean();
     *git.statuses.lock().expect("not poisoned") = [vec![quoted.to_string()]].into();
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert!(
         ran.why().contains(plain),
@@ -2039,7 +2039,7 @@ fn a_quoted_octal_path_decodes_to_the_name_also_admits() {
 
     // And admitted by exactly that value, which is the half the decoding is for.
     let item = an_item(
-        bd,
+        graph,
         "an item admitting a quoted path",
         Some(("ACCEPTED", SHA)),
     );
@@ -2057,7 +2057,7 @@ fn a_quoted_octal_path_decodes_to_the_name_also_admits() {
         vec![" M .store/export.jsonl".to_string()],
     ]
     .into();
-    let ran = run_with(scratch, bd, &git, &item, SHA, &[plain.to_string()], None);
+    let ran = run_with(scratch, graph, &git, &item, SHA, &[plain.to_string()], None);
     assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
 }
 
@@ -2068,9 +2068,9 @@ fn a_quoted_octal_path_decodes_to_the_name_also_admits() {
 #[test]
 fn a_push_output_that_could_not_be_kept_says_so_rather_than_naming_the_file() {
     let scratch = &store();
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let item = an_item(
-        bd,
+        graph,
         "an item whose push output could not be kept",
         Some(("ACCEPTED", SHA)),
     );
@@ -2089,7 +2089,7 @@ fn a_push_output_that_could_not_be_kept_says_so_rather_than_naming_the_file() {
         code: Some(1),
     };
 
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}\n{}", ran.why(), ran.out);
     assert!(
         ran.why().contains("could not be kept"),
@@ -2104,13 +2104,17 @@ fn a_push_output_that_could_not_be_kept_says_so_rather_than_naming_the_file() {
 
     // The control: the same refusal with the write working names the file, so
     // what changed above is the WRITE and not the sentence.
-    let item = an_item(bd, "an item whose push was kept", Some(("ACCEPTED", SHA)));
+    let item = an_item(
+        graph,
+        "an item whose push was kept",
+        Some(("ACCEPTED", SHA)),
+    );
     let mut git = StubGit::clean();
     git.push = Pushed {
         output: "remote: a pre-receive hook refused it\n".to_string(),
         code: Some(1),
     };
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert!(
         ran.why().contains("its output is at") && ran.why().contains("push.out"),
@@ -2130,7 +2134,7 @@ fn a_refusal_after_the_squash_resets_before_it_detaches() {
         "an item refused with a squash already staged",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let mut git = StubGit::clean();
     git.staged = vec![
         ".store/export.jsonl".to_string(),
@@ -2138,7 +2142,7 @@ fn a_refusal_after_the_squash_resets_before_it_detaches() {
         "a/leftover.rs".to_string(),
     ];
 
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     let calls = git.calls();
     let at = |needle: &str| calls.iter().position(|c| c.starts_with(needle));
@@ -2167,7 +2171,7 @@ fn an_also_path_does_not_make_every_landing_carry() {
         "an item landed with a path of the reviewer's own",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let mut git = StubGit::clean();
     git.staged = vec![
         ".store/export.jsonl".to_string(),
@@ -2182,7 +2186,7 @@ fn an_also_path_does_not_make_every_landing_carry() {
 
     let ran = run_with(
         &scratch,
-        bd,
+        graph,
         &git,
         &item,
         SHA,
@@ -2223,11 +2227,11 @@ fn a_detach_that_fails_after_the_landing_still_exits_zero() {
         "an item whose checkout would not detach",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let mut git = StubGit::clean();
     git.detach_fails = true;
 
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
     assert!(
         ran.out.trim_end().ends_with(&format!("LANDED {LANDED}")),
@@ -2240,7 +2244,7 @@ fn a_detach_that_fails_after_the_landing_still_exits_zero() {
         ran.err
     );
     assert_eq!(
-        bd.show(&item).expect("it reads back").status,
+        graph.show(&item).expect("it reads back").status,
         "closed",
         "the item is closed either way"
     );
@@ -2256,14 +2260,14 @@ fn an_untracked_store_stages_its_export_and_not_the_database() {
         "an item in a project whose store is untracked",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let git = StubGit::clean();
     // An untracked store answers with the DIRECTORY, which is the shape that
     // would have swept the database in.
     *git.statuses.lock().expect("not poisoned") =
         [Vec::new(), vec!["?? .store/".to_string()]].into();
 
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
     let adds: Vec<String> = git
         .calls()
@@ -2293,9 +2297,9 @@ fn a_store_that_declares_no_export_lands_without_one_and_says_so() {
     let mut board = store();
     board.store.no_export = true;
     let scratch = &board;
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let item = an_item(
-        bd,
+        graph,
         "an item landed on a store that declares no export",
         Some(("ACCEPTED", SHA)),
     );
@@ -2305,7 +2309,7 @@ fn a_store_that_declares_no_export_lands_without_one_and_says_so() {
     *git.statuses.lock().expect("not poisoned") = [Vec::new()].into();
     git.staged = vec![FILE.to_string()];
 
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     let landed = ran
         .landed
         .as_ref()
@@ -2321,7 +2325,7 @@ fn a_store_that_declares_no_export_lands_without_one_and_says_so() {
         "the staged-set row says the store declares no export:\n{}",
         ran.out
     );
-    let shown = shown(bd, &item);
+    let shown = shown(graph, &item);
     assert!(
         shown.contains("the store declares no export"),
         "and the landed entry carries the same row:\n{shown}"
@@ -2367,9 +2371,9 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
         "this rig's policy names the reviewer its seat table carries a row for"
     );
     let scratch = &store();
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let item = an_item(
-        bd,
+        graph,
         "an item landed from a workflow",
         Some(("ACCEPTED", SHA)),
     );
@@ -2403,7 +2407,7 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
     let events = StubEvents::default();
     let ran = run_against(
         scratch,
-        bd,
+        graph,
         &git,
         &item,
         SHA,
@@ -2462,7 +2466,7 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
     // resolved over the table's ids and names, so the policy naming the seat
     // by its id lands in the same worktree the name did.
     let by_id = an_item(
-        bd,
+        graph,
         "an item whose reviewer is named by its id",
         Some(("ACCEPTED", SHA)),
     );
@@ -2486,7 +2490,7 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
     git.linked = false;
     let ran = run_against(
         scratch,
-        bd,
+        graph,
         &git,
         &by_id,
         SHA,
@@ -2518,7 +2522,7 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
     // reason, naming the key and the value — and the list of seats it does —
     // before the table is read.
     let stranger = an_item(
-        bd,
+        graph,
         "an item whose reviewer the table does not hold",
         Some(("ACCEPTED", SHA)),
     );
@@ -2539,7 +2543,7 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
     git.linked = false;
     let ran = run_against(
         scratch,
-        bd,
+        graph,
         &git,
         &stranger,
         SHA,
@@ -2567,7 +2571,7 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
     // A LISTED REVIEWER THIS MACHINE RUNS NO ROW FOR refuses naming the seat,
     // its id and the table: the row is found by the resolved id alone.
     let rowless = an_item(
-        bd,
+        graph,
         "an item whose reviewer has no row here",
         Some(("ACCEPTED", SHA)),
     );
@@ -2590,7 +2594,7 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
     git.linked = false;
     let ran = run_against(
         scratch,
-        bd,
+        graph,
         &git,
         &rowless,
         SHA,
@@ -2622,7 +2626,7 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
     // and the table. The resolution never falls back to the tree it was handed,
     // because that tree is the one it exists to keep a landing out of.
     let orphan = an_item(
-        bd,
+        graph,
         "an item whose reviewer holds no worktree here",
         Some(("ACCEPTED", SHA)),
     );
@@ -2634,7 +2638,7 @@ fn a_landing_handed_the_primary_runs_in_the_reviewers_own_worktree() {
     git.linked = false;
     let ran = run_against(
         scratch,
-        bd,
+        graph,
         &git,
         &orphan,
         SHA,
@@ -2669,7 +2673,7 @@ fn no_fetch(git: &StubGit) -> bool {
 #[test]
 fn every_refusal_before_the_push_leaves_the_item_untouched() {
     let scratch = &store();
-    let bd = &scratch.store;
+    let graph = &scratch.store;
 
     // A branch name where a commit is meant, refused by SHAPE before anything
     // is read (rule 1 of the pack's rules).
@@ -2680,7 +2684,7 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
     );
     let before = scratch.json(&item);
     let git = StubGit::clean();
-    let ran = run(scratch, bd, &git, &item, WORK);
+    let ran = run(scratch, graph, &git, &item, WORK);
     assert_eq!(ran.code(), Some(2), "{}", ran.why());
     assert!(ran.why().contains(WORK), "{}", ran.why());
     assert!(
@@ -2706,7 +2710,7 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
     let mut git = StubGit::clean();
     git.linked = false;
     git.driven_linked = false;
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert!(ran.why().contains("primary"), "{}", ran.why());
     assert_eq!(scratch.json(&item), before);
@@ -2714,7 +2718,7 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
     // A working-tree change nothing admitted, seen by the FIRST status read.
     let git = StubGit::clean();
     *git.statuses.lock().expect("not poisoned") = [vec!["?? forgotten.txt".to_string()]].into();
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert!(ran.why().contains("forgotten.txt"), "{}", ran.why());
     assert_eq!(scratch.json(&item), before);
@@ -2728,7 +2732,7 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
     scratch.hand_to(&other, &full(BUILDER));
     let before_other = scratch.json(&other);
     let git = StubGit::clean();
-    let ran = run(scratch, bd, &git, &other, SHA);
+    let ran = run(scratch, graph, &git, &other, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert!(
         ran.why().contains(&agent(BUILDER).machine_name()),
@@ -2741,7 +2745,7 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
     let bare = an_item(&scratch.store, "an item nobody reviewed", None);
     let before_bare = scratch.json(&bare);
     let git = StubGit::clean();
-    let ran = run(scratch, bd, &git, &bare, SHA);
+    let ran = run(scratch, graph, &git, &bare, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert_eq!(
         ran.why(),
@@ -2758,7 +2762,7 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
     );
     let before_returned = scratch.json(&returned);
     let git = StubGit::clean();
-    let ran = run(scratch, bd, &git, &returned, SHA);
+    let ran = run(scratch, graph, &git, &returned, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert_eq!(
         ran.why(),
@@ -2778,7 +2782,7 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
     );
     let before_elsewhere = scratch.json(&elsewhere);
     let git = StubGit::clean();
-    let ran = run(scratch, bd, &git, &elsewhere, SHA);
+    let ran = run(scratch, graph, &git, &elsewhere, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert_eq!(
         ran.why(),
@@ -2801,7 +2805,7 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
         .expect("it closes");
     let before_closed = scratch.json(&elsewhere);
     let git = StubGit::clean();
-    let ran = run(scratch, bd, &git, &elsewhere, SHA);
+    let ran = run(scratch, graph, &git, &elsewhere, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert!(ran.why().contains("closed"), "{}", ran.why());
     assert_eq!(scratch.json(&elsewhere), before_closed);
@@ -2928,7 +2932,7 @@ fn a_runs_landing_lands_its_own_runs_accept_and_no_other_runs() {
 #[test]
 fn a_branch_name_is_refused_before_any_git_write() {
     let scratch = &store();
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let item = an_item(
         &scratch.store,
         "an item landed by branch name",
@@ -2937,7 +2941,7 @@ fn a_branch_name_is_refused_before_any_git_write() {
     let before_item = scratch.json(&item);
     let git = StubGit::clean();
 
-    let ran = run(scratch, bd, &git, &item, WORK);
+    let ran = run(scratch, graph, &git, &item, WORK);
     assert_eq!(ran.code(), Some(2), "{}", ran.why());
     assert!(ran.why().contains(WORK), "{}", ran.why());
     assert!(
@@ -3124,14 +3128,14 @@ fn a_conflicted_squash_returns_for_rebase_and_puts_the_tree_back() {
         Some(("ACCEPTED", SHA)),
     );
     let before = scratch.json(&item);
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let git = StubGit::clean();
     *git.squash.lock().expect("not poisoned") = Some(Squashed::Conflicted(vec![
         FILE.to_string(),
         "b/other.rs".to_string(),
     ]));
 
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert!(
         ran.out.contains("RETURN FOR REBASE")
@@ -3168,7 +3172,7 @@ fn a_staged_set_beyond_the_delivery_prints_both_sets() {
         Some(("ACCEPTED", SHA)),
     );
     let before = scratch.json(&item);
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let mut git = StubGit::clean();
     git.staged = vec![
         ".store/export.jsonl".to_string(),
@@ -3176,7 +3180,7 @@ fn a_staged_set_beyond_the_delivery_prints_both_sets() {
         "a/leftover.rs".to_string(),
     ];
 
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert!(
         ran.out.contains("STAGED (outside .store/):")
@@ -3199,11 +3203,11 @@ fn a_trunk_that_moved_is_rebase_needed_with_its_count() {
         Some(("ACCEPTED", SHA)),
     );
     let before = scratch.json(&item);
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let mut git = StubGit::clean();
     git.behind = 3;
 
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert!(
         ran.out.contains("REBASE NEEDED") && ran.out.contains("(3)"),
@@ -3227,7 +3231,7 @@ fn a_rejected_push_writes_no_entry_and_no_close() {
         "an item whose push was rejected",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let mut git = StubGit::clean();
     git.push = Pushed {
         output: "remote: a pre-receive hook refused it\n! [remote rejected] HEAD -> main\n"
@@ -3237,7 +3241,7 @@ fn a_rejected_push_writes_no_entry_and_no_close() {
 
     let before = scratch.json(&item);
     let events = StubEvents::default();
-    let ran = run_watched(scratch, bd, &git, &item, SHA, &[], None, &events);
+    let ran = run_watched(scratch, graph, &git, &item, SHA, &[], None, &events);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert_eq!(
         events.count(),
@@ -3249,9 +3253,9 @@ fn a_rejected_push_writes_no_entry_and_no_close() {
         "the remote's own words:\n{}",
         ran.out
     );
-    let read = bd.show(&item).expect("the item reads back");
+    let read = graph.show(&item).expect("the item reads back");
     assert_eq!(read.status, "open", "nothing after the push ran");
-    assert!(no_landing(bd, &item), "and no landed entry was written");
+    assert!(no_landing(graph, &item), "and no landed entry was written");
     assert_eq!(
         scratch.json(&item),
         before,
@@ -3276,7 +3280,7 @@ fn a_push_with_no_range_line_could_not_tell_and_wrote_nothing() {
         "an item whose push printed no range",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let mut git = StubGit::clean();
     git.push = Pushed {
         output: "Everything up-to-date\n".to_string(),
@@ -3284,7 +3288,7 @@ fn a_push_with_no_range_line_could_not_tell_and_wrote_nothing() {
     };
 
     let before = scratch.json(&item);
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(3), "{}", ran.why());
     assert!(ran.out.contains("Everything up-to-date"), "{}", ran.out);
     assert!(
@@ -3292,9 +3296,9 @@ fn a_push_with_no_range_line_could_not_tell_and_wrote_nothing() {
         "the refusal names where the output was kept: {}",
         ran.why()
     );
-    let read = bd.show(&item).expect("the item reads back");
+    let read = graph.show(&item).expect("the item reads back");
     assert_eq!(read.status, "open");
-    assert!(no_landing(bd, &item));
+    assert!(no_landing(graph, &item));
     assert_eq!(
         scratch.json(&item),
         before,
@@ -3497,9 +3501,9 @@ fn the_read_back_catches_a_planted_token() {
         "an item whose read-back is not its own",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let doctored = Doctored {
-        inner: bd,
+        inner: graph,
         plant: Some(control_token().to_string()),
         refuse_close: false,
     };
@@ -3550,7 +3554,7 @@ fn a_close_the_store_does_not_make_names_the_read_and_the_landing_stands() {
 #[test]
 fn the_branch_is_deleted_on_safe_alone() {
     let scratch = &store();
-    let bd = &scratch.store;
+    let graph = &scratch.store;
 
     // SAFE: the tip IS the reviewed commit and the delivered paths are
     // byte-identical on the trunk.
@@ -3560,7 +3564,7 @@ fn the_branch_is_deleted_on_safe_alone() {
         Some(("ACCEPTED", SHA)),
     );
     let git = StubGit::clean();
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert!(ran.landed.is_ok(), "{}", ran.why());
     assert!(ran.out.contains("6. work branch      SAFE"), "{}", ran.out);
     let calls = git.calls();
@@ -3578,7 +3582,7 @@ fn the_branch_is_deleted_on_safe_alone() {
     );
     let mut git = StubGit::clean();
     git.tip = OTHER.to_string();
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert!(ran.landed.is_ok(), "{}", ran.why());
     assert!(
         ran.out.contains("CARRIES UNLANDED WORK"),
@@ -3595,7 +3599,7 @@ fn the_branch_is_deleted_on_safe_alone() {
     );
     let mut git = StubGit::clean();
     git.carried = vec![FILE.to_string()];
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert!(ran.landed.is_ok(), "{}", ran.why());
     assert!(
         ran.out.contains("6. work branch      CARRIES ") && ran.out.contains(FILE),
@@ -3612,7 +3616,7 @@ fn the_branch_is_deleted_on_safe_alone() {
     );
     let mut git = StubGit::clean();
     git.blind = Some(WORK.to_string());
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert!(ran.landed.is_ok(), "{}", ran.why());
     assert!(ran.out.contains("COULD NOT TELL"), "{}", ran.out);
     assert!(no_delete(&git), "{:?}", git.calls());
@@ -3634,7 +3638,7 @@ fn no_delete(git: &StubGit) -> bool {
 #[test]
 fn a_branch_name_that_names_a_trunk_is_never_deleted() {
     let scratch = &store();
-    let bd = &scratch.store;
+    let graph = &scratch.store;
 
     for dangerous in [TRUNK_BRANCH, "HEAD", TRUNK, "--force"] {
         let item = an_item_on_branch(
@@ -3645,7 +3649,7 @@ fn a_branch_name_that_names_a_trunk_is_never_deleted() {
         let mut git = StubGit::clean();
         // The tip and the diff both say SAFE, so only the name refuses.
         git.tip = SHA.to_string();
-        let ran = run(scratch, bd, &git, &item, SHA);
+        let ran = run(scratch, graph, &git, &item, SHA);
         assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
         assert!(
             ran.out.contains("COULD NOT TELL"),
@@ -3672,7 +3676,7 @@ fn a_branch_name_that_names_a_trunk_is_never_deleted() {
     // says SAFE.
     let item = an_item_on_branch(&scratch.store, "an item whose branch is ordinary", WORK);
     let git = StubGit::clean();
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert!(ran.landed.is_ok(), "{}", ran.why());
     assert!(
         git.calls()
@@ -3690,7 +3694,7 @@ fn a_branch_name_that_names_a_trunk_is_never_deleted() {
 #[test]
 fn a_held_local_delete_names_the_retire_and_its_own_entry_reads_back_as_a_delete() {
     let scratch = &store();
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let item = an_item(
         &scratch.store,
         "an item whose branch a worktree still holds",
@@ -3699,7 +3703,7 @@ fn a_held_local_delete_names_the_retire_and_its_own_entry_reads_back_as_a_delete
     let mut git = StubGit::clean();
     git.held = Some(WORK.to_string());
 
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert!(ran.landed.is_ok(), "{}", ran.why());
     assert!(
         ran.err
@@ -3723,7 +3727,7 @@ fn a_held_local_delete_names_the_retire_and_its_own_entry_reads_back_as_a_delete
 
     // THE TIMELINE THE LANDING JUST WROTE, read back off the store the way the
     // retire reads it — never an entry typed here.
-    let timeline = bd
+    let timeline = graph
         .timeline(&ItemId::from(item.as_str()))
         .expect("the timeline reads back");
     assert_eq!(
@@ -3750,7 +3754,7 @@ fn a_held_local_delete_names_the_retire_and_its_own_entry_reads_back_as_a_delete
 #[test]
 fn a_landing_that_did_not_read_safe_releases_nothing() {
     let scratch = &store();
-    let bd = &scratch.store;
+    let graph = &scratch.store;
 
     // Every rig here also holds the branch, so what keeps it is the verdict and
     // never a delete that happened to succeed at land time.
@@ -3771,9 +3775,9 @@ fn a_landing_that_did_not_read_safe_releases_nothing() {
             "whose landed content differs" => git.carried = vec![FILE.to_string()],
             _ => git.blind = Some(WORK.to_string()),
         }
-        let ran = run(scratch, bd, &git, &item, SHA);
+        let ran = run(scratch, graph, &git, &item, SHA);
         assert!(ran.landed.is_ok(), "{}", ran.why());
-        let timeline = bd
+        let timeline = graph
             .timeline(&ItemId::from(item.as_str()))
             .expect("the timeline reads back");
         assert_eq!(
@@ -3917,13 +3921,13 @@ fn a_release_keeps_the_branch_on_every_reading_but_one() {
 #[test]
 fn a_delivery_naming_another_landings_branch_is_never_deleted() {
     let scratch = &store();
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let other = "land/an-other-item";
 
-    let item = an_item_on_branch(bd, "an item whose delivery names another landing", other);
+    let item = an_item_on_branch(graph, "an item whose delivery names another landing", other);
     let mut git = StubGit::clean();
     git.reviewed_too = Some(other.to_string());
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
     assert!(
         ran.out.contains("COULD NOT TELL"),
@@ -3940,10 +3944,10 @@ fn a_delivery_naming_another_landings_branch_is_never_deleted() {
     // on the same seam reaches SAFE and deletes both sides, so what refused
     // above is the PREFIX.
     let ordinary = "a-builder/feat/another-hand";
-    let item = an_item_on_branch(bd, "an item on an ordinary second branch", ordinary);
+    let item = an_item_on_branch(graph, "an item on an ordinary second branch", ordinary);
     let mut git = StubGit::clean();
     git.reviewed_too = Some(ordinary.to_string());
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
     assert!(
         git.calls()
@@ -4025,10 +4029,10 @@ fn a_landing_takes_the_lane_and_leaves_the_holder_on_the_lock() {
         "an item whose landing takes the lane",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let git = StubGit::clean();
 
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert!(ran.landed.is_ok(), "the landing was refused: {}", ran.why());
 
     let lock = lane::lock_path(&lane_of(scratch));
@@ -4077,9 +4081,9 @@ fn a_lane_under_the_projects_bare_name_is_adopted_under_the_prefixed_one() {
     let old_lock = lane::lock_path(&old);
     std::fs::write(&old_lock, "fx-before 2026-09-13T00:00:00Z\n").expect("the older lock");
 
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let git = StubGit::clean();
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert!(ran.landed.is_ok(), "the landing was refused: {}", ran.why());
 
     let lane = lane_of(scratch);
@@ -4267,9 +4271,9 @@ fn a_landing_waits_on_a_held_lane_and_lands_after_it_is_released() {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::scope(|threads| {
         let landing = threads.spawn(|| {
-            let bd = &board.store;
+            let graph = &board.store;
             let git = StubGit::clean();
-            let ran = run(&board, bd, &git, &item, SHA);
+            let ran = run(&board, graph, &git, &item, SHA);
             let _ = tx.send(());
             let why = ran.why();
             (ran.out, ran.landed.is_ok(), why)
@@ -4309,7 +4313,7 @@ fn a_lane_whose_lock_cannot_be_made_is_exit_3_with_nothing_written() {
         "an item whose lane will not open",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let git = StubGit::clean();
 
     let blocked = scratch.root.join("a-file-not-a-directory");
@@ -4322,7 +4326,7 @@ fn a_lane_whose_lock_cannot_be_made_is_exit_3_with_nothing_written() {
 
     let ran = run_against(
         scratch,
-        bd,
+        graph,
         &git,
         &item,
         SHA,
@@ -4344,9 +4348,9 @@ fn a_lane_whose_lock_cannot_be_made_is_exit_3_with_nothing_written() {
         "and it names the lane: {}",
         ran.why()
     );
-    let read = bd.show(&item).expect("the item reads");
+    let read = graph.show(&item).expect("the item reads");
     assert_eq!(read.status, "open", "nothing was written");
-    assert!(no_landing(bd, &item), "and no landed entry");
+    assert!(no_landing(graph, &item), "and no landed entry");
     assert!(
         git.calls()
             .iter()
@@ -4424,7 +4428,7 @@ fn a_red_gate_is_rerun_once_and_a_green_second_reading_lands_with_both_rows() {
         "an item whose gate reddens once",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let git = StubGit::clean();
 
     let command = a_gate_script(scratch, "rerun-green", &[1, 0]);
@@ -4436,7 +4440,7 @@ fn a_red_gate_is_rerun_once_and_a_green_second_reading_lands_with_both_rows() {
     let events = StubEvents::default();
     let ran = run_against(
         scratch,
-        bd,
+        graph,
         &git,
         &item,
         SHA,
@@ -4455,7 +4459,7 @@ fn a_red_gate_is_rerun_once_and_a_green_second_reading_lands_with_both_rows() {
     assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
     // ONE ROW PER CHECK READ, IN ORDER: eight with the rerun, which sits under
     // its own name between the first reading and the trunk's row.
-    let (_, landing) = landing_of(bd, &item);
+    let (_, landing) = landing_of(graph, &item);
     let named: Vec<&str> = landing
         .checks
         .iter()
@@ -4480,7 +4484,7 @@ fn a_red_gate_is_rerun_once_and_a_green_second_reading_lands_with_both_rows() {
         ran_test(&command, 0),
         "the entry's test is the reading the landing stood on: the rerun's"
     );
-    let checks = shown(bd, &item);
+    let checks = shown(graph, &item);
     // A row is a number at the start of a line; the `test:` line above them
     // names the command too, and is not a row.
     let suite_rows: Vec<&str> = checks
@@ -4549,7 +4553,7 @@ fn a_second_red_reading_refuses_with_both_tails_and_writes_both_readings() {
         "an item whose gate stays red",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let git = StubGit::clean();
 
     let command = a_gate_script(scratch, "rerun-red", &[1, 2]);
@@ -4561,7 +4565,7 @@ fn a_second_red_reading_refuses_with_both_tails_and_writes_both_readings() {
     let events = StubEvents::default();
     let ran = run_against(
         scratch,
-        bd,
+        graph,
         &git,
         &item,
         SHA,
@@ -4600,7 +4604,7 @@ fn a_second_red_reading_refuses_with_both_tails_and_writes_both_readings() {
         readings.iter().all(|r| r["verdict"] == "red"),
         "both red: {readings:?}"
     );
-    let read = bd.show(&item).expect("the item reads");
+    let read = graph.show(&item).expect("the item reads");
     assert_eq!(read.status, "open", "and nothing landed");
 }
 
@@ -4614,7 +4618,7 @@ fn the_rerun_waits_for_the_box_to_quieten_and_the_row_says_it_did() {
         "an item whose rerun waits",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let git = StubGit::clean();
 
     let command = a_gate_script(scratch, "rerun-wait", &[1, 0]);
@@ -4633,7 +4637,7 @@ fn the_rerun_waits_for_the_box_to_quieten_and_the_row_says_it_did() {
     ]);
     let ran = run_against(
         scratch,
-        bd,
+        graph,
         &git,
         &item,
         SHA,
@@ -4649,7 +4653,7 @@ fn the_rerun_waits_for_the_box_to_quieten_and_the_row_says_it_did() {
         .as_ref()
         .unwrap_or_else(|stop| panic!("the landing was refused: {}\n{}", stop.message, ran.out));
     assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
-    let checks = shown(bd, &item);
+    let checks = shown(graph, &item);
     assert!(
         checks
             .lines()
@@ -4673,7 +4677,7 @@ fn a_wait_that_expires_reruns_anyway_and_the_row_says_it_expired() {
         "an item whose rerun waits in vain",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let git = StubGit::clean();
 
     let command = a_gate_script(scratch, "rerun-expire", &[1, 0]);
@@ -4688,7 +4692,7 @@ fn a_wait_that_expires_reruns_anyway_and_the_row_says_it_expired() {
     let started = std::time::Instant::now();
     let ran = run_against(
         scratch,
-        bd,
+        graph,
         &git,
         &item,
         SHA,
@@ -4711,7 +4715,7 @@ fn a_wait_that_expires_reruns_anyway_and_the_row_says_it_expired() {
         started.elapsed()
     );
     assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
-    let checks = shown(bd, &item);
+    let checks = shown(graph, &item);
     assert!(
         checks.lines().any(|line| line.contains(SUITE_RERUN_ROW)
             && line.contains("expired")
@@ -4729,7 +4733,7 @@ fn a_wait_that_expires_reruns_anyway_and_the_row_says_it_expired() {
 #[test]
 fn a_behind_delivery_and_its_landing_carry_both_bases_whole() {
     let scratch = &store();
-    let bd = &scratch.store;
+    let graph = &scratch.store;
 
     // The push lands on OLD, and this delivery was cut from OTHER.
     let behind = an_item_delivering(
@@ -4741,9 +4745,9 @@ fn a_behind_delivery_and_its_landing_carry_both_bases_whole() {
         },
         Some(("ACCEPTED", SHA)),
     );
-    let ran = run(scratch, bd, &abbreviating(), &behind, SHA);
+    let ran = run(scratch, graph, &abbreviating(), &behind, SHA);
     assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
-    let entries = bd
+    let entries = graph
         .timeline(&ItemId::from(behind.as_str()))
         .expect("the timeline reads");
     let timeline = Timeline(&entries);
@@ -4762,9 +4766,9 @@ fn a_behind_delivery_and_its_landing_carry_both_bases_whole() {
         "an item delivered on the tip",
         Some(("ACCEPTED", SHA)),
     );
-    let ran = run(scratch, bd, &abbreviating(), &current, SHA);
+    let ran = run(scratch, graph, &abbreviating(), &current, SHA);
     assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
-    let entries = bd
+    let entries = graph
         .timeline(&ItemId::from(current.as_str()))
         .expect("the timeline reads");
     let timeline = Timeline(&entries);
@@ -4786,11 +4790,11 @@ fn a_trunk_that_moved_prints_the_rebase_needed_line_at_column_zero() {
         "an item whose trunk moved",
         Some(("ACCEPTED", SHA)),
     );
-    let bd = &scratch.store;
+    let graph = &scratch.store;
     let mut git = StubGit::clean();
     git.behind = 2;
 
-    let ran = run(scratch, bd, &git, &item, SHA);
+    let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "it refuses: {}", ran.why());
     assert!(
         ran.out
@@ -4798,65 +4802,6 @@ fn a_trunk_that_moved_prints_the_rebase_needed_line_at_column_zero() {
             .any(|line| line.starts_with(REBASE_NEEDED) && line.contains("(2)")),
         "the line the flight reads, at column zero:\n{}",
         ran.out
-    );
-}
-
-// ---- the store the landing does not shell out to -------------------------------
-
-/// THE WHOLE LANDING RUNS WITH NO `bd` ON THE `PATH`, export gate and all.
-///
-/// `store::bd::BD` is a bare name resolved on the process's own `PATH` — the seam
-/// the store suite's shim enters through — so a `PATH` holding one directory
-/// that is not the store's resolves nothing, and a landing that still lands is
-/// one that made no `bd` subprocess. That is what puts the arms of this file in
-/// memory rather than in a subprocess, and it is the reading that says so.
-///
-/// `sh` IS STILL THERE, linked into that directory, because the gate suite is a
-/// real shell child and stays one: what is taken away is the store and nothing
-/// else.
-#[test]
-fn a_landing_on_the_board_held_in_memory_runs_with_no_bd_on_the_path() {
-    let _path = PATH_LOCK.lock().expect("not poisoned");
-    let scratch = &store();
-    let item = an_item(
-        &scratch.store,
-        "an item landed with no store on the path",
-        Some(("ACCEPTED", SHA)),
-    );
-    let bin = scratch.root.join("only-sh");
-    std::fs::create_dir_all(&bin).expect("the one PATH directory is made");
-    std::os::unix::fs::symlink("/bin/sh", bin.join("sh")).expect("sh is linked into it");
-    assert!(
-        !bin.join("bd").exists(),
-        "and the store's binary is not: {}",
-        bin.display()
-    );
-
-    let stub = StubGit::clean();
-    let ran = with_only_on_path(&bin, || run(scratch, &scratch.store, &stub, &item, SHA));
-    let landed = ran
-        .landed
-        .as_ref()
-        .unwrap_or_else(|stop| panic!("the landing was refused: {}\n{}", stop.message, ran.out));
-
-    // The export gate is the one the recording fake could not pass at all: it
-    // fingerprints a file, so it passes only because the store wrote one.
-    let export = scratch.root.join(EXPORT_FILE);
-    let written = std::fs::read_to_string(&export).expect("the store's export is a file");
-    assert!(
-        written.contains(&item),
-        "carrying the item that was landed:\n{written}"
-    );
-    assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
-    assert_eq!(
-        landing_of(&scratch.store, &item).1.sha,
-        LANDED,
-        "and the landed entry was written"
-    );
-    assert_eq!(
-        scratch.store.show(&item).expect("the item reads").status,
-        "closed",
-        "and the close landed"
     );
 }
 
@@ -4893,7 +4838,7 @@ fn a_probe_dir(scratch: &dyn Rooted, name: &str, rc: i32) -> PathBuf {
 fn the_suite_runs_under_the_constructed_path_and_the_reading_names_it() {
     let _path = PATH_LOCK.lock().expect("not poisoned");
     let scratch = &store();
-    let bd = &scratch.store;
+    let graph = &scratch.store;
 
     // The ambient path: the broken probe, and the `sh` every gate child is.
     let ambient = a_probe_dir(scratch, "ambient", 1);
@@ -4914,12 +4859,12 @@ fn the_suite_runs_under_the_constructed_path_and_the_reading_names_it() {
     );
 
     let under_the_constructed_path = an_item(
-        bd,
+        graph,
         "an item landed under the constructed path",
         Some(("ACCEPTED", SHA)),
     );
     let under_the_ambient_path = an_item(
-        bd,
+        graph,
         "an item landed under the ambient path",
         Some(("ACCEPTED", SHA)),
     );
@@ -4929,7 +4874,7 @@ fn the_suite_runs_under_the_constructed_path_and_the_reading_names_it() {
     let (green_ran, red_ran) = with_only_on_path(&ambient, || {
         let green_ran = run_against_path(
             scratch,
-            bd,
+            graph,
             &StubGit::clean(),
             &under_the_constructed_path,
             SHA,
@@ -4944,7 +4889,7 @@ fn the_suite_runs_under_the_constructed_path_and_the_reading_names_it() {
         );
         let red_ran = run_against_path(
             scratch,
-            bd,
+            graph,
             &StubGit::clean(),
             &under_the_ambient_path,
             SHA,
@@ -4967,7 +4912,7 @@ fn the_suite_runs_under_the_constructed_path_and_the_reading_names_it() {
         )
     });
     assert_eq!(landed.sha, LANDED, "the landing ran through to the push");
-    let shown = shown(bd, &under_the_constructed_path);
+    let shown = shown(graph, &under_the_constructed_path);
     assert!(
         shown.contains("4. suite            PASS"),
         "and the suite row is green:\n{shown}"

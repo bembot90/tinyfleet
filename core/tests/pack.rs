@@ -802,96 +802,9 @@ fn the_runtime_doctor_shape_reads_the_pinned_version_against_the_binary_on_path(
     assert!(said.contains("runtime-version: nothing pinned"), "{said}");
 }
 
-/// fleet-reb — the bd pin's doctor check the defaults ship, run as a real
-/// script against stub trackers, and its copy of the pin held to
-/// `store::bd::PINNED_BD`: the script cannot read the constant, so this arm is what
-/// refuses a pin move that left the script behind.
-///
-/// The mismatch arm is a bd answering 1.2.2, the release before the pin, and
-/// is what makes the holding arm worth anything; absence is measured with no
-/// bd on PATH at all, which is also what proves the check needs no tool of its
-/// own there. `FLEET_BD_BIN` is the seam prime reads the tracker through, and
-/// names the binary over PATH.
-#[test]
-fn the_bd_doctor_check_reads_bd_version_against_the_pin() {
-    let pin = fleet_core::store::bd::PINNED_BD;
-    let install = format!(
-        "Install the pinned bd {pin} by beads' own instructions: \
-         https://github.com/gastownhall/beads/blob/v{pin}/docs/getting-started/installation.md"
-    );
-    let defaults = Defaults::new("bd-doctor");
-    let check = defaults.path().join("doctor/bd-version/run.sh");
-    let script = std::fs::read_to_string(&check)
-        .unwrap_or_else(|e| panic!("the defaults ship the check at {}: {e}", check.display()));
-    assert_eq!(
-        script
-            .lines()
-            .filter(|line| line.starts_with("PINNED="))
-            .collect::<Vec<_>>(),
-        vec![format!("PINNED={pin}").as_str()],
-        "the check's one copy of the pin is store::bd::PINNED_BD"
-    );
-
-    let fixture = Fixture::new("bd-doctor-stubs");
-    fixture.dir("nothing");
-    let fake = |label: &str, answer: &str| -> std::path::PathBuf {
-        let dir = fixture.path(label);
-        std::fs::create_dir_all(&dir).expect("the fake tracker's directory");
-        let bin = dir.join("bd");
-        std::fs::write(&bin, format!("#!/bin/sh\necho \"{answer}\"\n"))
-            .expect("the fake tracker is written");
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
-            .expect("the fake tracker is executable");
-        dir
-    };
-    let pinned = fake("pinned", &format!("bd version {pin} (Homebrew)"));
-    let other = fake("other", "bd version 1.2.2");
-
-    let run = |path: &std::path::Path, seam: Option<&std::path::Path>| -> (i32, String) {
-        let mut cmd = std::process::Command::new("/bin/sh");
-        cmd.arg(&check).env("PATH", path).env_remove("FLEET_BD_BIN");
-        if let Some(bin) = seam {
-            cmd.env("FLEET_BD_BIN", bin);
-        }
-        let out = cmd.output().expect("the check runs");
-        (
-            out.status
-                .code()
-                .expect("the check exits rather than signals"),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-        )
-    };
-
-    let (code, said) = run(&pinned, None);
-    assert_eq!(code, 0, "the pinned bd on PATH: {said}");
-    assert!(said.contains("bd-version: holds"), "{said}");
-
-    let (code, said) = run(&other, None);
-    assert_eq!(code, 1, "another bd on PATH: {said}");
-    assert!(
-        said.contains("answers: bd version 1.2.2")
-            && said.contains(&format!("is not the pinned {pin}"))
-            && said.contains("the verbs still run")
-            && said.contains(&install),
-        "the mismatch is named, pointed at where to install the pin: {said}"
-    );
-
-    let (code, said) = run(&fixture.path("nothing"), None);
-    assert_eq!(code, 1, "no bd on PATH: {said}");
-    assert!(
-        said.contains("did not answer (exit 127)") && said.contains(&install),
-        "{said}"
-    );
-
-    let (code, said) = run(&other, Some(&pinned.join("bd")));
-    assert_eq!(code, 0, "the seam names the pinned bd over PATH's: {said}");
-    assert!(said.contains("bd-version: holds"), "{said}");
-}
-
 /// fleet-2jt — the Claude Code pin's doctor check the defaults ship, run as a
 /// real script against stub agents, and its copy of the pin held to
-/// `supported::PINNED_CLAUDE_CODE`, as the bd check's is held to its own.
+/// `supported::PINNED_CLAUDE_CODE`.
 ///
 /// The mismatch arm is a claude answering 2.1.261, a release before the pin,
 /// in the shape `claude --version` prints; absence is measured with no claude
@@ -1018,7 +931,7 @@ fn the_fleet_packs_doctor_check_reads_the_lock_against_the_pin() {
         format!("{name}  {from}  {version}  0123abcd  2026-09-25T00:00:00Z")
     };
     let defaults_row = row("defaults", "embedded:defaults", "0.1.0");
-    let bd = format!("{source}//adapters/store/bd");
+    let tk = format!("{source}//adapters/store/tk");
     let ts = format!("{source}//runtimes/ts");
     let fleet = |label: &str, table: &str, exit: i32| -> std::path::PathBuf {
         let dir = fixture.path(label);
@@ -1054,7 +967,7 @@ fn the_fleet_packs_doctor_check_reads_the_lock_against_the_pin() {
         "nothing",
         &[
             header.to_string(),
-            row("bd", "/a/checkout//adapters/store/bd", "main"),
+            row("tk", "/a/checkout//adapters/store/tk", "main"),
             defaults_row.clone(),
         ]
         .join("\n"),
@@ -1072,7 +985,7 @@ fn the_fleet_packs_doctor_check_reads_the_lock_against_the_pin() {
         "holds",
         &[
             header.to_string(),
-            row("bd", &bd, pin),
+            row("tk", &tk, pin),
             defaults_row.clone(),
             row("ts", &ts, pin),
         ]
@@ -1081,7 +994,7 @@ fn the_fleet_packs_doctor_check_reads_the_lock_against_the_pin() {
     ));
     assert_eq!(code, 0, "every pack from the source at the pin: {said}");
     assert!(
-        said.contains(&format!("fleet-packs-version: holds — bd, ts at {pin}")),
+        said.contains(&format!("fleet-packs-version: holds — tk, ts at {pin}")),
         "{said}"
     );
 
@@ -1089,7 +1002,7 @@ fn the_fleet_packs_doctor_check_reads_the_lock_against_the_pin() {
         "moved",
         &[
             header.to_string(),
-            row("bd", &bd, "v0.0.9"),
+            row("tk", &tk, "v0.0.9"),
             defaults_row.clone(),
             row("ts", &ts, pin),
         ]
@@ -1099,8 +1012,8 @@ fn the_fleet_packs_doctor_check_reads_the_lock_against_the_pin() {
     assert_eq!(code, 1, "a pack from the source at another tag: {said}");
     assert!(
         said.contains(&format!(
-            "bd is pinned at v0.0.9, not the supported {pin} — `fleet pack remove {bd}` and \
-             then `fleet pack add {bd} --version {pin}`"
+            "tk is pinned at v0.0.9, not the supported {pin} — `fleet pack remove {tk}` and \
+             then `fleet pack add {tk} --version {pin}`"
         )) && said.contains("broken — 1 pack(s) from fleet-packs")
             && said.contains("fleet still runs them")
             && !said.contains("ts is pinned"),

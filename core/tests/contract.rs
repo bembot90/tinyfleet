@@ -1,36 +1,26 @@
-//! The contract both stores answer, asked of each of them.
+//! The contract, asked of the board held in memory and of the stub over it.
 //!
 //! The arms of every other suite here run against the board held in memory, so
-//! what that board answers has to be what `bd` answers — and the only way to
-//! say that is to ask the same question of both and compare the answers to the
-//! same expectation. The questions are the library's own checks,
-//! [`fleet_core::store::conformance`], which `fleet store check` asks of an
-//! adapter; this file is only their runner. Each check has an arm of its own
-//! against [`Board`]'s store, two arms ask the whole table of `bd`: once on a
-//! board a rig made, and once on the scratch store the adapter makes itself —
-//! and one asks it of the same board held in memory behind the contract's JSON,
+//! what that board answers has to be what the contract says — and the only way
+//! to say that is to ask it the questions every adapter is asked. The questions
+//! are the library's own checks, [`fleet_core::store::conformance`], which
+//! `fleet store check` asks of an adapter; this file is only their runner. Each
+//! check has an arm of its own against [`Board`]'s store, and one arm asks the
+//! whole table of the same board held in memory behind the contract's JSON,
 //! the stub, through `Exec`.
 //!
-//! WHY THE REAL HALF IS ONE ARM AND NOT TWENTY. A nextest arm is its own
-//! process, so a shared store is shared only with itself and every arm that
-//! wants `bd` pays a `bd init` — 3.5 s on an idle box, three times that under
-//! the run's own parallelism. Twenty arms would buy twenty inits and the same
-//! twenty readings.
-//!
-//! The two `bd` arms are the only arms in core's verb suites that run the `bd`
-//! on `PATH`, and each answers green with the reason printed where there is
-//! none: `cargo nextest run -p fleet-core` is asked of a box with no `bd` on it.
+//! A REAL STORE IS ITS PACK'S TO ASK. The store adapters live in fleet-packs,
+//! and each is held to this same table there, by `fleet store check` over its
+//! own entry — so no arm here needs a store installed on the box.
 
 mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::board::{bd_init_server_args, note_bd_init};
 use common::{a_delivery, seat_actor, shared_store};
 use fleet_core::entry::{Body, Entry};
 use fleet_core::seat::actor::Actor;
-use fleet_core::store::bd::Bd;
-use fleet_core::store::conformance::{self, AnotherWriter, Ctx, Passed, CHECKS};
+use fleet_core::store::conformance::{self, Ctx, Passed, CHECKS};
 use fleet_core::store::exec::Exec;
 use fleet_core::store::types::{Capabilities, Priorities, Vocabulary};
 use fleet_core::store::{
@@ -39,8 +29,9 @@ use fleet_core::store::{
 };
 use fleet_core::test_support::{stub_path, Board, FakeStore};
 
-/// The ids bd 1.3.0 minted on a scratch board, in the order it minted them,
-/// which the board held in memory files under in place of its own `fx-<n>`.
+/// Ids of the shape a store minting base-36 hashes files under, in the order
+/// it minted them, which the board held in memory files under in place of its
+/// own `fx-<n>`.
 ///
 /// ITS OWN CANNOT BE MADE AMBIGUOUS. Every prefix of a number is another
 /// number the board already holds — `1` is `fx-1` wherever `fx-10` and
@@ -95,93 +86,6 @@ fn in_memory(name: &str) {
         }
         Err(why) => panic!("{name} — the board held in memory: {why}"),
     }
-}
-
-/// Every check against one `bd` store, in the table's order, and one red naming
-/// each check that did not hold — a skip among them, as every check is asked
-/// of `bd`.
-fn every_check_holds(store: &Bd, root: &Path, which: &str, plant: &AnotherWriter) {
-    let nowhere = Gone::empty("contract-absent");
-    let absent = Bd::at(&nowhere.0);
-    let ctx = Ctx {
-        store,
-        root,
-        absent: &absent,
-        another_writer: Some(plant),
-    };
-    let failed: Vec<String> = conformance::run(&ctx)
-        .filter_map(|(name, answer)| match answer {
-            Ok(Passed::Pass) => None,
-            Ok(Passed::Skip(why)) => Some(format!("{name}: skipped — {why}")),
-            Err(why) => Some(format!("{name}: {why}")),
-        })
-        .collect();
-    assert!(
-        failed.is_empty(),
-        "{which} — {} of the {} checks did not hold:\n{}",
-        failed.len(),
-        CHECKS.len(),
-        failed.join("\n")
-    );
-}
-
-/// Another writer's metadata onto an item on a real board, through the binary,
-/// under an actor that is no fleet actor.
-fn planted_on(root: &Path) -> impl Fn(&str, &str) -> Result<(), String> + '_ {
-    move |item: &str, payload: &str| {
-        let out = std::process::Command::new("bd")
-            .arg("-C")
-            .arg(root)
-            .args([
-                "update",
-                item,
-                "--metadata",
-                payload,
-                "--actor",
-                "another-tool",
-            ])
-            .output()
-            .map_err(|e| format!("bd could not be run: {e}"))?;
-        if out.status.success() {
-            Ok(())
-        } else {
-            Err(String::from_utf8_lossy(&out.stderr).into_owned())
-        }
-    }
-}
-
-/// Whether a `bd` is on the process's `PATH`, and the line a `bd` arm prints
-/// where none is, before it answers green without asking anything.
-fn bd_on_path(arm: &str) -> bool {
-    let found = std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::metadata(dir.join("bd"))
-                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-        })
-    });
-    if !found {
-        println!("{arm}: skipped — no `bd` on PATH, so there is no real adapter to ask");
-    }
-    found
-}
-
-/// A `bd init` in a directory of its own, on the run's server where there is
-/// one: a board nothing has written to.
-fn bd_board(label: &str) -> Gone {
-    let dir = Gone::empty(label);
-    let out = std::process::Command::new("bd")
-        .args(["init", "--prefix", "fx", "--quiet"])
-        .args(bd_init_server_args(label))
-        .current_dir(&dir.0)
-        .output()
-        .expect("bd is on the process PATH");
-    assert!(
-        out.status.success(),
-        "bd init: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    dir
 }
 
 /// A directory under the system temp directory, removed when this is dropped —
@@ -392,70 +296,6 @@ fn another_writers_keys_are_named_foreign_and_fleets_own_never_are() {
 
 // ---- the real half ----------------------------------------------------------
 
-/// THE OTHER HALF: every check, against the store `bd` answers.
-///
-/// ON A BOARD OF ITS OWN, never a copy of the run's shared one: the first
-/// check lists a store nothing has written to, and the shared board holds
-/// every other rig's rows. A check that reds here and greens in its own arm
-/// above is the in-memory board having drifted from the real store, which is
-/// the whole reason this file exists.
-#[test]
-fn every_check_holds_against_bd_too() {
-    if !bd_on_path("every_check_holds_against_bd_too") {
-        return;
-    }
-    let board = bd_board("contract-checks");
-    let bd = Bd::at(&board.0);
-    // The file the export check reads is the one bd declares, and bd declares
-    // its own.
-    let declared = bd
-        .capabilities()
-        .expect("bd's capabilities read")
-        .export
-        .expect("bd declares an export");
-    assert_eq!(declared.file, ".beads/issues.jsonl");
-    assert_eq!(declared.file, fleet_core::store::bd::EXPORT);
-    every_check_holds(&bd, &board.0, "bd", &planted_on(&board.0));
-}
-
-/// THE ADAPTER'S OWN SCRATCH: `bd init` in a directory of the caller's, on
-/// bd's embedded engine, answered as that directory — and every check holds on
-/// a store over it, which is what `fleet store check` will ask of it.
-///
-/// That init is not one of the rigs', so it is counted here, where
-/// `fleet/tools/dolt-test-server` reads its run's count.
-#[test]
-fn the_bd_adapter_makes_a_scratch_store_every_check_holds_on() {
-    if !bd_on_path("the_bd_adapter_makes_a_scratch_store_every_check_holds_on") {
-        return;
-    }
-    let dir = Gone::named("contract-scratch");
-    let adapter = Bd::at(&dir.0);
-    assert!(
-        adapter
-            .capabilities()
-            .expect("bd's capabilities read")
-            .scratch,
-        "bd declares a scratch store"
-    );
-    note_bd_init("contract-scratch");
-    let root = adapter
-        .scratch(&dir.0)
-        .unwrap_or_else(|e| panic!("bd makes a scratch store in {}: {e}", dir.0.display()));
-    assert_eq!(root, dir.0, "the answer is the directory it was handed");
-    assert!(
-        root.join(".beads").is_dir(),
-        "and the store is in it: {}",
-        root.display()
-    );
-    every_check_holds(
-        &Bd::at(&root),
-        &root,
-        "bd's own scratch",
-        &planted_on(&root),
-    );
-}
-
 /// THE THIRD HALF: every check against the stub, through `Exec` — the board
 /// held in memory answering the contract's JSON, one process per call, as an
 /// adapter out of process answers it. The store is the stub's own scratch,
@@ -527,7 +367,7 @@ fn the_board_held_in_memory_declares_a_scratch_and_answers_the_directory() {
 }
 
 /// The board held in memory names the ids whose hash OPENS WITH a fragment, as
-/// the contract reads one and bd 1.3.0 answered on a scratch board that minted
+/// the contract reads one, over a board that minted
 /// these ids: `3` is `fx-37v` alone though `fx-h35` and `fx-pz3` hold a 3,
 /// `35` inside `fx-h35` and `z` inside `fx-6az` and `fx-pz3` open no hash and
 /// name nothing, and `0` opens two.

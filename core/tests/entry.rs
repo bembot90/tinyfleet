@@ -65,7 +65,7 @@ fn delivered(commit: &str) -> Body {
             refuted_by: words("it moved to 104-121"),
         }],
         not_proven: vec![NotProven {
-            surface: words("a real bd store"),
+            surface: words("a real store"),
             command: words("fleet item show fleet-1"),
         }],
         decisions: vec![Decision {

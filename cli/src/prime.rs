@@ -30,9 +30,8 @@ use crate::exit::Exit;
 /// that will not answer costs the line and never the session start.
 const ITEMS_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The bound on line 2's `version` call, which reads no items: the built-in
-/// store's own bound on the same question is this too, and a store that will
-/// not answer it costs the line and never the session start.
+/// The bound on line 2's `version` call, which reads no items: a store that
+/// will not answer it within this costs the line and never the session start.
 const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The rules file, as a path under a pack's `assets` slot.
@@ -235,10 +234,9 @@ fn store_line(project_root: Option<&Path>) -> String {
 }
 
 /// The store the project's own file names, asked its version through the
-/// opener every verb takes, and the adapter's name. NOT STRICT, as the verbs
-/// are not: the line names the store a verb run here writes to, so a binary
-/// the constructed child PATH does not resolve is the bare name, and that
-/// name's refusal is the line's answer.
+/// opener every verb takes, and the adapter's name: the line names the store a
+/// verb run here writes to, and an adapter that will not open or answer is the
+/// line's answer.
 fn store_version(root: &Path) -> Result<(Version, String), String> {
     let policy = store::project_policy(root).map_err(|why| why.to_string())?;
     let machine_dir = platform::machine_dir();
@@ -247,7 +245,6 @@ fn store_version(root: &Path) -> Result<(Version, String), String> {
         policy: &policy,
         source: AdapterSource::Setting,
         search_path: &platform::child_path(&platform::home_dir()),
-        strict: false,
         timeout: VERSION_TIMEOUT,
         packs: Some(PackDirs {
             packs_dir: &machine_dir.join("packs"),
@@ -304,11 +301,10 @@ fn print_items(project_root: &Path, seat: &SeatId) {
 ///
 /// The store the project's own file names, through the opener every verb
 /// takes, under `ITEMS_TIMEOUT` rather than the store's bound: a session-start
-/// hook cannot wait a minute. STRICT: a binary the constructed child PATH does
-/// not resolve never falls back to the bare name the verbs keep, because a
-/// session the controller started carries a `PATH` a bare name finds nothing
-/// on (lessons claude-code D1), so a tracker nothing resolves is this line's
-/// third answer.
+/// hook cannot wait a minute. The adapter runs on the constructed child PATH,
+/// because a session the controller started carries a `PATH` that finds
+/// nothing (lessons claude-code D1), so a store that does not answer on it is
+/// this line's third answer.
 fn items(project_root: &Path, seat: &SeatId) -> Result<Vec<(String, String)>, String> {
     let policy = store::project_policy(project_root).map_err(|why| why.to_string())?;
     let machine_dir = platform::machine_dir();
@@ -317,7 +313,6 @@ fn items(project_root: &Path, seat: &SeatId) -> Result<Vec<(String, String)>, St
         policy: &policy,
         source: AdapterSource::Setting,
         search_path: &platform::child_path(&platform::home_dir()),
-        strict: true,
         timeout: ITEMS_TIMEOUT,
         packs: Some(PackDirs {
             packs_dir: &machine_dir.join("packs"),

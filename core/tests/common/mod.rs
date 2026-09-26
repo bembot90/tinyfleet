@@ -5,9 +5,6 @@
 //! folder rather than against a model of it.
 
 pub mod adapter;
-pub mod board;
-pub mod capped;
-pub mod holding;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -487,7 +484,7 @@ pub fn workspace() -> PathBuf {
 ///
 /// The store is the stub's scratch, asked for through the contract's own
 /// `scratch` verb as `fleet store check` asks for one, so every arm on it runs
-/// with no `bd` on the box. What no contract verb reaches — a label, a blocker,
+/// with no store installed on the box. What no contract verb reaches — a label, a blocker,
 /// another writer's keys — the rig writes onto the stub's state under its lock.
 pub struct Scratch {
     pub root: PathBuf,

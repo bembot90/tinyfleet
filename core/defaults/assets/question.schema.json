@@ -67,7 +67,7 @@
   "examples": [
     {
       "question": "Land fleet-7 on the review alone, with its suite not run?",
-      "context": "The suite needs a bd server the box does not have; the review read every changed line.",
+      "context": "The suite needs a database server the box does not have; the review read every changed line.",
       "options": [
         {
           "letter": "A",

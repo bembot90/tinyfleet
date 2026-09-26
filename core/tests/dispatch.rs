@@ -787,7 +787,7 @@ fn an_item_already_ordered_is_refused_and_nothing_is_written() {
 ///
 /// Seeded as the contract reads one. Which of a store's own shapes read so —
 /// an `at` that is no stamp, a version this fleet does not know or none — is
-/// the adapter's reading, and bd's unit tests hold it.
+/// the adapter's reading, and its pack's tests hold it.
 #[test]
 fn an_order_index_that_does_not_read_is_unreadable_and_dispatch_says_could_not_tell() {
     let rig = Rig::new("unreadable-order");
@@ -1538,7 +1538,7 @@ fn the_sweep_removes_a_dead_runs_store_and_keeps_a_live_ones() {
 
     root.dir(&living)
         .file(
-            &format!("{dead}/.beads/config.yaml"),
+            &format!("{dead}/.tracker/config.yaml"),
             "a store's own file\n",
         )
         .dir(&not_a_store);

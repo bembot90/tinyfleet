@@ -18,8 +18,13 @@
 //! process group is killed and the call is could not tell — and for a write,
 //! a write whose effect cannot be told.
 //!
-//! SELECTED BY `[store] adapter` naming an executable by absolute path, which
-//! [`super::open`] reads out of the project's own file.
+//! SELECTED BY `[store] adapter` naming an executable by absolute path, or by
+//! a name an installed pack carries, which [`super::open`] reads out of the
+//! project's own file.
+//!
+//! ITS `PATH` IS THE OPENER'S TO GIVE: a named adapter runs on the caller's
+//! constructed search path ([`Exec::on_path`]), and one given none carries
+//! this process's own.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -57,8 +62,7 @@ const WRITES: [&str; 9] = [
 ];
 
 /// What a write that outran its bound adds to its refusal: the kill cannot
-/// say whether the write landed before it. The words are the built-in
-/// adapter's.
+/// say whether the write landed before it.
 const UNTOLD: &str = " — the write's effect cannot be told, so the item must be read before \
                       anything is written to it again";
 
@@ -67,6 +71,8 @@ pub struct Exec {
     adapter: PathBuf,
     root: PathBuf,
     timeout: Duration,
+    /// The `PATH` every call runs under, or `None` for this process's own.
+    path: Option<String>,
 }
 
 /// Exit 1's answer: the refusal, under its one key.
@@ -90,12 +96,24 @@ impl Exec {
             adapter: adapter.to_path_buf(),
             root: root.to_path_buf(),
             timeout: STORE_TIMEOUT,
+            path: None,
         }
     }
 
     /// The same store under another bound.
     pub fn with_timeout(self, timeout: Duration) -> Exec {
         Exec { timeout, ..self }
+    }
+
+    /// The same store with every call run under `path` as its `PATH`, in
+    /// place of this process's own: the search path an entry resolves its
+    /// runtime and its store's binary on, which under a service is the
+    /// constructed one and never the manager's.
+    pub fn on_path(self, path: String) -> Exec {
+        Exec {
+            path: Some(path),
+            ..self
+        }
     }
 
     /// One call: the verb's response body, and the whole of stdout it was read
@@ -118,6 +136,9 @@ impl Exec {
         let request = types::request(fields, &self.root).to_string().into_bytes();
         let mut cmd = Command::new(&self.adapter);
         cmd.arg(verb);
+        if let Some(path) = &self.path {
+            cmd.env("PATH", path);
+        }
         let out = run_bounded_fed(cmd, request, self.timeout).map_err(|why| {
             if why != deadline_cause(self.timeout) {
                 return StoreError::Unreadable(format!(
@@ -332,10 +353,10 @@ impl Store for Exec {
 
     /// Each entry as `fleet item show --json` prints one ([`entry::to_json`]):
     /// the body's fields and `kind` beside the store's `id` and `at` and the
-    /// actor as its `<kind>:<id>` string. The body is read through the same
-    /// reader the built-in adapter's comments go through, so an entry that
-    /// does not read — an actor in any other shape among them — refuses the
-    /// whole timeline, naming it.
+    /// actor as its `<kind>:<id>` string. The body is read through
+    /// [`entry::read_row`], the one reader of an entry, so an entry that does
+    /// not read — an actor in any other shape among them — refuses the whole
+    /// timeline, naming it.
     fn timeline(&self, item: &ItemId) -> Result<Vec<Entry>, StoreError> {
         let (Entries { entries }, _) = self.call("timeline", fields(json!({ "id": item })))?;
         entries
@@ -533,6 +554,37 @@ mod tests {
             Err(StoreError::Refused(why)) => why,
             other => panic!("wanted Refused, got {other:?}"),
         }
+    }
+
+    /// A call runs on the `PATH` the store was given, in place of this
+    /// process's own — the search path an entry resolves its runtime and its
+    /// store's binary on — and on this process's own where it was given none.
+    ///
+    /// RED-PROOF: with the `PATH` never set on the command, the first reading
+    /// is this process's own `PATH` and not the one given.
+    #[test]
+    fn a_call_runs_on_the_path_it_was_given_and_on_this_processs_own_without_one() {
+        let seen = |exec: Exec, stub: &Stub| {
+            exec.show("a1b2").expect("the stub answered an item");
+            std::fs::read_to_string(stub.dir.join("path")).expect("the stub recorded its PATH")
+        };
+        // `${0%/*}` is the stub's own directory, read without a program: the
+        // `PATH` under test need hold none but the `cat` the stub runs.
+        let body = format!(
+            "printf '%s' \"$PATH\" > \"${{0%/*}}/path\"\n{}",
+            answers(SHOWN, 0)
+        );
+        let given = "/usr/bin:/bin:/fleet-exec-given-path";
+
+        let stub = Stub::new("path-given", &body);
+        assert_eq!(seen(stub.exec().on_path(given.to_string()), &stub), given);
+
+        let stub = Stub::new("path-own", &body);
+        assert_eq!(
+            seen(stub.exec(), &stub),
+            std::env::var("PATH").unwrap_or_default(),
+            "a store given no path carries this process's own"
+        );
     }
 
     /// Arm 1. One call is one `<adapter> show` process, carrying the request

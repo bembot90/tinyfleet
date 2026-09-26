@@ -76,7 +76,7 @@ instead) and pins it, writes the file for the mode, materializes the defaults
 this binary carries and pins them, and lists you as the fleet's first seat, a
 human one — nobody is asked for a name. --store none installs no pack and
 prints the line that installs one later; with no terminal and no --store, the
-store is bd.
+store is the bd pack.
 
 It never initialises and never rewrites the project's work-graph store.")]
     Create(lifecycle::CreateArgs),
@@ -1295,7 +1295,7 @@ fn with_targets(policy: Policy, targets: guard::Targets) -> Policy {
 /// The shell-trap and record classes read a third: the command the project's
 /// store declares, which an adapter answers as a process. It is asked only for
 /// a text [`guard::reads_the_cli`] says a declaration could change the verdict
-/// on, and a store that does not answer leaves the built-in store's command
+/// on, and a store that does not answer leaves the default adapter's command
 /// policed rather than none.
 fn caller_readings(class: Class, command: &str, cwd: Option<&Path>, policy: &mut Policy) {
     if matches!(class, Class::ShellTrap | Class::Record) {
@@ -1352,9 +1352,9 @@ fn configured_project() -> Option<String> {
     }
 }
 
-/// How long the store is given to declare its command. The built-in store
-/// answers with no call; an adapter's answer is a process, and one that will
-/// not answer costs the reading and never the shell call behind the hook.
+/// How long the store is given to declare its command. An adapter's answer is
+/// a process, and one that will not answer costs the reading and never the
+/// shell call behind the hook.
 const STORE_CLI_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The command the project's store declares, through the opener every verb
@@ -1362,9 +1362,8 @@ const STORE_CLI_TIMEOUT: Duration = Duration::from_secs(2);
 /// not be read — no project above the caller, a store that will not open or
 /// will not answer — which leaves the policy's default in place.
 ///
-/// NOT STRICT, as the verbs are not: the store read is the one a verb run here
-/// opens, so a binary the constructed child PATH does not resolve is its bare
-/// name.
+/// The store read is the one a verb run here opens, on the same constructed
+/// child PATH.
 fn store_cli(cwd: Option<&Path>) -> Option<Option<String>> {
     let start = cwd
         .map(PathBuf::from)
@@ -1380,7 +1379,6 @@ fn store_cli(cwd: Option<&Path>) -> Option<Option<String>> {
         policy: &policy,
         source: fleet_core::store::AdapterSource::Setting,
         search_path: &platform::child_path(&platform::home_dir()),
-        strict: false,
         timeout: STORE_CLI_TIMEOUT,
         packs: Some(fleet_core::store::PackDirs {
             packs_dir: &machine_dir.join("packs"),

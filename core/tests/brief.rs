@@ -518,8 +518,8 @@ fn an_item_with_no_order_index_is_refused_and_writes_nothing() {
     // An index that is there and cannot be read is refused by its own line: the
     // ordered store with that one reading taken away, so what refuses is that
     // reading and not the rest of the record. One only partly filled — naming
-    // nobody who gave it — reads so too, which is the adapter's reading and
-    // bd's unit tests hold.
+    // nobody who gave it — reads so too, which is the adapter's reading and its
+    // pack's tests hold.
     let unreadable = ordered();
     unreadable.amend(ITEM, |item| item.order = OrderState::Unreadable);
     let rendered = rig.render(&unreadable, SEAT);

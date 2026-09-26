@@ -840,12 +840,12 @@ mod tests {
     fn the_embedded_file_names_the_mode_the_command_the_guards_and_telemetry() {
         let text = embedded_text(
             "claude_code",
-            Some("bd"),
+            Some("tk"),
             &written_by(&["--embedded", "--agent claude_code"], false),
         );
         assert!(text.contains("EMBEDDED"), "{text}");
         assert!(
-            text.contains("[store]\nadapter = \"bd\"\n\n# One table per seat"),
+            text.contains("[store]\nadapter = \"tk\"\n\n# One table per seat"),
             "the store create installed is named, before the seats table: {text}"
         );
         let storeless = embedded_text(
@@ -916,7 +916,7 @@ mod tests {
             Some("ap"),
             Path::new("/p/a-project"),
             Path::new("/p/a-project-worktrees"),
-            Some("bd"),
+            Some("tk"),
             &written_by(&["--standalone"], false),
         );
         assert!(text.contains("name = \"a-project\""), "{text}");
@@ -950,7 +950,7 @@ mod tests {
         assert_eq!(table["project"]["item_prefix"].as_str(), Some("ap"));
         assert_eq!(
             table["store"]["adapter"].as_str(),
-            Some("bd"),
+            Some("tk"),
             "the project's own file names its store, which is the file the store opens by: {text}"
         );
         assert!(

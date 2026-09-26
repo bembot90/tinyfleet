@@ -2,10 +2,8 @@
 //! store stub, opened through the adapter seam any other adapter is opened by
 //! — and the env block the shipped binary runs under.
 //!
-//! NO RIG HERE NEEDS `bd`. The two that still run one — `adopt.rs`, whose
-//! subject is a board fleet did not write, and `store_check.rs`'s arm on the
-//! built-in store — find it on the process `PATH` through [`bd_or_skip`], and
-//! say they skipped where there is none.
+//! NO RIG HERE NEEDS A STORE INSTALLED. A real store's behaviour is its pack's
+//! to test, in the repository the pack is published from.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -67,7 +65,7 @@ pub fn stub_path() -> PathBuf {
 /// THE POLICY COMES FIRST. The file must not already carry a `[store]`
 /// table, since a second one does not parse, and a rig that writes the file
 /// whole after this call writes the setting away with it — the project then
-/// names no store, and a verb opens the built-in one.
+/// names no store, and a verb opens the default name through the packs.
 ///
 /// A STORE IS ONE ROOT'S. The stub keeps it under `<root>/.store/`, and a
 /// verb run in a linked worktree resolves that checkout as its root: a rig
@@ -188,22 +186,6 @@ pub fn store_outside_git(repo: &Path) {
             .expect("the git dir's info/ is made");
         std::fs::write(&exclude, lines).expect("the exclude file is written");
     }
-}
-
-/// The `bd` on this process's own `PATH` for the arm named `arm`, whose
-/// subject is bd itself — or `None` on a box with none, with a line on the
-/// arm's own output saying it skipped rather than a pass that measured
-/// nothing.
-pub fn bd_or_skip(arm: &str) -> Option<PathBuf> {
-    let found = std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path)
-            .map(|dir| dir.join("bd"))
-            .find(|bd| bd.is_file())
-    });
-    if found.is_none() {
-        eprintln!("SKIP {arm}: no `bd` on this process's PATH, and this arm's subject is bd");
-    }
-    found
 }
 
 /// The full id a rig's seat is keyed by, derived from its name alone: FNV-1a

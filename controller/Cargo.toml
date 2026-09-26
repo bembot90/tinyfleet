@@ -41,7 +41,7 @@ test-support = []
 # may depend on no other member. The controller takes it from there rather
 # than keep a second copy; the edge runs the one way the workspace allows
 # (cli/tests/workspace.rs refuses the other). The Claude Code release fleet
-# supports is core's too (`fleet_core::supported`), beside bd's, and it is the
+# supports is core's too (`fleet_core::supported`), and it is the
 # expectation the loop compares the live agent with where a fleet pins none.
 # So is a seat's identity (`fleet_core::seat::identity`: the id, the fleet.toml
 # roster and the resolver), which `fleet start` renders the seat list from.

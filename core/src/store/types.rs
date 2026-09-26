@@ -1629,8 +1629,8 @@ mod tests {
         };
         let exporting = Capabilities {
             export: Some(ExportSpec {
-                file: String::from(".beads/issues.jsonl"),
-                dir: String::from(".beads/"),
+                file: String::from(".tracker/items.jsonl"),
+                dir: String::from(".tracker/"),
             }),
             scratch: true,
             item_prefix: Some(String::from("fx")),
@@ -1835,7 +1835,7 @@ mod tests {
         // THE CONTROLS: the capability example keeps the rules the doc
         // states, and `{}` reads as the store that declares nothing.
         let exporting: Capabilities = serde_json::from_str(
-            r#"{"export":{"file":".beads/issues.jsonl","dir":".beads/"},"scratch":true,"item_prefix":"fx","cli":"tracker","items":{"types":["task","bug"],"priority":{"min":0,"max":4}}}"#,
+            r#"{"export":{"file":".tracker/items.jsonl","dir":".tracker/"},"scratch":true,"item_prefix":"fx","cli":"tracker","items":{"types":["task","bug"],"priority":{"min":0,"max":4}}}"#,
         )
         .unwrap();
         assert_eq!(exporting.validate(), Ok(()));

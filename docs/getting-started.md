@@ -68,7 +68,7 @@ installed against it.
 
 | Tool | Supported version | What measures it |
 | --- | --- | --- |
-| `bd` | 1.3.0 | the `bd-version` doctor check |
+| `bd` | 1.3.0, pinned by the bd pack | the bd pack's `bd-version` doctor check |
 | Claude Code (`claude`) | 2.1.280 | the `claude-code-version` doctor check, and the controller's `substrate.moved` event |
 | Deno (`deno`) | 2.9.7, pinned by the `ts` pack | the `runtime-version` doctor check, which `fleet run` runs before it opens a run, and the `ts` pack's `deno-version` |
 | fleet-packs | the tag `v0.1.0`, which `fleet create` installs the store's pack at | the `fleet-packs-version` doctor check, over every pack `packs.lock` pins from that repository |
@@ -85,12 +85,13 @@ every poll. That is 2.1.280 unless the fleet's `fleet.toml` pins another; see
 
 ### Running a doctor check
 
-`bd-version` and `claude-code-version` come with the defaults every fleet
-gets, which `fleet create` and `fleet start` write under
-`<machine>/defaults`. Each is a shell script you run with `sh`:
+`claude-code-version` comes with the defaults every fleet gets, which
+`fleet create` and `fleet start` write under `<machine>/defaults`;
+`bd-version` comes with the bd pack, under `<machine>/packs/bd`. Each is a
+shell script you run with `sh`:
 
 ```sh
-$ sh <machine>/defaults/doctor/bd-version/run.sh
+$ sh <machine>/packs/bd/doctor/bd-version/run.sh
 bd-version: pinned bd 1.3.0; `bd version` answers: bd version 1.3.0 (<build>)
 bd-version: holds
 ```
@@ -277,9 +278,10 @@ which lists you once the file is put right.
 
 `.fleet/project.toml` carries `[project]` with `name`, `primary` (the project
 directory) and `worktrees` (a sibling directory named after the project with
-`-worktrees` on the end). Where the project's `.beads/config.yaml` names an
-`issue-prefix`, the file carries it as `item_prefix`; otherwise that line is
-left commented out for you to fill in. It carries the `[store]` table too,
+`-worktrees` on the end). Where the store answers a prefix, the file carries
+it as `item_prefix` (the bd pack's store answers the `issue-prefix` the
+project's `.beads/config.yaml` names); otherwise that line is left commented
+out for you to fill in. It carries the `[store]` table too,
 as the embedded file does. Where a `.fleet/project.toml` is already there,
 `create --standalone` reads every key in it, writes nothing over it, and
 registers it.
@@ -423,17 +425,18 @@ Five things no verb guesses, each one a lesson somebody already paid for:
 
 It exits 0, always. With no pack installed, the first line says
 `packs: none installed`. The second line names the store by the name and
-version it answers with, then the adapter that answered: `bd` for the
-built-in store, or the file name of the adapter the project's
-[`[store] adapter`](store.md#choosing-an-adapter) names. The project is the
-seat's worktree when the directory is one, and otherwise the nearest
+version it answers with, then the adapter that answered: the name the
+project's [`[store] adapter`](store.md#choosing-an-adapter) gives, `bd` where
+it names none, or the file name of the adapter it names by path. The project
+is the seat's worktree when the directory is one, and otherwise the nearest
 directory, at or above it, that holds a `fleet.toml` or a
 `.fleet/project.toml`. The line does not compare the version with the
-supported one; the `bd-version` doctor check does (see
+supported one; the bd pack's `bd-version` doctor check does (see
 [Running a doctor check](#running-a-doctor-check)). When the store cannot be
 opened, or does not answer within two seconds, the line reads
-`store: could not be read — ` and the reason. The built-in store is read in
-the project's directory, so a project with no `bd` board gets that line too.
+`store: could not be read — ` and the reason, so a machine where no installed
+pack carries the store's adapter gets that line too, naming the
+`fleet pack add` line that installs it.
 With no project, it reads `store: none (no project here)`. Outside every fleet it
 prints one line, `fleet 0.1.0 — no fleet config found above <directory>`. When the directory
 is a seat's worktree, it also lists the items assigned to that seat.

@@ -11,8 +11,9 @@ The store is the work graph fleet reads and writes: each item with its title,
 description, status, type and labels, who holds it, the order it stands
 under, the open items that block it, a run's record and the names of the
 keys other tools keep on it; the holds raised on items; and each item's
-timeline of entries. bd is built in. Any other store is an executable,
-named by `[store] adapter`, that answers the verbs on this page.
+timeline of entries. A store is an executable, named by `[store] adapter`,
+that answers the verbs on this page: the adapter the bd pack carries, or one
+of your own.
 
 **Status:** The contract is live.
 
@@ -25,9 +26,10 @@ The key is `adapter`, in the `[store]` table:
 adapter = "bd"
 ```
 
-`"bd"` is the default, and a project whose file has no `adapter` key uses bd.
-The key takes two other forms. A name with no `/` in it is the store adapter
-an installed pack carries under `adapters/store/<name>/`:
+The key takes two forms. A name with no `/` in it is the store adapter an
+installed pack carries under `adapters/store/<name>/`. `bd` is the one the bd
+pack carries, and a project whose file has no `adapter` key opens `bd` the
+same way. Another pack's adapter is named the same way:
 
 ```toml
 [store]
@@ -40,13 +42,23 @@ carrying `adapters/store/<name>/adapter.toml` is the adapter: fleet runs the
 `adapter.toml` fails the pack format is not run. How a pack carries an
 adapter is on [Packs](packs.md).
 
-The last form is the absolute path to an executable:
+fleet runs a pack's adapter with `PATH` set to the search path it builds for
+the processes it starts, not the one fleet itself was started with. Where
+that path does not hold the runtime the pack runs under (its own `[runtime]`,
+or that of a pack it imports), fleet puts the runtime's directory in front:
+the one on fleet's own `PATH` that holds it, else the runtime's installer
+directory, `$<NAME>_INSTALL/bin` or `~/.<name>/bin`. With no pack installed
+that carries the name, fleet refuses before it runs anything, naming the
+`fleet pack add` line that installs the one fleet-packs carries.
+
+The other form is the absolute path to an executable:
 
 ```toml
 [store]
 adapter = "/opt/tracker/bin/fleet-store"
 ```
 
+An adapter named by path runs on the `PATH` fleet itself was started with.
 Any other value is refused. The key lives in the project's own file:
 `fleet.toml` for an embedded fleet, `.fleet/project.toml` for a standalone
 project.
@@ -331,12 +343,12 @@ of an item its seat holds in progress, reopening it:
 What a store does beyond the verbs every store answers: an export file fleet
 commits, scratch stores for a suite, the prefix its ids carry, the command a
 seat types to reach it, and the types and priorities its items take. A store
-that exports `.beads/issues.jsonl`, makes scratch stores, mints ids such as
+that exports `.tracker/items.jsonl`, makes scratch stores, mints ids such as
 `fx-a1b2`, is reached from a shell as `tracker`, and files items of type
 `task` and `bug` at priorities 0 to 4 answers:
 
 ```json
-{"export":{"file":".beads/issues.jsonl","dir":".beads/"},"scratch":true,"item_prefix":"fx","cli":"tracker","items":{"types":["task","bug"],"priority":{"min":0,"max":4}}}
+{"export":{"file":".tracker/items.jsonl","dir":".tracker/"},"scratch":true,"item_prefix":"fx","cli":"tracker","items":{"types":["task","bug"],"priority":{"min":0,"max":4}}}
 ```
 
 `export` is `null` for a store with no export. Its `file` and `dir` are
@@ -354,8 +366,9 @@ priority inside its range, and a routine whose item does not fit is failed
 without a create being sent. A `types` left out is the six types below, and a
 `priority` left out is 0 to 4.
 
-bd declares the command `bd`, the types `bug`, `feature`, `task`, `epic`,
-`chore`, `decision`, `spike`, `story` and `milestone`, and priorities 0 to 4.
+The bd pack's adapter declares the command `bd`, the types `bug`,
+`feature`, `task`, `epic`, `chore`, `decision`, `spike`, `story` and
+`milestone`, and priorities 0 to 4.
 
 An answer of `{}` reads as a store that declares nothing:
 
@@ -536,13 +549,15 @@ object, a request among them, accepts keys it does not name. An update's
 
 ## Checking an adapter
 
-`fleet store check [--adapter <path>]` runs every check of this contract
-against an adapter and prints what each one answered.
+`fleet store check [--adapter <path|name>]` runs every check of this
+contract against an adapter and prints what each one answered.
 
 Without `--adapter` it checks the adapter the project you are in selects:
-the one `[store] adapter` names in the project's own file, else bd. Outside
-a project it checks bd. `--adapter` takes the absolute path to an adapter
-executable and checks that one instead.
+the one `[store] adapter` names in the project's own file, else `bd`, by
+name. Outside a project it checks `bd`, through this machine's installed
+packs. `--adapter` takes what `[store] adapter` takes, an absolute path to
+an adapter executable or the name of one an installed pack carries, and
+checks that one instead.
 
 The checks write, so they never run on your project's store. fleet makes a
 temporary directory, asks the adapter's `scratch` verb for a new store
@@ -551,7 +566,7 @@ finishes, whatever the checks answered. An adapter whose capabilities do not
 declare `scratch` is asked for nothing beyond its capabilities, and no check
 runs.
 
-In a project whose file names no adapter:
+In a project whose store is the bd pack's:
 
 ```sh
 $ fleet store check
@@ -587,7 +602,7 @@ store check` has no way to put another tool's keys on an item.
 | --- | --- | --- |
 | a check failed | 1 | its `FAIL` line, and the summary's count of failures |
 | the adapter declares no `scratch` | 1 | `fleet store check: <adapter> declares no scratch capability, and the check runs only on a store it makes for the purpose — nothing was run` |
-| `--adapter` names a relative path | 2 | `fleet store check: --adapter takes an absolute path to an executable, and <path> is not one` |
+| `--adapter` names a relative path, or nothing | 2 | ``fleet store check: --adapter takes an absolute path to an executable or the name of a store adapter an installed pack carries, and `<value>` is neither`` |
 | nothing executable is at the path `--adapter` names | 3 | ``fleet store check: --adapter names `<path>`, which is not an executable file`` |
 | nothing executable is at the path `[store] adapter` names | 3 | ``fleet store check: [store] adapter names `<path>`, which is not an executable file`` |
 | no installed pack carries the name | 3 | ``fleet store check: no store adapter named `<name>` in the installed packs — `fleet pack add https://github.com/bembot90/fleet-packs//adapters/store/<name> --version v0.1.0` installs the one fleet-packs carries`` |

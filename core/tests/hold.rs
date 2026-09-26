@@ -12,10 +12,9 @@
 
 mod common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use common::holding::{holding_bd, standing, LEFT_BEHIND};
 use common::{full, keys_agree, seat_actor, shared_store, signal, Rooted, Scratch, StubEvents};
 use fleet_core::entry::{self, Body, Choice, Entry, HoldReason, Timeline};
 use fleet_core::input::{Checked, QuestionInput, QUESTION_SCHEMA};
@@ -23,8 +22,11 @@ use fleet_core::item::hold::{self, Clearance, Question, Wiring};
 use fleet_core::item::run;
 use fleet_core::item::{Change, Git, Project, Stop, ITEM_ENTRY};
 use fleet_core::seat::actor::{Actor, ActorKind};
-use fleet_core::store::bd::Bd;
-use fleet_core::store::{Filter, Item, NewItem, RunRecord, Stamp, Store, StoreError};
+use fleet_core::store::types::Capabilities;
+use fleet_core::store::{
+    Filter, HoldId, Item, ItemId, ItemSummary, NewItem, Order, RunRecord, Stamp, Store, StoreError,
+    Update, Version, WithdrawFence,
+};
 use fleet_core::test_support::Board;
 
 const AT: &str = "2026-09-13T04:05:06Z";
@@ -1263,47 +1265,145 @@ fn an_epic_is_refused_before_the_commit_and_nothing_is_written() {
     assert_eq!(before, scratch.json(&item), "the item is byte-identical");
 }
 
-/// The row the holding fake answers for the item a seat holds.
-fn a_held_row(item: &str, seat: &str) -> String {
-    let seat = full(seat);
-    format!(
-        r#"{{"id":"{item}","title":"an item whose hold fails","status":"open","issue_type":"task","assignee":"{seat}","metadata":{{"fleet.orders":{{"v":1,"by":"run:a-flight","kind":"dispatch","seat":"{seat}","at":"{AT}"}}}}}}"#
-    )
+/// The hold a failed create leaves behind in [`LeftBehind`].
+const LEFT_BEHIND: &str = "g-left";
+
+/// The board held in memory, with a hold create that files its hold and then
+/// answers a failure — the store's own hold left open behind a create that
+/// said it failed — and a clear that fails too where `clears` is false. The
+/// open list is its own: `standing` holds what was open before the park, the
+/// create adds [`LEFT_BEHIND`], and a clear that answers takes it off. Every
+/// other verb is the board's, and every hold call is logged in order.
+struct LeftBehind<'a> {
+    board: &'a fleet_core::test_support::FakeStore,
+    standing: Mutex<Vec<String>>,
+    clears: bool,
+    calls: Mutex<Vec<String>>,
 }
 
-/// The calls the holding fake was handed, with the `-C <root>` every call opens
-/// on dropped. A line that does not open on it is the rest of a reason the
-/// question's own newlines split, and not a call.
-fn holding_calls(log: &std::path::Path) -> Vec<String> {
-    common::capped::calls(log)
-        .into_iter()
-        .filter(|call| call.first().map(String::as_str) == Some("-C"))
-        .map(|call| call[2..].join(" "))
-        .collect()
+impl<'a> LeftBehind<'a> {
+    fn new(board: &'a fleet_core::test_support::FakeStore, before: &[&str], clears: bool) -> Self {
+        LeftBehind {
+            board,
+            standing: Mutex::new(before.iter().map(|hold| hold.to_string()).collect()),
+            clears,
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn call(&self, line: String) {
+        self.calls.lock().expect("not poisoned").push(line);
+    }
+
+    fn standing(&self) -> Vec<String> {
+        self.standing.lock().expect("not poisoned").clone()
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().expect("not poisoned").clone()
+    }
 }
 
-/// A `gate create` that files its gate and then exits 1 — bd 1.2.2 on an epic,
-/// which 1.3.0 no longer does — leaves an open hold blocking nothing. The park reads the open list before
-/// the create and again after it, clears what is new, and names it; a hold
-/// that was open before the park is somebody else's and is left alone.
+impl Store for LeftBehind<'_> {
+    fn show(&self, item: &str) -> Result<Item, StoreError> {
+        self.board.show(item)
+    }
+    fn resolve(&self, id: &str) -> Result<ItemId, StoreError> {
+        self.board.resolve(id)
+    }
+    fn list(&self, filter: &Filter) -> Result<Vec<ItemSummary>, StoreError> {
+        self.board.list(filter)
+    }
+    fn create(&self, item: &NewItem, by: &Actor) -> Result<ItemId, StoreError> {
+        self.board.create(item, by)
+    }
+    fn update(&self, id: &ItemId, change: &Update, by: &Actor) -> Result<(), StoreError> {
+        self.board.update(id, change, by)
+    }
+    fn order_set(&self, id: &ItemId, order: &Order, by: &Actor) -> Result<(), StoreError> {
+        self.board.order_set(id, order, by)
+    }
+    fn order_withdraw(
+        &self,
+        id: &ItemId,
+        fence: &WithdrawFence,
+        by: &Actor,
+    ) -> Result<(), StoreError> {
+        self.board.order_withdraw(id, fence, by)
+    }
+    fn run_set(&self, id: &ItemId, run: &RunRecord, by: &Actor) -> Result<(), StoreError> {
+        self.board.run_set(id, run, by)
+    }
+    fn hold_raise(&self, id: &ItemId, _: &str, _: &Actor) -> Result<HoldId, StoreError> {
+        self.call(format!("hold.raise {id}"));
+        self.standing
+            .lock()
+            .expect("not poisoned")
+            .push(LEFT_BEHIND.to_string());
+        Err(StoreError::Unreadable(String::from(
+            "the hold was filed and the create answered a failure",
+        )))
+    }
+    fn hold_clear(&self, hold: &HoldId, _: &Actor) -> Result<(), StoreError> {
+        self.call(format!("hold.clear {hold}"));
+        if !self.clears {
+            return Err(StoreError::Unreadable(format!(
+                "tracker could not clear {hold}"
+            )));
+        }
+        self.standing
+            .lock()
+            .expect("not poisoned")
+            .retain(|open| *hold != open.as_str());
+        Ok(())
+    }
+    fn holds_open(&self) -> Result<Vec<HoldId>, StoreError> {
+        self.call(String::from("holds.open"));
+        Ok(self
+            .standing()
+            .into_iter()
+            .map(|hold| HoldId::from(hold.as_str()))
+            .collect())
+    }
+    fn close(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<(), StoreError> {
+        self.board.close(id, reason, by)
+    }
+    fn append(&self, item: &ItemId, body: &Body, by: &Actor) -> Result<String, StoreError> {
+        self.board.append(item, body, by)
+    }
+    fn timeline(&self, item: &ItemId) -> Result<Vec<Entry>, StoreError> {
+        self.board.timeline(item)
+    }
+    fn capabilities(&self) -> Result<Capabilities, StoreError> {
+        self.board.capabilities()
+    }
+    fn version(&self) -> Result<Version, StoreError> {
+        self.board.version()
+    }
+    fn export(&self, into: &Path) -> Result<PathBuf, StoreError> {
+        self.board.export(into)
+    }
+}
+
+/// A hold create that files its hold and then answers a failure leaves an
+/// open hold blocking nothing. The park reads the open list before the create
+/// and again after it, clears what is new, and names it; a hold that was open
+/// before the park is somebody else's and is left alone.
 #[test]
 fn a_hold_left_behind_by_a_failed_create_is_cleared_and_named() {
     let scratch = &store();
     let seat = "g-left";
-    let item = "fx-left";
-    let dir = common::Fixture::new("hold-left-behind");
-    let log = dir.path("argv");
-    let bin = holding_bd(&dir, &a_held_row(item, seat), &["g-before"], true, &log);
-    let bd = Bd::at_bin(scratch.root(), &bin);
+    let item = an_ordered_item(&scratch.store, "an item whose hold fails", seat);
+    let left = LeftBehind::new(&scratch.store, &["g-before"], true);
     let question = a_question(scratch, "left", QUESTION);
     let events = StubEvents::default();
 
     let stop = hold_with(
-        Some(item),
+        Some(&item),
         &question,
         seat,
         &Seams {
-            store: &bd,
+            store: &left,
             git: &StubGit::holding_work(),
             project: &project(scratch),
             events: &events,
@@ -1330,38 +1430,20 @@ fn a_hold_left_behind_by_a_failed_create_is_cleared_and_named() {
         stop.message
     );
     assert_eq!(
-        standing(&dir),
+        left.standing(),
         vec![String::from("g-before")],
         "the hold left behind is cleared and the one before it stands"
     );
-
-    let calls = holding_calls(&log);
-    let at = |prefix: &str| {
-        calls
-            .iter()
-            .position(|call| call.starts_with(prefix))
-            .unwrap_or_else(|| panic!("no `{prefix}` in {calls:?}"))
-    };
-    let listed: Vec<usize> = calls
-        .iter()
-        .enumerate()
-        .filter(|(_, call)| call.starts_with("gate list"))
-        .map(|(n, _)| n)
-        .collect();
-    let created = at("gate create");
-    assert!(
-        listed.len() == 2 && listed[0] < created && created < listed[1],
-        "the open list is read once before the create and once after it: {calls:?}"
-    );
-    assert!(
-        at(&format!("gate resolve {LEFT_BEHIND}")) > listed[1],
-        "{calls:?}"
-    );
-    assert!(
-        !calls
-            .iter()
-            .any(|call| call.starts_with("gate resolve g-before")),
-        "{calls:?}"
+    assert_eq!(
+        left.calls(),
+        [
+            String::from("holds.open"),
+            format!("hold.raise {item}"),
+            String::from("holds.open"),
+            format!("hold.clear {LEFT_BEHIND}"),
+        ],
+        "the open list is read once before the create and once after it, and only the new \
+         hold is cleared"
     );
     assert_eq!(events.count(), 0, "nothing reached the stream");
 }
@@ -1373,19 +1455,16 @@ fn a_hold_left_behind_by_a_failed_create_is_cleared_and_named() {
 fn a_hold_left_behind_that_cannot_be_cleared_is_named_as_standing() {
     let scratch = &store();
     let seat = "g-left-stands";
-    let item = "fx-left-stands";
-    let dir = common::Fixture::new("hold-left-stands");
-    let log = dir.path("argv");
-    let bin = holding_bd(&dir, &a_held_row(item, seat), &[], false, &log);
-    let bd = Bd::at_bin(scratch.root(), &bin);
+    let item = an_ordered_item(&scratch.store, "an item whose hold stands", seat);
+    let left = LeftBehind::new(&scratch.store, &[], false);
     let question = a_question(scratch, "left-stands", QUESTION);
 
     let stop = hold_with(
-        Some(item),
+        Some(&item),
         &question,
         seat,
         &Seams {
-            store: &bd,
+            store: &left,
             git: &StubGit::holding_work(),
             project: &project(scratch),
             events: &StubEvents::default(),
@@ -1404,9 +1483,10 @@ fn a_hold_left_behind_that_cannot_be_cleared_is_named_as_standing() {
         "the refusal names the hold and what stands: {}",
         stop.message
     );
-    // FLEET'S OWN WORDS NAME NO bd. The store's answer is quoted as the store
-    // gave it, and this store's is a bd's argv, so the line is read with that
-    // answer taken out: what is before it and what follows it are fleet's.
+    // FLEET'S OWN WORDS NAME NO STORE COMMAND. The store's answer is quoted as
+    // the store gave it, and this store's names its command, so the line is
+    // read with that answer taken out: what is before it and what follows it
+    // are fleet's.
     let line = stop
         .message
         .lines()
@@ -1415,6 +1495,10 @@ fn a_hold_left_behind_that_cannot_be_cleared_is_named_as_standing() {
     let (before, rest) = line
         .split_once("withdrawing it failed: ")
         .expect("the line names the failed withdrawal");
+    assert!(
+        rest.starts_with("tracker could not clear"),
+        "the store's answer is quoted: {rest}"
+    );
     let (_, after) = rest
         .rsplit_once("; ")
         .expect("the store's answer is followed by what stands");
@@ -1422,12 +1506,12 @@ fn a_hold_left_behind_that_cannot_be_cleared_is_named_as_standing() {
         assert!(
             !words
                 .split(|c: char| !c.is_ascii_alphanumeric())
-                .any(|word| word == "bd"),
-            "and no bd in fleet's words `{words}`: {}",
+                .any(|word| word == "tracker"),
+            "and no store command in fleet's words `{words}`: {}",
             stop.message
         );
     }
-    assert_eq!(standing(&dir), vec![String::from(LEFT_BEHIND)]);
+    assert_eq!(left.standing(), vec![String::from(LEFT_BEHIND)]);
 }
 
 // ---- AC2: the clearance ------------------------------------------------------

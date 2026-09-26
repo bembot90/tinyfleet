@@ -3,20 +3,17 @@
 //! checks and the controller compare the installed one with.
 //!
 //! TWO ARE DECLARED HERE: Claude Code's, and the fleet-packs repository's —
-//! the source and the tag `fleet create` installs a store pack from. The
-//! built-in store's pin is its adapter's own constant, in `store::bd`, and is
-//! not read through this module: every "measured on" claim it rests on sits in
-//! that file beside it, and what compares the installed store with it is the
-//! defaults' `bd-version` doctor check. The workflow runtime is NOT the
-//! binary's: a pack pins it in its own `[runtime]` table (the ts pack pins
-//! Deno), and the defaults' `runtime-version` check measures whichever pack
-//! declares one. git carries no pin.
+//! the source and the tag `fleet create` installs a store pack from. A store's
+//! own pin is its pack's and not this binary's: the pack at that tag pins the
+//! store it drives and carries the doctor check that measures it. The workflow
+//! runtime is NOT the binary's either: a pack pins it in its own `[runtime]`
+//! table (the ts pack pins Deno), and the defaults' `runtime-version` check
+//! measures whichever pack declares one. git carries no pin.
 //!
 //! Another version is NAMED AND NOT REFUSED, for every pin: the verbs and the
 //! controller still run on it, and the doctor check that reports the spread
 //! says so beside how to install the supported release: Claude Code's own
-//! install command, for the built-in store its own installation page at the
-//! pin's tag, and for fleet-packs the `fleet pack add` line at the tag.
+//! install command, and for fleet-packs the `fleet pack add` line at the tag.
 
 /// The Claude Code release fleet supports: the one the defaults'
 /// `claude-code-version` doctor check compares `claude --version` with, and

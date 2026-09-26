@@ -1045,13 +1045,13 @@ fn a_run_at_the_cap_whose_record_will_not_answer_is_refused_and_not_parked() {
         )
         .expect("the reading lands");
     let stub = Stub {
-        unreadable: Some(String::from("bd is not on this path")),
+        unreadable: Some(String::from("tracker is not on this path")),
         ..Stub::with(&stream, &[])
     };
 
     let refused = pass(&stub, &stream, 0).expect_err("the pass reports the record");
     assert!(
-        refused.contains("r2") && refused.contains("bd is not on this path"),
+        refused.contains("r2") && refused.contains("tracker is not on this path"),
         "{refused}"
     );
     assert!(stub.holds.borrow().is_empty(), "no hold is raised");

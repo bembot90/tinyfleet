@@ -56,7 +56,7 @@ const NO_STORE: &str = "none";
 /// The stores `create` installs a pack for, in the order the question lists
 /// them: the first is the default. The name is the one `[store] adapter`
 /// takes, and the pack is fleet-packs' `adapters/store/<name>`.
-const STORES: [&str; 1] = [store::bd::NAME];
+const STORES: [&str; 1] = [store::DEFAULT_ADAPTER];
 
 /// The question's rows, one per store and then [`NO_STORE`], in that order.
 const STORE_ROWS: [&str; 2] = [
@@ -269,7 +269,6 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
                 policy: &store::project_policy(&root)?,
                 source: AdapterSource::Setting,
                 search_path: &platform::child_path(&platform::home_dir()),
-                strict: false,
                 timeout: STORE_TIMEOUT,
                 packs: Some(PackDirs {
                     packs_dir: &machine_dir.join("packs"),

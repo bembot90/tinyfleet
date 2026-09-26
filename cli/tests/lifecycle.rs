@@ -27,6 +27,10 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 /// The one agent name the adapters answer to.
 const AGENT: &str = "claude_code";
 
+/// The store pack `fleet create` installs by default, and the name the file
+/// it writes gives `[store] adapter`: fleet-packs' `adapters/store/<this>`.
+const STORE: &str = fleet_core::store::DEFAULT_ADAPTER;
+
 /// Seat ids written out by hand, so a row's `<slug>-<short>` name is read
 /// against a spelling this suite fixed and not one it computed. They share
 /// their first eight characters the way ids minted in one minute do, and each
@@ -202,7 +206,7 @@ impl Rig {
         // A store that is already there, so the arm that says this verb never
         // touches one has a subject to read.
         write(
-            &rig.project.join(".beads/config.yaml"),
+            &rig.project.join(".tracker/config.yaml"),
             "# the project's own store config\nissue-prefix: ap\n",
         );
         rig.a_manager();
@@ -278,37 +282,51 @@ impl Rig {
         write(&self.pid, "");
     }
 
-    /// A checkout laid out as fleet-packs is, for `--packs-from`: the store
-    /// pack `adapters/store/bd`, whose adapter is a shell stub, importing the
-    /// runtime pack `runtimes/ts` from the same repository, committed and
-    /// tagged at the version this binary pins. Nothing in it is run here.
+    /// A checkout laid out as fleet-packs is, for `--packs-from`: the default
+    /// store pack `adapters/store/<STORE>`, whose adapter is a shell stub that
+    /// answers `capabilities` with the prefix `zz` and nothing else, importing
+    /// the runtime pack `runtimes/ts` from the same repository, committed and
+    /// tagged at the version this binary pins.
     fn a_packs_checkout(&self) -> String {
         let repo = self.root.join("fleet-packs");
+        let pack = format!("adapters/store/{STORE}");
+        let entry = format!("{pack}/adapters/store/{STORE}/main.sh");
         for (relative, body) in [
             (
-                "adapters/store/bd/pack.toml",
-                "[pack]\nname = \"bd\"\nversion = \"0.1.0\"\nschema = 3\n\
-                 description = \"a stand-in for the bd store pack\"\n\
-                 \n[imports.ts]\nsource = \"../../../runtimes/ts\"\nversion = \"0.1.0\"\n",
+                format!("{pack}/pack.toml"),
+                format!(
+                    "[pack]\nname = \"{STORE}\"\nversion = \"0.1.0\"\nschema = 3\n\
+                     description = \"a stand-in for the default store pack\"\n\
+                     \n[imports.ts]\nsource = \"../../../runtimes/ts\"\nversion = \"0.1.0\"\n"
+                ),
             ),
             (
-                "adapters/store/bd/adapters/store/bd/adapter.toml",
-                "[adapter]\nname = \"bd\"\nkind = \"store\"\nversion = \"0.1.0\"\n\
-                 entry = \"main.sh\"\n",
+                format!("{pack}/adapters/store/{STORE}/adapter.toml"),
+                format!(
+                    "[adapter]\nname = \"{STORE}\"\nkind = \"store\"\nversion = \"0.1.0\"\n\
+                     entry = \"main.sh\"\n"
+                ),
             ),
             (
-                "adapters/store/bd/adapters/store/bd/main.sh",
-                "#!/bin/sh\necho 'a stand-in adapter answers nothing' >&2\nexit 3\n",
+                entry.clone(),
+                String::from(
+                    "#!/bin/sh\ncat > /dev/null\ncase \"$1\" in\n\
+                     capabilities) echo '{\"schema_version\":1,\"item_prefix\":\"zz\"}' ;;\n\
+                     *) echo 'a stand-in adapter answers nothing else' >&2; exit 3 ;;\n\
+                     esac\n",
+                ),
             ),
             (
-                "runtimes/ts/pack.toml",
-                "[pack]\nname = \"ts\"\nversion = \"0.1.0\"\nschema = 3\n\
-                 description = \"a stand-in for the runtime pack\"\n",
+                String::from("runtimes/ts/pack.toml"),
+                String::from(
+                    "[pack]\nname = \"ts\"\nversion = \"0.1.0\"\nschema = 3\n\
+                     description = \"a stand-in for the runtime pack\"\n",
+                ),
             ),
         ] {
-            write(&repo.join(relative), body);
+            write(&repo.join(relative), &body);
         }
-        executable(&repo.join("adapters/store/bd/adapters/store/bd/main.sh"));
+        executable(&repo.join(&entry));
         git(&repo, &["init", "--quiet", "-b", "main"]);
         git(&repo, &["add", "--all"]);
         git(
@@ -769,8 +787,8 @@ fn create_refuses_a_question_it_cannot_ask_and_names_the_flag() {
 ///
 /// Every row is the first row, which is what Enter alone takes: a prompt that
 /// starts with nothing selected refuses Enter and redraws, and the arm's red is
-/// the timeout below rather than a wrong answer. The store's first row is bd,
-/// installed from the rig's own fleet-packs checkout.
+/// the timeout below rather than a wrong answer. The store's first row is the
+/// default store pack, installed from the rig's own fleet-packs checkout.
 #[test]
 fn create_takes_the_first_row_of_each_prompt_on_enter_alone() {
     let rig = Rig::new("pty-enter");
@@ -806,11 +824,18 @@ fn create_takes_the_first_row_of_each_prompt_on_enter_alone() {
         "{written}"
     );
 
-    // The first row of the third is bd: its pack installed, and the file
-    // naming it.
-    assert!(written.contains("[store]\nadapter = \"bd\"\n"), "{written}");
+    // The first row of the third is the default store pack: installed, and
+    // the file naming it.
     assert!(
-        rig.machine.join("packs/bd/pack.toml").is_file(),
+        written.contains(&format!("[store]\nadapter = \"{STORE}\"\n")),
+        "{written}"
+    );
+    assert!(
+        rig.machine
+            .join("packs")
+            .join(STORE)
+            .join("pack.toml")
+            .is_file(),
         "the store's pack is installed"
     );
 }
@@ -878,7 +903,7 @@ fn store_named(root: &Path) -> Option<String> {
 }
 
 /// No terminal and no `--store`: the default is taken rather than refused, and
-/// the default is bd — its pack fetched from the source `--packs-from` names at
+/// the default is the bd pack — fetched from the source `--packs-from` names at
 /// the tag this binary pins, installed with the runtime pack it imports out of
 /// the same checkout, both pinned in the lock at that tag and commit, and the
 /// file naming the adapter. The header names no `--store`, because the call
@@ -899,7 +924,7 @@ fn create_with_no_terminal_installs_the_default_store_pack_and_pins_it() {
     assert_eq!(code(&out), 0, "{said}");
 
     let pin = fleet_core::supported::PINNED_PACKS;
-    let bd = format!("{packs}//adapters/store/bd");
+    let store = format!("{packs}//adapters/store/{STORE}");
     let ts = format!("{packs}//runtimes/ts");
     let lines = locked(&rig.machine);
     let line = |source: &str| {
@@ -909,15 +934,15 @@ fn create_with_no_terminal_installs_the_default_store_pack_and_pins_it() {
             .unwrap_or_else(|| panic!("the lock pins {source}: {lines:?}"))
             .clone()
     };
-    let (_, version, commit) = line(&bd);
+    let (_, version, commit) = line(&store);
     assert_eq!(version, pin, "pinned at the tag the binary pins");
     assert_eq!(commit.len(), 40, "and the commit it resolved to: {commit}");
     assert_eq!(line(&ts).1, pin, "the import at the same tag");
     assert_eq!(line(&ts).2, commit, "out of the same checkout");
-    assert!(rig.machine.join("packs/bd/pack.toml").is_file());
-    assert!(rig
-        .machine
-        .join("packs/bd/adapters/store/bd/main.sh")
+    let installed = rig.machine.join("packs").join(STORE);
+    assert!(installed.join("pack.toml").is_file());
+    assert!(installed
+        .join(format!("adapters/store/{STORE}/main.sh"))
         .is_file());
     assert!(rig.machine.join("packs/ts/pack.toml").is_file());
     assert!(
@@ -928,7 +953,7 @@ fn create_with_no_terminal_installs_the_default_store_pack_and_pins_it() {
     let written = std::fs::read_to_string(rig.project.join("fleet.toml")).expect("the file landed");
     assert_eq!(
         store_named(&rig.project).as_deref(),
-        Some("bd"),
+        Some(STORE),
         "the file names the store its pack carries: {written}"
     );
     assert!(
@@ -939,19 +964,21 @@ fn create_with_no_terminal_installs_the_default_store_pack_and_pins_it() {
     );
     assert!(
         said.contains(&format!(
-            "store: bd {pin} at {commit}, installed and pinned"
+            "store: {STORE} {pin} at {commit}, installed and pinned"
         )),
         "{said}"
     );
     assert!(
-        said.contains(&format!("store: ts {pin} at {commit}, which bd imports")),
+        said.contains(&format!(
+            "store: ts {pin} at {commit}, which {STORE} imports"
+        )),
         "{said}"
     );
 }
 
 /// `--store none`: no pack fetched, nothing pinned but the defaults, no
-/// `[store]` table, and the line that installs bd later printed with the
-/// source and tag this binary pins.
+/// `[store]` table, and the line that installs the default store pack later
+/// printed with the source and tag this binary pins.
 #[test]
 fn create_with_store_none_installs_nothing_and_prints_the_line_that_does() {
     let rig = Rig::new("store-none");
@@ -960,7 +987,7 @@ fn create_with_store_none_installs_nothing_and_prints_the_line_that_does() {
     assert_eq!(code(&out), 0, "{said}");
 
     let line = format!(
-        "fleet pack add {}//adapters/store/bd --version {}",
+        "fleet pack add {}//adapters/store/{STORE} --version {}",
         fleet_core::supported::PINNED_PACKS_SOURCE,
         fleet_core::supported::PINNED_PACKS
     );
@@ -973,7 +1000,10 @@ fn create_with_store_none_installs_nothing_and_prints_the_line_that_does() {
         .map(|(source, _, _)| source)
         .collect();
     assert_eq!(sources, [fleet_core::defaults::SOURCE], "only the defaults");
-    assert!(!rig.machine.join("packs/bd").exists(), "no pack installed");
+    assert!(
+        !rig.machine.join("packs").join(STORE).exists(),
+        "no pack installed"
+    );
     let written = std::fs::read_to_string(rig.project.join("fleet.toml")).expect("the file landed");
     assert!(!written.contains("[store]"), "{written}");
 }
@@ -995,7 +1025,9 @@ fn create_refuses_a_store_it_does_not_install_before_anything_is_written() {
     let said = stderr(&out);
     assert_eq!(code(&out), 2, "{said}");
     assert!(
-        said.contains("no store pack answers to `sqlite` — this fleet installs bd, or none"),
+        said.contains(&format!(
+            "no store pack answers to `sqlite` — this fleet installs {STORE}, or none"
+        )),
         "{said}"
     );
 
@@ -1064,12 +1096,14 @@ fn create_refuses_with_no_fleet_written_when_the_store_pack_cannot_be_fetched() 
         "{said}"
     );
     assert!(!rig.project.join("fleet.toml").exists(), "no fleet file");
-    assert!(!rig.machine.join("packs/bd").exists(), "no pack");
+    assert!(!rig.machine.join("packs").join(STORE).exists(), "no pack");
 }
 
 /// A second fleet on the machine reads the pack the first installed: the
-/// standalone project declared to the first finds bd already there, leaves
-/// it as it stands, says where it came from, and names it in its own file.
+/// standalone project declared to the first finds the store pack already
+/// there, leaves it as it stands, says where it came from, and names it in its
+/// own file — with the prefix the store's capabilities answer, read through
+/// that pack's adapter.
 #[test]
 fn create_leaves_a_store_pack_already_on_the_machine_as_it_stands() {
     let rig = Rig::new("store-already");
@@ -1105,8 +1139,8 @@ fn create_leaves_a_store_pack_already_on_the_machine_as_it_stands() {
     assert_eq!(code(&out), 0, "{said}");
     assert!(
         said.contains(&format!(
-            "store: bd, already installed on this machine at {} from {packs}//adapters/store/bd \
-             — left as it stands",
+            "store: {STORE}, already installed on this machine at {} from \
+             {packs}//adapters/store/{STORE} — left as it stands",
             fleet_core::supported::PINNED_PACKS
         )),
         "{said}"
@@ -1116,13 +1150,17 @@ fn create_leaves_a_store_pack_already_on_the_machine_as_it_stands() {
         .expect("the declaration landed");
     assert_eq!(
         store_named(&rig.project).as_deref(),
-        Some("bd"),
+        Some(STORE),
         "the project's own file names its store: {declared}"
+    );
+    assert!(
+        declared.contains("\nitem_prefix = \"zz\"\n"),
+        "the prefix the pack's adapter answers: {declared}"
     );
 }
 
 /// OPT-IN, and the one arm that reaches the network: `fleet create` with no
-/// `--packs-from` installs bd from the source and tag this binary pins, the
+/// `--packs-from` installs the bd pack from the source and tag this binary pins, the
 /// real fleet-packs on GitHub. Skipped, with a line saying so, unless
 /// `FLEET_TEST_NETWORK` is set, and when it is set and the source does not
 /// answer.
@@ -1154,16 +1192,18 @@ fn create_installs_the_pinned_store_pack_from_the_published_source() {
         .expect("the built binary runs");
     let said = stderr(&out);
     assert_eq!(code(&out), 0, "{said}");
-    let bd = format!("{source}//adapters/store/bd");
+    let store = format!("{source}//adapters/store/{STORE}");
     assert!(
         locked(&rig.machine)
             .iter()
-            .any(|(held, version, _)| *held == bd && version == pin),
-        "the lock pins {bd} at {pin}"
+            .any(|(held, version, _)| *held == store && version == pin),
+        "the lock pins {store} at {pin}"
     );
     assert!(rig
         .machine
-        .join("packs/bd/adapters/store/bd/adapter.toml")
+        .join("packs")
+        .join(STORE)
+        .join(format!("adapters/store/{STORE}/adapter.toml"))
         .is_file());
 }
 
@@ -1460,7 +1500,7 @@ fn create_embedded_with_an_unwritable_machine_directory_exits_3_and_lists_nobody
 #[test]
 fn create_never_touches_the_projects_work_graph_store() {
     let rig = Rig::new("store");
-    let store = rig.project.join(".beads");
+    let store = rig.project.join(".tracker");
     let before = std::fs::metadata(&store).unwrap().modified().unwrap();
     let listed = |dir: &Path| {
         let mut names: Vec<String> = std::fs::read_dir(dir)
@@ -1508,11 +1548,22 @@ fn create_standalone_declares_the_project_registers_it_and_says_so_on_the_stream
     // The host's own fleet.toml is embedded, so a second create in the same
     // directory would refuse. The standalone project is a second directory that
     // shares the machine.
+    //
+    // The default store's pack is on the machine, added by hand: `--store
+    // none` writes no `[store]` table, so the project names no store and the
+    // default name opens that pack's adapter, whose capabilities name the
+    // prefix the declaration carries.
+    let packs = host.a_packs_checkout();
+    let added = host.run(&[
+        "pack",
+        "add",
+        &format!("{packs}//adapters/store/{STORE}"),
+        "--version",
+        fleet_core::supported::PINNED_PACKS,
+    ]);
+    assert_eq!(code(&added), 0, "{}", stderr(&added));
     let second = host.root.join("b-project");
-    std::fs::create_dir_all(second.join(".beads")).unwrap();
-    // The store's own config names the prefix, and the declaration carries
-    // what the store's capabilities answer from it.
-    write(&second.join(".beads/config.yaml"), "issue-prefix: zz\n");
+    std::fs::create_dir_all(&second).unwrap();
     let out = host
         .command(&[
             "create",
@@ -1670,8 +1721,15 @@ fn create_standalone_declares_the_project_registers_it_and_says_so_on_the_stream
     assert_eq!(code(&out), 1, "{}", stderr(&out));
     assert!(stderr(&out).contains("[project] name"), "{}", stderr(&out));
 
-    // A project whose store names no prefix — no store config at all — is
-    // declared with the commented line, and never with a prefix guessed.
+    // A project whose store names no prefix — here no store at all, the pack
+    // taken back off the machine — is declared with the commented line, and
+    // never with a prefix guessed.
+    let removed = host.run(&[
+        "pack",
+        "remove",
+        &format!("{packs}//adapters/store/{STORE}"),
+    ]);
+    assert_eq!(code(&removed), 0, "{}", stderr(&removed));
     let bare = host.root.join("e-project");
     std::fs::create_dir_all(&bare).unwrap();
     let out = host

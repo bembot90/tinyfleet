@@ -146,7 +146,7 @@ checks, in the order it runs them:
 | `pipe-rc` | reading `$?` right after a pipeline whose last stage only formats | the command without the pipe, output to a file, then its own `$?` |
 | `false-alternative` | `A && B \|\| C` where C only reports (`echo`, `printf`, `true`, `:`, `print`) and A has a third answer | `if A; then B; else ...; exit 1; fi` |
 
-The store's command is `bd` for the built-in store, and another store's is
+The store's command is `bd` for the bd pack's store, and another store's is
 the one it declares (see
 [The store's command](#the-stores-command)). With `bd`, the stored text
 `record-backtick` reads is the text argument of `bd note`
@@ -174,8 +174,8 @@ Record refuses writes to items that destroy text, skip the audit row, or
 leave an id a later reader cannot resolve. It reads calls of the store's
 command only, by that name or by a path ending in it (see
 [The store's command](#the-stores-command)). The examples on this page use
-`bd`, the built-in store's command. Its three checks, in order, each with
-its own escape:
+`bd`, the command the bd pack's store declares. Its three checks, in order,
+each with its own escape:
 
 | Check | Refuses | Write instead | Escape |
 | --- | --- | --- | --- |
@@ -210,7 +210,7 @@ plain text match. `bare-id` lets it through.
 
 The store's command is the command a seat types in its shell to reach the
 project's store, as the store's capabilities declare it (see
-[The store contract](store.md#capabilities)). For the built-in store it is
+[The store contract](store.md#capabilities)). For the bd pack's store it is
 `bd`. A store that declares `tracker` has `tracker update <item> --notes n`
 refused and `bd update <item> --notes n` let through, and each rewrite names
 `tracker`.

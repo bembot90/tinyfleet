@@ -68,9 +68,8 @@ pub fn routine_actor(name: &str) -> Actor {
     }
 }
 
-/// The type an item that names none is filed as: the built-in store's own
-/// default — measured on its pinned release, 1.3.0 — made explicit, so every
-/// store files the same item the same way.
+/// The type an item that names none is filed as: the default store's own
+/// default, made explicit, so every store files the same item the same way.
 pub const DEFAULT_ITEM_TYPE: &str = "task";
 
 /// The environment every child of an action carries.
@@ -315,8 +314,8 @@ fn create_request(routine: &Routine, filed: &NewItem) -> String {
 ///
 /// The item is held to the contract first, so one a store must not file is
 /// failed before the store is asked anything. The store is then OPENED AS
-/// EVERY VERB OPENS IT, out of the project's own file, strictly on the
-/// constructed child path and under the routine's own bound. The dedupe is
+/// EVERY VERB OPENS IT, out of the project's own file, on the constructed
+/// child path and under the routine's own bound. The dedupe is
 /// the store's label listing, every row of it; the item is then held to the
 /// types and priorities the store's capabilities declare, created, and
 /// handed to the seat the load resolved its assignee to. The routine's actor
@@ -335,7 +334,6 @@ fn file_item(routine: &Routine, item: &Item, machine: &Machine) -> Done {
         policy: &policy,
         source: AdapterSource::Setting,
         search_path: &path_for_children(machine.child_path),
-        strict: true,
         timeout: Duration::from_secs(routine.timeout),
         packs: Some(PackDirs {
             packs_dir: &machine.machine_dir.join("packs"),

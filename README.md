@@ -41,9 +41,10 @@ left out of the default profile by binary name in `.config/nextest.toml` and
 runs only under its own profile. That file's per-arm `slow-timeout` is the one
 bound on a run's time.
 
-A rig's scratch board runs on bd's embedded engine unless
-`FLEET_TEST_DOLT_PORT` names a served one; `tools/dolt-test-server <command>`
-runs `<command>` against a throwaway server it starts and stops.
+No suite needs a store installed: a rig keeps its project on the store stub,
+the example a test build of `fleet-cli` makes (`cargo build -p fleet-cli
+--examples` makes it alone). A real store's adapter is tested in the
+fleet-packs repository, where its pack lives.
 `tools/suite-profile` ranks where a run's seconds went, read from the junit
 report the default profile writes.
 

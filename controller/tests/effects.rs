@@ -761,11 +761,10 @@ mod lessons {
             "and a name only the prefix holds still resolves there"
         );
 
-        // THE SAME PAIR ON THE BOX'S OWN NAMES, where the box has them: python3
-        // is the name the field failure was about and the platform ships one
-        // too, and `bd` is the item tracker, which only the prefix ships. A box
-        // missing either copy cannot be read for that half, so the arm says
-        // which copy it did not find rather than passing in silence.
+        // THE SAME READING ON THE BOX'S OWN NAME, where the box has both copies:
+        // python3 is the name the field failure was about and the platform
+        // ships one too. A box missing either copy cannot be read, so the arm
+        // says which copy it did not find rather than passing in silence.
         let built = platform::child_path(&platform::home_dir());
         let system_python = PathBuf::from("/usr/bin/python3");
         let prefix_python = PathBuf::from("/opt/homebrew/bin/python3");
@@ -781,16 +780,6 @@ mod lessons {
                 system_python.exists(),
                 prefix_python.exists()
             );
-        }
-        let prefix_bd = PathBuf::from("/opt/homebrew/bin/bd");
-        if prefix_bd.exists() && !PathBuf::from("/usr/bin/bd").exists() {
-            assert_eq!(
-                platform::resolve_on_path(&built, "bd"),
-                Some(prefix_bd),
-                "and the item tracker, which only the prefix ships, is still found"
-            );
-        } else {
-            println!("bd not read on this box: /opt/homebrew/bin/bd absent or shadowed");
         }
     }
 

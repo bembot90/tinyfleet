@@ -49,13 +49,15 @@ what they date:
 
 | Tool | Constant | Where it is declared | Checked by |
 | --- | --- | --- | --- |
-| bd | `PINNED_BD` | `core/src/store/bd/mod.rs`, the built-in store's adapter, beside every claim measured on it | `doctor/bd-version` |
 | Claude Code | `PINNED_CLAUDE_CODE` | `core/src/supported.rs` | `doctor/claude-code-version`, the controller's `substrate.moved` when a fleet pins none |
 | fleet-packs | `PINNED_PACKS_SOURCE` and `PINNED_PACKS` (the tag) | `core/src/supported.rs` | `doctor/fleet-packs-version`, over every pack `packs.lock` pins from the source; `fleet create` installs the store's pack at the tag |
 
 Deno is a pack's, not the binary's: the ts pack's `[runtime]` table
 (`runtimes/ts/pack.toml` in the fleet-packs repository), measured by
-`doctor/runtime-version`. git carries no pin.
+`doctor/runtime-version`. So is bd: the bd pack pins it and carries the
+`doctor/bd-version` check that measures it (`adapters/store/bd` in the
+fleet-packs repository), and a move of it is that repository's. git carries
+no pin.
 
 **A supported-version move is one constant plus a re-measure**, as one item:
 
@@ -63,14 +65,9 @@ Deno is a pack's, not the binary's: the ts pack's `[runtime]` table
    (`PINNED=` or `SUPPORTED=`; fleet-packs' check also copies the source as
    `SOURCE=`). The core suite fails until the copies agree.
    The install pointers follow the copy: Claude Code's check names
-   `claude install <version>` and the native installer at that version, and
-   bd's check links beads' installation page at the pin's tag
-   (`github.com/gastownhall/beads/blob/v<pin>/docs/getting-started/installation.md`).
-   For bd, confirm that page exists at the new tag before the move lands; no
-   suite can.
+   `claude install <version>` and the native installer at that version.
 2. Re-measure every claim that rests on the old release, on the new one: for
-   bd, every "measured on" comment in `core/src/store/bd/mod.rs`; for Claude Code,
-   the version-scoped entries in `brain/lessons/claude-code.md` the adapter
+   Claude Code, the version-scoped entries in `brain/lessons/claude-code.md` the adapter
    reads. Restate each one that held, and change the code where a behaviour
    moved. For fleet-packs, re-check the packs at the new tag against this
    binary: `fleet store check --adapter` over each store adapter, and the

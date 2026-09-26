@@ -115,7 +115,7 @@ fn a_timeline() -> Vec<Entry> {
                     refuted_by: words("it moved to 104-121"),
                 }],
                 not_proven: vec![NotProven {
-                    surface: words("a real bd store"),
+                    surface: words("a real store"),
                     command: words("fleet item show fx-1"),
                 }],
                 decisions: vec![Decision {
@@ -243,7 +243,7 @@ timeline (7 entries)
     spec corrections:
       - the module list sits at 100-116 — refuted by it moved to 104-121
     not proven:
-      - a real bd store — fleet item show fx-1
+      - a real store — fleet item show fx-1
     decisions:
       D1 read the author with Actor::typed; not taken: a new parser; because typed is the one reader
     covers: fleet-zlk.1, fleet-zlk.4

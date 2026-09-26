@@ -178,9 +178,13 @@ pub struct Policy {
     /// name or by a path ending in it. `None` is a store that declares no
     /// command, and every check that reads one refuses nothing.
     ///
-    /// THE DEFAULT IS THE BUILT-IN STORE'S WORD, and a caller that cannot
-    /// read the declaration keeps it: a guard that cannot tell polices that
-    /// command, and is never turned off by a store that did not answer.
+    /// THE DEFAULT IS THE DEFAULT STORE ADAPTER'S NAME, [`DEFAULT_ADAPTER`],
+    /// which is also the command the bd pack's adapter declares — `bd` — and a
+    /// caller that cannot read the declaration keeps it: a guard that cannot
+    /// tell polices that command, and is never turned off by a store that did
+    /// not answer.
+    ///
+    /// [`DEFAULT_ADAPTER`]: crate::store::DEFAULT_ADAPTER
     pub cli: Option<String>,
 }
 
@@ -188,7 +192,7 @@ impl Default for Policy {
     fn default() -> Self {
         Policy {
             enabled: true,
-            cli: Some(crate::store::bd::BD.to_string()),
+            cli: Some(crate::store::DEFAULT_ADAPTER.to_string()),
             item_prefix: None,
             release_ref_glob: None,
             prod_buckets: Vec::new(),

@@ -1,7 +1,7 @@
 //! A store adapter executable that answers from files and records every
 //! request, for the arms that ask what a verb SENDS over the contract.
 //!
-//! The in-memory board answers a write the way bd does, and the verbs reach
+//! The in-memory board answers a write the way the contract says, and the verbs reach
 //! both through methods no adapter out of process sees. An arm asking what one
 //! of them sends to an adapter drives the verb over [`Exec`], the store an
 //! adapter is reached through, and reads the requests off disk.

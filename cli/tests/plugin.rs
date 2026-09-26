@@ -630,11 +630,7 @@ fn prime(cwd: &Path, fleet_dir: &Path, env: &[(&str, &str)]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_fleet"));
     cmd.arg("prime")
         .current_dir(cwd)
-        .hermetic(&fleet_dir.join("home"), fleet_dir, None)
-        // The suite shares one process environment across arms run in
-        // parallel, so every seam a case does not set is removed rather than
-        // inherited.
-        .env_remove("FLEET_BD_BIN");
+        .hermetic(&fleet_dir.join("home"), fleet_dir, None);
     for (key, value) in env {
         cmd.env(key, value);
     }
@@ -997,7 +993,9 @@ fn a_pack_and_its_import_install_from_a_checkout_and_prime_reads_them() {
 /// The fail-open contract, at the one place a layering can refuse: line 1
 /// still prints, with the refusal in place of the names; the rules are omitted,
 /// because there is no resolution to ask; the item lines still print, because
-/// they do not come from the packs; and the exit is still 0.
+/// the store the seat's worktree names by path does not come from the packs;
+/// and the exit is still 0. (A store that IS a pack's adapter is opened
+/// through that layering, and its item line says the layering's refusal.)
 #[test]
 fn a_layering_that_refuses_costs_the_names_and_nothing_else() {
     let s = Scratch::new("cycle");
@@ -1027,9 +1025,10 @@ fn a_layering_that_refuses_costs_the_names_and_nothing_else() {
         "bee",
         "\n[imports.ay]\nsource = \"./ay\"\nversion = \"1\"\n",
     );
-    let stub = s.script("bd", "#!/bin/sh\necho '[]'\n");
+    let adapter = tracker(&s, "tracker", &answers_version("1.3.0"), &answers_rows(&[]));
+    keeps_its_store_on(&s, "cwd", &adapter);
 
-    let out = prime(&cwd, &fleet_dir, &[("FLEET_BD_BIN", &text_of(&stub))]);
+    let out = prime(&cwd, &fleet_dir, &[]);
     assert_eq!(
         out.status.code(),
         Some(0),
@@ -1124,20 +1123,19 @@ fn the_item_lines_are_this_seat_s_open_work() {
         serde_json::Value::String(text_of(&cwd))
     );
     s.write("fleet-dir/config.json", &config_json(&fleet_toml, &row));
-
-    let argv = s.root.join("argv");
-    let stub = s.script(
-        "bd",
-        &format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" > {argv}\ncat <<'JSON'\n[\
-             {{\"id\": \"x-1\", \"title\": \"the open one\", \"status\": \"open\"}},\
-             {{\"id\": \"x-2\", \"title\": \"the moving one\", \"status\": \"in_progress\"}},\
-             {{\"id\": \"x-3\", \"title\": \"the done one\", \"status\": \"closed\"}}]\nJSON\n",
-            argv = text_of(&argv)
-        ),
+    let adapter = tracker(
+        &s,
+        "tracker",
+        &answers_version("1.3.0"),
+        &answers_rows(&[
+            ("x-1", "the open one", "open"),
+            ("x-2", "the moving one", "in_progress"),
+            ("x-3", "the done one", "closed"),
+        ]),
     );
+    keeps_its_store_on(&s, "cwd", &adapter);
 
-    let out = prime(&cwd, &fleet_dir, &[("FLEET_BD_BIN", &text_of(&stub))]);
+    let out = prime(&cwd, &fleet_dir, &[]);
     assert_eq!(out.status.code(), Some(0));
     let text = utf8(out.stdout);
     let items: Vec<&str> = text.lines().filter(|l| l.starts_with("item:")).collect();
@@ -1147,14 +1145,23 @@ fn the_item_lines_are_this_seat_s_open_work() {
         "open and in-progress only, in the order the tracker listed them: {text}"
     );
 
-    let asked = std::fs::read_to_string(&argv).expect("the stub recorded its arguments");
+    let listed: Vec<serde_json::Value> = calls_of(&s)
+        .into_iter()
+        .filter(|(verb, _)| verb == "list")
+        .map(|(_, request)| request)
+        .collect();
+    assert_eq!(listed.len(), 1, "one listing: {listed:?}");
     assert_eq!(
-        asked.trim(),
-        format!(
-            "-C {} list -a 01a0d1f1-0aec-765f-9abe-5c21e8a04b17 --all --json -n 0",
-            text_of(&cwd)
-        ),
-        "the listing is asked of the row's own project root, for the row's full id"
+        listed[0]["filter"],
+        serde_json::json!({ "assignee": "01a0d1f1-0aec-765f-9abe-5c21e8a04b17" }),
+        "the listing is asked for the row's full id: {}",
+        listed[0]
+    );
+    assert_eq!(
+        listed[0]["root"],
+        serde_json::json!(text_of(&cwd)),
+        "of the row's own project root: {}",
+        listed[0]
     );
 }
 
@@ -1169,9 +1176,10 @@ fn a_seat_with_nothing_open_prints_none() {
         serde_json::Value::String(text_of(&cwd))
     );
     s.write("fleet-dir/config.json", &config_json(&fleet_toml, &row));
-    let stub = s.script("bd", "#!/bin/sh\necho '[]'\n");
+    let adapter = tracker(&s, "tracker", &answers_version("1.3.0"), &answers_rows(&[]));
+    keeps_its_store_on(&s, "cwd", &adapter);
 
-    let out = prime(&cwd, &fleet_dir, &[("FLEET_BD_BIN", &text_of(&stub))]);
+    let out = prime(&cwd, &fleet_dir, &[]);
     assert_eq!(out.status.code(), Some(0));
     assert!(
         utf8(out.stdout).lines().any(|l| l == "item: none"),
@@ -1191,9 +1199,8 @@ fn a_directory_no_row_names_gets_no_item_line() {
         serde_json::Value::String(text_of(&elsewhere))
     );
     s.write("fleet-dir/config.json", &config_json(&fleet_toml, &row));
-    let stub = s.script("bd", "#!/bin/sh\necho '[]'\n");
 
-    let out = prime(&cwd, &fleet_dir, &[("FLEET_BD_BIN", &text_of(&stub))]);
+    let out = prime(&cwd, &fleet_dir, &[]);
     assert_eq!(out.status.code(), Some(0));
     let text = utf8(out.stdout);
     assert!(
@@ -1213,16 +1220,22 @@ fn a_listing_that_cannot_be_read_is_its_own_answer() {
         serde_json::Value::String(text_of(&cwd))
     );
     s.write("fleet-dir/config.json", &config_json(&fleet_toml, &row));
-    let stub = s.script("bd", "#!/bin/sh\necho 'the store is locked' >&2\nexit 4\n");
+    let adapter = tracker(
+        &s,
+        "tracker",
+        &answers_version("1.3.0"),
+        "echo 'the store is locked' >&2; exit 4",
+    );
+    keeps_its_store_on(&s, "cwd", &adapter);
 
-    let out = prime(&cwd, &fleet_dir, &[("FLEET_BD_BIN", &text_of(&stub))]);
+    let out = prime(&cwd, &fleet_dir, &[]);
     assert_eq!(out.status.code(), Some(0), "prime still exits 0");
     let text = utf8(out.stdout);
     assert!(
         text.contains(&format!(
-            "item: could not be read — `{} list -a 01a0d1f1-0aec-765f-9abe-5c21e8a04b17 --all --json -n 0` exit status: 4: the store \
-             is locked",
-            text_of(&stub)
+            "item: could not be read — {} list exited 4, which is not a row of the store \
+             contract's exit table: the store is locked",
+            text_of(&adapter)
         )),
         "the third answer names what happened rather than reading as `none`: {text}"
     );
@@ -1235,7 +1248,7 @@ fn a_listing_that_cannot_be_read_is_its_own_answer() {
 /// A tracker that never answers costs the item line and nothing else: prime
 /// prints its third answer inside the listing's five-second bound, names that
 /// bound, and still exits 0 — a session-start hook that waited on a hung store
-/// would hold the session with it. The stub answers line 2's `--version` at
+/// would hold the session with it. The stub answers line 2's `version` at
 /// once, so the bound measured is the listing's alone.
 #[test]
 fn a_listing_that_never_answers_is_its_own_answer_inside_the_bound() {
@@ -1248,20 +1261,18 @@ fn a_listing_that_never_answers_is_its_own_answer_inside_the_bound() {
         serde_json::Value::String(text_of(&cwd))
     );
     s.write("fleet-dir/config.json", &config_json(&fleet_toml, &row));
-    let stub = s.script(
-        "bd",
-        "#!/bin/sh\n[ \"$3\" = --version ] && { echo 'bd version 1.3.0'; exit 0; }\nsleep 30\n",
-    );
+    let adapter = tracker(&s, "tracker", &answers_version("1.3.0"), "sleep 30");
+    keeps_its_store_on(&s, "cwd", &adapter);
 
     let started = std::time::Instant::now();
-    let out = prime(&cwd, &fleet_dir, &[("FLEET_BD_BIN", &text_of(&stub))]);
+    let out = prime(&cwd, &fleet_dir, &[]);
     let took = started.elapsed();
     assert_eq!(out.status.code(), Some(0), "prime still exits 0");
     let text = utf8(out.stdout);
     assert!(
         text.contains(&format!(
-            "item: could not be read — `{} list -a 01a0d1f1-0aec-765f-9abe-5c21e8a04b17 --all --json -n 0` did not answer within 5s",
-            text_of(&stub)
+            "item: could not be read — {} list did not answer within 5s",
+            text_of(&adapter)
         )),
         "the third answer names the bound the listing outran: {text}"
     );
@@ -1271,10 +1282,87 @@ fn a_listing_that_never_answers_is_its_own_answer_inside_the_bound() {
     );
 }
 
-/// A seat's rig whose tracker answers `--version` with `version` and every
-/// other call with one open item, so an arm reads line 2 and the item line off
-/// one prime.
-fn tracker_rig(label: &str, version: &str) -> (Scratch, PathBuf, PathBuf, PathBuf) {
+/// A store adapter answering the contract from a `#!/bin/sh` stub at
+/// `relative`: it appends its verb and its request, one line per call, to
+/// [`calls_of`]'s log, answers `version` by running `version` and `list` by
+/// running `list`, and every other verb as usage.
+fn tracker(s: &Scratch, relative: &str, version: &str, list: &str) -> PathBuf {
+    let log = s.root.join("tracker-calls");
+    s.script(
+        relative,
+        &format!(
+            "#!/bin/sh\nrequest=$(cat)\nprintf '%s %s\\n' \"$1\" \"$request\" >> '{log}'\n\
+             case \"$1\" in\nversion) {version} ;;\nlist) {list} ;;\n*) exit 2 ;;\nesac\n",
+            log = text_of(&log)
+        ),
+    )
+}
+
+/// Every call the [`tracker`] stubs of `s` were handed, as `(verb, request)`.
+fn calls_of(s: &Scratch) -> Vec<(String, serde_json::Value)> {
+    std::fs::read_to_string(s.root.join("tracker-calls"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| {
+            let (verb, request) = line.split_once(' ').expect("a verb and its request");
+            let request = serde_json::from_str(request).expect("the request is one JSON value");
+            (verb.to_string(), request)
+        })
+        .collect()
+}
+
+/// A `version` answer naming the store `tracker` at `version`.
+fn answers_version(version: &str) -> String {
+    format!("echo '{{\"schema_version\":1,\"name\":\"tracker\",\"version\":\"{version}\"}}'")
+}
+
+/// A `list` answer of one row per `(id, title, status)`.
+fn answers_rows(rows: &[(&str, &str, &str)]) -> String {
+    let rows: Vec<String> = rows
+        .iter()
+        .map(|(id, title, status)| {
+            format!(
+                "{{\"id\":\"{id}\",\"title\":\"{title}\",\"status\":\"{status}\",\
+                 \"type\":\"task\",\"labels\":[],\"order\":{{\"state\":\"none\"}}}}"
+            )
+        })
+        .collect();
+    format!(
+        "echo '{{\"schema_version\":1,\"items\":[{}]}}'",
+        rows.join(",")
+    )
+}
+
+/// The seat's worktree at `cwd` naming `adapter` as its store, in the
+/// project's own file there: the file the item line's store is opened by.
+fn keeps_its_store_on(s: &Scratch, cwd: &str, adapter: &Path) {
+    s.write(
+        &format!("{cwd}/fleet.toml"),
+        &naming_adapter(&text_of(adapter)),
+    );
+}
+
+/// A pack on the machine carrying the store adapter `name`, its entry the
+/// `#!/bin/sh` script `body`, over the binary's own defaults: the store a
+/// project whose file names none, or names `name`, opens by name.
+fn a_store_pack(s: &Scratch, name: &str, body: &str) -> PathBuf {
+    s.shipped_defaults();
+    s.pack("a-store-pack", "a-store-pack", "version = \"0.1.0\"\n");
+    s.write(
+        &format!("fleet-dir/packs/a-store-pack/adapters/store/{name}/adapter.toml"),
+        &format!(
+            "[adapter]\nname = \"{name}\"\nkind = \"store\"\nversion = \"0.1.0\"\nentry = \"main\"\n"
+        ),
+    );
+    s.script(
+        &format!("fleet-dir/packs/a-store-pack/adapters/store/{name}/main"),
+        body,
+    )
+}
+
+/// A seat's rig whose tracker answers `version` at `version` and every listing
+/// with one open item, so an arm reads line 2 and the item line off one prime.
+fn tracker_rig(label: &str, version: &str) -> (Scratch, PathBuf, PathBuf) {
     let s = Scratch::new(label);
     let cwd = s.dir("cwd");
     let fleet_dir = s.dir("fleet-dir");
@@ -1284,38 +1372,37 @@ fn tracker_rig(label: &str, version: &str) -> (Scratch, PathBuf, PathBuf, PathBu
         serde_json::Value::String(text_of(&cwd))
     );
     s.write("fleet-dir/config.json", &config_json(&fleet_toml, &row));
-    let stub = s.script(
-        "bd",
-        &format!(
-            "#!/bin/sh\n[ \"$3\" = --version ] && {{ {version}; exit 0; }}\ncat <<'JSON'\n[\
-             {{\"id\": \"x-1\", \"title\": \"the open one\", \"status\": \"open\"}}]\nJSON\n"
-        ),
+    let adapter = tracker(
+        &s,
+        "tracker",
+        &answers_version(version),
+        &answers_rows(&[("x-1", "the open one", "open")]),
     );
-    (s, cwd, fleet_dir, stub)
+    keeps_its_store_on(&s, "cwd", &adapter);
+    (s, cwd, fleet_dir)
 }
 
 /// fleet-wpf0.3: line 2 is the store's own answer to the contract's `version`
 /// and the adapter that gave it, read off the seat's worktree, the root the
-/// item line reads. It COMPARES WITH NO PIN: a bd at another release reads the
-/// same way as one at the pin, with no pointer and no verdict, and the item
-/// line still prints beneath it. The version is the one bd's first line names,
-/// not the sentence it names it in.
+/// item line reads. It COMPARES WITH NO PIN: a store at another release reads
+/// the same way as one at the pin, with no pointer and no verdict, and the
+/// item line still prints beneath it.
 #[test]
 fn line_two_is_the_store_s_own_version_and_its_adapter() {
     for (label, version, line) in [
         (
             "store-at-one",
-            "echo 'bd version 1.3.0 (Homebrew)'",
-            "store: bd 1.3.0 (adapter bd)",
+            "1.3.0",
+            "store: tracker 1.3.0 (adapter tracker)",
         ),
         (
             "store-at-another",
-            "echo 'bd version 1.2.2 (Homebrew)'",
-            "store: bd 1.2.2 (adapter bd)",
+            "1.2.2",
+            "store: tracker 1.2.2 (adapter tracker)",
         ),
     ] {
-        let (_s, cwd, fleet_dir, stub) = tracker_rig(label, version);
-        let out = prime(&cwd, &fleet_dir, &[("FLEET_BD_BIN", &text_of(&stub))]);
+        let (_s, cwd, fleet_dir) = tracker_rig(label, version);
+        let out = prime(&cwd, &fleet_dir, &[]);
         assert_eq!(out.status.code(), Some(0), "prime always exits 0");
         let text = utf8(out.stdout);
         let lines: Vec<&str> = text.lines().collect();
@@ -1408,9 +1495,9 @@ fn a_store_that_cannot_be_read_is_line_two_s_own_answer() {
             "neither-form",
             String::from("tools/sqlite"),
             String::from(
-                "store: could not be read — [store] adapter is `tools/sqlite` — it is \"bd\", \
-                 the name of a store adapter an installed pack carries, or an absolute path to \
-                 an adapter executable",
+                "store: could not be read — [store] adapter is `tools/sqlite` — it is the name \
+                 of a store adapter an installed pack carries, or an absolute path to an \
+                 adapter executable",
             ),
         ),
         (
@@ -1458,23 +1545,22 @@ fn a_store_that_cannot_be_read_is_line_two_s_own_answer() {
     }
 }
 
-/// `store::bd::resolve`'s DEFAULT branch: with no `FLEET_BD_BIN`, the tracker
-/// is the first `bd` on the CONSTRUCTED child PATH — the platform's own
-/// directory list over the home — and the `PATH` this process inherited
-/// contributes nothing.
+/// fleet-3krx.2: a store adapter a pack carries runs on the CONSTRUCTED child
+/// PATH — the platform's own directory list over the home — and the `PATH`
+/// this process inherited contributes nothing. The pack's entry execs its
+/// tracker by bare name, as the bd pack's execs its runtime and its store's
+/// binary, so what the entry finds is the proof of which `PATH` it ran on.
 ///
 /// The decoy is the control: it is first on the child's inherited `PATH` and on
-/// no entry of the constructed one, so it is reachable by a bare name and by
-/// nothing else.
+/// no entry of the constructed one, so an entry run on the inherited `PATH`
+/// reaches it and nothing else does. The tracker's name is this arm's own, so
+/// no directory the platform lists ahead of the home's `.local/bin` holds one.
 ///
-/// macOS orders `/opt/homebrew/bin` and `/usr/local/bin` ahead of the home's
-/// `.local/bin`, and the home is the only entry a test may write into — so a
-/// `bd` installed in either of those genuinely wins, and this arm asserts
-/// against whichever file the constructed path names rather than against its
-/// own stub.
+/// RED-PROOF: with the adapter run on this process's own `PATH`, the entry
+/// execs the decoy and the item line is the decoy's.
 #[test]
 fn with_no_seam_the_tracker_comes_off_the_constructed_child_path() {
-    let s = Scratch::new("bd-default");
+    let s = Scratch::new("store-constructed");
     let cwd = s.dir("cwd");
     let fleet_dir = s.dir("fleet-dir");
     let fleet_toml = s.write("fleet-root/fleet.toml", "");
@@ -1483,27 +1569,25 @@ fn with_no_seam_the_tracker_comes_off_the_constructed_child_path() {
         serde_json::Value::String(text_of(&cwd))
     );
     s.write("fleet-dir/config.json", &config_json(&fleet_toml, &row));
+    // The worktree names no store: the default name, through the packs.
+    a_store_pack(
+        &s,
+        fleet_core::store::DEFAULT_ADAPTER,
+        "#!/bin/sh\nexec fx-probe-tracker \"$@\"\n",
+    );
 
     let home = s.dir("home");
-    let stub_argv0 = s.root.join("stub-argv0");
-    let stub = s.script(
-        "home/.local/bin/bd",
-        &format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$0\" > {log}\ncat <<'JSON'\n[\
-             {{\"id\": \"fxitem-stub9\", \"title\": \"the constructed path\", \
-             \"status\": \"open\"}}]\nJSON\n",
-            log = text_of(&stub_argv0)
-        ),
+    let stub = tracker(
+        &s,
+        "home/.local/bin/fx-probe-tracker",
+        &answers_version("1.3.0"),
+        &answers_rows(&[("fxitem-stub9", "the constructed path", "open")]),
     );
-    let decoy_argv0 = s.root.join("decoy-argv0");
-    let decoy = s.script(
-        "decoy/bd",
-        &format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$0\" > {log}\ncat <<'JSON'\n[\
-             {{\"id\": \"fxitem-decoy9\", \"title\": \"the inherited PATH\", \
-             \"status\": \"open\"}}]\nJSON\n",
-            log = text_of(&decoy_argv0)
-        ),
+    let decoy = tracker(
+        &s,
+        "decoy/fx-probe-tracker",
+        &answers_version("1.3.0"),
+        &answers_rows(&[("fxitem-decoy9", "the inherited PATH", "open")]),
     );
     let decoy_dir = decoy.parent().expect("the decoy sits in a directory");
 
@@ -1512,8 +1596,11 @@ fn with_no_seam_the_tracker_comes_off_the_constructed_child_path() {
         !std::env::split_paths(&child_path).any(|dir| dir == decoy_dir),
         "the decoy is on no entry of the constructed child PATH {child_path}"
     );
-    let named = fleet_controller::platform::resolve_on_path(&child_path, "bd")
-        .expect("the constructed child PATH names a `bd` — the stub is on it");
+    assert_eq!(
+        fleet_controller::platform::resolve_on_path(&child_path, "fx-probe-tracker"),
+        Some(stub.clone()),
+        "the constructed child PATH names the stub"
+    );
 
     // `HOME` and `PATH` are set on the CHILD, so no arm in this binary shares
     // them and no lock is owed.
@@ -1527,77 +1614,13 @@ fn with_no_seam_the_tracker_comes_off_the_constructed_child_path() {
         &[(common::hermetic::HOME, &text_of(&home)), ("PATH", &ahead)],
     );
     assert_eq!(out.status.code(), Some(0));
-    let text = utf8(out.stdout.clone());
-    let item = text
-        .lines()
-        .find(|l| l.starts_with("item:"))
-        .unwrap_or_else(|| panic!("prime prints an item line: {text}"));
-
-    assert!(
-        !text.contains("fxitem-decoy9"),
-        "the decoy answers only a bare name resolved on the inherited PATH: {item}"
-    );
-    assert!(
-        !decoy_argv0.exists(),
-        "the decoy was never run, and it recorded: {}",
-        std::fs::read_to_string(&decoy_argv0).unwrap_or_default()
-    );
-
-    if named == stub {
-        let argv0 = std::fs::read_to_string(&stub_argv0).expect("the stub recorded its own $0");
-        assert_eq!(
-            argv0.trim(),
-            text_of(&stub),
-            "the stub was reached at the absolute path the constructed child PATH names"
-        );
-    } else {
-        assert!(
-            !stub_argv0.exists(),
-            "{} is earlier on the constructed child PATH than the stub, which ran anyway",
-            named.display()
-        );
-    }
-
-    // The positive claim, in one shape whichever file won: prime's item line
-    // carries that file's own answer.
-    let direct = Command::new(&named)
-        .arg("-C")
-        .arg(&cwd)
-        .args([
-            "list",
-            "-a",
-            "01a0d1f1-0aec-765f-9abe-5c21e8a04b17",
-            "--json",
-            "-n",
-            "0",
-        ])
-        .output()
-        .expect("the resolved tracker runs");
-    let fingerprint = if direct.status.success() {
-        let rows: serde_json::Value =
-            serde_json::from_str(&utf8(direct.stdout.clone())).expect("the answer is JSON");
-        rows.as_array()
-            .and_then(|rows| rows.first())
-            .and_then(|first| first["id"].as_str())
-            .expect("the answer lists a row")
-            .to_string()
-    } else {
-        utf8(direct.stderr.clone())
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-            .expect("a refusing tracker says why")
-            .to_string()
-    };
-    assert!(
-        item.contains(&fingerprint),
-        "the item line carries the answer of {}, the file the constructed child PATH names: \
-         {item}",
-        named.display()
-    );
-    println!(
-        "the constructed child PATH names {} — the arm asserted against that file",
-        named.display()
+    let text = utf8(out.stdout);
+    let items: Vec<&str> = text.lines().filter(|l| l.starts_with("item:")).collect();
+    assert_eq!(
+        items,
+        vec!["item: fxitem-stub9 — the constructed path"],
+        "the entry found the tracker the constructed child PATH names, and never the decoy \
+         the inherited PATH puts first: {text}"
     );
 }
 
@@ -1606,11 +1629,11 @@ fn with_no_seam_the_tracker_comes_off_the_constructed_child_path() {
 /// than a wrong seat's (D3 of the prime spec — a cwd names a seat and proves
 /// nothing, so the weakest reading is the one taken).
 ///
-/// The tracker stub would answer with one item, and its argv file — holding
-/// the LAST call it was handed — is the witness that it was asked nothing: no
-/// row names the subdirectory and no project file sits above it, so line 2
-/// has no store to ask either. The same fixture run from the root is the
-/// control: there the item line appears and the listing is the last call.
+/// The store is the default name's, a pack's adapter the worktree's file need
+/// not name, and its call log is the witness that it was asked nothing: no row
+/// names the subdirectory and no project file sits above it, so line 2 has no
+/// store to ask either. The same fixture run from the root is the control:
+/// there the item line appears and the listing is asked of the root.
 #[test]
 fn a_session_under_a_seat_s_worktree_gets_no_item_line() {
     let s = Scratch::new("items-descendant");
@@ -1623,18 +1646,19 @@ fn a_session_under_a_seat_s_worktree_gets_no_item_line() {
         serde_json::Value::String(text_of(&root))
     );
     s.write("fleet-dir/config.json", &config_json(&fleet_toml, &row));
-
-    let argv = s.root.join("argv");
-    let stub = s.script(
-        "bd",
-        &format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" > {argv}\ncat <<'JSON'\n[\
-             {{\"id\": \"x-9\", \"title\": \"the descendant one\", \"status\": \"open\"}}]\nJSON\n",
-            argv = text_of(&argv)
-        ),
+    let tracker_bin = tracker(
+        &s,
+        "the-tracker",
+        &answers_version("1.3.0"),
+        &answers_rows(&[("x-9", "the descendant one", "open")]),
+    );
+    a_store_pack(
+        &s,
+        fleet_core::store::DEFAULT_ADAPTER,
+        &format!("#!/bin/sh\nexec '{}' \"$@\"\n", text_of(&tracker_bin)),
     );
 
-    let out = prime(&under, &fleet_dir, &[("FLEET_BD_BIN", &text_of(&stub))]);
+    let out = prime(&under, &fleet_dir, &[]);
     assert_eq!(out.status.code(), Some(0), "prime always exits 0");
     let text = utf8(out.stdout);
     let items: Vec<&str> = text.lines().filter(|l| l.starts_with("item:")).collect();
@@ -1650,12 +1674,12 @@ fn a_session_under_a_seat_s_worktree_gets_no_item_line() {
         "{text}"
     );
     assert!(
-        !argv.exists(),
-        "the tracker was asked nothing, and it recorded: {}",
-        std::fs::read_to_string(&argv).unwrap_or_default()
+        calls_of(&s).is_empty(),
+        "the tracker was asked nothing, and it recorded: {:?}",
+        calls_of(&s)
     );
 
-    let out = prime(&root, &fleet_dir, &[("FLEET_BD_BIN", &text_of(&stub))]);
+    let out = prime(&root, &fleet_dir, &[]);
     assert_eq!(out.status.code(), Some(0));
     let text = utf8(out.stdout);
     let items: Vec<&str> = text.lines().filter(|l| l.starts_with("item:")).collect();
@@ -1664,13 +1688,17 @@ fn a_session_under_a_seat_s_worktree_gets_no_item_line() {
         vec!["item: x-9 — the descendant one"],
         "the same fixture run from the root itself does get the line: {text}"
     );
-    let asked = std::fs::read_to_string(&argv).expect("the stub recorded its arguments");
+    let listed: Vec<serde_json::Value> = calls_of(&s)
+        .into_iter()
+        .filter(|(verb, _)| verb == "list")
+        .map(|(_, request)| request)
+        .collect();
     assert_eq!(
-        asked.trim(),
-        format!(
-            "-C {} list -a 01a0d1f1-0aec-765f-9abe-5c21e8a04b17 --all --json -n 0",
-            text_of(&root)
-        ),
+        listed
+            .iter()
+            .map(|request| request["root"].clone())
+            .collect::<Vec<_>>(),
+        vec![serde_json::json!(text_of(&root))],
         "and it is asked of the row's own root, never of the subdirectory"
     );
 }
