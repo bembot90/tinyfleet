@@ -107,17 +107,22 @@ the packs it imports that the same checkout holds (see
 [Imports](#imports-from-the-same-checkout)).
 
 ```sh
-$ fleet pack add <fleet-packs>//runtimes/ts --version main
-added ts main at <sha> — <machine-dir>/packs/ts
+$ fleet pack add <fleet-packs>//runtimes/ts --version v0.1.0
+added ts v0.1.0 at <sha> — <machine-dir>/packs/ts
 pinned in <machine-dir>/packs.lock
-$ fleet pack add <fleet-packs>//tiny --version main
-added tiny main at <sha> — <machine-dir>/packs/tiny
+$ fleet pack add <fleet-packs>//tiny --version v0.1.0
+added tiny v0.1.0 at <sha> — <machine-dir>/packs/tiny
 pinned in <machine-dir>/packs.lock
 ```
 
 `<fleet-packs>` is the fleet-packs repository,
 `https://github.com/bembot90/fleet-packs`, which holds the tiny pack at `tiny`
-and the ts pack it imports at `runtimes/ts`.
+and the ts pack it imports at `runtimes/ts`. It also holds one pack per store
+adapter, under `adapters/store/<name>`: `fleet create` installs the bd pack
+from there (see [Getting started](getting-started.md#the-stores-pack)), and
+the bd pack imports ts too, so a machine holds tiny or the bd pack, not both
+(see [Imports are one level deep](#imports-are-one-level-deep)). `v0.1.0` is
+the tag this binary supports.
 
 Each exits 0. The directory is named by the `name` in the pack's own
 `pack.toml`, not by the source.
@@ -151,9 +156,9 @@ are installed with it, out of the same clone and pinned at the same commit,
 one `added` line each:
 
 ```sh
-$ fleet pack add <fleet-packs>//tiny --version main
-added tiny main at <sha> — <machine-dir>/packs/tiny
-added ts main at <sha>, which tiny imports — <machine-dir>/packs/ts
+$ fleet pack add <fleet-packs>//tiny --version v0.1.0
+added tiny v0.1.0 at <sha> — <machine-dir>/packs/tiny
+added ts v0.1.0 at <sha>, which tiny imports — <machine-dir>/packs/ts
 pinned in <machine-dir>/packs.lock
 ```
 
@@ -192,9 +197,9 @@ source.
 ```sh
 $ fleet pack list
 name      source                      version  commit    fetched
-ts        <fleet-packs>//runtimes/ts  main     <sha>     <fetched>
-tiny      <fleet-packs>//tiny         main     <sha>     <fetched>
 defaults  embedded:defaults           0.1.0    embedded  <fetched>
+ts        <fleet-packs>//runtimes/ts  v0.1.0   <sha>     <fetched>
+tiny      <fleet-packs>//tiny         v0.1.0   <sha>     <fetched>
 ```
 
 It exits 0. The defaults have their own row, with the source
@@ -212,7 +217,7 @@ schema = 1
 
 [packs."<fleet-packs>//tiny"]
 name = "tiny"
-version = "main"
+version = "v0.1.0"
 commit = "<sha>"
 fetched = "<fetched>"
 ```
@@ -224,8 +229,8 @@ fetched = "<fetched>"
 
 ```sh
 $ fleet pack remove <fleet-packs>//tiny
-removed tiny main — <machine-dir>/packs/tiny
-dropped <fleet-packs>//tiny main from <machine-dir>/packs.lock
+removed tiny v0.1.0 — <machine-dir>/packs/tiny
+dropped <fleet-packs>//tiny v0.1.0 from <machine-dir>/packs.lock
 ```
 
 It exits 0. It deletes the pack's directory first and then drops its line from
@@ -268,7 +273,6 @@ the defaults:
 ```sh
 $ fleet prime
 fleet 0.1.0 — packs: tiny, ts; guards: shell-trap on, record on, release-ref on, production-write on
-store: bd 1.3.0 (adapter bd)
 ...
 ```
 

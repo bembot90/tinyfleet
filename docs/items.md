@@ -1,31 +1,32 @@
 # Items and the record
 
-An item is one piece of work in the project's work graph, the bd store beside
-the project. Seven verbs move it: `fleet dispatch` gives it to a seat,
-`fleet brief` renders what that seat reads first, `fleet deliver` hands the
-work over, `fleet hold` stops it on a question and `fleet clear` answers the
-question, `fleet review` reads the delivery and writes a verdict, and
-`fleet land` puts the reviewed commit on the trunk and closes the item. Every
-verb that writes appends a typed entry to the item's timeline and reads it
-back before it exits 0, so the item's timeline, in the store's order, is its
-record. `fleet item show` renders it.
+An item is one piece of work in the project's work graph, which the project's
+store keeps (see [The store contract](store.md)). Seven verbs move it:
+`fleet dispatch` gives it to a seat, `fleet brief` renders what that seat
+reads first, `fleet deliver` hands the work over, `fleet hold` stops it on a
+question and `fleet clear` answers the question, `fleet review` reads the
+delivery and writes a verdict, and `fleet land` puts the reviewed commit on
+the trunk and closes the item. Every verb that writes appends a typed entry
+to the item's timeline and reads it back before it exits 0, so the item's
+timeline, in the store's order, is its record. `fleet item show` renders it.
 
 ## Terms
 
-- **Item**: one entry in the project's bd store, named by its id.
+- **Item**: one entry in the project's store, named by its id.
 - **Entry**: one typed fact on an item: who wrote it, when, and what it
   says. Its kind is one of `ordered`, `order_withdrawn`, `delivered`,
-  `reviewed`, `held`, `cleared` and `landed`. The store keeps each entry as
-  one JSON comment on the item.
-- **Timeline**: the item's entries in the store's order. A comment a person
-  writes on the item by hand is theirs and is not on the timeline.
+  `reviewed`, `held`, `cleared` and `landed`. The store keeps each entry on
+  the item; the bd pack's store keeps it as one JSON comment.
+- **Timeline**: the item's entries in the store's order. With the bd pack's
+  store, a comment a person writes on the item by hand is theirs and is not
+  on the timeline.
 - **The record**: the item's timeline, plus its assignee and its order index.
 - **Order**: the `ordered` entry `dispatch` appends, together with the
-  item's order index: an object in the item's metadata under `fleet.orders`,
-  carrying `"v": 1`. An item with no order index has not been given to
-  anybody. fleet reads no other key for the index: an `orders` key another
-  tool wrote is not an order, whatever it holds, and fleet leaves it as it
-  is.
+  item's order index: the order the store keeps on the item, carrying who
+  gave it, its kind, the seat it is for and when (see
+  [The store contract](store.md#order)). An item with no order index has not
+  been given to anybody. A key another tool keeps on the item is not an
+  order, whatever it holds, and fleet leaves it as it is.
 - **Brief**: the first turn a dispatched seat reads, rendered from the item.
 - **Ring**: one message sent to a seat's live session, naming the item and,
   from `dispatch`, where its brief is.
@@ -97,9 +98,10 @@ reviewer, named `<reviewer-name>`, as `seat:<reviewer>`. Each `<…>` in
 `seat:<…>` is a full id.
 
 The actor is what the store records too: every write a verb makes to the
-item is made under `<kind>:<id>`. The one exception is the close
-`fleet land` makes, which is made under the closer's bare id, because `bd`
-closes an assigned item only for an actor equal to its assignee.
+item is made under `<kind>:<id>`. The close `fleet land` makes is made as the
+seat that holds the item, `seat:<its assignee>`, because a store closes an
+assigned item only for its assignee (see
+[The store contract](store.md#closing)).
 
 The seat verbs (`deliver`, `hold`) use the actor to find the item: it is the
 one item assigned to that seat's id, open or in progress, that carries an
@@ -143,9 +145,8 @@ It exits 0. In one act it writes three things and reads all three back:
 - the assignee: the seat's full id, `<seat>`;
 - the `ordered` entry on the item's timeline, naming the seat by its full
   id; `<entry>` is the entry's id;
-- the order index in the item's metadata, `fleet.orders`: `by` (the actor,
-  `seat:<you>`), `kind` (`dispatch`), `seat` (the full id), `at` and `v`
-  (`1`).
+- the order index the store keeps on the item: `by` (the actor,
+  `seat:<you>`), `kind` (`dispatch`), `seat` (the full id) and `at`.
 
 Then it writes one `item.entry` line to the event stream for the `ordered`
 entry, and the brief to `<fleet-dir>/briefs/<item>.md`. Last, it rings the
@@ -531,6 +532,9 @@ be the item's assignee. A run's landing acts as the `[core] reviewer` seat
 land. Run from the project's primary checkout, it does its work in the
 reviewer's worktree for this project, as the machine's seat list names it.
 
+In a project whose store is the bd pack's, which exports
+`.beads/issues.jsonl`:
+
 ```sh
 $ fleet land <item> <redelivered> --test "test -f GREETING" --reason "greeting added" --by <reviewer-name>
 1. reviewed commit  PASS       <redelivered> — the last verdict on <item> accepts it, by this landing's own reviewer
@@ -557,8 +561,9 @@ In order, it:
    accept of this commit, written by the landing's own reviewer;
 4. fetches `origin`, cuts `land/<item>` at `origin/main`, and squashes the
    commit onto it;
-5. regenerates the store's export and checks the staged set equals the
-   delivery's own paths, outside `.beads/`;
+5. regenerates the store's export, where the store declares one, and checks
+   the staged set equals the delivery's own paths, outside the export's
+   directory;
 6. runs `[landing] ci_marker`, where the project sets one, with the staged
    paths on its input, and appends what it prints to the commit subject;
 7. commits, with the subject `<item>: <title>` and two trailers:
@@ -720,8 +725,8 @@ timeline (6 entries)
 ```
 
 It writes nothing and exits 0. `order` reads `none` on an item with no order
-index, and `unreadable` where `fleet.orders` is not an object at `v` 1. The
-item's assignee is always a seat's full id. `held` and `cleared` entries sit
+index, and `unreadable` where the store holds an order index that does not
+read as one. The item's assignee is always a seat's full id. `held` and `cleared` entries sit
 where a question stopped the work; an `order_withdrawn` entry follows an
 order a refused spawn or a retired seat took back.
 
@@ -732,11 +737,14 @@ object per entry carrying its `id`, `at`, `by` (the actor as one string,
 `<kind>:<id>`, such as `seat:<you>`), `kind` and the kind's own fields.
 
 An item the store does not hold is exit 1:
-`fleet item show: <item>: no issues found matching the provided IDs`. A
-comment on the item that carries fleet's entry key and does not read as an
-entry makes the whole read exit 3, naming the comment — every verb that
-reads the timeline refuses the same way:
-`fleet item show: <item>'s comment <comment> carries fleet.entry and does not read: missing field `hold``.
+`fleet item show: <item> is not in the store`, followed, where the store's
+adapter printed a line on standard error, by that line in parentheses:
+`(the adapter said: …)`. A timeline the store cannot answer whole makes the
+whole read exit 3, and every verb that reads the timeline refuses the same
+way. With the bd pack's store, a comment on the item that carries fleet's
+entry key and does not read as an entry is one:
+`fleet item show: <adapter> timeline could not tell: ` and the store's
+reason, naming the comment.
 
 ### What each verb writes to the stream
 
@@ -803,14 +811,14 @@ Exits follow the table every command shares; see
 | No fleet above the current directory | 3 | ``no `fleet.toml` and no `.fleet/project.toml` above <dir> — `fleet create` writes one`` | Run from inside the project |
 | The policy file sets `[gates] suite` or `[gates] touched` | 1 | `[gates] suite is not project policy, and nothing reads it — a test command is the workflow's: set …, and delete the key`, and the `[gates]` line below | Delete the key and the `[gates]` table; pass `--test` or `--touched` |
 | The policy file carries a `[gates]` table, even an empty one | 1 | ``[gates] is not a policy table, and nothing reads it — its keys are set by purpose: `ci_marker` under [landing], `tool_commands` under [permissions], and `release_ref_glob` and the `prod_*` lists under [guards.targets]; move each one there, and delete the table`` | Move each key to the table named, and delete `[gates]` |
-| A comment on the item carries `fleet.entry` and does not read | 3 | `<item>'s comment <comment> carries fleet.entry and does not read: <why>` | Read the comment; fleet will not answer from a record with a hole in it |
-| `item show` of an item not in the store | 1 | `<item>: no issues found matching the provided IDs` | Check the id |
+| The store cannot answer the item's timeline whole, as with the bd pack's store when a comment carries fleet's entry key and does not read | 3 | `<adapter> timeline could not tell: ` and the store's reason | Read what it names; fleet will not answer from a record with a hole in it |
+| `item show` of an item not in the store | 1 | `<item> is not in the store`, and `(the adapter said: …)` where the adapter printed a line on standard error | Check the id |
 | `dispatch` of an item that is blocked | 1 | `<item> is not ready — it is blocked by <other>` | Finish the blocker |
 | `dispatch` of an item that is not open | 1 | ``<item> is not ready — its status is `<status>` `` | Pick a ready item |
 | `dispatch` of an epic | 1 | `<item> is an epic, and an epic is never dispatched — its children are` | Dispatch its children |
-| `dispatch` of an item not in the store | 1 | `<item>: no issues found matching the provided IDs` | Check the id |
+| `dispatch` of an item not in the store | 1 | `<item> is not in the store`, and `(the adapter said: …)` where the adapter printed a line on standard error | Check the id |
 | `dispatch` of an item already ordered | 1 | `<item> already carries an order — kind=dispatch by=seat:<you> at=<time>` | Nothing: it is given |
-| `dispatch` of an item whose `fleet.orders` is not an object at `v` 1 | 3 | ``<item> carries a `fleet.orders` this fleet cannot read — it is not an object at v 1 — and a dispatch will not guess whether it is an order`` | Read the key; dispatch with the fleet that wrote it |
+| `dispatch` of an item whose order index the store holds in a form that does not read as one | 3 | `<item>'s order index is not one this fleet can read — this fleet reads an order index at the store contract's v 1 — and a dispatch will not guess whether it is an order` | Read the item in its store; dispatch with the fleet that wrote the index |
 | `dispatch --to` a seat the machine does not run | 1 | `<arg> names no seat — the seats are <machine-name> (<id>), …`, listing the seats this machine runs | Name a seat from the list |
 | `dispatch --to` an argument more than one running seat answers to | 1 | `<arg> names <n> seats — <machine-name> (<id>), … — say more of the id` | Give more of the id |
 | `dispatch --to` a seat holding open work | 1 | `` `<seat-name>` already holds <item> (open) — one item at a time `` | Wait, or pick another seat |

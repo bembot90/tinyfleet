@@ -140,8 +140,8 @@ fleet create: fleet: embedded or standalone? — stdin is not a terminal; answer
 ```
 
 It exits 2. A prompt never waits on a script. One question has a default
-instead of a refusal: `fleet create`'s store question, which takes `bd` when
-there is no terminal and no `--store`.
+instead of a refusal: `fleet create`'s store question, which takes `bd`, the
+bd pack's store, when there is no terminal and no `--store`.
 
 A verb under the wrong noun. `fleet seat woke`, `fleet seat rest`, `fleet seat
 handed-off` and `fleet seat exited` name the spelling that works, whatever
@@ -282,11 +282,12 @@ fleet dispatch: dm-ncl is not ready — its status is `closed`
 ```
 
 It exits 1, naming `dm-ncl`. An id the store matches to no item is refused
-with the store's own words:
+as not in the store, with the last line the store's adapter printed on
+standard error beside it. With the bd pack's store:
 
 ```sh
 $ fleet dispatch zzz --to orla
-fleet dispatch: zzz: no issues found matching the provided IDs
+fleet dispatch: zzz is not in the store (the adapter said: `zzz` is not in the store: no issues found matching the provided IDs)
 ```
 
 It exits 1.
@@ -338,7 +339,7 @@ suffix, and how to run a command past it, are in [Guards](guards.md).
 | `fleet event rest` for a seat with no live session | 4 | `fleet event rest: <seat> has no live session — its row reads <state>` | Nothing to stop; read the seat's row with `fleet status --seat <seat>`. |
 | `fleet event rest` on a transient seat | 6 | ``… is a transient row, and only named seats rest — use `fleet seat retire <seat>` instead`` | Retire it. |
 | `fleet seat feed` or `fleet seat retire` on a named seat | 6 | `<machine-name> is a named seat — named seats are rung and rested, and only a transient row is fed and retired` | Use `fleet seat nudge` or `fleet event rest`. |
-| An item id the store matches to no item | 1 | `fleet <verb>: <id>: no issues found matching the provided IDs` | Type the full id. |
+| An item id the store matches to no item | 1 | `fleet <verb>: <id> is not in the store`, and `(the adapter said: …)` where the adapter printed a line on standard error | Type the full id. |
 
 ## See also
 

@@ -198,9 +198,10 @@ holds  1 open
 ```
 
 A hold stops counting once its store no longer lists it open, whoever
-cleared it: `fleet clear`, `fleet cancel`, or a person with `bd`. When one of
-those work graphs does not answer, the line reads `holds  not counted —` and
-the reason, and when the stream cannot be read it reads
+cleared it: `fleet clear`, `fleet cancel`, or a person working in the store
+itself, with `bd` for the bd pack's store. When one of those work graphs
+does not answer, the line reads `holds  not counted —` and the reason, and
+when the stream cannot be read it reads
 `holds  not counted — the stream did not read`.
 
 ### When a section cannot be read

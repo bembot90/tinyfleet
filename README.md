@@ -150,6 +150,22 @@ that same line.
 `none installed` until one is added, and never the defaults, which are the
 binary's — and prints the resolved rules file beneath it.
 
+The store is a pack's too. This binary owns the store contract
+(`docs/store.md`, printed by `fleet store schema`, checked by `fleet store
+check`) and carries no store of its own: `[store] adapter` names a store
+adapter an installed pack carries, and a project that names none opens `bd`,
+the one the bd pack carries. fleet-packs holds one pack per store under
+`adapters/store/<name>`. `fleet create` asks which store the fleet uses and
+installs its pack from `supported::PINNED_PACKS_SOURCE` at
+`supported::PINNED_PACKS`; the default, `bd`, is the same install as
+
+    fleet pack add https://github.com/bembot90/fleet-packs//adapters/store/bd --version v0.1.0
+
+`--store none` installs nothing and prints that line, and `--packs-from <dir>`
+installs from a checkout of fleet-packs instead. The bd pack imports ts, as
+tiny does, and two installed packs that each declare an import do not layer,
+so a fleet that takes tiny is created with `--store none`.
+
 A pack's settings are set in `fleet.toml`, under the pack's name, and only the
 keys the pack declares. A pack declares each one in its `pack.toml` with a
 one-line description, and optionally a type and a default:

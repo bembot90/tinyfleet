@@ -38,9 +38,10 @@ $ cargo build --release
 
 The binary lands at `target/release/fleet`, or at `target/debug/fleet` for a
 plain `cargo build`. Fleet also calls other tools as you go further: `git` to
-fetch a pack, `bd` for the project's items, `claude` for the sessions the
-controller starts, and `deno` for the tiny pack's workflows. The version of
-each that fleet supports is in [What fleet runs on](#what-fleet-runs-on).
+fetch a pack, `claude` for the sessions the controller starts, and `deno`
+for the tiny pack's workflows. The store's pack runs what its store needs:
+the bd pack runs `deno` and `bd`. The version of each that fleet supports is
+in [What fleet runs on](#what-fleet-runs-on).
 
 `--version` prints the version and nothing else:
 
@@ -61,21 +62,26 @@ full path, so start the controller from the copy you mean to keep.
 
 ## What fleet runs on
 
-Fleet runs four other tools, and installs packs from one repository,
+Fleet runs three other tools, and installs packs from one repository,
 fleet-packs, at `https://github.com/bembot90/fleet-packs`. Every one but
 `git` has a supported version, and a doctor check measures the one you have
 installed against it.
 
 | Tool | Supported version | What measures it |
 | --- | --- | --- |
-| `bd` | 1.3.0, pinned by the bd pack | the bd pack's `bd-version` doctor check |
 | Claude Code (`claude`) | 2.1.280 | the `claude-code-version` doctor check, and the controller's `substrate.moved` event |
 | Deno (`deno`) | 2.9.7, pinned by the `ts` pack | the `runtime-version` doctor check, which `fleet run` runs before it opens a run, and the `ts` pack's `deno-version` |
 | fleet-packs | the tag `v0.1.0`, which `fleet create` installs the store's pack at | the `fleet-packs-version` doctor check, over every pack `packs.lock` pins from that repository |
 | `git` | none: fleet pins no version | nothing |
 
-Another version of `bd`, of Claude Code or of a pack from fleet-packs is named
-and not refused: the verbs and the controller still run on it. Deno is
+The bd pack pins the versions its store runs on and carries the doctor check
+that measures them. Its README says what the pack needs, how to install it,
+and which check measures what. The installed copy is at
+`<machine>/packs/bd/adapters/store/bd/README.md`, and fleet-packs holds it
+at `adapters/store/bd/adapters/store/bd/README.md`.
+
+Another version of Claude Code or of a pack from fleet-packs is named and not
+refused: the verbs and the controller still run on it. Deno is
 different: while the `runtime-version` check is red, `fleet run` refuses to
 open a run. See [Runs and workflows](runs.md).
 
@@ -86,18 +92,11 @@ every poll. That is 2.1.280 unless the fleet's `fleet.toml` pins another; see
 ### Running a doctor check
 
 `claude-code-version` comes with the defaults every fleet gets, which
-`fleet create` and `fleet start` write under `<machine>/defaults`;
-`bd-version` comes with the bd pack, under `<machine>/packs/bd`. Each is a
-shell script you run with `sh`:
-
-```sh
-$ sh <machine>/packs/bd/doctor/bd-version/run.sh
-bd-version: pinned bd 1.3.0; `bd version` answers: bd version 1.3.0 (<build>)
-bd-version: holds
-```
-
-It exits 0. On another version, the check says `broken`, says how to install
-the supported one, and exits 1:
+`fleet create` and `fleet start` write under `<machine>/defaults`. A pack
+carries checks of its own, under its directory in `<machine>/packs`: the ts
+pack's `deno-version` (below), and the bd pack's check on what its store
+runs. Each is a shell script you run with `sh`. On another version, a check
+says `broken`, says how to install the supported one, and exits 1:
 
 ```sh
 $ sh <machine>/defaults/doctor/claude-code-version/run.sh
@@ -106,17 +105,11 @@ claude-code-version: broken — this claude is not the supported 2.1.280, so the
 ```
 
 A tool that does not answer at all is `broken` too, with the exit it gave:
-`did not answer (exit 127)` when it is not on your `PATH`. What each check
-names to install is:
-
-- `bd-version`: `Install the pinned bd 1.3.0 by beads' own instructions:`
-  and beads' installation page for that release,
-  `https://github.com/gastownhall/beads/blob/v1.3.0/docs/getting-started/installation.md`,
-  whether `bd` answered another version or nothing answered.
-- `claude-code-version`: `claude install 2.1.280` when `claude` answered
-  another version, and
-  `curl -fsSL https://claude.ai/install.sh | bash -s 2.1.280` when nothing
-  answered.
+`did not answer (exit 127)` when it is not on your `PATH`.
+`claude-code-version` names `claude install 2.1.280` when `claude` answered
+another version, and
+`curl -fsSL https://claude.ai/install.sh | bash -s 2.1.280` when nothing
+answered.
 
 `fleet-packs-version` comes with the defaults too. It reads `packs.lock`
 through `fleet pack list` and compares every pack installed from
@@ -135,10 +128,10 @@ named with `--packs-from` is not read. A pack from the repository at another
 tag is a finding and exits 1, naming it with
 `` `fleet pack remove <source>` and then `fleet pack add <source> --version v0.1.0` ``.
 
-`bd-version` asks the binary `FLEET_BD_BIN` names, or else the first `bd` on
-your `PATH`. `claude-code-version` asks the binary `FLEET_CLAUDE_BIN` names,
-or else the first `claude` on your `PATH`, which is not the search path the
-controller uses (see [Starting the controller](#starting-the-controller)).
+`claude-code-version` asks the binary `FLEET_CLAUDE_BIN` names, or else the
+first `claude` on your `PATH`, which is not the search path the controller
+uses (see [Starting the controller](#starting-the-controller)). The bd pack's
+README says which `bd` its check and its store run.
 
 The `ts` pack's own Deno check runs the same way, from the pack:
 
@@ -159,14 +152,14 @@ It asks three questions: embedded or standalone, which agent, and which
 store. It installs the store's pack, then writes the file for the mode into
 the directory you ran it in. It also writes the defaults into the machine
 directory and lists you, whoever ran it, as the fleet's first seat: a human
-one, under this machine's identity. It does not create or change the
-project's `bd` store: run `bd init` yourself. Everything it prints goes to
-standard error.
+one, under this machine's identity. It makes nothing of the store's own in
+the project (see [The store's pack](#the-stores-pack)). Everything it prints
+goes to standard error.
 
 On a terminal, each question is a list you pick from, and Enter takes the
-first row: `embedded`, `claude_code` and `bd`. Where standard input is not a
-terminal, pass the mode and the agent as flags. The store has a default: with
-no `--store` and no terminal, the store is `bd`.
+first row: `embedded`, `claude_code` and `bd`, the bd pack's store. Where
+standard input is not a terminal, pass the mode and the agent as flags. The
+store has a default: with no `--store` and no terminal, the store is `bd`.
 
 ### The store's pack
 
@@ -189,6 +182,19 @@ adapter = "bd"
 
 Where a pack named `bd` is already installed on the machine, `create` leaves
 it as it stands and says where it came from.
+
+The bd pack's store keeps the project's items in a beads board inside the
+project, which `create` does not make: the bd pack's README says how to make
+one. Once the board is there, `fleet item list --ready` reads the items that
+are ready:
+
+```sh
+$ fleet item list --ready
+<item> · Name the stamp's fields  [open]  type task · labels none · assignee none
+```
+
+It exits 0. Before the board is there, it refuses and exits 3, with the
+store's reason (see [When it refuses](#when-it-refuses)).
 
 `--store none` installs nothing, writes no `[store]` table, and prints the
 line that installs the pack later:
@@ -278,10 +284,9 @@ which lists you once the file is put right.
 
 `.fleet/project.toml` carries `[project]` with `name`, `primary` (the project
 directory) and `worktrees` (a sibling directory named after the project with
-`-worktrees` on the end). Where the store answers a prefix, the file carries
-it as `item_prefix` (the bd pack's store answers the `issue-prefix` the
-project's `.beads/config.yaml` names); otherwise that line is left commented
-out for you to fill in. It carries the `[store]` table too,
+`-worktrees` on the end). Where the project's store answers a prefix for its
+ids, the file carries it as `item_prefix`; otherwise that line is left
+commented out for you to fill in. It carries the `[store]` table too,
 as the embedded file does. Where a `.fleet/project.toml` is already there,
 `create --standalone` reads every key in it, writes nothing over it, and
 registers it.
@@ -417,7 +422,7 @@ line, the project's store on its second, then prints the resolved rules:
 
 ```sh
 $ fleet prime
-fleet 0.1.0 — packs: tiny, ts; guards: shell-trap on, record on, release-ref on, production-write on
+fleet 0.1.0 — packs: bd, ts; guards: shell-trap on, record on, release-ref on, production-write on
 store: bd 1.3.0 (adapter bd)
 Five things no verb guesses, each one a lesson somebody already paid for:
 ...
@@ -426,13 +431,14 @@ Five things no verb guesses, each one a lesson somebody already paid for:
 It exits 0, always. With no pack installed, the first line says
 `packs: none installed`. The second line names the store by the name and
 version it answers with, then the adapter that answered: the name the
-project's [`[store] adapter`](store.md#choosing-an-adapter) gives, `bd` where
-it names none, or the file name of the adapter it names by path. The project
+project's [`[store] adapter`](store.md#choosing-an-adapter) gives, `bd`, the
+bd pack's adapter, where it names none, or the file name of the adapter it
+names by path. The project
 is the seat's worktree when the directory is one, and otherwise the nearest
 directory, at or above it, that holds a `fleet.toml` or a
 `.fleet/project.toml`. The line does not compare the version with the
-supported one; the bd pack's `bd-version` doctor check does (see
-[Running a doctor check](#running-a-doctor-check)). When the store cannot be
+supported one; for the bd pack's store, the bd pack's own doctor check does
+(see [Running a doctor check](#running-a-doctor-check)). When the store cannot be
 opened, or does not answer within two seconds, the line reads
 `store: could not be read — ` and the reason, so a machine where no installed
 pack carries the store's adapter gets that line too, naming the
@@ -489,7 +495,8 @@ A relative path is read from the directory `fleet.toml` is in. With no
 | `fleet pack add` before `fleet create` or `fleet start` has run on this machine | 1 | ``fleet pack add: the defaults this binary carries are not at <machine>/defaults — `fleet start` writes them, and every template resolves through them`` | Run `fleet create` first. |
 | `fleet pack add` of tiny where the bd store's pack is installed, or the reverse | 1 | ``fleet pack add: layer `tiny` declares its own import `ts` — imports are one level deep`` | Keep one of the two: create the fleet with `--store none` to add tiny. |
 | `fleet run takeoff` with tiny installed and ts not | 1 | ``fleet run: `tiny` carries `workflows/takeoff.ts` and declares no [runtime] table, and no installed pack it imports declares one: `tiny` imports `ts`, which is not installed — `fleet pack add <fleet-packs>//runtimes/ts --version <version>` adds it`` | Run the `fleet pack add` it names. |
-| `fleet run` in a project with no `bd` store | 3 | `fleet run: the work graph could not be read: ...` | Run `bd init` in the project. |
+| A verb that reads the store where no installed pack carries the store's adapter, as after `fleet create --store none` | 3 | ``fleet item list: no store adapter named `bd` in the installed packs — `fleet pack add https://github.com/bembot90/fleet-packs//adapters/store/bd --version v0.1.0` installs the one fleet-packs carries`` | Run the `fleet pack add` it names. |
+| `fleet item list --ready` or `fleet run` where the store cannot read the project's items, as with the bd pack's store before the project has a board | 3 | `fleet item list: the store's ready set could not be read: ` or `fleet run: the work graph could not be read: `, then the adapter's reason | Make the board, as the bd pack's README says. |
 | `fleet start` with no `fleet.toml` above the directory and no fleet named by the seat list | 1 | ``fleet start: no fleet.toml above this directory and no fleet named by <machine>/config.json — `fleet create` writes one`` | Run it inside the fleet's project, or `fleet create` first. |
 | `fleet start` while the controller is running | 1 | `fleet start: the controller is already running as pid <pid>; its last tick was <stamp>` | Nothing to do, or `fleet stop` first. |
 | `fleet start` cannot find `claude` | 3 | ``fleet start: no `claude` on the constructed child PATH (<path>) — nothing was loaded; the search path is <path>`` | Install `claude` into a directory on that path, or set `FLEET_CLAUDE_BIN`. |

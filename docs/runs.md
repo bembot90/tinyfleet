@@ -119,8 +119,8 @@ In this order, once every check has passed:
    of the `fleet.toml` in force) and `bundle` (what the pack's bundle command
    wrote).
 3. The hash, a sha256 over those three files, and the workflow, the pack and
-   the file, written to the run record's `fleet.run` metadata, an object
-   carrying `"v": 1`.
+   the file, with the time the run started, written onto that item as its
+   [run record](store.md#run-record).
 4. `run.started` on the event stream, carrying the run, the hash and the
    workflow.
 
@@ -642,7 +642,8 @@ to the person.
 | `[packs.<pack>]` sets a key the pack does not declare | 1 | ``fleet run: `<workflow>` is not opened — [packs.<pack>] sets `farewell`, which the pack `<pack>` does not declare — its pack.toml declares greeting`` | Remove the key. |
 | `[packs.<pack>]` sets a value of the wrong type | 1 | ``fleet run: `<workflow>` is not opened — [packs.<pack>] sets `greeting` to an integer, and the pack `<pack>` declares it string`` | Write the declared type. |
 | `fleet.toml` does not parse | 3 | ``fleet run: the policy in force at <path> does not parse, so the settings its [packs] table sets cannot be read:`` and the parse error | Fix the file. |
-| The work graph cannot be read | 3 | ``fleet run: the work graph could not be read:`` and the reason | Make `bd` reachable. |
+| The store cannot be opened, as where no installed pack carries its adapter | 3 | `fleet run: ` and why, naming the `fleet pack add` line where no installed pack carries it | Install the store's pack; see [Getting started](getting-started.md#the-stores-pack). |
+| The work graph cannot be read | 3 | ``fleet run: the work graph could not be read:`` and the store's reason | Read the reason; with the bd pack's store, the project needs its board, as the bd pack's README says. |
 | The pack's bundle command fails | 1 | ``fleet run: the bundle command of `<pack>` exited <rc> — `` the command, its error output, and `the record <run> filed for this run is closed as failed` | Fix the workflow, and run it again. |
 | `fleet cancel` of an item that is not a run's record | 1 | ``fleet cancel: <item> is not a run's record — it carries no `fleet:run` label, and `fleet cancel` ends runs and nothing else`` | Name the run's id. |
 | `fleet cancel` of a run already closed | 1 | `fleet cancel: <run> is closed already — the run has ended and there is nothing to cancel` | Nothing to do. |

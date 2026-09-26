@@ -146,14 +146,14 @@ checks, in the order it runs them:
 | `pipe-rc` | reading `$?` right after a pipeline whose last stage only formats | the command without the pipe, output to a file, then its own `$?` |
 | `false-alternative` | `A && B \|\| C` where C only reports (`echo`, `printf`, `true`, `:`, `print`) and A has a third answer | `if A; then B; else ...; exit 1; fi` |
 
-The store's command is `bd` for the bd pack's store, and another store's is
-the one it declares (see
-[The store's command](#the-stores-command)). With `bd`, the stored text
-`record-backtick` reads is the text argument of `bd note`
-and `bd comment`, the title and `--description`, `-d`, `--notes` and
-`--append-notes` of `bd create`, `--reason` and `-r` of `bd close`, and
-`--title`, `--description`, `-d`, `--acceptance`, `--design` and
-`--append-notes` of `bd update`. A backtick inside single quotes, and text
+The store's command is the one the project's store declares (see
+[The store's command](#the-stores-command)). The examples on this page use
+`bd`, the command the bd pack's store declares. Whatever the command, the
+stored text `record-backtick` reads is the same: with `bd`, it is the text
+argument of `bd note` and `bd comment`, the title and `--description`, `-d`,
+`--notes` and `--append-notes` of `bd create`, `--reason` and `-r` of
+`bd close`, and `--title`, `--description`, `-d`, `--acceptance`, `--design`
+and `--append-notes` of `bd update`. A backtick inside single quotes, and text
 passed as `"$(cat <file>)"`, are let through.
 
 The stages `pipe-rc` treats as formatting are `head`, `tail`, `cat`, `cut`,
@@ -173,8 +173,8 @@ let through.
 Record refuses writes to items that destroy text, skip the audit row, or
 leave an id a later reader cannot resolve. It reads calls of the store's
 command only, by that name or by a path ending in it (see
-[The store's command](#the-stores-command)). The examples on this page use
-`bd`, the command the bd pack's store declares. Its three checks, in order,
+[The store's command](#the-stores-command)). Its examples use `bd`, the bd
+pack's command, as the shell-trap class's do. Its three checks, in order,
 each with its own escape:
 
 | Check | Refuses | Write instead | Escape |
@@ -223,8 +223,8 @@ fleet asks the project's store for its command only when the command being
 judged carries `note`, `comment`, `create`, `close`, `update` or `sql`
 somewhere in its text. A project file that does not read, a store that
 cannot be opened, and a store that does not answer readably within 2 seconds
-each leave `bd` as the command read. So does a directory with no project
-above it.
+each leave `bd`, the bd pack's command, as the command read. So does a
+directory with no project above it.
 
 ## The release-ref class
 

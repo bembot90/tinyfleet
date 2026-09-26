@@ -29,7 +29,10 @@ adapter = "bd"
 The key takes two forms. A name with no `/` in it is the store adapter an
 installed pack carries under `adapters/store/<name>/`. `bd` is the one the bd
 pack carries, and a project whose file has no `adapter` key opens `bd` the
-same way. Another pack's adapter is named the same way:
+same way. `fleet create` installs the bd pack from fleet-packs unless you
+answer its store question with `none` (see
+[Getting started](getting-started.md#the-stores-pack)). Another pack's
+adapter is named the same way:
 
 ```toml
 [store]
@@ -38,7 +41,7 @@ adapter = "tracker"
 
 fleet reads the installed packs over the defaults, and the highest layer
 carrying `adapters/store/<name>/adapter.toml` is the adapter: fleet runs the
-`entry` that file names, from the same directory. An adapter whose
+`entry` that file names, the file of that name beside it. An adapter whose
 `adapter.toml` fails the pack format is not run. How a pack carries an
 adapter is on [Packs](packs.md).
 
@@ -506,6 +509,43 @@ carries `by` as the seat that holds the item, `seat:<its assignee>`.
 - `scratch` makes a new, empty store inside `into`, and never touches a store
   outside it.
 
+## Writing an adapter
+
+An adapter is an executable that answers the verbs on this page. You carry it
+in a pack, so that `fleet pack add` installs it and a project names it by
+name, or you name it in `[store] adapter` by its absolute path.
+
+In a pack, a store adapter is the directory `adapters/store/<name>/`, holding
+`adapter.toml` and the entry that file names. `<name>` is the directory's
+name, the `name` in `adapter.toml`, and the name a project writes in
+`[store] adapter`. What `adapter.toml` holds is on
+[Packs](packs.md#the-format).
+
+fleet runs the entry itself, as `<entry> <verb>`, with nothing in front of
+it, so the entry is an executable file: a compiled program, or a script
+whose first line, `#!`, names what runs it. The bd pack's entry is
+`main.ts`, a script whose first line is `#!/bin/sh`. `fleet pack check`
+refuses an entry that is not executable, and fleet does not run one. A pack
+whose adapter needs a runtime declares it, or imports a pack that does, and
+fleet puts the runtime on the `PATH` the entry runs on (see
+[Choosing an adapter](#choosing-an-adapter)): the bd pack imports the ts
+pack, which declares Deno.
+
+[The schema](#the-schema) is the contract as a document your adapter's
+types can be generated from and its requests and answers checked against.
+[Checking an adapter](#checking-an-adapter) runs every check of the contract
+against your adapter, by its absolute path before you install it and by its
+name after.
+
+The store adapters fleet installs live in the fleet-packs repository,
+`https://github.com/bembot90/fleet-packs`, one pack per store under
+`adapters/store/<name>/`, so the bd pack is `adapters/store/bd` there and
+its adapter is `adapters/store/bd/adapters/store/bd`. The line that installs
+one at the tag this binary supports is
+`fleet pack add https://github.com/bembot90/fleet-packs//adapters/store/<name> --version v0.1.0`,
+and fleet names it whenever no installed pack carries the name a project
+asks for (see [When it refuses](#when-it-refuses)).
+
 ## The schema
 
 `fleet store schema` prints this contract as one JSON Schema document, draft
@@ -553,9 +593,9 @@ object, a request among them, accepts keys it does not name. An update's
 contract against an adapter and prints what each one answered.
 
 Without `--adapter` it checks the adapter the project you are in selects:
-the one `[store] adapter` names in the project's own file, else `bd`, by
-name. Outside a project it checks `bd`, through this machine's installed
-packs. `--adapter` takes what `[store] adapter` takes, an absolute path to
+the one `[store] adapter` names in the project's own file, else `bd`, the
+bd pack's adapter, by name. Outside a project it checks `bd`, through this
+machine's installed packs. `--adapter` takes what `[store] adapter` takes, an absolute path to
 an adapter executable or the name of one an installed pack carries, and
 checks that one instead.
 
