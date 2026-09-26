@@ -12,7 +12,8 @@
 //! `paste-buffer`, `send-keys`, `capture-pane`, `kill-session`, `list-panes`,
 //! `attach-session` and `kill-server`, chained with `;` as the real client
 //! chains them. Every argument list it is run with is recorded on the state,
-//! which is how a suite reads an attach's.
+//! which is how a suite reads an attach's — and an attach's whole environment
+//! beside it, the one call run under the person's own.
 //!
 //! One verb is the stub's own, for a suite to drive what no client call does:
 //! `fleet-tmux-stub end <name> <status>` ends that session's pane with the
@@ -241,6 +242,18 @@ fn one(server: &mut FakeServer, command: &[String]) -> Result<String, String> {
                 .collect())
         }
         "attach-session" => {
+            // Recorded before the target is read, as the argument list is: an
+            // attach refused for its session still ran under what it carried.
+            server.attach_envs.push(
+                std::env::vars_os()
+                    .map(|(k, v)| {
+                        (
+                            k.to_string_lossy().into_owned(),
+                            v.to_string_lossy().into_owned(),
+                        )
+                    })
+                    .collect(),
+            );
             let name = target(command)?;
             if server.sessions.contains_key(&name) {
                 Ok(String::new())

@@ -110,6 +110,16 @@ pub const SEAT_EXITED: &str = "seat.exited";
 /// seat's own event family, not because the seat's workflow emits it.
 pub const SEAT_CLEAR_HALT: &str = "seat.clear_halt";
 
+/// A person took a seat's keyboard: `fleet seat attach --write`, written just
+/// before the attach so a seat typed into by hand is on the record (reviewer
+/// call 2026-09-25 on fleet-2u3.13). A read-only attach writes no line.
+///
+/// ON NEITHER HALF BELOW. A seat never says it, so it is no `fleet event` word
+/// and the tick's fold of seat lines never reads it; the controller never
+/// writes it either — the person's own verb does, about the seat. It asks
+/// nothing of anyone and folds into nothing: it is the record and only that.
+pub const SEAT_ATTACHED: &str = "seat.attached";
+
 /// The five, in the order `fleet event`'s usage names them.
 pub const SEAT_TYPES: [&str; 5] = [
     SEAT_WOKE,
@@ -848,6 +858,10 @@ mod tests {
         all.sort();
         all.dedup();
         assert_eq!(all.len(), listed, "a type is named once: {all:?}");
+
+        // A person's attach is written about a seat by neither half: no seat
+        // says it and the controller never writes it.
+        assert!(!all.contains(&SEAT_ATTACHED), "{all:?}");
 
         // The transient verbs' own end-of-life line, which is the controller's
         // and not a seat's: a seat says `seat.exited`, and `session.stopped` is

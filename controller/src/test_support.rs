@@ -373,6 +373,14 @@ pub struct FakeServer {
     /// fake records [`Call`]s instead.
     #[serde(default)]
     pub invocations: Vec<Vec<String>>,
+    /// The whole environment each `attach-session` the stub binary was run
+    /// under, in order. The attach is the one client run with the PERSON'S
+    /// environment rather than a constructed one, so what it carried — and
+    /// what it did not, `TMUX` above all — is a suite's to read. The
+    /// in-process fake builds that command and runs nothing, so it records
+    /// none.
+    #[serde(default)]
+    pub attach_envs: Vec<Vec<(String, String)>>,
 }
 
 impl FakeServer {

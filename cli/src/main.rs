@@ -8,6 +8,7 @@
 //! published document and the policy, never the process table, and it writes
 //! nothing at all.
 
+mod attach;
 mod claude;
 mod doctor;
 mod envelope;
@@ -367,8 +368,9 @@ its own line and the next part still prints.")]
     Prime,
 }
 
-/// The verbs done TO a seat — the add that lists one, three to a transient one
-/// and the courier to any — plus the four lifecycle words kept as hidden arms.
+/// The verbs done TO a seat — the add that lists one, three to a transient one,
+/// the courier to any and the attach that opens any one's session — plus the
+/// four lifecycle words kept as hidden arms.
 ///
 /// The four are HIDDEN and not absent: they are what a seat's ritual types, and
 /// a bare "unrecognized subcommand" would leave the person to guess the `event`
@@ -421,6 +423,19 @@ projection, or one older than three poll intervals, is 5; a seat the
 projection does not carry, or carries without a live session, is 4. A
 delivery the provider refuses writes its event and exits 1.")]
     Nudge(nudge::NudgeArgs),
+
+    /// open a seat's session in this terminal, read-only unless --write
+    #[command(long_about = "\
+open a seat's session in this terminal, read-only unless --write. Detach with
+the tmux prefix and d. Typing under --write is typing as the seat: the
+session's verbs act as it.
+
+It needs no running controller: the sessions are tmux's, on fleet's own
+socket, and outlive one. A seat with no session there is 4; a dead session is
+still opened, under a line naming its exit status, because its last screen is
+what says why it ended. --write writes one seat.attached line to the stream
+first, so a keyboard taken over a seat is on the record.")]
+    Attach(attach::AttachArgs),
 
     // THE HELP FLAG IS DISABLED ON ALL FOUR, and the words are taken as a
     // trailing var-arg: a lifecycle verb is typed with whatever the ritual typed
@@ -762,6 +777,7 @@ fn seat_command(ui: &Ui, verb: &SeatVerb) -> Exit {
         SeatVerb::Feed(args) => transient::feed_command(args),
         SeatVerb::Retire(args) => transient::retire_command(args),
         SeatVerb::Nudge(args) => nudge::nudge_command(ui, args),
+        SeatVerb::Attach(args) => attach::attach_command(args),
         SeatVerb::Woke(_) => seat_usage_error("woke"),
         SeatVerb::Rest(_) => seat_usage_error("rest"),
         SeatVerb::HandedOff(_) => seat_usage_error("handed-off"),
