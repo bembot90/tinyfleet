@@ -106,9 +106,18 @@
 //! the last line the adapter said — and it knows no contract: it answers the
 //! row an exit is, and the store's `Exec` words that row as the store
 //! contract's refusal, as the agent's caller will word it as its own.
+//!
+//! `agent` is the agent contract written down as types: the six verbs fleet
+//! asks the program a seat runs through its adapter — what it is, which
+//! version, the argv a session launches or resumes under, what each seat is
+//! doing and how full its window is — each verb's request and answer, and
+//! the reasons an adapter refuses by. Nothing here calls an adapter: the
+//! trait fleet drives an agent through is the controller's, and it speaks
+//! these types over the same `adapter` call the store's contract does.
 
 pub mod adapter;
 pub mod add;
+pub mod agent;
 pub mod defaults;
 pub mod digest;
 pub mod embedded;

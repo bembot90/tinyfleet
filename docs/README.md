@@ -41,3 +41,4 @@ skill, `.claude/skills/docs/SKILL.md`.
 | `status.md` | Status and the event stream | `fleet status`, `fleet event tail`, `fleet event show` | drafted |
 | `conventions.md` | Exit codes and conventions | the exit table every command shares, full item ids | drafted |
 | `store.md` | The store contract | the store contract an adapter implements: choosing an adapter, the call, the envelope, the exit table, the types, the verbs and what they mean, writing an adapter as a pack, `fleet store schema` and `fleet store check` | drafted |
+| `agent.md` | The agent contract | the agent contract an adapter implements: the call, the envelope, the exit table, the types, the six verbs and what they mean | drafted |
