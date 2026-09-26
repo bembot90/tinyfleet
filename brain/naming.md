@@ -31,6 +31,7 @@ plain word instead.
 | --- | --- | --- |
 | the product | **fleet** | the name; lowercase |
 | a persistent agent identity with a worktree and a history | **seat** | plain word for a position someone occupies; in general use |
+| the adapter a seat's agent is reached through, and the cli family that checks it | **agent adapter**, `fleet agent` | plain; mirrors the store's, and a seat is the worker while the agent is the program it runs — not the agents/ pack slot, which holds seat templates (Alberto's ruling 18, 2026-09-25) |
 | a batch of work run without the person present | **flight** | the one analogy the product story rests on: "a night with fleet", "minutes to first flight"; used everywhere, never varied |
 | the mode that runs flights unattended from the board | **autopilot** | conventional English for an automatic mode, not a coinage. *Removed from core 2026-09-17 (workflows-formula-fate): `fleet autopilot` and the switch file left with `plan` and `fly`; unattended composition is tiny's takeoff workflow over `fleet run`* |
 | the binary's own bottom layer | **defaults** | plain; what every fleet runs on — the record templates, the guards' wiring, the health checks — with no opinion about the work. *Was the shipped pack **core** until the ruling of 2026-09-13 (core-folds-into-the-binary-after-the-rehearsal) landed: the files are embedded in the executable and materialized into the machine directory's `defaults/`, and `core` names no pack on any surface* |

@@ -346,6 +346,58 @@ adapter's to know, and is never in the request.
 A resume's `argv` carries the flags the launch's did, its model and posture
 among them, with the session's full id.
 
+## The schema
+
+`fleet agent schema` prints this contract as one JSON Schema document, draft
+2020-12, on standard output: the contract of the fleet binary you run it
+with. You read it to validate what your adapter receives and answers, or to
+generate your adapter's types from it. It reads no project and runs no
+adapter, so it runs anywhere.
+
+```sh
+$ fleet agent schema > contract.json
+$ jq '.verbs | keys' contract.json
+[
+  "capabilities",
+  "context",
+  "launch",
+  "read",
+  "resume",
+  "version"
+]
+```
+
+It exits 0.
+
+The document's top-level keys:
+
+- `schema_version` is `1`, the agent contract's version.
+- `verbs` holds one entry per row of the [verbs table](#verbs), each with a
+  `request` and a `response` schema. A request is the envelope's
+  `schema_version` and `root` with the verb's own fields; a response is
+  `schema_version` with the verb's response fields.
+- `refusal` is the answer of exit 1, `{"schema_version":1,"refused":…}`, and
+  `error` the answer of exit 3, `{"schema_version":1,"error":…}`.
+- `$defs` holds the types. Every `$ref` in the document points into it, so a
+  tool loads the whole document and reaches one verb's schema by its pointer:
+  `#/verbs/launch/request`.
+
+A posture, an activity, a `blocked_on`, an `evidence` and a refusal's
+`reason` are each a closed list of words, an `enum`, so the types you
+generate name them:
+
+```sh
+$ jq '."$defs".Posture.enum' contract.json
+[
+  "ask",
+  "auto",
+  "unattended"
+]
+```
+
+Every object accepts keys it does not name, a request among them, except
+`posture_models`, whose keys are the three postures and no other.
+
 ## See also
 
 - [The store contract](store.md): the store adapter's contract, whose call,

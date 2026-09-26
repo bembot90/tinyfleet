@@ -1,0 +1,597 @@
+{
+  "$defs": {
+    "Activity": {
+      "enum": [
+        "starting",
+        "busy",
+        "idle",
+        "blocked",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "BlockedOn": {
+      "enum": [
+        "permission",
+        "question",
+        "logged_out",
+        "usage_limit"
+      ],
+      "type": "string"
+    },
+    "Evidence": {
+      "enum": [
+        "typed",
+        "screen"
+      ],
+      "type": "string"
+    },
+    "Permissions": {
+      "properties": {
+        "commands": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "touched": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "commands"
+      ],
+      "type": "object"
+    },
+    "Posture": {
+      "enum": [
+        "ask",
+        "auto",
+        "unattended"
+      ],
+      "type": "string"
+    },
+    "Refusal": {
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "reason": {
+          "$ref": "#/$defs/RefusalReason"
+        }
+      },
+      "required": [
+        "reason",
+        "message"
+      ],
+      "type": "object"
+    },
+    "RefusalReason": {
+      "enum": [
+        "unsupported",
+        "missing"
+      ],
+      "type": "string"
+    },
+    "SeatActivity": {
+      "properties": {
+        "activity": {
+          "$ref": "#/$defs/Activity"
+        },
+        "blocked_on": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BlockedOn"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cause": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence": {
+          "$ref": "#/$defs/Evidence"
+        },
+        "seat": {
+          "$ref": "#/$defs/SeatId"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "seat",
+        "activity",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "SeatContext": {
+      "properties": {
+        "last_write": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Stamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "seat": {
+          "$ref": "#/$defs/SeatId"
+        },
+        "tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "turns": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "window": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "seat"
+      ],
+      "type": "object"
+    },
+    "SeatId": {
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "type": "string"
+    },
+    "SeatRef": {
+      "properties": {
+        "config_dir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pid": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "screen": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seat": {
+          "$ref": "#/$defs/SeatId"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worktree": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "seat",
+        "worktree"
+      ],
+      "type": "object"
+    },
+    "Stamp": {
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "error": {
+    "properties": {
+      "error": {
+        "type": "string"
+      },
+      "schema_version": {
+        "const": 1
+      }
+    },
+    "required": [
+      "schema_version",
+      "error"
+    ],
+    "type": "object"
+  },
+  "refusal": {
+    "properties": {
+      "refused": {
+        "$ref": "#/$defs/Refusal"
+      },
+      "schema_version": {
+        "const": 1
+      }
+    },
+    "required": [
+      "schema_version",
+      "refused"
+    ],
+    "type": "object"
+  },
+  "schema_version": 1,
+  "verbs": {
+    "capabilities": {
+      "request": {
+        "properties": {
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "context": {
+            "default": false,
+            "type": "boolean"
+          },
+          "default_model": {
+            "type": "string"
+          },
+          "first_turn": {
+            "type": "string"
+          },
+          "measured": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "posture_models": {
+            "additionalProperties": false,
+            "default": {},
+            "properties": {
+              "ask": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "auto": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "unattended": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "postures": {
+            "items": {
+              "$ref": "#/$defs/Posture"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "postures",
+          "default_model",
+          "first_turn",
+          "measured",
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "context": {
+      "request": {
+        "properties": {
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          },
+          "seats": {
+            "items": {
+              "$ref": "#/$defs/SeatRef"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "seats",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "schema_version": {
+            "const": 1
+          },
+          "seats": {
+            "items": {
+              "$ref": "#/$defs/SeatContext"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "seats",
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "launch": {
+      "request": {
+        "properties": {
+          "config_dir": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "first_turn": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "permissions": {
+            "$ref": "#/$defs/Permissions"
+          },
+          "posture": {
+            "$ref": "#/$defs/Posture"
+          },
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          },
+          "seat": {
+            "$ref": "#/$defs/SeatId"
+          },
+          "worktree": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "seat",
+          "worktree",
+          "name",
+          "model",
+          "posture",
+          "first_turn",
+          "env",
+          "permissions",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "argv",
+          "env",
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "read": {
+      "request": {
+        "properties": {
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          },
+          "seats": {
+            "items": {
+              "$ref": "#/$defs/SeatRef"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "seats",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "schema_version": {
+            "const": 1
+          },
+          "seats": {
+            "items": {
+              "$ref": "#/$defs/SeatActivity"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "seats",
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "resume": {
+      "request": {
+        "properties": {
+          "config_dir": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "posture": {
+            "$ref": "#/$defs/Posture"
+          },
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "worktree": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "worktree",
+          "model",
+          "posture",
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "argv",
+          "env",
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    },
+    "version": {
+      "request": {
+        "properties": {
+          "root": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "schema_version",
+          "root"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "schema_version"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}

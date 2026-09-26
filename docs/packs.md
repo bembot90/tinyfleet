@@ -373,7 +373,9 @@ is a file. The file browser's own files — `.DS_Store`, `Thumbs.db` and
 
 Each slot's entries:
 
-- `agents/<name>/` holds `agent.toml` or `prompt.template.md`.
+- `agents/<name>/` holds `agent.toml` or `prompt.template.md`. An entry here
+  is not an agent adapter: an agent adapter is an `adapters/agent/<name>/`
+  entry, and its contract is [The agent contract](agent.md).
 - `skills/<name>/` holds `SKILL.md`.
 - `doctor/<name>/` holds `doctor.toml`.
 - every file directly under `orders/` parses as TOML.

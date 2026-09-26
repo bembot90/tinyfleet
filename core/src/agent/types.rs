@@ -12,7 +12,8 @@
 //!
 //! NOTHING CALLS THESE YET. The controller's trait still speaks its own
 //! shapes; it moves onto these verb by verb, and until it does only this
-//! file's own tests hold them.
+//! file's own tests and the schema generated from them ([`super::schema`])
+//! hold them.
 //!
 //! IT GROWS ADDITIVELY. `schema_version` stays 1 while every field a later
 //! fleet adds to a request is optional and every field it adds to an answer is

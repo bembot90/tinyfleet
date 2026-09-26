@@ -8,6 +8,7 @@
 //! published document and the policy, never the process table, and it writes
 //! nothing at all.
 
+mod agent;
 mod attach;
 mod claude;
 mod doctor;
@@ -144,6 +145,12 @@ woke, rest, handed-off and exited are said under `fleet event`.")]
     Store {
         #[command(subcommand)]
         verb: store::Verb,
+    },
+
+    /// the agent a seat runs, and the adapter it is reached through
+    Agent {
+        #[command(subcommand)]
+        verb: agent::Verb,
     },
 
     // THE OLD SPELLING OF THE FAMILY, kept for one release and refused: a
@@ -663,6 +670,7 @@ fn dispatch() -> Result<Exit> {
         Family::Routine { verb } => Ok(routines::command(&verb)),
         Family::Item { verb } => Ok(item_show::command(&verb)),
         Family::Store { verb } => Ok(store::command(&verb)),
+        Family::Agent { verb } => Ok(agent::command(&verb)),
         Family::Order(_) => Ok(routines::old_name()),
         Family::Dispatch(args) => Ok(item::dispatch_command(&args)),
         Family::Brief(args) => Ok(item::brief_command(&args)),

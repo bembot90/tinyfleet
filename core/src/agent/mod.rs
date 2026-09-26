@@ -22,4 +22,5 @@
 //! schema `fleet agent schema` prints and the page `docs/agent.md` shows are
 //! generated from and held to one set of types, whichever crate calls them.
 
+pub mod schema;
 pub mod types;

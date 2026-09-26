@@ -114,6 +114,11 @@
 //! the reasons an adapter refuses by. Nothing here calls an adapter: the
 //! trait fleet drives an agent through is the controller's, and it speaks
 //! these types over the same `adapter` call the store's contract does.
+//!
+//! `schema` is what both contracts' JSON Schema documents are built with and
+//! checked by: the generator's helpers the store's and the agent's documents
+//! share, so their shapes cannot drift apart, and the one validator every
+//! suite holds an instance to either document with.
 
 pub mod adapter;
 pub mod add;
@@ -133,6 +138,7 @@ pub mod process;
 pub mod registry;
 pub mod remove;
 pub mod resolve;
+pub mod schema;
 pub mod seat;
 pub mod settings;
 pub mod store;
