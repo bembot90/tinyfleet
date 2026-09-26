@@ -11,7 +11,6 @@
 //! sits in are read from there, and never spelled by a verb.
 
 use std::path::{Path, PathBuf};
-use std::process::Output;
 use std::time::Duration;
 
 use crate::entry::{Body, Entry};
@@ -27,6 +26,12 @@ pub use types::{
     Filter, HoldId, Item, ItemId, ItemSummary, NewItem, Order, OrderKind, OrderState, ReadProof,
     RunRecord, Stamp, Status, Update, Version, WithdrawFence,
 };
+
+/// The first JSON value of an answer, with whatever trails it discarded —
+/// read as every adapter's answer is ([`crate::adapter::exec::first_value`]),
+/// and reached here, beside the trait, by the store's own readers of a
+/// request or a proof.
+pub use crate::adapter::exec::first_value;
 
 /// The ways a store call ends badly, which are different exits: an act the
 /// record refuses, or an item not held by whom the write required, is the
@@ -592,34 +597,4 @@ pub(crate) fn writable(change: &Update) -> Result<(), StoreError> {
         ))),
         _ => Ok(()),
     }
-}
-
-/// What a call said last: the last line of its stderr that is not blank, else
-/// of its stdout, cut to 160 characters.
-///
-/// Beside the trait and not inside an adapter, where any adapter's caller
-/// can carry it into its refusals.
-pub(crate) fn tail(out: &Output) -> String {
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let body = if stderr.trim().is_empty() {
-        String::from_utf8_lossy(&out.stdout)
-    } else {
-        stderr
-    };
-    body.lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("no output")
-        .chars()
-        .take(160)
-        .collect()
-}
-
-/// The first JSON value of an answer, with whatever trails it discarded.
-///
-/// Beside the trait and not inside an adapter: the contract's own envelope
-/// ([`types::answer`]) reads an answer through it as an adapter's reads do.
-pub fn first_value(text: &str) -> Option<serde_json::Value> {
-    let mut stream = serde_json::Deserializer::from_str(text).into_iter::<serde_json::Value>();
-    stream.next().and_then(Result::ok)
 }

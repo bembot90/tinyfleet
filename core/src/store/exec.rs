@@ -14,6 +14,13 @@
 //! carries the last line the adapter wrote on stderr, because that line is
 //! for the person reading the refusal.
 //!
+//! THE CALL ITSELF IS EVERY ADAPTER'S: the spawn, the bound and its group
+//! kill, the row an exit is and the line the adapter said last are
+//! [`crate::adapter::exec`]'s, which the agent contract's caller shares. What
+//! is the store's here is the words: each row becomes a refusal naming the
+//! store contract, a refusal on the record is read by its reason, and a write
+//! that outran its bound says its effect cannot be told.
+//!
 //! BOUNDED like every store call: [`STORE_TIMEOUT`], then the adapter's whole
 //! process group is killed and the call is could not tell — and for a write,
 //! a write whose effect cannot be told.
@@ -27,7 +34,6 @@
 //! this process's own.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
@@ -39,12 +45,11 @@ use super::types::{
     RefusalReason, Resolved, Scratched, Shown,
 };
 use super::{
-    first_value, tail, validated, validated_new, writable, Filter, HoldId, Item, ItemId,
-    ItemSummary, NewItem, Order, ReadProof, RunRecord, Store, StoreError, Update, Version,
-    WithdrawFence, STORE_TIMEOUT,
+    validated, validated_new, writable, Filter, HoldId, Item, ItemId, ItemSummary, NewItem, Order,
+    ReadProof, RunRecord, Store, StoreError, Update, Version, WithdrawFence, STORE_TIMEOUT,
 };
+use crate::adapter::exec::{self, Exited, Ran, Unrun};
 use crate::entry::{self, Body, Entry};
-use crate::process::{deadline_cause, run_bounded_fed};
 use crate::seat::actor::Actor;
 
 /// The verbs that change the store: a call to one of them that outruns its
@@ -133,58 +138,56 @@ impl Exec {
             .or_else(|| fields.get("hold"))
             .and_then(Value::as_str)
             .map(str::to_string);
-        let request = types::request(fields, &self.root).to_string().into_bytes();
-        let mut cmd = Command::new(&self.adapter);
-        cmd.arg(verb);
-        if let Some(path) = &self.path {
-            cmd.env("PATH", path);
-        }
-        let out = run_bounded_fed(cmd, request, self.timeout).map_err(|why| {
-            if why != deadline_cause(self.timeout) {
-                return StoreError::Unreadable(format!(
-                    "{adapter} could not be run ({why}) — nothing was written"
-                ));
+        let request = types::request(fields, &self.root);
+        let ran = exec::run(
+            &self.adapter,
+            verb,
+            &request,
+            self.timeout,
+            self.path.as_deref(),
+        )
+        .map_err(|unrun| match unrun {
+            Unrun::CouldNotRun(why) => StoreError::Unreadable(format!(
+                "{adapter} could not be run ({why}) — nothing was written"
+            )),
+            Unrun::Deadline(why) => {
+                let mut refusal = format!("{named} {why}");
+                if WRITES.contains(&verb) {
+                    refusal.push_str(UNTOLD);
+                }
+                StoreError::Unreadable(refusal)
             }
-            let mut refusal = format!("{named} {why}");
-            if WRITES.contains(&verb) {
-                refusal.push_str(UNTOLD);
-            }
-            StoreError::Unreadable(refusal)
         })?;
-        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-        let said = tail(&out);
-        let read = match out.status.code() {
-            Some(0) => types::answer::<T>(&stdout).map_err(|why| {
-                StoreError::Unreadable(format!("{named} answered no readable response: {why}"))
-            }),
-            Some(1) => Err(match types::answer::<Refused>(&stdout) {
+        let said = &ran.said;
+        let read = match &ran.exited {
+            Exited::Answered(stdout) => types::answer::<T>(stdout)
+                .map(|body| (body, stdout.clone()))
+                .map_err(|why| {
+                    StoreError::Unreadable(format!("{named} answered no readable response: {why}"))
+                }),
+            Exited::Refused(stdout) => Err(match types::answer::<Refused>(stdout) {
                 Ok(Refused { refused }) => on_the_record(refused, subject),
                 Err(_) => StoreError::Unreadable(format!(
                     "{named} refused with no readable refusal: {said}"
                 )),
             }),
-            Some(2) => Err(StoreError::Unreadable(format!(
+            Exited::Usage => Err(StoreError::Unreadable(format!(
                 "{named} refused the request as usage (exit 2) — this fleet and the adapter do \
                  not speak the same store contract: {said}"
             ))),
-            Some(3) => {
-                let error = first_value(&stdout)
-                    .and_then(|answer| answer.get("error")?.as_str().map(str::to_string));
-                Err(StoreError::Unreadable(format!(
-                    "{named} could not tell: {}",
-                    error.unwrap_or_else(|| said.clone())
-                )))
-            }
-            Some(code) => Err(StoreError::Unreadable(format!(
+            Exited::CouldNotTell(error) => Err(StoreError::Unreadable(format!(
+                "{named} could not tell: {}",
+                error.as_deref().unwrap_or(said)
+            ))),
+            Exited::OffTable(code) => Err(StoreError::Unreadable(format!(
                 "{named} exited {code}, which is not a row of the store contract's exit table: \
                  {said}"
             ))),
-            None => Err(StoreError::Unreadable(format!(
+            Exited::Signalled => Err(StoreError::Unreadable(format!(
                 "{named} was ended by a signal: {said}"
             ))),
         };
-        read.map(|body| (body, stdout))
-            .map_err(|refused| carrying_stderr(refused, &out))
+        read.map_err(|refused| carrying_stderr(refused, &ran))
     }
 }
 
@@ -222,22 +225,13 @@ fn on_the_record(refused: Refusal, subject: Option<String>) -> StoreError {
 }
 
 /// The refusal with what the adapter said last on stderr beside it, where it
-/// said anything there and the refusal does not already carry it.
-fn carrying_stderr(refused: StoreError, out: &Output) -> StoreError {
-    if String::from_utf8_lossy(&out.stderr).trim().is_empty() {
-        return refused;
-    }
-    let said = tail(out);
-    let carried = |text: String| {
-        if text.contains(&said) {
-            text
-        } else {
-            format!("{text} (the adapter said: {said})")
-        }
-    };
+/// said anything there and the refusal does not already carry it
+/// ([`exec::carrying`]). A fence the item did not meet is left in the
+/// adapter's own words, which already name what holds it.
+fn carrying_stderr(refused: StoreError, ran: &Ran) -> StoreError {
     match refused {
-        StoreError::Refused(text) => StoreError::Refused(carried(text)),
-        StoreError::Unreadable(text) => StoreError::Unreadable(carried(text)),
+        StoreError::Refused(text) => StoreError::Refused(exec::carrying(text, ran)),
+        StoreError::Unreadable(text) => StoreError::Unreadable(exec::carrying(text, ran)),
         moved => moved,
     }
 }
@@ -453,10 +447,11 @@ fn entry_of(item: &ItemId, row: Value) -> Result<Entry, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::process::Command;
     use std::time::Instant;
 
     use super::*;
+    use crate::adapter::exec::tests::{answers, Stub};
     use crate::process::DRAIN_GRACE;
 
     const SEAT: &str = "0199a3c4-7d8e-7f90-a1b2-c3d4e5f60718";
@@ -464,72 +459,12 @@ mod tests {
     /// The item `docs/store.md` prints, as a `show` answer.
     const SHOWN: &str = r#"{"schema_version":1,"item":{"id":"fx-a1b2","title":"Teach the parser the new stamp","status":"in_progress","type":"task","labels":["fleet"],"assignee":"0199a3c4-7d8e-7f90-a1b2-c3d4e5f60718","order":{"state":"ordered","order":{"kind":"dispatch","by":"seat:0199a3c4-5e6f-7a8b-9c0d-1e2f3a4b5c6d","seat":"0199a3c4-7d8e-7f90-a1b2-c3d4e5f60718","at":"2026-09-23T10:00:00Z"}},"blockers":["fx-c3d4"],"run":null,"foreign":["sprint"]}}"#;
 
-    /// An adapter written as a `#!/bin/sh` stub in a directory of its own,
-    /// which is also the project root it is handed. The stub writes its pid to
-    /// `pid`, appends its verb to `argv`, copies its stdin to `request.json`,
-    /// and then runs `answer`.
-    struct Stub {
-        dir: PathBuf,
-        bin: PathBuf,
-    }
-
+    /// The store over the stub, scoped to the stub's own directory as the
+    /// project root: the one method the store adds to every adapter's rig.
     impl Stub {
-        fn new(label: &str, answer: &str) -> Stub {
-            static N: AtomicUsize = AtomicUsize::new(0);
-            let n = N.fetch_add(1, Ordering::SeqCst);
-            let dir =
-                std::env::temp_dir().join(format!("fleet-exec-{label}-{}-{n}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).expect("the stub's directory is made");
-            let bin = dir.join("adapter");
-            std::fs::write(
-                &bin,
-                format!(
-                    "#!/bin/sh\n\
-                     echo $$ > '{dir}/pid'\n\
-                     printf '%s\\n' \"$1\" >> '{dir}/argv'\n\
-                     cat > '{dir}/request.json'\n\
-                     {answer}\n",
-                    dir = dir.display(),
-                ),
-            )
-            .expect("the stub is written");
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
-                .expect("the stub is executable");
-            Stub { dir, bin }
-        }
-
         fn exec(&self) -> Exec {
             Exec::at(&self.bin, &self.dir)
         }
-
-        /// The last request the stub was handed, as JSON.
-        fn request(&self) -> Value {
-            let text = std::fs::read_to_string(self.dir.join("request.json"))
-                .expect("the stub recorded its request");
-            serde_json::from_str(&text).expect("the request is one JSON value")
-        }
-
-        /// Every verb the stub was called with, in order.
-        fn verbs(&self) -> Vec<String> {
-            std::fs::read_to_string(self.dir.join("argv"))
-                .unwrap_or_default()
-                .lines()
-                .map(str::to_string)
-                .collect()
-        }
-    }
-
-    impl Drop for Stub {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
-    }
-
-    /// A stub body that prints `json` and exits `code`.
-    fn answers(json: &str, code: i32) -> String {
-        format!("cat <<'JSON'\n{json}\nJSON\nexit {code}")
     }
 
     fn id() -> ItemId {

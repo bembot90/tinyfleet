@@ -100,7 +100,14 @@
 //! project's. Every one of them is a pure function from a command's text and a
 //! resolved policy to a verdict, so a second agent runtime adds a reader of its
 //! own payload in the caller and reuses all four unchanged.
+//!
+//! `adapter` is the one call every adapter executable is spoken to through —
+//! the verb, the envelope, the bound and its group kill, the exit table and
+//! the last line the adapter said — and it knows no contract: it answers the
+//! row an exit is, and the store's `Exec` words that row as the store
+//! contract's refusal, as the agent's caller will word it as its own.
 
+pub mod adapter;
 pub mod add;
 pub mod defaults;
 pub mod digest;

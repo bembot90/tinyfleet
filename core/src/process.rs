@@ -2,8 +2,8 @@
 //! deadline that kills the group, and both pipes drained from threads of their
 //! own.
 //!
-//! IT IS CORE'S so the store can bound its own calls, and core depends on no
-//! other member of the workspace. The controller's platform layer re-exports
+//! IT IS CORE'S so an adapter's call (`adapter::exec`) can be bounded here, and
+//! core depends on no other member of the workspace. The controller's platform layer re-exports
 //! every public name here, so its callers reach them by the paths they always
 //! had.
 
@@ -63,8 +63,8 @@ pub fn is_killable_group(leader: u32) -> bool {
 // routines module wants them on disk, and both want the same deadline with the
 // same process-group kill behind it. So the spawn, the wait and the kill are
 // one path here and the two collections differ only in where the child's
-// output goes. The first has a fed twin, for a store adapter whose request
-// goes in on stdin.
+// output goes. The first has a fed twin, for an adapter executable whose
+// request goes in on stdin.
 
 /// A bounded run whose output went somewhere this process never read.
 #[derive(Debug)]

@@ -901,44 +901,22 @@ pub struct Answered {}
 // ---- the envelope ---------------------------------------------------------------
 
 /// A verb's fields as one request: `schema_version` at [`CONTRACT_VERSION`] and
-/// the project's `root` inserted beside them.
+/// the project's `root` inserted beside them — every adapter's envelope
+/// ([`crate::adapter::exec::envelope`]) at the store contract's version.
 pub fn request(
-    mut verb_fields: serde_json::Map<String, serde_json::Value>,
+    verb_fields: serde_json::Map<String, serde_json::Value>,
     root: &Path,
 ) -> serde_json::Value {
-    verb_fields.insert(
-        String::from("schema_version"),
-        serde_json::Value::from(CONTRACT_VERSION),
-    );
-    verb_fields.insert(
-        String::from("root"),
-        serde_json::Value::from(root.display().to_string()),
-    );
-    serde_json::Value::Object(verb_fields)
+    crate::adapter::exec::envelope(verb_fields, root, CONTRACT_VERSION)
 }
 
 /// An answer's response body, read off the FIRST JSON value of the text with
 /// whatever trails it ignored: an object at `schema_version`
 /// [`CONTRACT_VERSION`] exactly, with that key taken out before the body is
-/// decoded.
+/// decoded — every adapter's reading ([`crate::adapter::exec::answer`]) at
+/// the store contract's version.
 pub fn answer<T: DeserializeOwned>(text: &str) -> Result<T, String> {
-    let Some(value) = super::first_value(text) else {
-        return Err(String::from("answered no JSON value"));
-    };
-    let serde_json::Value::Object(mut body) = value else {
-        return Err(format!("answered {value}, which is not an object"));
-    };
-    match body.remove("schema_version") {
-        None => return Err(String::from("answered no schema_version")),
-        Some(version) if version.as_u64() != Some(CONTRACT_VERSION) => {
-            return Err(format!(
-                "answered schema_version {version}; this fleet speaks {CONTRACT_VERSION}"
-            ));
-        }
-        Some(_) => {}
-    }
-    serde_json::from_value(serde_json::Value::Object(body))
-        .map_err(|why| format!("the answer does not read — {why}"))
+    crate::adapter::exec::answer(text, CONTRACT_VERSION)
 }
 
 #[cfg(test)]
