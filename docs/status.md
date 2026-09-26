@@ -128,7 +128,10 @@ carry.
 
 - The roster state is one of `present`, `prompt-blocked`, `starting`,
   `stopped`, `absent` and `unknown`. A `prompt-blocked` seat also shows what
-  it is waiting for.
+  it is waiting for. An `unknown` seat is followed by ` — ` and why: what
+  fleet's tmux server holds and what the agent's list names, where the two
+  disagree, or the read that failed. For example,
+  `rex-51df4f54  unknown — tmux holds pid 4242 alive for rex-51df4f54; the listing names no row with that pid  decision leave-alone, outcome none  ...`.
 - The decision is one of `leave-alone`, `spawn-woken`, `revive`, `rest`,
   `suggest-rest` and `halt`, or `pending` on a row the controller publishes
   before it reaches a decision.
@@ -140,6 +143,17 @@ carry.
 With no seats configured, the section says `no seat is configured`. The
 states and decisions are explained in
 [The controller and seats](seats.md).
+
+A `stopped` seat's session has ended. Its row in `fleet status --json`
+carries `exit_status`, the status the agent exited with, and `ended_at`,
+when the session ended; each is left out where there is none, as when a
+signal ended the session. The first poll that reads a seat's session ended
+writes one `session.ended` event about the seat, whose payload carries
+`session`, `pid`, `status`, `at` and `source`. `source` is `observed` when
+the controller was polling when the session ended, and `at` is that poll's
+time. It is `transcript` when the session ended before this controller
+started, and `at` is the last write of the session's transcript, or null
+where there is none.
 
 ### In flight and effects
 

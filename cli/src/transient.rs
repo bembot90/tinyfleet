@@ -337,7 +337,7 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
                         None => ", no live session to stop".to_string(),
                     },
                     if reclaimed.dead {
-                        " (--dead: the roster named no live session)"
+                        " (--dead: the host held no live session)"
                     } else {
                         ""
                     }

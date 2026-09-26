@@ -664,14 +664,22 @@ the requirement owed it.
   scoped session took no turn and left none to find, so where a scoped
   interactive transcript lands is unmeasured).
 - **Version:** Claude Code 2.1.282, on a binary that had moved past the
-  2.1.280 pin by itself (A1); tmux 3.7b.
-- **Date:** 2026-09-24.
+  2.1.280 pin by itself (A1); tmux 3.7b. Re-measured on the pin, 2.1.280,
+  with tmux 3.7b (fleet-rge6.3): the same row — `pid` equal to the pane's,
+  `status`, and no `id` and no `state` — at idle, busy and `waiting` with
+  `waitingFor` `permission prompt`, and gone by the next read after the tmux
+  session was killed. That re-measure also answers the open clause above: a
+  scoped session's transcript lands under the scoped directory's own
+  `projects/`, its mtime the second the session was killed. The recording is
+  the fixture in `controller/tests/observe.rs`.
+- **Date:** 2026-09-24; re-measured 2026-09-26.
 - **Implies:** the adapters-and-sessions design (fleet-notes, 2026-09-24):
   fleet owning the session under tmux keeps the listing as a read — presence,
   pid, busy or idle, and the typed blocked cause — so a screen rule is a
   second source for an agent whose listing carries less, never the first for
   this one. The address is gone with `--bg`, so stop and revive are tmux's
-  and the flagless full-id resume's (A9). A stopped interactive session
+  and a resume by the full id carrying the start's own flags (A9, measured
+  interactively by fleet-rge6.4). A stopped interactive session
   cannot be aged off the listing: recency for such a seat reads the
   transcript's mtime alone.
 - **Test:** `lessons::an_interactive_row_is_listed_without_an_address`
@@ -807,8 +815,9 @@ the requirement owed it.
 
 - **Retired by:** fleet-rge6.2 (2026-09-26). A start's output is its pane's,
   and a failed start's last screen is captured to a file by core. The
-  print-mode nudge still sends its output to a file until fleet-rge6.5
-  removes it. Kept here as history.
+  print-mode nudge sent its output to a file until fleet-rge6.5 removed it
+  (2026-09-26): a turn is typed into the seat's pane now, and no child's
+  output is collected at all. Kept here as history.
 - **Fact:** Collecting a child's output through a pipe waits for EOF on the
   pipe rather than for the child, so ANY process still holding the write end
   keeps the caller blocked — the direct child included, and a grandchild that

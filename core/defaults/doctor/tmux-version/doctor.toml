@@ -1,0 +1,17 @@
+description = "Whether the tmux fleet runs every seat's session on is there, at or above the release fleet was measured on."
+run = "run.sh"
+
+# No name key: the directory is the name, which is the shape the reference's
+# packs use.
+#
+# THE MINIMUM IS THE BINARY'S, not a pack's: the controller's host drives tmux
+# itself, on fleet's own socket, and no pack carries it. A floor and not a pin —
+# a later tmux is expected to answer the few client calls the host makes — and
+# the one release measured is the floor until another is.
+#
+# What it is for: every seat's session is a tmux session, its liveness and its
+# exit status are the pane's, and a typed turn is a paste into it. A fleet with
+# no tmux, or one older than the floor, is a controller that starts no seat or
+# reads one on calls nobody measured. This entry says so with the line that
+# installs one, and says whether fleet's own server is up and with how many
+# sessions — either state passes: a fleet with no seats running has none.

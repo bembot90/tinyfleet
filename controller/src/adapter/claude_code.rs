@@ -250,6 +250,43 @@ impl ClaudeCode {
         env
     }
 
+    /// The listing's own output under one configuration directory — the one
+    /// command [`Agent::status`] and [`ClaudeCode::daemon_hosted`] both read —
+    /// or why it gave none.
+    fn listing(&self, config_dir: Option<&Path>) -> Result<String, String> {
+        let mut cmd = self.read_command(&self.bin, config_dir);
+        cmd.args(["agents", "--json", "--all"]);
+        let run = run_bounded(cmd, self.timeout)?;
+        if !run.status.success() {
+            return Err(format!(
+                "`{} agents --json --all` exited {}: {}",
+                self.bin,
+                run.status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "on a signal".to_string()),
+                String::from_utf8_lossy(&run.stderr).trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&run.stdout).into_owned())
+    }
+
+    /// The live sessions Claude Code's background daemon still hosts under one
+    /// configuration directory, or the adapter's own where `config_dir` is
+    /// `None` — what the upgrade refusal reads before a controller's first
+    /// poll (ruling 10: the upgrade adopts nothing).
+    ///
+    /// ON THE CONCRETE TYPE AND NOT ON [`Agent`] (reviewer call 2026-09-25,
+    /// E6): the contract carries no daemon verb (ruling 1), and this goes with
+    /// the file that holds it. The rows are read through this adapter's own
+    /// private row type ([`parse_hosted`]), so the daemon's address never
+    /// reaches a caller as a field: a caller gets the sentence naming it and
+    /// the command that stops it, from [`Hosted`].
+    pub fn daemon_hosted(&self, config_dir: Option<&Path>) -> Result<Vec<Hosted>, String> {
+        self.listing(config_dir)
+            .and_then(|stdout| parse_hosted(&stdout))
+    }
+
     /// The binary a session's pane runs, or the refusal a verb with none
     /// resolved answers: effects off, and never a bare name the host would
     /// discover at the spawn.
@@ -495,26 +532,10 @@ impl Agent for ClaudeCode {
     }
 
     fn status(&self, config_dir: Option<&Path>) -> RosterRead {
-        let mut cmd = self.read_command(&self.bin, config_dir);
-        cmd.args(["agents", "--json", "--all"]);
-        let run = match run_bounded(cmd, self.timeout) {
-            Ok(run) => run,
-            Err(cause) => return RosterRead::Unreadable { cause },
-        };
-        if !run.status.success() {
-            return RosterRead::Unreadable {
-                cause: format!(
-                    "`{} agents --json --all` exited {}: {}",
-                    self.bin,
-                    run.status
-                        .code()
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|| "on a signal".to_string()),
-                    String::from_utf8_lossy(&run.stderr).trim()
-                ),
-            };
+        match self.listing(config_dir) {
+            Ok(stdout) => parse_roster(&stdout),
+            Err(cause) => RosterRead::Unreadable { cause },
         }
-        parse_roster(&String::from_utf8_lossy(&run.stdout))
     }
 
     fn transcript(
@@ -601,6 +622,119 @@ pub fn parse_roster(stdout: &str) -> RosterRead {
         Err(e) => RosterRead::Unreadable {
             cause: format!("the listing did not parse as JSON rows: {e}"),
         },
+    }
+}
+
+/// One session the daemon hosts, as [`ClaudeCode::daemon_hosted`] reads it:
+/// what a person needs to find it and to stop it, and nothing a caller could
+/// issue an act against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hosted {
+    pub session_id: String,
+    /// The directory the session stands in, as the listing reports it.
+    pub cwd: String,
+    short_id: String,
+}
+
+impl Hosted {
+    /// The row's working directory in the form seat matching compares.
+    pub fn cwd_key(&self) -> &str {
+        super::dir_key(&self.cwd)
+    }
+
+    /// The refusal's line for this session, standing in `worktree` of the
+    /// seat `seat` names.
+    pub fn line(&self, seat: &str, worktree: &str) -> String {
+        format!(
+            "{seat} is hosted by the Claude Code daemon: session {}, short id {}, in {worktree}",
+            self.session_id, self.short_id
+        )
+    }
+
+    /// The command a person runs to stop this session, under the
+    /// configuration directory its listing was read under: the daemon a
+    /// directory scopes is that directory's own (lessons claude-code A11).
+    pub fn stop_command(&self, config_dir: Option<&str>) -> String {
+        match config_dir {
+            Some(dir) => format!(
+                "CLAUDE_CONFIG_DIR={dir} {DEFAULT_BIN} stop {}",
+                self.short_id
+            ),
+            None => format!("{DEFAULT_BIN} stop {}", self.short_id),
+        }
+    }
+}
+
+/// The listing's row as the daemon check reads it: this adapter's own shape,
+/// private, so the short id it carries never becomes a field anything outside
+/// this file holds (reviewer call 2026-09-25, E6).
+#[derive(serde::Deserialize)]
+struct ListedRow {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    cwd: String,
+    #[serde(default)]
+    pid: Option<u32>,
+    /// The daemon's short id: a background row always carries one and an
+    /// interactive row never does (lessons claude-code A6, B10), which is the
+    /// whole of the test.
+    #[serde(default)]
+    id: Option<String>,
+}
+
+/// The rows of a listing the daemon hosts that are LIVE: a short id and a
+/// pid.
+///
+/// A row with a short id and no pid is left out. A background session stopped
+/// from idle reads pid-less with its state `done` and stays listed (lessons
+/// claude-code A3), so a check that counted it would go on refusing after the
+/// person ran the very stop it named; a live one is a process the daemon keeps
+/// running in a seat's worktree, which is what a start must not go on beside.
+///
+/// Empty output is unreadable, never a listing of nothing (lessons claude-code
+/// B4), exactly as [`parse_roster`] reads it.
+pub fn parse_hosted(stdout: &str) -> Result<Vec<Hosted>, String> {
+    if stdout.trim().is_empty() {
+        return Err("the listing answered with zero bytes and a success status".to_string());
+    }
+    let rows: Vec<ListedRow> = serde_json::from_str(stdout)
+        .map_err(|e| format!("the listing did not parse as JSON rows: {e}"))?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| row.pid.is_some())
+        .filter_map(|row| {
+            let short_id = row.id.filter(|id| !id.trim().is_empty())?;
+            Some(Hosted {
+                session_id: row.session_id,
+                cwd: row.cwd,
+                short_id,
+            })
+        })
+        .collect())
+}
+
+/// Whoever answers the upgrade refusal's reading, handed to the loop beside
+/// the agent (`crate::run::Seams`): this adapter, whose
+/// [`ClaudeCode::daemon_hosted`] it is, or a suite's own answer.
+///
+/// A seam of its own and never a verb on [`Agent`], for the reason
+/// [`ClaudeCode::daemon_hosted`] gives; it goes with this file.
+pub trait DaemonListing {
+    fn daemon_hosted(&self, config_dir: Option<&Path>) -> Result<Vec<Hosted>, String>;
+}
+
+impl DaemonListing for ClaudeCode {
+    fn daemon_hosted(&self, config_dir: Option<&Path>) -> Result<Vec<Hosted>, String> {
+        ClaudeCode::daemon_hosted(self, config_dir)
+    }
+}
+
+impl<F> DaemonListing for F
+where
+    F: Fn(Option<&Path>) -> Result<Vec<Hosted>, String>,
+{
+    fn daemon_hosted(&self, config_dir: Option<&Path>) -> Result<Vec<Hosted>, String> {
+        self(config_dir)
     }
 }
 
@@ -1111,5 +1245,35 @@ mod tests {
                 "{configured:?} is not a deadline"
             );
         }
+    }
+
+    /// The daemon check's one test: a short id on a live row (lessons
+    /// claude-code A6, B10). An interactive row carries none, and a background
+    /// row the daemon no longer runs carries no pid (A3); an empty answer is
+    /// unreadable (B4), and an empty array is a listing of nothing.
+    #[test]
+    fn a_daemon_hosted_row_is_a_short_id_on_a_live_row() {
+        let listing = r#"[
+            {"id":"ab12","sessionId":"s-live","cwd":"/wt/a/","kind":"background","pid":4242,"state":"done","status":"idle"},
+            {"id":"cd34","sessionId":"s-stopped","cwd":"/wt/b","kind":"background","state":"done"},
+            {"sessionId":"s-seat","cwd":"/wt/c","kind":"interactive","pid":4343,"status":"idle"}
+        ]"#;
+        let hosted = parse_hosted(listing).expect("the listing parses");
+        assert_eq!(hosted.len(), 1, "{hosted:?}");
+        assert_eq!(hosted[0].session_id, "s-live");
+        assert_eq!(hosted[0].cwd_key(), "/wt/a");
+        assert_eq!(
+            hosted[0].line("agent-e8a04b17", "/wt/a"),
+            "agent-e8a04b17 is hosted by the Claude Code daemon: session s-live, short id ab12, \
+             in /wt/a"
+        );
+        assert_eq!(hosted[0].stop_command(None), "claude stop ab12");
+        assert_eq!(
+            hosted[0].stop_command(Some("/cfg/a")),
+            "CLAUDE_CONFIG_DIR=/cfg/a claude stop ab12"
+        );
+        assert_eq!(parse_hosted("[]"), Ok(Vec::new()));
+        assert!(parse_hosted("").is_err());
+        assert!(parse_hosted("not json").is_err());
     }
 }

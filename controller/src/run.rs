@@ -1,6 +1,6 @@
 //! `fleet observe`: the poll loop. It observes, decides, acts and publishes.
 
-use crate::adapter::claude_code::ClaudeCode;
+use crate::adapter::claude_code::{ClaudeCode, DaemonListing, Hosted};
 use crate::adapter::{dir_key, Agent};
 use crate::clock::{self, Clock, SystemClock};
 use crate::config::{self, MachineConfig, Seat};
@@ -21,6 +21,11 @@ use std::time::Duration;
 /// Startup could not read what it needs. There is no last-good before the first
 /// read, so the only honest answer is to refuse and name the path.
 pub const EXIT_NO_POLICY: u8 = 3;
+
+/// Startup found a seat whose worktree holds a session Claude Code's background
+/// daemon still hosts. The upgrade adopts nothing (ruling 10): the loop refuses
+/// and names each one, and the person stops them and starts again.
+pub const EXIT_DAEMON_HOSTED: u8 = 1;
 
 pub struct Options {
     /// One poll, then exit: what a check runs.
@@ -178,6 +183,7 @@ impl Wiring {
             clock,
             agent: &self.agent,
             host: self.host.as_ref(),
+            daemon: Some(&self.agent),
             child_path: &self.child_path,
             effects_off: self.effects_off.clone(),
             stop_handler,
@@ -211,6 +217,11 @@ pub struct Seams<'a> {
     /// says what to run and this runs it (ruling 2), so the two are separate
     /// seams and an in-process suite hands in a fake of each.
     pub host: &'a dyn crate::host::Host,
+    /// What [`Observer::start`] reads for sessions Claude Code's background
+    /// daemon still hosts in a seat's worktree, before the first poll (ruling
+    /// 10). `None` is an agent no daemon hosts sessions for — a suite's stub —
+    /// and the start reads nothing.
+    pub daemon: Option<&'a dyn DaemonListing>,
     /// The `PATH` every child a routine's action starts carries.
     pub child_path: &'a str,
     /// Why no effect may be issued, or `None` for a fleet that can issue them.
@@ -244,6 +255,97 @@ pub fn observe_seamed(
         }
     }
     observer.finish()
+}
+
+/// What the upgrade check found before the first poll (ruling 10).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DaemonCheck {
+    /// No listing names a live session the daemon hosts in a seat's worktree.
+    Clear,
+    /// At least one does: the refusal, as the lines a person reads — one per
+    /// session, then the commands that stop them.
+    Hosted(Vec<String>),
+    /// None was named, and at least one listing could not be read, with why.
+    /// Said once, and the start goes on: refusing would leave a fleet whose
+    /// agent listing breaks unable to start at all, and a live seat decided
+    /// against a listing nobody read is Unknown, which nothing is started over
+    /// (reviewer call 2026-09-25, 2).
+    Unreadable(String),
+}
+
+/// The sentence the refusal's commands are introduced by.
+pub const DAEMON_REMEDY: &str = "stop each with the command below, then start again:";
+
+/// Whether any configured seat's worktree holds a live session Claude Code's
+/// background daemon still hosts — a seat left from before fleet ran its
+/// sessions itself (ruling 10: the upgrade adopts nothing, so the controller
+/// refuses to start over it and names it).
+///
+/// The listings read are the ones a poll reads: the fleet's own, and the
+/// configuration directory the session table recorded for each seat's newest
+/// row, each once. A fleet with no seats reads nothing.
+pub fn daemon_check(seats: &[Seat], table: &Table, daemon: &dyn DaemonListing) -> DaemonCheck {
+    if seats.is_empty() {
+        return DaemonCheck::Clear;
+    }
+    let mut dirs: Vec<Option<String>> = vec![None];
+    for seat in seats {
+        let recorded = table
+            .newest_for(&seat.id.to_string())
+            .and_then(|row| row.config_dir.clone());
+        if recorded.is_some() && !dirs.contains(&recorded) {
+            dirs.push(recorded);
+        }
+    }
+    let mut named: Vec<String> = Vec::new();
+    let mut commands: Vec<String> = Vec::new();
+    let mut unread: Vec<String> = Vec::new();
+    for dir in &dirs {
+        let rows: Vec<Hosted> = match daemon.daemon_hosted(dir.as_deref().map(Path::new)) {
+            Ok(rows) => rows,
+            Err(cause) => {
+                unread.push(match dir {
+                    Some(dir) => format!("the listing under {dir}: {cause}"),
+                    None => format!("the fleet's listing: {cause}"),
+                });
+                continue;
+            }
+        };
+        for row in &rows {
+            for seat in seats {
+                let Some((_, worktree)) = seat
+                    .worktrees
+                    .iter()
+                    .find(|(_, path)| dir_key(path) == row.cwd_key())
+                else {
+                    continue;
+                };
+                let line = row.line(&seat.machine_name(), dir_key(worktree));
+                if !named.contains(&line) {
+                    named.push(line);
+                    commands.push(format!("  {}", row.stop_command(dir.as_deref())));
+                }
+            }
+        }
+    }
+    if !named.is_empty() {
+        named.push(DAEMON_REMEDY.to_string());
+        named.extend(commands);
+        return DaemonCheck::Hosted(named);
+    }
+    match unread.is_empty() {
+        true => DaemonCheck::Clear,
+        false => DaemonCheck::Unreadable(unread.join("; ")),
+    }
+}
+
+/// The line an unreadable [`DaemonCheck`] is said once as.
+pub fn daemon_unreadable_line(cause: &str) -> String {
+    format!(
+        "could not tell whether Claude Code's daemon still hosts a seat's session — {cause}; \
+         starting anyway: a poll that cannot read the listing reads a seat unknown unless its \
+         session has ended"
+    )
 }
 
 /// The loop's own state: what one poll leaves for the next.
@@ -384,6 +486,25 @@ impl<'a> Observer<'a> {
                 rebuilt
             }
         };
+        // THE UPGRADE ADOPTS NOTHING (ruling 10). A seat whose worktree still
+        // holds a session Claude Code's background daemon runs is refused here,
+        // before the first poll reads the host or starts anything over it: a
+        // session fleet does not host is not the seat's (lessons claude-code
+        // B5), and a start beside it is a second session in one worktree.
+        if let Some(daemon) = seams.daemon {
+            match daemon_check(&config.seats, &table, daemon) {
+                DaemonCheck::Clear => {}
+                DaemonCheck::Hosted(lines) => {
+                    for line in lines {
+                        eprintln!("fleet observe: {line}");
+                    }
+                    return Err(EXIT_DAEMON_HOSTED);
+                }
+                DaemonCheck::Unreadable(cause) => {
+                    eprintln!("fleet observe: {}", daemon_unreadable_line(&cause));
+                }
+            }
+        }
         // Every session the table names that the roster still holds live is claimed
         // on the FIRST poll and never again — a restart re-hosts nothing.
         let adopted = false;

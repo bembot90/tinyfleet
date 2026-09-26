@@ -81,8 +81,8 @@ pub struct SeatInput<'a> {
     /// or one it has not dispatched for at all.
     pub dispatch_age_ms: Option<u64>,
     /// Whether that dispatch has been answered by a sighting. A sighting is the
-    /// roster's answer and never the effect's own return (lessons claude-code
-    /// A7, A14).
+    /// listing's answer and never the effect's own return: the rule lessons
+    /// claude-code A7 taught, kept after A7 and A14 retired (B10).
     pub sighted: bool,
     pub arrival_window_ms: u64,
     /// The halt latch and the blind count, both read from the session table this

@@ -20,8 +20,12 @@
 //! `session.ended`, dated by that poll when the controller saw the pane alive
 //! an interval before, and by the transcript when the pane was dead before
 //! the controller was looking.
+//!
+//! And what is never claimed at all: a session Claude Code's background daemon
+//! still hosts in a seat's worktree. The upgrade adopts nothing (ruling 10) —
+//! the controller refuses to start over it, names it, and touches nothing.
 
-use fleet_controller::adapter::claude_code::parse_roster;
+use fleet_controller::adapter::claude_code::{parse_hosted, parse_roster, DaemonListing, Hosted};
 use fleet_controller::clock::Clock;
 use fleet_controller::events;
 use fleet_controller::host::{session_for, Host};
@@ -182,6 +186,65 @@ impl Rig {
         self
     }
 
+    /// The table with the control seat's row recorded under a configuration
+    /// directory of its own, as a spawned seat's is.
+    fn with_the_control_under(self, dir: &str) -> Rig {
+        let row = |seat: &str, name: &str, worktree: &Path, session: &str, extra: &str| {
+            format!(
+                "{{\"seat\": \"{seat}\", \"project\": \"{PROJECT}\", \"worktree\": \"{}\", \
+                 \"name\": \"{name}\", \"model\": \"claude-opus-5\", \"posture\": \"auto\", \
+                 \"first_turn\": \"/wake {name}\", \"transient\": false, \
+                 \"dispatch_id\": \"dispatch-{name}\", \"dispatched_at\": 1000, \
+                 \"session_id\": \"{session}\"{extra}}}",
+                worktree.display()
+            )
+        };
+        write(
+            &self.machine.join("sessions.json"),
+            &format!(
+                "{{\"schema\": 2, \"sessions\": [{}, {}]}}\n",
+                row(OWNED_ID, OWNED, &self.owned, OWNED_SESSION, ""),
+                row(
+                    UNOWNED_ID,
+                    UNOWNED,
+                    &self.unowned,
+                    UNOWNED_SESSION,
+                    &format!(", \"config_dir\": \"{dir}\"")
+                )
+            ),
+        );
+        self
+    }
+
+    /// The seats and the table the start reads, off the rig's own files.
+    fn check(&self, daemon: &dyn DaemonListing) -> run::DaemonCheck {
+        let config = fleet_controller::config::read(&self.machine.join("config.json"))
+            .expect("the seat list reads");
+        let (table, _) = fleet_controller::sessions::read(&self.machine.join("sessions.json"));
+        run::daemon_check(
+            &config.seats,
+            &table.expect("the session table reads"),
+            daemon,
+        )
+    }
+
+    /// One start of the loop, reading `daemon` for what the Claude Code daemon
+    /// hosts, and the status it ended with. Effects are off: what is measured
+    /// is whether the loop starts, and a poll that went on to start the absent
+    /// seats would spend each start's watch finding out nothing about it.
+    fn start_reading(&self, daemon: &dyn DaemonListing) -> u8 {
+        let clock = FakeClock::new();
+        let mut seams = self.seams_reading(&clock, Some(daemon));
+        seams.effects_off = Some("this arm measures the start alone".to_string());
+        run::observe_seamed(&Options { once: true }, self.grant(), None, seams)
+    }
+
+    fn started(&self) -> bool {
+        self.stream()
+            .iter()
+            .any(|event| event["type"] == events::CONTROLLER_STARTED)
+    }
+
     /// A live session for `seat` on the host, as a start leaves one, and the
     /// pid its pane was given.
     fn start(&self, seat: &str, worktree: &Path) -> u32 {
@@ -232,10 +295,21 @@ impl Rig {
     }
 
     fn seams<'a>(&'a self, clock: &'a dyn Clock) -> Seams<'a> {
+        self.seams_reading(clock, None)
+    }
+
+    /// The seams, with what the start reads for sessions the Claude Code
+    /// daemon still hosts.
+    fn seams_reading<'a>(
+        &'a self,
+        clock: &'a dyn Clock,
+        daemon: Option<&'a dyn DaemonListing>,
+    ) -> Seams<'a> {
         Seams {
             clock,
             agent: &self.stub,
             host: &self.host,
+            daemon,
             child_path: "",
             effects_off: None,
             stop_handler: StopHandler::Unarmed,
@@ -651,4 +725,158 @@ fn the_rig_shadows_the_config_directory_a_seats_shell_carries() {
         Some(rig.root.join(".claude").into_os_string()),
         "the rig's environment block leaves the agent's config directory where the shell had it"
     );
+}
+
+/// A background row in the listing's own shape: a short id, and a pid while
+/// the daemon keeps it running (lessons claude-code A3, A6).
+fn background_row(session: &str, short: &str, worktree: &Path, pid: Option<u32>) -> String {
+    let pid = pid.map(|pid| format!(",\"pid\":{pid}")).unwrap_or_default();
+    format!(
+        "{{\"id\":\"{short}\",\"sessionId\":\"{session}\",\"cwd\":\"{}\",\"kind\":\"background\",\
+         \"state\":\"done\",\"startedAt\":1000{pid}}}",
+        worktree.display()
+    )
+}
+
+/// An interactive row as a seat's own session reads (lessons claude-code B10):
+/// a pid and a status, and no short id.
+fn interactive_row(session: &str, worktree: &Path, pid: u32) -> String {
+    format!(
+        "{{\"sessionId\":\"{session}\",\"cwd\":\"{}\",\"kind\":\"interactive\",\
+         \"pid\":{pid},\"status\":\"idle\",\"startedAt\":1000}}",
+        worktree.display()
+    )
+}
+
+/// THE UPGRADE ADOPTS NOTHING (ruling 10): A SEAT THE CLAUDE CODE DAEMON STILL
+/// HOSTS STOPS THE START, NAMED, BEFORE ANYTHING IS TOUCHED.
+///
+/// The listing carries a live background row in the owned seat's worktree —
+/// the shape a seat started before fleet ran its sessions itself reads. The
+/// loop exits 1, reads no seat's listing and makes no host call, and writes no
+/// `controller.started`; the lines it refuses with name the seat, the session,
+/// its short id and the command that stops it.
+#[test]
+fn a_seat_the_daemon_still_hosts_stops_the_start_and_is_named() {
+    let rig = Rig::new("daemon-hosted");
+    let listing = format!(
+        "[{}]",
+        background_row(OWNED_SESSION, "ab12", &rig.owned, Some(4242))
+    );
+    let asked = Mutex::new(Vec::new());
+    let daemon = |dir: Option<&Path>| -> Result<Vec<Hosted>, String> {
+        asked.lock().unwrap().push(dir.map(Path::to_path_buf));
+        parse_hosted(&listing)
+    };
+
+    assert_eq!(rig.start_reading(&daemon), run::EXIT_DAEMON_HOSTED);
+    assert_eq!(run::EXIT_DAEMON_HOSTED, 1);
+    assert!(
+        rig.host.calls().is_empty(),
+        "no host call before the refusal: {:?}",
+        rig.host.verbs()
+    );
+    assert!(
+        rig.stub.calls().is_empty(),
+        "and no read of the agent: {:?}",
+        rig.stub.verbs()
+    );
+    assert!(!rig.started(), "no controller.started: {:?}", rig.stream());
+    assert_eq!(
+        *asked.lock().unwrap(),
+        vec![None],
+        "the fleet's own listing, and no directory the table does not record"
+    );
+
+    assert_eq!(
+        rig.check(&daemon),
+        run::DaemonCheck::Hosted(vec![
+            format!(
+                "{OWNED} is hosted by the Claude Code daemon: session {OWNED_SESSION}, \
+                 short id ab12, in {}",
+                rig.owned.display()
+            ),
+            run::DAEMON_REMEDY.to_string(),
+            "  claude stop ab12".to_string(),
+        ])
+    );
+}
+
+/// A SEAT'S RECORDED DIRECTORY IS READ TOO, AND ITS STOP NAMES IT.
+///
+/// A spawned seat's session is listed under its own configuration directory
+/// and no other (lessons claude-code A11, B10), so the check reads every
+/// directory the table records for a seat, and the command it hands the person
+/// runs under that same directory.
+#[test]
+fn a_seat_hosted_under_its_own_directory_is_named_with_that_directory() {
+    let rig = Rig::new("daemon-hosted-dir").with_the_control_under("/cfg/control");
+    let listing = format!(
+        "[{}]",
+        background_row(UNOWNED_SESSION, "cd34", &rig.unowned, Some(4343))
+    );
+    let daemon = |dir: Option<&Path>| -> Result<Vec<Hosted>, String> {
+        match dir {
+            Some(dir) if dir == Path::new("/cfg/control") => parse_hosted(&listing),
+            _ => parse_hosted("[]"),
+        }
+    };
+
+    assert_eq!(rig.start_reading(&daemon), run::EXIT_DAEMON_HOSTED);
+    assert_eq!(
+        rig.check(&daemon),
+        run::DaemonCheck::Hosted(vec![
+            format!(
+                "{UNOWNED} is hosted by the Claude Code daemon: session {UNOWNED_SESSION}, \
+                 short id cd34, in {}",
+                rig.unowned.display()
+            ),
+            run::DAEMON_REMEDY.to_string(),
+            "  CLAUDE_CONFIG_DIR=/cfg/control claude stop cd34".to_string(),
+        ])
+    );
+}
+
+/// A LISTING OF THE SEATS' OWN SESSIONS LETS THE START GO ON.
+///
+/// An interactive row carries no short id (B10), so it is nobody's daemon's;
+/// and a background row the daemon no longer runs — pid-less, `done`, which is
+/// what the refusal's own stop leaves listed (A3) — does not hold the start
+/// either, or a person who ran the command the refusal named would meet it
+/// again. A row outside every seat's worktree is not a seat's.
+#[test]
+fn a_listing_of_interactive_rows_lets_the_start_go_on() {
+    let rig = Rig::new("daemon-clear");
+    let elsewhere = rig.root.join("elsewhere");
+    let listing = format!(
+        "[{},{},{}]",
+        interactive_row(OWNED_SESSION, &rig.owned, 4242),
+        background_row(UNOWNED_SESSION, "cd34", &rig.unowned, None),
+        background_row("a-person-s-session", "ef56", &elsewhere, Some(4444)),
+    );
+    let daemon = |_: Option<&Path>| -> Result<Vec<Hosted>, String> { parse_hosted(&listing) };
+
+    assert_eq!(rig.check(&daemon), run::DaemonCheck::Clear);
+    assert_eq!(rig.start_reading(&daemon), 0);
+    assert!(rig.started(), "the controller started: {:?}", rig.stream());
+}
+
+/// A LISTING THAT CANNOT BE READ IS SAID ONCE, AND THE START GOES ON
+/// (reviewer call 2026-09-25, 2): refusing would leave a fleet whose listing
+/// breaks unable to start at all, and the poll reads a seat it cannot see as
+/// unknown, which nothing is started over.
+#[test]
+fn an_unreadable_listing_lets_the_start_go_on() {
+    let rig = Rig::new("daemon-unreadable");
+    let daemon = |_: Option<&Path>| -> Result<Vec<Hosted>, String> { parse_hosted("") };
+
+    assert_eq!(
+        rig.check(&daemon),
+        run::DaemonCheck::Unreadable(
+            "the fleet's listing: the listing answered with zero bytes and a success status"
+                .to_string()
+        )
+    );
+    assert_eq!(rig.start_reading(&daemon), 0);
+    assert!(rig.started(), "the controller started: {:?}", rig.stream());
 }

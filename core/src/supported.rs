@@ -3,7 +3,8 @@
 //! checks and the controller compare the installed one with.
 //!
 //! TWO ARE DECLARED HERE: Claude Code's, and the fleet-packs repository's —
-//! the source and the tag `fleet create` installs a store pack from. A store's
+//! the source and the tag `fleet create` installs a store pack from — beside
+//! tmux's MINIMUM, a floor rather than a pin. A store's
 //! own pin is its pack's and not this binary's: the pack at that tag pins the
 //! store it drives and carries the doctor check that measures it. The workflow
 //! runtime is NOT the binary's either: a pack pins it in its own `[runtime]`
@@ -31,6 +32,18 @@
 /// where the behaviour moved. The doctor check carries its own copy, because a
 /// shell script cannot read this, and a suite arm fails until the two agree.
 pub const PINNED_CLAUDE_CODE: &str = "2.1.280";
+
+/// The oldest tmux fleet runs on: every seat's session is a tmux session on
+/// fleet's own socket, and the controller's host reads each pane's liveness,
+/// exit status and screen through it. The defaults' `tmux-version` doctor
+/// check compares `tmux -V` with it.
+///
+/// A FLOOR, not a pin: a later release is expected to keep the few client
+/// calls the host makes. It is the one release measured (3.7b, 2026-09-26),
+/// and it moves down only when an older one is measured the same way. The
+/// doctor check carries its own copy, because a shell script cannot read this,
+/// and a suite arm fails until the two agree.
+pub const MINIMUM_TMUX: &str = "3.7b";
 
 /// The repository fleet's packs are published from: the store adapters, the
 /// runtimes and the tiny pack, one directory each. `fleet create` installs the

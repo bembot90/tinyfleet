@@ -13,8 +13,10 @@
 
 use std::path::{Path, PathBuf};
 
+use fleet_controller::adapter::claude_code::ClaudeCode;
 use fleet_controller::lifecycle::{self, FirstRun, Mode, ProjectAt};
-use fleet_controller::{config, events, platform, policy as controller};
+use fleet_controller::run::{self, DaemonCheck};
+use fleet_controller::{config, events, platform, policy as controller, sessions};
 use fleet_core::item::Stop;
 use fleet_core::seat::identity;
 use fleet_core::store::{self, AdapterSource, Opening, PackDirs, STORE_TIMEOUT};
@@ -805,7 +807,7 @@ fn start(ui: &Ui, args: &StartArgs) -> Result<Exit, Stop> {
     let fleet = Fleet::resolve()?;
     let service = service(&fleet.machine_dir)?;
 
-    // THE THREE REFUSALS, before the first-run work and before anything is
+    // THE FIVE REFUSALS, before the first-run work and before anything is
     // loaded.
     if let Some(pid) = service.running().map_err(Stop::could_not_tell)? {
         let tick = lifecycle::last_tick(&fleet.machine_dir)
@@ -824,6 +826,14 @@ fn start(ui: &Ui, args: &StartArgs) -> Result<Exit, Stop> {
             "{why} — nothing was loaded; the search path is {child_path}"
         )));
     }
+    // The host every seat's session runs on, resolved as the controller
+    // resolves it: a controller with none starts no seat at all.
+    if let Err(why) = fleet_controller::host::TmuxHost::resolve(&child_path) {
+        return Err(Stop::could_not_tell(format!(
+            "{why} — nothing was loaded; the search path is {child_path}"
+        )));
+    }
+    daemon_hosted(ui, &fleet.machine_dir, &home)?;
 
     let policy = controller::load(&fleet.fleet_toml).map_err(Stop::could_not_tell)?;
     let report = lifecycle::first_run(&FirstRun {
@@ -858,8 +868,8 @@ fn start(ui: &Ui, args: &StartArgs) -> Result<Exit, Stop> {
     // a fleet.toml, so a machine whose binary was rebuilt has no other call
     // that would bring the set it ships.
     //
-    // A refusal here is a LINE AND NEVER A STOP. Start has its own three
-    // refusals and this is not a fourth: a machine whose defaults this binary
+    // A refusal here is a LINE AND NEVER A STOP. Start has its own five
+    // refusals and this is not a sixth: a machine whose defaults this binary
     // will not write over still gets its controller.
     match defaults_into(&fleet.machine_dir) {
         Ok(defaults) => {
@@ -926,6 +936,40 @@ fn start(ui: &Ui, args: &StartArgs) -> Result<Exit, Stop> {
             Ok(Exit::Done)
         }
         Err(not) => Err(Stop::could_not_tell(not.sentence())),
+    }
+}
+
+/// The upgrade refusal, at the terminal: the controller makes the same check
+/// before its first poll (ruling 10: the upgrade adopts nothing), and a person
+/// who meets it here reads it where they typed, not in the service's log.
+///
+/// It reads what the controller will: the seat list, the session table's
+/// recorded directories, and the listing under each. A seat list or a table
+/// that will not read names no seat and no directory here — the controller
+/// says why when it reads them — and a listing that cannot be read is one
+/// line, and the start goes on.
+fn daemon_hosted(ui: &Ui, machine_dir: &Path, home: &Path) -> Result<(), Stop> {
+    let seats = config::read(&machine_dir.join("config.json"))
+        .map(|machine| machine.seats)
+        .unwrap_or_default();
+    let (table, _) = sessions::read(&sessions::path_in(machine_dir));
+    let agent = ClaudeCode::new(home, machine_dir);
+    match run::daemon_check(&seats, &table.unwrap_or_default(), &agent) {
+        DaemonCheck::Clear => Ok(()),
+        DaemonCheck::Hosted(lines) => Err(Stop::refused(format!(
+            "{}\nnothing was loaded",
+            lines.join("\n")
+        ))),
+        DaemonCheck::Unreadable(cause) => {
+            ui.status(
+                Stream::Err,
+                Tone::Flat,
+                "agent:",
+                &run::daemon_unreadable_line(&cause),
+                None,
+            );
+            Ok(())
+        }
     }
 }
 

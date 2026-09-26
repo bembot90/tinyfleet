@@ -96,6 +96,7 @@ fn the_defaults_alone_resolve_every_check_they_ship() {
             "guards-installed",
             "isolation-pair",
             "runtime-version",
+            "tmux-version",
         ],
         "one entry per doctor directory, in name order"
     );

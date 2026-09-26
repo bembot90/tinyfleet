@@ -1,6 +1,6 @@
 # fleet/controller
 
-The controller: one boring daemon per machine that keeps a fleet of
+The controller: one boring service per machine that keeps a fleet of
 coding-agent seats alive, and publishes what it saw. Its contract is this
 code and `../docs/`; what it knows about the agent it runs is
 `../brain/lessons/`.
@@ -25,14 +25,28 @@ measurements are pinned to. Both files are re-read whenever their mtime moves;
 a row that names no seat or no worktree is skipped loudly rather than
 defaulted, and a policy file that stops parsing leaves the last good one in
 force. Startup is the exception that cannot fall back: with neither file
-readable, `observe` exits 3 and names the path. Through the agent adapter it
-then lists every session, matches rows to seats by working directory and never
-by short id, and reads each matched session's context from its transcript's
-last main-chain assistant entry — under `$CLAUDE_CONFIG_DIR` when the agent is
-scoped to one, and under `$HOME/.claude` otherwise, at the per-project
-directory the agent names by replacing every non-alphanumeric character of the
-path with a dash. Two live rows in one seat's worktrees, and a listing that
-could not be read, are both Unknown — never absence. Every call to the agent
+readable, `observe` exits 3 and names the path. So is a seat whose worktree
+still holds a live session the agent's own background daemon hosts — a row
+carrying the daemon's short id and a pid: the upgrade adopts nothing, so
+`observe` names each one with the `claude stop` that ends it and exits 1 before
+its first poll, and `fleet start` refuses the same way at the terminal.
+
+Presence and activity are two reads, split by question. **Presence** is the
+host's: every seat's session is a tmux session on fleet's own server, `tmux -L
+fleet -f /dev/null`, named by the seat's id, with the agent as the pane's own
+process and `remain-on-exit` on, and one read of that server per poll says
+whether each seat's session is there and whether its pane is alive or dead
+with the status the agent exited with. **Activity** is the agent's: through the
+adapter it lists every session once per distinct configuration directory,
+attributes a row to a seat by the pane's pid and never by working directory,
+and reads the matched session's context from its transcript's last main-chain
+assistant entry — under `$CLAUDE_CONFIG_DIR` when the agent is scoped to one,
+and under `$HOME/.claude` otherwise, at the per-project directory the agent
+names by replacing every non-alphanumeric character of the path with a dash. A
+live pane the listing has not named past a 30-second starting grace, a live row
+in a seat's worktree with no session behind it on the host, and a read of
+either that failed are all Unknown, carrying both readings — never absence.
+Every call to the agent
 binary — `$FLEET_CLAUDE_BIN`, else `claude` — runs under a deadline of 20
 seconds, or of `$FLEET_AGENT_TIMEOUT_MS` when that names a positive whole number
 of milliseconds; a call that outruns it is killed and read as Unknown naming the
@@ -45,8 +59,10 @@ previous one: it carries the format version, the moment it was generated, the
 controller's version, the agent version read this poll beside the release the
 policy pins, the policy in force with its mtime and `fleet_parse_error` when
 the loop is running on last-good, and one row per seat with its roster state —
-`present`, `prompt-blocked`, `starting`, `stopped`, `absent` or `unknown` — its
-context tokens, the project and worktree it was found in, and the verdict this
+`present`, `prompt-blocked`, `starting`, `stopped`, `absent` or `unknown`, with
+both readings on an `unknown` row and the exit status and end on a `stopped`
+one — its context tokens, the project and worktree it was found in, and the
+verdict this
 poll reached for it beside what was done about it. Beside the seats it carries
 `effects`, which reads `on` or `off` with the cause, and `in_flight`, which names
 the seat and the effect a poll is BLOCKED inside and is written before the
@@ -59,8 +75,11 @@ liveness signal a reader gets. `events.jsonl` is appended to, one JSON object
 per line, each with an id, a sequence, a timestamp, a type, an actor and a
 payload: `controller.started` once per process, `controller.stopped` when a
 signal ends it, `substrate.moved` when the agent version stops matching the pin,
-and `session.spawned`, `session.rested`, `session.nudged` and `session.crashed`
-as the effects below take them. The stream runs both ways: `fleet event` appends
+`session.spawned`, `session.revived`, `session.rested`, `session.nudged` and
+`session.crashed` as the effects below take them, and one `session.ended` the
+first poll that reads a seat's pane dead, carrying its status and when it
+ended — dated by that poll, or by the transcript's last write for a pane that
+died before this process was looking. The stream runs both ways: `fleet event` appends
 `seat.woke`, `seat.resting`, `seat.handed_off` and `seat.exited` from its own
 process, and the loop consumes them. Nothing is written per poll, because a
 stream that reports the controller's own health drowns the lines a person came
@@ -82,38 +101,27 @@ rest outranks spawn outranks suggest, and the halt guard outranks the spawn it
 guards. A seat whose newest dispatch is younger than
 `controller.arrival_window_seconds` and has no sighting is held whatever the
 roster says, because the roster reads the same absence every poll and a start
-that has not arrived yet is not a seat that needs another one. A pid-less row
-that is not a newborn is read by an EVENT and then by its context — the roster
-cannot tell a hibernated session from a deliberately stopped one — so an
-unconsumed deliberate end is a successor, a reading under
+that has not arrived yet is not a seat that needs another one. A dead pane is
+an END, and it is read by an EVENT and then by its context — a pane that exited
+cannot say whether the seat said goodbye or crashed — so an unconsumed
+deliberate end is a successor, a reading under
 `controller.rest_threshold_tokens` is a revive, and a reading at or over it, or
-one nobody could take, is a successor too.
-
-Above those two arms and below the arrival hold sits the **replacement window**.
-The controller reads the agent daemon's own account of itself once per poll — a
-whole-fleet read like the roster, so two seats cannot decide against different
-beliefs about the same moment — and a pid-less row is HELD while that daemon's
-pid has moved since the last poll or its uptime is under
-`controller.arrival_window_seconds`. Upgrading the agent replaces the daemon,
-which ends every hosted process at once and re-hosts the sessions within about a
-minute: a row in that window is in transit rather than gone, and spawning over it
-is what puts two live rows in one worktree. The hold's line names itself
-(`replacement window: held`) and is printed once per transition into it. A daemon
-read that FAILED opens no window — a hold on a reading nobody took would stop
-every dispatch on the fleet for as long as the read stayed broken. A poll in
-which at least half the seats, and never fewer than two, stand on pid-less rows
-logs ONE upgrade line rather than N independent absences; it changes no seat's
-verdict, because the arrival window already bounds each dispatch.
+one nobody could take, is a successor too. A poll in which at least half the
+seats, and never fewer than two, have no session on the host logs ONE
+server-gone line — fleet's tmux server ended, or the machine rebooted — rather
+than N independent absences; it changes no seat's verdict, because the arrival
+window already bounds each dispatch.
 
 The **blind counter** is the other pure function beside the table. A sighting —
 a present or prompt-blocked row — decays it by one and never clears it, because a
 flapping roster that cleared the count on each good poll would let a guard built
 for a stuck seat never fire; an unreadable roster holds it, so a broken read
 cannot launder a runaway back to zero; a starting row moves it in no direction;
-and a pid-less row under a session-creating verdict increments it. A REVIVE
-counts as a dispatch: an attach exits 0 whether it revived the row or silently
-did nothing, so without that a failing revive would be retried every poll forever
-and never reach the guard. Three consecutive blind dispatches — the limit is a
+and a stopped or absent seat under a session-creating verdict increments it. A
+REVIVE counts as a dispatch: a resume that came up and died again, or came up as
+some other session, leaves the seat stopped or absent once more, so without
+that a failing revive would be retried every poll forever and never reach the
+guard. Three consecutive blind dispatches — the limit is a
 constant, because the number is a property of the arrival-window design rather
 than a per-fleet knob — latch the seat **halted**: the verdict becomes `halt`,
 one `session.halted` and one line are written at the transition and never once
@@ -125,56 +133,69 @@ any verdict is reached.
 ## effect
 
 Four of the six verdicts are carried out here, each writing its own event once.
-`spawn-woken` starts a session in the seat's worktree with `--bg`, the seat's
-name, its model, the fleet's permission posture and the rendered first turn as
-the prompt — the model and the posture on every call, never the agent's own
-defaults — with the child's output going to a **file** under the machine
-directory's `starts/` and the child watched for `controller.start_watch_seconds`:
-one that exits inside that window is a `session.crashed` carrying its status and
-the file, and one still running when it closes is a `session.spawned` and a row
-in the session table, because arrival is the roster's answer and never the
-start's own exit. `rest` is stop, then start the successor, then remove the
-predecessor's row, in that order and by the **short id** from the roster, which
-is the address a stop takes and is not the session id; a stop that does not exit
-0 starts nothing, removes nothing, leaves the rest pending for the next poll, and
-is the alarm the contract names — a `seat.resting` with no `session.rested` after
-it. `suggest-rest` sends one nudge, once per session, and never a second.
-`revive` dispatches an **attach** of the pid-less row's short id, so the session
-continues in place with its id and its context intact — only a flagless full-id
-resume continues a session and a flagged one forks it — and it emits
-`session.revived`; the row is then re-opened as this dispatch's, waiting on a
-sighting, because the attach's own exit is not a witness that it took. A pid-less
-row with no short id cannot be revived, says so, and is left to the next poll.
+The adapter answers WHAT to run and core runs it, as a new tmux session named by
+the seat's id whose command is the agent itself, under an environment set
+exactly. `spawn-woken` starts an INTERACTIVE session in the seat's worktree
+with the seat's name, its model, the fleet's permission posture, the plugin
+root and the rendered first turn as the prompt — the model and the posture on
+every call, never the agent's own defaults — and, for a spawned seat, a
+configuration directory seeded with the operator's onboarding answers and
+trust for that one worktree. The start is watched for
+`controller.start_watch_seconds`: a pane that dies inside it, or a session the
+listing has not shown with the pane's own pid and a status by its close, is a
+`session.crashed` carrying the status and the pane's last screen, kept under the
+machine directory's `starts/`, and the session is killed; a listed one is a
+`session.spawned` and a row in the session table, because arrival is the
+listing's answer and never the start's own return. A **stop** is one `C-c`, up
+to five seconds for the pane to die, then `kill-session`, and it counts only
+once the host no longer lists the session. `rest` is stop, then start the
+successor, in that order, since the successor takes the name the predecessor
+held; a stop that does not land starts nothing, leaves the rest pending for the
+next poll, and is the alarm the contract names — a `seat.resting` with no
+`session.rested` after it. `suggest-rest` types one nudge, once per session,
+and never a second. `revive` clears the dead pane and starts a new session
+whose command resumes the session's FULL id from the table with the start's
+own model, posture and plugin root, so the session continues with its id and
+its context intact; it is believed only when the new pane's pid is listed under
+that same id — any other id is a fork, failed and killed — and it emits
+`session.revived` and re-opens the row as this dispatch's. A seat whose table
+names no session cannot be revived, says so, and is left to the next poll. A
+turn for a live seat — the controller's nudge, `fleet seat nudge`, a routine's
+and a feed — is a bracketed paste into the pane and a separate submit, refused
+before any byte when the listing says the seat is blocked, and believed only
+when the row turns busy; a seat already busy is `queued`.
 `halt` is the verdict whose act is to dispatch nothing: it publishes `halted` as
 its outcome, and its line and its event were written once at the transition.
 Every process the controller starts carries
 a **constructed** `PATH` from the platform layer and an environment built rather
 than inherited, and the binary an effect execs is resolved once at startup —
 `$FLEET_CLAUDE_BIN` when it names an absolute path, else the first `claude` on
-that constructed `PATH`. Unresolvable is not fatal: the loop observes and
+that constructed `PATH`. tmux is resolved the same way, `$FLEET_TMUX_BIN` else
+the first `tmux` on it. Unresolvable is not fatal: the loop observes and
 publishes with the projection's `effects` field reading `off` and the cause
-beside it.
+beside it. Every child carries `DISABLE_AUTOUPDATER=1`, so no seat's session
+moves the operator's installed Claude Code.
 
 `sessions.json` in the machine directory is the controller's own memory of what
 it started: the stream cursor, the map of sessions already nudged, the blind
-counter and the halt latch per seat, the daemon's pid at the last poll, and one
-row per session with its seat, project, worktree, name, model, posture, first
-turn, the id of the `session.spawned` that opened it, and — filled at the first
-sighting, matched by worktree — the agent's session id, the short id and the
-stamps. It is private and holds no work item.
+counter and the halt latch per seat, and one row per session with its seat,
+project, worktree, name, model, posture, first turn, configuration directory,
+the id of the `session.spawned` that opened it, the latched end of its pane, and
+— filled at the first sighting, matched by the pane's pid — the agent's session
+id and the stamps. It is private and holds no work item.
 
 It is also **not a second source of truth**. At startup the controller ADOPTS:
-for every session the table names, it asks the roster this poll already read
+for every session the table names, it asks the listing this poll already read
 whether that session id is live and claims the live ones by id — no respawn, one
-`session.adopted` each — so a restart re-hosts nothing, and a session the roster
-no longer carries falls to the discriminator on that same poll. A table that is
+`session.adopted` each — so a restart re-hosts nothing: tmux held the sessions
+across it. A session whose pane died meanwhile falls to the discriminator on
+that same poll. A table that is
 missing, unparseable or of a schema this build refuses is REBUILT from the event
 stream rather than trusted or invented: a `session.spawned` or a
 `session.adopted` opens a row, a `session.rested` closes the predecessor it
 names, a `dispatch.blind` carries the counter, a `session.halted` with no
 `seat.clear_halt` after it is a standing hold, and the cursor is the last
-sequence folded. The daemon pid is not folded and starts at none, which reads as
-no replacement rather than a false one.
+sequence folded.
 
 ## event
 
@@ -202,8 +223,8 @@ state file, the projection's array and the events' `order` payload key keep the
 file format's word until that format is renamed, and `fleet order` is refused
 with exit 2 and the pointer for one release.
 
-Standing duties are flat files this same tick evaluates — no second daemon and
-no per-routine service job — and a controller that is down fires nothing and says
+Standing duties are flat files this same tick evaluates — no second service and
+no per-routine job — and a controller that is down fires nothing and says
 so by the absence of its own events. `orders/<name>.toml` is read from three
 roots on every tick that evaluates: the fleet root's `orders/`, every installed
 pack's under the machine directory's `packs/`, and every project's. Each loaded

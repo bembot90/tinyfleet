@@ -972,6 +972,131 @@ fn the_claude_code_doctor_check_reads_claude_version_against_the_pin() {
     assert!(said.contains("claude-code-version: holds"), "{said}");
 }
 
+/// fleet-rge6.6 — tmux's doctor check the defaults ship, run as a real script
+/// against stub tmuxes, and its copy of the floor held to
+/// `supported::MINIMUM_TMUX`.
+///
+/// Each stub answers `-V` as `tmux -V` prints, and `-L fleet list-sessions`
+/// either as a socket with no server behind it or with two sessions; any other
+/// call fails, so a check that asked another socket would not read a server.
+/// Absence is measured with no tmux on PATH at all. `FLEET_TMUX_BIN` is the
+/// seam the controller reads tmux through, and names the binary over PATH.
+#[test]
+fn the_tmux_doctor_check_reads_tmux_version_against_the_floor() {
+    let minimum = fleet_core::supported::MINIMUM_TMUX;
+    let defaults = Defaults::new("tmux-doctor");
+    let check = defaults.path().join("doctor/tmux-version/run.sh");
+    let script = std::fs::read_to_string(&check)
+        .unwrap_or_else(|e| panic!("the defaults ship the check at {}: {e}", check.display()));
+    assert_eq!(
+        script
+            .lines()
+            .filter(|line| line.starts_with("MINIMUM="))
+            .collect::<Vec<_>>(),
+        vec![format!("MINIMUM={minimum}").as_str()],
+        "the check's one copy of the floor is supported::MINIMUM_TMUX"
+    );
+
+    let fixture = Fixture::new("tmux-doctor-stubs");
+    fixture.dir("nothing");
+    let fake = |label: &str, answer: &str, sessions: Option<&str>| -> std::path::PathBuf {
+        let dir = fixture.path(label);
+        std::fs::create_dir_all(&dir).expect("the fake tmux's directory");
+        let bin = dir.join("tmux");
+        let listed = match sessions {
+            Some(names) => format!("printf '{names}'\nexit 0"),
+            None => "echo \"no server running on /tmp/tmux-0/fleet\" >&2\nexit 1".to_string(),
+        };
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = -V ]; then echo \"{answer}\"; exit 0; fi\n\
+                 if [ \"$1 $2 $3\" = \"-L fleet list-sessions\" ]; then\n{listed}\nfi\n\
+                 echo \"this stub answers no $*\" >&2\nexit 1\n"
+            ),
+        )
+        .expect("the fake tmux is written");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+            .expect("the fake tmux is executable");
+        dir
+    };
+    let floor = fake("floor", &format!("tmux {minimum}"), None);
+    let newer = fake("newer", "tmux 3.8", Some("a\\nb\\n"));
+    let below = fake("below", "tmux 3.7a", None);
+    let old = fake("old", "tmux 3.4", None);
+    let master = fake("master", "tmux master", None);
+
+    let run = |path: &std::path::Path, seam: Option<&std::path::Path>| -> (i32, String) {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg(&check)
+            .env("PATH", path)
+            .env_remove("FLEET_TMUX_BIN")
+            .env_remove("TMUX_TMPDIR");
+        if let Some(bin) = seam {
+            cmd.env("FLEET_TMUX_BIN", bin);
+        }
+        let out = cmd.output().expect("the check runs");
+        (
+            out.status
+                .code()
+                .expect("the check exits rather than signals"),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
+    };
+    let install = "brew install tmux on macOS, or the distribution's tmux package";
+
+    let (code, said) = run(&floor, None);
+    assert_eq!(code, 0, "the floor itself: {said}");
+    assert!(
+        said.contains(&format!("answers: tmux {minimum}"))
+            && said.contains("tmux-version: holds — no server is running on socket fleet"),
+        "{said}"
+    );
+
+    let (code, said) = run(&newer, None);
+    assert_eq!(code, 0, "a release above the floor: {said}");
+    assert!(
+        said.contains(
+            "tmux-version: holds — a server is running on socket fleet with 2 session(s)"
+        ),
+        "{said}"
+    );
+
+    for (dir, version) in [(&below, "3.7a"), (&old, "3.4")] {
+        let (code, said) = run(dir, None);
+        assert_eq!(code, 1, "tmux {version} is below the floor: {said}");
+        assert!(
+            said.contains(&format!(
+                "tmux {version} is older than the minimum {minimum}"
+            )) && said.contains(install),
+            "the floor is named, with the line that installs tmux: {said}"
+        );
+    }
+
+    let (code, said) = run(&master, None);
+    assert_eq!(code, 0, "a build with no release number: {said}");
+    assert!(
+        said.contains("tmux-version: holds (`master` carries no release number to compare"),
+        "{said}"
+    );
+
+    let (code, said) = run(&fixture.path("nothing"), None);
+    assert_eq!(code, 1, "no tmux on PATH: {said}");
+    assert!(
+        said.contains("did not answer (exit 127)") && said.contains(install),
+        "{said}"
+    );
+
+    let (code, said) = run(&old, Some(&floor.join("tmux")));
+    assert_eq!(
+        code, 0,
+        "the seam names the floor's tmux over PATH's: {said}"
+    );
+    assert!(said.contains("tmux-version: holds"), "{said}");
+}
+
 /// fleet-3krx.1 — the fleet-packs pin's doctor check the defaults ship, run as
 /// a real script against a stub `fleet` whose `pack list` prints the lock, and
 /// its two copies held to `supported::PINNED_PACKS_SOURCE` and `PINNED_PACKS`.

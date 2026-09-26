@@ -2,12 +2,15 @@
 
 A seat is whoever does a fleet's work: an agent the controller runs, or a
 person. Every seat is known by an id minted once, and may carry a name you
-choose. The controller is the process that keeps the agent seats running: it
-polls the agent for each seat's session, starts or brings back the ones that
-are down, collects the rests seats ask for, and publishes what it saw. You
-list seats in `fleet.toml` with `fleet seat add`, bring the controller up
-with `fleet start` and down with `fleet stop`, or run it in your terminal
-with `fleet observe`. Transient seats are made on demand with
+choose. The controller is the process that keeps the agent seats running:
+each agent seat's session runs inside a tmux session on fleet's own tmux
+server, and on every poll the controller reads that server and the agent's
+list of sessions, starts or brings back the sessions that are down, collects
+the rests seats ask for, and publishes what it saw. You list seats in
+`fleet.toml` with `fleet seat add`, bring the controller up with
+`fleet start` and down with `fleet stop`, or run it in your terminal with
+`fleet observe`. You watch a seat's session, or type into it, with
+`fleet seat attach`. Transient seats are made on demand with
 `fleet seat spawn`, handed work with `fleet seat feed`, and ended with
 `fleet seat retire`.
 
@@ -60,9 +63,14 @@ with `fleet observe`. Transient seats are made on demand with
 - **blind dispatch**: a start or revive the controller issues for a seat that
   has no live session. At three uncancelled blind dispatches the seat is
   **halted**: nothing more is started for it until you lift the halt.
+- **session**: one run of the agent for a seat. The agent is the process of
+  a tmux session of its own, on fleet's tmux server: the server on the socket
+  `fleet` (`tmux -L fleet`), never your own tmux server. The tmux session is
+  named by the seat's full id. When the agent exits, the session stays, dead,
+  holding the status the agent exited with.
 - **rest**: a named seat's request to stop its session and have a fresh one
   started in its place.
-- **nudge**: one message carried to a seat's live session.
+- **nudge**: one message typed into a seat's live session.
 
 The projection and the event stream the controller writes are read with
 `fleet status` and `fleet event tail`; see
@@ -264,13 +272,18 @@ written or loaded when:
   (exit 1);
 - the controller's service is already running (exit 1, naming its pid and the
   time of its last published poll);
-- no agent binary can be found (exit 3, naming the search path it used).
+- no agent binary can be found (exit 3, naming the search path it used);
+- no tmux can be found (exit 3, naming the search path it used);
+- a seat's worktree holds a session fleet did not start (exit 1; see
+  [Seats Claude Code still runs](#seats-claude-code-still-runs)).
 
 The agent binary is `FLEET_CLAUDE_BIN` where that names an absolute path, and
 otherwise the first `claude` on a search path fleet builds for its children,
 not your shell's `PATH`: `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`,
 `/opt/homebrew/bin`, `/usr/local/bin` and `~/.local/bin` on macOS, and
-`~/.local/bin`, `/usr/local/bin`, `/usr/bin` and `/bin` on Linux.
+`~/.local/bin`, `/usr/local/bin`, `/usr/bin` and `/bin` on Linux. The tmux
+binary is `FLEET_TMUX_BIN` where that names an absolute path, and otherwise
+the first `tmux` on the same search path.
 
 Then it does the install work, every step of it idempotent, and prints one
 line per step on standard error, each starting `first run:`:
@@ -324,6 +337,36 @@ $ fleet start --foreground
 It does the same checks and the same first-run steps, loads no service, and
 runs the controller in your terminal until you stop it with Ctrl-C.
 
+### Seats Claude Code still runs
+
+A seat whose worktree holds a live session that Claude Code's background
+daemon runs, and not fleet's tmux server, is one fleet does not take over.
+`fleet start` reads the agent's list of sessions — under the agent's own
+configuration directory, and under each directory a seat's sessions were
+started with — and refuses with exit 1 when a row there carries the daemon's
+short id and a process and stands in a seat's worktree. Nothing is written or
+loaded. `fleet observe` makes the same check before its first poll and exits
+1 the same way:
+
+```sh
+$ fleet observe --once
+...
+fleet observe: orla-10b55fd3 is hosted by the Claude Code daemon: session <session>, short id <short>, in <worktrees>/orla-10b55fd3
+fleet observe: stop each with the command below, then start again:
+fleet observe:   claude stop <short>
+```
+
+`fleet start` prints the same lines with `fleet start:` before the first
+alone, then `nothing was loaded`. A seat whose sessions were started under a
+configuration directory of their own is named with
+`CLAUDE_CONFIG_DIR=<dir> claude stop <short>`. A row the daemon lists with no
+process, as a stopped session reads, does not refuse the start. A seat list
+with no seats in it is not checked. When a list cannot be read and no other
+names such a session, the start goes on, saying once
+`could not tell whether Claude Code's daemon still hosts a seat's session —
+<why>; starting anyway: a poll that cannot read the listing reads a seat
+unknown unless its session has ended`.
+
 ## Stopping the controller
 
 ```sh
@@ -349,7 +392,8 @@ directory you run it from.
 
 `--once` runs one poll and exits 0. Without it the loop polls until it is sent
 SIGINT or SIGTERM, then writes `controller.stopped` to the stream and exits 0.
-Every run writes `controller.started` when it begins.
+Every run that goes on to poll writes `controller.started` before its first
+poll.
 
 What it has to say goes to standard error, each line starting
 `fleet observe:`, and is said when something changes rather than on every
@@ -365,7 +409,9 @@ fleet observe: skipping a seat row — echo-fe0d9831 would start under posture `
 
 It exits 3 without polling when the seat list cannot be read
 (`fleet observe: cannot read the seat list at ...`) or when the policy file
-it names cannot be read (`fleet observe: cannot read policy at ...`).
+it names cannot be read (`fleet observe: cannot read policy at ...`). It
+exits 1 without polling when a seat's worktree holds a session fleet did not
+start (see [Seats Claude Code still runs](#seats-claude-code-still-runs)).
 
 ## What the controller does each poll
 
@@ -373,18 +419,43 @@ On every poll the controller re-reads the seat list and the policy file when
 either has changed. A policy file that stops parsing is reported once, and
 the controller keeps running on the last one that parsed.
 
-It then reads the agent's list of sessions and matches each seat to the
-session running in its worktree. For each seat it decides one of these, which
-`fleet status` shows as the seat's decision:
+It then reads fleet's tmux server once, and the agent's list of sessions:
+the agent's own list, and the list under each configuration directory a
+transient seat's sessions were started with. Whether a seat's session is
+there is the server's answer: the tmux session named by the seat's id, alive
+or ended. What the session is doing is the agent's answer, read off the row
+whose process is the session's own. Each seat reads as one of these roster
+states, which `fleet status` shows:
+
+- **present**: the session is alive and the agent lists it.
+- **prompt-blocked**: the session is alive and the agent lists it stopped at
+  a question, such as a permission prompt.
+- **starting**: the session is alive, younger than 30 seconds, and the agent
+  does not list it yet.
+- **stopped**: the session ended. It keeps the status the agent exited with,
+  and the first poll that reads it ended writes `session.ended` to the stream
+  (see [Status and the event stream](status.md#the-roster)).
+- **absent**: the server holds no session for the seat, and the agent lists
+  no live session in the seat's worktree.
+- **unknown**: the two answers disagree, or one could not be read: a live
+  session the agent still does not list after 30 seconds, a live session the
+  agent lists in the seat's worktree that the server does not hold, or a
+  list that could not be read. The controller starts nothing for an unknown
+  seat, and `fleet status` prints why.
+
+For each seat it decides one of these, which `fleet status` shows as the
+seat's decision:
 
 - **spawn-woken**: the seat has no session, so a new one is started in the
   seat's worktree with the first turn `/wake <session-name>`. A named seat
   runs under the permission posture `auto` and a transient one under
   `dontAsk`.
-- **revive**: the seat's stopped session is brought back in place, context
-  intact. The controller revives only a session whose context it read and
-  found under the rest threshold; a stopped session at or over the threshold,
-  or one whose context could not be read, gets a new session instead.
+- **revive**: the seat's ended session is brought back, context intact: a new
+  tmux session resumes the agent's session by its id, on the model, posture
+  and plugin directory it was started with. The controller revives only a
+  session whose context it read and found under the rest threshold; an ended
+  session at or over the threshold, or one whose context could not be read,
+  gets a new session instead.
 - **rest**: the seat asked to rest and its session is live (see
   [Asking for a rest](#asking-for-a-rest)).
 - **suggest-rest**: the live session's context is at or over the rest
@@ -403,7 +474,18 @@ name still names the seat in every verb.
 
 Every session the controller starts, named or transient, carries
 `FLEET_ACTOR=seat:<id>` in its environment, so the verbs the seat runs act as
-that seat (see [Items and the record](items.md)).
+that seat (see [Items and the record](items.md)). It also carries
+`DISABLE_AUTOUPDATER=1`, which turns Claude Code's own updater off inside the
+session. The environment is set whole: a variable fleet does not name does
+not reach the session.
+
+A start counts only once the agent lists the new session's own process with
+a status, within `start_watch_seconds` (5). A session that ends inside that
+time, or that the agent has not listed by then, is a failed start: the
+controller saves its screen to `starts/<session-name>-<ms>.log` in the
+machine directory, ends the session, and writes `session.crashed`, naming the
+file. A revive fails the same way, and also when the resumed session comes up
+under another session id.
 
 A seat that wrote `fleet event exited` or `fleet event rest` and whose
 session then stopped gets a new session rather than the old one back.
@@ -429,9 +511,9 @@ start under posture `auto` on a model outside `auto_capable_models`. A
 skipped seat is not in `fleet status`.
 
 The controller starts, stops and nudges nothing, and says why, when no agent
-binary can be found (`fleet observe: effects are off — <why>`). On macOS it
-also holds every such act while the permission to read the seats' worktrees
-is pending. In both cases it keeps polling and publishing.
+binary or no tmux can be found (`fleet observe: effects are off — <why>`).
+On macOS it also holds every such act while the permission to read the
+seats' worktrees is pending. In both cases it keeps polling and publishing.
 
 ### The Claude Code version
 
@@ -482,10 +564,9 @@ number or a name is expected is read as the default.
 | Key | Default | What it sets |
 | --- | --- | --- |
 | `poll_seconds` | `5` | seconds between polls |
-| `rest_threshold_tokens` | `700000` | context at or over which a live seat is nudged to rest, and a stopped session gets a new one instead of coming back |
+| `rest_threshold_tokens` | `700000` | context at or over which a live seat is nudged to rest, and an ended session gets a new one instead of coming back |
 | `arrival_window_seconds` | `45` | how long a start is given to appear before the seat is eligible again |
-| `stopped_recency_hours` | `24` | how long an ended session still counts as the seat's stopped session |
-| `start_watch_seconds` | `5` | how long a start is watched for an immediate failure |
+| `start_watch_seconds` | `5` | how long a start or a revive is given for the agent to list the new session before it counts as failed |
 | `default_model` | `claude-opus-5` | the model of a seat that names none |
 | `posture` | `auto` | the permission posture of a named seat's session |
 | `transient_posture` | `dontAsk` | the permission posture of a transient seat's session |
@@ -579,8 +660,10 @@ when:
 
 On its next poll the controller collects the rest in this order: it stops the
 seat's session, starts a new one in the same worktree with the first turn,
-removes the old session, and writes `session.rested`. If the stop or the
-start fails, the rest stays pending and the next poll tries again.
+and writes `session.rested`. A stop sends the session one Ctrl-C, gives it up
+to five seconds to end, then ends the tmux session, and counts only once
+fleet's server no longer holds it. If the stop or the start fails, the rest
+stays pending and the next poll tries again.
 
 `fleet event rest` reads only the machine directory, so it works from any
 directory.
@@ -640,6 +723,57 @@ is refused before anything is typed: it prints `not nudged <seat> —
 did not take within the bound prints `not nudged <seat> — <session> —
 failed: typed and not taken: still <status> after <n>s` and exits 1.
 
+## Attaching to a seat
+
+`fleet seat attach` opens a seat's session in your terminal, so you can watch
+it work. It takes a seat argument, named or transient, and hands your
+terminal to tmux's own client, attached to the seat's tmux session on fleet's
+server:
+
+```sh
+$ fleet seat attach orla
+```
+
+The attach is read-only: your keys do not reach the session. Detach with
+Ctrl-b and then `d`; the session goes on running. Run from inside a tmux
+session of your own, it opens inside it. It needs no running controller,
+because the sessions are tmux's and outlive the controller. How the attach
+ends, and its exit, are tmux's.
+
+A session that has ended is still opened, after a line naming how it ended:
+
+```sh
+$ fleet seat attach orla
+fleet seat attach: the session ended with status 1
+```
+
+A session a signal ended says `the session ended with no exit status — a
+signal ended it` instead.
+
+`--write` takes the keyboard: what you type goes to the seat's session, and
+the verbs the session runs as a result act as that seat. Before it attaches,
+it writes one `seat.attached` event to the stream, with the seat,
+`"mode":"write"` and the time, and says so:
+
+```sh
+$ fleet seat attach orla --write
+fleet seat attach: typing into orla-10b55fd3's session acts as that seat
+```
+
+When the stream cannot take the line, it attaches nothing and exits 3. A
+read-only attach writes nothing. An attach does not hold off the
+controller's nudges or a feed: text typed by fleet arrives in the session
+while you are attached.
+
+It refuses (see [When it refuses](#when-it-refuses)) when:
+
+- fleet's server holds no session for the seat (exit 4:
+  `fleet seat attach: <machine-name> has no session on fleet`);
+- fleet's server cannot be read (exit 3), or no tmux can be found (exit 3);
+- the seat argument names no seat, or more than one (exit 1);
+- `--project <name>` names a project the directory does not resolve to
+  (exit 2).
+
 ## Spawning a transient seat
 
 ```sh
@@ -670,12 +804,20 @@ standard error. `fleet seat spawn`:
 The seat's configuration directory is `config/agent-<short id>` in the
 machine directory. The spawn empties it, then fills it with the files the installed
 packs and the defaults carry under `overlay/per-provider/claude/config/`;
-the packs fleet ships carry none there, so it starts empty. The settings,
-memory, instructions and servers in your own agent configuration therefore
-do not reach the seat. The session starts with `CLAUDE_CONFIG_DIR` set to
-that directory, and with `CLAUDE_SECURESTORAGE_CONFIG_DIR` set to the
-`CLAUDE_CONFIG_DIR` the spawning command ran with, or empty where it had
-none, so the seat finds the login your own configuration stored. A named
+the packs fleet ships carry none there. The start then writes `.claude.json`
+into it, merged over any the packs put there: `hasCompletedOnboarding`,
+`lastOnboardingVersion` and `oauthAccount`, and `theme` where you have one,
+copied from your own `~/.claude.json` (or `<dir>/.claude.json` where you set
+`CLAUDE_CONFIG_DIR=<dir>`), and the seat's worktree marked trusted. The
+session comes up with no onboarding and no question about trusting the
+folder; fleet marks no other directory trusted, and copies nothing else
+from your file. A `.claude.json` of yours missing one of the three keys
+stops the spawn, naming the key. The settings, memory, instructions and
+servers in your own agent configuration do not reach the seat. The session
+starts with `CLAUDE_CONFIG_DIR` set to that directory, and with
+`CLAUDE_SECURESTORAGE_CONFIG_DIR` set to the `CLAUDE_CONFIG_DIR` the
+spawning command ran with, or empty where it had none, so the seat finds the
+login your own configuration stored. A named
 seat has no directory of its own: it runs under the `CLAUDE_CONFIG_DIR` the
 controller runs with, or `~/.claude` where that is not set.
 
@@ -684,9 +826,11 @@ controller writes one `dispatch.failed` on the stream, naming the seat, the
 item it was given, and the cause `authentication_failed`. It does nothing
 else about it.
 
-A start that fails within `start_watch_seconds` exits 1 and undoes the
-worktree, the row and the configuration directory, naming each and the file
-the start's output went to; it never deletes a branch.
+A start that fails (see
+[What the controller does each poll](#what-the-controller-does-each-poll))
+exits 1 and undoes the worktree, the row and the configuration directory,
+naming each and the file the session's screen was saved to; it leaves no
+session on fleet's server, and it never deletes a branch.
 
 `--touched <command>` names one more command the seat's permission rules let
 it run. `--json` prints one document on standard output instead of the name,
@@ -726,12 +870,14 @@ $ fleet seat retire agent-fe0d9831
 retired agent-fe0d9831 — reclaimed <bytes> bytes from <worktrees>/agent-fe0d9831, pid <pid> confirmed gone
 ```
 
-`fleet seat retire` stops the seat's session and waits until the agent no
-longer lists it as live, removes the session from the agent's list, removes
-the worktree, drops the seat's
-row, checks from outside that nothing of the seat is still running or on
-disk, removes its configuration directory, and writes `session.stopped`. The
-seat's id goes with it: the next spawn mints a new one.
+`fleet seat retire` stops the seat's session on fleet's tmux server: one
+Ctrl-C, up to five seconds for it to end, then the tmux session ended. The
+stop counts only once the server no longer holds the session, and standard
+error says `session: killed <session>`. The retire then removes the worktree,
+drops the seat's row, checks from outside that nothing of the seat is still
+running or on disk, removes its configuration directory, and writes
+`session.stopped`. The seat's id goes with it: the next spawn mints a new
+one.
 
 Before it drops the row, it takes back every `open` or `in_progress` item on
 the project's board assigned to the seat with a dispatch on it: the item goes
@@ -754,10 +900,11 @@ seat's item classifies that same branch `SAFE`, and then prints
 `work branch <branch>: SAFE on the landing — deleted`. Otherwise it prints
 `work branch kept — <why>`, or nothing when the worktree stood on no branch.
 
-A seat whose session is already gone retires the same way, with `no live
-session to stop` in place of the pid. `--dead` says you expect that: it adds
-`(--dead: the roster named no live session)` to the line, and refuses (exit 1)
-when the session turns out to be live.
+A seat whose session has already ended, or is gone, retires the same way,
+with `no live session to stop` in place of the pid. `--dead` says you expect
+that: it adds `(--dead: the host held no live session)` to the line, and
+refuses (exit 1) when fleet's server holds the session alive. A server that
+cannot be read stops the retire before anything is removed (exit 3).
 
 It refuses when the seat argument names no row of the seat list, or more
 than one (exit 1), or names a named seat (exit 6). A `--by` that names no
@@ -772,6 +919,8 @@ branch.
 | `fleet start` with no fleet above the directory and none in the seat list | 1 | ``fleet start: no fleet.toml above this directory and no fleet named by <fleet-dir>/config.json — `fleet create` writes one`` | run it inside the project, or run `fleet create` |
 | `fleet start` while the controller runs | 1 | `fleet start: the controller is already running as pid <pid>; its last tick was <time>` | nothing, or `fleet stop` first |
 | `fleet start` with no agent binary | 3 | `fleet start: <why> — nothing was loaded; the search path is <path>` | install `claude` on that path, or set `FLEET_CLAUDE_BIN` |
+| `fleet start` with no tmux | 3 | `fleet start: <why> — nothing was loaded; the search path is <path>` | install tmux on that path, or set `FLEET_TMUX_BIN` |
+| `fleet start` or `fleet observe` over a seat whose worktree holds a session fleet did not start | 1 | `fleet start: <machine-name> is hosted by ...`, and the command that stops each (see [Seats Claude Code still runs](#seats-claude-code-still-runs)) | run each command it names, then start again |
 | `fleet start` with a `[seats]` table keyed by anything but an id | 3 | `fleet start: [seats.<key>] is keyed by a name — a seat is keyed by its id now; fleet seat add --agent --name <key> mints one` | run the `fleet seat add` it names, and delete the old table |
 | `fleet start` with a seat table carrying the retired name key | 3 | `fleet start: [seats.<id>] carries <retired-key>, which is name now` | rename the key to `name` |
 | `fleet start` with a seat table carrying no `kind`, or another kind | 3 | `fleet start: [seats.<id>] carries no kind — say kind = "agent" or kind = "human"`, or `[seats.<id>] kind = "<value>" is neither agent nor human` | set `kind` |
@@ -798,19 +947,22 @@ branch.
 | `fleet seat nudge` for a seat not `present` | 4 | ``fleet seat nudge: `<seat>` has no live session — its row reads <state> and not present`` | wait for the seat, or answer its prompt |
 | `fleet seat nudge` for a seat stopped at a question | 1 | `not nudged <seat> — <session> — refused: blocked on <cause>` | answer the seat's question, then nudge again |
 | `fleet seat nudge` the session did not take | 1 | `not nudged <seat> — <session> — failed: typed and not taken: still <status> after <n>s` | look at it with `fleet seat attach <seat>`, or nudge again |
+| `fleet seat attach` for a seat fleet's server holds no session for | 4 | `fleet seat attach: <machine-name> has no session on fleet` | read the seat's row in `fleet status` |
+| `fleet seat attach` when fleet's server cannot be read | 3 | `fleet seat attach: the sessions on fleet could not be listed: <why>` | run `fleet doctor tmux-version` |
+| `fleet seat attach --write` when the stream cannot take its line | 3 | `fleet seat attach: could not append to <fleet-dir>/events.jsonl, so the keyboard was not taken: <why>` | fix the machine directory, or attach without `--write` |
 | `fleet seat add`, `nudge`, `spawn`, `feed` or `retire` outside every project | 3 | ``no `fleet.toml` and no `.fleet/project.toml` above <dir> — `fleet create` writes one`` | run it inside the project |
 | `--project` naming another project | 2 | `--project <name> names a project this directory does not resolve to — ...` | run it in that project |
 | `fleet seat spawn` with a first-turn file that cannot be read | 2 | `fleet seat spawn: the first turn at <file> could not be read: ...` | fix the path |
 | `fleet seat spawn` over the load or mid-turn ceiling | 1 | `the machine cannot take another transient seat: <leg> over its ceiling.` and both readings | wait, or raise `load_ceiling_per_cpu` or `max_transient_busy` |
 | `fleet seat spawn --base` naming no commit | 1 | `` `<base>` does not resolve to a commit in <project> — nothing was made: `git rev-parse` exited 1: `` | name a commit |
 | `fleet seat spawn` in a clone with no `origin/main` | 1 | ``fleet seat spawn: `git worktree add` exited 128: fatal: invalid reference: origin/main`` | fetch `origin`, or pass `--base` |
-| `fleet seat spawn` whose session fails to start | 1 | `the start for <seat> failed inside its 5s watch window; its output is at <file>` and what was rolled back | read the file |
+| `fleet seat spawn` whose session fails to start | 1 | `the start for <seat> failed inside its 5s watch window (<cause>); its output is at <file>` and what was rolled back | read the file |
 | `fleet seat feed` or `retire` for a named seat | 6 | `<machine-name> is a named seat — named seats are rung and rested, and only a transient row is fed and retired` | `fleet seat nudge` or `fleet event rest` |
 | `fleet seat feed` with no live session | 4 | `` `<seat>` has no live session in <worktree>, so there is nothing to feed `` | retire it, and spawn again |
 | `fleet seat feed` while the seat is mid-turn | 1 | `` `<seat>` is still holding a turn — the agent reports its session busy `` | wait for the turn to end |
 | `fleet seat feed` while the seat is stopped at a question | 1 | `` `<seat>` is stopped in front of a person — blocked on <cause> — and nothing is typed at a dialog `` | answer the seat's question |
 | `fleet seat feed` the session did not take | 1 | `` `<seat>` was not fed — failed: typed and not taken: still <status> after <n>s; the occupant marker was put back `` | feed it again |
-| `fleet seat retire --dead` for a live seat | 1 | `` `<seat>` is not dead — the roster names a live session ... `` | retire without `--dead` |
+| `fleet seat retire --dead` for a live seat | 1 | `` `<seat>` is not dead — the host holds its session <session> live ... `` | retire without `--dead` |
 
 ## See also
 

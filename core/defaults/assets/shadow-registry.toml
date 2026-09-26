@@ -50,6 +50,14 @@ path = "doctor/claude-code-version/run.sh"
 purpose = "how Claude Code is asked for its version against the release the binary's controller adapter was measured on, and the line a mismatch names to install it"
 
 [[shadow]]
+path = "doctor/tmux-version/doctor.toml"
+purpose = "the tmux check's own name and description"
+
+[[shadow]]
+path = "doctor/tmux-version/run.sh"
+purpose = "how tmux is asked for its version against the oldest release the controller's host was measured on, how fleet's own server is read, and the line a missing or older tmux names to install it"
+
+[[shadow]]
 path = "doctor/fleet-packs-version/doctor.toml"
 purpose = "the fleet-packs pin check's own name and description"
 

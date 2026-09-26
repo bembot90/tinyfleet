@@ -2178,6 +2178,102 @@ fn start_refuses_an_unresolvable_agent_binary_and_loads_nothing() {
     );
 }
 
+/// A tmux that does not resolve is could-not-tell beside the agent binary, and
+/// NOTHING IS LOADED: every seat's session runs on it, so a controller without
+/// one would start no seat at all.
+#[test]
+fn start_refuses_an_unresolvable_tmux_and_loads_nothing() {
+    let rig = Rig::new("no-tmux");
+    rig.created();
+    let out = rig
+        .command(&["start"])
+        .env(common::hermetic::TMUX_BIN, rig.root.join("not-a-tmux"))
+        .output()
+        .expect("the built binary runs");
+    assert_eq!(code(&out), 3, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("nothing was loaded"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains(&rig.root.join("not-a-tmux").display().to_string()),
+        "{}",
+        stderr(&out)
+    );
+    assert!(rig.of_class("load").is_empty(), "{:?}", rig.calls());
+    assert!(
+        !rig.machine.join("config.json").exists(),
+        "no first-run work ran"
+    );
+}
+
+/// THE UPGRADE ADOPTS NOTHING: a seat whose worktree still holds a session the
+/// Claude Code daemon runs is refused at the terminal, with the lines the
+/// controller would refuse with, and NOTHING IS LOADED.
+///
+/// The agent stub's listing carries a background row — a short id and a pid —
+/// in the one seat's worktree. Its deadline is lifted for this arm: the stub is
+/// a script written a moment ago, whose first exec this platform can hold far
+/// past the listing's own deadline, and a listing that timed out is read as
+/// unreadable and lets the start go on.
+#[test]
+fn start_refuses_a_seat_the_claude_code_daemon_still_hosts_and_loads_nothing() {
+    const SEAT: &str = "01a0d1f1-0aec-765f-9abe-5c21e8a04b17";
+    let rig = Rig::new("daemon-hosted");
+    rig.created();
+    let worktree = rig.root.join("worktrees").join("agent-e8a04b17");
+    write(
+        &rig.machine.join("config.json"),
+        &format!(
+            "{{\"fleet_toml\": \"{}\", \"children\": [\
+             {{\"id\": \"{SEAT}\", \"worktrees\": {{\"a-project\": \"{}\"}}}}]}}\n",
+            rig.project.join("fleet.toml").display(),
+            worktree.display()
+        ),
+    );
+    write(
+        &rig.agent,
+        &format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = agents ]; then\n\
+             echo '[{{\"id\":\"ab12\",\"sessionId\":\"s-hosted\",\"cwd\":\"{}\",\
+             \"kind\":\"background\",\"pid\":4242,\"state\":\"done\",\"status\":\"idle\"}}]'\n\
+             fi\n\
+             exit 0\n",
+            worktree.display()
+        ),
+    );
+    executable(&rig.agent);
+    let seats_before = std::fs::read_to_string(rig.machine.join("config.json")).unwrap();
+
+    let out = rig
+        .command(&["start"])
+        .env("FLEET_AGENT_TIMEOUT_MS", "300000")
+        .output()
+        .expect("the built binary runs");
+    let said = stderr(&out);
+    assert_eq!(code(&out), 1, "{said}");
+    assert!(
+        said.contains(&format!(
+            "fleet start: agent-e8a04b17 is hosted by the Claude Code daemon: session s-hosted, \
+             short id ab12, in {}",
+            worktree.display()
+        )),
+        "{said}"
+    );
+    assert!(
+        said.contains(fleet_controller::run::DAEMON_REMEDY) && said.contains("  claude stop ab12"),
+        "{said}"
+    );
+    assert!(rig.of_class("load").is_empty(), "{:?}", rig.calls());
+    assert_eq!(
+        std::fs::read_to_string(rig.machine.join("config.json")).unwrap(),
+        seats_before,
+        "no first-run work ran"
+    );
+}
+
 /// `--foreground` IS THE SERVICE'S LOOP, workflows included: a waiting run
 /// whose stream has moved is advanced under it.
 ///

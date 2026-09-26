@@ -31,9 +31,10 @@ pub const FILE: &str = "sessions.json";
 /// One session this controller started.
 ///
 /// The fields above the fold are what the DISPATCH knew; the four below it are
-/// filled at the first sighting, because arrival is the roster's answer and
-/// never the start's own return (lessons claude-code A7, A14). A row nothing has
-/// sighted carries none of them, which is exactly what the arrival window reads.
+/// filled at the first sighting, because arrival is the listing's answer and
+/// never the start's own return — the rule lessons claude-code A7 taught, kept
+/// after A7 and A14 retired (B10). A row nothing has sighted carries none of
+/// them, which is exactly what the arrival window reads.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct SessionRow {
     /// The seat's id, which is what every lookup here keys on.

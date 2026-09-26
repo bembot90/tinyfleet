@@ -62,14 +62,18 @@ full path, so start the controller from the copy you mean to keep.
 
 ## What fleet runs on
 
-Fleet runs three other tools, and installs packs from one repository,
+Fleet runs on macOS and Linux. Windows is not supported: fleet does not
+build there.
+
+Fleet runs four other tools, and installs packs from one repository,
 fleet-packs, at `https://github.com/bembot90/fleet-packs`. Every one but
-`git` has a supported version, and a doctor check measures the one you have
-installed against it.
+`git` has a supported version, or for tmux a minimum, and a doctor check
+measures the one you have installed against it.
 
 | Tool | Supported version | What measures it |
 | --- | --- | --- |
 | Claude Code (`claude`) | 2.1.280 | the `claude-code-version` doctor check, and the controller's `substrate.moved` event |
+| tmux (`tmux`) | 3.7b or later | the `tmux-version` doctor check |
 | Deno (`deno`) | 2.9.7, pinned by the `ts` pack | the `runtime-version` doctor check, which `fleet run` runs before it opens a run, and the `ts` pack's `deno-version` |
 | fleet-packs | the tag `v0.1.0`, which `fleet create` installs the store's pack at | the `fleet-packs-version` doctor check, over every pack `packs.lock` pins from that repository |
 | `git` | none: fleet pins no version | nothing |
@@ -84,6 +88,11 @@ Another version of Claude Code or of a pack from fleet-packs is named and not
 refused: the verbs and the controller still run on it. Deno is
 different: while the `runtime-version` check is red, `fleet run` refuses to
 open a run. See [Runs and workflows](runs.md).
+
+The controller runs every agent seat's session inside tmux, on a tmux server
+of fleet's own (see [The sessions the controller starts](#the-sessions-the-controller-starts)).
+`fleet start` refuses to start without a tmux. An older tmux is named by the
+`tmux-version` check and not refused.
 
 The controller compares Claude Code's version with the one it expects on
 every poll. That is 2.1.280 unless the fleet's `fleet.toml` pins another; see
@@ -132,6 +141,31 @@ tag is a finding and exits 1, naming it with
 first `claude` on your `PATH`, which is not the search path the controller
 uses (see [Starting the controller](#starting-the-controller)). The bd pack's
 README says which `bd` its check and its store run.
+
+`tmux-version` comes with the defaults too. It holds when `tmux -V` answers
+3.7b or later, reading a trailing letter as a later release (3.7b is after
+3.7a, which is after 3.7), and says whether fleet's own tmux server is
+running and with how many sessions; either way it passes:
+
+```sh
+$ fleet doctor tmux-version
+pass tmux-version (defaults) — tmux-version: holds — no server is running on socket fleet
+doctor 1 check — 1 pass, 0 finding, 0 could not tell
+```
+
+It exits 0. A running server reads `a server is running on socket fleet with
+<n> session(s)`. A tmux that answers no release number, such as a build from
+source, holds too, and the line says it was taken as recent. An older tmux,
+or none, is `broken` and exits 1, naming the minimum and how to install it:
+
+```sh
+$ sh <machine>/defaults/doctor/tmux-version/run.sh
+tmux-version: minimum tmux 3.7b; `tmux -V` answers: tmux 3.4
+tmux-version: broken — tmux 3.4 is older than the minimum 3.7b, so the calls the controller makes to it were not measured on it. Install tmux 3.7b or later: brew install tmux on macOS, or the distribution's tmux package on Linux
+```
+
+`tmux-version` asks the binary `FLEET_TMUX_BIN` names, or else the first
+`tmux` on your `PATH`.
 
 The `ts` pack's own Deno check runs the same way, from the pack:
 
@@ -356,12 +390,14 @@ $ fleet start
 
 Run it inside the embedded fleet's project, or inside any directory once the
 machine's seat list names a fleet. Before it does anything, it refuses when
-the controller is already running, and when it cannot find the `claude`
-binary. It looks for `claude` on a fixed search path, not your shell's `PATH`:
-`/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`, `/opt/homebrew/bin`,
+the controller is already running, when it cannot find the `claude` binary
+or `tmux`, and when a seat's worktree holds a session fleet did not start
+(see [The controller and seats](seats.md#seats-claude-code-still-runs)). It
+looks for `claude` and `tmux` on a fixed search path, not your shell's
+`PATH`: `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`, `/opt/homebrew/bin`,
 `/usr/local/bin` and `~/.local/bin` on macOS, and `~/.local/bin`,
-`/usr/local/bin`, `/usr/bin` and `/bin` on Linux. `FLEET_CLAUDE_BIN`, set to
-an absolute path, names the binary instead.
+`/usr/local/bin`, `/usr/bin` and `/bin` on Linux. `FLEET_CLAUDE_BIN` and
+`FLEET_TMUX_BIN`, set to an absolute path, name the binaries instead.
 
 Then it does the first-run work, one line each on standard error, each line
 starting `first run:`. It makes the machine directory, and writes the seat
@@ -464,6 +500,20 @@ prints why on standard error and exits 127.
 
 ### The sessions the controller starts
 
+Each agent seat's session is an interactive Claude Code session, run as the
+process of its own tmux session on a tmux server that is fleet's alone: the
+server on the socket `fleet`, which `tmux -L fleet` reaches, started with no
+configuration file, so your own `~/.tmux.conf` does not shape it. The tmux
+session is named by the seat's full id, and `fleet seat attach <seat>`
+opens it in your terminal (see
+[The controller and seats](seats.md#attaching-to-a-seat)).
+
+A transient seat's session runs under a configuration directory of its own,
+which fleet seeds with your onboarding answers and with the seat's worktree
+marked trusted, so the session starts without asking either (see
+[Spawning a transient seat](seats.md#spawning-a-transient-seat)). A named
+seat's session runs under your own configuration.
+
 The controller starts each seat's session with the plugin only when the
 fleet's `fleet.toml` names the plugin's directory:
 
@@ -500,6 +550,8 @@ A relative path is read from the directory `fleet.toml` is in. With no
 | `fleet start` with no `fleet.toml` above the directory and no fleet named by the seat list | 1 | ``fleet start: no fleet.toml above this directory and no fleet named by <machine>/config.json — `fleet create` writes one`` | Run it inside the fleet's project, or `fleet create` first. |
 | `fleet start` while the controller is running | 1 | `fleet start: the controller is already running as pid <pid>; its last tick was <stamp>` | Nothing to do, or `fleet stop` first. |
 | `fleet start` cannot find `claude` | 3 | ``fleet start: no `claude` on the constructed child PATH (<path>) — nothing was loaded; the search path is <path>`` | Install `claude` into a directory on that path, or set `FLEET_CLAUDE_BIN`. |
+| `fleet start` cannot find `tmux` | 3 | ``fleet start: no `tmux` on the constructed child PATH (<path>) — nothing was loaded; the search path is <path>`` | Install tmux into a directory on that path (`brew install tmux` on macOS, the distribution's `tmux` package on Linux), or set `FLEET_TMUX_BIN`. |
+| `fleet start` over a seat whose worktree holds a session fleet did not start | 1 | `fleet start: <machine-name> is hosted by ...` and the command that stops each | Run each command it names, then start again; see [The controller and seats](seats.md#seats-claude-code-still-runs). |
 | The service loaded and no `controller.started` arrived within 30 seconds | 3 | `fleet start: no controller.started was written within 30s — nothing fresh reached <machine>/events.jsonl; what the service printed is at <machine>/service.err.log` | Read the service's log. |
 | The plugin's `bin/fleet` finds no binary | 127 | `fleet: no built binary under <checkout>/target — run cargo build --release in <checkout>, or set FLEET_BIN` | Build the checkout, or set `FLEET_BIN`. |
 | `FLEET_BIN` is not an absolute path | 127 | ``fleet: FLEET_BIN names `<value>`, which is not an absolute path`` | Set it to an absolute path. |

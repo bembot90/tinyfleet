@@ -11,7 +11,8 @@
 //! `-V` (as `tmux 3.7b`), `set-option`, `new-session`, `load-buffer`,
 //! `paste-buffer`, `send-keys`, `capture-pane`, `kill-session`, `list-panes`,
 //! `attach-session` and `kill-server`, chained with `;` as the real client
-//! chains them. Every argument list it is run with is recorded on the state,
+//! chains them — and `list-sessions`, which the defaults' `tmux-version`
+//! doctor check asks. Every argument list it is run with is recorded on the state,
 //! which is how a suite reads an attach's — and an attach's whole environment
 //! beside it, the one call run under the person's own.
 //!
@@ -233,6 +234,14 @@ fn one(server: &mut FakeServer, command: &[String]) -> Result<String, String> {
                 Err(format!("can't find session: {name}"))
             }
         }
+        // Not a call `TmuxHost` makes: the defaults' `tmux-version` doctor
+        // check asks it, for the server's session count. One name a line,
+        // whatever the format asks for.
+        "list-sessions" => Ok(server
+            .sessions
+            .keys()
+            .map(|name| format!("{name}\n"))
+            .collect()),
         "list-panes" => {
             let format = flag(command, "-F").ok_or("list-panes: no -F")?;
             Ok(server

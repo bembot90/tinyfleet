@@ -1217,7 +1217,7 @@ impl Rig {
         let pid = common::live_pane(&self.tmux_state_path(), SEAT_ID, &self.worktree());
         let row = |status: &str| {
             format!(
-                r#"[{{"id":"{session}","sessionId":"{session}","cwd":"{}","kind":"interactive",
+                r#"[{{"sessionId":"{session}","cwd":"{}","kind":"interactive",
                       "pid":{pid},"status":"{status}","startedAt":1000}}]"#,
                 self.worktree().display()
             )
@@ -2050,13 +2050,17 @@ impl Rig {
     /// SIGINT and SIGTERM handlers. They belong to the whole binary, and a test
     /// process holding them answers the harness's SIGTERM by living on.
     ///
-    /// TWO THINGS THE ARM DOES NOT GET, and neither is any arm's subject. The
+    /// THREE THINGS THE ARM DOES NOT GET, and none is any arm's subject. The
     /// run seam the binary fills is `None` here, because `fleet-cli` is one
     /// binary and no library, so its `Engine` is unreachable from a test of it;
     /// no fixture in this file opens a run, so the pass would ask no store
-    /// anything. And the two lines `main` adds to a refused startup — its own
+    /// anything. The two lines `main` adds to a refused startup — its own
     /// error chain — are absent, while the loop's own line naming the path it
-    /// could not read is what the two refusal arms assert on.
+    /// could not read is what the two refusal arms assert on. And the upgrade
+    /// check's startup read of the listing (the daemon seam) is `None`: it is
+    /// one more call of the stub before the poll's own, and the arms here that
+    /// delay or count the stub's calls mean the poll's; the check's arms are
+    /// `controller/tests/adoption.rs`'s and `lifecycle.rs`'s.
     ///
     /// The status is the loop's own `u8` dressed as a wait status, which is the
     /// same number the binary's exit table maps it to for the two the loop can
@@ -2131,7 +2135,7 @@ impl Rig {
                 fleet_controller::platform::GRANT_PROBE_TIMEOUT,
             ),
             None,
-            wiring.seams(&clock, run::StopHandler::Unarmed),
+            without_the_upgrade_check(wiring.seams(&clock, run::StopHandler::Unarmed)),
         );
         let stderr = err.taken();
         let stdout = out.taken();
@@ -2220,7 +2224,7 @@ impl Rig {
                     fleet_controller::platform::GRANT_PROBE_TIMEOUT,
                 ),
                 None,
-                wiring.seams(&clock, run::StopHandler::Unarmed),
+                without_the_upgrade_check(wiring.seams(&clock, run::StopHandler::Unarmed)),
             )
         };
         let mut ticks = Ticks {
@@ -2872,9 +2876,16 @@ const HOUR_MS: u64 = 60 * 60 * 1000;
 const POLICY_1S: &str =
     "[controller]\npoll_seconds = 1\n\n[substrate.claude_code]\nversion = \"9.9.9\"\n";
 
+/// The binary's own seams less the upgrade check's startup read, for the
+/// reason [`Rig::poll_in_process`] gives.
+fn without_the_upgrade_check(mut seams: run::Seams<'_>) -> run::Seams<'_> {
+    seams.daemon = None;
+    seams
+}
+
 fn live_row(cwd: &Path, session: &str) -> String {
     format!(
-        r#"[{{"id":"{session}","sessionId":"{session}","cwd":"{}","kind":"background",
+        r#"[{{"sessionId":"{session}","cwd":"{}","kind":"interactive",
               "pid":4242,"status":"idle","startedAt":1000}}]"#,
         cwd.display()
     )
@@ -2892,7 +2903,7 @@ fn now_ms() -> u64 {
 
 fn blocked_row(cwd: &Path, session: &str, cause: &str) -> String {
     format!(
-        r#"[{{"id":"{session}","sessionId":"{session}","cwd":"{}","kind":"background",
+        r#"[{{"sessionId":"{session}","cwd":"{}","kind":"interactive",
               "pid":4242,"status":"idle","startedAt":1000,"waitingFor":"{cause}"}}]"#,
         cwd.display()
     )
