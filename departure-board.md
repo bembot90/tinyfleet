@@ -80,7 +80,7 @@ Touches no store code, so it can fly beside flights 9 and 10.
 | ☑ | fleet-14p8.2 | The agent contract written down: six verbs, their types in core, docs/agent.md | fleet-14p8.1 |
 | ☐ | fleet-14p8.3 | The Agent trait is the six verbs, the in-process Claude Code answers them, one `agent::open` | fleet-14p8.2, flight 11 |
 | ☐ | fleet-1jr1e | Posture is fleet's word (ask, auto, unattended), old words read as aliases, the rest refused | fleet-14p8.3 |
-| ☐ | fleet-14p8.4 | `fleet guard` reads the adapter's declared `[hook]` mapping; cli/src/claude.rs goes | fleet-14p8.2 |
+| ☑ | fleet-14p8.4 | `fleet guard` reads the adapter's declared `[hook]` mapping; cli/src/claude.rs goes | fleet-14p8.2 |
 | ☑ | fleet-14p8.5 | `fleet agent schema` prints the contract as JSON Schema, committed with a drift test | fleet-14p8.2 |
 | ☐ | fleet-14p8.6 | `[agent] adapter` names an executable by path or a pack's name, spoken to one process per call | fleet-14p8.1, .3, .4 |
 | ☐ | fleet-14p8.7 | `fleet-agent-stub`: the suites run on the contract with no claude and no tmux | fleet-14p8.6, fleet-rge6.1 |
