@@ -1418,7 +1418,8 @@ fn the_four_lifecycle_words_under_seat_still_name_the_event_spelling() {
             "spawn".to_string(),
             "feed".to_string(),
             "retire".to_string(),
-            "nudge".to_string()
+            "nudge".to_string(),
+            "attach".to_string()
         ],
         "`seat --help` lists the verbs it answers and the four rewrites stay hidden: {page}"
     );
