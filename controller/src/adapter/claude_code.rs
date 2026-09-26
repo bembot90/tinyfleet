@@ -68,6 +68,16 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 /// The agent binary when nothing names one: a bare name, resolved on `PATH`.
 pub const DEFAULT_BIN: &str = "claude";
 
+/// The name this adapter answers to: the one fleet-packs' pack carries it
+/// under, `adapters/agent/claude-code/`.
+pub const NAME: &str = "claude-code";
+
+/// This agent's pre-tool hook, as the `[hook]` table an agent adapter's
+/// `adapter.toml` declares it: what `fleet guard` reads where no installed
+/// pack carries [`NAME`]. It lives beside the in-process adapter, and goes
+/// with it.
+pub const HOOK_MANIFEST: &str = include_str!("claude_code.hook.toml");
+
 impl ClaudeCode {
     pub fn new(home: &Path, machine_dir: &Path) -> Self {
         Self {

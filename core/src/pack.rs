@@ -39,6 +39,11 @@ pub const ADAPTER_MANIFEST: &str = "adapter.toml";
 
 const ADAPTER_KEYS: [&str; 5] = ["name", "kind", "version", "description", "entry"];
 
+/// The table an agent adapter's `adapter.toml` may carry beside `[adapter]`:
+/// its pre-tool hook, as [`guard::hook`](crate::guard::hook) reads it. A store
+/// adapter carrying one is a defect.
+pub const HOOK_TABLE: &str = "hook";
+
 /// What an adapter answers for, which is the directory it is filed under. A
 /// kind directory naming neither is a defect: nothing opens an adapter of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +71,7 @@ impl AdapterKind {
 }
 
 /// One adapter's `adapter.toml`, read and held to the directory it sits in.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AdapterManifest {
     /// The adapter directory's own name, which the file repeats.
     pub name: String,
@@ -77,6 +82,10 @@ pub struct AdapterManifest {
     /// The executable that answers for the adapter, as a path inside its
     /// directory.
     pub entry: String,
+    /// An agent adapter's `[hook]` table, held to the shape
+    /// [`HookMap::parse`](crate::guard::hook::HookMap::parse) reads; `None`
+    /// where it carries none, which a store adapter always does.
+    pub hook: Option<toml::Table>,
 }
 
 /// A manifest declaring any other number is refused rather than read: the keys
@@ -186,7 +195,8 @@ pub struct Manifest {
 /// The adapter defects name an adapter by `adapters/<kind>/<name>`.
 /// `AdapterKind` carries `None` for a kind directory naming no kind, else the
 /// `kind` an `adapter.toml` says against the directory it is filed under;
-/// `AdapterKey` the key and what is wrong with it; and
+/// `AdapterKey` the key and what is wrong with it; `AdapterHook` what is wrong
+/// with the `[hook]` table, in its reader's words; and
 /// `AdapterEntryNotExecutable` the entry by the path the check was handed, so
 /// the `chmod` its line prints runs from where the check ran.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,6 +229,7 @@ pub enum Defect {
     AdapterWithoutManifest(String),
     AdapterKind(String, Option<String>),
     AdapterKey(String, String, &'static str),
+    AdapterHook(String, String),
     AdapterNameMismatch { path: String, name: String },
     AdapterEntryMissing { path: String, entry: String },
     AdapterEntryNotExecutable(String),
@@ -325,6 +336,9 @@ impl fmt::Display for Defect {
             ),
             Defect::AdapterKey(path, key, why) => {
                 write!(f, "`{path}/{ADAPTER_MANIFEST}`'s `{key}` {why}")
+            }
+            Defect::AdapterHook(path, why) => {
+                write!(f, "`{path}/{ADAPTER_MANIFEST}`'s [{HOOK_TABLE}] {why}")
             }
             Defect::AdapterNameMismatch { path, name } => write!(
                 f,
@@ -886,8 +900,14 @@ pub fn adapter_manifest(dir: &Path) -> Result<AdapterManifest, Defect> {
     })?;
 
     let key = |key: &str, why: &'static str| Defect::AdapterKey(path.clone(), key.to_string(), why);
-    if let Some(table) = doc.keys().find(|table| *table != "adapter") {
-        return Err(key(table, "is not a table it holds — it holds [adapter]"));
+    if let Some(table) = doc
+        .keys()
+        .find(|table| *table != "adapter" && *table != HOOK_TABLE)
+    {
+        return Err(key(
+            table,
+            "is not a table it holds — it holds [adapter], and [hook] on an agent adapter",
+        ));
     }
     let Some(table) = doc.get("adapter").and_then(toml::Value::as_table) else {
         return Err(key("[adapter]", "is missing"));
@@ -935,13 +955,52 @@ pub fn adapter_manifest(dir: &Path) -> Result<AdapterManifest, Defect> {
             program.display().to_string(),
         ));
     }
+    let hook = match doc.get(HOOK_TABLE) {
+        None => None,
+        Some(_) if kind != AdapterKind::Agent => {
+            return Err(key(
+                "[hook]",
+                "is a table only an agent adapter holds — a store adapter holds [adapter] alone",
+            ));
+        }
+        Some(toml::Value::Table(table)) => {
+            crate::guard::hook::HookMap::parse(table)
+                .map_err(|why| Defect::AdapterHook(path.clone(), why))?;
+            Some(table.clone())
+        }
+        Some(_) => return Err(key("hook", "is not a table")),
+    };
     Ok(AdapterManifest {
         name,
         kind,
         version,
         description,
         entry,
+        hook,
     })
+}
+
+/// The adapter `name` of `kind` the installed packs carry: the layer that
+/// carries `adapters/<kind>/<name>/adapter.toml` — the highest holding it,
+/// which carries the adapter WHOLE — and the adapter's directory in it.
+/// `None` where no layer carries it.
+///
+/// A LOOKUP AND NOT A READ: the manifest is not held to the format here, so a
+/// caller reads it through [`adapter_manifest`] before it runs, or reads,
+/// anything the adapter declares.
+pub fn adapter_dir<'p>(
+    packs: &'p crate::item::brief::Packs,
+    kind: AdapterKind,
+    name: &str,
+) -> Option<(&'p crate::resolve::Layer, std::path::PathBuf)> {
+    let declared = format!("{ADAPTERS}/{}/{name}/{ADAPTER_MANIFEST}", kind.as_str());
+    let carrier = packs
+        .resolution
+        .files
+        .get(&declared)
+        .and_then(|carrier| packs.layers.iter().find(|layer| &layer.name == carrier))?;
+    let dir = carrier.root.join(&declared).parent()?.to_path_buf();
+    Some((carrier, dir))
 }
 
 /// The five slots whose entries carry a shape. `overlay`, `assets` and

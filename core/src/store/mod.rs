@@ -425,21 +425,9 @@ fn by_name(at: &Opening, name: &str) -> Result<Box<dyn Store>, StoreError> {
     };
     let packs = crate::item::brief::Packs::under(installed.packs_dir, installed.defaults_dir)
         .map_err(|stop| unopened(at.source, Unopened::Layers(name, stop.message)))?;
-    let declared = format!(
-        "{}/{}/{name}/{}",
-        crate::pack::ADAPTERS,
-        crate::pack::AdapterKind::Store.as_str(),
-        crate::pack::ADAPTER_MANIFEST
-    );
-    let Some(carrier) = packs
-        .resolution
-        .files
-        .get(&declared)
-        .and_then(|carrier| packs.layers.iter().find(|layer| &layer.name == carrier))
+    let Some((carrier, dir)) =
+        crate::pack::adapter_dir(&packs, crate::pack::AdapterKind::Store, name)
     else {
-        return Err(unopened(at.source, Unopened::Nowhere(name)));
-    };
-    let Some(dir) = carrier.root.join(&declared).parent().map(Path::to_path_buf) else {
         return Err(unopened(at.source, Unopened::Nowhere(name)));
     };
     // The manifest is held to the format here, its entry's executable bit

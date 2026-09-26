@@ -446,6 +446,7 @@ fn adapters_under_both_kinds_are_the_eighth_slot_and_counted() {
             version: "0.1.0".into(),
             description: Some("an adapter".into()),
             entry: "main.sh".into(),
+            hook: None,
         })
     );
 }
@@ -588,6 +589,84 @@ fn an_adapter_manifest_key_out_of_shape_is_a_defect_naming_the_key() {
             "{toml}"
         );
     }
+}
+
+// ---- an agent adapter's hook mapping ----------------------------------------
+
+/// A `[hook]` table no real agent speaks, in the shape the guards read.
+const HOOK: &str = "\n[hook]\nshell_tool = \"sh\"\ntool = \"/call\"\ncommand = \"/line\"\n\
+     deny = '{\"why\":{reason}}'\n";
+
+/// An agent adapter carries its `[hook]` table beside `[adapter]`, read into
+/// the manifest as written.
+///
+/// RED-PROOF: on the base `hook` is a table the file does not hold.
+#[test]
+fn an_agent_adapter_carries_its_hook_table() {
+    let fixture = Fixture::new("adapter-hook");
+    fixture.manifest("adapter-hook");
+    let dir = an_adapter(
+        &fixture,
+        "agent",
+        "y",
+        &format!("{}{HOOK}", adapter_toml("agent", "y")),
+    );
+    assert_eq!(defects(&fixture.root), Vec::<Defect>::new());
+    let hook = pack::adapter_manifest(&dir)
+        .expect("the manifest reads")
+        .hook
+        .expect("the table is read, not merely tolerated");
+    assert_eq!(hook["shell_tool"].as_str(), Some("sh"));
+    assert_eq!(hook["deny"].as_str(), Some("{\"why\":{reason}}"));
+}
+
+/// A `[hook]` on a store adapter, a `deny` with no `{reason}`, and a pointer
+/// that is not a JSON pointer are each one defect naming the adapter.
+#[test]
+fn a_hook_out_of_place_or_out_of_shape_is_a_defect() {
+    let fixture = Fixture::new("adapter-hook-defects");
+    fixture.manifest("adapter-hook-defects");
+    an_adapter(
+        &fixture,
+        "store",
+        "s",
+        &format!("{}{HOOK}", adapter_toml("store", "s")),
+    );
+    an_adapter(
+        &fixture,
+        "agent",
+        "a",
+        &format!(
+            "{}{}",
+            adapter_toml("agent", "a"),
+            HOOK.replace("{reason}", "\"no\"")
+        ),
+    );
+    an_adapter(
+        &fixture,
+        "agent",
+        "b",
+        &format!(
+            "{}{}",
+            adapter_toml("agent", "b"),
+            HOOK.replace("\"/line\"", "\"line\"")
+        ),
+    );
+
+    let found = defects(&fixture.root);
+    assert_eq!(found.len(), 3, "{found:?}");
+    let lines: Vec<String> = found.iter().map(Defect::to_string).collect();
+    assert_eq!(
+        lines,
+        vec![
+            "`adapters/agent/a/adapter.toml`'s [hook] `deny` holds no {reason} — a refusal \
+             that does not carry the reason is one the agent cannot act on",
+            "`adapters/agent/b/adapter.toml`'s [hook] `command` is `line`, which is not a \
+             JSON pointer — one starts with `/` and writes `~` as `~0`",
+            "`adapters/store/s/adapter.toml`'s `[hook]` is a table only an agent adapter \
+             holds — a store adapter holds [adapter] alone",
+        ]
+    );
 }
 
 // ---- the runtime table ------------------------------------------------------

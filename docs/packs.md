@@ -383,7 +383,7 @@ Each slot's entries:
   `agent`. Any other name directly under `adapters/` is a defect.
 - `overlay/`, `assets/` and `workflows/` hold whatever the pack puts there.
 
-`adapter.toml` holds one table:
+`adapter.toml` holds the `[adapter]` table:
 
 ```toml
 [adapter]
@@ -394,9 +394,9 @@ description = "..."         # optional
 entry = "main.sh"           # required; an executable file in the directory
 ```
 
-Every value is a string, and any other key or table is a defect. An entry
-that is in the directory but not executable is a defect whose line is the
-fix:
+Every value is a string, and any other key is a defect. So is any other
+table, except `[hook]` in an agent adapter's file. An entry that is in the
+directory but not executable is a defect whose line is the fix:
 
 ```text
 p: the adapter entry `p/adapters/store/x/main.sh` is not executable — `chmod +x p/adapters/store/x/main.sh` makes it one
@@ -404,6 +404,33 @@ p: the adapter entry `p/adapters/store/x/main.sh` is not executable — `chmod +
 
 A store adapter a pack carries is one a project can name in `[store]
 adapter`; see [The store contract](store.md).
+
+An agent adapter's `adapter.toml` may also hold `[hook]`: the hook mapping
+`fleet guard --adapter <name>` reads a pre-tool payload and writes a refusal
+through (see [Guards](guards.md#reading-another-agents-payload)):
+
+```toml
+[hook]
+shell_tool = "shell"                         # required; the agent's name for its shell tool
+tool = "/tool"                               # required; where the payload names the tool
+command = "/input/cmd"                       # required; where it carries the command
+cwd = "/dir"                                 # optional; where it carries the working directory
+deny = '{"block":true,"message":{reason}}'   # required; the refusal
+```
+
+Every value is a string, and `tool`, `command` and `cwd` are JSON pointers
+into the payload. In `deny`, `{reason}` is replaced by the refusal's reason
+as a JSON string, quoted and escaped, so the template writes `{reason}` where
+a JSON value goes and never inside quotes. Any other key is a defect, and so
+is a pointer that does not start with `/`, a `deny` with no `{reason}`, a
+`deny` that is not JSON once `{reason}` is filled, and a `[hook]` in a store
+adapter's file. Each is one line:
+
+```text
+p: `adapters/agent/y/adapter.toml`'s [hook] `deny` holds no {reason} — a refusal that does not carry the reason is one the agent cannot act on
+p: `adapters/agent/z/adapter.toml`'s [hook] `command` is `cmd`, which is not a JSON pointer — one starts with `/` and writes `~` as `~0`
+p: `adapters/store/x/adapter.toml`'s `[hook]` is a table only an agent adapter holds — a store adapter holds [adapter] alone
+```
 
 `pack.toml` holds up to five tables, and any other top-level table is a defect:
 

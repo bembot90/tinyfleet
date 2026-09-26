@@ -408,6 +408,214 @@ fn a_payload_with_nothing_to_judge_prints_nothing_and_exits_zero() {
     }
 }
 
+// ---- the hook mapping an agent adapter declares ------------------------------
+
+/// A machine directory holding the binary's defaults and, under `packs/`,
+/// whatever packs the arm installs by hand: the layers `--adapter <name>`
+/// resolves through.
+fn a_machine(scratch: &Scratch) -> PathBuf {
+    let machine = scratch.root.join("machine");
+    let defaults = machine.join(fleet_core::defaults::DIR);
+    std::fs::create_dir_all(&defaults).expect("the defaults dir is created");
+    fleet_core::embedded::write_all(&defaults).expect("the embedded defaults are written");
+    machine
+}
+
+/// The pack `name`, installed on `machine`, carrying the agent adapter `name`
+/// whose `adapter.toml` ends in `hook` — a `[hook]` table, or nothing.
+fn an_agent_pack(machine: &Path, name: &str, hook: &str) {
+    let root = machine.join("packs").join(name);
+    let dir = root.join(format!("adapters/agent/{name}"));
+    std::fs::create_dir_all(&dir).expect("the adapter's directory is created");
+    std::fs::write(
+        root.join("pack.toml"),
+        format!("[pack]\nname = \"{name}\"\nversion = \"0.1.0\"\nschema = 3\n"),
+    )
+    .expect("the manifest is written");
+    std::fs::write(
+        dir.join("adapter.toml"),
+        format!(
+            "[adapter]\nname = \"{name}\"\nkind = \"agent\"\nversion = \"0.1.0\"\n\
+             entry = \"main.sh\"\n{hook}"
+        ),
+    )
+    .expect("the adapter's manifest is written");
+    std::fs::write(dir.join("main.sh"), "#!/bin/sh\nexit 3\n").expect("the entry is written");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir.join("main.sh"), std::fs::Permissions::from_mode(0o755))
+        .expect("the entry is executable");
+}
+
+/// One judging run under `machine`, from inside `scratch`, the class and
+/// whatever flags follow it as the arguments.
+fn judge_on(machine: &Path, scratch: &Scratch, args: &[&str], body: &str) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fleet"))
+        .arg("guard")
+        .args(args)
+        .hermetic(&scratch.root.join("home"), machine, None)
+        .current_dir(&scratch.root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the built binary runs");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin is piped")
+        .write_all(body.as_bytes())
+        .expect("the payload is written");
+    child.wait_with_output().expect("the binary exits")
+}
+
+/// THE BUILT-IN IS CLAUDE CODE'S MAPPING, BYTE FOR BYTE. The payload and the
+/// refusal docs/guards.md prints, read off the page: with no `--adapter`, and
+/// with `--adapter claude-code` where no pack carries that name, the binary
+/// prints exactly the page's line.
+///
+/// RED-PROOF: on the base `--adapter` is an unknown flag, a usage error.
+#[test]
+fn the_guards_page_example_prints_the_same_bytes_with_and_without_the_built_in_adapter() {
+    let page =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/guards.md"))
+            .expect("the guards page is readable");
+    let lines: Vec<&str> = page.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| line.starts_with("$ echo '") && line.ends_with("| fleet guard shell-trap"))
+        .expect("the page hands a payload to fleet guard shell-trap");
+    let body = lines[at]
+        .strip_prefix("$ echo '")
+        .and_then(|rest| rest.strip_suffix("' | fleet guard shell-trap"))
+        .expect("the payload sits between the quotes");
+    let printed = format!("{}\n", lines[at + 1]);
+
+    let scratch = Scratch::new("page");
+    let machine = a_machine(&scratch);
+    for args in [
+        vec!["shell-trap"],
+        vec!["shell-trap", "--adapter", "claude-code"],
+    ] {
+        let out = judge_on(&machine, &scratch, &args, body);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            printed,
+            "{args:?} prints the page's line"
+        );
+    }
+}
+
+/// ANOTHER AGENT'S MAPPING IS DATA IN ITS PACK. An agent adapter whose `[hook]`
+/// names its shell tool `shell`, keeps the command at `/input/cmd` and writes
+/// a refusal as the bare reason: a trapped command in its payload is refused
+/// in its template, and a Claude Code payload is nothing it can judge. The
+/// same payload through the built-in is silent the other way round.
+///
+/// RED-PROOF: on the base `--adapter` is an unknown flag, a usage error.
+#[test]
+fn a_packs_hook_mapping_reads_its_own_payload_and_writes_its_own_refusal() {
+    let scratch = Scratch::new("other");
+    scratch.write("fleet.toml", "[project]\nitem_prefix = \"acme\"\n");
+    let machine = a_machine(&scratch);
+    an_agent_pack(
+        &machine,
+        "other",
+        "\n[hook]\nshell_tool = \"shell\"\ntool = \"/tool\"\ncommand = \"/input/cmd\"\n\
+         cwd = \"/dir\"\ndeny = '{reason}'\n",
+    );
+    let theirs =
+        serde_json::json!({"tool": "shell", "input": {"cmd": TRAP}, "dir": scratch.path()})
+            .to_string();
+
+    let out = judge_on(
+        &machine,
+        &scratch,
+        &["shell-trap", "--adapter", "other"],
+        &theirs,
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8(out.stdout).expect("the output is utf-8");
+    let reason: String = serde_json::from_str(text.trim())
+        .expect("the refusal is the template filled: the reason as one JSON string");
+    assert!(
+        reason.starts_with("fleet guard shell-trap: MODIFIER")
+            && reason.contains("FLEET_TRAP_OK=1"),
+        "the reason is core's — {reason}"
+    );
+    assert!(
+        text.starts_with('"') && text.ends_with("\"\n"),
+        "no envelope around it: {text}"
+    );
+
+    let ours = payload(TRAP, scratch.path());
+    let out = judge_on(
+        &machine,
+        &scratch,
+        &["shell-trap", "--adapter", "other"],
+        &ours,
+    );
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        out.stdout.is_empty(),
+        "a Claude Code payload is nothing this mapping judges: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    let out = judge_on(&machine, &scratch, &["shell-trap"], &theirs);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        out.stdout.is_empty(),
+        "the built-in judges no other agent's payload: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+/// A MIS-WIRED GUARD FAILS CLOSED. An `--adapter` that resolves nowhere, one
+/// whose manifest has no `[hook]`, and one that is neither form each exit 2
+/// with one line on standard error naming what was missing, and print nothing
+/// on standard output — the agent reads a hook's exit 2 as blocking.
+#[test]
+fn an_adapter_that_resolves_nowhere_or_declares_no_hook_exits_two_with_one_line() {
+    let scratch = Scratch::new("miswired");
+    scratch.write("fleet.toml", "[project]\nitem_prefix = \"acme\"\n");
+    let machine = a_machine(&scratch);
+    an_agent_pack(&machine, "bare", "");
+    let bare = machine.join("packs/bare/adapters/agent/bare");
+    let body = payload(TRAP, scratch.path());
+    for (adapter, names) in [
+        ("nobody", "`nobody`"),
+        ("bare", "[hook]"),
+        (bare.to_str().expect("a utf-8 path"), "[hook]"),
+        ("some/where", "`some/where`"),
+    ] {
+        let out = judge_on(
+            &machine,
+            &scratch,
+            &["shell-trap", "--adapter", adapter],
+            &body,
+        );
+        let said = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(out.status.code(), Some(2), "{adapter}: {said}");
+        assert!(out.stdout.is_empty(), "{adapter}: nothing on stdout");
+        assert_eq!(said.lines().count(), 1, "{adapter}: one line — {said}");
+        assert!(
+            said.starts_with("fleet guard: ") && said.contains(names),
+            "{adapter}: the line names {names} — {said}"
+        );
+    }
+}
+
 // ---- the command the project's store declares ---------------------------------
 
 /// The project's `[store] adapter` as an executable that logs each verb it is
@@ -955,9 +1163,9 @@ fn the_classes_are_callable_through_fleet_core_with_no_payload_at_all() {
 /// hook short-circuits the agent's whole permission system, so letting a
 /// command through means printing nothing. Read off the sources rather than off
 /// a run, because the claim is about what the code CAN say — and read in two
-/// directions, because the decision value belongs to ONE provider: the adapter
-/// states the refusing one and nothing else, and core's guard module states
-/// none at all.
+/// directions, because the decision value belongs to ONE provider: the
+/// adapter's hook mapping states the refusing one and nothing else, and core's
+/// guard module states none at all.
 #[test]
 fn the_adapter_states_the_refusing_decision_alone_and_core_states_none() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -966,8 +1174,8 @@ fn the_adapter_states_the_refusing_decision_alone_and_core_states_none() {
         .to_path_buf();
     let allowing = format!("\"{}\"", "allow");
 
-    let adapter = workspace.join("cli/src/claude.rs");
-    let text = std::fs::read_to_string(&adapter).expect("the adapter is readable");
+    let adapter = workspace.join("controller/src/adapter/claude_code.hook.toml");
+    let text = std::fs::read_to_string(&adapter).expect("the adapter's mapping is readable");
     let mut stated = 0;
     for (offset, _) in text.match_indices("permissionDecision") {
         let after = &text[offset..];

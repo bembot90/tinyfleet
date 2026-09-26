@@ -1,0 +1,14 @@
+# Claude Code's pre-tool hook, as the [hook] table an agent adapter's
+# adapter.toml declares: the built-in `fleet guard` reads a payload and writes
+# a refusal through where no installed pack carries the claude-code adapter.
+#
+# The refusal is the one decision a guard states. A pre-tool hook that says
+# anything else short-circuits the agent's whole permission system, so letting
+# a command through is printing nothing at all.
+
+[hook]
+shell_tool = "Bash"
+tool = "/tool_name"
+command = "/tool_input/command"
+cwd = "/cwd"
+deny = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":{reason}}}'

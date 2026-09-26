@@ -20,6 +20,9 @@ You switch classes off, and name what the last two refuse on, in
   target is not set refuses nothing.
 - **Escape**: an assignment such as `FLEET_TRAP_OK=1` written at the front of
   the command, which lets that one command through the checks it names.
+- **Hook mapping**: where an agent's pre-tool payload keeps the tool and the
+  command, and the shape of the refusal it reads. fleet carries Claude
+  Code's, and an agent adapter in a pack declares its own.
 
 ## How a guard judges a command
 
@@ -44,8 +47,37 @@ fleet guard <class>: <WHAT IT FOUND> — <the part of the command> → <what to 
 ```
 
 The judging path exits 0 on every route: a refusal, a command let through,
-and a payload with nothing to judge. A payload that is not JSON, is not a
-Bash call, or carries a blank command prints nothing and exits 0.
+and a payload with nothing to judge. A payload that is not JSON, names no
+tool or a tool other than the shell tool, or carries a command that is
+missing, not a string or blank prints nothing and exits 0.
+
+### Reading another agent's payload
+
+Where a payload keeps the tool and the command, and what a refusal looks
+like, is the hook mapping. With no flag, `fleet guard` uses Claude Code's:
+the shell tool is `Bash`, and a refusal is the `PreToolUse` object above.
+`--adapter <name>` uses the `[hook]` table of the agent adapter the installed
+packs carry under that name (see [Packs](packs.md#the-format)), and
+`--adapter <path>` the one in the adapter directory at that absolute path.
+`--adapter claude-code` where no installed pack carries `claude-code` is the
+same as no flag.
+
+A refusal through another mapping is its `deny` template with the reason
+filled in. For an installed agent adapter `other` carrying the `[hook]` table
+shown in [Packs](packs.md#the-format), a trapped command in its payload is
+refused in its shape, and a Claude Code payload is nothing it judges:
+
+```sh
+$ echo '{"tool":"shell","input":{"cmd":"for b in $BRANCHES; do echo $b; done"}}' | fleet guard shell-trap --adapter other
+{"block":true,"message":"fleet guard shell-trap: UNSPLIT VARIABLE — $BRANCHES → pass the items as explicit arguments, or read them one line at a time: printf '%s\\n' \"${BRANCHES}\" | while read -r item; do ...; done — and where ONE argument really is intended, quote it: \"${BRANCHES}\"; FLEET_TRAP_OK=1 <the same command> runs it anyway. The reason: the shell passes an unquoted variable as ONE argument, so this iterates or matches once over the whole newline-joined string and reads exactly like absence."}
+$ echo '{"tool_name":"Bash","tool_input":{"command":"for b in $BRANCHES; do echo $b; done"},"cwd":"."}' | fleet guard shell-trap --adapter other
+```
+
+Both exit 0. An `--adapter` fleet cannot read a mapping from is the one
+judging route that does not: it prints one line on standard error and exits
+2, before it reads the payload, and Claude Code reads a pre-tool hook's 2 as
+blocking the call. The lines are under
+[When it refuses](#when-it-refuses).
 
 An escape counts only when it is among the assignments that open the command
 text, and it covers every statement after them: `FLEET_TRAP_OK=1 ls; for b in $LIST;
@@ -370,7 +402,11 @@ non-zero status among them. `fleet doctor` runs it (see
 
 | Situation | Exit | What you see | What to do |
 | --- | --- | --- | --- |
-| A guard refuses a Bash command | 0 | one JSON object on standard output, `"permissionDecision":"deny"`, with the reason | write what the reason says instead, or put the class's escape at the front of the command |
+| A guard refuses a Bash command | 0 | one JSON object on standard output, `"permissionDecision":"deny"`, with the reason; through `--adapter`, that adapter's `deny` template with the reason | write what the reason says instead, or put the class's escape at the front of the command |
+| `--adapter` names an adapter no installed pack carries | 2 | ``fleet guard: no installed pack carries the agent adapter `<name>` — `adapters/agent/<name>/adapter.toml` resolves nowhere`` | install the pack that carries it, or wire the hook to a name that is installed |
+| `--adapter` names an adapter whose `adapter.toml` has no `[hook]` | 2 | ``fleet guard: the agent adapter at <dir> declares no [hook] — a guard has no mapping to read its payload through`` | add the `[hook]` table to the adapter (see [Packs](packs.md#the-format)) |
+| `--adapter` is neither a bare name nor an absolute path | 2 | ``fleet guard: --adapter `<value>` is neither an agent adapter's name nor an absolute path to its directory`` | give the adapter's name, or its directory's absolute path |
+| `--adapter <name>` and the installed packs do not resolve | 2 | ``fleet guard: the agent adapter `<name>` is looked up in the installed packs:`` and the layering's refusal | fix what the refusal names; `fleet pack check` names a pack's defects |
 | `fleet guard` with no class | 2 | `error: the following required arguments were not provided:` and `<CLASS>` | name one of the four classes |
 | `fleet guard` with a class it does not know | 2 | ``error: invalid value 'shell' for '<CLASS>': unknown class `shell` — one of shell-trap, record, release-ref, production-write`` | use one of the names it lists |
 | `--check` finds a target not set | 1 | `<class> <check>: not configured — <key>` | set the key the line names, or leave it unset if the check does not apply to you |

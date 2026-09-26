@@ -24,12 +24,14 @@
 //!
 //! NO PROVIDER REACHES THIS MODULE. The payload one agent runtime hands a
 //! pre-tool hook, and the document it reads a refusal out of, are that
-//! runtime's contract and live in the caller's adapter; a second runtime adds
-//! a reader of its own and reuses these classes unchanged. Nothing here states
-//! a decision value, touches the filesystem or reads the process table: the
-//! caller resolves the policy and hands it in, which is what keeps the
-//! judgment testable over text alone.
+//! runtime's contract: its agent adapter declares both as data, in the
+//! `[hook]` table [`hook`] reads, and a second runtime declares a mapping of
+//! its own and reuses these classes unchanged. Nothing here states a decision
+//! value, touches the filesystem or reads the process table: the caller
+//! resolves the policy and hands it in, which is what keeps the judgment
+//! testable over text alone.
 
+pub mod hook;
 pub mod lex;
 pub mod production_write;
 pub mod record;

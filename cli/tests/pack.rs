@@ -197,6 +197,65 @@ fn the_adapters_slot_is_counted_and_a_kind_out_of_place_exits_one() {
     }
 }
 
+/// An agent adapter's `[hook]` is held to the mapping's shape: a `[hook]` on a
+/// store adapter, a `deny` with no `{reason}`, and a pointer that is not a
+/// JSON pointer each exit 1 with one defect line.
+///
+/// RED-PROOF: on the base every `[hook]` is the same unknown-table line.
+#[test]
+fn a_hook_out_of_place_or_out_of_shape_is_one_defect_line_each() {
+    let copy = Copy::of_fixture("hook");
+    let manifest = |kind: &str, name: &str, hook: &str| {
+        format!(
+            "[adapter]\nname = \"{name}\"\nkind = \"{kind}\"\nversion = \"0.1.0\"\n\
+             entry = \"main.sh\"\n\n[hook]\nshell_tool = \"sh\"\ntool = \"/call\"\n{hook}"
+        )
+    };
+    for (kind, name, hook) in [
+        (
+            "store",
+            "s",
+            "command = \"/line\"\ndeny = '{\"why\":{reason}}'\n",
+        ),
+        (
+            "agent",
+            "a",
+            "command = \"/line\"\ndeny = '{\"why\":\"no\"}'\n",
+        ),
+        (
+            "agent",
+            "b",
+            "command = \"line\"\ndeny = '{\"why\":{reason}}'\n",
+        ),
+    ] {
+        let dir = format!("adapters/{kind}/{name}");
+        copy.write(&format!("{dir}/adapter.toml"), &manifest(kind, name, hook))
+            .write(&format!("{dir}/main.sh"), "#!/bin/sh\n");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            copy.root.join(format!("{dir}/main.sh")),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .expect("the entry is executable");
+    }
+    let out = run(&["pack", "check", copy.arg()]);
+    assert_eq!(out.status.code(), Some(1));
+    let said = stderr(&out);
+    for line in [
+        "ts: `adapters/store/s/adapter.toml`'s `[hook]` is a table only an agent adapter holds",
+        "ts: `adapters/agent/a/adapter.toml`'s [hook] `deny` holds no {reason}",
+        "ts: `adapters/agent/b/adapter.toml`'s [hook] `command` is `line`, which is not a JSON \
+         pointer",
+    ] {
+        assert_eq!(
+            said.lines().filter(|said| said.starts_with(line)).count(),
+            1,
+            "{line}\n{said}"
+        );
+    }
+    assert_eq!(said.lines().count(), 3, "one line each: {said}");
+}
+
 #[test]
 fn a_manifest_at_the_previous_schema_exits_one_and_names_the_number() {
     let copy = Copy::of_fixture("schema");

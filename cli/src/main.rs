@@ -10,7 +10,6 @@
 
 mod agent;
 mod attach;
-mod claude;
 mod doctor;
 mod envelope;
 mod exit;
@@ -32,9 +31,11 @@ mod ui;
 use anyhow::{Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use exit::Exit;
+use fleet_controller::adapter::claude_code;
 use fleet_controller::events;
 use fleet_controller::runs::Runs as RunsSeam;
 use fleet_controller::{clock, config, platform, run, seat};
+use fleet_core::guard::hook::HookMap;
 use fleet_core::guard::{self, Class, Policy, Verdict};
 use fleet_core::{add, defaults, lock, pack, remove, resolve};
 use std::io::Read;
@@ -349,14 +350,22 @@ carries every row, with the same exit.")]
 
     /// judge one pre-tool payload read from stdin
     #[command(long_about = "\
-judge one pre-tool payload read from stdin. A refusal is one JSON object on
-stdout and the exit is 0 either way, because a non-zero exit from a pre-tool
-hook is read as non-blocking. --check reports whether each check's target is
-configured.")]
+judge one pre-tool payload read from stdin, read through an agent adapter's
+[hook] mapping: the built-in claude-code one, or the one --adapter names —
+a name the installed packs carry, or the absolute path to its directory. A
+refusal is the mapping's deny template with the reason filled in, on stdout,
+and the exit is 0 either way, because a non-zero exit from a pre-tool hook is
+read as non-blocking. An --adapter that resolves nowhere, or declares no
+[hook], exits 2 with one line on stderr. --check reports whether each check's
+target is configured.")]
     Guard {
         /// the guard class: shell-trap, record, release-ref or production-write
         #[arg(value_name = "CLASS", value_parser = parse_class)]
         class: Class,
+
+        /// the agent adapter whose [hook] mapping is read
+        #[arg(long, value_name = "NAME|PATH")]
+        adapter: Option<String>,
 
         /// report whether each check's target is configured
         #[arg(long)]
@@ -693,7 +702,11 @@ fn dispatch() -> Result<Exit> {
         Family::Cancel(args) => Ok(item::cancel_command(&args)),
         Family::Status(args) => Ok(status::status_command(&args)),
         Family::Doctor(args) => Ok(doctor::command(&ui, &args)),
-        Family::Guard { class, check } => guard_command(&ui, class, check),
+        Family::Guard {
+            class,
+            adapter,
+            check,
+        } => guard_command(&ui, class, adapter.as_deref(), check),
         Family::Prime => Ok(prime::command()),
     }
 }
@@ -1162,24 +1175,102 @@ fn lock_table(entries: &[lock::Entry]) -> String {
 // ---- the guards -------------------------------------------------------------
 //
 // 2 is a caller who did not name a class, the same usage code the pack verbs
-// use. The JUDGING path has no other code: a refusal is data on stdout and the
-// exit is 0 on every path, because a non-zero exit from a pre-tool hook is read
-// as non-blocking and a guard that signalled by status would fail open exactly
+// use, and a guard wired to an adapter whose mapping cannot be read. The
+// JUDGING path has no other code: a refusal is data on stdout and the exit is 0
+// on every path, because a non-zero exit from a pre-tool hook is read as
+// non-blocking and a guard that signalled by status would fail open exactly
 // when it broke. --check is the one guard path with a verdict in its exit.
+//
+// The mis-wired guard is the exception, and the reason is the same table read
+// the other way: the agent reads a hook's 2 as blocking, so a guard that cannot
+// read the payload it was wired for blocks every call until it is wired right,
+// rather than letting each one through unjudged.
 
-fn guard_command(ui: &Ui, class: Class, check: bool) -> Result<Exit> {
+fn guard_command(ui: &Ui, class: Class, adapter: Option<&str>, check: bool) -> Result<Exit> {
     if check {
         return Ok(guard_check(ui, class));
     }
-    Ok(guard_run(class))
+    let map = match hook_map(adapter) {
+        Ok(map) => map,
+        Err(missing) => {
+            eprintln!("fleet guard: {missing}");
+            return Ok(Exit::Usage);
+        }
+    };
+    Ok(guard_run(class, &map))
 }
 
-fn guard_run(class: Class) -> Exit {
+/// The mapping a payload is read and a refusal written through: the built-in
+/// claude-code manifest where no `--adapter` is given, and otherwise the
+/// `[hook]` table of the agent adapter it names — by an absolute path to the
+/// adapter's directory, or by a bare name the machine's packs carry over its
+/// defaults, as a store adapter's name is looked up. `claude-code` where no
+/// pack carries it is the built-in.
+///
+/// Each `Err` is one line naming what was missing. The manifest is read
+/// through the pack format's own reader, so a mapping `fleet pack check`
+/// refuses is never applied.
+fn hook_map(adapter: Option<&str>) -> Result<HookMap, String> {
+    let dir = match adapter {
+        None => return built_in_hook(),
+        Some(path) if path.starts_with('/') => PathBuf::from(path),
+        Some(name) if !name.is_empty() && !name.contains('/') => {
+            let machine_dir = platform::machine_dir();
+            let packs = fleet_core::item::brief::Packs::under(
+                &machine_dir.join("packs"),
+                &machine_dir.join(defaults::DIR),
+            )
+            .map_err(|stop| {
+                format!(
+                    "the agent adapter `{name}` is looked up in the installed packs: {}",
+                    stop.message
+                )
+            })?;
+            match pack::adapter_dir(&packs, pack::AdapterKind::Agent, name) {
+                Some((_, dir)) => dir,
+                None if name == claude_code::NAME => return built_in_hook(),
+                None => {
+                    return Err(format!(
+                        "no installed pack carries the agent adapter `{name}` — `{}/{}/{name}/{}` \
+                         resolves nowhere",
+                        pack::ADAPTERS,
+                        pack::AdapterKind::Agent.as_str(),
+                        pack::ADAPTER_MANIFEST
+                    ))
+                }
+            }
+        }
+        Some(other) => {
+            return Err(format!(
+                "--adapter `{other}` is neither an agent adapter's name nor an absolute path to \
+                 its directory"
+            ))
+        }
+    };
+    let manifest = pack::adapter_manifest(&dir).map_err(|defect| defect.to_string())?;
+    let Some(table) = manifest.hook else {
+        return Err(format!(
+            "the agent adapter at {} declares no [{}] — a guard has no mapping to read its \
+             payload through",
+            dir.display(),
+            pack::HOOK_TABLE
+        ));
+    };
+    HookMap::parse(&table)
+}
+
+/// Claude Code's mapping, compiled in: the built-in's `[hook]` table.
+fn built_in_hook() -> Result<HookMap, String> {
+    HookMap::from_manifest(claude_code::HOOK_MANIFEST)
+        .map_err(|why| format!("the built-in {} hook mapping: {why}", claude_code::NAME))
+}
+
+fn guard_run(class: Class, map: &HookMap) -> Exit {
     let mut body = String::new();
     if std::io::stdin().read_to_string(&mut body).is_err() {
         return Exit::Done;
     }
-    let Some(payload) = claude::payload(&body) else {
+    let Some(payload) = map.payload(&body) else {
         return Exit::Done;
     };
     let cwd = payload.cwd.as_deref().map(Path::new);
@@ -1189,7 +1280,7 @@ fn guard_run(class: Class) -> Exit {
     // states and the reason it has no raw-text fallback.
     let verdict = std::panic::catch_unwind(|| guard::judge(class, &payload.command, &policy));
     if let Ok(Verdict::Refused(denial)) = verdict {
-        println!("{}", claude::refusal(&denial.reason()));
+        println!("{}", map.deny(&denial.reason()));
     }
     Exit::Done
 }
