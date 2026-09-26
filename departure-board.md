@@ -77,7 +77,7 @@ Touches no store code, so it can fly beside flights 9 and 10.
 | Landed | Bead | What | Blocked by |
 | --- | --- | --- | --- |
 | ☑ | fleet-14p8.1 | One `adapter::exec` serves the store and the agent: spawn, bound, group kill, exit table, stderr's last line | flight 8 (fleet-wpf0) |
-| ☐ | fleet-14p8.2 | The agent contract written down: six verbs, their types in core, docs/agent.md | fleet-14p8.1 |
+| ☑ | fleet-14p8.2 | The agent contract written down: six verbs, their types in core, docs/agent.md | fleet-14p8.1 |
 | ☐ | fleet-14p8.3 | The Agent trait is the six verbs, the in-process Claude Code answers them, one `agent::open` | fleet-14p8.2, flight 11 |
 | ☐ | fleet-1jr1e | Posture is fleet's word (ask, auto, unattended), old words read as aliases, the rest refused | fleet-14p8.3 |
 | ☐ | fleet-14p8.4 | `fleet guard` reads the adapter's declared `[hook]` mapping; cli/src/claude.rs goes | fleet-14p8.2 |
