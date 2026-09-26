@@ -70,7 +70,7 @@ Touches no store code, so it can fly beside flights 9 and 10.
 | ☑ | fleet-rge6.4 | Stop, revive and remove act on the seat's session; revive resumes the full id with the start's flags; short ids stay in the adapter | fleet-rge6.2, fleet-rge6.3 |
 | ☑ | fleet-rge6.5 | Nudge and feed are a paste into the pane, believed on busy, refused when blocked; `nudge_model` goes (closes fleet-nrl, fleet-fmver) | fleet-rge6.2 |
 | ☑ | fleet-2u3.13 | `fleet seat attach <seat>`: read-only `tmux attach`, `--write` takes the keyboard | fleet-rge6.1 |
-| ☐ | fleet-rge6.6 | A controller refuses seats the daemon still hosts, doctor checks tmux, the docs describe the tmux model | fleet-rge6.2–.5, fleet-2u3.13 |
+| ☑ | fleet-rge6.6 | A controller refuses seats the daemon still hosts, doctor checks tmux, the docs describe the tmux model | fleet-rge6.2–.5, fleet-2u3.13 |
 
 ## Flight 12 — the agent contract complete for an external adapter: six verbs over a shared exec, neutral postures, a declared hook mapping, the schema verb, a stub and `fleet agent check` (`fleet-14p8`)
 
