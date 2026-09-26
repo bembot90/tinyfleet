@@ -15,7 +15,8 @@
 //!   per check row, its message carrying the suite log's line count as it grows.
 //! * **prompts** — select, confirm and input through `dialoguer`, refused with
 //!   the usage status and a sentence naming the flag that answers the question
-//!   whenever stdin is not a terminal: a prompt never blocks a script.
+//!   whenever stdin is not a terminal, or answered by its default where the
+//!   question has one: a prompt never blocks a script.
 //! * **tables** — none. The listing verbs, when they land, print their columns
 //!   with the standard library and no table crate enters for them.
 //!
@@ -24,7 +25,8 @@
 //!
 //! `create` calls [`Ui::select`] twice — embedded-or-standalone, then the agent
 //! — with `--embedded`, `--standalone` and `--agent` as the non-terminal
-//! answers. [`Ui::confirm`], [`Ui::input`] and [`Wait::is_showing`] are still
+//! answers, and [`Ui::select_or`] once, for the store, whose default a call
+//! with no terminal and no `--store` takes. [`Ui::confirm`], [`Ui::input`] and [`Wait::is_showing`] are still
 //! held by this module's own arms and by no verb: each carries an
 //! `#[allow(dead_code)]` until the frame that calls it lands.
 
@@ -175,6 +177,32 @@ impl Ui {
             .default(0)
             .interact()
             .map_err(|e| Prompt::Failed(e.to_string()))
+    }
+
+    /// One of `options`, by index, for a question with a default a script may
+    /// leave unanswered: where stdin is not a terminal the answer is `default`
+    /// and nothing is asked, and on a terminal that row is the one selected
+    /// before a key is pressed.
+    pub fn select_or(
+        &self,
+        question: &str,
+        options: &[&str],
+        default: usize,
+    ) -> Result<usize, Prompt> {
+        if !self.can_ask() {
+            return Ok(default);
+        }
+        dialoguer::Select::new()
+            .with_prompt(question)
+            .items(options)
+            .default(default)
+            .interact()
+            .map_err(|e| Prompt::Failed(e.to_string()))
+    }
+
+    /// Whether a question put now would be asked: stdin is a terminal.
+    pub fn can_ask(&self) -> bool {
+        self.stdin_is_terminal
     }
 
     /// Yes or no.

@@ -58,6 +58,14 @@ path = "doctor/claude-code-version/run.sh"
 purpose = "how Claude Code is asked for its version against the release the binary's controller adapter was measured on, and the line a mismatch names to install it"
 
 [[shadow]]
+path = "doctor/fleet-packs-version/doctor.toml"
+purpose = "the fleet-packs pin check's own name and description"
+
+[[shadow]]
+path = "doctor/fleet-packs-version/run.sh"
+purpose = "how the packs installed from fleet-packs are read out of the lock against the tag the binary was checked against, and the lines a mismatch names to replace them"
+
+[[shadow]]
 path = "doctor/adopt-board/doctor.toml"
 purpose = "the board-adoption check's own name and description"
 

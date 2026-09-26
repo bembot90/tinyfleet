@@ -68,8 +68,10 @@ stands there with no line in `packs.lock` behind it, fleet names it:
 a defaults directory edited since the line that pinned it was written is at <machine-dir>/defaults; this binary will not write over it — remove it, or keep it
 ```
 
-`fleet create` stops on this and exits 1, after it has written `fleet.toml`,
-or `.fleet/project.toml` for `--standalone`.
+`fleet create` stops on this and exits 1. With `--store none` it stops after
+it has written `fleet.toml`, or `.fleet/project.toml` for `--standalone`;
+installing a store's pack writes the defaults first, so there it stops before
+any fleet file is written.
 `fleet start` prints it on a `defaults: left as it stands — ` line and carries
 on. Remove the `defaults/` directory and the next `fleet create` or
 `fleet start` writes the binary's set again.
@@ -83,8 +85,9 @@ The defaults carry these files, and a pack can shadow every one of them:
 - `overlay/per-provider/claude/hooks.json`,
   `overlay/per-provider/claude/permissions.json`
 - `doctor/guards-installed/`, `doctor/isolation-pair/`,
-  `doctor/runtime-version/`, `doctor/bd-version/` and
-  `doctor/claude-code-version/`, each a `doctor.toml` and a `run.sh`
+  `doctor/runtime-version/`, `doctor/bd-version/`,
+  `doctor/claude-code-version/`, `doctor/fleet-packs-version/` and
+  `doctor/adopt-board/`, each a `doctor.toml` and a `run.sh`
 
 `<machine-dir>/defaults/assets/shadow-registry.toml` lists the same files with
 one line each on what they are for.
@@ -440,12 +443,14 @@ script that looks at one thing on this machine and says whether it holds.
 
 ```sh
 $ fleet doctor
+pass adopt-board (defaults) — adopt-board: nothing to adopt — no items read
 pass bd-version (defaults) — bd-version: holds
 pass claude-code-version (defaults) — claude-code-version: holds
+pass fleet-packs-version (defaults) — fleet-packs-version: nothing installed from fleet-packs — no line of the lock names https://github.com/bembot90/fleet-packs
 pass guards-installed (defaults) — record bare-id: configured — [project] item_prefix
 pass isolation-pair (defaults) — isolation-pair: holds
 pass runtime-version (defaults) — nothing pinned: no installed pack declares a [runtime] table
-doctor 5 checks — 5 pass, 0 finding, 0 could not tell
+doctor 7 checks — 7 pass, 0 finding, 0 could not tell
 ```
 
 It exits 0. Each row is the verdict, the check's name, the layer that
@@ -548,7 +553,7 @@ the names the layers do carry:
 
 ```sh
 $ fleet doctor nosuch
-fleet doctor: no doctor check named nosuch — the layers carry: bd-version, claude-code-version, guards-installed, isolation-pair, runtime-version
+fleet doctor: no doctor check named nosuch — the layers carry: adopt-board, bd-version, claude-code-version, fleet-packs-version, guards-installed, isolation-pair, runtime-version
 ```
 
 It exits 2.

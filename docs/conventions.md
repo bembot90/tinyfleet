@@ -139,7 +139,9 @@ $ fleet create < /dev/null
 fleet create: fleet: embedded or standalone? — stdin is not a terminal; answer it with --embedded
 ```
 
-It exits 2. A prompt never waits on a script.
+It exits 2. A prompt never waits on a script. One question has a default
+instead of a refusal: `fleet create`'s store question, which takes `bd` when
+there is no terminal and no `--store`.
 
 A verb under the wrong noun. `fleet seat woke`, `fleet seat rest`, `fleet seat
 handed-off` and `fleet seat exited` name the spelling that works, whatever

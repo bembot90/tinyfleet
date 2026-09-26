@@ -59,7 +59,14 @@ impl Rig {
         write(&rig.agent, "#!/bin/sh\nexit 0\n");
         executable(&rig.agent);
 
-        let out = rig.run(&["create", "--embedded", "--agent", "claude_code"]);
+        let out = rig.run(&[
+            "create",
+            "--embedded",
+            "--agent",
+            "claude_code",
+            "--store",
+            "none",
+        ]);
         assert_eq!(out.status.code(), Some(0), "create: {}", stderr(&out));
         rig.as_before_its_creator_was_listed();
         rig

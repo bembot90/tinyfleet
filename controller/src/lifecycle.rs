@@ -84,7 +84,11 @@ pub fn written_by(flags: &[&str], asked: bool) -> String {
 /// The agent is written on a line of its own rather than read out of the
 /// invocation, because it is a choice this file records and the invocation is
 /// only how the choice was made.
-pub fn embedded_text(agent: &str, written_by: &str) -> String {
+///
+/// `store` is the store adapter `fleet create` installed a pack for, written as
+/// `[store] adapter`; `None` writes no table, for a fleet whose store pack is
+/// installed later.
+pub fn embedded_text(agent: &str, store: Option<&str>, written_by: &str) -> String {
     format!(
         "# This fleet is EMBEDDED: this file is its policy and it sits at the\n\
          # project's root, so the fleet and the project are one directory.\n\
@@ -103,6 +107,7 @@ pub fn embedded_text(agent: &str, written_by: &str) -> String {
          [telemetry]\n\
          enabled = false\n\
          \n\
+         {store}\
          # One table per seat, keyed by the seat's id. fleet seat add writes them\n\
          # and fleet start renders the agent seats into the machine's seat list.\n\
          # A row looks like this:\n\
@@ -114,7 +119,25 @@ pub fn embedded_text(agent: &str, written_by: &str) -> String {
          #   status = \"active\"\n\
          [seats]\n",
         model = policy::DEFAULT_MODEL,
+        store = store_table(store),
     )
+}
+
+/// The `[store]` table naming the store adapter `fleet create` installed, the
+/// line above it saying what the name is and a blank line after it; the empty
+/// string where it installed none.
+fn store_table(store: Option<&str>) -> String {
+    match store {
+        Some(name) => format!(
+            "# The store this fleet's items live in: the store adapter an installed\n\
+             # pack carries under this name.\n\
+             [store]\n\
+             adapter = \"{}\"\n\
+             \n",
+            basic(name)
+        ),
+        None => String::new(),
+    }
 }
 
 /// A standalone project's declaration.
@@ -122,11 +145,15 @@ pub fn embedded_text(agent: &str, written_by: &str) -> String {
 /// The two directories are written OUT even though an embedded fleet derives
 /// them from where its own file sits: a standalone fleet's file sits somewhere
 /// else entirely, so there is nothing here for it to derive them from.
+///
+/// `store` as [`embedded_text`] takes it: the `[store]` table goes in the
+/// project's own file, which is the one the store is opened by.
 pub fn project_text(
     name: &str,
     item_prefix: Option<&str>,
     primary: &Path,
     worktrees: &Path,
+    store: Option<&str>,
     written_by: &str,
 ) -> String {
     let prefix = match item_prefix {
@@ -145,6 +172,7 @@ pub fn project_text(
          primary = \"{primary}\"\n\
          worktrees = \"{worktrees}\"\n\
          \n\
+         {store}\
          # Owed, and left for the person: a marker this file guessed would\n\
          # skip a pipeline nobody chose to skip. The test commands are not set\n\
          # here — a workflow hands them to the landing; for takeoff they are\n\
@@ -154,6 +182,7 @@ pub fn project_text(
         name = basic(name),
         primary = basic(&primary.display().to_string()),
         worktrees = basic(&worktrees.display().to_string()),
+        store = store_table(store),
     )
 }
 
@@ -781,7 +810,7 @@ mod tests {
 
         // Every rendering reaches the file the same way, so the arm above is
         // about what `create` writes and not about a helper nobody calls.
-        let asked = embedded_text("claude_code", &written_by(&[], true));
+        let asked = embedded_text("claude_code", None, &written_by(&[], true));
         assert!(
             asked.contains("# Written by `fleet create`, answered at its prompts."),
             "{asked}"
@@ -797,6 +826,7 @@ mod tests {
             None,
             Path::new("/p/a-project"),
             Path::new("/p/wt"),
+            None,
             &written_by(&[], true),
         );
         assert!(
@@ -810,9 +840,23 @@ mod tests {
     fn the_embedded_file_names_the_mode_the_command_the_guards_and_telemetry() {
         let text = embedded_text(
             "claude_code",
+            Some("bd"),
             &written_by(&["--embedded", "--agent claude_code"], false),
         );
         assert!(text.contains("EMBEDDED"), "{text}");
+        assert!(
+            text.contains("[store]\nadapter = \"bd\"\n\n# One table per seat"),
+            "the store create installed is named, before the seats table: {text}"
+        );
+        let storeless = embedded_text(
+            "claude_code",
+            None,
+            &written_by(&["--embedded", "--agent claude_code"], false),
+        );
+        assert!(
+            !storeless.contains("[store]") && storeless.contains("enabled = false\n\n# One table"),
+            "no store installed, no table: {storeless}"
+        );
         assert!(
             text.contains("fleet create --embedded --agent claude_code"),
             "{text}"
@@ -872,6 +916,7 @@ mod tests {
             Some("ap"),
             Path::new("/p/a-project"),
             Path::new("/p/a-project-worktrees"),
+            Some("bd"),
             &written_by(&["--standalone"], false),
         );
         assert!(text.contains("name = \"a-project\""), "{text}");
@@ -894,13 +939,20 @@ mod tests {
             None,
             Path::new("/p/a-project"),
             Path::new("/p/wt"),
+            None,
             &written_by(&["--standalone"], false),
         );
         assert!(unsaid.contains("# item_prefix ="), "{unsaid}");
         assert!(!unsaid.contains("\nitem_prefix ="), "{unsaid}");
+        assert!(!unsaid.contains("[store]"), "no store installed: {unsaid}");
 
         let table: toml::Table = text.parse().expect("the written file parses");
         assert_eq!(table["project"]["item_prefix"].as_str(), Some("ap"));
+        assert_eq!(
+            table["store"]["adapter"].as_str(),
+            Some("bd"),
+            "the project's own file names its store, which is the file the store opens by: {text}"
+        );
         assert!(
             table["landing"].as_table().expect("a table").is_empty(),
             "the marker is commented: {text}"
@@ -1134,6 +1186,7 @@ mod tests {
             Some("a\\b"),
             Path::new("/p/a \"quoted\" project"),
             Path::new("/p/wt"),
+            None,
             &written_by(&["--standalone"], false),
         );
         let table: toml::Table = text.parse().expect("the written file parses");

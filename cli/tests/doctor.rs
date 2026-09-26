@@ -36,10 +36,11 @@ const CONFIGURED: &str = "[project]\nitem_prefix = \"fx\"\n";
 const UNCONFIGURED: &str = "[project]\n";
 
 /// Every check the binary's defaults carry, in the order the verb runs them.
-const DEFAULTS: [&str; 6] = [
+const DEFAULTS: [&str; 7] = [
     "adopt-board",
     "bd-version",
     "claude-code-version",
+    "fleet-packs-version",
     "guards-installed",
     "isolation-pair",
     "runtime-version",
@@ -309,8 +310,16 @@ fn the_defaults_pass_on_a_configured_project() {
         "pass adopt-board (defaults) — adopt-board: nothing to adopt — no items read"
     );
     assert_eq!(
+        row(&said, "fleet-packs-version (defaults)"),
+        format!(
+            "pass fleet-packs-version (defaults) — fleet-packs-version: nothing installed from \
+             fleet-packs — no line of the lock names {}",
+            fleet_core::supported::PINNED_PACKS_SOURCE
+        )
+    );
+    assert_eq!(
         last_line(&said),
-        "doctor 6 checks — 6 pass, 0 finding, 0 could not tell"
+        "doctor 7 checks — 7 pass, 0 finding, 0 could not tell"
     );
     assert!(
         !said.lines().any(|line| line.starts_with("  ")),
@@ -348,7 +357,58 @@ fn an_unconfigured_guard_is_a_finding_with_its_lines_below_the_row() {
     }
     assert_eq!(
         last_line(&said),
-        "doctor 6 checks — 5 pass, 1 finding, 0 could not tell"
+        "doctor 7 checks — 6 pass, 1 finding, 0 could not tell"
+    );
+}
+
+/// fleet-3krx.1 — the fleet-packs pin through the shipped binary: the check
+/// reads the machine's lock through `fleet pack list`, so a line from the
+/// pinned source at another tag is a finding naming the lines that replace it,
+/// and the same line at the pin holds. The lock is written by hand, in the
+/// shape `fleet pack add` writes it, so no pack is fetched.
+#[test]
+fn a_pack_from_fleet_packs_at_another_tag_is_a_finding() {
+    let source = fleet_core::supported::PINNED_PACKS_SOURCE;
+    let pin = fleet_core::supported::PINNED_PACKS;
+    let rig = Rig::new("packs-pin", CONFIGURED);
+    let lock = |version: &str| {
+        write(
+            &rig.machine.join("packs.lock"),
+            &format!(
+                "schema = 1\n\n[packs.\"{source}//adapters/store/bd\"]\nname = \"bd\"\n\
+                 version = \"{version}\"\ncommit = \"{commit}\"\nfetched = \"2026-09-25T00:00:00Z\"\n",
+                commit = "0".repeat(40)
+            ),
+        )
+    };
+
+    lock("v0.0.9");
+    let out = rig.doctor(&["fleet-packs-version"]);
+    let said = stdout(&out);
+    assert_eq!(out.status.code(), Some(1), "{said}{}", stderr(&out));
+    assert!(
+        row(&said, "fleet-packs-version (defaults)").starts_with(
+            "finding fleet-packs-version (defaults) — fleet-packs-version: broken — 1 pack(s)"
+        ),
+        "{said}"
+    );
+    assert!(
+        followed_by(&said, "fleet-packs-version (defaults)")
+            .iter()
+            .any(|line| line.contains(&format!(
+                "bd is pinned at v0.0.9, not the supported {pin} — `fleet pack remove \
+                 {source}//adapters/store/bd`"
+            ))),
+        "the pack that moved is named below the row: {said}"
+    );
+
+    lock(pin);
+    let out = rig.doctor(&["fleet-packs-version"]);
+    let said = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{said}{}", stderr(&out));
+    assert_eq!(
+        row(&said, "fleet-packs-version (defaults)"),
+        format!("pass fleet-packs-version (defaults) — fleet-packs-version: holds — bd at {pin}")
     );
 }
 
@@ -383,7 +443,7 @@ fn a_check_that_could_not_tell_wins_over_a_finding() {
     );
     assert_eq!(
         last_line(&said),
-        "doctor 9 checks — 6 pass, 1 finding, 2 could not tell"
+        "doctor 10 checks — 7 pass, 1 finding, 2 could not tell"
     );
 
     rig.uncheck("scratch", "fx-unread");
@@ -578,7 +638,7 @@ fn json_carries_every_row_and_the_exit_carries_the_aggregate() {
     assert_eq!(document["data"]["verdict"], "finding");
     assert_eq!(
         document["data"]["counts"],
-        serde_json::json!({ "pass": 5, "finding": 1, "could_not_tell": 0 })
+        serde_json::json!({ "pass": 6, "finding": 1, "could_not_tell": 0 })
     );
     let checks = document["data"]["checks"]
         .as_array()

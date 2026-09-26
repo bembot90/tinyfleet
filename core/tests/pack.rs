@@ -978,6 +978,143 @@ fn the_claude_code_doctor_check_reads_claude_version_against_the_pin() {
     assert!(said.contains("claude-code-version: holds"), "{said}");
 }
 
+/// fleet-3krx.1 — the fleet-packs pin's doctor check the defaults ship, run as
+/// a real script against a stub `fleet` whose `pack list` prints the lock, and
+/// its two copies held to `supported::PINNED_PACKS_SOURCE` and `PINNED_PACKS`.
+///
+/// The table the stub prints is `fleet pack list`'s own shape: a header, then
+/// one padded row per line of the lock. A line from any other source — a
+/// checkout `fleet create --packs-from` named — is not read, whatever its
+/// version.
+#[test]
+fn the_fleet_packs_doctor_check_reads_the_lock_against_the_pin() {
+    let source = fleet_core::supported::PINNED_PACKS_SOURCE;
+    let pin = fleet_core::supported::PINNED_PACKS;
+    let defaults = Defaults::new("packs-doctor");
+    let check = defaults.path().join("doctor/fleet-packs-version/run.sh");
+    let script = std::fs::read_to_string(&check)
+        .unwrap_or_else(|e| panic!("the defaults ship the check at {}: {e}", check.display()));
+    let copies = |key: &str| -> Vec<String> {
+        script
+            .lines()
+            .filter(|line| line.starts_with(&format!("{key}=")))
+            .map(str::to_string)
+            .collect()
+    };
+    assert_eq!(
+        copies("SOURCE"),
+        vec![format!("SOURCE={source}")],
+        "the check's one copy of the source is supported::PINNED_PACKS_SOURCE"
+    );
+    assert_eq!(
+        copies("PINNED"),
+        vec![format!("PINNED={pin}")],
+        "the check's one copy of the tag is supported::PINNED_PACKS"
+    );
+
+    let fixture = Fixture::new("packs-doctor-stubs");
+    let header = "name      source                                 version  commit    fetched";
+    let row = |name: &str, from: &str, version: &str| {
+        format!("{name}  {from}  {version}  0123abcd  2026-09-25T00:00:00Z")
+    };
+    let defaults_row = row("defaults", "embedded:defaults", "0.1.0");
+    let bd = format!("{source}//adapters/store/bd");
+    let ts = format!("{source}//runtimes/ts");
+    let fleet = |label: &str, table: &str, exit: i32| -> std::path::PathBuf {
+        let dir = fixture.path(label);
+        std::fs::create_dir_all(&dir).expect("the fake fleet's directory");
+        let bin = dir.join("fleet");
+        std::fs::write(
+            &bin,
+            format!("#!/bin/sh\ncat <<'EOF'\n{table}\nEOF\nexit {exit}\n"),
+        )
+        .expect("the fake fleet is written");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+            .expect("the fake fleet is executable");
+        bin
+    };
+    let run = |bin: &std::path::Path| -> (i32, String) {
+        let out = std::process::Command::new("/bin/sh")
+            .arg(&check)
+            .env("FLEET_BIN", bin)
+            .output()
+            .expect("the check runs");
+        (
+            out.status
+                .code()
+                .expect("the check exits rather than signals"),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
+    };
+
+    // Nothing from the source: the defaults' line, and a checkout's pack at a
+    // version that is not the pin, which is not read.
+    let (code, said) = run(&fleet(
+        "nothing",
+        &[
+            header.to_string(),
+            row("bd", "/a/checkout//adapters/store/bd", "main"),
+            defaults_row.clone(),
+        ]
+        .join("\n"),
+        0,
+    ));
+    assert_eq!(code, 0, "nothing installed from the source: {said}");
+    assert!(
+        said.contains(&format!(
+            "nothing installed from fleet-packs — no line of the lock names {source}"
+        )),
+        "{said}"
+    );
+
+    let (code, said) = run(&fleet(
+        "holds",
+        &[
+            header.to_string(),
+            row("bd", &bd, pin),
+            defaults_row.clone(),
+            row("ts", &ts, pin),
+        ]
+        .join("\n"),
+        0,
+    ));
+    assert_eq!(code, 0, "every pack from the source at the pin: {said}");
+    assert!(
+        said.contains(&format!("fleet-packs-version: holds — bd, ts at {pin}")),
+        "{said}"
+    );
+
+    let (code, said) = run(&fleet(
+        "moved",
+        &[
+            header.to_string(),
+            row("bd", &bd, "v0.0.9"),
+            defaults_row.clone(),
+            row("ts", &ts, pin),
+        ]
+        .join("\n"),
+        0,
+    ));
+    assert_eq!(code, 1, "a pack from the source at another tag: {said}");
+    assert!(
+        said.contains(&format!(
+            "bd is pinned at v0.0.9, not the supported {pin} — `fleet pack remove {bd}` and \
+             then `fleet pack add {bd} --version {pin}`"
+        )) && said.contains("broken — 1 pack(s) from fleet-packs")
+            && said.contains("fleet still runs them")
+            && !said.contains("ts is pinned"),
+        "the one that moved is named with the lines that replace it: {said}"
+    );
+
+    let (code, said) = run(&fleet("unread", "", 3));
+    assert_eq!(code, 3, "a lock fleet could not read: {said}");
+    assert!(
+        said.contains("could not read the lock — `fleet pack list` exited 3"),
+        "{said}"
+    );
+}
+
 // ---- the config table ---------------------------------------------------------
 
 fn with_config(body: &str) -> Result<pack::Manifest, Vec<Defect>> {

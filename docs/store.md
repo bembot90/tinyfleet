@@ -590,7 +590,7 @@ store check` has no way to put another tool's keys on an item.
 | `--adapter` names a relative path | 2 | `fleet store check: --adapter takes an absolute path to an executable, and <path> is not one` |
 | nothing executable is at the path `--adapter` names | 3 | ``fleet store check: --adapter names `<path>`, which is not an executable file`` |
 | nothing executable is at the path `[store] adapter` names | 3 | ``fleet store check: [store] adapter names `<path>`, which is not an executable file`` |
-| no installed pack carries the name | 3 | ``fleet store check: no store adapter named `<name>` in the installed packs — `fleet pack add <repo>//adapters/store/<name> --version <version>` installs one`` |
+| no installed pack carries the name | 3 | ``fleet store check: no store adapter named `<name>` in the installed packs — `fleet pack add https://github.com/bembot90/fleet-packs//adapters/store/<name> --version v0.1.0` installs the one fleet-packs carries`` |
 | the installed packs do not resolve | 3 | ``fleet store check: no store adapter named `<name>` resolves:`` and the reason |
 | the pack's adapter fails the format | 3 | ``fleet store check: the store adapter `<name>` cannot be opened:`` and the defect |
 | the adapter cannot be run, or does not answer `capabilities` or `scratch` | 3 | `fleet store check:` and the reason |

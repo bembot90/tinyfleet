@@ -44,7 +44,7 @@ const EMBEDDED: &str = "\
 # This fleet is EMBEDDED: this file is its policy and it sits at the
 # project's root, so the fleet and the project are one directory.
 # Its agent is `claude_code`.
-# Written by `fleet create --embedded --agent claude_code`.
+# Written by `fleet create --embedded --agent claude_code --store none`.
 #
 # Every key the controller defaults is left out on purpose. Add one here
 # to override it for this fleet.
@@ -84,7 +84,7 @@ fn standalone_text(name: &str, item_prefix: Option<&str>, root: &Path, worktrees
     };
     format!(
         "# This project is declared to the STANDALONE fleet this machine runs.\n\
-         # Written by `fleet create --standalone --agent claude_code`.\n\
+         # Written by `fleet create --standalone --agent claude_code --store none`.\n\
          \n\
          [project]\n\
          name = \"{name}\"\n\
@@ -278,6 +278,47 @@ impl Rig {
         write(&self.pid, "");
     }
 
+    /// A checkout laid out as fleet-packs is, for `--packs-from`: the store
+    /// pack `adapters/store/bd`, whose adapter is a shell stub, importing the
+    /// runtime pack `runtimes/ts` from the same repository, committed and
+    /// tagged at the version this binary pins. Nothing in it is run here.
+    fn a_packs_checkout(&self) -> String {
+        let repo = self.root.join("fleet-packs");
+        for (relative, body) in [
+            (
+                "adapters/store/bd/pack.toml",
+                "[pack]\nname = \"bd\"\nversion = \"0.1.0\"\nschema = 3\n\
+                 description = \"a stand-in for the bd store pack\"\n\
+                 \n[imports.ts]\nsource = \"../../../runtimes/ts\"\nversion = \"0.1.0\"\n",
+            ),
+            (
+                "adapters/store/bd/adapters/store/bd/adapter.toml",
+                "[adapter]\nname = \"bd\"\nkind = \"store\"\nversion = \"0.1.0\"\n\
+                 entry = \"main.sh\"\n",
+            ),
+            (
+                "adapters/store/bd/adapters/store/bd/main.sh",
+                "#!/bin/sh\necho 'a stand-in adapter answers nothing' >&2\nexit 3\n",
+            ),
+            (
+                "runtimes/ts/pack.toml",
+                "[pack]\nname = \"ts\"\nversion = \"0.1.0\"\nschema = 3\n\
+                 description = \"a stand-in for the runtime pack\"\n",
+            ),
+        ] {
+            write(&repo.join(relative), body);
+        }
+        executable(&repo.join("adapters/store/bd/adapters/store/bd/main.sh"));
+        git(&repo, &["init", "--quiet", "-b", "main"]);
+        git(&repo, &["add", "--all"]);
+        git(
+            &repo,
+            &["commit", "--quiet", "--no-gpg-sign", "-m", "the packs"],
+        );
+        git(&repo, &["tag", fleet_core::supported::PINNED_PACKS]);
+        repo.display().to_string()
+    }
+
     /// The agent binary, which `start` resolves and never runs here.
     fn an_agent(&self) {
         write(&self.agent, "#!/bin/sh\nexit 0\n");
@@ -297,7 +338,12 @@ impl Rig {
             .hermetic(&self.home, &self.machine, Some(&self.agent))
             .env("FLEET_SERVICE_BIN", &self.manager)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_SYSTEM", "/dev/null");
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            // NO NETWORK: `create` fetches a store's pack with git, and an arm
+            // that forgot `--store none` or `--packs-from` would reach the
+            // pinned source over https. Local paths are git's `file`
+            // transport, and nothing else is let through.
+            .env("GIT_ALLOW_PROTOCOL", "file");
     }
 
     fn run(&self, args: &[&str]) -> Output {
@@ -395,7 +441,7 @@ impl Rig {
 
     /// The fleet created, so an arm about `start` does not re-assert `create`.
     fn created(&self) -> &Rig {
-        let out = self.run(&["create", "--embedded", "--agent", AGENT]);
+        let out = self.run(&["create", "--embedded", "--agent", AGENT, "--store", "none"]);
         assert_eq!(code(&out), 0, "create: {}", stderr(&out));
         self
     }
@@ -468,7 +514,7 @@ fn until(what: &str, deadline: Duration, mut ready: impl FnMut() -> bool) {
 fn create_refuses_a_fleet_that_is_already_here_and_a_dot_fleet_that_is_not_a_project() {
     let rig = Rig::new("refusals");
     write(&rig.project.join("fleet.toml"), "[controller]\n");
-    let out = rig.run(&["create", "--embedded", "--agent", AGENT]);
+    let out = rig.run(&["create", "--embedded", "--agent", AGENT, "--store", "none"]);
     assert_eq!(code(&out), 1, "{}", stderr(&out));
     assert!(
         stderr(&out).contains(&rig.project.join("fleet.toml").display().to_string()),
@@ -479,7 +525,7 @@ fn create_refuses_a_fleet_that_is_already_here_and_a_dot_fleet_that_is_not_a_pro
 
     // A `.fleet/` with no declaration in it is somebody else's directory.
     std::fs::create_dir_all(rig.project.join(".fleet/elsewhere")).unwrap();
-    let out = rig.run(&["create", "--embedded", "--agent", AGENT]);
+    let out = rig.run(&["create", "--embedded", "--agent", AGENT, "--store", "none"]);
     assert_eq!(code(&out), 1, "{}", stderr(&out));
     assert!(
         stderr(&out).contains(&rig.project.join(".fleet").display().to_string()),
@@ -499,7 +545,7 @@ fn create_refuses_a_fleet_that_is_already_here_and_a_dot_fleet_that_is_not_a_pro
         &rig.project.join(".fleet/project.toml"),
         "[project]\nname = \"a-project\"\n",
     );
-    let out = rig.run(&["create", "--embedded", "--agent", AGENT]);
+    let out = rig.run(&["create", "--embedded", "--agent", AGENT, "--store", "none"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
 }
 
@@ -525,7 +571,14 @@ fn create_refuses_an_agent_no_adapter_answers_to() {
 #[test]
 fn create_refuses_standalone_with_no_fleet_on_the_machine_and_names_start() {
     let rig = Rig::new("standalone-alone");
-    let out = rig.run(&["create", "--standalone", "--agent", AGENT]);
+    let out = rig.run(&[
+        "create",
+        "--standalone",
+        "--agent",
+        AGENT,
+        "--store",
+        "none",
+    ]);
     assert_eq!(code(&out), 1, "{}", stderr(&out));
     assert!(stderr(&out).contains("fleet start"), "{}", stderr(&out));
     assert!(
@@ -549,6 +602,8 @@ fn create_refuses_a_fleet_flag_whose_directory_holds_no_policy_file() {
         "--standalone",
         "--agent",
         AGENT,
+        "--store",
+        "none",
         "--fleet",
         &nowhere.display().to_string(),
     ]);
@@ -582,7 +637,7 @@ fn create_standalone_names_the_fleet_and_one_start_renders_the_seat() {
     let fleet = rig.root.join("the-fleet");
     std::fs::create_dir_all(&fleet).expect("the fleet's own directory is made");
     let out = rig
-        .command(&["create", "--embedded", "--agent", AGENT])
+        .command(&["create", "--embedded", "--agent", AGENT, "--store", "none"])
         .current_dir(&fleet)
         .output()
         .expect("the built binary runs");
@@ -606,6 +661,8 @@ fn create_standalone_names_the_fleet_and_one_start_renders_the_seat() {
         "--standalone",
         "--agent",
         AGENT,
+        "--store",
+        "none",
         "--fleet",
         &fleet.display().to_string(),
     ]);
@@ -708,25 +765,28 @@ fn create_refuses_a_question_it_cannot_ask_and_names_the_flag() {
     );
 }
 
-/// The two questions answered by two Enters, on a real terminal.
+/// The three questions answered by three Enters, on a real terminal.
 ///
-/// Both rows are the first row, which is what Enter alone takes: a prompt that
+/// Every row is the first row, which is what Enter alone takes: a prompt that
 /// starts with nothing selected refuses Enter and redraws, and the arm's red is
-/// the timeout below rather than a wrong answer.
+/// the timeout below rather than a wrong answer. The store's first row is bd,
+/// installed from the rig's own fleet-packs checkout.
 #[test]
 fn create_takes_the_first_row_of_each_prompt_on_enter_alone() {
     let rig = Rig::new("pty-enter");
-    let (status, seen) = rig.on_a_pty(&["create"], "\n\n");
+    let packs = rig.a_packs_checkout();
+    let (status, seen) = rig.on_a_pty(&["create", "--packs-from", &packs], "\n\n\n");
     assert_eq!(
         status,
         Some(0),
-        "two Enters answer the two questions; the terminal showed:\n{seen}"
+        "three Enters answer the three questions; the terminal showed:\n{seen}"
     );
     assert!(
         seen.contains("embedded or standalone?"),
-        "both questions were asked: {seen}"
+        "every question was asked: {seen}"
     );
     assert!(seen.contains("which agent?"), "{seen}");
+    assert!(seen.contains("which store?"), "{seen}");
 
     // The first row of the first question is `embedded`, so the embedded file is
     // the one written — the answer is read out of what landed, not out of what
@@ -745,13 +805,22 @@ fn create_takes_the_first_row_of_each_prompt_on_enter_alone() {
         written.contains(&format!("# Its agent is `{AGENT}`.")),
         "{written}"
     );
+
+    // The first row of the third is bd: its pack installed, and the file
+    // naming it.
+    assert!(written.contains("[store]\nadapter = \"bd\"\n"), "{written}");
+    assert!(
+        rig.machine.join("packs/bd/pack.toml").is_file(),
+        "the store's pack is installed"
+    );
 }
 
 /// A file nobody passed a flag to does not claim one.
 #[test]
 fn create_writes_a_header_naming_only_the_flags_the_call_carried() {
     let rig = Rig::new("pty-header");
-    let (status, seen) = rig.on_a_pty(&["create"], "\n\n");
+    let packs = rig.a_packs_checkout();
+    let (status, seen) = rig.on_a_pty(&["create", "--packs-from", &packs], "\n\n\n");
     assert_eq!(status, Some(0), "{seen}");
 
     let written = std::fs::read_to_string(rig.project.join("fleet.toml")).expect("the file landed");
@@ -759,7 +828,13 @@ fn create_writes_a_header_naming_only_the_flags_the_call_carried() {
         written.contains("# Written by `fleet create`, answered at its prompts."),
         "{written}"
     );
-    for flag in ["--embedded", "--standalone", "--agent"] {
+    for flag in [
+        "--embedded",
+        "--standalone",
+        "--agent",
+        "--store",
+        "--packs-from",
+    ] {
         assert!(
             !written.contains(flag),
             "no flag was passed, so none is named: {flag} in\n{written}"
@@ -769,15 +844,327 @@ fn create_writes_a_header_naming_only_the_flags_the_call_carried() {
     // The pair: a call that DID carry its flags names them, on the same
     // assertion the arm above makes about their absence.
     let flagged = Rig::new("pty-header-flagged");
-    let out = flagged.run(&["create", "--embedded", "--agent", AGENT]);
+    let out = flagged.run(&["create", "--embedded", "--agent", AGENT, "--store", "none"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let written = std::fs::read_to_string(flagged.project.join("fleet.toml")).expect("it landed");
+    assert!(
+        written.contains(&format!(
+            "# Written by `fleet create --embedded --agent {AGENT} --store none`."
+        )),
+        "{written}"
+    );
+}
+
+// ---- fleet create: the store's pack (fleet-3krx.1) --------------------------
+
+/// The lines the machine's lock holds, as `(source, version, commit)`.
+fn locked(machine: &Path) -> Vec<(String, String, String)> {
+    fleet_core::lock::read(&machine.join(fleet_core::lock::LOCK))
+        .expect("the lock reads")
+        .into_iter()
+        .map(|line| (line.source, line.version, line.commit))
+        .collect()
+}
+
+/// The `[store] adapter` the project at `root` names in its own file, read the
+/// way the store is opened by.
+fn store_named(root: &Path) -> Option<String> {
+    let policy = fleet_core::store::project_policy(root).expect("the project's file parses");
+    policy
+        .get("store")
+        .and_then(|store| store.get("adapter"))
+        .and_then(|adapter| adapter.as_str())
+        .map(str::to_string)
+}
+
+/// No terminal and no `--store`: the default is taken rather than refused, and
+/// the default is bd — its pack fetched from the source `--packs-from` names at
+/// the tag this binary pins, installed with the runtime pack it imports out of
+/// the same checkout, both pinned in the lock at that tag and commit, and the
+/// file naming the adapter. The header names no `--store`, because the call
+/// carried none.
+#[test]
+fn create_with_no_terminal_installs_the_default_store_pack_and_pins_it() {
+    let rig = Rig::new("store-default");
+    let packs = rig.a_packs_checkout();
+    let out = rig.run(&[
+        "create",
+        "--embedded",
+        "--agent",
+        AGENT,
+        "--packs-from",
+        &packs,
+    ]);
+    let said = stderr(&out);
+    assert_eq!(code(&out), 0, "{said}");
+
+    let pin = fleet_core::supported::PINNED_PACKS;
+    let bd = format!("{packs}//adapters/store/bd");
+    let ts = format!("{packs}//runtimes/ts");
+    let lines = locked(&rig.machine);
+    let line = |source: &str| {
+        lines
+            .iter()
+            .find(|(held, _, _)| held == source)
+            .unwrap_or_else(|| panic!("the lock pins {source}: {lines:?}"))
+            .clone()
+    };
+    let (_, version, commit) = line(&bd);
+    assert_eq!(version, pin, "pinned at the tag the binary pins");
+    assert_eq!(commit.len(), 40, "and the commit it resolved to: {commit}");
+    assert_eq!(line(&ts).1, pin, "the import at the same tag");
+    assert_eq!(line(&ts).2, commit, "out of the same checkout");
+    assert!(rig.machine.join("packs/bd/pack.toml").is_file());
+    assert!(rig
+        .machine
+        .join("packs/bd/adapters/store/bd/main.sh")
+        .is_file());
+    assert!(rig.machine.join("packs/ts/pack.toml").is_file());
+    assert!(
+        rig.machine.join("defaults").is_dir(),
+        "the defaults beneath it, as ever"
+    );
+
+    let written = std::fs::read_to_string(rig.project.join("fleet.toml")).expect("the file landed");
+    assert_eq!(
+        store_named(&rig.project).as_deref(),
+        Some("bd"),
+        "the file names the store its pack carries: {written}"
+    );
     assert!(
         written.contains(&format!(
             "# Written by `fleet create --embedded --agent {AGENT}`."
         )),
         "{written}"
     );
+    assert!(
+        said.contains(&format!(
+            "store: bd {pin} at {commit}, installed and pinned"
+        )),
+        "{said}"
+    );
+    assert!(
+        said.contains(&format!("store: ts {pin} at {commit}, which bd imports")),
+        "{said}"
+    );
+}
+
+/// `--store none`: no pack fetched, nothing pinned but the defaults, no
+/// `[store]` table, and the line that installs bd later printed with the
+/// source and tag this binary pins.
+#[test]
+fn create_with_store_none_installs_nothing_and_prints_the_line_that_does() {
+    let rig = Rig::new("store-none");
+    let out = rig.run(&["create", "--embedded", "--agent", AGENT, "--store", "none"]);
+    let said = stderr(&out);
+    assert_eq!(code(&out), 0, "{said}");
+
+    let line = format!(
+        "fleet pack add {}//adapters/store/bd --version {}",
+        fleet_core::supported::PINNED_PACKS_SOURCE,
+        fleet_core::supported::PINNED_PACKS
+    );
+    assert!(
+        said.contains(&format!("store: none installed — `{line}` installs one")),
+        "{said}"
+    );
+    let sources: Vec<String> = locked(&rig.machine)
+        .into_iter()
+        .map(|(source, _, _)| source)
+        .collect();
+    assert_eq!(sources, [fleet_core::defaults::SOURCE], "only the defaults");
+    assert!(!rig.machine.join("packs/bd").exists(), "no pack installed");
+    let written = std::fs::read_to_string(rig.project.join("fleet.toml")).expect("the file landed");
+    assert!(!written.contains("[store]"), "{written}");
+}
+
+/// The store's scripted answer is refused before any question and before
+/// anything is written: a name no pack is installed for, and `--packs-from`
+/// beside `--store none`, which would name a source for nothing.
+#[test]
+fn create_refuses_a_store_it_does_not_install_before_anything_is_written() {
+    let rig = Rig::new("store-refused");
+    let out = rig.run(&[
+        "create",
+        "--embedded",
+        "--agent",
+        AGENT,
+        "--store",
+        "sqlite",
+    ]);
+    let said = stderr(&out);
+    assert_eq!(code(&out), 2, "{said}");
+    assert!(
+        said.contains("no store pack answers to `sqlite` — this fleet installs bd, or none"),
+        "{said}"
+    );
+
+    // A pipe with no mode answered: the store is refused, not the question.
+    let out = rig.run(&["create", "--store", "sqlite"]);
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
+    assert!(stderr(&out).contains("sqlite"), "{}", stderr(&out));
+
+    let packs = rig.a_packs_checkout();
+    let out = rig.run(&[
+        "create",
+        "--embedded",
+        "--agent",
+        AGENT,
+        "--store",
+        "none",
+        "--packs-from",
+        &packs,
+    ]);
+    let said = stderr(&out);
+    assert_eq!(code(&out), 2, "{said}");
+    assert!(
+        said.contains("--packs-from") && said.contains("--store none"),
+        "{said}"
+    );
+
+    assert!(
+        !rig.project.join("fleet.toml").exists(),
+        "nothing was written"
+    );
+    assert!(
+        !rig.machine.join("packs.lock").exists(),
+        "nothing was pinned"
+    );
+}
+
+/// A fetch that fails — here a checkout that carries no tag the binary pins,
+/// the offline case's stand-in — refuses with no fleet file written, naming
+/// git's reason and `--store none` as the way to create the fleet without it.
+#[test]
+fn create_refuses_with_no_fleet_written_when_the_store_pack_cannot_be_fetched() {
+    let rig = Rig::new("store-unfetched");
+    let untagged = rig.root.join("untagged");
+    write(&untagged.join("README"), "no packs here\n");
+    git(&untagged, &["init", "--quiet", "-b", "main"]);
+    git(&untagged, &["add", "--all"]);
+    git(
+        &untagged,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "nothing"],
+    );
+
+    let out = rig.run(&[
+        "create",
+        "--embedded",
+        "--agent",
+        AGENT,
+        "--packs-from",
+        &untagged.display().to_string(),
+    ]);
+    let said = stderr(&out);
+    assert_eq!(code(&out), 1, "{said}");
+    assert!(
+        said.contains(
+            "the store's pack was not installed, so no fleet file was written: git checkout"
+        ) && said.contains("`fleet create --store none` creates the fleet without one"),
+        "{said}"
+    );
+    assert!(!rig.project.join("fleet.toml").exists(), "no fleet file");
+    assert!(!rig.machine.join("packs/bd").exists(), "no pack");
+}
+
+/// A second fleet on the machine reads the pack the first installed: the
+/// standalone project declared to the first finds bd already there, leaves
+/// it as it stands, says where it came from, and names it in its own file.
+#[test]
+fn create_leaves_a_store_pack_already_on_the_machine_as_it_stands() {
+    let rig = Rig::new("store-already");
+    let packs = rig.a_packs_checkout();
+    let fleet = rig.root.join("the-fleet");
+    std::fs::create_dir_all(&fleet).expect("the fleet's own directory is made");
+    let out = rig
+        .command(&[
+            "create",
+            "--embedded",
+            "--agent",
+            AGENT,
+            "--packs-from",
+            &packs,
+        ])
+        .current_dir(&fleet)
+        .output()
+        .expect("the built binary runs");
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let pinned = locked(&rig.machine);
+
+    let out = rig.run(&[
+        "create",
+        "--standalone",
+        "--agent",
+        AGENT,
+        "--packs-from",
+        &packs,
+        "--fleet",
+        &fleet.display().to_string(),
+    ]);
+    let said = stderr(&out);
+    assert_eq!(code(&out), 0, "{said}");
+    assert!(
+        said.contains(&format!(
+            "store: bd, already installed on this machine at {} from {packs}//adapters/store/bd \
+             — left as it stands",
+            fleet_core::supported::PINNED_PACKS
+        )),
+        "{said}"
+    );
+    assert_eq!(locked(&rig.machine), pinned, "the lock is as it was");
+    let declared = std::fs::read_to_string(rig.project.join(".fleet/project.toml"))
+        .expect("the declaration landed");
+    assert_eq!(
+        store_named(&rig.project).as_deref(),
+        Some("bd"),
+        "the project's own file names its store: {declared}"
+    );
+}
+
+/// OPT-IN, and the one arm that reaches the network: `fleet create` with no
+/// `--packs-from` installs bd from the source and tag this binary pins, the
+/// real fleet-packs on GitHub. Skipped, with a line saying so, unless
+/// `FLEET_TEST_NETWORK` is set, and when it is set and the source does not
+/// answer.
+#[test]
+fn create_installs_the_pinned_store_pack_from_the_published_source() {
+    let arm = "create_installs_the_pinned_store_pack_from_the_published_source";
+    if std::env::var_os("FLEET_TEST_NETWORK").is_none() {
+        eprintln!("SKIP {arm}: FLEET_TEST_NETWORK is unset, and this arm reaches GitHub");
+        return;
+    }
+    let source = fleet_core::supported::PINNED_PACKS_SOURCE;
+    let pin = fleet_core::supported::PINNED_PACKS;
+    let reached = Command::new("git")
+        .args(["ls-remote", "--tags", source, pin])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map(|out| out.status.success() && !out.stdout.is_empty())
+        .unwrap_or(false);
+    if !reached {
+        eprintln!("SKIP {arm}: {source} did not answer for {pin} — offline, or the tag is gone");
+        return;
+    }
+
+    let rig = Rig::new("store-network");
+    let out = rig
+        .command(&["create", "--embedded", "--agent", AGENT])
+        .env_remove("GIT_ALLOW_PROTOCOL")
+        .output()
+        .expect("the built binary runs");
+    let said = stderr(&out);
+    assert_eq!(code(&out), 0, "{said}");
+    let bd = format!("{source}//adapters/store/bd");
+    assert!(
+        locked(&rig.machine)
+            .iter()
+            .any(|(held, version, _)| *held == bd && version == pin),
+        "the lock pins {bd} at {pin}"
+    );
+    assert!(rig
+        .machine
+        .join("packs/bd/adapters/store/bd/adapter.toml")
+        .is_file());
 }
 
 /// The embedded file, byte for byte, with the binary's own defaults
@@ -785,7 +1172,7 @@ fn create_writes_a_header_naming_only_the_flags_the_call_carried() {
 #[test]
 fn create_embedded_writes_the_smallest_file_that_runs_and_materializes_the_defaults() {
     let rig = Rig::new("embedded");
-    let out = rig.run(&["create", "--embedded", "--agent", AGENT]);
+    let out = rig.run(&["create", "--embedded", "--agent", AGENT, "--store", "none"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
 
     let written = std::fs::read_to_string(rig.project.join("fleet.toml")).unwrap();
@@ -795,7 +1182,7 @@ fn create_embedded_writes_the_smallest_file_that_runs_and_materializes_the_defau
         "the file is not the expected text"
     );
 
-    // NOTHING under packs: `create` installs no pack, and the word core names
+    // NOTHING under packs: `create --store none` installs no pack, and the word core names
     // no directory a person could meet.
     let packs = rig.machine.join("packs");
     let installed: Vec<String> = std::fs::read_dir(&packs)
@@ -887,7 +1274,7 @@ fn create_embedded_lists_its_creator_as_a_human_seat_under_a_minted_identity() {
     let identity_file = rig.machine.join(identity::IDENTITY);
     assert!(!identity_file.exists(), "the rig starts with no identity");
 
-    let out = rig.run(&["create", "--embedded", "--agent", AGENT]);
+    let out = rig.run(&["create", "--embedded", "--agent", AGENT, "--store", "none"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
 
     // The id is READ from the minted file, so the table is checked against the
@@ -929,7 +1316,7 @@ fn create_embedded_lists_its_creator_as_a_human_seat_under_a_minted_identity() {
     let second = rig.root.join("b-project");
     std::fs::create_dir_all(&second).unwrap();
     let out = rig
-        .command(&["create", "--embedded", "--agent", AGENT])
+        .command(&["create", "--embedded", "--agent", AGENT, "--store", "none"])
         .current_dir(&second)
         .output()
         .expect("the built binary runs");
@@ -960,7 +1347,7 @@ fn create_standalone_into_a_fleet_that_already_lists_the_identity_says_so_and_wr
     let fleet = rig.root.join("the-fleet");
     std::fs::create_dir_all(&fleet).unwrap();
     let out = rig
-        .command(&["create", "--embedded", "--agent", AGENT])
+        .command(&["create", "--embedded", "--agent", AGENT, "--store", "none"])
         .current_dir(&fleet)
         .output()
         .expect("the built binary runs");
@@ -974,6 +1361,8 @@ fn create_standalone_into_a_fleet_that_already_lists_the_identity_says_so_and_wr
         "--standalone",
         "--agent",
         AGENT,
+        "--store",
+        "none",
         "--fleet",
         &fleet.display().to_string(),
     ]);
@@ -1010,6 +1399,8 @@ fn create_standalone_into_a_fleet_whose_seats_do_not_read_says_so_and_answers_0(
         "--standalone",
         "--agent",
         AGENT,
+        "--store",
+        "none",
         "--fleet",
         &fleet.display().to_string(),
     ]);
@@ -1042,7 +1433,7 @@ fn create_embedded_with_an_unwritable_machine_directory_exits_3_and_lists_nobody
     std::fs::create_dir_all(&rig.machine).unwrap();
     std::fs::set_permissions(&rig.machine, std::fs::Permissions::from_mode(0o555)).unwrap();
 
-    let out = rig.run(&["create", "--embedded", "--agent", AGENT]);
+    let out = rig.run(&["create", "--embedded", "--agent", AGENT, "--store", "none"]);
     // Writable again BEFORE any assertion, so a failing arm still cleans up.
     std::fs::set_permissions(&rig.machine, std::fs::Permissions::from_mode(0o755)).unwrap();
 
@@ -1082,7 +1473,7 @@ fn create_never_touches_the_projects_work_graph_store() {
     };
     let names_before = listed(&store);
 
-    let out = rig.run(&["create", "--embedded", "--agent", AGENT]);
+    let out = rig.run(&["create", "--embedded", "--agent", AGENT, "--store", "none"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
 
     assert_eq!(
@@ -1123,7 +1514,14 @@ fn create_standalone_declares_the_project_registers_it_and_says_so_on_the_stream
     // what the store's capabilities answer from it.
     write(&second.join(".beads/config.yaml"), "issue-prefix: zz\n");
     let out = host
-        .command(&["create", "--standalone", "--agent", AGENT])
+        .command(&[
+            "create",
+            "--standalone",
+            "--agent",
+            AGENT,
+            "--store",
+            "none",
+        ])
         .current_dir(&second)
         .output()
         .expect("the built binary runs");
@@ -1179,7 +1577,7 @@ fn create_standalone_declares_the_project_registers_it_and_says_so_on_the_stream
     let third = host.root.join("d-project");
     std::fs::create_dir_all(&third).unwrap();
     let embedded = host
-        .command(&["create", "--embedded", "--agent", AGENT])
+        .command(&["create", "--embedded", "--agent", AGENT, "--store", "none"])
         .current_dir(&third)
         .output()
         .expect("the built binary runs");
@@ -1220,7 +1618,14 @@ fn create_standalone_declares_the_project_registers_it_and_says_so_on_the_stream
     // the file's keys, writes nothing over it, and leaves the register a set
     // rather than a log.
     let out = host
-        .command(&["create", "--standalone", "--agent", AGENT])
+        .command(&[
+            "create",
+            "--standalone",
+            "--agent",
+            AGENT,
+            "--store",
+            "none",
+        ])
         .current_dir(&second)
         .output()
         .expect("the built binary runs");
@@ -1251,7 +1656,14 @@ fn create_standalone_declares_the_project_registers_it_and_says_so_on_the_stream
         "[landing]\nci_marker = \"printf '[skip ci]'\"\n",
     );
     let out = host
-        .command(&["create", "--standalone", "--agent", AGENT])
+        .command(&[
+            "create",
+            "--standalone",
+            "--agent",
+            AGENT,
+            "--store",
+            "none",
+        ])
         .current_dir(&third)
         .output()
         .expect("the built binary runs");
@@ -1263,7 +1675,14 @@ fn create_standalone_declares_the_project_registers_it_and_says_so_on_the_stream
     let bare = host.root.join("e-project");
     std::fs::create_dir_all(&bare).unwrap();
     let out = host
-        .command(&["create", "--standalone", "--agent", AGENT])
+        .command(&[
+            "create",
+            "--standalone",
+            "--agent",
+            AGENT,
+            "--store",
+            "none",
+        ])
         .current_dir(&bare)
         .output()
         .expect("the built binary runs");
@@ -1309,7 +1728,14 @@ fn a_declaration_beside_a_fleet_toml_is_registered_and_every_key_is_read() {
     write(&both.join(".fleet/project.toml"), &declaration);
 
     let out = host
-        .command(&["create", "--standalone", "--agent", AGENT])
+        .command(&[
+            "create",
+            "--standalone",
+            "--agent",
+            AGENT,
+            "--store",
+            "none",
+        ])
         .current_dir(&both)
         .output()
         .expect("the built binary runs");
@@ -1336,7 +1762,7 @@ fn a_declaration_beside_a_fleet_toml_is_registered_and_every_key_is_read() {
     // `--embedded` in the same directory still refuses, naming the neighbour:
     // the declaration excuses the standalone mode and nothing else.
     let out = host
-        .command(&["create", "--embedded", "--agent", AGENT])
+        .command(&["create", "--embedded", "--agent", AGENT, "--store", "none"])
         .current_dir(&both)
         .output()
         .expect("the built binary runs");
@@ -1359,7 +1785,14 @@ fn a_declaration_beside_a_fleet_toml_is_registered_and_every_key_is_read() {
         ),
     );
     let out = host
-        .command(&["create", "--standalone", "--agent", AGENT])
+        .command(&[
+            "create",
+            "--standalone",
+            "--agent",
+            AGENT,
+            "--store",
+            "none",
+        ])
         .current_dir(&short)
         .output()
         .expect("the built binary runs");
@@ -1449,7 +1882,7 @@ fn a_second_start_writes_nothing_and_says_so() {
 fn start_refreshes_a_defaults_set_this_binary_no_longer_carries() {
     let rig = Rig::new("defaults-refresh");
     assert_eq!(
-        code(&rig.run(&["create", "--embedded", "--agent", AGENT])),
+        code(&rig.run(&["create", "--embedded", "--agent", AGENT, "--store", "none"])),
         0
     );
 
@@ -1543,7 +1976,7 @@ fn create_retires_the_bundled_core_pack_a_previous_binary_installed() {
     )
     .expect("the machine the previous binary left is seeded");
 
-    let out = rig.run(&["create", "--embedded", "--agent", AGENT]);
+    let out = rig.run(&["create", "--embedded", "--agent", AGENT, "--store", "none"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert!(
         stderr(&out).contains("retired the bundled core pack"),
@@ -1610,7 +2043,7 @@ fn a_bundled_core_pack_edited_since_it_was_pinned_is_named_and_left_where_it_sta
     )
     .expect("the machine is seeded");
 
-    let out = rig.run(&["create", "--embedded", "--agent", AGENT]);
+    let out = rig.run(&["create", "--embedded", "--agent", AGENT, "--store", "none"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let said = stderr(&out);
     assert!(
@@ -2240,7 +2673,7 @@ fn an_embedded_fleet_inside_a_registered_project_keys_its_rows_on_that_project()
     let inside = rig.project.join("fleet");
     std::fs::create_dir_all(&inside).expect("the fleet's own directory is made");
     let out = rig
-        .command(&["create", "--embedded", "--agent", AGENT])
+        .command(&["create", "--embedded", "--agent", AGENT, "--store", "none"])
         .current_dir(&inside)
         .output()
         .expect("the built binary runs");
@@ -2390,7 +2823,7 @@ mod lessons {
     #[test]
     fn telemetry_is_off_and_asked() {
         let rig = Rig::new("g2");
-        let out = rig.run(&["create", "--embedded", "--agent", AGENT]);
+        let out = rig.run(&["create", "--embedded", "--agent", AGENT, "--store", "none"]);
         assert_eq!(code(&out), 0, "{}", stderr(&out));
 
         let policy = rig.project.join("fleet.toml");

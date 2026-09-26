@@ -2106,10 +2106,15 @@ fn a_name_resolved_nowhere_is_could_not_tell_naming_how_to_install_one() {
         Err(other) => panic!("wanted Unreadable, got {other:?}"),
         Ok(_) => panic!("`y` opened a store"),
     };
+    // The line names the fleet-packs source and tag this binary pins.
     assert_eq!(
         refusal(Some(machine.packs())),
-        "no store adapter named `y` in the installed packs — `fleet pack add \
-         <repo>//adapters/store/y --version <version>` installs one"
+        format!(
+            "no store adapter named `y` in the installed packs — `fleet pack add \
+             {}//adapters/store/y --version {}` installs the one fleet-packs carries",
+            fleet_core::supported::PINNED_PACKS_SOURCE,
+            fleet_core::supported::PINNED_PACKS
+        )
     );
     assert_eq!(
         refusal(None),

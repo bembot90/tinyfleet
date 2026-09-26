@@ -1416,10 +1416,12 @@ fn a_store_that_cannot_be_read_is_line_two_s_own_answer() {
         (
             "no-pack-carries-it",
             String::from("sqlite"),
-            String::from(
+            format!(
                 "store: could not be read — no store adapter named `sqlite` in the installed \
-                 packs — `fleet pack add <repo>//adapters/store/sqlite --version <version>` \
-                 installs one",
+                 packs — `fleet pack add {}//adapters/store/sqlite --version {}` installs the \
+                 one fleet-packs carries",
+                fleet_core::supported::PINNED_PACKS_SOURCE,
+                fleet_core::supported::PINNED_PACKS
             ),
         ),
         (

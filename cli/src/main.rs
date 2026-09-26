@@ -70,9 +70,13 @@ enum Family {
     /// write this project's fleet and materialize its defaults
     #[command(long_about = "\
 write this project's fleet, from inside the project. It asks embedded or
-standalone and which agent, writes the file for the mode, materializes the
-defaults this binary carries and pins them, and lists you as the fleet's
-first seat, a human one — nobody is asked for a name. It installs no pack.
+standalone, which agent and which store, installs the store's pack from the
+fleet-packs source and tag this binary pins (--packs-from names a checkout
+instead) and pins it, writes the file for the mode, materializes the defaults
+this binary carries and pins them, and lists you as the fleet's first seat, a
+human one — nobody is asked for a name. --store none installs no pack and
+prints the line that installs one later; with no terminal and no --store, the
+store is bd.
 
 It never initialises and never rewrites the project's work-graph store.")]
     Create(lifecycle::CreateArgs),

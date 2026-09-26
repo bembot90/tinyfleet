@@ -1,0 +1,19 @@
+description = "Whether every pack installed from fleet-packs is pinned at the tag this binary was checked against."
+run = "run.sh"
+
+# No name key: the directory is the name, which is the shape the reference's
+# packs use.
+#
+# THE PIN IS THE BINARY'S, not a pack's: `fleet create` installs a store's pack
+# from the fleet-packs source and tag the binary declares, and those packs at
+# that tag are what this release was checked against. The registry lets a pack
+# replace this entry, as it does every default, and a copy that moves the pin
+# compares the installed packs with a tag the binary never ran.
+#
+# What it is for: a store adapter answers every verb fleet sends it, by the
+# contract this binary speaks. A pack from fleet-packs at another tag still
+# installs and still runs, and this entry is where a person is told it was not
+# checked against this binary, with the lines that put the pinned tag in its
+# place. A pack installed from anywhere else — a checkout named with
+# `fleet create --packs-from`, another repository — is that person's choice and
+# is not read.

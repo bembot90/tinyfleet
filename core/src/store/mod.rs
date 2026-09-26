@@ -427,6 +427,27 @@ fn by_name(at: &Opening, name: &str) -> Result<Box<dyn Store>, StoreError> {
     ))
 }
 
+/// Where the pack carrying the store adapter `name` sits in a repository laid
+/// out as fleet-packs is: its own directory, `adapters/store/<name>`, at the
+/// repository's top — the source `fleet pack add` takes for it.
+pub fn pack_source(repo: &str, name: &str) -> String {
+    format!(
+        "{repo}//{}/{}/{name}",
+        crate::pack::ADAPTERS,
+        crate::pack::AdapterKind::Store.as_str()
+    )
+}
+
+/// The line that installs the store adapter `name` out of `repo` at `version`:
+/// what `fleet create` prints where it installs no store, and what a refusal
+/// of a name no installed pack carries names.
+pub fn pack_line(repo: &str, name: &str, version: &str) -> String {
+    format!(
+        "fleet pack add {} --version {version}",
+        pack_source(repo, name)
+    )
+}
+
 /// Why the adapter `[store] adapter` names is not opened, wherever the setting
 /// was written.
 enum Unopened<'s> {
@@ -457,10 +478,13 @@ fn unopened(source: AdapterSource, why: Unopened) -> StoreError {
             format!("no store adapter named `{name}` resolves: {why}")
         }
         Unopened::Nowhere(name) => format!(
-            "no store adapter named `{name}` in the installed packs — `fleet pack add \
-             <repo>//{}/{}/{name} --version <version>` installs one",
-            crate::pack::ADAPTERS,
-            crate::pack::AdapterKind::Store.as_str()
+            "no store adapter named `{name}` in the installed packs — `{}` installs the one \
+             fleet-packs carries",
+            pack_line(
+                crate::supported::PINNED_PACKS_SOURCE,
+                name,
+                crate::supported::PINNED_PACKS
+            )
         ),
         Unopened::Defect(name, defect) => {
             format!("the store adapter `{name}` cannot be opened: {defect}")

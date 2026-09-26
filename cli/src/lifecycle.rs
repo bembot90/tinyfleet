@@ -2,10 +2,11 @@
 //! family.
 //!
 //! Everything here is argv, the terminal and what only a process knows: which
-//! directory the call was made in, which executable is running, and the two
+//! directory the call was made in, which executable is running, and the three
 //! questions `create` asks. The files, the register, the install work and the
-//! confirmations are `fleet_controller::lifecycle`'s, and the binary's own
-//! defaults are `fleet_core::defaults`'s.
+//! confirmations are `fleet_controller::lifecycle`'s, the binary's own
+//! defaults are `fleet_core::defaults`'s, and the store's pack is installed by
+//! `fleet_core::add`, the function `fleet pack add` calls.
 //!
 //! THERE IS NO `fleet install`. Its work runs on the first `fleet start`, in one
 //! function, so a later installer script calls the same one.
@@ -14,18 +15,19 @@ use std::path::{Path, PathBuf};
 
 use fleet_controller::lifecycle::{self, FirstRun, Mode, ProjectAt};
 use fleet_controller::{config, events, platform, policy as controller};
-use fleet_core::defaults;
 use fleet_core::item::Stop;
 use fleet_core::seat::identity;
 use fleet_core::store::{self, AdapterSource, Opening, PackDirs, STORE_TIMEOUT};
+use fleet_core::{add, defaults, lock, supported};
 
 use crate::exit::Exit;
 use crate::item::{derived_worktrees_dir, resolve_at, resolve_from};
 use crate::seat_add::{self, Listed};
 use crate::ui::{Prompt, Stream, Tone, Ui};
 
-/// What `create` takes. The two flags are the two questions' answers, for a
-/// caller with no terminal to answer them on.
+/// What `create` takes. The mode, agent and store flags are the three
+/// questions' answers, for a caller with no terminal to answer them on; the
+/// store's has a default, which such a caller takes by leaving it out.
 #[derive(clap::Args)]
 pub struct CreateArgs {
     /// one fleet.toml at this project's root
@@ -37,10 +39,30 @@ pub struct CreateArgs {
     /// the agent the fleet's seats run on
     #[arg(long, value_name = "NAME")]
     pub agent: Option<String>,
-    /// the embedded fleet's directory, before a fleet runs here
+    /// the store's pack to install: bd, or none
+    #[arg(long, value_name = "NAME")]
+    pub store: Option<String>,
+    /// a fleet-packs checkout to install it from
+    #[arg(long = "packs-from", value_name = "DIR")]
+    pub packs_from: Option<PathBuf>,
+    /// the embedded fleet's directory, before it has started
     #[arg(long, value_name = "DIR", conflicts_with = "embedded")]
     pub fleet: Option<PathBuf>,
 }
+
+/// The answer to the store question that installs nothing.
+const NO_STORE: &str = "none";
+
+/// The stores `create` installs a pack for, in the order the question lists
+/// them: the first is the default. The name is the one `[store] adapter`
+/// takes, and the pack is fleet-packs' `adapters/store/<name>`.
+const STORES: [&str; 1] = [store::bd::NAME];
+
+/// The question's rows, one per store and then [`NO_STORE`], in that order.
+const STORE_ROWS: [&str; 2] = [
+    "bd — beads, installed from fleet-packs",
+    "none — install a store pack later",
+];
 
 /// What `start` takes.
 #[derive(clap::Args)]
@@ -89,10 +111,18 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
             lifecycle::PROJECT_TOML
         )));
     }
-    // Both scripted answers are checked before either question is asked, so a
+    // Every scripted answer is checked before any question is asked, so a
     // caller that gave them meets every refusal at once.
     if let Some(named) = &args.agent {
         known_agent(named)?;
+    }
+    let scripted_store = args.store.as_deref().map(known_store).transpose()?;
+    let packs_repo = packs_repo(&root, args.packs_from.as_deref())?;
+    if scripted_store == Some(None) && args.packs_from.is_some() {
+        return Err(Stop::usage(format!(
+            "--packs-from names where the store's pack comes from, and --store {NO_STORE} \
+             installs none — drop one of them"
+        )));
     }
     // Relative to the directory the call was made in, the way every other path
     // this verb stores is.
@@ -129,6 +159,18 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
         },
     };
 
+    // THE STORE IS THE ONE QUESTION WITH A DEFAULT: a call with no terminal and
+    // no --store takes the first store rather than being refused, because a
+    // fleet whose items have nowhere to live is not what a script meant by
+    // leaving the flag out.
+    let store: Option<String> = match scripted_store {
+        Some(chosen) => chosen,
+        None => match ui.select_or("which store?", &STORE_ROWS, 0) {
+            Ok(index) => STORES.get(index).map(|name| name.to_string()),
+            Err(prompt) => return Err(asked(&prompt)),
+        },
+    };
+
     // The header the two writers put at the top of the file says how this call
     // reached its answers, so only a flag this call actually carried is named.
     let mode_flag = match (args.embedded, args.standalone) {
@@ -137,6 +179,10 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
         _ => None,
     };
     let agent_flag = args.agent.as_ref().map(|named| format!("--agent {named}"));
+    let store_flag = args
+        .store
+        .as_ref()
+        .map(|named| format!("--store {}", named.trim()));
     let mut flags: Vec<&str> = Vec::new();
     if let Some(flag) = mode_flag {
         flags.push(flag);
@@ -144,14 +190,52 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
     if let Some(flag) = &agent_flag {
         flags.push(flag);
     }
-    let written_by = lifecycle::written_by(&flags, mode_flag.is_none() || agent_flag.is_none());
+    if let Some(flag) = &store_flag {
+        flags.push(flag);
+    }
+    let store_asked = store_flag.is_none() && ui.can_ask();
+    let written_by = lifecycle::written_by(
+        &flags,
+        mode_flag.is_none() || agent_flag.is_none() || store_asked,
+    );
+
+    // THE STORE'S PACK BEFORE ANY FILE: a standalone declaration reads its
+    // item prefix off the store it names, so the adapter has to be installed
+    // for that read to reach it, and a fetch that fails — no network, a tag the
+    // source does not carry — refuses with no fleet file written.
+    //
+    // THE DEFAULTS GO FIRST WHERE A PACK IS INSTALLED: a pack is checked
+    // against the layers it lands on, and the defaults are the bottom one, so
+    // `fleet pack add` refuses a machine without them. Where none is, they go
+    // in at the end as they always have, after the creator is listed.
+    let mut early_defaults = None;
+    match &store {
+        Some(name) => {
+            early_defaults = Some(defaults_into(&machine_dir)?);
+            let installed = install_store(ui, &machine_dir, &packs_repo, name)?;
+            say_store(ui, name, &installed);
+        }
+        None => ui.status(
+            Stream::Err,
+            Tone::Flat,
+            "store:",
+            &format!(
+                "none installed — `{}` installs one",
+                store::pack_line(&packs_repo, STORES[0], supported::PINNED_PACKS)
+            ),
+            None,
+        ),
+    }
 
     let written = match mode {
         Mode::Embedded => {
             if fleet_toml.is_file() {
                 return Err(already_a_fleet(&fleet_toml));
             }
-            write_new(&fleet_toml, &lifecycle::embedded_text(&agent, &written_by))?;
+            write_new(
+                &fleet_toml,
+                &lifecycle::embedded_text(&agent, store.as_deref(), &written_by),
+            )?;
             fleet_toml.clone()
         }
         // A `.fleet/project.toml` ALREADY THERE is a declared project, not a
@@ -176,6 +260,10 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
             // every verb opens it, and asked. A store that cannot be opened or
             // does not answer names no prefix, and the line is left for the
             // person rather than guessed.
+            //
+            // The file is not written yet, so the policy read here names no
+            // adapter, which opens the default store — the first of STORES,
+            // and the only store this verb installs.
             let prefix = store::open(&Opening {
                 root: &root,
                 policy: &store::project_policy(&root)?,
@@ -198,6 +286,7 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
                     prefix.as_deref(),
                     &root,
                     &derived_worktrees_dir(&root),
+                    store.as_deref(),
                     &written_by,
                 ),
             )?;
@@ -258,8 +347,9 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
 
     // THE PERSON WHO RAN THIS IS THE FLEET'S FIRST SEAT, a human one, listed
     // through `fleet seat add --human`'s own writer. Nobody is asked for a
-    // name. Before the defaults, so a machine directory this call cannot write
-    // in is met here, with the sentence that says what is left to do.
+    // name. Before the defaults where no store's pack took them first, so a
+    // machine directory this call cannot write in is met here, with the
+    // sentence that says what is left to do.
     let creator = creator(&machine_dir, &fleet_file)?;
     if mode == Mode::Embedded {
         // The file was written by this call a moment ago, so a listing that
@@ -269,7 +359,10 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
         }
     }
 
-    let defaults = defaults_into(&machine_dir)?;
+    let defaults = match early_defaults {
+        Some(defaults) => defaults,
+        None => defaults_into(&machine_dir)?,
+    };
 
     // The done message. On stderr, because stdout is a script's.
     ui.status(
@@ -328,6 +421,149 @@ fn known_agent(named: &str) -> Result<String, Stop> {
         "no adapter answers to `{named}` — this fleet knows {}",
         controller::AGENTS.join(", ")
     )))
+}
+
+/// The store `--store` names — `None` for [`NO_STORE`] — or the usage refusal
+/// naming the answers there are.
+fn known_store(named: &str) -> Result<Option<String>, Stop> {
+    let named = named.trim();
+    if named == NO_STORE {
+        return Ok(None);
+    }
+    if STORES.contains(&named) {
+        return Ok(Some(named.to_string()));
+    }
+    Err(Stop::usage(format!(
+        "no store pack answers to `{named}` — this fleet installs {}, or {NO_STORE}",
+        STORES.join(", ")
+    )))
+}
+
+/// The repository the store's pack is installed from: the source this binary
+/// pins, or the checkout `--packs-from` names, resolved against the directory
+/// the call was made in so the lock records a source that reads the same from
+/// anywhere.
+fn packs_repo(root: &Path, from: Option<&Path>) -> Result<String, Stop> {
+    let Some(dir) = from else {
+        return Ok(supported::PINNED_PACKS_SOURCE.to_string());
+    };
+    let dir = root.join(dir);
+    if !dir.is_dir() {
+        return Err(Stop::usage(format!(
+            "--packs-from {} is not a directory — name a checkout of fleet-packs",
+            dir.display()
+        )));
+    }
+    Ok(dir.canonicalize().unwrap_or(dir).display().to_string())
+}
+
+/// What became of the store's pack.
+enum StorePack {
+    /// Fetched, moved in and pinned by this call, with the imports its
+    /// checkout carried.
+    Added(add::Installed),
+    /// A pack of that name was already on this machine — every fleet on it
+    /// shares one packs directory — and was left as it stands, with its line
+    /// in the lock where it has one.
+    Already {
+        root: PathBuf,
+        pinned: Option<lock::Entry>,
+    },
+}
+
+/// The store `name`'s pack installed from `repo` at the tag this binary pins,
+/// the same work `fleet pack add <repo>//adapters/store/<name> --version <tag>`
+/// does: fetched, checked against what is installed, moved in with the
+/// imports its checkout carries, and pinned in the machine's lock.
+///
+/// A pack of that name already installed is left alone, whatever it was
+/// installed from: a second fleet on a machine reads the one the first
+/// installed, and replacing it is `fleet pack remove` and `fleet pack add`.
+fn install_store(ui: &Ui, machine_dir: &Path, repo: &str, name: &str) -> Result<StorePack, Stop> {
+    let packs_dir = machine_dir.join("packs");
+    let lock_path = machine_dir.join(lock::LOCK);
+    let root = packs_dir.join(name);
+    if root.exists() {
+        let pinned = lock::read(&lock_path).ok().and_then(|lines| {
+            lines
+                .into_iter()
+                .find(|line| line.name.as_deref() == Some(name))
+        });
+        return Ok(StorePack::Already { root, pinned });
+    }
+
+    let source = store::pack_source(repo, name);
+    let version = supported::PINNED_PACKS;
+    let wait = ui.spinner(&format!("fetching {source} at {version}"));
+    let added = add::add(
+        &packs_dir,
+        &machine_dir.join(defaults::DIR),
+        &lock_path,
+        &source,
+        version,
+        &lifecycle::stamp(),
+    );
+    wait.done();
+    added.map(StorePack::Added).map_err(|refusals| {
+        let said: Vec<String> = refusals.iter().map(ToString::to_string).collect();
+        Stop::refused(format!(
+            "the store's pack was not installed, so no fleet file was written: {} — `fleet create \
+             --store {NO_STORE}` creates the fleet without one",
+            said.join("; ")
+        ))
+    })
+}
+
+/// The lines that say which store pack the fleet reads, and what came with it.
+fn say_store(ui: &Ui, name: &str, pack: &StorePack) {
+    match pack {
+        StorePack::Added(installed) => {
+            ui.status(
+                Stream::Err,
+                Tone::Good,
+                "store:",
+                &format!(
+                    "{} {} at {}, installed and pinned",
+                    installed.name, installed.entry.version, installed.entry.commit
+                ),
+                Some(&installed.root.display().to_string()),
+            );
+            for import in &installed.imports {
+                ui.status(
+                    Stream::Err,
+                    Tone::Good,
+                    "store:",
+                    &format!(
+                        "{} {} at {}, which {} imports",
+                        import.name, import.entry.version, import.entry.commit, installed.name
+                    ),
+                    Some(&import.root.display().to_string()),
+                );
+            }
+            for missing in &installed.missing {
+                ui.status(
+                    Stream::Err,
+                    Tone::Flat,
+                    "store:",
+                    &missing.to_string(),
+                    None,
+                );
+            }
+        }
+        StorePack::Already { root, pinned } => {
+            let at = match pinned {
+                Some(line) => format!(" at {} from {}", line.version, line.source),
+                None => String::new(),
+            };
+            ui.status(
+                Stream::Err,
+                Tone::Flat,
+                "store:",
+                &format!("{name}, already installed on this machine{at} — left as it stands"),
+                Some(&root.display().to_string()),
+            );
+        }
+    }
 }
 
 /// The one refusal two call sites carry, so the sentence a person meets is the
