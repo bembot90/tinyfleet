@@ -12,7 +12,7 @@
 //! never rewrites one, and nothing here shells out to it.
 
 use crate::events::{self, EventLog};
-use crate::policy::{self, Policy};
+use crate::policy::Policy;
 use crate::{clock, config, platform};
 use fleet_core::seat::identity::{roster_in, Kind, SeatRef};
 use serde::{Deserialize, Serialize};
@@ -118,7 +118,7 @@ pub fn embedded_text(agent: &str, store: Option<&str>, written_by: &str) -> Stri
          #   model = \"{model}\"\n\
          #   status = \"active\"\n\
          [seats]\n",
-        model = policy::DEFAULT_MODEL,
+        model = crate::adapter::claude_code::DEFAULT_MODEL,
         store = store_table(store),
     )
 }
@@ -388,6 +388,9 @@ pub struct FirstRun<'a> {
     /// guessed one puts a seat in the wrong checkout.
     pub project: Option<ProjectAt<'a>>,
     pub policy: &'a Policy,
+    /// What the agent declares: the model a rendered seat whose table names
+    /// none, under a policy that names none, is written with.
+    pub agent: &'a crate::adapter::Capabilities,
     pub service: &'a platform::Service,
 }
 
@@ -548,7 +551,7 @@ fn rendered_seats(run: &FirstRun) -> Result<(Vec<config::RenderedSeat>, usize), 
         .map(|seat| config::RenderedSeat {
             id: seat.seat.id,
             name: seat.seat.name.clone(),
-            model: run.policy.model_for(seat.model.as_deref()),
+            model: run.policy.model_for(seat.model.as_deref(), run.agent),
             worktrees: vec![(
                 at.name.to_string(),
                 worktree_for(at.worktrees_dir, &seat.seat)
@@ -784,6 +787,7 @@ pub fn stamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy;
 
     /// A header claiming a flag nobody passed is the only thing a later reader
     /// has to go on, so an answer given at a prompt is said to be one.
@@ -879,7 +883,7 @@ mod tests {
                  #   model = \"{}\"\n\
                  #   status = \"active\"\n\
                  [seats]\n",
-                policy::DEFAULT_MODEL
+                crate::adapter::claude_code::DEFAULT_MODEL
             )),
             "the file ends on the seats table, keyed by an id: {text}"
         );
@@ -1288,6 +1292,7 @@ mod tests {
                 worktrees_dir: &worktrees,
             }),
             policy: &policy,
+            agent: &crate::adapter::claude_code::capabilities(),
             service: &service,
         };
 

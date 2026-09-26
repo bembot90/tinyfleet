@@ -329,9 +329,11 @@ off the item's record, and a run waits on the record with `run.until` (see
 
 ### Finding a seat's session
 
-The adapter finds a seat's session among its agent's by `session_id`, and
-where the request carries none, by `pid`. It never matches a seat by its
-`worktree`.
+The adapter finds a seat's session among its agent's by `session_id`. Where
+the request carries none, or none of its agent's sessions carries that id, it
+finds it by `pid`, and answers the `session_id` of the session it found
+there: an agent can give the same process a new session id, and fleet learns
+the new one from the answer. It never matches a seat by its `worktree`.
 
 ### Launching
 

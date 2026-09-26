@@ -149,9 +149,11 @@ fn the_dependency_list_core_was_read_from_is_populated() {
 /// The run lifecycle's vocabulary is spelled in two crates and is one fact.
 ///
 /// The controller crate takes nothing from core but its bounded runner
-/// (`fleet_core::process`), the release it supports (`fleet_core::supported`)
-/// and a seat's identity (`fleet_core::seat::identity`: the id, the fleet.toml
-/// roster and the resolver), so the kinds its run pass folds and writes, and the
+/// (`fleet_core::process`), the release it supports (`fleet_core::supported`),
+/// a seat's identity (`fleet_core::seat::identity`: the id, the fleet.toml
+/// roster and the resolver), the agent contract's types
+/// (`fleet_core::agent::types`) and the template render
+/// (`fleet_core::item::render`), so the kinds its run pass folds and writes, and the
 /// environment variable a run's children carry, are spelled there as well as in
 /// core. This is the one member that can see both, which makes it the place
 /// the two spellings are held to one string — a kind spelled twice is two

@@ -44,7 +44,8 @@
 // available exactly when a hang is what the arm is measuring against.
 
 use fleet_controller::adapter::claude_code::ClaudeCode;
-use fleet_controller::adapter::{encode_project_dir, Agent, RosterRead};
+use fleet_controller::adapter::claude_code::encode_project_dir;
+use fleet_controller::adapter::{Activity, Agent, SeatRef};
 use fleet_controller::platform::child_path;
 use fleet_controller::run;
 use fleet_controller::test_support::{FakeClock, FakeServer, FakeSession, FIRST_PANE_PID};
@@ -136,11 +137,14 @@ const DESCENDANT: &str = "descendant";
 const VERSION_DESCENDANT: &str = "version-descendant";
 const ESCAPEE: &str = "escapee";
 
-/// The sixth, and the only ONE-SHOT one: a delay the stub takes between its
-/// start mark and everything after it, consumed by the first invocation that
-/// reads it. The five above describe every call a rig makes; this one describes
-/// exactly one, which is what lets an arm force a kill into the gap between two
-/// marks on the attempt that is then discarded and not on the retry.
+/// The sixth, and the only ONE-SHOT one: a delay the stub's LISTING branch
+/// takes between the stub's start mark and its own listing mark, consumed by
+/// the first listing that reads it. The five above describe every call a rig
+/// makes; this one describes exactly one, which is what lets an arm force a
+/// kill into the gap between two marks on the attempt that is then discarded
+/// and not on the retry. The listing's and not the first invocation's, because
+/// a poll reads the version before it asks the agent's `read`, and a delay the
+/// version call took would kill a call that leaves no listing mark either way.
 const PREAMBLE: &str = "preamble";
 
 /// The environment and the standard streams are the PROCESS's, so one
@@ -956,8 +960,8 @@ impl Rig {
     /// `witnessed`, as `observe` is the built-binary half. Every arm that reads
     /// a stub adapter goes through here, so the retry lives in one place for
     /// both call shapes.
-    fn read_with(&self, agent: &ClaudeCode) -> RosterRead {
-        self.witnessed(|| agent.status(None))
+    fn read_with(&self, agent: &ClaudeCode) -> ListingRead {
+        self.witnessed(|| listing_read(agent))
     }
 
     fn events_path(&self) -> PathBuf {
@@ -1351,16 +1355,17 @@ impl Rig {
         self.clear_version_start_mark();
     }
 
-    /// How long the listing call lasted: its start mark to the version branch's,
-    /// which is the first stamp after the listing's collect returns because a
-    /// poll calls the listing and then the version (`run.rs`).
+    /// How long the listing call lasted: its start mark to the projection the
+    /// poll published, which is the first stamp after the listing's collect
+    /// returns because a poll reads the version, then asks the agent's `read`
+    /// (the listing), and publishes after (`run.rs`).
     ///
     /// Read instead of the poll's whole elapsed for the reason
-    /// `version_call_lasted` is. A missing mark, or a version mark not later than
-    /// the listing's, is a panic naming both paths and never a duration.
+    /// `version_call_lasted` is. A missing mark, or a projection not later than
+    /// the listing's mark, is a panic naming both paths and never a duration.
     fn listing_call_lasted(&self) -> Duration {
         let listing = self.listing_started_path();
-        let version = self.version_started_path();
+        let published = self.machine().join("projection.json");
         let stamp = |path: &Path| {
             std::fs::metadata(path)
                 .and_then(|m| m.modified())
@@ -1368,19 +1373,19 @@ impl Rig {
                     panic!(
                         "the listing call's span, {} to {}, is not a reading: {} reads: {e}",
                         listing.display(),
-                        version.display(),
+                        published.display(),
                         path.display()
                     )
                 })
         };
-        let (started, ended) = (stamp(listing.as_path()), stamp(version.as_path()));
+        let (started, ended) = (stamp(listing.as_path()), stamp(published.as_path()));
         match ended.duration_since(started) {
             Ok(span) if !span.is_zero() => span,
             _ => panic!(
-                "the listing call's span, {} to {}, is not a reading: the version \
-                 mark is not later than the listing mark",
+                "the listing call's span, {} to {}, is not a reading: the projection \
+                 is not later than the listing mark",
                 listing.display(),
-                version.display()
+                published.display()
             ),
         }
     }
@@ -1766,9 +1771,6 @@ impl Rig {
             &format!(
                 "#!/bin/sh\n\
                  : > '{started}'\n\
-                 p=$({cat} '{seam_preamble}' 2>/dev/null)\n\
-                 : > '{seam_preamble}'\n\
-                 [ -n \"$p\" ] && sleep \"$p\"\n\
                  case \"$1\" in\n\
                  \x20 --version)\n\
                  \x20   : > '{version_started}'\n\
@@ -1784,6 +1786,9 @@ impl Rig {
                  \x20   echo \"$v (a stub)\"\n\
                  \x20   ;;\n\
                  \x20 agents)\n\
+                 \x20   p=$({cat} '{seam_preamble}' 2>/dev/null)\n\
+                 \x20   : > '{seam_preamble}'\n\
+                 \x20   [ -n \"$p\" ] && sleep \"$p\"\n\
                  \x20   : > '{listing_started}'\n\
                  \x20   d=$({cat} '{seam_descendant}' 2>/dev/null)\n\
                  \x20   [ -n \"$d\" ] && ( sleep \"$d\" ) &\n\
@@ -1924,7 +1929,6 @@ impl Rig {
             bin.clone(),
             self.home().join(".claude"),
             timeout,
-            self.machine(),
             child_path(&self.home()),
             Some(PathBuf::from(bin)),
             String::new(),
@@ -2930,4 +2934,47 @@ fn flag_value<'a>(argv: &'a [String], flag: &str) -> &'a str {
         .unwrap_or_else(|| panic!("{flag} is not in the argv: {argv:?}"));
     argv.get(at + 1)
         .unwrap_or_else(|| panic!("{flag} is the last element of {argv:?}"))
+}
+
+/// What one listing read came to, as the adapter's `read` of a seat says it:
+/// read, or could not tell and why.
+#[derive(Debug)]
+enum ListingRead {
+    Readable,
+    Unreadable { cause: String },
+}
+
+/// The fleet's own listing read through the adapter's one `read`: a seat asked
+/// about by a pid no row carries, so the answer is the listing's own — a
+/// reading nobody could make is `unknown` naming no session, and anything else
+/// is a listing that read.
+fn listing_read(agent: &dyn Agent) -> ListingRead {
+    let asked = SeatRef {
+        seat: fleet_core::seat::identity::SeatId::parse(SEAT_ID).expect("the rig's seat id parses"),
+        session_id: None,
+        pid: Some(u32::MAX),
+        config_dir: None,
+        worktree: "/nowhere".to_string(),
+        screen: None,
+    };
+    match agent.read(&[asked]) {
+        Err(why) => ListingRead::Unreadable {
+            cause: why.to_string(),
+        },
+        Ok(mut read) => {
+            let reading = read.remove(0);
+            if reading.activity == Activity::Unknown && reading.session_id.is_none() {
+                ListingRead::Unreadable {
+                    cause: reading.cause.unwrap_or_default(),
+                }
+            } else {
+                ListingRead::Readable
+            }
+        }
+    }
+}
+
+/// The version the adapter's `version` names, or `None` where it names none.
+fn version_of(agent: &dyn Agent) -> Option<String> {
+    agent.version().ok().and_then(|version| version.version)
 }

@@ -213,6 +213,7 @@ fn document(policy_file: &Path, generated_at: &str, seats: Vec<SeatRow>) -> Proj
         version: projection::VERSION,
         generated_at: generated_at.to_string(),
         controller_version: "9.9.9".to_string(),
+        agent: fleet_controller::projection::AgentView::default(),
         agent_version: Some("2.1.261".to_string()),
         agent_version_expected: Some("2.1.261".to_string()),
         fleet: PolicyView {

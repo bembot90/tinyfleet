@@ -1,7 +1,7 @@
 //! `fleet observe`: the poll loop. It observes, decides, acts and publishes.
 
-use crate::adapter::claude_code::{ClaudeCode, DaemonListing, Hosted};
-use crate::adapter::{dir_key, Agent};
+use crate::adapter::claude_code::{DaemonListing, Hosted};
+use crate::adapter::{self, dir_key, Agent, Capabilities, SeatContext, SeatRef};
 use crate::clock::{self, Clock, SystemClock};
 use crate::config::{self, MachineConfig, Seat};
 use crate::decide::{self, FleetShape, SeatInput, Verdict};
@@ -114,24 +114,32 @@ pub fn observe_clocked(
 /// [`Seams`] borrows all four, so a caller driving ticks itself holds one of
 /// these for as long as its [`Observer`] lives.
 pub struct Wiring {
-    agent: ClaudeCode,
+    opened: adapter::Opened,
     host: Box<dyn crate::host::Host>,
     child_path: String,
     effects_off: Option<String>,
 }
 
 impl Wiring {
-    /// The agent this fleet runs, built from the environment, with the binary
-    /// its effects exec resolved.
+    /// The agent this fleet runs, opened the one way every caller opens it
+    /// ([`adapter::open`]), with the binary its effects exec resolved.
     pub fn resolve() -> Wiring {
-        let machine_dir = platform::machine_dir();
-        let mut agent = ClaudeCode::new(&platform::home_dir(), &machine_dir);
-        // The binary an EFFECT execs, resolved once and never by bare name.
+        let home = platform::home_dir();
+        // The plugin root the in-process adapter loads into every session,
+        // read ONCE off the policy the seat list names: it is the adapter's
+        // own (reviewer call 2026-09-25, E8), handed in at the open, so a
+        // changed `[controller] plugin_dir` is taken at the next start. A
+        // policy that will not read opens with none, and the start refuses
+        // over that policy on its own.
+        let plugin_dir = config::read(&platform::machine_dir().join("config.json"))
+            .ok()
+            .and_then(|machine| policy::load(&machine.fleet_toml).ok())
+            .and_then(|policy| policy.plugin_dir);
         // Unresolvable is not fatal: the loop observes and publishes with
         // effects off and the projection carries the cause, which is the shape
         // the grant gate has too.
         //
-        // ONE RESOLUTION, TWO USERS. The value below is both the gate the loop
+        // ONE RESOLUTION, TWO USERS. The opener's gate is both what the loop
         // reads and the binary the adapter execs, because a controller that
         // gated on one file and acted through another would issue effects nobody
         // checked — which is what a service-launched process, whose own `PATH`
@@ -140,32 +148,34 @@ impl Wiring {
         // The cause travels to the loop rather than being said here, so the line
         // it prints keeps its place in the order a reader meets the startup's
         // lines in.
-        let effect_bin = ClaudeCode::resolve_effect_bin(
-            crate::adapter::claude_code::configured_bin().as_deref(),
-            &agent.child_path,
-        );
-        if let Ok(bin) = &effect_bin {
-            agent = agent.with_effect_bin(bin.clone());
-        }
+        let opened = adapter::open(&adapter::Opening {
+            home: &home,
+            plugin_dir,
+            permissions: None,
+        })
+        .unwrap_or_else(|cause| {
+            eprintln!("fleet observe: the agent could not be opened: {cause}");
+            std::process::exit(i32::from(EXIT_NO_POLICY));
+        });
         // The host every start runs its session on, resolved ONCE beside the
         // binary and on the same constructed `PATH`. Unresolvable is effects
         // off in the same way: every effect that starts a session needs it, so
         // a loop without one publishes why rather than failing each start in
         // turn. The agent's cause is named first where both fail — it is the
         // older gate, and the one an operator already knows to read.
-        let host = crate::host::TmuxHost::resolve(&agent.child_path);
-        let child_path = agent.child_path.clone();
-        let effects_off = match (effect_bin, &host) {
-            (Err(cause), _) => Some(cause),
-            (Ok(_), Err(cause)) => Some(cause.clone()),
-            (Ok(_), Ok(_)) => None,
+        let child_path = platform::child_path(&home);
+        let host = crate::host::TmuxHost::resolve(&child_path);
+        let effects_off = match (&opened.effects_off, &host) {
+            (Some(cause), _) => Some(cause.clone()),
+            (None, Err(cause)) => Some(cause.clone()),
+            (None, Ok(_)) => None,
         };
         let host: Box<dyn crate::host::Host> = match host {
             Ok(host) => Box::new(host),
             Err(cause) => Box::new(crate::host::Unresolved { cause }),
         };
         Wiring {
-            agent,
+            opened,
             host,
             child_path,
             effects_off,
@@ -181,9 +191,10 @@ impl Wiring {
     pub fn seams<'a>(&'a self, clock: &'a dyn Clock, stop_handler: StopHandler) -> Seams<'a> {
         Seams {
             clock,
-            agent: &self.agent,
+            adapter: &self.opened.name,
+            agent: self.opened.agent.as_ref(),
             host: self.host.as_ref(),
-            daemon: Some(&self.agent),
+            daemon: self.opened.daemon.as_deref(),
             child_path: &self.child_path,
             effects_off: self.effects_off.clone(),
             stop_handler,
@@ -212,6 +223,9 @@ pub enum StopHandler {
 /// runs those.
 pub struct Seams<'a> {
     pub clock: &'a dyn Clock,
+    /// The name the agent's adapter answers to, which the projection's agent
+    /// block publishes.
+    pub adapter: &'a str,
     pub agent: &'a dyn Agent,
     /// The host a start runs the seat's session on (`crate::host`). The agent
     /// says what to run and this runs it (ruling 2), so the two are separate
@@ -359,6 +373,8 @@ pub fn daemon_unreadable_line(cause: &str) -> String {
 /// this one's.
 pub struct Observer<'a> {
     seams: Seams<'a>,
+    /// What the agent declared at startup ([`Agent::capabilities`]).
+    capabilities: Capabilities,
     runs: Option<&'a dyn crate::runs::Runs>,
     /// The file-access gate, whose own probe state lives across polls: one that
     /// outran its bound is read again rather than started again.
@@ -441,10 +457,21 @@ impl<'a> Observer<'a> {
                 return Err(EXIT_NO_POLICY);
             }
         };
+        // What the agent declares, read ONCE: the model, the first turn and the
+        // gate a policy that names none falls to, and the release it expects.
+        // A declaration that does not read is no fleet to run: every start's
+        // model would be a guess.
+        let capabilities = match seams.agent.capabilities() {
+            Ok(capabilities) => capabilities,
+            Err(why) => {
+                eprintln!("fleet observe: the agent's capabilities could not be read: {why}");
+                return Err(EXIT_NO_POLICY);
+            }
+        };
         // Once per key, never once per poll.
         let mut unknown_override_said: BTreeSet<String> = BTreeSet::new();
         let policy = overlaid(&file_policy, &raw_config, &mut unknown_override_said);
-        let config = admitted(&raw_config, &policy);
+        let config = admitted(&raw_config, &policy, &capabilities);
         report_skipped(&config);
 
         let policy_seen = policy_mtime;
@@ -545,6 +572,7 @@ impl<'a> Observer<'a> {
         );
         Ok(Observer {
             seams,
+            capabilities,
             runs,
             grant,
             machine_dir,
@@ -643,14 +671,14 @@ impl<'a> Observer<'a> {
                 &self.raw_config,
                 &mut self.unknown_override_said,
             );
-            self.config = admitted(&self.raw_config, &self.policy);
+            self.config = admitted(&self.raw_config, &self.policy, &self.capabilities);
             report_skipped(&self.config);
         }
 
-        // ONE LISTING PER DISTINCT CONFIGURATION DIRECTORY, and the fleet's own
-        // beside them. A seat started under its own directory is named by that
-        // directory's listing and by no other, so a poll that read once would
-        // read every spawned seat's activity off a listing that cannot see it.
+        // THE DIRECTORY EACH SEAT'S SESSION CAME UP UNDER, which every question
+        // put to the agent about that seat carries: a session started under its
+        // own directory is known to the agent under that directory and no
+        // other, so a read made under the fleet's would find nothing for it.
         //
         // The directories come off the session table, which is what the
         // controller remembers about what it started: the seat list carries no
@@ -667,23 +695,37 @@ impl<'a> Observer<'a> {
                     .map(|dir| (seat.id, dir))
             })
             .collect();
-        let rosters = observe::Rosters::gather(
-            &self.config.seats,
-            &|seat: &SeatId| recorded_dirs.get(seat).cloned(),
-            &|dir: Option<&Path>| agent.status(dir),
-        );
         // And ONE READ OF THE HOST (reviewer call 2026-09-25, E1): fleet's own
         // server, whose sessions are every seat's presence. Once per poll and
-        // shared by every seat, for the listing's reason — two seats must not
-        // decide against different readings of the same moment.
+        // shared by every seat — two seats must not decide against different
+        // readings of the same moment.
         let host_read = self.seams.host.list();
-        let agent_version = agent.version();
+        let agent_read = agent.version().ok();
+        let agent_version = agent_read
+            .as_ref()
+            .and_then(|version| version.version.clone());
         // Through the clock seam, so the windows a rig drives the loop across
         // age with the fake time its naps spend.
         let now_ms = self.seams.clock.now_ms();
         let mut table_moved = false;
+        // ONE READ OF THE AGENT about every seat whose pane is alive, each
+        // asked about by the session the table last sighted for it and by its
+        // pane (fleet-14p8.2), under its own directory.
+        let table = &self.table;
+        let mut observed = observe::observe_fleet(
+            agent,
+            &host_read,
+            &self.config.seats,
+            &|seat: &SeatId| observe::Held {
+                session_id: table
+                    .newest_for(&seat.to_string())
+                    .and_then(|row| row.session_id.clone()),
+                config_dir: recorded_dirs.get(seat).cloned(),
+            },
+            now_ms,
+        );
 
-        // Adoption, on the first poll and against the roster this poll read.
+        // Adoption, on the first poll and against the reading this poll took.
         // Not gated on effects: it issues none, and a controller that could not
         // exec the agent still knows which sessions it owns.
         //
@@ -693,27 +735,27 @@ impl<'a> Observer<'a> {
         // after the first, which is the whole of the defect it exists to close.
         // This controller's FIRST poll, read before adoption marks it taken: a
         // dead pane it meets here died before this process was looking, so its
-        // end is dated by the transcript rather than by this poll.
+        // end is dated by the agent's last write rather than by this poll.
         let startup = !self.adopted;
         if !self.adopted {
             self.adopted = true;
-            // EVERY listing's rows, folded: a session under a per-row directory
-            // is in that directory's listing alone, and a controller that
-            // restarted has to be able to claim it like any other.
-            {
-                let rows = rosters.all_rows();
-                let claimed = effect::adopt(&rows, &mut self.table, &mut self.events_log, now_ms);
-                if !claimed.is_empty() {
-                    table_moved = true;
-                    eprintln!(
-                        "fleet observe: adopted {} session(s) the table names: {}",
-                        claimed.len(),
-                        claimed.join(", ")
-                    );
-                }
+            // EVERY session the agent named for a live pane, whatever
+            // directory it was read under: a controller that restarted has to
+            // be able to claim a spawned seat's session like any other.
+            let live: Vec<String> = observed
+                .iter()
+                .filter_map(|observation| observation.session_id.clone())
+                .collect();
+            let claimed = effect::adopt(&live, &mut self.table, &mut self.events_log, now_ms);
+            if !claimed.is_empty() {
+                table_moved = true;
+                eprintln!(
+                    "fleet observe: adopted {} session(s) the table names: {}",
+                    claimed.len(),
+                    claimed.join(", ")
+                );
             }
         }
-
         // The stream, from the line after the cursor. Read BEFORE deciding, so
         // what a seat asked for between polls is in hand when its verdict is
         // reached.
@@ -732,70 +774,85 @@ impl<'a> Observer<'a> {
         let read_to = stream.iter().map(|record| record.seq).max();
         let pending = fold(&stream, &known, &transient);
 
+        // A dead pane's session is the one this controller started there, and
+        // the agent names nothing for it once its process is gone (lessons
+        // claude-code B10) — so the session, and where it stood, are the
+        // table's, which recorded both when it was sighted. The context read
+        // below, and the discriminator's revive, need the id; nothing else on
+        // this poll can supply it.
+        for (seat, observation) in self.config.seats.iter().zip(observed.iter_mut()) {
+            if observation.state != RosterState::Stopped {
+                continue;
+            }
+            if let Some(row) = self.table.newest_for(&seat.id.to_string()) {
+                observation.session_id = row.session_id.clone();
+                if observation.worktree.is_none() {
+                    observation.project = Some(row.project.clone());
+                    observation.worktree = Some(row.worktree.clone());
+                }
+            }
+        }
+        // Context is the agent's `context` and never its `read`, which carries
+        // no token field (lessons claude-code B2); asked once for every seat
+        // whose session answers for it, and only of an agent that declares
+        // the verb. An ended session still answers — its transcript outlives
+        // the process — and its last write is what dates an end this
+        // controller did not see.
+        //
+        // The worktree is the CONFIGURED spelling, put in the one form a
+        // comparison uses: the agent keys its own records on the directory
+        // itself, and a configured trailing separator is one it never wrote.
+        let asked: Vec<SeatRef> = self
+            .config
+            .seats
+            .iter()
+            .zip(observed.iter())
+            .filter(|(_, observation)| observation.state.has_context_reading())
+            .filter_map(|(seat, observation)| {
+                Some(SeatRef {
+                    seat: seat.id,
+                    session_id: Some(observation.session_id.clone()?),
+                    pid: None,
+                    config_dir: recorded_dirs.get(&seat.id).cloned(),
+                    worktree: dir_key(observation.worktree.as_deref()?).to_string(),
+                    screen: None,
+                })
+            })
+            .collect();
+        let contexts: BTreeMap<SeatId, SeatContext> =
+            adapter::contexts(agent, self.capabilities.context, &asked);
+
         let mut observations: Vec<(usize, SeatObservation, Option<u64>)> = Vec::new();
         let mut seats = Vec::with_capacity(self.config.seats.len());
         let mut logged_out: Vec<(SeatView, String, Option<String>)> = Vec::new();
-        for (index, seat) in self.config.seats.iter().enumerate() {
+        for (index, (seat, observation)) in self.config.seats.iter().zip(observed).enumerate() {
             let machine_name = seat.machine_name();
             // What the session table and the projection key this seat on.
             let key = seat.id.to_string();
-            // The seat's own directory, threaded through every read about it:
-            // the listing that can see it, the transcript its context is read
-            // from, and the end a dead pane met at startup is dated by.
-            let under: Option<PathBuf> = recorded_dirs.get(&seat.id).map(PathBuf::from);
-            let mut observation =
-                observe::observe_seat(rosters.for_seat(&seat.id), &host_read, seat, now_ms);
-            // A dead pane's session is the one this controller started there,
-            // and its row is gone from the listing by the next read after its
-            // process (lessons claude-code B10) — so the session, and where it
-            // stood, are the table's, which recorded both when it was sighted.
-            // The context read below, and the discriminator's revive, need the
-            // id; nothing else on this poll can supply it.
+            let context = contexts.get(&seat.id);
             if observation.state == RosterState::Stopped {
-                if let Some(row) = self.table.newest_for(&key) {
-                    observation.session_id = row.session_id.clone();
-                    if observation.worktree.is_none() {
-                        observation.project = Some(row.project.clone());
-                        observation.worktree = Some(row.worktree.clone());
-                    }
-                }
                 table_moved |= ended(
-                    agent,
                     &mut self.table,
                     &mut self.events_log,
                     &key,
                     &observation,
-                    under.as_deref(),
+                    context
+                        .and_then(|context| context.last_write.as_ref())
+                        .and_then(|stamp| clock::secs_of_stamp(stamp.as_str()))
+                        .map(|secs| secs * 1000),
                     startup,
                     now_ms,
                 );
             }
-            // Context comes from the transcript and never from the listing,
-            // which carries no token field (lessons claude-code B2). An ended
-            // row still answers, because the transcript outlives the process.
+            let context_tokens = context.and_then(|context| context.tokens);
+            // A seat that came up LOGGED OUT. The host cannot say so — a
+            // logged-out session is live, with a pid, exactly like one waiting
+            // for work — so the agent's own reading is what carries it:
+            // blocked on `logged_out`.
             //
-            // The worktree is the CONFIGURED spelling, so it goes through the
-            // same normalisation the seat match uses: the agent keys its
-            // transcript directory on the directory itself, and a configured
-            // trailing separator encodes to one the agent never wrote.
-            let body = match &observation.session_id {
-                Some(session_id) if observation.state.has_context_reading() => {
-                    observation.worktree.as_deref().and_then(|worktree| {
-                        agent.transcript(under.as_deref(), dir_key(worktree), session_id)
-                    })
-                }
-                _ => None,
-            };
-            let context_tokens = body.as_deref().and_then(observe::context_tokens_in);
-            // A seat that came up LOGGED OUT. The roster cannot say so — a
-            // logged-out session is live and idle, with a pid, exactly like one
-            // waiting for work — so the transcript is the only surface that
-            // carries the reading, and it is read from the same body the context
-            // came from rather than from a second read that could disagree.
-            //
-            // Once per ROW, at its first sighting: the reading stands for as long
-            // as the transcript does, and a line per poll is the noise the stream
-            // rule is against.
+            // Once per ROW, at its first sighting: the reading stands for as
+            // long as the session does, and a line per poll is the noise the
+            // stream rule is against.
             let sighted = self
                 .table
                 .newest_for(&key)
@@ -804,7 +861,7 @@ impl<'a> Observer<'a> {
                 seat.transient,
                 observation.state,
                 sighted,
-                body.as_deref(),
+                observation.blocked_on,
             ) {
                 logged_out.push((
                     SeatView::from(&seat.as_ref()),
@@ -813,7 +870,7 @@ impl<'a> Observer<'a> {
                 ));
             }
             // A sighting answers a dispatch's arrival window, and it is the
-            // ROSTER's answer rather than the start's own return (A7). Only a
+            // AGENT's answer rather than the start's own return (A7). Only a
             // LIVE session is one: a dead pane is a session that has ended and
             // a starting one has not arrived yet, and neither is a seat that
             // arrived.
@@ -845,7 +902,6 @@ impl<'a> Observer<'a> {
             seats.push(row);
             observations.push((index, observation, context_tokens));
         }
-
         // The logged-out dispatches, one line each. WRITTEN AND NOTHING
         // ELSE: holding the item and retiring the seat are a workflow's, and a
         // controller that acted here would be deciding a run's business from
@@ -976,15 +1032,27 @@ impl<'a> Observer<'a> {
         // either: a dispatch nobody issued is not a dispatch nobody answered.
         let acting = effects.acting;
 
+        // The expectation, which a fleet that pins nothing still has: the
+        // release the agent's adapter was measured against. `fleet.claude_code`
+        // below stays the file's own word, so a reader tells the two apart.
+        let expected = self.policy.claude_code_expected(&self.capabilities);
         let mut document = Projection {
             version: projection::VERSION,
             generated_at: clock::now_stamp(),
             controller_version: env!("CARGO_PKG_VERSION").to_string(),
+            // The agent, in words that name no vendor (E13): which adapter
+            // answers, which agent it drives at which version, what it is
+            // expected at and the postures it takes. The two fields after it
+            // are its mirrors until fleet-x93d.2.
+            agent: projection::AgentView {
+                adapter: self.seams.adapter.to_string(),
+                name: agent_read.map(|version| version.name),
+                version: agent_version.clone(),
+                expected: Some(expected.clone()),
+                postures: self.capabilities.postures.clone(),
+            },
             agent_version: agent_version.clone(),
-            // The expectation, which a fleet that pins nothing still has: the
-            // release fleet supports. `fleet.claude_code` below stays the
-            // file's own word, so a reader tells the two apart.
-            agent_version_expected: Some(self.policy.claude_code_expected()),
+            agent_version_expected: Some(expected),
             fleet: PolicyView {
                 path: self.policy_path.display().to_string(),
                 mtime: self.policy_mtime.and_then(clock::stamp_of),
@@ -1051,6 +1119,7 @@ impl<'a> Observer<'a> {
                     agent,
                     self.seams.host,
                     &self.policy,
+                    &self.capabilities,
                     seat,
                     observation,
                     *context_tokens,
@@ -1189,7 +1258,7 @@ impl<'a> Observer<'a> {
         // healthy poll.
         let pair = (
             agent_version.clone(),
-            Some(self.policy.claude_code_expected()),
+            Some(self.policy.claude_code_expected(&self.capabilities)),
         );
         match (&pair.0, &pair.1) {
             (Some(live), Some(pinned)) if live != pinned => {
@@ -1315,20 +1384,19 @@ impl<'a> Observer<'a> {
 /// first died inside the interval since the last one, so the end is this
 /// poll's own time, `observed`. On the FIRST poll the pane died before
 /// anyone was looking — a controller restarted over it, or a machine that
-/// rebooted — and the one end anyone has is the transcript's last write
-/// (lessons claude-code C4), `transcript`, or none where it does not
-/// resolve.
+/// rebooted — and the one end anyone has is the session's last write as the
+/// agent's `context` answered it (lessons claude-code C4), `last_write` in
+/// epoch milliseconds, under the source `transcript`; or none where the agent
+/// could not say.
 ///
 /// A seat with no row is a pane no dispatch of this fleet recorded, and it
 /// has nothing to latch on: no line, rather than one per poll.
-#[allow(clippy::too_many_arguments)]
 fn ended(
-    agent: &dyn Agent,
     table: &mut Table,
     events_log: &mut EventLog,
     key: &str,
     observation: &SeatObservation,
-    under: Option<&Path>,
+    last_write: Option<u64>,
     startup: bool,
     now_ms: u64,
 ) -> bool {
@@ -1343,13 +1411,7 @@ fn ended(
         return false;
     }
     let (at, source) = if startup {
-        let at = match (&row.session_id, &observation.worktree) {
-            (Some(session_id), Some(worktree)) => {
-                agent.ended_at(under, dir_key(worktree), session_id)
-            }
-            _ => None,
-        };
-        (at, events::ENDED_FROM_TRANSCRIPT)
+        (last_write, events::ENDED_FROM_TRANSCRIPT)
     } else {
         (Some(now_ms), events::ENDED_OBSERVED)
     };
@@ -1386,6 +1448,7 @@ fn act(
     agent: &dyn Agent,
     host: &dyn crate::host::Host,
     policy: &Policy,
+    capabilities: &Capabilities,
     seat: &Seat,
     observation: &SeatObservation,
     context_tokens: Option<u64>,
@@ -1406,8 +1469,14 @@ fn act(
         Verdict::Revive | Verdict::SpawnWoken | Verdict::Rest | Verdict::SuggestRest => {
             let machine_name = seat.machine_name();
             let recorded = Recorded::of(table, seat);
-            let Some(target) = target_for(policy, seat, observation, context_tokens, recorded)
-            else {
+            let Some(target) = target_for(
+                policy,
+                capabilities,
+                seat,
+                observation,
+                context_tokens,
+                recorded,
+            ) else {
                 eprintln!(
                     "fleet observe: {machine_name} is due {} and names no one worktree, so there \
                      is nowhere to start it; nothing is done",
@@ -1514,6 +1583,7 @@ fn seat_views(
 /// one directory to act in.
 fn target_for<'a>(
     policy: &Policy,
+    capabilities: &Capabilities,
     seat: &'a Seat,
     observation: &'a SeatObservation,
     context_tokens: Option<u64>,
@@ -1530,19 +1600,21 @@ fn target_for<'a>(
             _ => return None,
         },
     };
-    let model = policy.model_for(seat.model.as_deref());
+    let model = policy.model_for(seat.model.as_deref(), capabilities);
     Some(Target {
         seat: seat.id,
         project,
         worktree: dir_key(worktree),
         posture: policy.posture_for(seat.transient).to_string(),
-        first_turn: policy.first_turn_for(&recorded.session_name),
+        first_turn: policy.first_turn_for(&recorded.session_name, capabilities),
         session_name: recorded.session_name,
         model,
         transient: seat.transient,
         config_dir: recorded.config_dir,
         item: recorded.item,
-        settings: None,
+        // The loop's own starts name no command: a named seat's worktree is a
+        // person's, and nothing renders rules into it.
+        permissions: adapter::Permissions::default(),
         // The loop's own starts run no load belt: they wake seats the config
         // already carries rather than creating any, so a reading here would be
         // one this call never took.
@@ -1672,18 +1744,18 @@ fn overlaid(file: &Policy, raw: &MachineConfig, said: &mut BTreeSet<String>) -> 
 /// instrument reads reports the downgrade, and the seat then stops at the first
 /// approval dialog with nobody there to answer. So the row is dropped here,
 /// before any start is attempted, and the drop is loud.
-fn admitted(raw: &MachineConfig, policy: &Policy) -> MachineConfig {
+fn admitted(raw: &MachineConfig, policy: &Policy, capabilities: &Capabilities) -> MachineConfig {
     let mut seats = Vec::with_capacity(raw.seats.len());
     let mut skipped = raw.skipped.clone();
     for seat in &raw.seats {
-        let model = policy.model_for(seat.model.as_deref());
-        if policy.posture_is_ungranted(seat.transient, &model) {
+        let model = policy.model_for(seat.model.as_deref(), capabilities);
+        if policy.posture_is_ungranted(seat.transient, &model, capabilities) {
             skipped.push(format!(
                 "{} would start under posture `{}` on model `{model}`, which matches none of \
                  the models measured to honour it ({})",
                 seat.machine_name(),
                 policy.posture_for(seat.transient),
-                policy.auto_capable_models.join(", ")
+                policy.gate_for(seat.transient, capabilities).join(", ")
             ));
             continue;
         }

@@ -419,28 +419,28 @@ On every poll the controller re-reads the seat list and the policy file when
 either has changed. A policy file that stops parsing is reported once, and
 the controller keeps running on the last one that parsed.
 
-It then reads fleet's tmux server once, and the agent's list of sessions:
-the agent's own list, and the list under each configuration directory a
-transient seat's sessions were started with. Whether a seat's session is
-there is the server's answer: the tmux session named by the seat's id, alive
-or ended. What the session is doing is the agent's answer, read off the row
-whose process is the session's own. Each seat reads as one of these roster
-states, which `fleet status` shows:
+It then reads fleet's tmux server once, and asks the agent once about every
+seat whose session is alive, each under the configuration directory its
+session was started with. Whether a seat's session is there is the server's
+answer: the tmux session named by the seat's id, alive or ended. What the
+session is doing is the agent's answer, found by the session's id, or by the
+session's own process where the agent names no session by that id. Each seat
+reads as one of these roster states, which `fleet status` shows:
 
-- **present**: the session is alive and the agent lists it.
-- **prompt-blocked**: the session is alive and the agent lists it stopped at
-  a question, such as a permission prompt.
+- **present**: the session is alive and the agent names it.
+- **prompt-blocked**: the session is alive and the agent names it stopped in
+  front of a person: at a question, such as a permission prompt, or at a
+  login, when the session's first turn answered that it is not logged in.
 - **starting**: the session is alive, younger than 30 seconds, and the agent
-  does not list it yet.
+  does not name it yet.
 - **stopped**: the session ended. It keeps the status the agent exited with,
   and the first poll that reads it ended writes `session.ended` to the stream
   (see [Status and the event stream](status.md#the-roster)).
-- **absent**: the server holds no session for the seat, and the agent lists
-  no live session in the seat's worktree.
+- **absent**: the server holds no session for the seat, whatever the agent
+  has running elsewhere.
 - **unknown**: the two answers disagree, or one could not be read: a live
-  session the agent still does not list after 30 seconds, a live session the
-  agent lists in the seat's worktree that the server does not hold, or a
-  list that could not be read. The controller starts nothing for an unknown
+  session the agent still does not name after 30 seconds, or a server or an
+  agent that could not be read. The controller starts nothing for an unknown
   seat, and `fleet status` prints why.
 
 For each seat it decides one of these, which `fleet status` shows as the
@@ -822,9 +822,9 @@ seat has no directory of its own: it runs under the `CLAUDE_CONFIG_DIR` the
 controller runs with, or `~/.claude` where that is not set.
 
 When a transient seat's first turn answers that it is not logged in, the
-controller writes one `dispatch.failed` on the stream, naming the seat, the
-item it was given, and the cause `authentication_failed`. It does nothing
-else about it.
+seat reads `prompt-blocked`, waiting for `logged_out`, and the controller
+writes one `dispatch.failed` on the stream, naming the seat, the item it was
+given, and the cause `authentication_failed`. It does nothing else about it.
 
 A start that fails (see
 [What the controller does each poll](#what-the-controller-does-each-poll))

@@ -17,7 +17,7 @@
 //! here is believed unless an arm says otherwise.
 
 use fleet_controller::adapter::claude_code::{self, ClaudeCode};
-use fleet_controller::adapter::{Agent, AgentRow, RosterRead, StartSpec};
+use fleet_controller::adapter::{self as agent_seam, Agent, Launch, Permissions, Posture, Resume};
 use fleet_controller::decide::{self, decide, SeatInput, Verdict};
 use fleet_controller::effect::{self, Target, Watched};
 use fleet_controller::events::{self, EventLog};
@@ -176,7 +176,6 @@ impl Rig {
             self.stub_path().display().to_string(),
             self.home().join(".claude"),
             Duration::from_secs(10),
-            self.machine(),
             platform::child_path(&self.home()),
             effect_bin,
             credential_dir,
@@ -260,7 +259,7 @@ fn a_target(worktree: &str) -> Target<'_> {
         transient: false,
         config_dir: None,
         item: None,
-        settings: None,
+        permissions: Permissions::default(),
         belt: None,
         run: None,
         session_id: Some("a-session"),
@@ -291,19 +290,32 @@ fn a_row_for(seat: &str, worktree: &str, dispatched_at: u64, session: Option<&st
     }
 }
 
-/// The start every launch arm here asks for, in [`Rig::worktree`] and under the
-/// adapter's own configuration directory, which is a named seat's start.
-fn a_spec(worktree: &str) -> StartSpec {
-    StartSpec {
-        seat: S1.to_string(),
+/// The launch every launch arm here asks for, in [`Rig::worktree`] and under
+/// the adapter's own configuration directory, which is a named seat's start —
+/// carrying the variables fleet sets for the seat, its actor among them.
+fn a_spec(worktree: &str) -> Launch {
+    Launch {
+        seat: s1(),
         worktree: worktree.to_string(),
         name: "orla".to_string(),
-        actor: format!("seat:{S1}"),
         model: "claude-opus-5".to_string(),
-        posture: "auto".to_string(),
+        posture: Posture::Auto,
         first_turn: "/wake s1".to_string(),
-        plugin_dir: None,
         config_dir: None,
+        env: agent_seam::seat_environment(&format!("seat:{S1}")),
+        permissions: Permissions::default(),
+    }
+}
+
+/// The resume of `session_id` under the launch's own model, posture and
+/// directory.
+fn a_resume(session_id: &str, launch: &Launch) -> Resume {
+    Resume {
+        session_id: session_id.to_string(),
+        worktree: launch.worktree.clone(),
+        config_dir: launch.config_dir.clone(),
+        model: launch.model.clone(),
+        posture: launch.posture,
     }
 }
 
@@ -409,9 +421,13 @@ mod lessons {
         let operator = rig.home().join(claude_code::STATE_FILE);
         write(&operator, OPERATOR_STATE);
         let mut spec = a_spec(&worktree);
-        spec.plugin_dir = Some("/an/overlay".to_string());
         spec.config_dir = Some(config_dir.display().to_string());
-        let launch = rig.agent().launch(&spec).expect("a seeded start launches");
+        // The plugin root is the adapter's own, handed in at the open (E8).
+        let launch = rig
+            .agent()
+            .with_plugin_dir(Some(PathBuf::from("/an/overlay")))
+            .launch(&spec)
+            .expect("a seeded start launches");
         let argv = &launch.argv;
         assert_eq!(
             argv[0],
@@ -439,8 +455,9 @@ mod lessons {
             ),
             ("CLAUDE_SECURESTORAGE_CONFIG_DIR".to_string(), String::new()),
         ] {
-            assert!(
-                launch.env.contains(&owed),
+            assert_eq!(
+                launch.env.get(&owed.0),
+                Some(&owed.1),
                 "the pane's environment carries {owed:?}: {:?}",
                 launch.env
             );
@@ -518,7 +535,7 @@ mod lessons {
             .agent()
             .launch(&spec)
             .expect_err("a seed missing a key is no launch");
-        assert!(refused.contains("oauthAccount"), "{refused}");
+        assert!(refused.to_string().contains("oauthAccount"), "{refused}");
         // The theme is NOT such a key: the operator's own file on the measuring
         // machine carries none, and a directory seeded without it met no picker.
         let mut themeless = theirs.clone();
@@ -538,7 +555,9 @@ mod lessons {
             policy::parse("[controller]\nstart_watch_seconds = 1\n").expect("the policy parses");
         let target = a_target(&worktree);
         let listed = StubAgent::answering(Answers {
-            status: RosterRead::Readable(vec![test_support::arrived(test_support::FIRST_PANE_PID)]),
+            listing: Ok(test_support::listing(&[test_support::arrived(
+                test_support::FIRST_PANE_PID,
+            )])),
             ..Answers::default()
         });
         let host = FakeHost::new();
@@ -593,10 +612,13 @@ mod lessons {
         // the session is killed with its capture kept. The row here carries the
         // pane's pid and NO status — listed, and not yet up (B10) — which is the
         // control on the first reading: the pid alone is not believed.
-        let mut pid_only = test_support::arrived(test_support::FIRST_PANE_PID);
-        pid_only.status = None;
+        let pid_only = format!(
+            r#"{{"sessionId": "arrived", "cwd": "{}", "pid": {}}}"#,
+            test_support::ARRIVED_CWD,
+            test_support::FIRST_PANE_PID
+        );
         let unready = StubAgent::answering(Answers {
-            status: RosterRead::Readable(vec![pid_only]),
+            listing: Ok(test_support::listing(&[pid_only])),
             ..Answers::default()
         });
         let host = FakeHost::new();
@@ -636,14 +658,18 @@ mod lessons {
         host.new_session(&session, &rig.worktree(), &["/a/program".to_string()], &[])
             .expect("the fake starts it");
         host.fail(FakeHost::KILL, Some("kept for the arm"));
+        let seat = s1();
         let watched = effect::watch_start(
             &silent,
             &host,
-            &session,
-            None,
-            true,
-            Duration::from_secs(1),
-            None,
+            &effect::Watch {
+                seat: &seat,
+                worktree: &worktree,
+                config_dir: None,
+                answer_trust: true,
+                window: Duration::from_secs(1),
+                resumes: None,
+            },
         );
         assert!(matches!(watched, Watched::Failed { .. }), "{watched:?}");
         assert_eq!(
@@ -661,11 +687,14 @@ mod lessons {
         effect::watch_start(
             &silent,
             &host,
-            &session,
-            None,
-            false,
-            Duration::from_secs(1),
-            None,
+            &effect::Watch {
+                seat: &seat,
+                worktree: &worktree,
+                config_dir: None,
+                answer_trust: false,
+                window: Duration::from_secs(1),
+                resumes: None,
+            },
         );
         assert!(
             host.sends(&session).is_empty(),
@@ -758,19 +787,19 @@ mod lessons {
             "a different home moves the entry that is keyed on it"
         );
 
-        // What a session is handed: the launch's environment, which the host
-        // sets on the pane EXACTLY, carries the constructed value to the byte.
+        // What a session is handed: the variables fleet sets for every seat's
+        // session, which the launch carries through and the host sets on the
+        // pane EXACTLY, hold the constructed value to the byte — built off the
+        // home this process runs under, as the controller builds it.
         let launch = rig
             .agent()
             .launch(&a_spec(&rig.worktree().display().to_string()))
             .expect("it launches");
-        let handed = launch
-            .env
-            .iter()
-            .find(|(key, _)| key == "PATH")
-            .map(|(_, value)| value.clone())
-            .expect("the session is handed a PATH");
-        assert_eq!(handed, built);
+        assert_eq!(
+            launch.env.get("PATH"),
+            Some(&platform::child_path(&platform::home_dir())),
+            "the session is handed the constructed PATH"
+        );
 
         // And what a command child actually got, spawned through the adapter,
         // which builds its environment from the same list.
@@ -875,35 +904,43 @@ mod lessons {
     /// ids carry suffixes naming the same model.
     #[test]
     fn the_permission_posture_is_model_gated() {
+        // The gate is the agent's own declaration (E9) where the policy names
+        // none: Claude Code's `auto` held to the models measured to honour it.
+        let agent = claude_code::capabilities();
         let fleet = policy::parse("").expect("an empty policy parses");
         assert_eq!(fleet.posture_for(false), policy::POSTURE_AUTO);
 
         // By PREFIX: a dated suffix and a windowed one are the same model.
-        assert!(fleet.model_can_honour("claude-opus-5"));
-        assert!(fleet.model_can_honour("claude-opus-5-20260901"));
-        assert!(fleet.model_can_honour("claude-sonnet-5-1m"));
+        for model in [
+            "claude-opus-5",
+            "claude-opus-5-20260901",
+            "claude-sonnet-5-1m",
+        ] {
+            assert!(
+                !fleet.posture_is_ungranted(false, model, &agent),
+                "{model} honours auto"
+            );
+        }
         assert!(
-            !fleet.model_can_honour("claude-sonnet-4-5-20250929"),
+            fleet.posture_is_ungranted(false, "claude-sonnet-4-5-20250929", &agent),
             "a model outside the measured set is not in it by being close"
         );
 
         // The gate is on the REQUESTED posture, so a transient row asking for
         // less is not gated at all — which is what keeps a spawned builder on a
         // cheaper model startable.
-        assert!(fleet.posture_is_ungranted(false, "claude-sonnet-4-5-20250929"));
         assert!(
-            !fleet.posture_is_ungranted(true, "claude-sonnet-4-5-20250929"),
+            !fleet.posture_is_ungranted(true, "claude-sonnet-4-5-20250929", &agent),
             "the transient posture asks for less than the model's own default"
         );
-        assert!(!fleet.posture_is_ungranted(false, "claude-opus-5"));
 
         // And the list is policy: a fleet that names its own set moves the gate.
         let named = policy::parse("[controller]\nauto_capable_models = [\"claude-sonnet-4-5\"]\n")
             .expect("the policy parses");
-        assert!(named.model_can_honour("claude-sonnet-4-5-20250929"));
+        assert!(!named.posture_is_ungranted(false, "claude-sonnet-4-5-20250929", &agent));
         assert!(
-            !named.model_can_honour("claude-opus-5"),
-            "the named list REPLACES the default rather than adding to it"
+            named.posture_is_ungranted(false, "claude-opus-5", &agent),
+            "the named list REPLACES the declared one rather than adding to it"
         );
     }
 
@@ -928,13 +965,18 @@ mod lessons {
         let rig = Rig::new("lesson-a9");
         test_support::plant_operator_state(&rig.home());
         let worktree = rig.worktree().display().to_string();
-        let spec = StartSpec {
-            plugin_dir: Some("/a/plugin/root".to_string()),
+        let spec = Launch {
             config_dir: Some(rig.root.join("seat-config").display().to_string()),
             ..a_spec(&worktree)
         };
         const FULL_ID: &str = "663267a3-2b6e-44ac-b0f1-cbfd24bbbc5d";
-        let resumed = rig.agent().resume(FULL_ID, &spec).expect("it resumes");
+        // The plugin root is the adapter's own, handed in at the open (E8).
+        let adapter = rig
+            .agent()
+            .with_plugin_dir(Some(PathBuf::from("/a/plugin/root")));
+        let resumed = adapter
+            .resume(&a_resume(FULL_ID, &spec))
+            .expect("it resumes");
         assert_eq!(
             resumed.argv,
             [
@@ -951,11 +993,20 @@ mod lessons {
             "the full id and the start's three flags, and nothing else: no --name and no \
              first turn, both of which the session already has"
         );
-        let launched = rig.agent().launch(&spec).expect("it launches");
-        assert_eq!(
-            resumed.env, launched.env,
-            "a resume comes up under the start's own environment, actor and configuration \
-             directory included"
+        let launched = adapter.launch(&spec).expect("it launches");
+        for (key, value) in &resumed.env {
+            assert_eq!(
+                launched.env.get(key),
+                Some(value),
+                "a resume comes up under the start's own environment, its configuration \
+                 directory included: {key}"
+            );
+        }
+        assert!(
+            !resumed.env.contains_key("FLEET_ACTOR"),
+            "who the session acts as is fleet's to set beside the answer, as it sets every \
+             variable of its own: {:?}",
+            resumed.env
         );
 
         // ---- THE REVIVE: a seat whose pane died, and the table's row for it.
@@ -1092,18 +1143,14 @@ mod lessons {
     /// re-hosting them, and this fleet adds the event the reference engine
     /// omits: adoption by SESSION ID, no respawn, one line each.
     ///
-    /// Four table rows against one roster, so the predicate is measured and not
-    /// merely exercised. The LIVE row is claimed and it is the only one: a
-    /// session carrying a pid is one the daemon is running now, which is the
-    /// whole of the sighting. The pid-less rows are left to the discriminator
-    /// whether they read `done` or `stopped` — a claim taken on a row nobody
-    /// saw running is a claim on a session that may be over — and so is the row
-    /// the roster does not carry at all.
-    ///
-    /// The live row reads `state: done`, which is what a live IDLE session
-    /// carries (lessons claude-code A3): a claim consulting the state word
-    /// would take none of the four, and one consulting nothing would take
-    /// three.
+    /// Four table rows against one poll's reading, so the predicate is measured
+    /// and not merely exercised. The LIVE session is claimed and it is the
+    /// only one: a session the agent named for a pane the host holds alive is
+    /// one running now, which is the whole of the sighting (the host's
+    /// presence and the agent's `read` decide which ids those are, upstream of
+    /// this call). The rows whose sessions nobody named live are left to the
+    /// discriminator — a claim taken on a session nobody saw running is a claim
+    /// on a session that may be over.
     #[test]
     fn a_restart_adopts_and_says_so() {
         let rig = Rig::new("lesson-g7");
@@ -1114,15 +1161,10 @@ mod lessons {
         table.push(a_row_for("s4", "/wt/s4", 400, Some("a-gone-session")));
         let mut log = rig.log();
 
-        let roster: Vec<AgentRow> = serde_json::from_str(
-            r#"[{"sessionId":"a-session","id":"ab12","cwd":"/wt/s1","pid":4242,
-                 "state":"done","status":"idle"},
-                {"sessionId":"a-hibernated-session","id":"cd34","cwd":"/wt/s2","state":"done"},
-                {"sessionId":"a-stopped-session","id":"ef56","cwd":"/wt/s3","state":"stopped"}]"#,
-        )
-        .expect("the roster parses");
+        // The one session the agent named for a live pane this poll.
+        let live = vec!["a-session".to_string()];
 
-        let claimed = effect::adopt(&roster, &mut table, &mut log, 5_000);
+        let claimed = effect::adopt(&live, &mut table, &mut log, 5_000);
         assert_eq!(claimed, vec!["a-session".to_string()]);
         assert_eq!(rig.events_of(events::SESSION_ADOPTED), 1);
         assert_eq!(
@@ -1141,16 +1183,11 @@ mod lessons {
         );
         assert_eq!(
             table.sessions[1].first_seen_at, None,
-            "a pid-less row is left to the discriminator: nobody saw this session running"
+            "a session named for no live pane is left to the discriminator: nobody saw it \
+             running"
         );
-        assert_eq!(
-            table.sessions[2].first_seen_at, None,
-            "and so is one whose row names an end"
-        );
-        assert_eq!(
-            table.sessions[3].first_seen_at, None,
-            "and so is one the roster does not carry at all"
-        );
+        assert_eq!(table.sessions[2].first_seen_at, None, "and so is a second");
+        assert_eq!(table.sessions[3].first_seen_at, None, "and so is a third");
         assert!(
             !rig.argv_path().exists(),
             "and adoption runs nothing of the agent's"
@@ -1213,16 +1250,13 @@ fn a_second_adopt_over_the_same_table_claims_nothing() {
     let mut table = Table::default();
     table.push(a_row_for(S1, "/wt/s1", 100, Some("a-session")));
     let mut log = rig.log();
-    let roster: Vec<AgentRow> = serde_json::from_str(
-        r#"[{"sessionId":"a-session","id":"ab12","cwd":"/wt/s1","pid":4242}]"#,
-    )
-    .expect("the roster parses");
+    let live = vec!["a-session".to_string()];
 
-    let first = effect::adopt(&roster, &mut table, &mut log, 5_000);
+    let first = effect::adopt(&live, &mut table, &mut log, 5_000);
     assert_eq!(first, vec!["a-session".to_string()]);
     assert_eq!(table.sessions[0].adopted.as_deref(), Some("a-session"));
 
-    let second = effect::adopt(&roster, &mut table, &mut log, 6_000);
+    let second = effect::adopt(&live, &mut table, &mut log, 6_000);
     assert!(
         second.is_empty(),
         "the session was claimed once already: {second:?}"
@@ -1230,29 +1264,29 @@ fn a_second_adopt_over_the_same_table_claims_nothing() {
     assert_eq!(rig.events_of(events::SESSION_ADOPTED), 1);
 }
 
-/// The plugin root rides every start the controller makes: policy names it, the
-/// spawn passes it, and the child's argv carries `--plugin-dir <dir>`
-/// IMMEDIATELY BEFORE the first turn — which is the position that says the flag
-/// took the directory as its value and did not swallow the prompt.
+/// The plugin root rides every start the controller makes: the adapter is
+/// opened with it — it is the adapter's own and never a field of a request
+/// (reviewer call 2026-09-25, E8) — and the child's argv carries
+/// `--plugin-dir <dir>` IMMEDIATELY BEFORE the first turn, which is the
+/// position that says the flag took the directory as its value and did not
+/// swallow the prompt.
 ///
 /// Read from what the PANE was started with, through the same `spawn_woken` the
 /// loop takes, because the claim is about every start and not about one
-/// struct. The control is the same spawn under a policy that names no root: no
-/// such element is in the argv at all, so what is measured is the key and not
-/// a flag the adapter always passes.
+/// struct. The control is the same spawn through an adapter opened with no
+/// root: no such element is in the argv at all, so what is measured is the
+/// root handed in and not a flag the adapter always passes.
 #[test]
 fn a_start_carries_the_plugin_root_the_policy_names() {
     let rig = Rig::new("start-plugin-root");
     let worktree = rig.worktree().display().to_string();
-    let named =
-        policy::parse("[controller]\nstart_watch_seconds = 30\nplugin_dir = \"/an/overlay\"\n")
-            .expect("the policy parses");
     let mut table = Table::default();
     let mut log = rig.log();
     let outcome = effect::spawn_woken(
-        &rig.agent(),
+        &rig.agent()
+            .with_plugin_dir(Some(PathBuf::from("/an/overlay"))),
         &rig.host,
-        &named,
+        &a_policy(),
         &a_target(&worktree),
         &mut log,
         &mut table,
@@ -1273,7 +1307,7 @@ fn a_start_carries_the_plugin_root_the_policy_names() {
     );
     assert_eq!(argv.last().map(String::as_str), Some("/wake s1"));
 
-    // The control: the same start under a policy that names none.
+    // The control: the same start through an adapter opened with none.
     let bare = Rig::new("start-no-plugin-root");
     let elsewhere = bare.worktree().display().to_string();
     let mut table = Table::default();
@@ -1314,14 +1348,14 @@ fn an_adapter_with_no_effect_binary_refuses_every_verb_and_execs_nothing() {
 
     match ungated.launch(&a_spec(&worktree)) {
         Err(cause) => assert!(
-            cause.contains("no agent binary is resolved"),
+            cause.to_string().contains("no agent binary is resolved"),
             "the refusal says why: {cause}"
         ),
         Ok(launch) => panic!("a start with no resolved binary must not launch: {launch:?}"),
     }
-    match ungated.resume("a-session", &a_spec(&worktree)) {
+    match ungated.resume(&a_resume("a-session", &a_spec(&worktree))) {
         Err(cause) => assert!(
-            cause.contains("no agent binary is resolved"),
+            cause.to_string().contains("no agent binary is resolved"),
             "the refusal says why: {cause}"
         ),
         Ok(launch) => panic!("a resume with no resolved binary must not launch: {launch:?}"),
@@ -1334,7 +1368,7 @@ fn an_adapter_with_no_effect_binary_refuses_every_verb_and_execs_nothing() {
     let launched = gated.launch(&a_spec(&worktree)).expect("it launches");
     assert_eq!(launched.argv[0], stub);
     let resumed = gated
-        .resume("a-session", &a_spec(&worktree))
+        .resume(&a_resume("a-session", &a_spec(&worktree)))
         .expect("it resumes");
     assert_eq!(resumed.argv[0], stub);
 
@@ -1343,7 +1377,11 @@ fn an_adapter_with_no_effect_binary_refuses_every_verb_and_execs_nothing() {
     // exec anything still observing and publishing.
     let reading = rig.agent_with_effect_bin(None);
     assert!(
-        reading.version().is_some(),
+        reading
+            .version()
+            .expect("the in-process adapter answers")
+            .version
+            .is_some(),
         "observe reads through `bin`, which the effect gate does not touch"
     );
 }
@@ -1587,28 +1625,33 @@ fn a_live_pane(rig: &Rig) -> u32 {
         .pid
 }
 
-/// The listing's row for the pane with `pid`, reading `status`.
-fn a_row_reading(pid: u32, status: &str) -> AgentRow {
-    AgentRow {
-        session_id: "a-session".to_string(),
-        cwd: "/anywhere".to_string(),
-        pid: Some(pid),
-        state: None,
-        status: Some(status.to_string()),
-        started_at: None,
-        waiting_for: None,
-    }
+/// The listing's row for the pane with `pid`, reading `status`, as the JSON
+/// the one real adapter reads.
+fn a_row_reading(pid: u32, status: &str) -> serde_json::Value {
+    serde_json::json!({
+        "sessionId": "a-session",
+        "cwd": "/anywhere",
+        "pid": pid,
+        "status": status,
+    })
 }
 
-fn listing(rows: Vec<AgentRow>) -> RosterRead {
-    RosterRead::Readable(rows)
+/// The same row stopped in front of a person on `cause`.
+fn a_row_waiting_for(pid: u32, cause: &str) -> serde_json::Value {
+    let mut row = a_row_reading(pid, "waiting");
+    row["waitingFor"] = serde_json::Value::from(cause);
+    row
+}
+
+fn listing(rows: Vec<serde_json::Value>) -> Result<String, String> {
+    Ok(serde_json::Value::from(rows).to_string())
 }
 
 /// A stub agent whose listing reads `first` once and then `then` on every read
 /// after it: the row before the send, and the row the poll meets.
-fn an_agent_reading(first: AgentRow, then: AgentRow) -> StubAgent {
+fn an_agent_reading(first: serde_json::Value, then: serde_json::Value) -> StubAgent {
     let agent = StubAgent::answering(Answers {
-        status: listing(vec![then]),
+        listing: listing(vec![then]),
         ..Answers::default()
     });
     agent.list_next([listing(vec![first])]);
@@ -1651,7 +1694,7 @@ fn an_idle_seat_that_turns_busy_is_delivered_with_one_paste_and_one_submit() {
         ],
         "one paste, whole, and one submit"
     );
-    for verb in [StubAgent::START, StubAgent::RESUME] {
+    for verb in [StubAgent::LAUNCH, StubAgent::RESUME] {
         assert!(
             agent.calls_of(verb).is_empty(),
             "a turn for a live seat makes no {verb} call: {:?}",
@@ -1713,8 +1756,7 @@ fn a_blocked_seat_is_refused_before_any_byte() {
     let pid = a_live_pane(&rig);
     let seat = s1();
 
-    let mut asked = a_row_reading(pid, "waiting");
-    asked.waiting_for = Some("permission prompt".to_string());
+    let asked = a_row_waiting_for(pid, "permission prompt");
     let agent = an_agent_reading(asked.clone(), asked);
     let typed = effect::type_turn(&agent, &rig.host, &turn_for(&seat), "a turn", BOUND);
     assert_eq!(
@@ -1764,9 +1806,7 @@ fn a_seat_with_no_live_pane_or_no_listed_row_is_absent_and_nothing_is_sent() {
 
     // A listing that could not be read.
     let unreadable = StubAgent::answering(Answers {
-        status: RosterRead::Unreadable {
-            cause: "the listing timed out".to_string(),
-        },
+        listing: Err("the listing timed out".to_string()),
         ..Answers::default()
     });
     let rig = Rig::new("typed-unreadable");
@@ -1827,7 +1867,7 @@ fn a_nudge_marks_its_session_and_states_what_it_carried() {
     for needle in ["orla", "700000", "fleet event rest orla"] {
         assert!(text.contains(needle), "{needle}: {text}");
     }
-    for verb in [StubAgent::START, StubAgent::RESUME] {
+    for verb in [StubAgent::LAUNCH, StubAgent::RESUME] {
         assert!(agent.calls_of(verb).is_empty(), "{:?}", agent.verbs());
     }
 
@@ -1857,8 +1897,7 @@ fn a_nudge_marks_its_session_and_states_what_it_carried() {
 
     // A seat at a dialog is refused before any byte, and marked.
     let before = rig.host.sends(&rig.session()).len();
-    let mut asked = a_row_reading(pid, "waiting");
-    asked.waiting_for = Some("permission prompt".to_string());
+    let asked = a_row_waiting_for(pid, "permission prompt");
     let agent = an_agent_reading(asked.clone(), asked);
     let mut table = Table::default();
     let (outcome, event) = nudged(&agent, &mut table, &mut log);

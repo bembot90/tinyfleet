@@ -324,9 +324,15 @@ fn a_policy_that_stops_parsing_keeps_last_good_and_says_so_in_the_projection() {
     assert_eq!(restored["seats"][0]["context_tokens"], 18);
 }
 
+/// A seat whose pane the host holds alive, beside a listing that answered
+/// zero bytes (lessons claude-code B4): unknown, with the cause, and never
+/// present or absent. The pane is what makes the listing the question — a
+/// seat the host holds nothing for is absent on the host's own reading, and
+/// its agent is not asked about it.
 #[test]
 fn an_unreadable_listing_is_unknown_for_every_seat_and_never_absent() {
     let rig = Rig::new("silent");
+    common::live_pane(&rig.tmux_state_path(), SEAT_ID, &rig.worktree());
     rig.write_roster("");
     assert_eq!(rig.observe().status.code(), Some(0));
     let published = rig.projection();

@@ -1807,16 +1807,18 @@ mod isolation {
         let out = rig.observe();
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
 
-        // BOTH directories were asked, and the row's own is among them: this is
-        // what a fold reading every row under the fleet's own leaves out.
+        // The row's own directory was asked, and ONLY it: this is what a fold
+        // reading every row under the fleet's own leaves out, and a seat whose
+        // session came up under its own directory is asked about there alone —
+        // the fleet's listing is read only for a seat that runs under it.
         let dirs = rig.listing_dirs();
         assert!(
             dirs.iter().any(|d| Path::new(d) == config_dir),
             "the row's own directory was read: {dirs:?}"
         );
         assert!(
-            dirs.iter().any(|d| Path::new(d) != config_dir),
-            "and the fleet's was read too: {dirs:?}"
+            dirs.iter().all(|d| Path::new(d) == config_dir),
+            "and no other, the fleet's included: {dirs:?}"
         );
 
         let row = seat_row(&rig);

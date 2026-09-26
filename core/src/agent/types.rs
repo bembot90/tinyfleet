@@ -10,10 +10,10 @@
 //! [`crate::adapter::exec`]; what differs is the version this contract states,
 //! its verbs, and its refusal's reasons.
 //!
-//! NOTHING CALLS THESE YET. The controller's trait still speaks its own
-//! shapes; it moves onto these verb by verb, and until it does only this
-//! file's own tests and the schema generated from them ([`super::schema`])
-//! hold them.
+//! THE CONTROLLER'S AGENT TRAIT SPEAKS THESE: its six verbs take and answer
+//! exactly these types, which the in-process Claude Code adapter answers
+//! today. No executable adapter is spoken to yet; the envelope and the
+//! answer's reader below are what one will be.
 //!
 //! IT GROWS ADDITIVELY. `schema_version` stays 1 while every field a later
 //! fleet adds to a request is optional and every field it adds to an answer is

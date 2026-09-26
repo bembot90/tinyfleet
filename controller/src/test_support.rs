@@ -3,7 +3,10 @@
 //! which a dependent's DEV-dependency turns on: under resolver 2 that keeps it
 //! out of the binary a release build produces.
 
-use crate::adapter::{Agent, AgentRow, Launch, RosterRead, StartSpec};
+use crate::adapter::{
+    Agent, AgentError, Argv, Capabilities, Launch, Posture, Resume, SeatActivity, SeatContext,
+    SeatRef, Version,
+};
 use crate::clock::Clock;
 use std::path::Path;
 use std::sync::Mutex;
@@ -77,8 +80,10 @@ pub struct Call {
     /// One of [`StubAgent`]'s verb constants, so an arm and the stub name a verb
     /// from the same value.
     pub verb: &'static str,
-    /// Which session or seat the call was about — the address, the seat
-    /// directory or the session id it named. Empty for a verb that names none.
+    /// Which session or seat the call was about — the session name a launch
+    /// named, the session id a resume named, or the seats a read or a context
+    /// was asked about, by id and comma-separated. Empty for a verb that names
+    /// none.
     pub about: String,
 }
 
@@ -86,31 +91,44 @@ pub struct Call {
 ///
 /// Set per arm at construction, and settable again between ticks through
 /// [`StubAgent::set`]: a loop's second tick can be told something its first was
-/// not, which is how a roster that changes under the controller is driven.
+/// not, which is how an agent that changes under the controller is driven.
 #[derive(Clone, Debug)]
 pub struct Answers {
-    pub status: RosterRead,
+    /// The listing `read` is answered from, in the shape the one real adapter
+    /// reads (`claude agents --json --all`'s JSON rows), or why none could be
+    /// read. Every directory a read names is answered from it, and a seat is
+    /// found in it by the real adapter's own rules
+    /// ([`crate::adapter::claude_code::readings_from`]).
+    pub listing: Result<String, String>,
     pub version: Option<String>,
-    /// `Ok` is a launch built from the start's own spec ([`StubAgent::launched`]),
-    /// and `Err` a launch the agent refuses, with its cause.
+    /// `Ok` is a launch built from the request ([`StubAgent::launched`]), and
+    /// `Err` a launch the agent could not build, with its cause.
     pub launch: Result<(), String>,
     /// The same for a resume ([`StubAgent::resumed`]).
     pub resume: Result<(), String>,
-    pub transcript: Option<String>,
-    pub ended_at: Option<u64>,
+    /// The log every session reads as, in the shape the one real adapter reads
+    /// a transcript in — its first turn for `read`'s
+    /// logged-out answer, and its window and turns for `context`.
+    pub session_log: Option<String>,
+    /// When every session last wrote, in epoch milliseconds, for `context`.
+    pub last_write: Option<u64>,
+    /// What `capabilities` declares: the one real adapter's, unless an arm
+    /// says otherwise.
+    pub capabilities: Capabilities,
 }
 
 impl Default for Answers {
-    /// A fleet the agent can see and nothing is running in: an empty roster that
-    /// READ, and every effect succeeding.
+    /// A fleet the agent can see and nothing is running in: an empty listing
+    /// that READ, and every effect succeeding.
     fn default() -> Self {
         Self {
-            status: RosterRead::Readable(Vec::new()),
+            listing: Ok("[]".to_string()),
             version: Some(StubAgent::VERSION.to_string()),
             launch: Ok(()),
             resume: Ok(()),
-            transcript: None,
-            ended_at: None,
+            session_log: None,
+            last_write: None,
+            capabilities: crate::adapter::claude_code::capabilities(),
         }
     }
 }
@@ -124,26 +142,25 @@ impl Default for Answers {
 pub struct StubAgent {
     answers: Mutex<Answers>,
     calls: Mutex<Vec<Call>>,
-    starts: Mutex<Vec<StartSpec>>,
-    /// Listings answered ahead of [`Answers::status`], one per read, in order:
+    starts: Mutex<Vec<Launch>>,
+    /// Listings answered ahead of [`Answers::listing`], one per read, in order:
     /// see [`StubAgent::list_next`].
-    listed_next: Mutex<std::collections::VecDeque<RosterRead>>,
+    listed_next: Mutex<std::collections::VecDeque<Result<String, String>>>,
 }
 
 impl StubAgent {
-    pub const START: &'static str = "start";
+    pub const LAUNCH: &'static str = "launch";
     pub const RESUME: &'static str = "resume";
-    pub const STATUS: &'static str = "status";
-    pub const TRANSCRIPT: &'static str = "transcript";
-    pub const ENDED_AT: &'static str = "ended_at";
+    pub const READ: &'static str = "read";
+    pub const CONTEXT: &'static str = "context";
     pub const VERSION_CALL: &'static str = "version";
+    pub const CAPABILITIES: &'static str = "capabilities";
 
     /// What [`Answers::default`] reports as the live agent version.
     pub const VERSION: &'static str = "0.0.0-stub";
 
-    /// Where this provider would keep a session's project-local settings. No
-    /// observe path reads it; it is here because the trait has the verb.
-    pub const LOCAL_SETTINGS: &'static str = ".stub/settings.json";
+    /// The agent the stub's `version` names.
+    pub const NAME: &'static str = "stub";
 
     pub fn new() -> StubAgent {
         StubAgent::answering(Answers::default())
@@ -158,14 +175,14 @@ impl StubAgent {
         }
     }
 
-    /// Answer the next reads of the listing with `reads`, one each and in
-    /// order, and [`Answers::status`] once they are spent — how an arm says
-    /// what a row read before a turn was typed and what it reads after.
-    pub fn list_next(&self, reads: impl IntoIterator<Item = RosterRead>) {
+    /// Answer the next reads with `listings`, one each and in order, and
+    /// [`Answers::listing`] once they are spent — how an arm says what a seat
+    /// read before a turn was typed and what it reads after.
+    pub fn list_next(&self, listings: impl IntoIterator<Item = Result<String, String>>) {
         self.listed_next
             .lock()
             .expect("the stub agent's own lock")
-            .extend(reads);
+            .extend(listings);
     }
 
     /// Change what the next call is told.
@@ -192,9 +209,9 @@ impl StubAgent {
             .collect()
     }
 
-    /// Every start's whole specification, so an arm reads what the effect asked
+    /// Every launch's whole request, so an arm reads what the effect asked
     /// for rather than only that it asked.
-    pub fn starts(&self) -> Vec<StartSpec> {
+    pub fn starts(&self) -> Vec<Launch> {
         self.starts
             .lock()
             .expect("the stub agent's own lock")
@@ -230,68 +247,69 @@ impl StubAgent {
     /// a fake starts no process, and one that is real is never handed a stub.
     pub const PROGRAM: &'static str = "/nowhere/stub-agent";
 
-    /// The launch the stub answers for `spec`: the argv in the shape the one
-    /// real adapter builds — the name, the model, the posture, the plugin root
-    /// where one is named, then the first turn — and an environment carrying
-    /// the actor and the configuration directory, so an arm reads what a start
-    /// asked for off the host's own record of the session.
-    pub fn launched(spec: &StartSpec) -> Launch {
-        let mut argv: Vec<String> = [
+    /// The variable a stub launch and resume name the request's configuration
+    /// directory under, so an arm reads it off the host's own record of the
+    /// session.
+    pub const CONFIG_DIR_VAR: &'static str = "STUB_CONFIG_DIR";
+
+    /// The launch the stub answers for `launch`: the name, the model, the
+    /// posture in fleet's own word, then the first turn — and the request's
+    /// environment with the configuration directory beside it.
+    pub fn launched(launch: &Launch) -> Argv {
+        let argv: Vec<String> = [
             StubAgent::PROGRAM,
             "--name",
-            &spec.name,
+            &launch.name,
             "--model",
-            &spec.model,
-            "--permission-mode",
-            &spec.posture,
+            &launch.model,
+            "--posture",
+            posture_word(launch.posture),
+            &launch.first_turn,
         ]
         .iter()
         .map(|a| a.to_string())
         .collect();
-        if let Some(plugin_dir) = &spec.plugin_dir {
-            argv.push("--plugin-dir".to_string());
-            argv.push(plugin_dir.clone());
-        }
-        argv.push(spec.first_turn.clone());
-        Launch {
-            argv,
-            env: StubAgent::session_env(spec),
-        }
+        let mut env = launch.env.clone();
+        env.extend(StubAgent::own_env(launch.config_dir.as_deref()));
+        Argv { argv, env }
     }
 
-    /// The resume the stub answers for `session_id` under `spec`, in the shape
-    /// the one real adapter builds: the full id, then the model, the posture
-    /// and the plugin root where one is named — no name and no first turn —
-    /// under the start's environment.
-    pub fn resumed(session_id: &str, spec: &StartSpec) -> Launch {
-        let mut argv: Vec<String> = [
+    /// The resume the stub answers for `resume`: the full id, then the model
+    /// and the posture — no name and no first turn — under the configuration
+    /// directory alone; fleet sets its own variables beside it.
+    pub fn resumed(resume: &Resume) -> Argv {
+        let argv: Vec<String> = [
             StubAgent::PROGRAM,
             "--resume",
-            session_id,
+            &resume.session_id,
             "--model",
-            &spec.model,
-            "--permission-mode",
-            &spec.posture,
+            &resume.model,
+            "--posture",
+            posture_word(resume.posture),
         ]
         .iter()
         .map(|a| a.to_string())
         .collect();
-        if let Some(plugin_dir) = &spec.plugin_dir {
-            argv.push("--plugin-dir".to_string());
-            argv.push(plugin_dir.clone());
-        }
-        Launch {
+        Argv {
             argv,
-            env: StubAgent::session_env(spec),
+            env: StubAgent::own_env(resume.config_dir.as_deref()),
         }
     }
 
-    fn session_env(spec: &StartSpec) -> Vec<(String, String)> {
-        let mut env = vec![("FLEET_ACTOR".to_string(), spec.actor.clone())];
-        if let Some(dir) = &spec.config_dir {
-            env.push(("CLAUDE_CONFIG_DIR".to_string(), dir.clone()));
-        }
-        env
+    fn own_env(config_dir: Option<&str>) -> std::collections::BTreeMap<String, String> {
+        config_dir
+            .map(|dir| (StubAgent::CONFIG_DIR_VAR.to_string(), dir.to_string()))
+            .into_iter()
+            .collect()
+    }
+}
+
+/// A posture's own word, as the contract spells it.
+fn posture_word(posture: Posture) -> &'static str {
+    match posture {
+        Posture::Ask => "ask",
+        Posture::Auto => "auto",
+        Posture::Unattended => "unattended",
     }
 }
 
@@ -324,29 +342,31 @@ pub const ARRIVED_CWD: &str = "/nowhere/arrived";
 
 /// The row the listing shows for a session a start brought up on a
 /// [`FakeHost`], found by the pane's pid and carrying a status, which is what
-/// a start's watch believes (lessons claude-code B10).
+/// a start's watch believes (lessons claude-code B10) — as the JSON the one
+/// real adapter reads.
 ///
-/// It stands in [`ARRIVED_CWD`] and not in the seat's worktree. A row is a
+/// It stands in [`ARRIVED_CWD`] and not in the seat's worktree. A session is a
 /// seat's by the pane's pid and never by where it stands (fleet-rge6.3), so
-/// the next poll reads it as the seat's live session all the same; the
-/// directory only keeps a listed arrival from reading as a session the host
-/// does not hold standing in some seat's worktree.
-pub fn arrived(pid: u32) -> AgentRow {
-    AgentRow {
-        session_id: format!("arrived-{pid}"),
-        cwd: ARRIVED_CWD.to_string(),
-        pid: Some(pid),
-        state: None,
-        status: Some("idle".to_string()),
-        started_at: None,
-        waiting_for: None,
-    }
+/// the next poll reads it as the seat's live session all the same.
+pub fn arrived(pid: u32) -> String {
+    serde_json::json!({
+        "sessionId": format!("arrived-{pid}"),
+        "cwd": ARRIVED_CWD,
+        "pid": pid,
+        "status": "idle",
+    })
+    .to_string()
 }
 
 /// [`arrived`] for the first `n` panes a fresh [`FakeHost`] or a fresh
 /// `fleet-tmux-stub` state hands out, in order.
-pub fn arrivals(n: u32) -> Vec<AgentRow> {
+pub fn arrivals(n: u32) -> Vec<String> {
     (0..n).map(|k| arrived(FIRST_PANE_PID + k)).collect()
+}
+
+/// Rows as the listing's JSON body.
+pub fn listing(rows: &[String]) -> String {
+    format!("[{}]", rows.join(", "))
 }
 
 /// How many arrivals [`with_arrivals`] lists: more panes than any one arm's
@@ -362,18 +382,7 @@ pub const LISTED_ARRIVALS: u32 = 8;
 /// is not a JSON array is served as the arm gave it — an arm serving a listing
 /// that does not parse means exactly that.
 pub fn with_arrivals(body: &str) -> String {
-    let rows: Vec<String> = arrivals(LISTED_ARRIVALS)
-        .iter()
-        .map(|row| {
-            serde_json::json!({
-                "sessionId": row.session_id,
-                "cwd": row.cwd,
-                "pid": row.pid,
-                "status": row.status,
-            })
-            .to_string()
-        })
-        .collect();
+    let rows = arrivals(LISTED_ARRIVALS);
     let trimmed = body.trim_end();
     match trimmed.strip_suffix(']') {
         Some(head) if trimmed.trim_start().starts_with('[') => {
@@ -388,14 +397,86 @@ pub fn with_arrivals(body: &str) -> String {
     }
 }
 
+/// The seats a read or a context was asked about, as a call's `about`.
+fn about(seats: &[SeatRef]) -> String {
+    seats
+        .iter()
+        .map(|seat| seat.seat.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 impl Agent for StubAgent {
-    fn launch(&self, spec: &StartSpec) -> Result<Launch, String> {
-        self.record(StubAgent::START, spec.name.clone());
+    fn capabilities(&self) -> Result<Capabilities, AgentError> {
+        self.record(StubAgent::CAPABILITIES, "");
+        Ok(self.answers().capabilities)
+    }
+
+    fn version(&self) -> Result<Version, AgentError> {
+        self.record(StubAgent::VERSION_CALL, "");
+        Ok(Version {
+            name: StubAgent::NAME.to_string(),
+            version: self.answers().version,
+        })
+    }
+
+    fn launch(&self, launch: &Launch) -> Result<Argv, AgentError> {
+        self.record(StubAgent::LAUNCH, launch.name.clone());
         self.starts
             .lock()
             .expect("the stub agent's own lock")
-            .push(spec.clone());
-        self.answers().launch.map(|()| StubAgent::launched(spec))
+            .push(launch.clone());
+        self.answers()
+            .launch
+            .map(|()| StubAgent::launched(launch))
+            .map_err(AgentError::Unreadable)
+    }
+
+    fn resume(&self, resume: &Resume) -> Result<Argv, AgentError> {
+        self.record(StubAgent::RESUME, resume.session_id.clone());
+        self.answers()
+            .resume
+            .map(|()| StubAgent::resumed(resume))
+            .map_err(AgentError::Unreadable)
+    }
+
+    /// The one real adapter's own rules, over the stub's listing and its one
+    /// transcript.
+    fn read(&self, seats: &[SeatRef]) -> Result<Vec<SeatActivity>, AgentError> {
+        self.record(StubAgent::READ, about(seats));
+        let answers = self.answers();
+        let listing = self
+            .listed_next
+            .lock()
+            .expect("the stub agent's own lock")
+            .pop_front()
+            .unwrap_or(answers.listing);
+        Ok(crate::adapter::claude_code::readings_from(
+            seats,
+            &|_: Option<&str>| listing.clone(),
+            &|_: &SeatRef, _: &str| answers.session_log.clone(),
+        ))
+    }
+
+    /// Every seat with a session reads the stub's one transcript, last written
+    /// when [`Answers::last_write`] says; a seat with none answers its id alone.
+    fn context(&self, seats: &[SeatRef]) -> Result<Vec<SeatContext>, AgentError> {
+        self.record(StubAgent::CONTEXT, about(seats));
+        let answers = self.answers();
+        let written = answers
+            .last_write
+            .map(|ms| std::time::UNIX_EPOCH + Duration::from_millis(ms));
+        Ok(seats
+            .iter()
+            .map(|seat| match seat.session_id {
+                Some(_) => crate::adapter::claude_code::context_of(
+                    seat,
+                    answers.session_log.as_deref(),
+                    written,
+                ),
+                None => crate::adapter::claude_code::context_of(seat, None, None),
+            })
+            .collect())
     }
 
     /// The one real screen rule, read as the adapter reads it: an arm drives
@@ -403,59 +484,7 @@ impl Agent for StubAgent {
     fn trust_keys(&self, screen: &str) -> Option<Vec<String>> {
         crate::adapter::claude_code::trust_keys(screen)
     }
-
-    fn resume(&self, session_id: &str, spec: &StartSpec) -> Result<Launch, String> {
-        self.record(StubAgent::RESUME, session_id);
-        self.answers()
-            .resume
-            .map(|()| StubAgent::resumed(session_id, spec))
-    }
-
-    fn local_settings(&self) -> &'static str {
-        StubAgent::LOCAL_SETTINGS
-    }
-
-    fn status(&self, config_dir: Option<&Path>) -> RosterRead {
-        self.record(
-            StubAgent::STATUS,
-            config_dir
-                .map(|dir| dir.display().to_string())
-                .unwrap_or_default(),
-        );
-        let next = self
-            .listed_next
-            .lock()
-            .expect("the stub agent's own lock")
-            .pop_front();
-        next.unwrap_or_else(|| self.answers().status)
-    }
-
-    fn transcript(
-        &self,
-        _config_dir: Option<&Path>,
-        _worktree: &str,
-        session_id: &str,
-    ) -> Option<String> {
-        self.record(StubAgent::TRANSCRIPT, session_id);
-        self.answers().transcript
-    }
-
-    fn ended_at(
-        &self,
-        _config_dir: Option<&Path>,
-        _worktree: &str,
-        session_id: &str,
-    ) -> Option<u64> {
-        self.record(StubAgent::ENDED_AT, session_id);
-        self.answers().ended_at
-    }
-
-    fn version(&self) -> Option<String> {
-        self.record(StubAgent::VERSION_CALL, "");
-        self.answers().version
-    }
 }
-
 // ---- the host fake ----------------------------------------------------------
 //
 // ONE MODEL, TWO FACES (reviewer call 2026-09-25, E7). [`FakeServer`] is a
@@ -968,13 +997,13 @@ mod tests {
     /// one — while a body that is no array is left exactly as the arm wrote it.
     #[test]
     fn the_arrivals_follow_the_arms_own_rows_and_keep_their_bytes() {
-        let empty = with_arrivals("[]");
-        let rows = match crate::adapter::claude_code::parse_roster(&empty) {
-            RosterRead::Readable(rows) => rows,
-            RosterRead::Unreadable { cause } => panic!("{cause}: {empty}"),
+        let rows_of = |body: &str| -> Vec<serde_json::Value> {
+            serde_json::from_str(body).unwrap_or_else(|e| panic!("{e}: {body}"))
         };
+        let empty = with_arrivals("[]");
+        let rows = rows_of(&empty);
         assert_eq!(rows.len(), LISTED_ARRIVALS as usize);
-        assert_eq!(rows[0].pid, Some(FIRST_PANE_PID));
+        assert_eq!(rows[0]["pid"], FIRST_PANE_PID);
 
         let own = "[{\"sessionId\": \"a-session\", \"cwd\": \"/wt\", \"pid\": 4242}]\n";
         let listed = with_arrivals(own);
@@ -982,11 +1011,7 @@ mod tests {
             listed.starts_with("[{\"sessionId\": \"a-session\", \"cwd\": \"/wt\", \"pid\": 4242}"),
             "{listed}"
         );
-        let rows = match crate::adapter::claude_code::parse_roster(&listed) {
-            RosterRead::Readable(rows) => rows,
-            RosterRead::Unreadable { cause } => panic!("{cause}: {listed}"),
-        };
-        assert_eq!(rows.len(), LISTED_ARRIVALS as usize + 1);
+        assert_eq!(rows_of(&listed).len(), LISTED_ARRIVALS as usize + 1);
 
         assert_eq!(with_arrivals("not a listing"), "not a listing");
         assert_eq!(with_arrivals(""), "");

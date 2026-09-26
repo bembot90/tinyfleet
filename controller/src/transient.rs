@@ -28,7 +28,7 @@
 //! because setting a variable in a process that is forking children races the
 //! fork.
 
-use crate::adapter::{dir_key, Agent, RosterRead};
+use crate::adapter::{self, dir_key, Activity, Agent, Permissions};
 use crate::config::{self, Seat};
 use crate::effect::{self, Outcome, Target, Typed};
 use crate::events::{self, ActorRef, EventLog};
@@ -253,26 +253,6 @@ impl Machine<'_> {
             })
     }
 
-    /// One listing, once. `Unreadable` is could-not-tell on every verb that
-    /// asks (lessons claude-code B4): a listing that answers with nothing while
-    /// sessions are live must not read as an empty fleet.
-    ///
-    /// `config_dir` is one row's own configuration directory, and `None` the
-    /// fleet's. A session started under its own is named by that directory's
-    /// listing and by no other, so a verb about such a seat reads there or
-    /// sees nothing at all — which is a probe that cannot fail.
-    fn roster_under(
-        &self,
-        config_dir: Option<&Path>,
-    ) -> Result<Vec<crate::adapter::AgentRow>, Refusal> {
-        match self.agent.status(config_dir) {
-            RosterRead::Readable(rows) => Ok(rows),
-            RosterRead::Unreadable { cause } => Err(Refusal::could_not_tell(format!(
-                "the roster could not be read, so no session can be named: {cause}"
-            ))),
-        }
-    }
-
     /// The row of the seat list this argument names, through the one resolver
     /// every seat argument takes, with the refusals a verb over a transient
     /// seat owes: an argument that names no one row, and a named row where a
@@ -365,9 +345,9 @@ pub struct Belt {
 impl Belt {
     /// Both legs, read once.
     ///
-    /// An unreadable roster makes the cap leg could-not-tell and REFUSES
-    /// NOTHING — a listing nobody can read must not wedge every spawn in the
-    /// fleet — while the load leg keeps its teeth.
+    /// A cap leg nobody could read is could-not-tell and REFUSES NOTHING — an
+    /// agent nobody can ask must not wedge every spawn in the fleet — while
+    /// the load leg keeps its teeth.
     pub fn read(machine: &Machine, seats: &[Seat]) -> Belt {
         let Readings {
             load: reading,
@@ -382,68 +362,63 @@ impl Belt {
             _ => None,
         };
 
-        // THE FLEET'S LISTING, and one more per transient seat that came up under
-        // its own configuration directory. Such a seat is named by that
-        // directory's listing and appears in no other, so a cap counted off the fleet's
-        // read alone would be zero however many were mid-turn — a ceiling that
-        // refuses nothing, which is what this leg exists to prevent.
+        // EVERY TRANSIENT SEAT WHOSE PANE THE HOST HOLDS ALIVE, asked about in
+        // ONE read, each by the session its row last sighted and by its pane,
+        // under the directory its session came up under: a spawned seat is
+        // known to its agent under that directory and no other, so a cap
+        // counted off the fleet's would be zero however many were mid-turn — a
+        // ceiling that refuses nothing, which is what this leg exists to
+        // prevent. A seat is counted by what the agent says its OWN session is
+        // doing, and never by a session standing in its worktree (CORRECTIONS
+        // AT REVIEW, 2026-09-25).
         //
-        // ONE UNREADABLE LISTING makes the whole leg could-not-tell, as one
-        // unreadable roster did: a count short by an unknown number is not a
-        // count, and a listing nobody can read must not wedge every spawn.
+        // ONE READING NOBODY COULD MAKE makes the whole leg could-not-tell, as
+        // one unreadable listing did: a count short by an unknown number is not
+        // a count, and an agent nobody can read must not wedge every spawn.
         //
         // The table is read ONCE, not once per seat: the directories all come
         // out of the same file and a second read could answer differently.
         let recorded = sessions::read(&machine.table_path()).0;
-        let mut mid_turn = 0u32;
-        let mut busy_unreadable = None;
-        let mut count_in = |rows: &[crate::adapter::AgentRow], keys: &[String]| {
-            mid_turn += rows
-                .iter()
-                .filter(|row| {
-                    row.is_live() && row.is_busy() && keys.iter().any(|key| key == row.cwd_key())
-                })
-                .count() as u32;
-        };
-
-        // The seats whose sessions the fleet's own listing names: every
-        // transient row that named no directory of its own.
-        let shared: Vec<String> = seats
-            .iter()
-            .filter(|seat| seat.transient)
-            .filter(|seat| {
-                recorded
-                    .as_ref()
-                    .and_then(|table| table.newest_for(&seat.id.to_string()))
-                    .and_then(|row| row.config_dir.as_ref())
-                    .is_none()
-            })
-            .flat_map(|seat| seat.worktrees.iter().map(|(_, path)| path.clone()))
-            .map(|path| dir_key(&path).to_string())
-            .collect();
-        match machine.agent.status(None) {
-            RosterRead::Readable(rows) => count_in(&rows, &shared),
-            RosterRead::Unreadable { cause } => busy_unreadable = Some(cause),
-        }
-
-        for seat in seats.iter().filter(|seat| seat.transient) {
-            let Some(config_dir) = recorded
-                .as_ref()
-                .and_then(|table| table.newest_for(&seat.id.to_string()))
-                .and_then(|row| row.config_dir.clone())
-            else {
-                continue;
-            };
-            let keys: Vec<String> = seat
-                .worktrees
-                .iter()
-                .map(|(_, path)| dir_key(path).to_string())
-                .collect();
-            match machine.agent.status(Some(Path::new(&config_dir))) {
-                RosterRead::Readable(rows) => count_in(&rows, &keys),
-                RosterRead::Unreadable { cause } => busy_unreadable = Some(cause),
+        let (mid_turn, busy_unreadable) = match machine.host.list() {
+            HostRead::Unreadable { cause } => {
+                (0, Some(format!("the host could not be read: {cause}")))
             }
-        }
+            HostRead::Readable(panes) => {
+                let asked: Vec<adapter::SeatRef> = seats
+                    .iter()
+                    .filter(|seat| seat.transient)
+                    .filter_map(|seat| {
+                        let session = host::session_for(&seat.id);
+                        let pane = panes.iter().find(|pane| {
+                            pane.session == session && pane.state == PaneState::Alive
+                        })?;
+                        let row = recorded
+                            .as_ref()
+                            .and_then(|table| table.newest_for(&seat.id.to_string()));
+                        Some(adapter::SeatRef {
+                            seat: seat.id,
+                            session_id: row.and_then(|row| row.session_id.clone()),
+                            pid: pane.pid,
+                            config_dir: row.and_then(|row| row.config_dir.clone()),
+                            worktree: pane.path.clone(),
+                            screen: None,
+                        })
+                    })
+                    .collect();
+                let read = adapter::readings(machine.agent, &asked);
+                let unreadable = read
+                    .iter()
+                    .find(|reading| {
+                        reading.activity == Activity::Unknown && reading.session_id.is_none()
+                    })
+                    .map(|reading| reading.cause.clone().unwrap_or_default());
+                let busy = read
+                    .iter()
+                    .filter(|reading| reading.activity == Activity::Busy)
+                    .count() as u32;
+                (busy, unreadable)
+            }
+        };
         let busy = match &busy_unreadable {
             Some(_) => None,
             None => Some((mid_turn, machine.policy.max_transient_busy)),
@@ -455,7 +430,6 @@ impl Belt {
             busy_unreadable,
         }
     }
-
     /// The legs that are over their ceiling, in the order they are read.
     pub fn over(&self) -> Vec<&'static str> {
         let mut over = Vec::new();
@@ -536,20 +510,15 @@ fn override_u32(key: &str) -> Option<u32> {
 pub struct Spawn<'a> {
     pub first_turn: &'a str,
     pub model: Option<&'a str>,
-    /// The provider's local settings document, with [`WORKTREE`] still in it.
+    /// What the seat may run without asking, in fleet's own words: the
+    /// project's command words and the builder's checks.
     ///
     /// A spawned session comes up under a posture that refuses every writing
-    /// call it holds no rule for, and a permission list cannot ride the plugin
-    /// root the pack's overlay is loaded through — so the rules are written into
-    /// the worktree instead, before the first turn. `None` writes nothing.
-    ///
-    /// Everything else in the document is rendered by the caller, which reads
-    /// the pack layers and the project's policy. The worktree is not: it is
-    /// claimed below, and nothing outside this function knows the path.
-    ///
-    /// A document the worktree already carries is MERGED INTO rather than
-    /// replaced: see [`write_settings`].
-    pub settings: Option<&'a str>,
+    /// call it holds no rule for, so the launch hands these to the agent's
+    /// adapter, which renders them into its agent's own format inside the
+    /// seat's worktree before the first turn (reviewer call 2026-09-25, E8).
+    /// Nothing here knows that format or where the agent reads it.
+    pub permissions: Permissions,
     /// The work item this spawn is being made for, where the caller is giving
     /// one. It is carried only to be RECORDED — on the row and on the stream —
     /// so a report about this seat can name the work it was holding; nothing
@@ -578,10 +547,6 @@ pub struct Spawn<'a> {
 /// Where the per-row configuration directories live, under the machine
 /// directory: one per spawned seat, named by the seat.
 pub const CONFIG_DIRS: &str = "config";
-
-/// The one placeholder [`spawn`] fills, in the same `{name}` grammar the pack's
-/// own templates use.
-pub const WORKTREE: &str = "{worktree}";
 
 /// What a spawn left behind. The seat's machine name, `agent-<short>`, is the
 /// verb's one answer on stdout, because a person reads it; its id is what
@@ -622,11 +587,20 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
         None => TRUNK.to_string(),
     };
 
+    // (a3) What the agent declares, before anything is made: the model a
+    // spawn that names none starts on is the fleet's, else the agent's.
+    let capabilities = machine.agent.capabilities().map_err(|why| {
+        Refusal::could_not_tell(format!(
+            "the agent's capabilities could not be read, so no model can be named and nothing \
+             was made: {why}"
+        ))
+    })?;
+
     // (b) and (c) under ONE lock: a freshly minted seat id, the worktree cut
     // from the commit above, and the row. The rollback window opens with the
     // `worktree add` inside it, and a claim that answers `Made` is one that got
     // that far.
-    let model = machine.policy.model_for(ask.model);
+    let model = machine.policy.model_for(ask.model, &capabilities);
     let claimed = config::claim_transient_seat(
         &machine.config_path(),
         &config::TransientSeat {
@@ -695,27 +669,6 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
         }
     };
 
-    // (c2) The permission rules, inside the rollback window and BEFORE the
-    // start: a session that came up without them is one that cannot write, and
-    // this provider reads the file once at startup.
-    let settings = match ask.settings {
-        Some(template) => {
-            match write_settings(machine.agent.local_settings(), &worktree, template) {
-                Ok(did) => Some(did),
-                Err(why) => {
-                    return Err(rolled_back(
-                        machine,
-                        COULD_NOT_TELL,
-                        Some(&claimed),
-                        &worktree,
-                        &why,
-                    ))
-                }
-            }
-        }
-        None => None,
-    };
-
     // (c3) The seat's OWN configuration directory, empty but for whatever the
     // overlay puts in a configuration space. Made here, inside the rollback
     // window and before the start, because the start is what the directory is
@@ -761,7 +714,10 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
         transient: true,
         config_dir: Some(config_dir.display().to_string()),
         item: ask.item.map(str::to_string),
-        settings: settings.map(|did| did.as_str().to_string()),
+        // Rendered by the agent's adapter into the seat's worktree as the
+        // launch is built — inside the rollback window and BEFORE the start: a
+        // session that came up without them is one that cannot write.
+        permissions: ask.permissions.clone(),
         belt: Some(belt.payload()),
         // THE SPAWNING PROCESS'S OWN RUN, read here and nowhere else. A
         // workflow's child carries `FLEET_RUN_ID`, and `fleet seat spawn` under
@@ -921,147 +877,6 @@ fn make_config_dir(dir: &Path, files: &[(String, String)]) -> Result<(), String>
     Ok(())
 }
 
-/// What a settings write DID, which is what the seat's `session.spawned` line
-/// carries so a person reading the stream can tell the two apart.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SettingsWrite {
-    /// The worktree carried no such document, so the pack's is the whole file.
-    Written,
-    /// The worktree carried one — a project may TRACK this path on its trunk —
-    /// so the pack's lists were folded into it and every rule of the project's
-    /// own kept.
-    Merged,
-}
-
-impl SettingsWrite {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            SettingsWrite::Written => "written",
-            SettingsWrite::Merged => "merged",
-        }
-    }
-}
-
-/// The permission lists a merge folds. Everything else in either document is
-/// the project's to keep: a key only the pack carries is not a rule, and a key
-/// only the project carries is not this slice's to touch.
-const MERGED_LISTS: [&str; 2] = ["allow", "deny"];
-
-/// Render the settings document into the worktree and read it back.
-///
-/// A document already standing at the path is MERGED INTO, never replaced: a
-/// project that tracks this file on its trunk hands every transient worktree a
-/// copy of it, and a spawn that wrote over it would take the project's own
-/// rules out of the seat's session and leave a tracked file modified in a
-/// checkout nobody edited.
-///
-/// The read-back is the same check every other step here takes: a write that
-/// silently landed short leaves a seat that can neither edit nor commit, and
-/// the refusal a person would get instead is one from the agent, hours later.
-fn write_settings(
-    relative: &str,
-    worktree: &Path,
-    template: &str,
-) -> Result<SettingsWrite, String> {
-    let rendered = template.replace(WORKTREE, &worktree.display().to_string());
-    let path = worktree.join(relative);
-    let standing = match std::fs::read_to_string(&path) {
-        Ok(standing) => Some(standing),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => {
-            return Err(format!(
-                "the settings document at {} could not be read, and one that cannot be read is \
-                 never written over: {e}",
-                path.display()
-            ))
-        }
-    };
-    let (document, did) = match standing {
-        None => (rendered, SettingsWrite::Written),
-        Some(standing) => (
-            merged_settings(&standing, &rendered).map_err(|why| {
-                format!(
-                    "the pack's permission rules were not merged into the document at {}, and \
-                     nothing was written over: {why}",
-                    path.display()
-                )
-            })?,
-            SettingsWrite::Merged,
-        ),
-    };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("{} could not be made: {e}", parent.display()))?;
-    }
-    std::fs::write(&path, &document).map_err(|e| {
-        format!(
-            "the permission rules at {} were not written: {e}",
-            path.display()
-        )
-    })?;
-    match std::fs::read_to_string(&path) {
-        Ok(back) if back == document => Ok(did),
-        Ok(_) => Err(format!(
-            "the permission rules at {} do not read back as they were written",
-            path.display()
-        )),
-        Err(e) => Err(format!(
-            "the permission rules at {} do not read back: {e}",
-            path.display()
-        )),
-    }
-}
-
-/// The pack's permission lists folded into the document a project already
-/// carries: the project's document is the base, its rules stand FIRST and in
-/// their own order, the pack's are appended, and a rule the project already
-/// carries is not appended twice.
-///
-/// A document either side offers that this cannot read as JSON is an error
-/// here, which the caller turns into a refusal — the alternative is to fall
-/// back on the write, and the write is the damage.
-fn merged_settings(project: &str, pack: &str) -> Result<String, String> {
-    let mut merged: serde_json::Value = serde_json::from_str(project)
-        .map_err(|e| format!("the project's document is not JSON: {e}"))?;
-    let rules: serde_json::Value =
-        serde_json::from_str(pack).map_err(|e| format!("the pack's document is not JSON: {e}"))?;
-    let Some(root) = merged.as_object_mut() else {
-        return Err("the project's document is not a JSON object".to_string());
-    };
-    let Some(permissions) = root
-        .entry("permissions")
-        .or_insert_with(|| serde_json::json!({}))
-        .as_object_mut()
-    else {
-        return Err("the project's `permissions` is not a JSON object".to_string());
-    };
-    for list in MERGED_LISTS {
-        let Some(theirs) = rules
-            .get("permissions")
-            .and_then(|held| held.get(list))
-            .and_then(serde_json::Value::as_array)
-        else {
-            continue;
-        };
-        let Some(ours) = permissions
-            .entry(list)
-            .or_insert_with(|| serde_json::json!([]))
-            .as_array_mut()
-        else {
-            return Err(format!(
-                "the project's `permissions.{list}` is not an array"
-            ));
-        };
-        for rule in theirs {
-            if !ours.contains(rule) {
-                ours.push(rule.clone());
-            }
-        }
-    }
-    serde_json::to_string_pretty(&merged)
-        .map_err(|e| format!("the merged document could not be written out: {e}"))
-}
-
 /// Undo everything the window covers, and say what the undo did. `None` for
 /// the claim is one that made the worktree and never wrote the row, where there
 /// is nothing to drop and the line says so.
@@ -1211,13 +1026,13 @@ pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refu
     };
     // The primitive knows only what the AGENT says. Whether the seat is holding
     // a work item is the caller's half and is not asked here.
-    if live.is_busy() {
+    if live.reading.activity == Activity::Busy {
         return Err(Refusal::refused(format!(
             "`{seat}` is still holding a turn — the agent reports its session {}",
-            crate::adapter::BUSY
+            adapter::word(Activity::Busy)
         )));
     }
-    if let Some(cause) = live.blocked_on() {
+    if let Some(cause) = adapter::waiting_on(&live.reading) {
         return Err(Refusal::refused(format!(
             "`{seat}` is stopped in front of a person — blocked on {cause} — and nothing is \
              typed at a dialog"
@@ -1395,11 +1210,10 @@ pub fn retire_with(
     let key = dir_key(&worktree).to_string();
 
     // THE DIRECTORY THIS SEAT'S SESSION IS HELD UNDER, read off its own row.
-    // Every listing below is made under it: a spawned seat is named by its own
-    // directory's listing and by no other, so the fleet's read would find no
-    // row whatever was still running.
+    // The agent is asked about it under that directory: a spawned seat is
+    // known to its agent under its own and no other, so a read under the
+    // fleet's would find nothing whatever was still running.
     let config_dir = machine.recorded_config_dir(&seat_id);
-    let under = config_dir.as_deref().map(Path::new);
 
     // THE SEAT'S SESSION, BY THE SEAT: its name on the host is its id
     // (reviewer call 2026-09-25, E1), so nothing the agent issued addresses it.
@@ -1427,13 +1241,35 @@ pub fn retire_with(
     let branch = branch_of(Path::new(&worktree));
     let pid = live.and_then(|pane| pane.pid);
 
-    // The listing under the seat's own directory, read ONCE before anything is
-    // touched — an unreadable one is could-not-tell here rather than after the
-    // stop — and asked for the row the live pane's process carries: a row is
-    // the seat's by that pid and never by the directory it stands in (lessons
-    // claude-code B5).
-    let rows = machine.roster_under(under)?;
-    let listed = pid.and_then(|pid| rows.iter().find(|row| row.pid == Some(pid)));
+    // The agent asked, ONCE and before anything is touched, about the live
+    // pane's process under the seat's own directory — a reading nobody could
+    // make is could-not-tell here rather than after the stop — for the session
+    // it names: a session is the seat's by that pane and never by the directory
+    // it stands in (lessons claude-code B5).
+    let listed = match live.zip(pid) {
+        None => None,
+        Some((pane, pid)) => {
+            let reading = adapter::readings(
+                machine.agent,
+                &[adapter::SeatRef {
+                    seat: row.id,
+                    session_id: None,
+                    pid: Some(pid),
+                    config_dir: config_dir.clone(),
+                    worktree: pane.path.clone(),
+                    screen: None,
+                }],
+            )
+            .remove(0);
+            if reading.activity == Activity::Unknown && reading.session_id.is_none() {
+                return Err(Refusal::could_not_tell(format!(
+                    "the agent could not be read, so no session can be named: {}",
+                    reading.cause.unwrap_or_default()
+                )));
+            }
+            reading.session_id
+        }
+    };
 
     // READ WITHOUT THE LOCK, and an unreadable table refuses here, before the
     // stop: the row comes off it at the end, and a table found unreadable only
@@ -1454,8 +1290,8 @@ pub fn retire_with(
                 Some(pid) => format!(" as pid {pid}"),
                 None => String::new(),
             },
-            match listed {
-                Some(row) => format!(", listed as {}", row.session_id),
+            match &listed {
+                Some(session) => format!(", listed as {session}"),
                 None => String::new(),
             }
         )));
@@ -1701,14 +1537,35 @@ pub fn priced_with(
         }
     };
 
-    // UNDER THE SEAT'S OWN CONFIGURATION DIRECTORY, which is where a spawned
-    // seat's transcript is: a read under the default resolves no file at all,
-    // which would price every seat this fleet spawned as unread.
+    // UNDER THE SEAT'S OWN CONFIGURATION DIRECTORY, which is where the agent
+    // keeps a spawned seat's session: a read under the default resolves
+    // nothing at all, which would price every seat this fleet spawned as
+    // unread. Asked of an agent that declares `context`, and of no other.
     let config_dir = machine.recorded_config_dir(&seat_id);
-    let under = config_dir.as_deref().map(Path::new);
-    let transcript = session_id
-        .as_deref()
-        .and_then(|session| machine.agent.transcript(under, &worktree, session));
+    let declared = machine
+        .agent
+        .capabilities()
+        .is_ok_and(|capabilities| capabilities.context);
+    let context = session_id.as_ref().and_then(|session| {
+        adapter::contexts(
+            machine.agent,
+            declared,
+            &[adapter::SeatRef {
+                seat: row.id,
+                session_id: Some(session.clone()),
+                pid: None,
+                config_dir: config_dir.clone(),
+                worktree: dir_key(&worktree).to_string(),
+                screen: None,
+            }],
+        )
+        .remove(&row.id)
+    });
+    // Whether the agent could price the session at all: a context that states
+    // neither a window nor a turn is a session nobody read.
+    let read = context
+        .as_ref()
+        .is_some_and(|context| context.tokens.is_some() || context.turns.is_some());
     let commit = head_of(Path::new(&worktree));
 
     let reclaimed = retire_with(machine, &seat_id, false, withdrawal)?;
@@ -1718,19 +1575,15 @@ pub fn priced_with(
     // than a second time here: two readings of one fact are two things that can
     // disagree.
     let cost = Cost {
-        context_tokens: transcript
-            .as_deref()
-            .and_then(crate::observe::context_tokens_in),
-        // A transcript that opened and states no turn is a MEASURED ZERO, which
-        // is why the count is taken inside the `map` and not filtered after it:
-        // a session that took none and a transcript nobody could open answer
-        // differently here, and they are different facts.
-        turns: transcript.as_deref().map(crate::observe::turns_in),
+        context_tokens: context.as_ref().and_then(|context| context.tokens),
+        // A session that took no turn is a MEASURED ZERO, which is the agent's
+        // `turns: 0`, and one nobody could read is no count at all: they are
+        // different facts, and the agent answers them differently.
+        turns: context.as_ref().and_then(|context| context.turns),
         wall_ms: dispatched_at.map(|from| now_ms.saturating_sub(from)),
         branch: reclaimed.branch.clone(),
         commit,
     };
-
     let mut log = machine.log();
     machine.journal(
         &mut log,
@@ -1745,7 +1598,7 @@ pub fn priced_with(
             "wall_ms": cost.wall_ms,
             "branch": cost.branch,
             "commit": cost.commit,
-            "transcript": transcript.is_some(),
+            "transcript": read,
             "bytes": reclaimed.bytes,
             "pid": reclaimed.pid,
             "dead": reclaimed.dead,

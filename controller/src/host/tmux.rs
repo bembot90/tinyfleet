@@ -69,7 +69,7 @@ impl TmuxHost {
     ///
     /// `FLEET_TMUX_BIN` when it names an absolute path to an executable file;
     /// a relative one is refused rather than resolved, for the reason
-    /// `resolve_effect_bin` refuses one. Otherwise the first `tmux` on the
+    /// the agent binary's own seam refuses one. Otherwise the first `tmux` on the
     /// constructed `PATH`. Under `FLEET_TEST_HERMETIC` an unnamed binary is
     /// refused, as `configured_bin` refuses one: a suite run inside a flight
     /// inherits a live environment, and an arm that missed its stub would

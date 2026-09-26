@@ -21,8 +21,8 @@
 //! states the two readings it is judged against. The overrides' own wiring is
 //! measured in `cli/tests/seat.rs`, which sets them on the CHILD it drives.
 
-use fleet_controller::adapter::claude_code::ClaudeCode;
-use fleet_controller::adapter::{Agent, RosterRead};
+use fleet_controller::adapter::claude_code::{self, ClaudeCode};
+use fleet_controller::adapter::{Activity, Agent, Permissions, SeatRef};
 use fleet_controller::config;
 use fleet_controller::events;
 use fleet_controller::host::{Host, HostRead};
@@ -458,12 +458,17 @@ impl Rig {
             .expect("the stub is executable");
     }
 
+    /// The adapter as a verb opens it under `policy`: with the plugin root
+    /// that policy names, which is the adapter's own and handed at the open.
+    fn agent_for(&self, policy: &Policy) -> ClaudeCode {
+        self.agent().with_plugin_dir(policy.plugin_dir.clone())
+    }
+
     fn agent(&self) -> ClaudeCode {
         ClaudeCode::with_seams(
             self.stub.display().to_string(),
             self.home.join(".claude"),
             Duration::from_secs(20),
-            self.machine.clone(),
             platform::child_path(&self.home),
             Some(self.stub.clone()),
             String::new(),
@@ -712,11 +717,30 @@ impl Rig {
             .and_then(|row| row.config_dir.clone())
             .map(PathBuf::from)
             .expect("the spawn recorded the seat's own configuration directory");
-        let path = fleet_controller::adapter::transcript_path(&config_dir, worktree, session_id);
+        let path = claude_code::transcript_path(&config_dir, worktree, session_id);
         std::fs::create_dir_all(path.parent().expect("the transcript has a parent"))
             .expect("the transcript's directory is made");
         std::fs::write(&path, body).expect("the transcript is written");
         path
+    }
+
+    /// A live pane on the rig's host for the seat `id`, standing in `cwd` and
+    /// running as `pid` — the pane a listed row carrying that pid is the
+    /// seat's session by (E2).
+    fn host_pane(&self, id: &str, cwd: &str, pid: u32) -> &Rig {
+        let session =
+            fleet_controller::host::session_for(&SeatId::parse(id).expect("a hand-written id"));
+        self.host
+            .fake
+            .new_session(
+                &session,
+                Path::new(cwd),
+                &["/nowhere/agent".to_string()],
+                &[],
+            )
+            .expect("the fake host starts the pane");
+        self.host.fake.set_pid(&session, pid);
+        self
     }
 
     fn row(&self, session: &str, cwd: &str, pid: u32, status: &str) -> String {
@@ -829,7 +853,7 @@ fn spawned_at(
     base: Option<&str>,
     model: Option<&str>,
 ) -> Result<transient::Spawned, Refusal> {
-    let agent = rig.agent();
+    let agent = rig.agent_for(policy);
     let machine = machine_reading(
         rig,
         &agent,
@@ -844,7 +868,7 @@ fn spawned_at(
         &Spawn {
             first_turn: "the first turn",
             model,
-            settings: None,
+            permissions: Permissions::default(),
             item: None,
             base,
             config_files: &[],
@@ -853,9 +877,10 @@ fn spawned_at(
     )
 }
 
-/// The same spawn with the settings document the caller would have rendered.
-/// `None` is what a caller offering none passes, and it is what every arm above
-/// this one runs under.
+/// The same spawn with the agent opened with the permissions template a
+/// caller reads out of the pack layers, which its launch renders the spawn's
+/// permissions into. `None` is an agent opened with none, and it is what every
+/// arm above this one runs under.
 fn spawned_with(
     rig: &Rig,
     policy: &Policy,
@@ -864,7 +889,9 @@ fn spawned_with(
     first_turn: &str,
     settings: Option<&str>,
 ) -> Result<transient::Spawned, Refusal> {
-    let agent = rig.agent();
+    let agent = rig
+        .agent_for(policy)
+        .with_permissions(settings.map(str::to_string));
     let machine = machine_reading(
         rig,
         &agent,
@@ -879,7 +906,7 @@ fn spawned_with(
         &Spawn {
             first_turn,
             model: None,
-            settings,
+            permissions: Permissions::default(),
             item: None,
             base: None,
             config_files: &[],
@@ -1009,8 +1036,10 @@ fn a_load_average_over_the_ceiling_refuses_and_creates_nothing() {
     assert_agent_name(&spawn.seat);
 }
 
-/// The load belt's second leg, counted off the roster: a live row in a
-/// TRANSIENT row's worktree carrying the agent's busy word.
+/// The load belt's second leg, counted off the agent's reading: a TRANSIENT
+/// seat whose live pane the agent reads busy. Each seat's pane is on the host,
+/// and its listed row carries that pane's pid — a row is a seat's by its pane
+/// and never by the worktree it stands in (CORRECTIONS AT REVIEW, 2026-09-25).
 ///
 /// RED-PROVED by lowering the count one: at two mid-turn against a cap of one
 /// the spawn refuses, and with one of the two rows idle it proceeds.
@@ -1034,6 +1063,9 @@ fn the_transient_cap_refuses_when_more_seats_are_mid_turn_than_the_cap() {
         named = json_string(&rig.primary.display().to_string()),
     ));
     let before = rig.config_bytes();
+    rig.host_pane("01a0d1f1-0aec-765f-9abe-00000a1b2c3d", &one, 11)
+        .host_pane("01a0d1f1-0aec-765f-9abe-00004e5f6a7b", &two, 22)
+        .host_pane(NAMED_ID, &rig.primary.display().to_string(), 33);
     rig.roster(&format!(
         "[{}, {}, {}]",
         rig.row("s-one", &one, 11, "busy"),
@@ -1090,12 +1122,23 @@ fn the_transient_cap_refuses_when_more_seats_are_mid_turn_than_the_cap() {
 }
 
 /// An unreadable roster makes the cap leg COULD NOT TELL and refuses nothing —
-/// a daemon nobody can ask must not wedge every spawn in the fleet — while the
+/// an agent nobody can ask must not wedge every spawn in the fleet — while the
 /// load leg keeps its teeth.
+///
+/// A transient seat with a live pane is on the host, so the leg has a seat to
+/// ask about: a fleet with none asks the agent nothing, and its count is a
+/// reading of zero.
 #[test]
 fn an_unreadable_roster_makes_the_cap_leg_could_not_tell_and_the_spawn_proceeds() {
     let rig = Rig::new("belt-unreadable");
     let policy = a_policy();
+    let one = rig.worktrees.join("agent-0a1b2c3d").display().to_string();
+    rig.write_config(&format!(
+        "[{{\"id\": \"01a0d1f1-0aec-765f-9abe-00000a1b2c3d\", \"transient\": true, \
+           \"worktrees\": {{\"a-project\": {one}}}}}]",
+        one = json_string(&one),
+    ));
+    rig.host_pane("01a0d1f1-0aec-765f-9abe-00000a1b2c3d", &one, 11);
     // The FLEET'S listing, and not the new seat's own: a start is believed
     // only off the listing under the seat's directory, which is another read.
     rig.seam(&rig.fleet_roster_fails, "");
@@ -1177,10 +1220,11 @@ fn a_settings_doc(worktree: &str) -> String {
     format!("{{\"permissions\":{{\"allow\":[\"Bash(make check:*)\",\"Edit(/{worktree}/**)\"]}}}}")
 }
 
-/// A transient seat's session comes up under permission rules the spawn wrote
-/// into its own worktree: the posture refuses every writing call the session
-/// holds no rule for, and a permission list cannot ride the plugin root the
-/// overlay is loaded through.
+/// A transient seat's session comes up under permission rules its launch
+/// rendered into its own worktree: the posture refuses every writing call the
+/// session holds no rule for, and a permission list cannot ride the plugin
+/// root the overlay is loaded through. The write is the agent's adapter's, so
+/// the stream no longer says whether it was written or merged.
 ///
 /// Three claims, and the third is the one a later reading cannot make on its
 /// own: the document is at the path the adapter names, `{worktree}` reads as
@@ -1190,7 +1234,7 @@ fn a_settings_doc(worktree: &str) -> String {
 #[test]
 fn a_spawn_writes_the_seats_permission_rules_before_its_first_turn() {
     let rig = Rig::new("settings");
-    let template = a_settings_doc(transient::WORKTREE);
+    let template = a_settings_doc(claude_code::WORKTREE);
 
     let spawn = spawned_with(&rig, &a_policy(), 0.1, 8, "the first turn", Some(&template))
         .expect("the spawn lands");
@@ -1209,11 +1253,6 @@ fn a_spawn_writes_the_seats_permission_rules_before_its_first_turn() {
         std::fs::read_to_string(&rig.settings_at_start).unwrap_or_default(),
         want,
         "and the child read those same bytes out of its working directory as it came up"
-    );
-    assert_eq!(
-        rig.events_of(events::SESSION_SPAWNED)[0]["payload"]["settings"],
-        serde_json::json!("written"),
-        "and the stream says the document was written rather than merged"
     );
 }
 
@@ -1236,11 +1275,6 @@ fn a_spawn_offered_no_settings_writes_none() {
             .unwrap_or_default()
             .is_empty(),
         "and the child found nothing to read when it came up"
-    );
-    assert_eq!(
-        rig.events_of(events::SESSION_SPAWNED)[0]["payload"]["settings"],
-        serde_json::Value::Null,
-        "and the stream carries no settings word for a spawn that wrote none"
     );
 }
 
@@ -1269,7 +1303,7 @@ fn a_spawn_merges_the_packs_rules_into_a_settings_document_the_project_tracks() 
                    \"model\": \"a-project-model\"\n}\n";
     rig.tracked_on_trunk(".claude/settings.local.json", project);
 
-    let template = a_settings_doc_with_deny(transient::WORKTREE);
+    let template = a_settings_doc_with_deny(claude_code::WORKTREE);
     let spawn = spawned_with(&rig, &a_policy(), 0.1, 8, "the first turn", Some(&template))
         .expect("the spawn lands");
     let worktree = rig.worktrees.join(&spawn.seat);
@@ -1307,11 +1341,6 @@ fn a_spawn_merges_the_packs_rules_into_a_settings_document_the_project_tracks() 
         .unwrap_or(serde_json::Value::Null),
         merged,
         "and the child read the merged document out of its working directory as it came up"
-    );
-    assert_eq!(
-        rig.events_of(events::SESSION_SPAWNED)[0]["payload"]["settings"],
-        serde_json::json!("merged"),
-        "and the stream says which of the two happened"
     );
 }
 
@@ -1456,7 +1485,7 @@ fn two_concurrent_spawns_take_two_different_names() {
                         &Spawn {
                             first_turn: "a turn",
                             model: None,
-                            settings: None,
+                            permissions: Permissions::default(),
                             item: None,
                             base: None,
                             config_files: &[],
@@ -1952,8 +1981,9 @@ fn a_retire_reads_and_acts_under_the_rows_own_configuration_directory() {
         &format!("[{}]", rig.row("a-session", &worktree, pid, "idle")),
     );
 
-    // The listings the SPAWN already made — its belt reads the fleet's — so the
-    // assertion below is about this retire's own reads and not the fixture's.
+    // The listings the SPAWN already made — its start's watch read under the
+    // seat's own — so the assertion below is about this retire's own reads and
+    // not the fixture's.
     let before = rig.listing_dirs().len();
 
     let agent = rig.agent();
@@ -1983,12 +2013,29 @@ fn a_retire_reads_and_acts_under_the_rows_own_configuration_directory() {
         "every listing this retire made was under {}: {mine:?}",
         config_dir.display()
     );
-    // The control on that: the spawn's own belt read DID go through the fleet's,
-    // so the two directories are distinguishable in this rig and the assertion
-    // above is a difference rather than a tautology.
+    // The control on that: the same seat asked about with no directory of its
+    // own IS read through the fleet's, and finds no session there — so the two
+    // directories are distinguishable in this rig and the assertion above is a
+    // difference rather than a tautology.
+    let unscoped = agent
+        .read(&[SeatRef {
+            seat: SeatId::parse(&id).expect("the seat's id parses"),
+            session_id: None,
+            pid: Some(pid),
+            config_dir: None,
+            worktree: worktree.clone(),
+            screen: None,
+        }])
+        .expect("the in-process read answers")
+        .remove(0);
+    assert_eq!(
+        unscoped.session_id, None,
+        "the fleet's listing names no row"
+    );
+    let after = rig.listing_dirs();
     assert!(
-        dirs[..before].iter().any(|d| Path::new(d) != config_dir),
-        "the fixture's own reads went through the fleet's directory: {dirs:?}"
+        after.last().is_some_and(|d| Path::new(d) != config_dir),
+        "the control's read went through the fleet's directory: {after:?}"
     );
 
     // And the directory goes with the seat.
@@ -2855,9 +2902,29 @@ fn a_journal_line_that_cannot_land_is_a_refusal_naming_the_event() {
 fn an_unreadable_listing_is_a_third_answer_on_every_verb_that_asks() {
     let rig = Rig::new("unreadable");
     let agent = rig.agent();
-    assert!(matches!(agent.status(None), RosterRead::Readable(_)));
+    let asked = SeatRef {
+        seat: SeatId::parse(NAMED_ID).expect("a hand-written seat id parses"),
+        session_id: None,
+        pid: Some(4242),
+        config_dir: None,
+        worktree: rig.primary.display().to_string(),
+        screen: None,
+    };
+    let read = |agent: &ClaudeCode| {
+        agent
+            .read(std::slice::from_ref(&asked))
+            .expect("the in-process read answers")
+            .remove(0)
+    };
+    assert_eq!(
+        read(&agent).activity,
+        Activity::Starting,
+        "a listing that answered, naming no row for the pane"
+    );
     rig.seam(&rig.roster_fails, "");
-    assert!(matches!(agent.status(None), RosterRead::Unreadable { .. }));
+    let unreadable = read(&agent);
+    assert_eq!(unreadable.activity, Activity::Unknown);
+    assert!(unreadable.cause.is_some(), "{unreadable:?}");
 }
 
 // ---- the priced retire -------------------------------------------------------
@@ -3175,7 +3242,7 @@ fn a_spawn_passes_the_callers_model_to_the_start_over_the_policys_default() {
     let rig = Rig::new("base-model");
     let policy = a_policy();
     assert_eq!(
-        policy.model_for(None),
+        policy.model_for(None, &claude_code::capabilities()),
         "a-model",
         "the fixture's default is the value this arm must not read back"
     );

@@ -1,10 +1,11 @@
 //! The fleet controller.
 //!
 //! It observes, decides, acts and publishes: it reads policy and the seat list,
-//! lists sessions through the agent adapter, matches rows to seats by working
-//! directory, reads context from the transcripts, folds the seat events it finds
-//! in its own stream, produces one verdict per seat, carries three of them out,
-//! and writes the projection, the session table and the event stream.
+//! reads each seat's presence off its host and asks the agent adapter — opened
+//! through `adapter::open`, and spoken to in the agent contract's six verbs —
+//! what each live seat is doing and how full its context is, folds the seat
+//! events it finds in its own stream, produces one verdict per seat, carries
+//! them out, and writes the projection, the session table and the event stream.
 //!
 //! Beside the loop it holds the three TRANSIENT-SEAT PRIMITIVES a pack's
 //! `dispatch` calls, each a one-shot entry to the same machinery and none of
@@ -51,28 +52,26 @@
 //! beside it at the value the operator configured, which is what keeps such a
 //! seat logged in.
 //!
-//! THAT DIRECTORY SCOPES THE PROVIDER'S LISTING (lessons claude-code A11): the
-//! fleet's listing does not name a session started under one. So the directory
-//! is on the session-table row and every act about that session is made under
-//! it — the listing, the transcript, the end stamp, the stop, the removal, the
-//! revive and the nudge. A poll reads
-//! one listing per distinct directory and decides each seat against the listing
-//! that could see it; a per-row listing nobody could read leaves that row Unknown
-//! and the rest decided.
+//! THAT DIRECTORY SCOPES WHAT THE AGENT KNOWS (lessons claude-code A11): a
+//! session started under one is known to its agent under that directory and no
+//! other. So the directory is on the session-table row and every question put
+//! to the agent about that session carries it — its reading, its context, the
+//! launch and the resume. How the agent reads under it is the adapter's; a
+//! seat it could not read is left Unknown and the rest decided.
 //!
-//! A logged-out session is LIVE in that listing, so the roster cannot report the
-//! failure: the transcript is the only surface that carries it, and the first
-//! sighting whose transcript reads logged out writes one `dispatch.failed`
-//! naming the seat and the item. The controller only reports it — what a
-//! workflow does about a held item is the workflow's.
+//! A logged-out session is LIVE, so the host cannot report the failure: the
+//! agent's reading carries it, blocked on `logged_out`, and the first sighting
+//! that reads so writes one `dispatch.failed` naming the seat and the item. The
+//! controller only reports it — what a workflow does about a held item is the
+//! workflow's.
 //!
 //! **The retire's cost** ([`transient::priced`]) is the retire above with five
 //! readings taken first — the main-chain context tokens, the turns, the wall
 //! time since the dispatch, and the branch and commit the seat's worktree held.
 //! It appends `session.retired` carrying all five beside the reclaim
-//! `session.stopped` already carries. A transcript that will not open leaves
-//! the three cost fields null and the retire still runs, because a seat nobody
-//! can price is still a seat to reclaim.
+//! `session.stopped` already carries. A context the agent cannot give leaves
+//! the cost fields it prices null and the retire still runs, because a seat
+//! nobody can price is still a seat to reclaim.
 
 pub mod adapter;
 pub mod clock;

@@ -26,9 +26,15 @@ pub struct Projection {
     pub version: u32,
     pub generated_at: String,
     pub controller_version: String,
+    /// The agent this fleet's seats run, in words that name no vendor
+    /// (reviewer call 2026-09-25, E13). Defaulted for a reader meeting a
+    /// document written before it was carried.
+    #[serde(default)]
+    pub agent: AgentView,
     /// What the agent binary reported THIS poll, and the release its behaviours
     /// were measured against. A spread between them is a flag to re-measure,
-    /// never a failure.
+    /// never a failure. Mirrors of `agent.version` and `agent.expected`, kept
+    /// until fleet-x93d.2 retires them.
     pub agent_version: Option<String>,
     pub agent_version_expected: Option<String>,
     pub fleet: PolicyView,
@@ -58,6 +64,23 @@ pub struct Projection {
     /// routines state before the write, so a failing streak the reference let run
     /// unseen is a number every reader of this document meets.
     pub orders: Vec<crate::routines::RoutineRow>,
+}
+
+/// The agent as the projection names it: which adapter answers for it, which
+/// agent that adapter drives and at which version THIS poll, the version it is
+/// expected at — the fleet's own pin, else the release the adapter was
+/// measured against — and the postures it takes.
+///
+/// `name` and `version` are null where the adapter did not answer this poll;
+/// `version` alone is null where it answered and no binary of the agent is
+/// installed.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentView {
+    pub adapter: String,
+    pub name: Option<String>,
+    pub version: Option<String>,
+    pub expected: Option<String>,
+    pub postures: Vec<crate::adapter::Posture>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -290,6 +313,7 @@ mod tests {
             version: VERSION,
             generated_at: "2026-09-06T00:00:00Z".to_string(),
             controller_version: "0.1.0".to_string(),
+            agent: AgentView::default(),
             agent_version: Some("2.1.261".to_string()),
             agent_version_expected: Some("2.1.261".to_string()),
             fleet: PolicyView {
@@ -310,7 +334,8 @@ mod tests {
                     state: RosterState::Present,
                     unknown_cause: None,
                     waiting_for: None,
-                    activity: Some("idle".to_string()),
+                    blocked_on: None,
+                    activity: Some(crate::adapter::Activity::Idle),
                     session_id: Some("a-session".to_string()),
                     project: Some("demo".to_string()),
                     worktree: Some("/wt/builder-1".to_string()),
@@ -348,6 +373,7 @@ mod tests {
                 state: RosterState::Absent,
                 unknown_cause: None,
                 waiting_for: None,
+                blocked_on: None,
                 activity: None,
                 session_id: None,
                 project: Some("demo".to_string()),
@@ -365,6 +391,7 @@ mod tests {
                 state: RosterState::Absent,
                 unknown_cause: None,
                 waiting_for: None,
+                blocked_on: None,
                 activity: None,
                 session_id: None,
                 project: None,

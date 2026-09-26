@@ -10,7 +10,6 @@
 //! be setting it for every thread in the binary. Inside this one the rigs are
 //! serialised on the lock each holds for its whole life.
 
-use fleet_controller::adapter::RosterRead;
 use fleet_controller::clock::Clock;
 use fleet_controller::platform::{self, Grant};
 use fleet_controller::run::{self, Options, Seams, StopHandler};
@@ -195,10 +194,16 @@ impl Drop for Watchdog {
     }
 }
 
-/// Every verb one tick of the loop must reach the agent for. The roster read
-/// and the version are the observation; the start is the effect the absent
-/// seat's verdict asks for.
-const A_TICKS_VERBS: [&str; 3] = [StubAgent::STATUS, StubAgent::VERSION_CALL, StubAgent::START];
+/// Every verb one tick of the loop must reach the agent for. The capabilities
+/// are read once at the start and the version every poll; the launch is the
+/// effect the absent seat's verdict asks for, and the read is the start's
+/// watch asking after the pane it started.
+const A_TICKS_VERBS: [&str; 4] = [
+    StubAgent::CAPABILITIES,
+    StubAgent::VERSION_CALL,
+    StubAgent::LAUNCH,
+    StubAgent::READ,
+];
 
 /// A stub whose listing shows the one session a start on a fresh [`FakeHost`]
 /// brings up, by its pane's pid, so the start is believed at its first read
@@ -206,7 +211,7 @@ const A_TICKS_VERBS: [&str; 3] = [StubAgent::STATUS, StubAgent::VERSION_CALL, St
 /// so the seat still reads absent on the tick that starts it.
 fn listing_its_arrival() -> StubAgent {
     StubAgent::answering(Answers {
-        status: RosterRead::Readable(test_support::arrivals(1)),
+        listing: Ok(test_support::listing(&test_support::arrivals(1))),
         ..Answers::default()
     })
 }
@@ -244,6 +249,7 @@ fn a_run_of_ticks_spends_its_poll_interval_in_fake_time_and_costs_no_wall_clock(
         None,
         Seams {
             clock: &clock,
+            adapter: "stub",
             agent: &stub,
             host: &host,
             daemon: None,
@@ -296,6 +302,7 @@ fn one_tick_reaches_the_agent_for_every_call_the_poll_makes_and_publishes_its_ou
         None,
         Seams {
             clock: &clock,
+            adapter: "stub",
             agent: &stub,
             host: &host,
             daemon: None,
@@ -315,7 +322,11 @@ fn one_tick_reaches_the_agent_for_every_call_the_poll_makes_and_publishes_its_ou
 
     let starts = stub.starts();
     assert_eq!(starts.len(), 1, "one seat, one start: {:?}", stub.verbs());
-    assert_eq!(starts[0].seat, SEAT_ID, "the start carries the seat's id");
+    assert_eq!(
+        starts[0].seat.to_string(),
+        SEAT_ID,
+        "the start carries the seat's id"
+    );
     assert_eq!(
         starts[0].name, SEAT,
         "and its session is named by the machine name"
@@ -357,6 +368,7 @@ fn a_start_the_agent_refuses_is_published_as_a_failed_outcome() {
         None,
         Seams {
             clock: &clock,
+            adapter: "stub",
             agent: &stub,
             host: &host,
             daemon: None,
@@ -367,7 +379,7 @@ fn a_start_the_agent_refuses_is_published_as_a_failed_outcome() {
     );
     assert_eq!(status, 0);
 
-    assert_eq!(stub.calls_of(StubAgent::START).len(), 1);
+    assert_eq!(stub.calls_of(StubAgent::LAUNCH).len(), 1);
     let document = rig.projection();
     assert_eq!(document["seats"][0]["outcome"], "failed", "{document}");
 }

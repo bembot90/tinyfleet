@@ -1,29 +1,28 @@
-//! What one poll saw: a seat's presence on the host, its activity on the
-//! agent's listing, and the context its session is carrying.
+//! What one poll saw: a seat's presence on the host and its activity as the
+//! agent reads it.
 //!
 //! TWO READS, SPLIT BY QUESTION (ruling 3). Whether a seat's session is THERE
 //! is the host's answer: the session fleet started for the seat exists and its
 //! pane is alive, or it is dead and holds the exit status the agent left. What
 //! the session is DOING — starting, idle, busy, stopped in front of a human —
-//! is the agent's listing's answer. Neither stands in for the other, and where
+//! is the agent's answer to `read`. Neither stands in for the other, and where
 //! the two disagree the seat is Unknown with both pieces of evidence rather
 //! than whichever one a rule happened to read first.
 
-use crate::adapter::{dir_key, AgentRow, RosterRead};
+use crate::adapter::{self, dir_key, Activity, Agent, BlockedOn, SeatActivity, SeatRef};
 use crate::config::Seat;
 use crate::host::{self, HostRead, Pane, PaneState};
 use fleet_core::seat::identity::SeatId;
-use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::path::Path;
 
-/// How long a live pane the listing does not name yet may claim to be starting.
+/// How long a live pane the agent names no session for yet may claim to be
+/// starting.
 ///
 /// An interactive row was listed 0.5–0.75 s after its session was made
-/// (measured on 2.1.280, 2026-09-26), against a five-second poll, so this is
-/// deliberately far larger than the phenomenon: being generous costs a few
-/// polls before a session that never lists is noticed, and being tight reads a
-/// newborn as a disagreement between the host and the listing.
+/// (measured on Claude Code 2.1.280, 2026-09-26), against a five-second poll,
+/// so this is deliberately far larger than the phenomenon: being generous
+/// costs a few polls before a session that never lists is noticed, and being
+/// tight reads a newborn as a disagreement between the host and the agent.
 pub const STARTING_GRACE_MS: u64 = 30_000;
 
 /// What the roster said about one seat.
@@ -58,7 +57,7 @@ impl RosterState {
         }
     }
 
-    /// Whether a seat in this state has a session whose transcript answers for
+    /// Whether a seat in this state has a session whose context answers for
     /// it. A live one does and an ended one does — its transcript outlives the
     /// process (lessons claude-code C4) — and the reference reads no context for
     /// the other four, so neither does this: the row-for-row parity between the
@@ -72,19 +71,20 @@ impl RosterState {
 pub struct SeatObservation {
     pub state: RosterState,
     /// Set exactly when `state` is `Unknown`, and naming BOTH readings where it
-    /// is the two of them disagreeing: what the host holds and what the listing
-    /// names.
+    /// is the two of them disagreeing: what the host holds and what the agent
+    /// answered.
     pub unknown_cause: Option<String>,
-    /// The agent's own cause string for a seat stopped in front of a human,
-    /// carried verbatim and never matched on — or `status waiting` for a row
-    /// that says it waits and names no cause (`AgentRow::blocked_on`).
+    /// What a seat stopped in front of a human waits on, as a person reads it
+    /// ([`adapter::waiting_on`]): the agent's own sentence, carried verbatim
+    /// and never matched on.
     pub waiting_for: Option<String>,
-    /// What the listing says the session is doing, in the agent's own word
-    /// (`idle`, `busy`, `waiting` on 2.1.280), carried verbatim. It is ACTIVITY
-    /// and never presence: no liveness decision keys on it, and a row that
-    /// carries none is a reading nobody has rather than an idle session.
-    pub activity: Option<String>,
-    /// The session whose transcript answers for this seat, when there is one.
+    /// What the seat waits on, typed, where the agent could name it — the one
+    /// the logged-out line keys on ([`logged_out_dispatch`]).
+    pub blocked_on: Option<BlockedOn>,
+    /// What the agent says the session is doing. It is ACTIVITY and never
+    /// presence: no liveness decision keys on it.
+    pub activity: Option<Activity>,
+    /// The session whose context answers for this seat, when there is one.
     pub session_id: Option<String>,
     pub project: Option<String>,
     pub worktree: Option<String>,
@@ -97,113 +97,91 @@ pub struct SeatObservation {
     pub exit_status: Option<i32>,
 }
 
-/// The listings one poll read: the fleet's own, and one per seat that comes up
-/// under its own configuration directory.
-///
-/// A session started under its own configuration directory is LISTED under
-/// that directory and under no other (lessons claude-code A11, B10) — the
-/// fleet's listing answers as if the session did not exist. So a poll reads
-/// once per distinct directory rather than once, and each seat is decided
-/// against the listing that could see it.
-///
-/// The listings are kept APART rather than concatenated into one vector: a
-/// per-seat read that could not be made has to leave that seat Unknown while
-/// every other seat is still decided, and rows folded into one list carry no
-/// record of which read failed.
-pub struct Rosters {
-    fleet: RosterRead,
-    per_seat: BTreeMap<SeatId, RosterRead>,
+/// What core holds about a seat before it asks the agent: the session id a
+/// read last answered and the configuration directory its session was started
+/// under, both off the session table.
+#[derive(Clone, Debug, Default)]
+pub struct Held {
+    pub session_id: Option<String>,
+    pub config_dir: Option<String>,
 }
 
-impl Rosters {
-    /// The fleet's listing plus one per distinct configuration directory.
-    ///
-    /// `config_dir_of` answers the directory a seat's own row names, or `None`
-    /// for a seat that comes up under the fleet's. `read` is the listing under
-    /// one directory. Both are seams so the fold is exercised without an agent:
-    /// the defect this shape exists to prevent is reading every row under the
-    /// adapter's own directory, which is invisible in any rig where the two
-    /// reads answer alike.
-    pub fn gather(
-        seats: &[Seat],
-        config_dir_of: &dyn Fn(&SeatId) -> Option<String>,
-        read: &dyn Fn(Option<&Path>) -> RosterRead,
-    ) -> Rosters {
-        let fleet = read(None);
-        let mut by_dir: BTreeMap<String, RosterRead> = BTreeMap::new();
-        let mut per_seat = BTreeMap::new();
-        for seat in seats {
-            let Some(dir) = config_dir_of(&seat.id) else {
-                continue;
-            };
-            let listing = match by_dir.get(&dir) {
-                Some(read) => read.clone(),
-                None => {
-                    let listing = read(Some(Path::new(&dir)));
-                    by_dir.insert(dir, listing.clone());
-                    listing
-                }
-            };
-            per_seat.insert(seat.id, listing);
-        }
-        Rosters { fleet, per_seat }
-    }
-
-    /// The fleet's own listing, for the readings that are about the fleet rather
-    /// than about one seat.
-    pub fn fleet(&self) -> &RosterRead {
-        &self.fleet
-    }
-
-    /// The listing this seat is decided against.
-    pub fn for_seat(&self, id: &SeatId) -> &RosterRead {
-        self.per_seat.get(id).unwrap_or(&self.fleet)
-    }
-
-    /// Every row of every READABLE listing this poll took, folded into one.
-    ///
-    /// For the readings that are about the fleet's sessions rather than about one
-    /// seat's verdict — adoption is the one, and a session under a per-row
-    /// directory has to be claimable like any other, or a controller that
-    /// restarted would never own the spawned seats it started.
-    ///
-    /// A listing that could not be read contributes nothing and says nothing:
-    /// this is not the type that carries could-not-tell, and a caller that needs
-    /// that distinction per seat asks [`Rosters::for_seat`].
-    pub fn all_rows(&self) -> Vec<AgentRow> {
-        let mut rows = Vec::new();
-        for read in std::iter::once(&self.fleet).chain(self.per_seat.values()) {
-            if let RosterRead::Readable(found) = read {
-                rows.extend(found.iter().cloned());
-            }
-        }
-        rows
-    }
+/// Every seat's reading this poll, in the seats' order: the host's listing,
+/// read once and shared, and ONE `read` of the agent about every seat whose
+/// pane is alive (reviewer call 2026-09-25, E1; ruling 3).
+///
+/// Two seats must not decide against different readings of the same moment,
+/// so the agent is asked about all of them at once — how it reads them, one
+/// listing per configuration directory or otherwise, is the adapter's. A seat
+/// with no live pane is asked about by nobody: its presence is already
+/// answered, and an ended session's activity is nothing to read.
+pub fn observe_fleet(
+    agent: &dyn Agent,
+    host: &HostRead,
+    seats: &[Seat],
+    held: &dyn Fn(&SeatId) -> Held,
+    now_ms: u64,
+) -> Vec<SeatObservation> {
+    let asked: Vec<SeatRef> = seats
+        .iter()
+        .filter_map(|seat| {
+            let pane = live_pane(host, seat)?;
+            let held = held(&seat.id);
+            Some(SeatRef {
+                seat: seat.id,
+                session_id: held.session_id,
+                pid: pane.pid,
+                config_dir: held.config_dir,
+                worktree: placed(seat, &pane.path)
+                    .1
+                    .unwrap_or_else(|| pane.path.clone()),
+                screen: None,
+            })
+        })
+        .collect();
+    let read: BTreeMap<SeatId, SeatActivity> = adapter::readings(agent, &asked)
+        .into_iter()
+        .map(|reading| (reading.seat, reading))
+        .collect();
+    seats
+        .iter()
+        .map(|seat| observe_seat(host, seat, read.get(&seat.id), now_ms))
+        .collect()
 }
 
-/// One seat's reading, from the host's listing and the agent's.
+/// The seat's live pane on the host, where the host was read and holds one.
+fn live_pane<'h>(host: &'h HostRead, seat: &Seat) -> Option<&'h Pane> {
+    let HostRead::Readable(panes) = host else {
+        return None;
+    };
+    let session = host::session_for(&seat.id);
+    panes
+        .iter()
+        .find(|pane| pane.session == session && pane.state == PaneState::Alive)
+}
+
+/// One seat's reading, from the host's listing and the agent's answer about it.
 ///
 /// PRESENCE IS THE HOST'S. The seat's session is the one named by
 /// [`host::session_for`] on fleet's own server, and nothing else is: a session
-/// the host does not hold for the seat is not the seat's, wherever it stands.
-/// A dead pane is an END — a session the host keeps cannot hibernate or be
-/// re-hosted under it — and reads `Stopped` with the status it exited with.
+/// the host does not hold for the seat is not the seat's, wherever it stands,
+/// and a seat the host holds nothing for is Absent whatever the agent has
+/// running elsewhere — no seat is found by its working directory (CORRECTIONS
+/// AT REVIEW, 2026-09-25; lessons claude-code B5). A dead pane is an END and
+/// reads `Stopped` with the status it exited with.
 ///
-/// ACTIVITY IS THE LISTING'S, and a row is the seat's by its PID: the pane's
-/// process is the agent (E2), so the row whose pid is the pane's is this
-/// session and no other. A working directory names a seat and proves nothing
-/// about who started the session in it (lessons claude-code B5), so no row is
-/// attributed by where it stands.
+/// ACTIVITY IS THE AGENT'S, and `reading` is its answer about the live pane:
+/// found by the session's id, else by the pane's pid, since the pane's process
+/// is the agent (E2).
 ///
 /// WHERE THE TWO DISAGREE THE SEAT IS UNKNOWN, carrying both readings: a live
-/// pane the listing names no row for once the start's grace is spent, a live
-/// row in the seat's worktree with no session on the host behind it, and a
-/// live pane beside a listing that could not be read. None of them is a seat
-/// to spawn over and none of them is a seat to believe present.
+/// pane the agent names no session for once the start's grace is spent, and a
+/// live pane beside a reading that could not be made. Neither is a seat to
+/// spawn over and neither is a seat to believe present.
 pub fn observe_seat(
-    read: &RosterRead,
     host: &HostRead,
     seat: &Seat,
+    reading: Option<&SeatActivity>,
     now_ms: u64,
 ) -> SeatObservation {
     let session = host::session_for(&seat.id);
@@ -212,12 +190,12 @@ pub fn observe_seat(
         HostRead::Readable(panes) => panes,
     };
     let Some(pane) = panes.iter().find(|pane| pane.session == session) else {
-        return unhosted(read, seat, &session);
+        return unmatched(seat);
     };
     match pane.state {
-        // An end, and the reading does not need the listing: an interactive
-        // row is gone by the next read after its process is (lessons
-        // claude-code B10), so there is no row left to read it from.
+        // An end, and the reading does not need the agent: an interactive
+        // session is gone from its listing by the next read after its process
+        // is (lessons claude-code B10), so there is nothing left to ask.
         PaneState::Dead { status } => {
             let mut stopped = unmatched(seat);
             stopped.state = RosterState::Stopped;
@@ -225,58 +203,16 @@ pub fn observe_seat(
             stopped.exit_status = status;
             stopped
         }
-        PaneState::Alive => hosted(read, seat, &session, pane, now_ms),
+        PaneState::Alive => hosted(reading, seat, &session, pane, now_ms),
     }
 }
 
-/// A seat the host holds no session for: `Absent`, unless the listing names a
-/// live session standing in one of its worktrees — which is a session fleet
-/// does not host, and so not the seat's (B5), and not a seat to start a second
-/// session beside either.
-fn unhosted(read: &RosterRead, seat: &Seat, session: &str) -> SeatObservation {
-    let rows = match read {
-        // Nothing on the host, and nothing to say whether a live session stands
-        // in the worktree regardless: a start into that is a second session,
-        // so the seat is left unread rather than read absent.
-        RosterRead::Unreadable { cause } => {
-            return unknown(
-                seat,
-                None,
-                format!(
-                    "no tmux session {session} on {}, and the listing could not be read: {cause}",
-                    host::SOCKET
-                ),
-            )
-        }
-        RosterRead::Readable(rows) => rows,
-    };
-    let standing = rows.iter().filter(|row| row.is_live()).find_map(|row| {
-        seat.worktrees
-            .iter()
-            .find(|(_, path)| dir_key(path) == row.cwd_key())
-            .map(|(_, path)| (row, path))
-    });
-    match standing {
-        None => unmatched(seat),
-        Some((row, worktree)) => unknown(
-            seat,
-            None,
-            format!(
-                "no tmux session {session} on {}; the listing names session {}, pid {}, in {}",
-                host::SOCKET,
-                row.session_id,
-                row.pid.map(|pid| pid.to_string()).unwrap_or_default(),
-                dir_key(worktree)
-            ),
-        ),
-    }
-}
-
-/// A seat whose pane is alive: the listing's row with the pane's pid is its
-/// activity, a young session the listing has not named yet is starting, and an
-/// older one it still does not name is the two reads disagreeing.
+/// A seat whose pane is alive: a session the agent found is present — blocked
+/// where it waits on a human — a young one it names no session for yet is
+/// starting, and an older one it still names none for, or one it could not
+/// read at all, is the two readings disagreeing.
 fn hosted(
-    read: &RosterRead,
+    reading: Option<&SeatActivity>,
     seat: &Seat,
     session: &str,
     pane: &Pane,
@@ -289,46 +225,53 @@ fn hosted(
             seat.machine_name()
         ),
     };
-    let rows = match read {
-        // Reviewer call 2026-09-25 (1): never Present on a listing nobody read.
-        // Nothing is spawned beside a live pane or revived over it either way.
-        RosterRead::Unreadable { cause } => {
-            return unknown(
-                seat,
-                pane.pid,
-                format!("{alive}, and the listing could not be read: {cause}"),
-            )
-        }
-        RosterRead::Readable(rows) => rows,
+    let Some(reading) = reading else {
+        return unknown(
+            seat,
+            pane.pid,
+            format!("{alive}, and the agent was not asked about it"),
+        );
     };
-    if let Some(row) = pane
-        .pid
-        .and_then(|pid| rows.iter().find(|row| row.pid == Some(pid)))
-    {
-        // PRESENCE of the field, never its value: an unrecognised cause is still
-        // a seat that cannot act, and reading it as healthy is the whole defect
-        // (lessons claude-code B8, and B10 on the interactive row). Read through
-        // the row's one definition of a block, which a turn typed into the seat
-        // reads too (`crate::effect::type_turn`), so the seat the projection
-        // calls blocked and the one a turn refuses are the same seat — a
-        // `waiting` status with no cause beside it included.
-        let blocked = row.blocked_on();
-        let state = match blocked {
-            Some(_) => RosterState::PromptBlocked,
-            None => RosterState::Present,
-        };
-        let (project, worktree) = placed(seat, &[row.cwd.as_str(), pane.path.as_str()]);
+    let found = reading.session_id.is_some();
+    let live = match reading.activity {
+        // Keyed on the activity being BLOCKED and never on what it names: an
+        // unrecognised wait is still a seat that cannot act, and reading it as
+        // healthy is the whole defect (lessons claude-code B8). The seat the
+        // projection calls blocked and the one a typed turn refuses are the
+        // same seat, because both read this one answer (`effect::type_turn`).
+        Activity::Blocked => Some(RosterState::PromptBlocked),
+        Activity::Idle | Activity::Busy => Some(RosterState::Present),
+        // A session the agent FOUND whose activity it cannot say is still a
+        // session there: a word the agent has no reading for is not a fifth
+        // state to reason about, and never an absence.
+        Activity::Starting | Activity::Unknown if found => Some(RosterState::Present),
+        Activity::Starting | Activity::Unknown => None,
+    };
+    if let Some(state) = live {
+        let (project, worktree) = placed(seat, &pane.path);
+        let fallback = unmatched(seat);
         return SeatObservation {
             state,
             unknown_cause: None,
-            waiting_for: blocked,
-            activity: row.status.clone(),
-            session_id: Some(row.session_id.clone()),
-            project,
-            worktree,
+            waiting_for: adapter::waiting_on(reading),
+            blocked_on: reading.blocked_on,
+            activity: Some(reading.activity),
+            session_id: reading.session_id.clone(),
+            project: project.or(fallback.project),
+            worktree: worktree.or(fallback.worktree),
             pane_pid: pane.pid,
             exit_status: None,
         };
+    }
+    let cause = reading
+        .cause
+        .clone()
+        .unwrap_or_else(|| "the agent names no session for it".to_string());
+    if reading.activity == Activity::Unknown {
+        // Reviewer call 2026-09-25 (1): never Present on a reading nobody
+        // made. Nothing is spawned beside a live pane or revived over it
+        // either way.
+        return unknown(seat, pane.pid, format!("{alive}, and {cause}"));
     }
     // The age is the SESSION's, which the host counts in whole seconds: a start
     // is younger than the grace for every read inside it, and one the host
@@ -339,37 +282,22 @@ fn hosted(
     if young {
         let mut starting = unmatched(seat);
         starting.state = RosterState::Starting;
+        starting.activity = Some(reading.activity);
         starting.pane_pid = pane.pid;
         return starting;
     }
-    unknown(
-        seat,
-        pane.pid,
-        match pane.pid {
-            Some(_) => format!("{alive}; the listing names no row with that pid"),
-            None => format!("{alive}; the listing can name no row for it"),
-        },
-    )
+    unknown(seat, pane.pid, format!("{alive}; {cause}"))
 }
 
-/// The project and worktree a seat's session stands in: the first of `paths`
-/// that one of the seat's worktrees is, and the seat's one worktree where none
-/// is. Named, never guessed — the row's directory and the pane's are the two
-/// readings of where the session is, and a seat on several projects with
-/// neither matching has no one answer.
-fn placed(seat: &Seat, paths: &[&str]) -> (Option<String>, Option<String>) {
-    paths
+/// The project and worktree a seat's session stands in: the seat's worktree
+/// the pane's own directory is, where it is one. Named, never guessed — a seat
+/// on several projects whose pane stands in none of them has no one answer.
+fn placed(seat: &Seat, path: &str) -> (Option<String>, Option<String>) {
+    seat.worktrees
         .iter()
-        .find_map(|path| {
-            seat.worktrees
-                .iter()
-                .find(|(_, worktree)| dir_key(worktree) == dir_key(path))
-        })
+        .find(|(_, worktree)| dir_key(worktree) == dir_key(path))
         .map(|(project, worktree)| (Some(project.clone()), Some(worktree.clone())))
-        .unwrap_or_else(|| {
-            let fallback = unmatched(seat);
-            (fallback.project, fallback.worktree)
-        })
+        .unwrap_or((None, None))
 }
 
 /// A seat nobody could read, with why — both readings, where it is the two of
@@ -394,6 +322,7 @@ fn unmatched(seat: &Seat) -> SeatObservation {
         state: RosterState::Absent,
         unknown_cause: None,
         waiting_for: None,
+        blocked_on: None,
         activity: None,
         session_id: None,
         project,
@@ -403,168 +332,39 @@ fn unmatched(seat: &Seat) -> SeatObservation {
     }
 }
 
-// ------------------------------------------------------------------ transcript
+// ------------------------------------------------------- the logged-out dispatch
 
-#[derive(Deserialize)]
-struct TranscriptEntry {
-    #[serde(default, rename = "type")]
-    kind: String,
-    #[serde(default, rename = "isSidechain")]
-    is_sidechain: bool,
-    #[serde(default)]
-    message: Option<TranscriptMessage>,
-    /// The provider's own machine-readable cause on an entry it wrote in place
-    /// of a model turn. Absent on every ordinary entry.
-    #[serde(default)]
-    error: Option<String>,
-    /// Whether the provider wrote this entry itself instead of the model
-    /// answering.
-    #[serde(default, rename = "isApiErrorMessage")]
-    is_api_error: bool,
-}
-
-#[derive(Deserialize)]
-struct TranscriptMessage {
-    #[serde(default)]
-    usage: Option<Usage>,
-}
-
-#[derive(Deserialize)]
-struct Usage {
-    #[serde(default)]
-    input_tokens: Option<u64>,
-    #[serde(default)]
-    cache_read_input_tokens: Option<u64>,
-    #[serde(default)]
-    cache_creation_input_tokens: Option<u64>,
-}
-
-/// Context for a session: the last main-chain assistant entry's input tokens
-/// plus both cache figures.
-///
-/// There is no single context number in the file — the arithmetic over those
-/// three fields is the reading (lessons claude-code C2). Sidechain entries are
-/// skipped because a sidechain is a subagent's turn carrying the subagent's
-/// window (C3); the flag is on every entry, so the skip is a filter and not an
-/// inference.
-///
-/// An entry stating no window is skipped: no usage block, or a usage block
-/// summing to zero. The agent writes a zero-usage entry for a turn that made no
-/// model call, which is main-chain and does carry usage, so a plain last-entry
-/// reader publishes 0 for a loaded session. The zero is the test rather than the
-/// marker the agent puts on those entries, because a marker string that changes
-/// republishes the 0 while a usage schema that moves yields no reading at all —
-/// which every reader renders as blind instead.
-///
-/// A malformed line is skipped rather than fatal: transcripts are read while
-/// they are being appended to, so a torn final line is an expected transient.
-pub fn context_tokens_in(body: &str) -> Option<u64> {
-    body.lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str::<TranscriptEntry>(l).ok())
-        .filter(|e| e.kind == "assistant" && !e.is_sidechain)
-        .filter_map(|e| e.message)
-        .filter_map(|m| m.usage)
-        .map(|u| {
-            u.input_tokens.unwrap_or(0)
-                + u.cache_read_input_tokens.unwrap_or(0)
-                + u.cache_creation_input_tokens.unwrap_or(0)
-        })
-        .filter(|&tokens| tokens != 0)
-        .next_back()
-}
-
-/// The provider's own cause on the entry it writes in place of a first model
-/// turn when the session has no credential (lessons claude-code A11).
+/// The cause a logged-out dispatch's `dispatch.failed` line carries: the
+/// provider's own word for the answer it gave in place of a first turn (lessons
+/// claude-code A11), as the stream has always spelled it. The reading itself
+/// is the adapter's — `blocked_on: logged_out` — and this is only the line's
+/// word for it.
 pub const AUTHENTICATION_FAILED: &str = "authentication_failed";
 
-/// Whether this transcript's first main-chain assistant entry is the provider's
-/// LOGGED-OUT answer.
-///
-/// A seat started under its own configuration directory is logged out unless the
-/// credential knob is defined-but-empty beside it, and the roster cannot say so:
-/// such a session is LIVE and idle, with a pid and a state, exactly like one
-/// mid-turn. The transcript is the only surface that carries the reading.
-///
-/// THREE TERMS, ALL REQUIRED: the entry is one the provider wrote itself, its
-/// cause is [`AUTHENTICATION_FAILED`], and its window is zero. The conjunction
-/// is the safe direction — a term that moves in a later release yields NO
-/// reading, and a reading nobody has costs one uncaught logged-out seat, where a
-/// looser match would fail a dispatch that was fine.
-///
-/// It reads the FIRST such entry and not the last: what is being asked is how
-/// the session ANSWERED ITS FIRST TURN, and an entry further down belongs to a
-/// session that was already working.
-pub fn logged_out_first_turn(body: &str) -> bool {
-    body.lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str::<TranscriptEntry>(l).ok())
-        .filter(|e| e.kind == "assistant" && !e.is_sidechain)
-        .map(|e| {
-            let window = e
-                .message
-                .and_then(|m| m.usage)
-                .map(|u| {
-                    u.input_tokens.unwrap_or(0)
-                        + u.cache_read_input_tokens.unwrap_or(0)
-                        + u.cache_creation_input_tokens.unwrap_or(0)
-                })
-                .unwrap_or(0);
-            e.is_api_error && e.error.as_deref() == Some(AUTHENTICATION_FAILED) && window == 0
-        })
-        .next()
-        .unwrap_or(false)
-}
-
-/// Whether this poll's reading of one row is a LOGGED-OUT DISPATCH, which is the
-/// one line the controller writes about one.
+/// Whether this poll's reading of one seat is a LOGGED-OUT DISPATCH, which is
+/// the one line the controller writes about one.
 ///
 /// Four terms, and each of them is a different reason not to write:
 ///
 /// - `transient` — a named seat's session is the person's own and its login is
 ///   theirs to fix; only a dispatch can fail.
-/// - `state` — the reading comes off a live row, because a logged-out session IS
-///   live: it has a pid and an idle status, and only its transcript says
-///   otherwise.
+/// - `state` — the reading comes off a live session, because a logged-out
+///   session IS live: it has a pid and a prompt, and only the agent's reading
+///   says otherwise.
 /// - `already_sighted` — once per ROW. The reading stands for as long as the
-///   transcript does, and a line per poll is the noise the stream's content rule
+///   session does, and a line per poll is the noise the stream's content rule
 ///   is against.
-/// - `transcript` — the reading itself, and `None` is a transcript that did not
-///   resolve, which is a reading nobody has rather than a session that is fine.
+/// - `blocked_on` — the reading itself: the agent says the seat waits on a
+///   login. Anything else, `None` included, is a seat that is not known to be
+///   logged out.
 pub fn logged_out_dispatch(
     transient: bool,
     state: RosterState,
     already_sighted: bool,
-    transcript: Option<&str>,
+    blocked_on: Option<BlockedOn>,
 ) -> bool {
     transient
         && matches!(state, RosterState::Present | RosterState::PromptBlocked)
         && !already_sighted
-        && transcript.map(logged_out_first_turn).unwrap_or(false)
-}
-
-/// How many turns a session took: main-chain assistant entries carrying a usage
-/// block.
-///
-/// THE SAME FILTER AS [`context_tokens_in`], ONE STEP SHORTER. A turn that made
-/// a model call is a turn whatever the call cost, so the zero-usage entry that
-/// reader skips — the agent's line for a turn that called no model — is COUNTED
-/// here: a session's turns and the window its last turn carried are two
-/// different questions, and the second one is why that skip exists.
-///
-/// An entry with no usage block at all is not a turn the agent made a call for
-/// and is not counted, which is the one thing the two readers agree to drop.
-/// Sidechains are skipped for C3's reason: a sidechain is a subagent's turn and
-/// the seat did not take it.
-///
-/// A malformed line is skipped rather than fatal, as it is there: a transcript
-/// is read while it is being appended to, so a torn final line is expected.
-pub fn turns_in(body: &str) -> u64 {
-    body.lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str::<TranscriptEntry>(l).ok())
-        .filter(|e| e.kind == "assistant" && !e.is_sidechain)
-        .filter_map(|e| e.message)
-        .filter(|m| m.usage.is_some())
-        .count() as u64
+        && blocked_on == Some(BlockedOn::LoggedOut)
 }

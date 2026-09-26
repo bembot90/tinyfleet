@@ -429,9 +429,9 @@ fn a_descendant_holding_the_pipe_cannot_hold_the_poll_past_the_deadline() {
 /// a panic.
 ///
 /// The shape is the bounded held-pipe rig exactly, plus a one-shot preamble
-/// longer than its deadline: the first invocation writes the start mark, sleeps
-/// past the seam and is killed, so it reaches no `agents` branch and leaves no
-/// listing mark; the second finds the seam consumed and runs the arm's own case.
+/// longer than its deadline: the first listing call, after the start mark,
+/// sleeps past the seam and is killed before its listing mark, so the attempt
+/// leaves none; the next finds the seam consumed and runs the arm's own case.
 ///
 /// THREE CLAIMS AND THE DISCARD'S REASON IS WHAT MAKES THE OTHERS MEAN
 /// ANYTHING. Without it a wrapper that ignored the owed witness entirely would
@@ -446,7 +446,7 @@ fn a_descendant_holding_the_pipe_cannot_hold_the_poll_past_the_deadline() {
 ///
 /// WHAT IS NOT ASSERTED IS THE SPAN AGAINST THE PREAMBLE, because the stub
 /// sleeps the preamble BEFORE it writes the listing mark (`rig.rs`'s stub body),
-/// so no attempt's listing-to-version span can contain it and the comparison was
+/// so no attempt's listing-to-projection span can contain it and the comparison was
 /// never the discard it claimed to read. What such a line bounds is the seam
 /// plus the drain grace plus a spawn against the wall clock, which is a
 /// wall-clock ceiling on a loaded box: it read 1.521527613 s against 1.5 s.

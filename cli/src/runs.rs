@@ -256,7 +256,7 @@ impl Runs for Engine {
         let host = verb_host(&self.home);
         let policy = policy_of(&here).map_err(|stop| stop.message)?;
         let at = Where::of(&here).map_err(|stop| stop.message)?;
-        let machine = machine_of(&here, &at, &agent, host.as_ref(), &policy);
+        let machine = machine_of(&here, &at, agent.as_ref(), host.as_ref(), &policy);
         // THE RECORD'S HALF, which the controller reaches no work graph to do
         // for itself. A cleanup retires seats whose items were delivered and
         // seats whose items are still open — a park leaves the order standing —

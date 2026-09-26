@@ -1,236 +1,344 @@
-//! The agent seam. Everything the controller learns about a session goes
-//! through one trait, so the second agent is a second module and not a
-//! rewrite.
+//! The agent seam. Everything the controller learns about a seat's agent goes
+//! through one trait, and the trait is the agent contract's six verbs
+//! (`docs/agent.md`) over the contract's own types (`fleet_core::agent`): the
+//! in-process Claude Code adapter answers them today, and an adapter that is an
+//! executable answers the same six.
 //!
-//! Observe needs four of the verbs — the listing, the transcript, the end
-//! stamp and the version; `launch` and `resume` are the two an effect asks for.
+//! What the agent IS — [`Agent::capabilities`] and [`Agent::version`]; what a
+//! session starts or comes back under — [`Agent::launch`] and
+//! [`Agent::resume`]; what each seat's agent is DOING — [`Agent::read`]; and how
+//! full its window is — [`Agent::context`], asked only of an agent that declares
+//! it. Nothing else crosses: no listing row, no transcript and no short id
+//! leaves an adapter (reviewer call 2026-09-25, E6).
+//!
 //! A turn for a live seat is none of them: it is typed into the seat's pane by
-//! core (`crate::effect::type_turn`), and this trait's listing is what says
-//! whether it was taken. Whether a session is THERE is not a verb here at all:
-//! presence is the host's reading (`crate::host`, ruling 3), and what this
-//! trait's listing answers is what the session is DOING. Nor is ending one: a
-//! session is stopped on the host, by its seat (`crate::effect::stop_session`),
-//! and never by an address the agent issued (reviewer call 2026-09-25, E6).
+//! core (`crate::effect::type_turn`), and `read` is what says whether it was
+//! taken. Whether a session is THERE is not a verb here at all: presence is the
+//! host's reading (`crate::host`, ruling 3). Nor is ending one: a session is
+//! stopped on the host, by its seat (`crate::effect::stop_session`).
 //!
 //! A START IS TWO HALVES AND ONLY ONE OF THEM IS HERE (ruling 2). The adapter
-//! answers WHAT to run — the argv and the environment, in [`Launch`] — and
-//! core runs it, as a session on the host (`crate::host`), and believes it
-//! only when this trait's own listing shows the pane's process
-//! (`crate::effect::start_once`). No adapter touches the host.
+//! answers WHAT to run — the argv and the environment, an [`Argv`] — and core
+//! runs it, as a session on the host, and believes it only when `read` finds
+//! the pane's own process (`crate::effect::start_once`). No adapter touches the
+//! host.
+//!
+//! EVERY CALLER OPENS THE AGENT THROUGH [`open`], so which adapter answers, and
+//! whether it may issue effects at all, is decided in one place.
 
-use serde::Deserialize;
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::fmt;
+use std::path::{Path, PathBuf};
+
+pub use fleet_core::agent::types::{
+    Activity, Argv, BlockedOn, Capabilities, Evidence, Launch, Permissions, Posture, Refusal,
+    RefusalReason, Resume, SeatActivity, SeatContext, SeatRef, Version,
+};
 
 pub mod claude_code;
 
-/// What a start passes the agent. Every field is mandatory: a start with no
-/// model comes up on the cheapest available one, and a start with no posture
-/// takes the agent's default rather than the fleet's (lessons claude-code A5).
-#[derive(Clone, Debug)]
-pub struct StartSpec {
-    /// The seat's id, as its hyphenated string.
-    pub seat: String,
-    pub worktree: String,
-    /// The session's name: `--name`, and what its start log is named by.
-    pub name: String,
-    /// Who the session's own verbs act as, `seat:<id>`, handed to it as
-    /// `FLEET_ACTOR` [ASSUMES D7]: a seat's bare `fleet deliver` is the seat's
-    /// act and never the machine's person's.
-    pub actor: String,
-    pub model: String,
-    pub posture: String,
-    pub first_turn: String,
-    /// The plugin root this session loads, or `None` for a fleet that names
-    /// none — the one field that is optional, because a fleet with no overlay
-    /// is a fleet whose starts carry no such flag at all (lessons claude-code
-    /// D5).
-    pub plugin_dir: Option<String>,
-    /// The configuration directory THIS session comes up under, or `None` for a
-    /// start that takes the adapter's own. Every spawned seat comes up under one
-    /// of its own, holding only the pack's overlay.
-    ///
-    /// A directory here is the session's whole configuration space: nothing
-    /// from the person's home directory — settings, memory, instructions,
-    /// servers — reaches it. It scopes the agent's listing with it, so a
-    /// session started under one is listed under that directory and no other,
-    /// and every read about this session is made under the same value.
-    ///
-    /// It is also the one mark of a start whose worktree fleet CREATED: a named
-    /// seat comes up in a person's own checkout and carries `None`, so a start
-    /// with a directory here is the only one whose worktree a launch may seed
-    /// as trusted (ruling 13).
-    pub config_dir: Option<String>,
+/// Why a verb has no answer: the adapter REFUSED the act as asked, naming its
+/// reason (exit 1's `refused`), or nobody could tell (exit 3, or no answer at
+/// all), carrying why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentError {
+    Refused(Refusal),
+    Unreadable(String),
 }
 
-/// What a start runs: the pane's whole command and its whole environment.
-///
-/// The argv is the pane's own process (reviewer call 2026-09-25, E2), its first
-/// element the absolute binary, and the environment is set EXACTLY — the host
-/// hands the pane these pairs and nothing of its own — so every variable a
-/// session needs is one this value names.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Launch {
-    pub argv: Vec<String>,
-    pub env: Vec<(String, String)>,
+impl fmt::Display for AgentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AgentError::Refused(refusal) => write!(
+                f,
+                "the agent refused ({}): {}",
+                match refusal.reason {
+                    RefusalReason::Unsupported => "unsupported",
+                    RefusalReason::Missing => "missing",
+                },
+                refusal.message
+            ),
+            AgentError::Unreadable(cause) => f.write_str(cause),
+        }
+    }
 }
 
 pub trait Agent {
-    /// What to run to bring a fresh woken session up in the seat's worktree.
+    /// What this adapter declares about its agent: the postures it takes, the
+    /// model and the first turn a seat that names none starts with, whether it
+    /// answers [`Agent::context`], the releases it was measured against, and
+    /// the models a posture is held to (the D3 gate).
+    fn capabilities(&self) -> Result<Capabilities, AgentError>;
+
+    /// Which agent this adapter drives, and at which version of itself **this
+    /// call**: a version read once at startup and republished advertises the
+    /// boot version for as long as the controller lives.
+    fn version(&self) -> Result<Version, AgentError>;
+
+    /// What to run to bring a fresh session up in the seat's worktree.
     ///
     /// It RUNS NOTHING: the session is started by core, on the host, from the
-    /// value this answers. It may WRITE — inside the start's own configuration
-    /// directory, which is what that directory is for (reviewer call
-    /// 2026-09-25, E8) — and `Err` is a start that must not be attempted,
-    /// carrying why.
-    fn launch(&self, spec: &StartSpec) -> Result<Launch, String>;
+    /// value this answers. It may WRITE inside the request's configuration
+    /// directory and inside the seat's worktree, and nowhere else (reviewer
+    /// call 2026-09-25, E8) — its agent's scoped configuration and whatever
+    /// rendering of the request's permissions its agent reads — and an error
+    /// is a start that must not be attempted, carrying why.
+    fn launch(&self, launch: &Launch) -> Result<Argv, AgentError>;
 
     /// What to run to bring a seat's ENDED session back, context intact, as a
-    /// fresh session on the host: the resume of `session_id`, the FULL id the
-    /// table recorded, carrying the start's own flags from `spec` (reviewer
-    /// call 2026-09-25, E2, E3).
+    /// fresh session on the host: the resume of the FULL session id the table
+    /// recorded, carrying the start's own flags (reviewer call 2026-09-25, E2,
+    /// E3).
     ///
     /// It runs nothing, exactly as [`Agent::launch`] runs nothing, and it is
-    /// believed the same way: core starts it and watches for the pane's row —
-    /// which must carry `session_id` itself, because a row under any other id
-    /// is a fork and not the session this meant to continue (lessons
-    /// claude-code A9).
-    fn resume(&self, session_id: &str, spec: &StartSpec) -> Result<Launch, String>;
+    /// believed the same way: core starts it and asks [`Agent::read`] about the
+    /// pane — which must answer that session's id, because a session under any
+    /// other id is a fork and not the one this meant to continue.
+    fn resume(&self, resume: &Resume) -> Result<Argv, AgentError>;
+
+    /// What each seat's agent is doing, every seat in one call, one reading per
+    /// seat in the order asked.
+    ///
+    /// A seat is found by its `session_id`, and else by its `pid`, the pane's
+    /// process — even where the session id names nothing the agent has — and
+    /// NEVER by its worktree (CORRECTIONS AT REVIEW, 2026-09-25). An error is
+    /// the whole call unanswered; one seat the adapter could not read is that
+    /// seat's own `unknown`, and every other seat is still read.
+    fn read(&self, seats: &[SeatRef]) -> Result<Vec<SeatActivity>, AgentError>;
+
+    /// How much of its window each seat's session has used, how many turns it
+    /// took and when it last wrote — every seat in one call, asked only of an
+    /// adapter whose [`Agent::capabilities`] declare it. A reading the adapter
+    /// cannot give is absent from its row, never a zero.
+    fn context(&self, seats: &[SeatRef]) -> Result<Vec<SeatContext>, AgentError>;
 
     /// The keys that answer the question a starting session's screen is
     /// stopped at, where this agent knows the question and a start may answer
     /// it; `None` for a screen it does not recognise.
     ///
-    /// The one screen rule a start reads, and read only for a session whose
-    /// worktree fleet itself created: the keys accept the agent's
-    /// workspace-trust question, which the acceptance `launch` seeds should
-    /// already have skipped (ruling 13) — so this is the fallback, not the
+    /// NOT ONE OF THE CONTRACT'S VERBS: the in-process adapter's alone, kept
+    /// from flight 11 as the fallback ruling 13 allows should a seeded trust
+    /// acceptance not skip the agent's workspace-trust question. An adapter
+    /// that is an executable answers `None`, and its launch's seed is the
     /// path. The rule is the adapter's because the words on the screen are the
     /// agent's (ruling 2); core only captures and types.
     fn trust_keys(&self, _screen: &str) -> Option<Vec<String>> {
         None
     }
-
-    /// Where this provider reads a session's project-local settings from,
-    /// relative to the working directory the session comes up in.
-    ///
-    /// A permission list cannot ride the plugin root the overlay is loaded
-    /// through, so a transient seat's rules are written here instead — which is
-    /// why the path is the adapter's and not the spawn's: it is the one fact in
-    /// that write that belongs to one provider.
-    fn local_settings(&self) -> &'static str;
-
-    /// The listing under one configuration directory, or the adapter's own when
-    /// `config_dir` is `None`.
-    ///
-    /// The fleet's own read is one command per poll shared by every seat: two
-    /// seats must not decide against different readings of the same moment. A
-    /// session under its own configuration directory appears in NO other
-    /// listing (lessons claude-code A11, B10), so a row started that way is
-    /// asked for under that directory and is invisible to every other read this
-    /// trait has.
-    fn status(&self, config_dir: Option<&Path>) -> RosterRead;
-
-    /// The session's transcript body, or `None` when there is nothing to read,
-    /// under the same directory the session was started with.
-    fn transcript(
-        &self,
-        config_dir: Option<&Path>,
-        worktree: &str,
-        session_id: &str,
-    ) -> Option<String>;
-
-    /// When this session last wrote, in epoch milliseconds — the end the
-    /// listing does not carry. The transcript's last write is the session's own
-    /// final act, and it outlives the process (lessons claude-code C4), so it
-    /// is an end a controller still has in hand long after the row left the
-    /// listing: what dates a dead pane this controller did not see die.
-    /// `None` when the transcript does not resolve, which is a reading nobody
-    /// has rather than a session that never ended.
-    ///
-    /// It reads the same file [`Agent::transcript`] does, so it takes the same
-    /// directory: a row asked for under the wrong one resolves no transcript at
-    /// all, which reads as an end nobody has.
-    fn ended_at(&self, config_dir: Option<&Path>, worktree: &str, session_id: &str) -> Option<u64>;
-
-    /// What the agent binary reports **this poll**. A version read once at
-    /// startup and republished advertises the boot version for as long as the
-    /// controller lives.
-    fn version(&self) -> Option<String>;
 }
 
-/// One session as the listing reports it.
+// ---- opening the agent ------------------------------------------------------
+
+/// What a caller knows when it opens the agent: where this machine keeps its
+/// state, and what the in-process adapter is handed rather than reading for
+/// itself.
+pub struct Opening<'a> {
+    /// The home the adapter's own configuration is found under when nothing
+    /// configures one.
+    pub home: &'a Path,
+    /// The plugin root the in-process adapter loads into every session it
+    /// launches or resumes: `[controller] plugin_dir` today, the adapter's own
+    /// pack path once fleet-x93d.2 deletes the key (reviewer call 2026-09-25,
+    /// E8). Never a field of a request.
+    pub plugin_dir: Option<PathBuf>,
+    /// The template a launch renders the request's permissions into, the pack
+    /// layers' `overlay/per-provider/claude/permissions.json` until fleet-jymr.5
+    /// moves it into the claude-code pack. `None` is an adapter whose launches
+    /// write no permission document at all.
+    pub permissions: Option<String>,
+}
+
+/// The agent a caller opened, and why it may issue no effect where it may
+/// not.
+pub struct Opened {
+    /// The name `[agent] adapter` will call this adapter by.
+    pub name: String,
+    pub agent: Box<dyn Agent>,
+    /// Why no effect may be issued through this agent — nothing it could launch
+    /// resolved — or `None` for an agent that can. Reads are answered either
+    /// way: a loop that cannot start a session still observes and publishes.
+    pub effects_off: Option<String>,
+    /// What reads for sessions Claude Code's background daemon still hosts —
+    /// the upgrade refusal (ruling 10) — where this adapter's agent has such a
+    /// daemon, and `None` where it has none. Beside the agent and never one of
+    /// its verbs: it goes with the in-process adapter in flight 14.
+    pub daemon: Option<Box<dyn claude_code::DaemonListing>>,
+}
+
+/// The one opener every caller takes: the in-process Claude Code adapter,
+/// built from this process's environment, with the binary its effects exec
+/// resolved ONCE — the same resolution the gate in [`Opened::effects_off`] is
+/// read from, so a caller that gated on one file cannot act through another.
+pub fn open(opening: &Opening) -> Result<Opened, String> {
+    Ok(claude_code::open(opening))
+}
+
+// ---- what fleet sets for a seat's session -----------------------------------
+
+/// The environment a seat's session keeps from this process, beside the
+/// constructed `PATH`: four values a shell needs to be one, and nothing else.
+/// A variable this list does not name cannot reach a session through this
+/// controller.
 ///
-/// There is deliberately no token field: the listing carries none (lessons
-/// claude-code B2), and context comes from the transcript.
-#[derive(Clone, Debug, Deserialize)]
-pub struct AgentRow {
-    #[serde(rename = "sessionId")]
-    pub session_id: String,
-    pub cwd: String,
-    /// The session's process. An interactive row always carries it, and it is
-    /// what a row is attributed to a seat BY: the pane's own pid (E2). A row
-    /// without one is a background shape no seat the host runs can produce.
-    #[serde(default)]
-    pub pid: Option<u32>,
-    /// A background row's five-word state (lessons claude-code A3). An
-    /// interactive row never carries it (B10), and nothing decides on it.
-    #[serde(default)]
-    pub state: Option<String>,
-    /// What the agent says this session is DOING right now, in the agent's own
-    /// vocabulary. Absent on a row that carries none, which is a reading nobody
-    /// has rather than an idle session — so it is matched for equality against
-    /// the one word the cap leg counts ([`BUSY`]) and never read as a negative.
-    #[serde(default)]
-    pub status: Option<String>,
-    #[serde(rename = "startedAt", default)]
-    pub started_at: Option<u64>,
-    /// Present ONLY while the session is stopped in front of a human, and its
-    /// value names the cause (lessons claude-code B8). Read for PRESENCE and
-    /// never by matching the value: the vocabulary is the agent's, so a cause
-    /// this fleet does not recognise must still stop the seat rather than read
-    /// as a healthy one.
-    #[serde(rename = "waitingFor", default)]
-    pub waiting_for: Option<String>,
+/// `FLEET_BIN` is not here, and passing it through would be wrong twice over: a
+/// controller started by a service manager has none to pass, and one started
+/// from inside a seat would hand on that seat's binary rather than its own. It
+/// is set from this process's own executable instead.
+///
+/// `FLEET_ACTOR` is not here for the second of those reasons: a controller
+/// started from inside a seat would make every session it starts that seat.
+/// A start and a resume set it from the seat they are for.
+pub const PASSED_THROUGH: [&str; 4] = ["HOME", "USER", "TMPDIR", "LANG"];
+
+/// The variable the plugin's shim runs its binary from, which every seat's
+/// session is handed. Spelled here and not taken from the item layer's own
+/// constant, because this crate names nothing of the project around it.
+pub const FLEET_BIN_VAR: &str = "FLEET_BIN";
+
+/// The variable a started session's verbs read their actor from, set to the
+/// seat's own `seat:<id>`.
+pub const FLEET_ACTOR_VAR: &str = "FLEET_ACTOR";
+
+/// This process's own executable, as the absolute path the shim requires.
+///
+/// Whatever the operating system answers, and nothing when it answers nothing
+/// or something relative: the shim refuses a relative seam, so handing one over
+/// would block every Bash command of the session it reached rather than let the
+/// shim look under its own root.
+pub fn own_executable() -> Option<PathBuf> {
+    std::env::current_exe().ok().filter(|exe| exe.is_absolute())
 }
 
-/// The agent's own word for a session that is mid-turn. One word, matched for
-/// equality: the vocabulary is the agent's, so a status this fleet does not
-/// recognise counts as not-busy rather than as a fifth state to reason about.
-pub const BUSY: &str = "busy";
-
-/// The agent's word for a session stopped in front of a human, which an
-/// interactive row carries beside [`AgentRow::waiting_for`] (lessons claude-code
-/// B10). Read as a block on its own too, so a row that names no cause is still
-/// one nothing is typed into.
-pub const WAITING: &str = "waiting";
-
-impl AgentRow {
-    pub fn is_live(&self) -> bool {
-        self.pid.is_some()
+/// The variables fleet sets for a seat's session, whatever agent runs in it
+/// (D1, D7): the constructed `PATH`, the four a shell needs, this process's own
+/// executable as `FLEET_BIN`, and WHO THE SESSION ACTS AS — `actor`, so its own
+/// bare verbs are the seat's.
+///
+/// NOTHING IS INHERITED (lessons claude-code D1). A service-launched process
+/// carries a minimal `PATH`, and a session that inherits it hands the collapsed
+/// search path to every tool call it makes, long after the start that caused
+/// it; so the `PATH` is the platform's, built off the home, and the process's
+/// own contributes nothing. What an agent's adapter adds for its own agent it
+/// answers in its [`Argv`]'s environment, and core sets both, exactly.
+pub fn seat_environment(actor: &str) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    env.insert(
+        "PATH".to_string(),
+        crate::platform::child_path(&crate::platform::home_dir()),
+    );
+    for pass in PASSED_THROUGH {
+        if let Ok(value) = std::env::var(pass) {
+            env.insert(pass.to_string(), value);
+        }
     }
-
-    /// Whether this row is a session mid-turn.
-    pub fn is_busy(&self) -> bool {
-        self.status.as_deref() == Some(BUSY)
+    if let Some(bin) = own_executable() {
+        env.insert(FLEET_BIN_VAR.to_string(), bin.display().to_string());
     }
+    env.insert(FLEET_ACTOR_VAR.to_string(), actor.to_string());
+    env
+}
 
-    /// What this row is stopped in front of a human on, where it is: the cause
-    /// [`AgentRow::waiting_for`] names, else the [`WAITING`] status word itself.
-    /// Read for presence (B8), so a cause this fleet does not know still blocks.
-    pub fn blocked_on(&self) -> Option<String> {
-        self.waiting_for.clone().or_else(|| {
-            (self.status.as_deref() == Some(WAITING)).then(|| format!("status {WAITING}"))
+/// The environment a session's pane runs with: fleet's own for the seat, with
+/// the adapter's answered variables over it — the pairs the host is handed,
+/// and nothing of its own.
+pub fn pane_environment(fleet: &BTreeMap<String, String>, argv: &Argv) -> Vec<(String, String)> {
+    let mut env = fleet.clone();
+    for (key, value) in &argv.env {
+        env.insert(key.clone(), value.clone());
+    }
+    env.into_iter().collect()
+}
+
+// ---- reading the answers ------------------------------------------------------
+
+/// Every asked seat's reading, one per seat in the order asked: `read`'s own
+/// row for the seat, and `unknown` carrying why where there is none — the
+/// whole call unanswered, or an answer that left the seat out. A seat nobody
+/// read is a question, never a seat the agent says is idle.
+pub fn readings(agent: &dyn Agent, seats: &[SeatRef]) -> Vec<SeatActivity> {
+    if seats.is_empty() {
+        return Vec::new();
+    }
+    let answered = agent.read(seats);
+    seats
+        .iter()
+        .map(|asked| match &answered {
+            Ok(rows) => rows
+                .iter()
+                .find(|row| row.seat == asked.seat)
+                .cloned()
+                .unwrap_or_else(|| unread(asked, "the agent answered no reading for it".into())),
+            Err(why) => unread(asked, format!("the agent could not be read: {why}")),
         })
-    }
+        .collect()
+}
 
-    /// The row's working directory in the form seat matching compares.
-    pub fn cwd_key(&self) -> &str {
-        dir_key(&self.cwd)
+fn unread(asked: &SeatRef, cause: String) -> SeatActivity {
+    SeatActivity {
+        seat: asked.seat,
+        activity: Activity::Unknown,
+        blocked_on: None,
+        evidence: Evidence::Typed,
+        session_id: None,
+        cause: Some(cause),
     }
+}
+
+/// Every asked seat's context, keyed by the seat: `context`'s own rows where
+/// the adapter declares the verb and answered, and nothing otherwise — a seat
+/// with no row is a reading nobody has, which every reader renders as blind.
+pub fn contexts(
+    agent: &dyn Agent,
+    declared: bool,
+    seats: &[SeatRef],
+) -> BTreeMap<fleet_core::seat::identity::SeatId, SeatContext> {
+    if !declared || seats.is_empty() {
+        return BTreeMap::new();
+    }
+    match agent.context(seats) {
+        Ok(rows) => rows.into_iter().map(|row| (row.seat, row)).collect(),
+        Err(_) => BTreeMap::new(),
+    }
+}
+
+/// An activity's own word, as the contract spells it.
+pub fn word(activity: Activity) -> &'static str {
+    match activity {
+        Activity::Starting => "starting",
+        Activity::Busy => "busy",
+        Activity::Idle => "idle",
+        Activity::Blocked => "blocked",
+        Activity::Unknown => "unknown",
+    }
+}
+
+/// A blocked reason's own word, as the contract spells it.
+pub fn blocked_word(on: BlockedOn) -> &'static str {
+    match on {
+        BlockedOn::Permission => "permission",
+        BlockedOn::Question => "question",
+        BlockedOn::LoggedOut => "logged_out",
+        BlockedOn::UsageLimit => "usage_limit",
+    }
+}
+
+/// What a BLOCKED reading waits on, as a person reads it: the adapter's own
+/// sentence where it gave one, else the reason's word, else the bare word
+/// `blocked` — read for the activity's PRESENCE and never by matching what it
+/// names (lessons claude-code B8), so a wait nobody can name still stops the
+/// seat. `None` for a reading that is not blocked.
+pub fn waiting_on(reading: &SeatActivity) -> Option<String> {
+    (reading.activity == Activity::Blocked).then(|| {
+        reading
+            .cause
+            .clone()
+            .or_else(|| reading.blocked_on.map(|on| blocked_word(on).to_string()))
+            .unwrap_or_else(|| word(Activity::Blocked).to_string())
+    })
 }
 
 /// A directory path with any trailing separator removed — the one form both
-/// sides of the seat match are put in, so a configured path and a reported one
+/// sides of a comparison are put in, so a configured path and a reported one
 /// that differ only there are the same directory. The root is left alone,
 /// because trimming it away leaves nothing to compare.
 pub fn dir_key(path: &str) -> &str {
@@ -240,48 +348,4 @@ pub fn dir_key(path: &str) -> &str {
     } else {
         trimmed
     }
-}
-
-/// A whole-fleet read, or the reason there is none.
-///
-/// `Unreadable` carries why. The distinction is the type's whole job: a listing
-/// that answers with zero bytes and exit 0 while sessions are live (lessons
-/// claude-code B4) must not reach a seat as "no sessions", because that is every
-/// seat reading absent at once.
-#[derive(Clone, Debug)]
-pub enum RosterRead {
-    Readable(Vec<AgentRow>),
-    Unreadable { cause: String },
-}
-
-/// The transcript path encoding (lessons claude-code C1): the agent keys a
-/// per-project directory on the project path with every non-alphanumeric
-/// character replaced by a dash — the separators, and the dots, underscores and
-/// spaces beside them.
-///
-/// Censused on this fleet's own machine: of 235 per-project directories, zero
-/// carry any character outside `[A-Za-z0-9-]`, and a path under `.claude`
-/// resolves to `--claude`, so the dash is not the separator's alone.
-///
-/// TWO PARTS OF THE ENCODING ARE NOT HANDLED HERE, because no specimen on this
-/// machine exercises them: a project path past roughly 200 characters, which
-/// the agent truncates and gives a hash suffix (the longest local directory is
-/// 136), and a non-ASCII character, which this maps to a dash without a
-/// measurement saying it should. Either yields a path that does not exist,
-/// which every reader renders as a seat with no context reading.
-///
-/// Pure, and separate from the read, because the encoding is what can be wrong
-/// and a test must reach it without a filesystem.
-pub fn encode_project_dir(path: &str) -> String {
-    path.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect()
-}
-
-/// The session's transcript under the agent's configuration directory.
-pub fn transcript_path(config_dir: &Path, worktree: &str, session_id: &str) -> std::path::PathBuf {
-    config_dir
-        .join("projects")
-        .join(encode_project_dir(worktree))
-        .join(format!("{session_id}.jsonl"))
 }

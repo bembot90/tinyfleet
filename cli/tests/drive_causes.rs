@@ -69,19 +69,14 @@ mod unreadable_causes {
     /// control taking the case's own deadline would assert that a healthy spawn
     /// finishes inside a figure the case chose to be short, which is a timing
     /// assertion on a shared box.
-    fn readable(rig: &Rig) -> RosterRead {
+    fn readable(rig: &Rig) -> ListingRead {
         rig.read_with(&rig.stub_adapter("ok-stub", OK_STUB, Duration::from_secs(5)))
     }
 
-    fn cause_of(read: RosterRead) -> String {
+    fn cause_of(read: ListingRead) -> String {
         match read {
-            RosterRead::Unreadable { cause } => cause,
-            RosterRead::Readable(rows) => {
-                panic!(
-                    "the listing was read as {} rows, not as unreadable",
-                    rows.len()
-                )
-            }
+            ListingRead::Unreadable { cause } => cause,
+            ListingRead::Readable => panic!("the listing was read, not as unreadable"),
         }
     }
 
@@ -192,7 +187,7 @@ mod unreadable_causes {
         let read = rig.read_with(&adapter);
 
         assert!(
-            matches!(read, RosterRead::Readable(_)),
+            matches!(read, ListingRead::Readable),
             "the reading is the attempt that RAN, not the one that balked: {read:?}"
         );
         assert!(balked.exists(), "the stub really did balk once");
@@ -464,9 +459,12 @@ mod unreadable_causes {
     /// binary are pinned by the split itself and an arm can then speak about
     /// the OS's reason without quoting it.
     fn os_reason(cause: &str, bin: &str) -> String {
+        // The spawn's own cause, after whatever the adapter's `read` says of
+        // the listing it could not take ("the listing could not be read: ").
         let prefix = format!("could not start {bin}: ");
         cause
-            .strip_prefix(&prefix)
+            .split_once(&prefix)
+            .map(|(_, reason)| reason)
             .unwrap_or_else(|| {
                 panic!("a spawn cause opens with {prefix:?}, and this one reads: {cause:?}")
             })
@@ -492,7 +490,7 @@ mod unreadable_causes {
 
         // The control: the same rig, the same call, a stub that answers.
         assert!(
-            matches!(readable(&rig), RosterRead::Readable(_)),
+            matches!(readable(&rig), ListingRead::Readable),
             "the rig can read a listing, so the Unreadable above is the stub's"
         );
     }
@@ -504,7 +502,7 @@ mod unreadable_causes {
         let rig = Rig::new("no-binary");
         let absent = rig.root.join("no-such-agent").display().to_string();
         let missing = rig.adapter_at(absent.clone(), Duration::from_secs(5));
-        let cause = cause_of(missing.status(None));
+        let cause = cause_of(listing_read(&missing));
         // Split on the adapter's own contract — `could not start <bin>: ` and
         // then whatever the io::Error rendered — so what is pinned is the
         // adapter's prefix and the binary, never the words libc's strerror
@@ -525,7 +523,7 @@ mod unreadable_causes {
         let unrunnable = rig.root.join("not-executable");
         write(&unrunnable, "#!/bin/sh\necho '[]'\n");
         let refused = rig.adapter_at(unrunnable.display().to_string(), Duration::from_secs(5));
-        let cause = cause_of(refused.status(None));
+        let cause = cause_of(listing_read(&refused));
         let reason_for_the_unrunnable_file = os_reason(&cause, &unrunnable.display().to_string());
         assert!(
             !reason_for_the_unrunnable_file.is_empty(),
@@ -538,7 +536,7 @@ mod unreadable_causes {
         );
 
         assert!(
-            matches!(readable(&rig), RosterRead::Readable(_)),
+            matches!(readable(&rig), ListingRead::Readable),
             "the control reads, so the causes above are the two bad binaries'"
         );
     }
@@ -568,7 +566,7 @@ mod unreadable_causes {
         );
 
         assert!(
-            matches!(readable(&rig), RosterRead::Readable(_)),
+            matches!(readable(&rig), ListingRead::Readable),
             "the control reads through the same rig and the same call, at a \
              deadline of its own that it fits"
         );
@@ -640,7 +638,7 @@ mod unreadable_causes {
         // writes one.
         assert!(matches!(
             rig.read_with(&rig.stub_adapter("patient-stub", &body, Duration::from_secs(5))),
-            RosterRead::Readable(_)
+            ListingRead::Readable
         ));
         assert!(
             marker.exists(),
@@ -727,7 +725,7 @@ mod unreadable_causes {
         // is the kill's and not a stub whose descendant never writes one.
         assert!(matches!(
             rig.read_with(&rig.stub_adapter("keeper-patient-stub", &body, Duration::from_secs(30))),
-            RosterRead::Readable(_)
+            ListingRead::Readable
         ));
         assert!(
             marker.exists(),
@@ -814,7 +812,7 @@ mod unreadable_causes {
                 &body,
                 Duration::from_secs(30)
             )),
-            RosterRead::Readable(_)
+            ListingRead::Readable
         ));
         assert!(
             marker.exists(),
@@ -848,7 +846,7 @@ mod unreadable_causes {
             Duration::from_millis(VERSION_SEAM_MS),
         );
         rig.owes_witness(&started);
-        let version = rig.witnessed(|| agent.version());
+        let version = rig.witnessed(|| version_of(&agent));
         assert!(
             version.is_none(),
             "a version call the deadline cut short reports nothing: {version:?}"
@@ -880,6 +878,8 @@ mod unreadable_causes {
                 Duration::from_secs(30)
             )
             .version()
+            .ok()
+            .and_then(|version| version.version)
             .as_deref(),
             Some("9.9.9")
         );
@@ -961,7 +961,7 @@ mod unreadable_causes {
             Duration::from_millis(VERSION_SEAM_MS),
         );
         rig.owes_witness(&started);
-        let version = rig.witnessed(|| agent.version());
+        let version = rig.witnessed(|| version_of(&agent));
 
         assert!(
             version.is_none(),
@@ -1309,7 +1309,7 @@ mod unreadable_causes {
         );
 
         assert!(
-            matches!(readable(&rig), RosterRead::Readable(_)),
+            matches!(readable(&rig), ListingRead::Readable),
             "the control reads through the same rig and the same call, at a \
              deadline of its own that it fits"
         );

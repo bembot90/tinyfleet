@@ -25,7 +25,7 @@
 //! still hosts in a seat's worktree. The upgrade adopts nothing (ruling 10) —
 //! the controller refuses to start over it, names it, and touches nothing.
 
-use fleet_controller::adapter::claude_code::{parse_hosted, parse_roster, DaemonListing, Hosted};
+use fleet_controller::adapter::claude_code::{parse_hosted, DaemonListing, Hosted};
 use fleet_controller::clock::Clock;
 use fleet_controller::events;
 use fleet_controller::host::{session_for, Host};
@@ -112,8 +112,8 @@ impl Rig {
             // — which is what these arms are about. What a revive does is the
             // effects suite's.
             stub: StubAgent::answering(Answers {
-                transcript: Some(A_LIGHT_TRANSCRIPT.to_string()),
-                ended_at: Some(now_ms()),
+                session_log: Some(A_LIGHT_TRANSCRIPT.to_string()),
+                last_write: Some(now_ms()),
                 resume: Err("this rig's agent resumes nothing".to_string()),
                 ..Answers::default()
             }),
@@ -275,8 +275,8 @@ impl Rig {
             })
             .collect::<Vec<_>>()
             .join(",");
-        let listing = parse_roster(&format!("[{body}]"));
-        self.stub.set(|answers| answers.status = listing);
+        let listing = format!("[{body}]");
+        self.stub.set(|answers| answers.listing = Ok(listing));
     }
 
     /// One poll, from a loop that starts again knowing only what the session
@@ -307,6 +307,7 @@ impl Rig {
     ) -> Seams<'a> {
         Seams {
             clock,
+            adapter: "stub",
             agent: &self.stub,
             host: &self.host,
             daemon,
@@ -585,10 +586,10 @@ fn a_pane_dying_between_two_ticks_writes_one_session_ended() {
     drop(watchdog);
     assert_eq!(status, 0, "the loop ended on the stop it was asked for");
 
-    // THREE TICKS RAN, read from the agent rather than assumed: both seats are
-    // decided against the fleet's own listing, so a tick is one listing read.
+    // THREE TICKS RAN, read from the agent rather than assumed: every live
+    // pane is asked about in one read, so a tick is one read of the agent.
     assert_eq!(
-        rig.stub.calls_of(StubAgent::STATUS).len(),
+        rig.stub.calls_of(StubAgent::READ).len(),
         3,
         "the loop polled three times: {:?}",
         rig.stub.verbs()
@@ -637,8 +638,9 @@ fn a_pane_dying_between_two_ticks_writes_one_session_ended() {
 /// nothing but the pid can say it is the seat's: the pane the host holds for
 /// the seat is the agent's own process (E2). The control is a seat whose table
 /// row names a session the listing carries in its worktree with NO pane
-/// behind it — a session fleet does not host, so not claimed, and the seat is
-/// left unread rather than started beside it.
+/// behind it — a session fleet does not host, so not claimed; and since no
+/// seat is found by its working directory (CORRECTIONS AT REVIEW, 2026-09-25),
+/// the seat the host holds nothing for reads absent.
 #[test]
 fn a_live_idle_session_is_claimed_at_its_first_sighting() {
     let rig = Rig::new("live-idle-adopted");
@@ -663,14 +665,14 @@ fn a_live_idle_session_is_claimed_at_its_first_sighting() {
         "and nothing was attached to a session that is already up: {lines:?}"
     );
 
-    // The control: listed live, named by the table, and never the seat's.
-    assert_eq!(rig.row(UNOWNED_ID)["roster_state"], "unknown");
-    assert_eq!(rig.decision(UNOWNED_ID), "leave-alone");
+    // The control: listed live, named by the table, and never the seat's —
+    // no claim without a pane, and presence is the host's alone.
     assert_eq!(
-        rig.lines_reading(&format!("session.spawned {UNOWNED_ID}")),
+        rig.lines_reading(&format!("session.adopted {UNOWNED_ID}")),
         0,
-        "no second session beside one the listing names: {lines:?}"
+        "a listed session with no pane behind it is not claimed: {lines:?}"
     );
+    assert_eq!(rig.row(UNOWNED_ID)["roster_state"], "absent");
 }
 
 /// A CLAIMED SESSION WHOSE PANE IS DEAD IS REVIVED, EXACTLY AS AN UNCLAIMED ONE.
@@ -777,8 +779,12 @@ fn a_seat_the_daemon_still_hosts_stops_the_start_and_is_named() {
         rig.host.verbs()
     );
     assert!(
-        rig.stub.calls().is_empty(),
-        "and no read of the agent: {:?}",
+        rig.stub
+            .verbs()
+            .iter()
+            .all(|verb| *verb == StubAgent::CAPABILITIES),
+        "and no read of the agent — only its declaration, taken before the \
+         policy is gated: {:?}",
         rig.stub.verbs()
     );
     assert!(!rig.started(), "no controller.started: {:?}", rig.stream());

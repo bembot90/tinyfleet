@@ -85,7 +85,7 @@ pub enum PaneState {
 
 /// A whole-server read, or the reason there is none.
 ///
-/// The same distinction [`crate::adapter::RosterRead`] draws: a listing that
+/// The same distinction the agent's `unknown` reading draws: a listing that
 /// failed must not reach a seat as "no sessions", because that is every seat
 /// reading absent at once. A server that is not running IS readable — it holds
 /// no sessions, which is the fleet after a reboot.

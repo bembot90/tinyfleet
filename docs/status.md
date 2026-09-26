@@ -131,7 +131,7 @@ carry.
   it is waiting for. An `unknown` seat is followed by ` — ` and why: what
   fleet's tmux server holds and what the agent's list names, where the two
   disagree, or the read that failed. For example,
-  `rex-51df4f54  unknown — tmux holds pid 4242 alive for rex-51df4f54; the listing names no row with that pid  decision leave-alone, outcome none  ...`.
+  `rex-51df4f54  unknown — tmux holds pid 4242 alive for rex-51df4f54; the listing names no row with pid 4242  decision leave-alone, outcome none  ...`.
 - The decision is one of `leave-alone`, `spawn-woken`, `revive`, `rest`,
   `suggest-rest` and `halt`, or `pending` on a row the controller publishes
   before it reaches a decision.
@@ -258,6 +258,21 @@ Before printing, fleet parses the document, so a projection that the page
 would refuse is refused here too. Each seat's row names its seat as an
 object, `"seat": {"id": …, "name": …, "kind": …}`, with no `name` where the
 seat has none. `--json` and `--seat` cannot be used together.
+
+The document's `agent` object names the agent your seats run:
+
+- `adapter` is the name of the adapter that answers for it.
+- `name` is the agent the adapter drives, and `version` its version as the
+  controller read it on that poll. Both are null when the adapter could not
+  be read; `version` alone is null when no binary of the agent is installed.
+- `expected` is the version the controller expects: the fleet's own
+  `[substrate]` pin, or the version the adapter was measured against when
+  there is none.
+- `postures` lists the postures the agent takes, among `ask`, `auto` and
+  `unattended`.
+
+`agent_version` and `agent_version_expected`, beside it, carry the same two
+versions as `agent.version` and `agent.expected`.
 
 ## Reading the stream
 

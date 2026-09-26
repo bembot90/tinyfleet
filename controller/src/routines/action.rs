@@ -81,7 +81,7 @@ pub fn child_command(program: &str, machine: &Machine) -> Command {
     let mut cmd = Command::new(program);
     cmd.env_clear();
     cmd.env("PATH", path_for_children(machine.child_path));
-    for pass in crate::adapter::claude_code::PASSED_THROUGH {
+    for pass in crate::adapter::PASSED_THROUGH {
         if let Ok(value) = std::env::var(pass) {
             cmd.env(pass, value);
         }

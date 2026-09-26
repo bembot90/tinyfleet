@@ -13,7 +13,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use fleet_controller::adapter::claude_code::ClaudeCode;
+use fleet_controller::adapter;
 use fleet_controller::effect::{TurnTarget, Typed};
 use fleet_controller::{clock, config, effect, platform, policy as controller, sessions};
 use fleet_core::input::{DELIVERY_SCHEMA, QUESTION_SCHEMA};
@@ -1299,7 +1299,17 @@ impl SeatRing {
         };
 
         let home = platform::home_dir();
-        let agent = ClaudeCode::new(&home, &self.machine_dir);
+        // The agent opened the one way every caller opens it. A ring reads
+        // and types and starts nothing, so it is asked whatever the effects
+        // gate says: the typed turn is the host's act.
+        let agent = match adapter::open(&adapter::Opening {
+            home: &home,
+            plugin_dir: policy.plugin_dir.clone(),
+            permissions: None,
+        }) {
+            Ok(opened) => opened.agent,
+            Err(cause) => return rang_nobody(cause),
+        };
         let host = fleet_controller::host::resolve(&platform::child_path(&home));
         // A spawned seat's session runs under the configuration directory
         // that seat alone starts with, and is named by no other listing, so
@@ -1316,8 +1326,8 @@ impl SeatRing {
         };
         // The session the courier's event names, off the row carrying the
         // seat's pane's pid; the turn itself reads both again, fresh.
-        let session = match effect::seat_row(&agent, host.as_ref(), &target) {
-            Ok(live) => Some(live.session_id),
+        let session = match effect::seat_row(agent.as_ref(), host.as_ref(), &target) {
+            Ok(live) => live.reading.session_id,
             Err(typed) => {
                 return Rung {
                     session: None,
@@ -1326,7 +1336,7 @@ impl SeatRing {
             }
         };
         let typed = effect::type_turn(
-            &agent,
+            agent.as_ref(),
             host.as_ref(),
             &target,
             text,

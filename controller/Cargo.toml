@@ -55,9 +55,13 @@ required-features = ["test-support"]
 # supports is core's too (`fleet_core::supported`), and it is the
 # expectation the loop compares the live agent with where a fleet pins none.
 # So is a seat's identity (`fleet_core::seat::identity`: the id, the fleet.toml
-# roster and the resolver), which `fleet start` renders the seat list from.
-# The controller takes the bounded runner, the supported release and a seat's
-# identity from core, and nothing else.
+# roster and the resolver), which `fleet start` renders the seat list from. So
+# are the agent contract's types (`fleet_core::agent::types`), which the Agent
+# trait's six verbs take and answer, and the template render
+# (`fleet_core::item::render`) the in-process adapter renders a launch's
+# permissions with. The controller takes the bounded runner, the supported
+# release, a seat's identity, the agent contract and the render from core, and
+# nothing else.
 [dependencies]
 fleet-core = { path = "../core" }
 jiff = { version = "=0.2.35", default-features = false, features = [

@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-use fleet_controller::adapter::claude_code::ClaudeCode;
+use fleet_controller::adapter::{self, claude_code::DaemonListing};
 use fleet_controller::lifecycle::{self, FirstRun, Mode, ProjectAt};
 use fleet_controller::run::{self, DaemonCheck};
 use fleet_controller::{config, events, platform, policy as controller, sessions};
@@ -818,14 +818,24 @@ fn start(ui: &Ui, args: &StartArgs) -> Result<Exit, Stop> {
     }
     let home = platform::home_dir();
     let child_path = platform::child_path(&home);
-    if let Err(why) = fleet_controller::adapter::claude_code::ClaudeCode::resolve_effect_bin(
-        fleet_controller::adapter::claude_code::configured_bin().as_deref(),
-        &child_path,
-    ) {
+    // The agent, opened the one way the controller will open it: an agent that
+    // can issue no effect is a controller that would start no seat, so it is
+    // refused here, before anything is loaded.
+    let opened = adapter::open(&adapter::Opening {
+        home: &home,
+        plugin_dir: None,
+        permissions: None,
+    })
+    .map_err(Stop::could_not_tell)?;
+    if let Some(why) = &opened.effects_off {
         return Err(Stop::could_not_tell(format!(
             "{why} — nothing was loaded; the search path is {child_path}"
         )));
     }
+    let capabilities = opened
+        .agent
+        .capabilities()
+        .map_err(|why| Stop::could_not_tell(format!("{why} — nothing was loaded")))?;
     // The host every seat's session runs on, resolved as the controller
     // resolves it: a controller with none starts no seat at all.
     if let Err(why) = fleet_controller::host::TmuxHost::resolve(&child_path) {
@@ -833,7 +843,7 @@ fn start(ui: &Ui, args: &StartArgs) -> Result<Exit, Stop> {
             "{why} — nothing was loaded; the search path is {child_path}"
         )));
     }
-    daemon_hosted(ui, &fleet.machine_dir, &home)?;
+    daemon_hosted(ui, &fleet.machine_dir, opened.daemon.as_deref())?;
 
     let policy = controller::load(&fleet.fleet_toml).map_err(Stop::could_not_tell)?;
     let report = lifecycle::first_run(&FirstRun {
@@ -847,6 +857,7 @@ fn start(ui: &Ui, args: &StartArgs) -> Result<Exit, Stop> {
                 worktrees_dir,
             }),
         policy: &policy,
+        agent: &capabilities,
         service: &service,
     })
     .map_err(Stop::could_not_tell)?;
@@ -947,14 +958,21 @@ fn start(ui: &Ui, args: &StartArgs) -> Result<Exit, Stop> {
 /// recorded directories, and the listing under each. A seat list or a table
 /// that will not read names no seat and no directory here — the controller
 /// says why when it reads them — and a listing that cannot be read is one
-/// line, and the start goes on.
-fn daemon_hosted(ui: &Ui, machine_dir: &Path, home: &Path) -> Result<(), Stop> {
+/// line, and the start goes on. An agent that has no daemon to host a seat's
+/// session reads nothing.
+fn daemon_hosted(
+    ui: &Ui,
+    machine_dir: &Path,
+    daemon: Option<&dyn DaemonListing>,
+) -> Result<(), Stop> {
+    let Some(daemon) = daemon else {
+        return Ok(());
+    };
     let seats = config::read(&machine_dir.join("config.json"))
         .map(|machine| machine.seats)
         .unwrap_or_default();
     let (table, _) = sessions::read(&sessions::path_in(machine_dir));
-    let agent = ClaudeCode::new(home, machine_dir);
-    match run::daemon_check(&seats, &table.unwrap_or_default(), &agent) {
+    match run::daemon_check(&seats, &table.unwrap_or_default(), daemon) {
         DaemonCheck::Clear => Ok(()),
         DaemonCheck::Hosted(lines) => Err(Stop::refused(format!(
             "{}\nnothing was loaded",

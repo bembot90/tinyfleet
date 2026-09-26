@@ -9,8 +9,7 @@
 //! stdout: a caller piping this verb wants the row it produced, and a note
 //! about a lock it took over is not that row.
 
-use fleet_controller::adapter::claude_code::ClaudeCode;
-use fleet_controller::adapter::{dir_key, Agent};
+use fleet_controller::adapter::{self, dir_key, Agent};
 use fleet_controller::policy::Policy;
 use fleet_controller::routines::action::Machine;
 use fleet_controller::routines::file::Routine;
@@ -185,39 +184,46 @@ fn seat_views(fleet: &Fleet, needs_roster: bool) -> Vec<SeatView> {
             .and_then(|table| table.newest_for(&seat.to_string()))
             .and_then(|row| row.config_dir.clone())
     };
-    let read = if needs_roster {
+    let states: Vec<observe::RosterState> = if needs_roster {
         let home = platform::home_dir();
-        let mut agent = ClaudeCode::new(&home, &fleet.machine_dir);
-        if let Ok(bin) = ClaudeCode::resolve_effect_bin(
-            fleet_controller::adapter::claude_code::configured_bin().as_deref(),
-            &agent.child_path,
-        ) {
-            agent = agent.with_effect_bin(bin);
-        }
-        // One listing per distinct directory, the same fold the loop makes: a
-        // spawned seat is named by its own directory's listing alone, so a pass
-        // that read once would find no row for any such seat and ring nobody.
-        let rosters =
-            observe::Rosters::gather(&fleet.seats, &config_dir_of, &|dir| agent.status(dir));
-        // And the host, read once beside them, as the loop reads it: presence
-        // is the host's, so a seat is only ever rung in a session it holds.
+        // The host, read once, as the loop reads it: presence is the host's,
+        // so a seat is only ever rung in a session it holds. And the agent,
+        // opened the one way every caller opens it and asked ONCE about every
+        // seat whose pane is alive, each under its own directory — the same
+        // read the loop makes, so a spawned seat is not rung as nobody.
         let host = crate::transient::verb_host(&home).list();
-        Some((rosters, host))
+        match adapter::open(&adapter::Opening {
+            home: &home,
+            plugin_dir: fleet.policy.plugin_dir.clone(),
+            permissions: None,
+        }) {
+            Ok(opened) => observe::observe_fleet(
+                opened.agent.as_ref(),
+                &host,
+                &fleet.seats,
+                &|seat: &SeatId| observe::Held {
+                    session_id: recorded
+                        .as_ref()
+                        .and_then(|table| table.newest_for(&seat.to_string()))
+                        .and_then(|row| row.session_id.clone()),
+                    config_dir: config_dir_of(seat),
+                },
+                clock::now_ms(),
+            )
+            .into_iter()
+            .map(|observation| observation.state)
+            .collect(),
+            Err(_) => vec![observe::RosterState::Unknown; fleet.seats.len()],
+        }
     } else {
-        None
+        vec![observe::RosterState::Absent; fleet.seats.len()]
     };
     fleet
         .seats
         .iter()
-        .filter_map(|seat| {
+        .zip(states)
+        .filter_map(|(seat, state)| {
             let (_, worktree) = seat.worktrees.first()?;
-            let state = match &read {
-                Some((rosters, host)) => {
-                    observe::observe_seat(rosters.for_seat(&seat.id), host, seat, clock::now_ms())
-                        .state
-                }
-                None => observe::RosterState::Absent,
-            };
             let session_name = match &recorded {
                 Some(table) => table.session_name(&seat.as_ref()),
                 None => seat.machine_name(),
@@ -401,19 +407,19 @@ fn run(name: &str, force: bool, dry_run: bool) -> Exit {
     let needs_roster = routine.action.nudge.is_some();
     let seats = seat_views(&fleet, needs_roster);
     let home = platform::home_dir();
-    let mut agent = ClaudeCode::new(&home, &fleet.machine_dir);
-    let resolved = ClaudeCode::resolve_effect_bin(
-        fleet_controller::adapter::claude_code::configured_bin().as_deref(),
-        &agent.child_path,
-    );
-    let effects_off = match &resolved {
-        Ok(bin) => {
-            agent = agent.with_effect_bin(bin.clone());
-            None
-        }
+    let opened = adapter::open(&adapter::Opening {
+        home: &home,
+        plugin_dir: fleet.policy.plugin_dir.clone(),
+        permissions: None,
+    });
+    let effects_off = match &opened {
+        Ok(opened) => opened.effects_off.clone(),
         Err(why) => Some(why.clone()),
     };
-    let carrier: Option<&dyn Agent> = resolved.is_ok().then_some(&agent);
+    let carrier: Option<&dyn Agent> = match (&opened, &effects_off) {
+        (Ok(opened), None) => Some(opened.agent.as_ref()),
+        _ => None,
+    };
 
     let now = routines::now_secs();
     let (mut routine_state, why) = state::read(&fleet.machine_dir);

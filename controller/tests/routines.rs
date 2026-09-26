@@ -419,12 +419,11 @@ fn a_nudge_to_a_seat_this_machine_does_not_carry_is_refused() {
 /// machine that the ring passes by.
 #[test]
 fn a_nudge_to_a_seat_by_its_name_fires_at_that_seats_row() {
-    use fleet_controller::adapter::{AgentRow, RosterRead};
     use fleet_controller::host::{self, Host};
     use fleet_controller::observe::RosterState;
     use fleet_controller::policy;
     use fleet_controller::routines::{action, action::Machine, Outcome, SeatView};
-    use fleet_controller::test_support::{Answers, FakeHost, Sent, StubAgent};
+    use fleet_controller::test_support::{self, Answers, FakeHost, Sent, StubAgent};
 
     let routine = routine_of(
         "[order]\ndescription = \"d\"\ntrigger = \"cron\"\nschedule = \"* * * * *\"\n\
@@ -454,23 +453,23 @@ fn a_nudge_to_a_seat_by_its_name_fires_at_that_seats_row() {
         )
         .expect("the fake host starts the pane");
     }
-    let rows = |status: &str| {
-        let rows = [BUILDER, ORLA]
+    let rows = |status: &str| -> Result<String, String> {
+        let rows: Vec<String> = [BUILDER, ORLA]
             .iter()
-            .map(|id| AgentRow {
-                session_id: format!("{id}-session"),
-                cwd: "/anywhere".to_string(),
-                pid: fake.session(&session(id)).map(|pane| pane.pid),
-                state: None,
-                status: Some(status.to_string()),
-                started_at: None,
-                waiting_for: None,
+            .map(|id| {
+                serde_json::json!({
+                    "sessionId": format!("{id}-session"),
+                    "cwd": "/anywhere",
+                    "pid": fake.session(&session(id)).map(|pane| pane.pid),
+                    "status": status,
+                })
+                .to_string()
             })
             .collect();
-        RosterRead::Readable(rows)
+        Ok(test_support::listing(&rows))
     };
     let agent = StubAgent::answering(Answers {
-        status: rows("busy"),
+        listing: rows("busy"),
         ..Answers::default()
     });
     agent.list_next([rows("idle")]);

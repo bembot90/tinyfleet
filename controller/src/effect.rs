@@ -8,10 +8,10 @@
 //! is to dispatch nothing: it is published as its own outcome, and its line and
 //! its event are written once, at the transition into the hold.
 
-use crate::adapter::{Agent, AgentRow, RosterRead, StartSpec};
+use crate::adapter::{self, Activity, Agent, Launch, Permissions, Resume, SeatActivity, SeatRef};
 use crate::events::{self, ActorRef, EventLog};
 use crate::host::{self, Host, HostRead, PaneState};
-use crate::policy::Policy;
+use crate::policy::{self, Policy};
 use crate::sessions::{SessionRow, Table};
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
@@ -80,11 +80,10 @@ pub struct Target<'a> {
     pub config_dir: Option<String>,
     /// The work item this dispatch gave the seat, where an order named one.
     pub item: Option<String>,
-    /// What the start's permission document did, where the caller wrote one:
-    /// `written` where the worktree carried none, `merged` where it carried a
-    /// document of the project's own that the pack's rules were folded into.
-    /// `None` is a start that wrote no permission document at all.
-    pub settings: Option<String>,
+    /// What the seat may run without asking, in fleet's own words, which the
+    /// launch hands the adapter to render into its agent's format. Empty is a
+    /// start that names no command, which is every start the loop makes.
+    pub permissions: Permissions,
     /// The load belt's own readings, where the caller ran one, as
     /// `transient::Belt::payload` shapes them. It rides as a value and not as a
     /// belt: the caller that measured the machine is the one that knows the
@@ -265,9 +264,9 @@ pub fn start_capture_path(machine_dir: &Path, session_name: &str) -> PathBuf {
 /// What a start's watch saw.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Watched {
-    /// The listing shows a row whose pid is the pane's and which carries a
-    /// status (lessons claude-code B10): the agent is up, and up as this
-    /// pane's process. `trust_answered` is a start whose screen stopped at the
+    /// The agent's `read` found a session for the pane and says what it is
+    /// doing (lessons claude-code B10): the agent is up, and up as this pane's
+    /// process. `trust_answered` is a start whose screen stopped at the
     /// workspace-trust question and was answered from it — the fallback the
     /// seeded acceptance should leave unused, recorded so a reader of the
     /// stream sees that it was not.
@@ -283,47 +282,56 @@ pub enum Watched {
     },
 }
 
-/// Watch a session the host has just started until the agent's own listing
-/// shows it, reading the pane and the listing every [`WATCH_TICK`] until
-/// `window` closes.
+/// The seat a start's watch asks the agent about: the pane the host has just
+/// started for it, and what the agent needs to find that pane's session.
+pub struct Watch<'a> {
+    pub seat: &'a SeatId,
+    /// The worktree the session was started in.
+    pub worktree: &'a str,
+    /// The configuration directory the session came up under, `None` for the
+    /// adapter's own.
+    pub config_dir: Option<&'a Path>,
+    /// A start into a worktree fleet created, and only such a start may answer
+    /// the agent's workspace-trust question from the screen (ruling 13).
+    pub answer_trust: bool,
+    pub window: Duration,
+    /// The session a REVIVE resumed, which the pane must come up as.
+    pub resumes: Option<&'a str>,
+}
+
+/// Watch a session the host has just started until the agent's own `read`
+/// finds it, reading the pane and asking the agent every [`WATCH_TICK`] until
+/// the window closes.
 ///
 /// A DEAD PANE is a failed start carrying its exit status (the pane keeps it,
 /// remain-on-exit), which replaces the in-band exit a background start used to
 /// report (lessons claude-code A14, retired). A LIVE PANE is believed only when
-/// a listed row carries its pid and a status — the pid, because the pane's
-/// process IS the agent (E2) and a row in the same worktree proves nothing
-/// (B5); the status, because a row is listed half a second before it carries
-/// one and a start is not taken until it does (B10). Neither inside the window
-/// is a failure too: a session that runs and never lists is one no read will
-/// ever see.
+/// the agent names a session for the pane and says it is idle, busy or blocked
+/// — the pane, because its process IS the agent (E2) and a session in the same
+/// worktree proves nothing (B5); the activity, because a session is found half
+/// a second before it reports one and a start is not taken until it does
+/// (B10). Neither inside the window is a failure too: a session that runs and
+/// never lists is one no read will ever see.
 ///
-/// `answer_trust` is a start into a worktree fleet created, and only such a
-/// start may answer the agent's workspace-trust question from the screen
-/// (ruling 13). The screen is read only while no row is listed, and answered
-/// at most once.
+/// The screen is read only while no session is found, only for a start that
+/// may answer the trust question, and answered at most once.
 ///
-/// `resumes` is the session a REVIVE resumed, and then the pane's row must
-/// carry that id as well: a row under any other id is a fork — a new session
-/// that holds none of the old one's context — and is failed and killed like
-/// any start that did not come up (reviewer call 2026-09-25, E3). `None` is a
-/// fresh start, whose id nobody knows until its row shows it.
+/// A REVIVE is believed only where the agent names THE RESUMED SESSION for the
+/// pane: a session under any other id is a fork — a new session that holds
+/// none of the old one's context — and is failed and killed like any start
+/// that did not come up (reviewer call 2026-09-25, E3). A fresh start's id
+/// nobody knows until the agent names it.
 ///
 /// Every `Failed` kills the session first: its capture is taken, then the
 /// session ended, so a failed start's rollback finds nothing left on the host.
-pub fn watch_start(
-    agent: &dyn Agent,
-    host: &dyn Host,
-    session: &str,
-    config_dir: Option<&Path>,
-    answer_trust: bool,
-    window: Duration,
-    resumes: Option<&str>,
-) -> Watched {
+pub fn watch_start(agent: &dyn Agent, host: &dyn Host, watch: &Watch) -> Watched {
+    let session = host::session_for(watch.seat);
+    let window = watch.window;
     let deadline = Instant::now() + window;
     let mut trust_answered = false;
     let failed = |cause: String, status: Option<i32>| {
-        let screen = host.capture(session).ok();
-        let _ = host.kill(session);
+        let screen = host.capture(&session).ok();
+        let _ = host.kill(&session);
         Watched::Failed {
             cause,
             status,
@@ -352,19 +360,26 @@ pub fn watch_start(
                         )
                     }
                     PaneState::Alive => {
-                        if let (Some(pid), RosterRead::Readable(rows)) =
-                            (pane.pid, agent.status(config_dir))
-                        {
-                            if let Some(row) = rows
-                                .iter()
-                                .find(|row| row.pid == Some(pid) && row.status.is_some())
-                            {
-                                return match resumes {
-                                    Some(resumed) if row.session_id != resumed => failed(
+                        if let Some(pid) = pane.pid {
+                            let asked = SeatRef {
+                                seat: *watch.seat,
+                                session_id: watch.resumes.map(str::to_string),
+                                pid: Some(pid),
+                                config_dir: watch.config_dir.map(|dir| dir.display().to_string()),
+                                worktree: watch.worktree.to_string(),
+                                screen: None,
+                            };
+                            let reading = adapter::readings(agent, &[asked]).remove(0);
+                            let up = matches!(
+                                reading.activity,
+                                Activity::Idle | Activity::Busy | Activity::Blocked
+                            );
+                            if let (true, Some(found)) = (up, &reading.session_id) {
+                                return match watch.resumes {
+                                    Some(resumed) if found != resumed => failed(
                                         format!(
-                                            "the resume of {resumed} came up as {}, a fork and \
-                                             not the session it resumed",
-                                            row.session_id
+                                            "the resume of {resumed} came up as {found}, a fork \
+                                             and not the session it resumed"
                                         ),
                                         None,
                                     ),
@@ -372,14 +387,14 @@ pub fn watch_start(
                                 };
                             }
                         }
-                        if answer_trust && !trust_answered {
+                        if watch.answer_trust && !trust_answered {
                             if let Some(keys) = host
-                                .capture(session)
+                                .capture(&session)
                                 .ok()
                                 .and_then(|screen| agent.trust_keys(&screen))
                             {
                                 let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
-                                trust_answered = host.keys(session, &keys).is_ok();
+                                trust_answered = host.keys(&session, &keys).is_ok();
                             }
                         }
                     }
@@ -393,7 +408,6 @@ pub fn watch_start(
         std::thread::sleep(WATCH_TICK.min(deadline - now));
     }
 }
-
 /// One start, its event, and the id the row is keyed on.
 ///
 /// The adapter answers what to run ([`Agent::launch`]), the host runs it as the
@@ -422,7 +436,6 @@ pub fn start_once(
                 "transient": target.transient,
                 "config_dir": target.config_dir,
                 "item": target.item,
-                "settings": target.settings,
                 "belt": target.belt,
                 "run": target.run,
                 // The session's words are in its pane, so the output a reader
@@ -460,9 +473,15 @@ pub fn start_once(
 /// takes back — the resume of that session from [`Agent::resume`].
 ///
 /// Both go the one way. The seat's name is cleared on the host and the adapter
-/// answers what to run, the host runs it as the seat's own session, and
-/// [`watch_start`] decides whether it came up — as that session, for a
-/// resume.
+/// answers what to run, the host runs it as the seat's own session under
+/// fleet's environment for the seat with the adapter's over it
+/// ([`adapter::pane_environment`]), and [`watch_start`] decides whether it came
+/// up — as that session, for a resume.
+///
+/// The posture crosses as fleet's word: the stored one converts through the
+/// two-word reader ([`policy::stored_posture`]) until fleet-1jr1e stores fleet's
+/// words, and a stored word it does not read is a start refused before
+/// anything is asked of the agent.
 fn bring_up(
     agent: &dyn Agent,
     host: &dyn Host,
@@ -470,25 +489,23 @@ fn bring_up(
     target: &Target,
     resumes: Option<&str>,
 ) -> Watched {
-    // The plugin root comes off POLICY and not off the target: every session
-    // the controller brings up goes through this one construction, so a second
-    // builder of a target cannot forget it and the two cannot disagree.
-    let spec = StartSpec {
-        seat: target.seat.to_string(),
-        worktree: target.worktree.to_string(),
-        name: target.session_name.clone(),
-        actor: Actor::seat(target.seat).to_string(),
-        model: target.model.clone(),
-        posture: target.posture.clone(),
-        first_turn: target.first_turn.clone(),
-        plugin_dir: policy
-            .plugin_dir
-            .as_ref()
-            .map(|dir| dir.display().to_string()),
-        config_dir: target.config_dir.clone(),
-    };
     let session = host::session_for(&target.seat);
-    let window = Duration::from_secs(policy.start_watch_seconds);
+    let refused = |cause: String| Watched::Failed {
+        cause,
+        status: None,
+        screen: None,
+    };
+    let Some(posture) = policy::stored_posture(&target.posture) else {
+        return refused(format!(
+            "the posture `{}` is not one fleet can say — a stored posture is `{}` or `{}`",
+            target.posture,
+            policy::POSTURE_AUTO,
+            policy::DEFAULT_TRANSIENT_POSTURE
+        ));
+    };
+    // WHO THE SESSION ACTS AS [ASSUMES D7], among the variables fleet sets for
+    // every seat's session: its own bare verbs are the seat's.
+    let fleets = adapter::seat_environment(&Actor::seat(target.seat).to_string());
     // A start clears the name before the launch writes its seed, so a live
     // session refuses it before anything is written. A resume writes nothing,
     // and is asked for FIRST: one the adapter will not build leaves the dead
@@ -496,38 +513,57 @@ fn bring_up(
     // reads it.
     let launched = match resumes {
         Some(session_id) => agent
-            .resume(session_id, &spec)
-            .and_then(|launch| cleared(host, &session).map(|()| launch)),
-        None => cleared(host, &session).and_then(|()| agent.launch(&spec)),
+            .resume(&Resume {
+                session_id: session_id.to_string(),
+                worktree: target.worktree.to_string(),
+                config_dir: target.config_dir.clone(),
+                model: target.model.clone(),
+                posture,
+            })
+            .map_err(|why| why.to_string())
+            .and_then(|argv| cleared(host, &session).map(|()| argv)),
+        None => cleared(host, &session).and_then(|()| {
+            agent
+                .launch(&Launch {
+                    seat: target.seat,
+                    worktree: target.worktree.to_string(),
+                    name: target.session_name.clone(),
+                    model: target.model.clone(),
+                    posture,
+                    first_turn: target.first_turn.clone(),
+                    config_dir: target.config_dir.clone(),
+                    env: fleets.clone(),
+                    permissions: target.permissions.clone(),
+                })
+                .map_err(|why| why.to_string())
+        }),
     };
-    match launched.and_then(|launch| {
+    match launched.and_then(|argv| {
         host.new_session(
             &session,
             Path::new(target.worktree),
-            &launch.argv,
-            &launch.env,
+            &argv.argv,
+            &adapter::pane_environment(&fleets, &argv),
         )
         .map_err(|cause| format!("the host did not start the session: {cause}"))
     }) {
         // Nothing was started, so nothing is killed: a refusal here may be
         // over a live session that is not this start's to end.
-        Err(cause) => Watched::Failed {
-            cause,
-            status: None,
-            screen: None,
-        },
+        Err(cause) => refused(cause),
         Ok(()) => watch_start(
             agent,
             host,
-            &session,
-            target.config_dir(),
-            target.config_dir.is_some(),
-            window,
-            resumes,
+            &Watch {
+                seat: &target.seat,
+                worktree: target.worktree,
+                config_dir: target.config_dir(),
+                answer_trust: target.config_dir.is_some(),
+                window: Duration::from_secs(policy.start_watch_seconds),
+                resumes,
+            },
         ),
     }
 }
-
 /// The seat's name on the host made free for a start, or why it cannot be.
 ///
 /// A dead pane under it is killed — its agent is gone and the pane is only its
@@ -754,14 +790,14 @@ pub fn revive(
     }
 }
 
-/// Claim, at startup, every session the table names that the roster still
-/// LISTS.
+/// Claim, at startup, every session the table names that the agent still
+/// names LIVE.
 ///
 /// BY SESSION ID, never by name and never by re-issuing a start: a claimed
 /// session is one already running, and a start or a resume issued at it would
 /// be a second session beside it rather than a claim on it. Nothing
-/// is dispatched here — the row is marked sighted from the roster this poll
-/// already read, so the seat's first verdict is taken against a session the
+/// is dispatched here — the row is marked sighted from the reading this poll
+/// already took, so the seat's first verdict is taken against a session the
 /// controller knows it owns.
 ///
 /// One `session.adopted` each, which is the line the reference engine adopts
@@ -770,13 +806,14 @@ pub fn revive(
 /// restart — or a `--once` poll, which is a process per poll — writes nothing
 /// for a session an earlier start claimed.
 ///
-/// A row is claimed when it is LIVE — listed with a pid, a session observed
-/// running — and never by any word on it (gas-city G7: "adopts every live
-/// session it names"). A claim holds nothing past the session's end: a session
-/// the listing no longer carries is one whose pane is dead or gone, and the
-/// seat's verdict on this same poll is the host's reading of that.
+/// `live` is every session id the agent named this poll for a seat whose pane
+/// the host holds alive — a session observed running, never a word on it
+/// (gas-city G7: "adopts every live session it names"). A claim holds nothing
+/// past the session's end: a session the agent no longer names is one whose
+/// pane is dead or gone, and the seat's verdict on this same poll is the
+/// host's reading of that.
 pub fn adopt(
-    rows: &[crate::adapter::AgentRow],
+    live: &[String],
     table: &mut Table,
     events_log: &mut EventLog,
     now_ms: u64,
@@ -789,10 +826,7 @@ pub fn adopt(
         if row.adopted.as_ref() == Some(&session_id) {
             continue;
         }
-        if !rows
-            .iter()
-            .any(|listed| listed.session_id == session_id && listed.is_live())
-        {
+        if !live.contains(&session_id) {
             continue;
         }
         row.first_seen_at.get_or_insert(now_ms);
@@ -966,18 +1000,16 @@ impl Typed {
 /// 2026-09-26), so a quarter second meets even the shortest turn.
 pub const TURN_TICK: Duration = WATCH_TICK;
 
-/// The seat's live pane and the listed row carrying its pid, read FRESH: the
-/// host's listing, then the agent's under the seat's own directory.
+/// The seat's live pane and the agent's reading of it, read FRESH: the host's
+/// listing, then one `read` asking about the pane's pid under the seat's own
+/// directory.
 ///
-/// The row is found BY THE PANE'S PID and by nothing else — the pane's process
-/// IS the agent (E2), and a row in the same worktree proves nothing (B5). No
-/// pane, a dead one, or no row carrying its pid is [`Typed::Absent`]; a listing
-/// that could not be read is [`Typed::Failed`] naming it, never an absence.
-pub fn seat_row(
-    agent: &dyn Agent,
-    host: &dyn Host,
-    target: &TurnTarget,
-) -> Result<AgentRow, Typed> {
+/// The session is found BY THE PANE and by nothing else — the pane's process
+/// IS the agent (E2), and a session in the same worktree proves nothing (B5).
+/// No pane, a dead one, or no session the agent names for it is
+/// [`Typed::Absent`]; a reading that could not be made is [`Typed::Failed`]
+/// naming why, never an absence.
+pub fn seat_row(agent: &dyn Agent, host: &dyn Host, target: &TurnTarget) -> Result<Live, Typed> {
     let session = host::session_for(target.seat);
     let panes = match host.list() {
         HostRead::Readable(panes) => panes,
@@ -987,35 +1019,58 @@ pub fn seat_row(
             )))
         }
     };
-    let Some(pid) = panes
-        .iter()
+    let Some((pid, path)) = panes
+        .into_iter()
         .find(|pane| pane.session == session && pane.state == PaneState::Alive)
-        .and_then(|pane| pane.pid)
+        .and_then(|pane| Some((pane.pid?, pane.path)))
     else {
         return Err(Typed::Absent);
     };
-    match agent.status(target.config_dir) {
-        RosterRead::Readable(rows) => rows
-            .into_iter()
-            .find(|row| row.pid == Some(pid))
-            .ok_or(Typed::Absent),
-        RosterRead::Unreadable { cause } => Err(Typed::Failed(format!(
-            "the agent's listing could not be read: {cause}"
-        ))),
+    let asked = SeatRef {
+        seat: *target.seat,
+        session_id: None,
+        pid: Some(pid),
+        config_dir: target.config_dir.map(|dir| dir.display().to_string()),
+        worktree: path,
+        screen: None,
+    };
+    let reading = adapter::readings(agent, std::slice::from_ref(&asked)).remove(0);
+    match (&reading.session_id, reading.activity) {
+        (Some(_), _) => Ok(Live {
+            pid,
+            asked,
+            reading,
+        }),
+        (None, Activity::Unknown) => {
+            Err(Typed::Failed(reading.cause.unwrap_or_else(|| {
+                "the agent could not read the seat".to_string()
+            })))
+        }
+        (None, _) => Err(Typed::Absent),
     }
+}
+
+/// A seat's live pane as [`seat_row`] found it: the pane's process, what the
+/// agent was asked about it, and what the agent answered.
+#[derive(Clone, Debug)]
+pub struct Live {
+    pub pid: u32,
+    pub asked: SeatRef,
+    pub reading: SeatActivity,
 }
 
 /// Type one turn into a seat's own session and say whether it was taken — the
 /// one path the controller's rest suggestion, `fleet seat nudge`, a routine's
 /// ring and `fleet seat feed` all take.
 ///
-/// In order: the pane and its row are read fresh ([`seat_row`]); a row stopped
-/// in front of a human is refused BEFORE ANY BYTE; the text goes to the host as
-/// one paste and a separate submit ([`Host::send`]); and a row that was idle is
-/// then read every [`TURN_TICK`] for `busy` on the same pid until `bound`
-/// closes. The host's `Ok` is a dispatch and never a witness: only the listing
-/// says the turn was taken (lessons claude-code D8). A row that was busy
-/// already is [`Typed::Queued`] at once.
+/// In order: the pane and the agent's reading of it are taken fresh
+/// ([`seat_row`]); a seat stopped in front of a human is refused BEFORE ANY
+/// BYTE; the text goes to the host as one paste and a separate submit
+/// ([`Host::send`]); and a seat that was idle is then read every [`TURN_TICK`]
+/// for `busy` on the same pane until `bound` closes. The host's `Ok` is a
+/// dispatch and never a witness: only the agent's reading says the turn was
+/// taken (lessons claude-code D8). A seat that was busy already is
+/// [`Typed::Queued`] at once.
 pub fn type_turn(
     agent: &dyn Agent,
     host: &dyn Host,
@@ -1023,30 +1078,35 @@ pub fn type_turn(
     text: &str,
     bound: Duration,
 ) -> Typed {
-    let row = match seat_row(agent, host, target) {
-        Ok(row) => row,
+    let live = match seat_row(agent, host, target) {
+        Ok(live) => live,
         Err(typed) => return typed,
     };
-    if let Some(cause) = row.blocked_on() {
+    if let Some(cause) = adapter::waiting_on(&live.reading) {
         return Typed::Blocked(cause);
     }
     if let Err(cause) = host.send(&host::session_for(target.seat), text) {
         return Typed::Failed(format!("the host did not take the text: {cause}"));
     }
-    if row.is_busy() {
+    if live.reading.activity == Activity::Busy {
         return Typed::Queued;
     }
+    // The pane asked about again, under the session the first reading named.
+    let asked = SeatRef {
+        session_id: live.reading.session_id.clone(),
+        ..live.asked
+    };
     let deadline = Instant::now() + bound;
-    let mut last = status_word(Some(&row));
+    let mut last = activity_word(&live.reading);
     loop {
-        // An unreadable listing concludes nothing: the turn may have been
-        // taken and the read not, and the bound is what ends the wait.
-        if let RosterRead::Readable(rows) = agent.status(target.config_dir) {
-            let listed = rows.iter().find(|listed| listed.pid == row.pid);
-            if listed.is_some_and(AgentRow::is_busy) {
+        let reading = adapter::readings(agent, std::slice::from_ref(&asked)).remove(0);
+        // A reading that could not be made concludes nothing: the turn may have
+        // been taken and the read not, and the bound is what ends the wait.
+        if reading.session_id.is_some() || reading.activity != Activity::Unknown {
+            if reading.activity == Activity::Busy {
                 return Typed::Delivered;
             }
-            last = status_word(listed);
+            last = activity_word(&reading);
         }
         let now = Instant::now();
         if now >= deadline {
@@ -1059,18 +1119,14 @@ pub fn type_turn(
     }
 }
 
-/// The word a turn that was not taken names its row by: the row's status, or
-/// why there is none to name.
-fn status_word(row: Option<&AgentRow>) -> String {
-    match row {
-        Some(row) => row
-            .status
-            .clone()
-            .unwrap_or_else(|| "no status".to_string()),
+/// The word a turn that was not taken names its seat by: the activity the
+/// agent read, or why there is none to name.
+fn activity_word(reading: &SeatActivity) -> String {
+    match reading.session_id {
+        Some(_) => adapter::word(reading.activity).to_string(),
         None => "unlisted".to_string(),
     }
 }
-
 /// Append one event and answer with its id, which is what a row is keyed on. A
 /// stream that cannot be written is stated and does not stop the loop: the
 /// effect happened either way, and a controller that refused to act because it

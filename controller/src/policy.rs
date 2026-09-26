@@ -4,6 +4,7 @@
 //! read. A running loop that meets a file it cannot parse keeps last-good and
 //! says so once per change, never once per poll.
 
+use crate::adapter::{Capabilities, Posture};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -35,31 +36,29 @@ pub const DEFAULT_START_WATCH_SECONDS: u64 = 5;
 /// will not.
 pub const DEFAULT_NUDGE_TIMEOUT_SECONDS: u64 = 10;
 
-/// The model a start names when the seat's row does not. The model is mandatory
-/// on every start, because a start with no model flag comes up on the cheapest
-/// available one (lessons claude-code A5).
-pub const DEFAULT_MODEL: &str = "claude-opus-5";
-
 /// The permission posture a named seat's session is started under, and the one a
-/// transient row is. Both are values the pinned CLI's `--permission-mode` lists.
+/// transient row is, in the two words a stored policy carries until fleet-1jr1e
+/// makes posture fleet's own word: each converts through [`stored_posture`] as
+/// it crosses into a launch.
 ///
-/// The gate below is keyed on this one value and not on the pair: the measured
+/// The gate below is keyed on the posture and not on the pair: the measured
 /// downgrade is of a REQUESTED posture, and the transient posture asks for less
 /// than the model's default rather than more.
 pub const POSTURE_AUTO: &str = "auto";
 pub const DEFAULT_POSTURE: &str = POSTURE_AUTO;
 pub const DEFAULT_TRANSIENT_POSTURE: &str = "dontAsk";
 
-/// The models measured to honour a requested posture, matched BY PREFIX: live
-/// model ids carry suffixes that name the same model, one dated and one windowed
-/// (lessons claude-code D3).
-pub const DEFAULT_AUTO_CAPABLE_MODELS: [&str; 3] =
-    ["claude-opus-5", "claude-fable-5", "claude-sonnet-5"];
-
-/// The first turn a woken session is started with, with `{seat}` the seat
-/// directory. The wake rides the spawn: one act, one channel, so the instruction
-/// cannot be lost without also losing the session.
-pub const DEFAULT_FIRST_TURN: &str = "/wake {seat}";
+/// A stored posture as fleet's own word, through the TWO-WORD READER that
+/// stands until fleet-1jr1e stores postures as fleet's words: the two stored
+/// defaults, `auto` and `dontAsk`, and nothing else. A word it does not read is
+/// `None`, and a launch asked for under it is refused rather than guessed at.
+pub fn stored_posture(word: &str) -> Option<Posture> {
+    match word.trim() {
+        POSTURE_AUTO => Some(Posture::Auto),
+        DEFAULT_TRANSIENT_POSTURE => Some(Posture::Unattended),
+        _ => None,
+    }
+}
 
 /// The load belt's first leg: how much five-minute load average this fleet will
 /// carry per processor before a spawn is refused. One load unit per cpu is a
@@ -93,13 +92,19 @@ pub struct Policy {
     pub arrival_window_seconds: u64,
     pub start_watch_seconds: u64,
     pub nudge_timeout_seconds: u64,
-    pub default_model: String,
+    /// The model a seat that names none starts on, where the file names one;
+    /// `None` falls to the agent's own declared default
+    /// ([`Policy::model_for`]).
+    pub default_model: Option<String>,
     pub posture: String,
     pub transient_posture: String,
-    /// Prefixes, not ids: membership is by family plus major (D3).
-    pub auto_capable_models: Vec<String>,
-    /// The template, with `{seat}` still in it — rendered per seat at the start.
-    pub first_turn: String,
+    /// The models `auto` is held to, where the file names them: prefixes, not
+    /// ids, since membership is by family plus major (D3). `None` falls to the
+    /// agent's own declared gate ([`Policy::gate_for`]).
+    pub auto_capable_models: Option<Vec<String>>,
+    /// The first-turn template, with `{seat}` still in it, where the file names
+    /// one; `None` falls to the agent's own declared template.
+    pub first_turn: Option<String>,
     /// The load belt's two ceilings, read here and nowhere else.
     pub load_ceiling_per_cpu: f64,
     pub max_transient_busy: u32,
@@ -196,6 +201,29 @@ fn named(configured: Option<&str>, default: &str) -> String {
     }
 }
 
+/// A configured string, or `None` where it is blank or absent: the key's
+/// answer is then another's to give, and a blank never reaches a start.
+fn stated(configured: Option<&str>) -> Option<String> {
+    configured
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// A configured list of model prefixes, trimmed, with blanks dropped, and
+/// `None` where nothing is left.
+fn models(configured: Option<Vec<String>>) -> Option<Vec<String>> {
+    configured
+        .map(|models| {
+            models
+                .into_iter()
+                .map(|m| m.trim().to_string())
+                .filter(|m| !m.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .filter(|models| !models.is_empty())
+}
+
 pub fn load(path: &Path) -> Result<Policy, String> {
     let body = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut policy = parse(&body).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -230,22 +258,7 @@ pub fn parse(body: &str) -> Result<Policy, String> {
     // A list that is present and empty is refused too: it would gate every
     // model out and leave a fleet that can start nothing under posture `auto`,
     // which is a configuration nobody writes on purpose.
-    let auto_capable_models = c
-        .and_then(|c| c.auto_capable_models.clone())
-        .map(|models| {
-            models
-                .into_iter()
-                .map(|m| m.trim().to_string())
-                .filter(|m| !m.is_empty())
-                .collect::<Vec<_>>()
-        })
-        .filter(|models| !models.is_empty())
-        .unwrap_or_else(|| {
-            DEFAULT_AUTO_CAPABLE_MODELS
-                .iter()
-                .map(|m| m.to_string())
-                .collect()
-        });
+    let auto_capable_models = models(c.and_then(|c| c.auto_capable_models.clone()));
     Ok(Policy {
         poll_seconds,
         rest_threshold_tokens: positive(
@@ -264,14 +277,14 @@ pub fn parse(body: &str) -> Result<Policy, String> {
             c.and_then(|c| c.nudge_timeout_seconds),
             DEFAULT_NUDGE_TIMEOUT_SECONDS,
         ),
-        default_model: named(c.and_then(|c| c.default_model.as_deref()), DEFAULT_MODEL),
+        default_model: stated(c.and_then(|c| c.default_model.as_deref())),
         posture: named(c.and_then(|c| c.posture.as_deref()), DEFAULT_POSTURE),
         transient_posture: named(
             c.and_then(|c| c.transient_posture.as_deref()),
             DEFAULT_TRANSIENT_POSTURE,
         ),
         auto_capable_models,
-        first_turn: named(c.and_then(|c| c.first_turn.as_deref()), DEFAULT_FIRST_TURN),
+        first_turn: stated(c.and_then(|c| c.first_turn.as_deref())),
         // A ceiling of zero or less refuses every spawn, and one that is not a
         // number at all is no reading: both fall to the default, the way a zero
         // interval does.
@@ -308,9 +321,13 @@ pub fn parse(body: &str) -> Result<Policy, String> {
 
 impl Policy {
     /// The first turn a seat's session is started with, with `{seat}` filled
-    /// by the session's name.
-    pub fn first_turn_for(&self, session_name: &str) -> String {
-        self.first_turn.replace("{seat}", session_name)
+    /// by the session's name: the file's template, else the one the agent
+    /// declares.
+    pub fn first_turn_for(&self, session_name: &str, agent: &Capabilities) -> String {
+        self.first_turn
+            .as_deref()
+            .unwrap_or(&agent.first_turn)
+            .replace("{seat}", session_name)
     }
 
     /// The posture a row of this kind is started under.
@@ -322,36 +339,58 @@ impl Policy {
         }
     }
 
-    /// Whether a model can be trusted to honour the posture it is asked for.
-    /// BY PREFIX: a live id carries a suffix that names the same model (D3).
-    pub fn model_can_honour(&self, model: &str) -> bool {
-        self.auto_capable_models
-            .iter()
-            .any(|capable| model.starts_with(capable.as_str()))
+    /// The model a start for this row names. Mandatory on every call (A5), so a
+    /// row that configures none takes the fleet's, and a fleet that configures
+    /// none takes the model its agent declares — never the agent's own
+    /// unflagged choice.
+    pub fn model_for(&self, configured: Option<&str>, agent: &Capabilities) -> String {
+        named(
+            configured,
+            self.default_model
+                .as_deref()
+                .unwrap_or(&agent.default_model),
+        )
     }
 
-    /// The model a start for this row names. Mandatory on every call (A5), so a
-    /// row that configures none takes the fleet's and never the agent's.
-    pub fn model_for(&self, configured: Option<&str>) -> String {
-        named(configured, &self.default_model)
+    /// The models a row of this kind is held to (the D3 gate): the file's own
+    /// list where the row asks for `auto` and the file names one, and
+    /// otherwise the prefixes the agent declares for the row's posture. Empty
+    /// is no gate at all.
+    pub fn gate_for(&self, transient: bool, agent: &Capabilities) -> Vec<String> {
+        let Some(posture) = stored_posture(self.posture_for(transient)) else {
+            return Vec::new();
+        };
+        match (&self.auto_capable_models, posture) {
+            (Some(models), Posture::Auto) => models.clone(),
+            _ => agent
+                .posture_models
+                .get(&posture)
+                .cloned()
+                .unwrap_or_default(),
+        }
     }
 
     /// Whether this row would be started asking for a posture its model was not
-    /// measured to honour — the downgrade nothing reports (D3). A row that
-    /// answers `true` is dropped at config read, before any start is attempted.
-    pub fn posture_is_ungranted(&self, transient: bool, model: &str) -> bool {
-        self.posture_for(transient) == POSTURE_AUTO && !self.model_can_honour(model)
+    /// measured to honour — the downgrade nothing reports (D3). BY PREFIX: a
+    /// live id carries a suffix that names the same model. A row that answers
+    /// `true` is dropped at config read, before any start is attempted.
+    pub fn posture_is_ungranted(&self, transient: bool, model: &str, agent: &Capabilities) -> bool {
+        let gate = self.gate_for(transient, agent);
+        !gate.is_empty()
+            && !gate
+                .iter()
+                .any(|capable| model.starts_with(capable.as_str()))
     }
 
-    /// The Claude Code release the live one is compared with: the fleet's own
+    /// The agent release the live one is compared with: the fleet's own
     /// `[substrate]` pin where the file writes one, and otherwise the release
-    /// fleet supports (`fleet_core::supported`). A fleet that pins nothing is
-    /// not a fleet that expects nothing, so a spread there is "not the release
-    /// fleet supports" and announced the same way.
-    pub fn claude_code_expected(&self) -> String {
+    /// the agent's adapter declares it was measured against. A fleet that pins
+    /// nothing is not a fleet that expects nothing, so a spread there is "not
+    /// the release fleet supports" and announced the same way.
+    pub fn claude_code_expected(&self, agent: &Capabilities) -> String {
         named(
             self.claude_code_pin.as_deref(),
-            fleet_core::supported::PINNED_CLAUDE_CODE,
+            agent.measured.first().map(String::as_str).unwrap_or(""),
         )
     }
 }
@@ -466,22 +505,12 @@ impl Policy {
             arrival_window_seconds: positive(c.arrival_window_seconds, self.arrival_window_seconds),
             start_watch_seconds: positive(c.start_watch_seconds, self.start_watch_seconds),
             nudge_timeout_seconds: positive(c.nudge_timeout_seconds, self.nudge_timeout_seconds),
-            default_model: named(c.default_model.as_deref(), &self.default_model),
+            default_model: stated(c.default_model.as_deref()).or(self.default_model.clone()),
             posture: named(c.posture.as_deref(), &self.posture),
             transient_posture: named(c.transient_posture.as_deref(), &self.transient_posture),
-            auto_capable_models: c
-                .auto_capable_models
-                .clone()
-                .map(|models| {
-                    models
-                        .into_iter()
-                        .map(|m| m.trim().to_string())
-                        .filter(|m| !m.is_empty())
-                        .collect::<Vec<_>>()
-                })
-                .filter(|models| !models.is_empty())
-                .unwrap_or_else(|| self.auto_capable_models.clone()),
-            first_turn: named(c.first_turn.as_deref(), &self.first_turn),
+            auto_capable_models: models(c.auto_capable_models.clone())
+                .or(self.auto_capable_models.clone()),
+            first_turn: stated(c.first_turn.as_deref()).or(self.first_turn.clone()),
             load_ceiling_per_cpu: c
                 .load_ceiling_per_cpu
                 .filter(|n| n.is_finite() && *n > 0.0)
@@ -558,16 +587,20 @@ mod tests {
         assert_eq!(policy.arrival_window_seconds, 222);
         assert_eq!(policy.start_watch_seconds, 333);
         assert_eq!(policy.nudge_timeout_seconds, 444);
-        assert_eq!(policy.default_model, "a-model");
+        assert_eq!(policy.default_model.as_deref(), Some("a-model"));
         assert_eq!(policy.posture, "acceptEdits");
         assert_eq!(policy.transient_posture, "bypassPermissions");
-        assert_eq!(policy.auto_capable_models, vec!["a-model", "b-model"]);
-        assert_eq!(policy.first_turn, "/hello {seat}");
+        assert_eq!(
+            policy.auto_capable_models,
+            Some(vec!["a-model".to_string(), "b-model".to_string()])
+        );
+        assert_eq!(policy.first_turn.as_deref(), Some("/hello {seat}"));
     }
 
     /// The same keys, absent — each at the figure or the name the constant
     /// above it carries, read from that constant rather than from a second copy
-    /// of the number.
+    /// of the number; and the three the agent declares instead — the model,
+    /// the first turn and the gate — left for its declaration to answer.
     #[test]
     fn a_file_that_names_no_effect_key_takes_every_default() {
         let policy = parse("").expect("an empty file parses");
@@ -578,14 +611,11 @@ mod tests {
         );
         assert_eq!(policy.start_watch_seconds, DEFAULT_START_WATCH_SECONDS);
         assert_eq!(policy.nudge_timeout_seconds, DEFAULT_NUDGE_TIMEOUT_SECONDS);
-        assert_eq!(policy.default_model, DEFAULT_MODEL);
+        assert_eq!(policy.default_model, None);
         assert_eq!(policy.posture, DEFAULT_POSTURE);
         assert_eq!(policy.transient_posture, DEFAULT_TRANSIENT_POSTURE);
-        assert_eq!(
-            policy.auto_capable_models,
-            DEFAULT_AUTO_CAPABLE_MODELS.to_vec()
-        );
-        assert_eq!(policy.first_turn, DEFAULT_FIRST_TURN);
+        assert_eq!(policy.auto_capable_models, None);
+        assert_eq!(policy.first_turn, None);
         assert_eq!(policy.load_ceiling_per_cpu, DEFAULT_LOAD_CEILING_PER_CPU);
         assert_eq!(policy.max_transient_busy, DEFAULT_MAX_TRANSIENT_BUSY);
     }
@@ -704,40 +734,107 @@ mod tests {
         );
         assert_eq!(zeroed.start_watch_seconds, DEFAULT_START_WATCH_SECONDS);
         assert_eq!(zeroed.nudge_timeout_seconds, DEFAULT_NUDGE_TIMEOUT_SECONDS);
-        assert_eq!(zeroed.default_model, DEFAULT_MODEL);
+        assert_eq!(zeroed.default_model, None);
         assert_eq!(zeroed.posture, DEFAULT_POSTURE);
         assert_eq!(zeroed.transient_posture, DEFAULT_TRANSIENT_POSTURE);
         assert_eq!(
-            zeroed.auto_capable_models,
-            DEFAULT_AUTO_CAPABLE_MODELS.to_vec(),
+            zeroed.auto_capable_models, None,
             "a present but empty list would keep every model out"
         );
-        assert_eq!(zeroed.first_turn, DEFAULT_FIRST_TURN);
+        assert_eq!(zeroed.first_turn, None);
+    }
+
+    /// What an agent declares, for the arms below: a model, a first turn and
+    /// a gate of its own, none of them any constant of this file's.
+    fn declared() -> Capabilities {
+        Capabilities {
+            postures: vec![Posture::Ask, Posture::Auto, Posture::Unattended],
+            default_model: "declared-model".to_string(),
+            first_turn: "/declared {seat}".to_string(),
+            context: true,
+            measured: vec!["9.9.9".to_string()],
+            posture_models: std::collections::BTreeMap::from([(
+                Posture::Auto,
+                vec!["declared-".to_string()],
+            )]),
+        }
     }
 
     /// The four readings a start is composed from, each with the case that is
-    /// not the default beside it.
+    /// not the default beside it — and where the file names none, the agent's
+    /// own declaration and never a constant of fleet's.
     #[test]
     fn a_start_is_composed_from_the_seats_row_and_the_fleets_policy() {
+        let agent = declared();
         let policy = parse("[controller]\nfirst_turn = \"/wake {seat}\"\n").expect("it parses");
-        assert_eq!(policy.first_turn_for("builder-9"), "/wake builder-9");
+        assert_eq!(
+            policy.first_turn_for("builder-9", &agent),
+            "/wake builder-9"
+        );
         // A template naming the seat twice renders it twice, and one naming it
         // not at all renders as itself — the substitution is textual and says so.
         let twice = parse("[controller]\nfirst_turn = \"{seat}: /wake {seat}\"\n").unwrap();
-        assert_eq!(twice.first_turn_for("s1"), "s1: /wake s1");
+        assert_eq!(twice.first_turn_for("s1", &agent), "s1: /wake s1");
         let fixed = parse("[controller]\nfirst_turn = \"/orient\"\n").unwrap();
-        assert_eq!(fixed.first_turn_for("s1"), "/orient");
+        assert_eq!(fixed.first_turn_for("s1", &agent), "/orient");
+        let unnamed = parse("").unwrap();
+        assert_eq!(
+            unnamed.first_turn_for("s1", &agent),
+            "/declared s1",
+            "a file that names no template takes the agent's"
+        );
 
         assert_eq!(policy.posture_for(false), DEFAULT_POSTURE);
         assert_eq!(policy.posture_for(true), DEFAULT_TRANSIENT_POSTURE);
 
-        assert_eq!(policy.model_for(Some("a-model")), "a-model");
-        assert_eq!(policy.model_for(None), DEFAULT_MODEL);
+        assert_eq!(policy.model_for(Some("a-model"), &agent), "a-model");
+        assert_eq!(policy.model_for(None, &agent), "declared-model");
         assert_eq!(
-            policy.model_for(Some("   ")),
-            DEFAULT_MODEL,
+            policy.model_for(Some("   "), &agent),
+            "declared-model",
             "a blank row-level model is no model, not an empty one"
         );
+        let named = parse("[controller]\ndefault_model = \"the-fleets\"\n").unwrap();
+        assert_eq!(
+            named.model_for(None, &agent),
+            "the-fleets",
+            "the fleet's own default outranks the agent's"
+        );
+    }
+
+    /// The two stored words and no other cross as fleet's own (the two-word
+    /// reader fleet-1jr1e replaces), and the D3 gate is the file's list for
+    /// `auto` where it names one, and the agent's declared prefixes otherwise.
+    #[test]
+    fn a_stored_posture_crosses_as_fleets_word_and_the_gate_falls_to_the_agent() {
+        assert_eq!(stored_posture("auto"), Some(Posture::Auto));
+        assert_eq!(stored_posture("dontAsk"), Some(Posture::Unattended));
+        for other in [
+            "default",
+            "acceptEdits",
+            "bypassPermissions",
+            "plan",
+            "ask",
+            "",
+        ] {
+            assert_eq!(stored_posture(other), None, "{other:?}");
+        }
+
+        let agent = declared();
+        let unnamed = parse("").unwrap();
+        assert_eq!(
+            unnamed.gate_for(false, &agent),
+            vec!["declared-".to_string()]
+        );
+        assert!(unnamed.posture_is_ungranted(false, "another-model", &agent));
+        assert!(!unnamed.posture_is_ungranted(false, "declared-model-2", &agent));
+        assert!(
+            !unnamed.posture_is_ungranted(true, "another-model", &agent),
+            "the transient posture is held to nothing the agent declares"
+        );
+        let named = parse("[controller]\nauto_capable_models = [\"the-fleets\"]\n").unwrap();
+        assert!(named.posture_is_ungranted(false, "declared-model", &agent));
+        assert!(!named.posture_is_ungranted(false, "the-fleets-1", &agent));
     }
 
     /// Every key the machine may answer for, over a policy that answers
@@ -785,11 +882,14 @@ mod tests {
         assert_eq!(effective.arrival_window_seconds, 11);
         assert_eq!(effective.start_watch_seconds, 11);
         assert_eq!(effective.nudge_timeout_seconds, 11);
-        assert_eq!(effective.default_model, "from-machine");
+        assert_eq!(effective.default_model.as_deref(), Some("from-machine"));
         assert_eq!(effective.posture, "from-machine");
         assert_eq!(effective.transient_posture, "from-machine");
-        assert_eq!(effective.auto_capable_models, vec!["from-machine"]);
-        assert_eq!(effective.first_turn, "from-machine {seat}");
+        assert_eq!(
+            effective.auto_capable_models,
+            Some(vec!["from-machine".to_string()])
+        );
+        assert_eq!(effective.first_turn.as_deref(), Some("from-machine {seat}"));
         assert_eq!(effective.load_ceiling_per_cpu, 11.0);
         assert_eq!(effective.max_transient_busy, 11);
         assert_eq!(
@@ -804,8 +904,11 @@ mod tests {
         let untouched = file.overlaid(&Overrides::default());
         assert_eq!(untouched, file);
         assert_eq!(untouched.poll_seconds, 7);
-        assert_eq!(untouched.default_model, "from-policy");
-        assert_eq!(untouched.auto_capable_models, vec!["from-policy"]);
+        assert_eq!(untouched.default_model.as_deref(), Some("from-policy"));
+        assert_eq!(
+            untouched.auto_capable_models,
+            Some(vec!["from-policy".to_string()])
+        );
 
         // Every key in the census is one the object above named, so a key added
         // to `[controller]` and forgotten here is a failure and not a silence.
@@ -844,8 +947,11 @@ mod tests {
         }))));
         assert_eq!(effective.poll_seconds, 7, "and not {DEFAULT_POLL_SECONDS}");
         assert_eq!(effective.rest_threshold_tokens, 77);
-        assert_eq!(effective.default_model, "from-policy");
-        assert_eq!(effective.auto_capable_models, vec!["from-policy"]);
+        assert_eq!(effective.default_model.as_deref(), Some("from-policy"));
+        assert_eq!(
+            effective.auto_capable_models,
+            Some(vec!["from-policy".to_string()])
+        );
         assert_eq!(effective.load_ceiling_per_cpu, 7.0);
         assert_ne!(
             effective.poll_seconds, DEFAULT_POLL_SECONDS,
@@ -889,7 +995,8 @@ mod tests {
             "the wrongly-typed key falls back to policy"
         );
         assert_eq!(
-            effective.default_model, "from-machine",
+            effective.default_model.as_deref(),
+            Some("from-machine"),
             "and the other overrides on the same machine still land"
         );
         assert_eq!(effective.rest_threshold_tokens, 111);
@@ -907,7 +1014,7 @@ mod tests {
             "default_model": "from-machine",
         }))));
         assert_eq!(good.poll_seconds, 30);
-        assert_eq!(good.default_model, "from-machine");
+        assert_eq!(good.default_model.as_deref(), Some("from-machine"));
     }
 
     /// A key the object carries that names no `[controller]` key is IGNORED and
@@ -952,18 +1059,15 @@ mod tests {
     /// and a pin of its own wins over it. The pin is a release the constant is
     /// not, so the second half reads the file's and not a coincidence.
     #[test]
-    fn a_file_that_pins_nothing_expects_the_supported_release() {
+    fn a_file_that_pins_nothing_expects_the_release_its_agent_was_measured_against() {
         let policy = parse("[controller]\npoll_seconds = 9\n").unwrap();
         assert_eq!(policy.claude_code_pin, None);
-        assert_eq!(
-            policy.claude_code_expected(),
-            fleet_core::supported::PINNED_CLAUDE_CODE
-        );
+        assert_eq!(policy.claude_code_expected(&declared()), "9.9.9");
         assert_eq!(policy.poll_seconds, 9);
 
         let pinned = parse("[substrate]\nclaude_code = \"0.0.1\"\n").unwrap();
-        assert_ne!(fleet_core::supported::PINNED_CLAUDE_CODE, "0.0.1");
-        assert_eq!(pinned.claude_code_expected(), "0.0.1");
+        assert_ne!(declared().measured[0], "0.0.1");
+        assert_eq!(pinned.claude_code_expected(&declared()), "0.0.1");
     }
 
     #[test]
