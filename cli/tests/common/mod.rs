@@ -57,6 +57,35 @@ pub fn stub_path() -> PathBuf {
     stub
 }
 
+/// A tmux for a rig's `fleet` to run: the path to set `FLEET_TMUX_BIN` to,
+/// after the hermetic block, whose own value is the refusing tmux.
+///
+/// It is a SYMLINK at `<dir>/tmux` to this crate's example `fleet-tmux-stub`
+/// (beside `fleet`, in `examples/`, for the reason [`stub_path`]'s store stub
+/// is there), and the stub keeps its state beside the link it was run through,
+/// at `<dir>/tmux-stub.json`. Named by where the link sits because the host
+/// clears its clients' environment, so a variable put on `fleet` never reaches
+/// the stub; a link and not a wrapper script, because macOS spends 15 s or more
+/// assessing a newly written script's first exec. The rig reads the fake
+/// server back with `fleet_controller::test_support::FakeServer::load` on that
+/// file, and ends a session's pane with `<link> end <name> <status>`.
+pub fn stub_tmux(dir: &Path) -> PathBuf {
+    let stub = Path::new(env!("CARGO_BIN_EXE_fleet"))
+        .parent()
+        .expect("the built binary sits in a directory")
+        .join("examples/fleet-tmux-stub");
+    assert!(
+        stub.is_file(),
+        "{} is built by a test build of fleet-cli — `cargo nextest run -p fleet-cli`, or \
+         `cargo build -p fleet-cli --examples`",
+        stub.display()
+    );
+    std::fs::create_dir_all(dir).expect("the tmux stub's directory is made");
+    let link = dir.join("tmux");
+    std::os::unix::fs::symlink(&stub, &link).expect("the link to the tmux stub is made");
+    link
+}
+
 /// The project at `root` kept on the stub: `[store] adapter` naming it
 /// appended to the project's own file — `.fleet/project.toml` where there is
 /// one, else `fleet.toml`, made where it is not — and an empty store

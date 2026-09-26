@@ -17,6 +17,17 @@ path = "src/lib.rs"
 [features]
 test-support = []
 
+# tmux's client answered from the fake host server kept in a file, for the
+# suites that drive the built `fleet` and cannot hand it the in-process fake.
+# Under the feature alone, as core's `fleet-store-stub` is: this crate's own
+# tests turn it on through the dev-dependency below, so `cargo test -p
+# fleet-controller` builds it beside the test binaries, and a plain build of the
+# workspace never does. The cli builds the same file as an example of its own.
+[[bin]]
+name = "fleet-tmux-stub"
+path = "src/bin/tmux_stub.rs"
+required-features = ["test-support"]
+
 # Any crate, each added with a work item that says why. The work item that
 # adds each of these is the observe slice; it cannot be named here, because the
 # boundary check forbids this directory from naming the surrounding project.

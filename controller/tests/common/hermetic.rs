@@ -3,8 +3,9 @@
 //!
 //! A suite run inside a flight this fleet's own controller is flying inherits
 //! that controller's environment, so an arm naming none of the roots reads the
-//! RUNNING machine directory and execs the account's real agent binary. The
-//! three roots, the agent binary and the refusal flag are named here,
+//! RUNNING machine directory and execs the account's real agent binary — or
+//! starts sessions on the operator's own tmux server. The three roots, the
+//! agent binary, the tmux binary and the refusal flag are named here,
 //! unconditionally, in ONE list — a second copy of the list is a second thing
 //! to remember to change. The same list STRIPS the actor a session is started
 //! with ([`FLEET_ACTOR`]), so no arm acts as the seat that ran the suite. A rig
@@ -30,9 +31,15 @@ pub const FLEET_HOME: &str = "FLEET_HOME";
 pub const HOME: &str = "HOME";
 /// The agent binary.
 pub const CLAUDE_BIN: &str = "FLEET_CLAUDE_BIN";
+/// The tmux binary every host call runs (`fleet_controller::host::tmux`). A
+/// rig with no tmux stub of its own gets the refusing one, so no arm reaches
+/// the operator's tmux, and so never the live fleet's own socket on it.
+pub const TMUX_BIN: &str = "FLEET_TMUX_BIN";
 /// Set, `CLAUDE_BIN` naming nothing is a refusal rather than a fall back to a
 /// `claude` on `PATH` — see
-/// `fleet_controller::adapter::claude_code::configured_bin`.
+/// `fleet_controller::adapter::claude_code::configured_bin` — and `TMUX_BIN`
+/// naming nothing is one rather than a `tmux` on it
+/// (`fleet_controller::host::tmux::TmuxHost::resolve`).
 pub const HERMETIC: &str = "FLEET_TEST_HERMETIC";
 
 /// Who a verb acts as where the call names no `--by`. The controller sets it
@@ -62,7 +69,8 @@ pub const CONFIG_DIR: &str = "CLAUDE_CONFIG_DIR";
 /// `claude_bin` is the rig's own stub where it has one. `None` names the
 /// REFUSING stub instead: the variable is set either way, so the resolution
 /// never reaches a `claude` on the process `PATH` whether or not the refusal
-/// flag is read.
+/// flag is read. The tmux binary is always the REFUSING tmux stub here: a rig
+/// whose subject is the host names its own after the block.
 pub fn vars(
     home: &Path,
     machine: &Path,
@@ -77,6 +85,7 @@ pub fn vars(
         (FLEET_HOME, Some(home.as_os_str().to_owned())),
         (FLEET_DIR, Some(machine.as_os_str().to_owned())),
         (CLAUDE_BIN, Some(bin.into_os_string())),
+        (TMUX_BIN, Some(refusing_tmux().into_os_string())),
         (HERMETIC, Some(OsString::from("1"))),
         (FLEET_ACTOR, None),
     ]
@@ -158,19 +167,31 @@ pub fn nowhere() -> PathBuf {
 /// as THREADS of one process, so the pid alone is not unique between two
 /// arms of the same binary calling this at once.
 pub fn refusing_stub() -> PathBuf {
+    refusing(
+        "fleet-refusing-agent",
+        "no agent binary: this rig named no FLEET_CLAUDE_BIN",
+    )
+}
+
+/// [`refusing_stub`]'s twin for [`TMUX_BIN`]: every host call a rig did not
+/// point at a tmux stub of its own fails, naming why, and no tmux server is
+/// ever started.
+pub fn refusing_tmux() -> PathBuf {
+    refusing(
+        "fleet-refusing-tmux",
+        "no tmux binary: this rig named no FLEET_TMUX_BIN",
+    )
+}
+
+/// A script at `<temp>/<stem>.sh` that prints `line` on stderr and exits 127,
+/// written as [`refusing_stub`] says.
+fn refusing(stem: &str, line: &str) -> PathBuf {
     static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = std::env::temp_dir().join("fleet-refusing-agent.sh");
-    let mine = std::env::temp_dir().join(format!(
-        "fleet-refusing-agent-{}-{}.sh.tmp",
-        std::process::id(),
-        call
-    ));
-    std::fs::write(
-        &mine,
-        "#!/bin/sh\necho \"no agent binary: this rig named no FLEET_CLAUDE_BIN\" >&2\nexit 127\n",
-    )
-    .expect("the refusing stub is written");
+    let path = std::env::temp_dir().join(format!("{stem}.sh"));
+    let mine = std::env::temp_dir().join(format!("{stem}-{}-{}.sh.tmp", std::process::id(), call));
+    std::fs::write(&mine, format!("#!/bin/sh\necho \"{line}\" >&2\nexit 127\n"))
+        .expect("the refusing stub is written");
     make_executable(&mine);
     std::fs::rename(&mine, &path).expect("the refusing stub is renamed into place");
     path

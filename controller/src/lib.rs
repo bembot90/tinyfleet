@@ -80,6 +80,7 @@ pub mod config;
 pub mod decide;
 pub mod effect;
 pub mod events;
+pub mod host;
 pub mod lifecycle;
 pub mod observe;
 pub mod platform;

@@ -354,7 +354,7 @@ pub fn configured_bin() -> Option<String> {
     configured
 }
 
-fn hermetic() -> bool {
+pub(crate) fn hermetic() -> bool {
     match std::env::var(HERMETIC_VAR) {
         Ok(value) => !matches!(value.trim(), "" | "0"),
         Err(_) => false,

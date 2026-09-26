@@ -27,7 +27,7 @@ use std::time::Duration;
 
 pub use fleet_core::process::{
     deadline_cause, is_killable_group, kill_process_group, own_process_group, run_bounded,
-    run_bounded_to_file, Exit, DRAIN_GRACE,
+    run_bounded_fed, run_bounded_to_file, Exit, DRAIN_GRACE,
 };
 
 #[cfg(target_os = "macos")]
