@@ -29,8 +29,8 @@ written by hand; the item's own dependencies are the real blockers.
 | ☑ | fleet-wpf0.5 | fleet store schema prints the contract as JSON Schema generated from the Rust types, committed with a drift test | fleet-wpf0.1, fleet-pjl |
 | ☑ | fleet-wpf0.6 | The fake store decodes the contract's own JSON and nothing of bd's | fleet-run, fleet-urp |
 | ☑ | fleet-wpf0.7 | fleet-store-stub: a test-only adapter executable answering the contract from the fake, its state in a file | fleet-wpf0.4, fleet-wpf0.6 |
-| ☐ | fleet-wpf0.8 | core's verb suites run on the stub through Exec | fleet-wpf0.7 |
-| ☐ | fleet-wpf0.9 | cli's suites run on the stub through Exec; store_check keeps one bd arm | fleet-wpf0.7 |
+| ☑ | fleet-wpf0.8 | core's verb suites run on the stub through Exec | fleet-wpf0.7 |
+| ☑ | fleet-wpf0.9 | cli's suites run on the stub through Exec; store_check keeps one bd arm | fleet-wpf0.7 |
 | ☑ | fleet-wpf0.2 | adapters is the eighth pack slot, and a bare name in [store] adapter resolves through the installed packs | — |
 | ☑ | fleet-wpf0.3 | fleet prime's second line reads the store's version verb through the opener | — |
 
