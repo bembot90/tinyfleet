@@ -11,9 +11,9 @@
 //! its verbs, and its refusal's reasons.
 //!
 //! THE CONTROLLER'S AGENT TRAIT SPEAKS THESE: its six verbs take and answer
-//! exactly these types, which the in-process Claude Code adapter answers
-//! today. No executable adapter is spoken to yet; the envelope and the
-//! answer's reader below are what one will be.
+//! exactly these types, which the in-process Claude Code adapter answers, and
+//! which an adapter executable is sent and answers through the envelope and
+//! the answer's reader below.
 //!
 //! IT GROWS ADDITIVELY. `schema_version` stays 1 while every field a later
 //! fleet adds to a request is optional and every field it adds to an answer is
@@ -32,6 +32,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
@@ -44,6 +45,38 @@ use crate::store::types::Stamp;
 /// `schema_version` on every request and demanded on every answer. The
 /// store's contract states its own; the two grow apart.
 pub const CONTRACT_VERSION: u64 = 1;
+
+/// The bound on every call of an agent adapter when nothing sets one: far
+/// above any healthy answer, and far below the interval at which a person
+/// would call the poll hung. The store's contract states its own
+/// ([`crate::store::STORE_TIMEOUT`]); the agent's is shorter, because a poll
+/// asks it every few seconds.
+pub const AGENT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The variable that sets the bound instead, in milliseconds.
+pub const TIMEOUT_VAR: &str = "FLEET_AGENT_TIMEOUT_MS";
+
+/// The bound every call of an agent adapter runs on, with the setting of
+/// [`TIMEOUT_VAR`] passed in, so a suite can shorten what the built binary
+/// waits for and the order is tested without touching the environment.
+///
+/// Anything that is not a positive whole number of milliseconds is the
+/// default. The guard is against a reading that is no deadline at all — a
+/// typo, a negative, a zero, which would kill every read before it could
+/// answer and publish a whole fleet as unknown. It is not a floor on the value
+/// read back: a setting of 1 ms returns 1 ms. What that deadline then costs in
+/// elapsed time is the bounded runner's, which reads the child every 20 ms and
+/// so cuts a call off no finer than that; a deadline too short to answer
+/// inside is the operator's either way.
+pub fn timeout_from(configured: Option<&str>) -> Duration {
+    match configured
+        .map(str::trim)
+        .and_then(|ms| ms.parse::<u64>().ok())
+    {
+        Some(ms) if ms > 0 => Duration::from_millis(ms),
+        _ => AGENT_TIMEOUT,
+    }
+}
 
 // ---- the posture ----------------------------------------------------------------
 
@@ -401,6 +434,56 @@ pub fn answer<T: DeserializeOwned>(text: &str) -> Result<T, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bound with nothing set. Asserted as the figure and not as "some
+    /// default", because the number is the whole content: widened, a hung
+    /// adapter hangs the poll for as long as it says.
+    #[test]
+    fn the_bound_with_nothing_set_is_twenty_seconds() {
+        assert_eq!(timeout_from(None), Duration::from_secs(20));
+        assert_eq!(AGENT_TIMEOUT, Duration::from_secs(20));
+        assert_eq!(TIMEOUT_VAR, "FLEET_AGENT_TIMEOUT_MS");
+    }
+
+    /// The setting, in milliseconds: the value this reader returns for it, and
+    /// nothing about elapsed time. The 1 ms case pins that the guard rejects a
+    /// non-deadline without flooring the value.
+    ///
+    /// THE CLAIM IS ABOUT A RANGE AND THE CASES ARE ITS ENDS AND ITS MIDDLE: 1
+    /// and 150 sit inside the two stretches the claim covers, and the case
+    /// ABOVE the default is what says the promise reaches past it — a cap at
+    /// `AGENT_TIMEOUT` satisfies every other line here.
+    #[test]
+    fn the_setting_is_the_bound_in_milliseconds() {
+        assert_eq!(timeout_from(Some("1")), Duration::from_millis(1));
+        assert_eq!(timeout_from(Some("150")), Duration::from_millis(150));
+        assert_eq!(timeout_from(Some("300")), Duration::from_millis(300));
+        assert_eq!(timeout_from(Some(" 300 ")), Duration::from_millis(300));
+        assert_eq!(timeout_from(Some("5000")), Duration::from_secs(5));
+
+        // Above the default, built FROM the default so the case cannot become a
+        // value under it the day that constant moves.
+        let above_default = AGENT_TIMEOUT + Duration::from_secs(40);
+        assert_eq!(
+            timeout_from(Some(&above_default.as_millis().to_string())),
+            above_default,
+            "a setting above the default is honoured, not capped at it"
+        );
+    }
+
+    /// Every reading that is not a positive whole number of milliseconds is the
+    /// default. A zero is named here beside the typos: it parses, and honouring
+    /// it would kill every read before it could answer.
+    #[test]
+    fn an_unreadable_or_zero_setting_is_the_default_and_never_a_zero_bound() {
+        for configured in ["", "   ", "0", "-1", "3.5", "20s", "twenty"] {
+            assert_eq!(
+                timeout_from(Some(configured)),
+                AGENT_TIMEOUT,
+                "{configured:?} is not a deadline"
+            );
+        }
+    }
 
     use std::fmt::Debug;
 

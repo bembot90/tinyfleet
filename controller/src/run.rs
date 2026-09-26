@@ -131,10 +131,25 @@ impl Wiring {
         // changed `[controller] plugin_dir` is taken at the next start. A
         // policy that will not read opens with none, and the start refuses
         // over that policy on its own.
-        let plugin_dir = config::read(&platform::machine_dir().join("config.json"))
+        let machine_dir = platform::machine_dir();
+        let fleet_toml = config::read(&machine_dir.join("config.json"))
             .ok()
-            .and_then(|machine| policy::load(&machine.fleet_toml).ok())
+            .map(|machine| machine.fleet_toml);
+        let plugin_dir = fleet_toml
+            .as_deref()
+            .and_then(|file| policy::load(file).ok())
             .and_then(|policy| policy.plugin_dir);
+        // `[agent] adapter` out of the same file, resolved through this
+        // machine's packs. A file that will not read names no adapter, so the
+        // default's opens — the start refuses over that file on its own.
+        let setting = adapter::Setting::of(
+            fleet_toml
+                .as_deref()
+                .map(fleet_core::item::table_at)
+                .unwrap_or_default(),
+            fleet_toml.as_deref().unwrap_or(Path::new("")),
+            &machine_dir,
+        );
         // Unresolvable is not fatal: the loop observes and publishes with
         // effects off and the projection carries the cause, which is the shape
         // the grant gate has too.
@@ -148,15 +163,11 @@ impl Wiring {
         // The cause travels to the loop rather than being said here, so the line
         // it prints keeps its place in the order a reader meets the startup's
         // lines in.
-        let opened = adapter::open(&adapter::Opening {
-            home: &home,
-            plugin_dir,
-            permissions: None,
-        })
-        .unwrap_or_else(|cause| {
-            eprintln!("fleet observe: the agent could not be opened: {cause}");
-            std::process::exit(i32::from(EXIT_NO_POLICY));
-        });
+        let opened =
+            adapter::open(&setting.opening(&home, plugin_dir, None)).unwrap_or_else(|cause| {
+                eprintln!("fleet observe: the agent could not be opened: {cause}");
+                std::process::exit(i32::from(EXIT_NO_POLICY));
+            });
         // The host every start runs its session on, resolved ONCE beside the
         // binary and on the same constructed `PATH`. Unresolvable is effects
         // off in the same way: every effect that starts a session needs it, so

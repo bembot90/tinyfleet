@@ -9,6 +9,7 @@ use super::{
     FLEET_BIN_VAR, PASSED_THROUGH,
 };
 use crate::platform::run_bounded;
+use fleet_core::agent::types::{timeout_from, TIMEOUT_VAR};
 use fleet_core::store::types::Stamp;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -58,11 +59,6 @@ pub struct ClaudeCode {
     /// at [`open`], or `None` for an adapter whose launches write none.
     permissions: Option<String>,
 }
-
-/// The deadline every call to the agent binary runs on when nothing sets one.
-/// Far above any healthy answer, and far below the interval at which a person
-/// would call the poll hung.
-pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The agent binary when nothing names one: a bare name, resolved on `PATH`.
 pub const DEFAULT_BIN: &str = "claude";
@@ -130,7 +126,7 @@ impl ClaudeCode {
         Self {
             bin: bin_from(configured_bin().as_deref()),
             config_dir: config_dir_from(std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(), home),
-            timeout: timeout_from(std::env::var("FLEET_AGENT_TIMEOUT_MS").ok().as_deref()),
+            timeout: timeout_from(std::env::var(TIMEOUT_VAR).ok().as_deref()),
             child_path: crate::platform::child_path(home),
             credential_dir: credential_dir_from(std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref()),
             // Reads alone until [`open`] hands one in: an adapter built for
@@ -463,32 +459,17 @@ pub(crate) fn configured_bin() -> Option<String> {
     configured
 }
 
+/// The same stop, taken by the opener for a fleet that names no agent adapter
+/// before it reads the packs: under `FLEET_TEST_HERMETIC` with no binary
+/// named, it refuses whichever adapter the default name would resolve to.
+pub(crate) fn refuse_an_unnamed_binary_under_test() {
+    let _ = configured_bin();
+}
+
 pub(crate) fn hermetic() -> bool {
     match std::env::var(HERMETIC_VAR) {
         Ok(value) => !matches!(value.trim(), "" | "0"),
         Err(_) => false,
-    }
-}
-
-/// The deadline the binary actually runs on, with the environment passed in, so
-/// a suite can shorten what the built binary waits for and the order is tested
-/// without touching it.
-///
-/// Anything that is not a positive whole number of milliseconds is the default.
-/// The guard is against a reading that is no deadline at all — a typo, a
-/// negative, a zero, which would kill every listing before it could answer and
-/// publish a whole fleet as Unknown. It is not a floor on the value read back:
-/// a seam set to 1 ms returns 1 ms. What that deadline then costs in elapsed
-/// time is `run_bounded`'s, which reads `try_wait` every 20 ms and so cuts a
-/// call off no finer than that poll; a deadline too short to answer inside is
-/// the operator's either way.
-pub fn timeout_from(configured: Option<&str>) -> Duration {
-    match configured
-        .map(str::trim)
-        .and_then(|ms| ms.parse::<u64>().ok())
-    {
-        Some(ms) if ms > 0 => Duration::from_millis(ms),
-        _ => DEFAULT_TIMEOUT,
     }
 }
 
@@ -1613,7 +1594,7 @@ mod tests {
         let agent = ClaudeCode::new(home);
         assert_eq!(
             agent.timeout,
-            timeout_from(std::env::var("FLEET_AGENT_TIMEOUT_MS").ok().as_deref()),
+            timeout_from(std::env::var(TIMEOUT_VAR).ok().as_deref()),
             "the deadline a real call runs on, and not only the constant"
         );
         assert_eq!(agent.bin, bin_from(configured_bin().as_deref()));
@@ -1638,7 +1619,7 @@ mod tests {
         ClaudeCode::with_seams(
             "claude".to_string(),
             PathBuf::from("/nowhere/.claude"),
-            DEFAULT_TIMEOUT,
+            fleet_core::agent::types::AGENT_TIMEOUT,
             "/usr/bin:/bin".to_string(),
             Some(PathBuf::from("/opt/claude/bin/claude")),
             String::new(),
@@ -1681,15 +1662,6 @@ mod tests {
             Some("1")
         );
         assert_eq!(AUTOUPDATER_VAR, "DISABLE_AUTOUPDATER");
-    }
-
-    /// The deadline the controller runs on when nothing sets one. Asserted as the
-    /// figure and not as "some default", because the number is the whole content:
-    /// widened, a hung listing hangs the poll for as long as it says.
-    #[test]
-    fn the_deadline_with_no_seam_set_is_twenty_seconds() {
-        assert_eq!(timeout_from(None), Duration::from_secs(20));
-        assert_eq!(DEFAULT_TIMEOUT, Duration::from_secs(20));
     }
 
     /// A blank seam is the default and never an empty program, and a setting that
@@ -1857,33 +1829,6 @@ mod tests {
         assert_eq!(credential_dir_from(Some("  /opt/cfg  ")), "/opt/cfg");
     }
 
-    /// The seam, in milliseconds: the value this reader returns for a setting, and
-    /// nothing about elapsed time. The 1 ms case pins that the guard rejects a
-    /// non-deadline without flooring the value; what a 1 ms deadline costs a real
-    /// call is `run_bounded`'s 20 ms poll, which this arm never enters.
-    ///
-    /// THE CLAIM IS ABOUT A RANGE AND THE CASES ARE ITS ENDS AND ITS MIDDLE: 1 and
-    /// 150 sit inside the two stretches the claim covers, and the case ABOVE the
-    /// default is what says the promise reaches past it — a cap at
-    /// `DEFAULT_TIMEOUT` satisfies every other line here.
-    #[test]
-    fn the_seam_sets_the_deadline_in_milliseconds() {
-        assert_eq!(timeout_from(Some("1")), Duration::from_millis(1));
-        assert_eq!(timeout_from(Some("150")), Duration::from_millis(150));
-        assert_eq!(timeout_from(Some("300")), Duration::from_millis(300));
-        assert_eq!(timeout_from(Some(" 300 ")), Duration::from_millis(300));
-        assert_eq!(timeout_from(Some("5000")), Duration::from_secs(5));
-
-        // Above the default, built FROM the default so the case cannot become a
-        // value under it the day that constant moves.
-        let above_default = DEFAULT_TIMEOUT + Duration::from_secs(40);
-        assert_eq!(
-            timeout_from(Some(&above_default.as_millis().to_string())),
-            above_default,
-            "a seam above the default is honoured, not capped at it"
-        );
-    }
-
     /// The operator's state file is where the agent itself keeps it: inside a
     /// configured configuration directory, and in the home — beside the default
     /// directory — where none is configured.
@@ -1917,20 +1862,6 @@ mod tests {
         );
         let at_the_prompt = " ▐▛███▜▌   Claude Code v2.1.280\n❯ \n  ⏸ manual mode on\n";
         assert_eq!(trust_keys(at_the_prompt), None);
-    }
-
-    /// Every reading that is not a positive whole number of milliseconds is the
-    /// default. A zero is named here beside the typos: it parses, and honouring it
-    /// would kill every listing before it could answer.
-    #[test]
-    fn an_unreadable_or_zero_seam_is_the_default_and_never_a_zero_deadline() {
-        for configured in ["", "   ", "0", "-1", "3.5", "20s", "twenty"] {
-            assert_eq!(
-                timeout_from(Some(configured)),
-                DEFAULT_TIMEOUT,
-                "{configured:?} is not a deadline"
-            );
-        }
     }
 
     /// The daemon check's one test: a short id on a live row (lessons claude-code

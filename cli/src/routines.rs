@@ -113,6 +113,9 @@ struct Fleet {
     /// The host the seats' sessions run on, which a ring types into.
     host: Box<dyn fleet_controller::host::Host>,
     policy: Policy,
+    /// `[agent] adapter` out of the fleet's own file, and this machine's
+    /// packs to resolve it through.
+    setting: adapter::Setting,
     seats: Vec<config::Seat>,
     registry: Registry,
 }
@@ -148,12 +151,21 @@ fn resolve() -> Result<Fleet, String> {
     let policy = policy::load(&fleet_root.join("fleet.toml"))
         .or_else(|_| policy::parse(""))
         .map_err(|why| format!("the policy could not be read: {why}"))?;
+    // A file that will not read names no adapter, as it names no policy
+    // above: the agent's default opens.
+    let fleet_toml = fleet_root.join("fleet.toml");
+    let setting = adapter::Setting::of(
+        fleet_core::item::table_at(&fleet_toml),
+        &fleet_toml,
+        &machine_dir,
+    );
     let child_path = platform::child_path(&platform::home_dir());
     Ok(Fleet {
         host: fleet_controller::host::resolve(&child_path),
         child_path,
         machine_dir,
         policy,
+        setting,
         seats,
         registry,
     })
@@ -192,11 +204,11 @@ fn seat_views(fleet: &Fleet, needs_roster: bool) -> Vec<SeatView> {
         // seat whose pane is alive, each under its own directory — the same
         // read the loop makes, so a spawned seat is not rung as nobody.
         let host = crate::transient::verb_host(&home).list();
-        match adapter::open(&adapter::Opening {
-            home: &home,
-            plugin_dir: fleet.policy.plugin_dir.clone(),
-            permissions: None,
-        }) {
+        match adapter::open(
+            &fleet
+                .setting
+                .opening(&home, fleet.policy.plugin_dir.clone(), None),
+        ) {
             Ok(opened) => observe::observe_fleet(
                 opened.agent.as_ref(),
                 &host,
@@ -407,11 +419,11 @@ fn run(name: &str, force: bool, dry_run: bool) -> Exit {
     let needs_roster = routine.action.nudge.is_some();
     let seats = seat_views(&fleet, needs_roster);
     let home = platform::home_dir();
-    let opened = adapter::open(&adapter::Opening {
-        home: &home,
-        plugin_dir: fleet.policy.plugin_dir.clone(),
-        permissions: None,
-    });
+    let opened = adapter::open(&fleet.setting.opening(
+        &home,
+        fleet.policy.plugin_dir.clone(),
+        None,
+    ));
     let effects_off = match &opened {
         Ok(opened) => opened.effects_off.clone(),
         Err(why) => Some(why.clone()),

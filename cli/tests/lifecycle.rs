@@ -2178,6 +2178,89 @@ fn start_refuses_an_unresolvable_agent_binary_and_loads_nothing() {
     );
 }
 
+/// An agent adapter named by path whose capabilities do not answer is a
+/// controller that could start no seat: could-not-tell, naming the adapter,
+/// and NOTHING IS LOADED.
+#[test]
+fn start_refuses_an_agent_adapter_whose_capabilities_exit_3_and_loads_nothing() {
+    let rig = Rig::new("agent-exec-3");
+    rig.created();
+    let adapter = rig.root.join("agent-adapter");
+    write(
+        &adapter,
+        "#!/bin/sh\ncat > /dev/null\necho 'the agent is not set up' >&2\nexit 3\n",
+    );
+    executable(&adapter);
+    rig.policy_says(&format!(
+        "\n[agent]\nadapter = {:?}\n",
+        adapter.display().to_string()
+    ));
+    let out = rig
+        .command(&["start"])
+        // The stub is a script written a moment ago, whose first exec this
+        // platform can hold past the agent's own bound.
+        .env("FLEET_AGENT_TIMEOUT_MS", "300000")
+        .output()
+        .expect("the built binary runs");
+    assert_eq!(code(&out), 3, "{}", stderr(&out));
+    let said = stderr(&out);
+    assert!(
+        said.contains(&format!(
+            "{} capabilities could not tell: the agent is not set up",
+            adapter.display()
+        )),
+        "{said}"
+    );
+    assert!(said.contains("nothing was loaded"), "{said}");
+    assert!(rig.of_class("load").is_empty(), "{:?}", rig.calls());
+    assert!(
+        !rig.machine.join("config.json").exists(),
+        "no first-run work ran"
+    );
+}
+
+/// UNDER FLEET_TEST_HERMETIC a fleet that names no agent adapter and no agent
+/// binary is refused BEFORE the packs are read: an installed pack carrying the
+/// default name is never run, so a suite cannot fall through to a live agent.
+///
+/// RED-PROOF: with the stop left to the in-process adapter alone, the pack's
+/// entry opens and writes its mark.
+#[test]
+fn a_hermetic_start_naming_no_agent_never_runs_a_pack_carrying_the_default() {
+    let rig = Rig::new("agent-hermetic");
+    rig.created();
+    let mark = rig.root.join("the-pack-ran");
+    let pack = rig.machine.join("packs/claude-code");
+    let dir = pack.join("adapters/agent/claude-code");
+    write(
+        &pack.join("pack.toml"),
+        "[pack]\nname = \"claude-code\"\nversion = \"0.1.0\"\nschema = 3\n",
+    );
+    write(
+        &dir.join("adapter.toml"),
+        "[adapter]\nname = \"claude-code\"\nkind = \"agent\"\nversion = \"0.1.0\"\n\
+         entry = \"main\"\n",
+    );
+    write(
+        &dir.join("main"),
+        &format!("#!/bin/sh\ntouch '{}'\nexit 3\n", mark.display()),
+    );
+    executable(&dir.join("main"));
+    let out = rig
+        .command(&["start"])
+        .env_remove(common::hermetic::CLAUDE_BIN)
+        .output()
+        .expect("the built binary runs");
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("FLEET_TEST_HERMETIC is set and FLEET_CLAUDE_BIN names no agent"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!mark.exists(), "the pack's adapter never ran");
+    assert!(rig.of_class("load").is_empty(), "{:?}", rig.calls());
+}
+
 /// A tmux that does not resolve is could-not-tell beside the agent binary, and
 /// NOTHING IS LOADED: every seat's session runs on it, so a controller without
 /// one would start no seat at all.

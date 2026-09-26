@@ -974,10 +974,10 @@ fn declaring(carrier: &Layer, layers: &[Layer]) -> Result<(Vec<Pinned>, BTreeSet
 /// [`declaring`] finds them: none for a pack that declares none and imports
 /// none that does, which is a file that execs no runtime of a pack's.
 ///
-/// What the store opener puts in front of an adapter's search path, through
-/// [`child_path_for`], so a pack's adapter finds the runtime its entry execs
-/// where a run line would.
-pub(crate) fn runtimes_of(carrier: &Layer, layers: &[Layer]) -> Result<Vec<String>, Stop> {
+/// What the store's opener and the agent's put in front of an adapter's search
+/// path, through [`child_path_for`], so a pack's adapter finds the runtime its
+/// entry execs where a run line would.
+pub fn runtimes_of(carrier: &Layer, layers: &[Layer]) -> Result<Vec<String>, Stop> {
     let (declaring, _) = declaring(carrier, layers)?;
     Ok(declaring
         .into_iter()

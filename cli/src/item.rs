@@ -1302,11 +1302,11 @@ impl SeatRing {
         // The agent opened the one way every caller opens it. A ring reads
         // and types and starts nothing, so it is asked whatever the effects
         // gate says: the typed turn is the host's act.
-        let agent = match adapter::open(&adapter::Opening {
-            home: &home,
-            plugin_dir: policy.plugin_dir.clone(),
-            permissions: None,
-        }) {
+        let setting = match adapter::Setting::read(&machine.fleet_toml, &self.machine_dir) {
+            Ok(setting) => setting,
+            Err(cause) => return rang_nobody(cause),
+        };
+        let agent = match adapter::open(&setting.opening(&home, policy.plugin_dir.clone(), None)) {
             Ok(opened) => opened.agent,
             Err(cause) => return rang_nobody(cause),
         };

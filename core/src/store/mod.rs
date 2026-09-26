@@ -317,7 +317,8 @@ pub struct Opening<'a> {
     pub packs: Option<PackDirs<'a>>,
 }
 
-/// Where the `[store] adapter` an [`Opening`] opens by was written, so a
+/// Where the `[store] adapter` an [`Opening`] opens by was written — or the
+/// agent's `[agent] adapter`, whose opener takes the same answer — so a
 /// refusal names the thing a person wrote and not a key they never did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdapterSource {
@@ -539,8 +540,8 @@ pub fn project_policy(root: &Path) -> Result<toml::Table, StoreError> {
 }
 
 /// A file that is there and executable: the opener asks it of an adapter's
-/// path.
-pub(crate) fn executable_file(path: &Path) -> bool {
+/// path, and the agent's opener asks it too.
+pub fn executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path)
         .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)

@@ -14,10 +14,58 @@ each seat's agent is doing, and how much of its context a session has used.
 It answers those six questions, and it never starts, types into or ends a
 session itself: it answers the command a session starts with.
 
-**Status:** fleet speaks this contract to no adapter executable at this
-commit; the agent its seats run is the one fleet has built in. The JSON on
-this page is fleet's own, and every example here reads and writes back
-through it.
+**Status:** fleet speaks this contract to the adapter executable
+`[agent] adapter` names. Where the key names none and no installed pack
+carries `claude-code`, the agent its seats run is Claude Code, through the
+adapter fleet has built in. The JSON on this page is fleet's own, and every
+example here reads and writes back through it.
+
+## Choosing an adapter
+
+The key is `adapter`, in the `[agent]` table of the fleet's own
+`fleet.toml`. It holds for every seat the fleet runs:
+
+```toml
+[agent]
+adapter = "quill"
+```
+
+The key takes two forms. A name with no `/` in it is the agent adapter an
+installed pack carries under `adapters/agent/<name>/`. fleet reads the
+installed packs over the defaults, and the highest layer carrying
+`adapters/agent/<name>/adapter.toml` is the adapter: fleet runs the `entry`
+that file names, the file of that name beside it. An adapter whose
+`adapter.toml` fails the pack format is not run. How a pack carries an
+adapter is on [Packs](packs.md).
+
+A fleet whose file has no `adapter` key opens `claude-code` the same way.
+Where no installed pack carries `claude-code`, that name is the Claude Code
+adapter fleet has built in, and so it is on a machine where `fleet start`
+has not yet written the defaults. Any other name no installed pack carries
+is refused before anything runs, naming the `fleet pack add` line that
+installs the one fleet-packs carries. Where the installed packs do not
+resolve, every name is refused, `claude-code` among them, naming why.
+
+fleet runs a pack's adapter with `PATH` set to the search path it builds for
+the processes it starts, not the one fleet itself was started with. Where
+that path does not hold the runtime the pack runs under, fleet puts the
+runtime's directory in front, as it does for a
+[store adapter](store.md#choosing-an-adapter).
+
+The other form is the absolute path to an executable:
+
+```toml
+[agent]
+adapter = "/opt/quill/bin/fleet-agent"
+```
+
+An adapter named by path runs on the `PATH` fleet itself was started with.
+Any other value is refused.
+
+When fleet opens an adapter, it asks it `capabilities` and `version`. Where
+either does not answer, the capabilities break the contract, or `version`
+answers `null`, fleet starts no session through that adapter: `fleet start`
+refuses, names the adapter and why, exits 3, and loads nothing.
 
 ## The call
 
@@ -32,15 +80,19 @@ call, the same call a [store adapter](store.md#the-call) answers.
 - Each call is bounded at 20 seconds. `FLEET_AGENT_TIMEOUT_MS`, set to a
   positive whole number of milliseconds in fleet's environment, is the bound
   instead; any other value is the 20 seconds. A call that outruns the bound
-  has the adapter's process group killed, and reads as could not tell.
+  has the adapter's process group killed, and reads as could not tell; what
+  fleet prints about it names the bound and `FLEET_AGENT_TIMEOUT_MS`.
 - `read` and `context` are asked about every seat at once, so a poll runs
   one process per verb and never one per seat.
 
 ## The envelope
 
 Every request carries two keys beside the verb's own fields:
-`"schema_version": 1`, and `"root"`, the absolute path of the project's root,
-exactly as a [store request](store.md#the-envelope) does. A `resume` request:
+`"schema_version": 1`, and `"root"`, as a
+[store request](store.md#the-envelope) does. An agent adapter is the
+fleet's and not a project's, so its `root` is the directory the fleet's own
+`fleet.toml` is in: for an embedded fleet, the project's root. A `resume`
+request:
 
 ```json
 {"config_dir":"/work/seats/builder-e5f60718/agent","model":"quill-large-2","posture":"auto","root":"/work/project","schema_version":1,"session_id":"5d1c2a9e-4b3f-4e6a-9c8d-7e6f5a4b3c2d","worktree":"/work/lanes/builder-e5f60718"}

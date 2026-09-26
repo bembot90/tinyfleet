@@ -403,7 +403,9 @@ p: the adapter entry `p/adapters/store/x/main.sh` is not executable — `chmod +
 ```
 
 A store adapter a pack carries is one a project can name in `[store]
-adapter`; see [The store contract](store.md).
+adapter`; see [The store contract](store.md). An agent adapter a pack
+carries is one a fleet can name in `[agent] adapter`; see
+[The agent contract](agent.md#choosing-an-adapter).
 
 An agent adapter's `adapter.toml` may also hold `[hook]`: the hook mapping
 `fleet guard --adapter <name>` reads a pre-tool payload and writes a refusal

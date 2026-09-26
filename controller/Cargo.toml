@@ -59,9 +59,12 @@ required-features = ["test-support"]
 # are the agent contract's types (`fleet_core::agent::types`), which the Agent
 # trait's six verbs take and answer, and the template render
 # (`fleet_core::item::render`) the in-process adapter renders a launch's
-# permissions with. The controller takes the bounded runner, the supported
-# release, a seat's identity, the agent contract and the render from core, and
-# nothing else.
+# permissions with. So is what opens an agent adapter that is an executable:
+# the one adapter call (`fleet_core::adapter::exec`), the census `[agent]
+# adapter` is read through, and the pack resolution a name goes through, the
+# store opener's own. The controller takes the bounded runner, the supported
+# release, a seat's identity, the agent contract, the render and the adapter's
+# opening from core, and nothing else.
 [dependencies]
 fleet-core = { path = "../core" }
 jiff = { version = "=0.2.35", default-features = false, features = [

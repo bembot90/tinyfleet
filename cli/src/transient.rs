@@ -725,9 +725,14 @@ fn config_files_of(here: &Here) -> Result<Vec<(String, String)>, Stop> {
 
 /// The policy the verbs read, from the file the machine's seat list names.
 pub(crate) fn policy_of(here: &Here) -> Result<controller::Policy, Stop> {
-    let machine = config::read(&here.machine_dir.join("config.json"))
-        .map_err(|cause| Stop::could_not_tell(format!("the seat list: {cause}")))?;
-    controller::load(&machine.fleet_toml).map_err(Stop::could_not_tell)
+    controller::load(&fleet_toml_of(here)?).map_err(Stop::could_not_tell)
+}
+
+/// The file the machine's seat list names: the fleet's own.
+fn fleet_toml_of(here: &Here) -> Result<PathBuf, Stop> {
+    config::read(&here.machine_dir.join("config.json"))
+        .map(|machine| machine.fleet_toml)
+        .map_err(|cause| Stop::could_not_tell(format!("the seat list: {cause}")))
 }
 
 /// The agent, opened the one way every caller opens it, with the binary its
@@ -745,12 +750,10 @@ fn spawning_agent(here: &Here, home: &Path) -> Result<Box<dyn Agent>, Stop> {
 }
 
 fn opened(here: &Here, home: &Path, permissions: Option<String>) -> Result<Box<dyn Agent>, Stop> {
-    let opened = adapter::open(&adapter::Opening {
-        home,
-        plugin_dir: policy_of(here)?.plugin_dir,
-        permissions,
-    })
-    .map_err(Stop::could_not_tell)?;
+    let setting = adapter::Setting::read(&fleet_toml_of(here)?, &here.machine_dir)
+        .map_err(Stop::could_not_tell)?;
+    let opened = adapter::open(&setting.opening(home, policy_of(here)?.plugin_dir, permissions))
+        .map_err(Stop::could_not_tell)?;
     match opened.effects_off {
         Some(why) => Err(Stop::could_not_tell(why)),
         None => Ok(opened.agent),

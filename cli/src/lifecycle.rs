@@ -821,12 +821,10 @@ fn start(ui: &Ui, args: &StartArgs) -> Result<Exit, Stop> {
     // The agent, opened the one way the controller will open it: an agent that
     // can issue no effect is a controller that would start no seat, so it is
     // refused here, before anything is loaded.
-    let opened = adapter::open(&adapter::Opening {
-        home: &home,
-        plugin_dir: None,
-        permissions: None,
-    })
-    .map_err(Stop::could_not_tell)?;
+    let setting = adapter::Setting::read(&fleet.fleet_toml, &fleet.machine_dir)
+        .map_err(|why| Stop::could_not_tell(format!("{why} — nothing was loaded")))?;
+    let opened = adapter::open(&setting.opening(&home, None, None))
+        .map_err(|why| Stop::could_not_tell(format!("{why} — nothing was loaded")))?;
     if let Some(why) = &opened.effects_off {
         return Err(Stop::could_not_tell(format!(
             "{why} — nothing was loaded; the search path is {child_path}"

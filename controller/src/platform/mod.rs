@@ -714,12 +714,12 @@ mod tests {
         );
     }
 
-    /// The adapter's own deadline, named whole by the cause the runner gives
-    /// it — the one reading of `deadline_cause` that needs this crate's
+    /// The agent contract's own deadline, named whole by the cause the runner
+    /// gives it — the one reading of `deadline_cause` that needs that
     /// constant, so it stays beside the re-export.
     #[test]
     fn the_deadline_cause_names_the_adapters_deadline() {
-        assert!(deadline_cause(crate::adapter::claude_code::DEFAULT_TIMEOUT)
+        assert!(deadline_cause(fleet_core::agent::types::AGENT_TIMEOUT)
             .contains("did not answer within 20s"));
     }
 
