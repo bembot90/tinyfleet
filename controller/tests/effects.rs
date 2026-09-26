@@ -254,7 +254,7 @@ fn a_target(worktree: &str) -> Target<'_> {
         project: "demo",
         worktree,
         model: "claude-opus-5".to_string(),
-        posture: "auto".to_string(),
+        posture: Posture::Auto,
         first_turn: "/wake s1".to_string(),
         transient: false,
         config_dir: None,
@@ -275,7 +275,7 @@ fn a_row_for(seat: &str, worktree: &str, dispatched_at: u64, session: Option<&st
         worktree: worktree.to_string(),
         name: "orla".to_string(),
         model: "a-model".to_string(),
-        posture: "auto".to_string(),
+        posture: Posture::Auto.into(),
         first_turn: format!("/wake {seat}"),
         transient: false,
         config_dir: None,
@@ -908,7 +908,7 @@ mod lessons {
         // none: Claude Code's `auto` held to the models measured to honour it.
         let agent = claude_code::capabilities();
         let fleet = policy::parse("").expect("an empty policy parses");
-        assert_eq!(fleet.posture_for(false), policy::POSTURE_AUTO);
+        assert_eq!(fleet.posture_for(false), Posture::Auto);
 
         // By PREFIX: a dated suffix and a windowed one are the same model.
         for model in [
@@ -2194,7 +2194,7 @@ fn a_rebuilt_row_carries_the_dispatch_the_live_table_holds() {
         (
             Some(live.name.as_str()),
             Some(live.model.as_str()),
-            Some(live.posture.as_str()),
+            Some(live.posture.word()),
             Some(live.first_turn.as_str()),
             Some(live.transient),
         ),

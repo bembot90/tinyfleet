@@ -22,7 +22,7 @@
 //! measured in `cli/tests/seat.rs`, which sets them on the CHILD it drives.
 
 use fleet_controller::adapter::claude_code::{self, ClaudeCode};
-use fleet_controller::adapter::{Activity, Agent, Permissions, SeatRef};
+use fleet_controller::adapter::{Activity, Agent, Permissions, Posture, SeatRef};
 use fleet_controller::config;
 use fleet_controller::events;
 use fleet_controller::host::{Host, HostRead};
@@ -1424,7 +1424,10 @@ fn a_spawn_makes_a_detached_worktree_a_row_and_a_session_and_prints_its_name() {
             .and_then(|at| argv.get(at + 1))
             .map(String::as_str)
     };
-    assert_eq!(flag("--permission-mode"), Some(policy.posture_for(true)));
+    // Fleet's `unattended`, which the in-process adapter asks of Claude Code as
+    // its `dontAsk` (ruling 14).
+    assert_eq!(policy.posture_for(true), Posture::Unattended);
+    assert_eq!(flag("--permission-mode"), Some("dontAsk"));
     assert_eq!(flag("--model"), Some("a-model"));
     assert_eq!(flag("--name"), Some(seat));
 
@@ -1445,8 +1448,16 @@ fn a_spawn_makes_a_detached_worktree_a_row_and_a_session_and_prints_its_name() {
         "the occupant marker is the turn's text: {:?}",
         opened.first_turn
     );
+    assert_eq!(
+        opened.posture,
+        sessions::StoredPosture::Known(Posture::Unattended)
+    );
     let spawned_lines = rig.events_of(events::SESSION_SPAWNED);
     assert_eq!(spawned_lines.len(), 1);
+    assert_eq!(
+        spawned_lines[0]["payload"]["posture"], "unattended",
+        "the line carries fleet's word and not the agent's"
+    );
     assert_eq!(
         spawned_lines[0]["actor"],
         serde_json::json!({ "kind": "seat", "id": row.id.to_string() })

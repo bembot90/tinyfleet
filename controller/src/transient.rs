@@ -709,7 +709,7 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
         project: machine.project,
         worktree: &worktree_arg,
         model,
-        posture: machine.policy.posture_for(true).to_string(),
+        posture: machine.policy.posture_for(true),
         first_turn: ask.first_turn.to_string(),
         transient: true,
         config_dir: Some(config_dir.display().to_string()),

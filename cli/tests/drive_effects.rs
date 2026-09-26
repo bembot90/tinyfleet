@@ -1718,7 +1718,7 @@ mod isolation {
         format!(
             r#"{{"schema":2,"consumed_seq":0,"nudged":{{}},"seats":{{}},"sessions":[
                  {{"seat":"{SEAT_ID}","project":"demo","worktree":"{}",
-                   "name":"{SEAT}","model":"a-model","posture":"dontAsk",
+                   "name":"{SEAT}","model":"a-model","posture":"unattended",
                    "first_turn":"a brief","transient":true,
                    "config_dir":"{}","item":"{}",
                    "dispatch_id":"a-dispatch","dispatched_at":1000}}

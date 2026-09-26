@@ -48,6 +48,11 @@ the rests seats ask for, and publishes what it saw. You list seats in
   for it and never listed in `fleet.toml`. It has no name, so its machine
   name is `agent-<short id>`. The controller watches it and never brings it
   back.
+- **posture**: how much a seat's session does without asking, as one of
+  fleet's three words: `ask`, `auto` or `unattended` (what each means is on
+  [The agent contract](agent.md#posture)). Claude Code runs `ask` in its
+  `default` permission mode, `auto` in `auto`, and `unattended` in
+  `dontAsk`.
 - **controller**: the loop behind `fleet observe`, run as a user service by
   `fleet start`. One poll every `poll_seconds` (5 unless your policy says
   otherwise).
@@ -448,8 +453,7 @@ seat's decision:
 
 - **spawn-woken**: the seat has no session, so a new one is started in the
   seat's worktree with the first turn `/wake <session-name>`. A named seat
-  runs under the permission posture `auto` and a transient one under
-  `dontAsk`.
+  runs under the posture `auto` and a transient one under `unattended`.
 - **revive**: the seat's ended session is brought back, context intact: a new
   tmux session resumes the agent's session by its id, on the model, posture
   and plugin directory it was started with. The controller revives only a
@@ -506,9 +510,17 @@ named seat whose worktree does not exist fails every start this way and is
 halted on its third poll.
 
 A seat row is skipped, and said so on every read of the seat list, when it
-carries no id or an id that is not a seat id, names no worktree, or would
-start under posture `auto` on a model outside `auto_capable_models`. A
-skipped seat is not in `fleet status`.
+carries no id or an id that is not a seat id, names no worktree, would start
+under a posture its agent does not take, or would start under posture `auto`
+on a model outside `auto_capable_models`. A skipped seat is not in
+`fleet status`.
+
+A session row the controller reads back, from its session table or rebuilt
+from the stream, whose posture is not one of the three words reads as an
+unknown posture, and the controller says so once as it starts:
+``fleet observe: the session row for seat <id> (`<session-name>`) reads as an
+unknown posture: `<word>` is not a posture — a posture is `ask`, `auto` or
+`unattended` ``. The row keeps the word it carried.
 
 The controller starts, stops and nudges nothing, and says why, when no agent
 binary or no tmux can be found (`fleet observe: effects are off — <why>`).
@@ -568,8 +580,8 @@ number or a name is expected is read as the default.
 | `arrival_window_seconds` | `45` | how long a start is given to appear before the seat is eligible again |
 | `start_watch_seconds` | `5` | how long a start or a revive is given for the agent to list the new session before it counts as failed |
 | `default_model` | `claude-opus-5` | the model of a seat that names none |
-| `posture` | `auto` | the permission posture of a named seat's session |
-| `transient_posture` | `dontAsk` | the permission posture of a transient seat's session |
+| `posture` | `auto` | the posture of a named seat's session |
+| `transient_posture` | `unattended` | the posture of a transient seat's session |
 | `auto_capable_models` | `claude-opus-5`, `claude-fable-5`, `claude-sonnet-5` | model prefixes allowed to run under posture `auto` |
 | `first_turn` | `/wake {seat}` | the first turn of a session the controller starts; `{seat}` is the name the session is started under |
 | `nudge_timeout_seconds` | `10` | how long a nudge or a feed typed into a seat's session is given to be taken |
@@ -595,6 +607,17 @@ them:
 
 A key there that is not one of these is ignored, and `fleet observe` says so
 once.
+
+`posture` and `transient_posture` take `ask`, `auto` or `unattended` and no
+other word. In `fleet.toml`, any other word makes the file unreadable as
+policy: `fleet start` refuses with exit 3, `fleet observe` exits 3 before it
+polls, and a running controller keeps its last policy, each naming the word:
+``[controller] `posture`: `<word>` is not a posture — a posture is `ask`,
+`auto` or `unattended` ``. In the seat list's `controller` object, the key
+alone is ignored and the policy file's posture stands; `fleet observe` says
+so once: ``fleet observe: the seat list's `controller.posture` is refused:
+`<word>` is not a posture — a posture is `ask`, `auto` or `unattended`, so it
+is ignored``.
 
 ## What a seat says about itself
 
@@ -938,6 +961,7 @@ branch.
 | `fleet start` or `fleet stop` sees no fresh event within 30 seconds | 3 | `no controller.started was written within 30s — ...` (or `controller.stopped`), and where the service's output is | read the service's output |
 | `fleet stop` with nothing loaded | 1 | `fleet stop: no service is loaded under dev.fleet.controller — there is nothing to stop` | nothing |
 | `fleet observe` with no seat list, or no policy file | 3 | `fleet observe: cannot read the seat list at ...` or `cannot read policy at ...` | run `fleet start` once, or fix `fleet_toml` in the seat list |
+| `fleet start` or `fleet observe` over a `posture` or `transient_posture` that is not `ask`, `auto` or `unattended` | 3 | ``<project>/fleet.toml: [controller] `posture`: `<word>` is not a posture — a posture is `ask`, `auto` or `unattended` `` | write one of the three words |
 | `fleet event rest`, `clear-halt` or `fleet seat nudge` with no controller running | 5 | `no collector is consuming — ...` | `fleet start` |
 | `fleet event rest` for a seat with no live session | 4 | `fleet event rest: <seat> has no live session — ...` | nothing to rest |
 | `fleet event rest` for a transient seat | 6 | ``... only named seats rest — use `fleet seat retire <seat>` instead`` | `fleet seat retire` |

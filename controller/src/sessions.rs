@@ -13,6 +13,7 @@
 //! the nudge ledger and the latches. A name is a person's and free to change,
 //! and a table keyed by one forgets a halt the day the seat is renamed.
 
+use crate::adapter::Posture;
 use crate::platform;
 use fleet_core::seat::identity::SeatRef;
 use serde::{Deserialize, Serialize};
@@ -47,7 +48,10 @@ pub struct SessionRow {
     /// still running under the name it was started with.
     pub name: String,
     pub model: String,
-    pub posture: String,
+    /// The posture the dispatch asked for, read back through the one reader
+    /// ([`Posture::read`]): a row written before postures were fleet's own
+    /// carries a word that reads as unknown ([`StoredPosture::Unknown`]).
+    pub posture: StoredPosture,
     pub first_turn: String,
     pub transient: bool,
     /// The configuration directory THIS session came up under, when it came up
@@ -94,6 +98,62 @@ pub struct SessionRow {
     /// seen end.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended: Option<Ended>,
+}
+
+/// A posture as a row or a stream line stored it.
+///
+/// A WORD THAT IS NO POSTURE IS KEPT AND NEVER GUESSED AT (ruling 14, amended
+/// by 17): a row written when the table carried an agent's own mode names
+/// reads as unknown rather than through an alias, and is written back as the word it carried, so a row that rolls off
+/// is never rewritten under a posture it did not ask for. A line names it
+/// ([`Table::unknown_postures`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StoredPosture {
+    Known(Posture),
+    Unknown(String),
+}
+
+impl StoredPosture {
+    /// A stored word, through the one reader.
+    pub fn read(word: &str) -> StoredPosture {
+        Posture::read(word)
+            .map(StoredPosture::Known)
+            .unwrap_or_else(|_| StoredPosture::Unknown(word.to_string()))
+    }
+
+    /// Fleet's posture, where the stored word is one.
+    pub fn posture(&self) -> Option<Posture> {
+        match self {
+            StoredPosture::Known(posture) => Some(*posture),
+            StoredPosture::Unknown(_) => None,
+        }
+    }
+
+    /// The word as it was stored.
+    pub fn word(&self) -> &str {
+        match self {
+            StoredPosture::Known(posture) => posture.word(),
+            StoredPosture::Unknown(word) => word,
+        }
+    }
+}
+
+impl From<Posture> for StoredPosture {
+    fn from(posture: Posture) -> Self {
+        StoredPosture::Known(posture)
+    }
+}
+
+impl Serialize for StoredPosture {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.word())
+    }
+}
+
+impl<'de> Deserialize<'de> for StoredPosture {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(StoredPosture::read(&String::deserialize(deserializer)?))
+    }
 }
 
 /// How a row's session ended, as its `session.ended` line said it.
@@ -380,6 +440,24 @@ impl Table {
             .unwrap_or_else(|| seat.machine_name())
     }
 
+    /// One line per row whose stored posture is no posture, naming the seat,
+    /// the session's name and the word: what a table or a rebuild read back,
+    /// said once by the caller that read it.
+    pub fn unknown_postures(&self) -> Vec<String> {
+        self.sessions
+            .iter()
+            .filter_map(|row| match &row.posture {
+                StoredPosture::Known(_) => None,
+                StoredPosture::Unknown(word) => Some(format!(
+                    "the session row for seat {} (`{}`) reads as an unknown posture: {}",
+                    row.seat,
+                    row.name,
+                    Posture::read(word).err().unwrap_or_default()
+                )),
+            })
+            .collect()
+    }
+
     pub fn push(&mut self, row: SessionRow) {
         self.sessions.push(row);
     }
@@ -527,7 +605,7 @@ pub fn rebuild(events_path: &Path) -> Table {
             worktree: text("worktree").unwrap_or_default(),
             name: text("name").unwrap_or_default(),
             model: text("model").unwrap_or_default(),
-            posture: text("posture").unwrap_or_default(),
+            posture: StoredPosture::read(&text("posture").unwrap_or_default()),
             first_turn: text("first_turn").unwrap_or_default(),
             transient: payload
                 .get("transient")
@@ -665,7 +743,7 @@ mod tests {
             worktree: worktree.to_string(),
             name: "orla".to_string(),
             model: "a-model".to_string(),
-            posture: "auto".to_string(),
+            posture: Posture::Auto.into(),
             first_turn: "/wake s1".to_string(),
             transient: false,
             config_dir: None,
@@ -1146,6 +1224,94 @@ mod tests {
         })
     }
 
+    /// A STORED WORD THAT IS NO POSTURE READS AS UNKNOWN (ruling 14, amended by
+    /// 17): the stream below is two spawns as 2a48e90 wrote them, a named
+    /// seat's under `auto` and a transient one's under `dontAsk`. The first
+    /// reads as fleet's `auto`; the second is never guessed into `unattended`
+    /// — it keeps the word it carried, a line names it, and the stream is
+    /// read and never rewritten.
+    #[test]
+    fn a_stored_row_whose_posture_is_no_posture_rebuilds_as_unknown_and_a_line_names_the_word() {
+        let dir = scratch("stored-posture");
+        let spawned = |posture: &str, worktree: &str, transient: bool| {
+            serde_json::json!({
+                "worktree": worktree, "project": "demo", "name": "orla", "model": "a-model",
+                "posture": posture, "first_turn": "/wake s1", "transient": transient,
+                "config_dir": null, "item": null, "settings": null, "belt": null,
+                "run": null, "output": "",
+            })
+        };
+        let path = stream_of(
+            &dir,
+            "at-2a48e90.jsonl",
+            &[
+                line_by(
+                    1,
+                    "s1",
+                    "ev-named",
+                    "2026-09-25T10:00:00Z",
+                    crate::events::SESSION_SPAWNED,
+                    spawned("auto", "/wt/s1", false),
+                ),
+                line_by(
+                    2,
+                    "s2",
+                    "ev-transient",
+                    "2026-09-25T10:00:05Z",
+                    crate::events::SESSION_SPAWNED,
+                    spawned("dontAsk", "/wt/s2", true),
+                ),
+            ],
+        );
+        let before = std::fs::read(&path).expect("the stream reads");
+
+        let table = rebuild(&path);
+        let posture_of = |seat: &str| {
+            table
+                .newest_for(seat)
+                .unwrap_or_else(|| panic!("{seat} has a row: {:?}", table.sessions))
+                .posture
+                .clone()
+        };
+        assert_eq!(posture_of("s1"), StoredPosture::Known(Posture::Auto));
+        assert_eq!(
+            posture_of("s2"),
+            StoredPosture::Unknown("dontAsk".to_string()),
+            "never read as the posture it once meant"
+        );
+        assert_eq!(posture_of("s2").posture(), None);
+
+        let said = table.unknown_postures();
+        assert_eq!(said.len(), 1, "one line, for the one row: {said:?}");
+        assert!(said[0].contains("`dontAsk`"), "{said:?}");
+        assert!(said[0].contains("s2"), "and it names the seat: {said:?}");
+        assert!(
+            said[0].contains("`ask`, `auto` or `unattended`"),
+            "{said:?}"
+        );
+
+        assert_eq!(
+            std::fs::read(&path).expect("the stream reads"),
+            before,
+            "the stream is byte-unchanged"
+        );
+
+        // The table written back keeps the word as it was stored, so a row
+        // that rolls off is never rewritten under a word it did not carry.
+        let written = serde_json::to_value(&table).expect("the table serializes");
+        let postures: Vec<&str> = written["sessions"]
+            .as_array()
+            .expect("the rows")
+            .iter()
+            .filter_map(|row| row["posture"].as_str())
+            .collect();
+        assert_eq!(postures, vec!["auto", "dontAsk"]);
+        let back: Table = serde_json::from_value(written).expect("the table reads back");
+        assert_eq!(back.sessions, table.sessions);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A row this fold opens is keyed on its LINE's own id, which is the value
     /// the live path takes from the append's own return — no writer puts a
     /// dispatch id in a payload, so a payload read here keys every rebuilt row
@@ -1309,7 +1475,7 @@ mod tests {
             (
                 rows[0].name.as_str(),
                 rows[0].model.as_str(),
-                rows[0].posture.as_str(),
+                rows[0].posture.word(),
                 rows[0].first_turn.as_str(),
             ),
             ("orla", "a-model", "auto", "/wake s1"),

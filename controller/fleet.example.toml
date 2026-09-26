@@ -24,11 +24,13 @@ nudge_timeout_seconds = 10
 # start: a start with no model comes up on the cheapest model available.
 default_model = "claude-opus-5"
 
-# The permission posture a start asks for — one for a named seat, one for a
-# spawned (transient) row. The pinned CLI accepts auto, dontAsk, acceptEdits,
-# bypassPermissions, manual and plan.
+# The posture a start asks for — one for a named seat, one for a spawned
+# (transient) row — in fleet's own words: ask (ask a person before an act the
+# rules do not allow), auto (act without asking, within the model's
+# judgement) or unattended (nobody is there, so an act the rules do not allow
+# is refused, not asked). Any other word is refused when the file is read.
 posture = "auto"
-transient_posture = "dontAsk"
+transient_posture = "unattended"
 
 # The models measured to honour a requested posture, matched BY PREFIX. A row
 # whose start would ask for `auto` on a model outside this list is dropped at

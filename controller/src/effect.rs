@@ -8,10 +8,12 @@
 //! is to dispatch nothing: it is published as its own outcome, and its line and
 //! its event are written once, at the transition into the hold.
 
-use crate::adapter::{self, Activity, Agent, Launch, Permissions, Resume, SeatActivity, SeatRef};
+use crate::adapter::{
+    self, Activity, Agent, Launch, Permissions, Posture, Resume, SeatActivity, SeatRef,
+};
 use crate::events::{self, ActorRef, EventLog};
 use crate::host::{self, Host, HostRead, PaneState};
-use crate::policy::{self, Policy};
+use crate::policy::Policy;
 use crate::sessions::{SessionRow, Table};
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
@@ -72,7 +74,9 @@ pub struct Target<'a> {
     pub project: &'a str,
     pub worktree: &'a str,
     pub model: String,
-    pub posture: String,
+    /// Fleet's own word, which every line this effect writes carries and the
+    /// adapter maps to its agent's mode.
+    pub posture: Posture,
     pub first_turn: String,
     pub transient: bool,
     /// The configuration directory this start comes up under, when it comes up
@@ -141,7 +145,7 @@ fn open_row(table: &mut Table, target: &Target, dispatch_id: String, now_ms: u64
         worktree: target.worktree.to_string(),
         name: target.session_name.clone(),
         model: target.model.clone(),
-        posture: target.posture.clone(),
+        posture: target.posture.into(),
         first_turn: target.first_turn.clone(),
         transient: target.transient,
         config_dir: target.config_dir.clone(),
@@ -477,11 +481,6 @@ pub fn start_once(
 /// fleet's environment for the seat with the adapter's over it
 /// ([`adapter::pane_environment`]), and [`watch_start`] decides whether it came
 /// up — as that session, for a resume.
-///
-/// The posture crosses as fleet's word: the stored one converts through the
-/// two-word reader ([`policy::stored_posture`]) until fleet-1jr1e stores fleet's
-/// words, and a stored word it does not read is a start refused before
-/// anything is asked of the agent.
 fn bring_up(
     agent: &dyn Agent,
     host: &dyn Host,
@@ -494,14 +493,6 @@ fn bring_up(
         cause,
         status: None,
         screen: None,
-    };
-    let Some(posture) = policy::stored_posture(&target.posture) else {
-        return refused(format!(
-            "the posture `{}` is not one fleet can say — a stored posture is `{}` or `{}`",
-            target.posture,
-            policy::POSTURE_AUTO,
-            policy::DEFAULT_TRANSIENT_POSTURE
-        ));
     };
     // WHO THE SESSION ACTS AS [ASSUMES D7], among the variables fleet sets for
     // every seat's session: its own bare verbs are the seat's.
@@ -518,7 +509,7 @@ fn bring_up(
                 worktree: target.worktree.to_string(),
                 config_dir: target.config_dir.clone(),
                 model: target.model.clone(),
-                posture,
+                posture: target.posture,
             })
             .map_err(|why| why.to_string())
             .and_then(|argv| cleared(host, &session).map(|()| argv)),
@@ -529,7 +520,7 @@ fn bring_up(
                     worktree: target.worktree.to_string(),
                     name: target.session_name.clone(),
                     model: target.model.clone(),
-                    posture,
+                    posture: target.posture,
                     first_turn: target.first_turn.clone(),
                     config_dir: target.config_dir.clone(),
                     env: fleets.clone(),

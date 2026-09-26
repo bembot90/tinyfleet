@@ -36,29 +36,16 @@ pub const DEFAULT_START_WATCH_SECONDS: u64 = 5;
 /// will not.
 pub const DEFAULT_NUDGE_TIMEOUT_SECONDS: u64 = 10;
 
-/// The permission posture a named seat's session is started under, and the one a
-/// transient row is, in the two words a stored policy carries until fleet-1jr1e
-/// makes posture fleet's own word: each converts through [`stored_posture`] as
-/// it crosses into a launch.
+/// The posture a named seat's session is started under, and the one a
+/// transient row is, in fleet's own words (ruling 14): a named seat acts
+/// within its model's judgement, and a transient one has nobody there, so an
+/// act its rules do not allow is refused rather than asked.
 ///
 /// The gate below is keyed on the posture and not on the pair: the measured
 /// downgrade is of a REQUESTED posture, and the transient posture asks for less
 /// than the model's default rather than more.
-pub const POSTURE_AUTO: &str = "auto";
-pub const DEFAULT_POSTURE: &str = POSTURE_AUTO;
-pub const DEFAULT_TRANSIENT_POSTURE: &str = "dontAsk";
-
-/// A stored posture as fleet's own word, through the TWO-WORD READER that
-/// stands until fleet-1jr1e stores postures as fleet's words: the two stored
-/// defaults, `auto` and `dontAsk`, and nothing else. A word it does not read is
-/// `None`, and a launch asked for under it is refused rather than guessed at.
-pub fn stored_posture(word: &str) -> Option<Posture> {
-    match word.trim() {
-        POSTURE_AUTO => Some(Posture::Auto),
-        DEFAULT_TRANSIENT_POSTURE => Some(Posture::Unattended),
-        _ => None,
-    }
-}
+pub const DEFAULT_POSTURE: Posture = Posture::Auto;
+pub const DEFAULT_TRANSIENT_POSTURE: Posture = Posture::Unattended;
 
 /// The load belt's first leg: how much five-minute load average this fleet will
 /// carry per processor before a spawn is refused. One load unit per cpu is a
@@ -96,8 +83,8 @@ pub struct Policy {
     /// `None` falls to the agent's own declared default
     /// ([`Policy::model_for`]).
     pub default_model: Option<String>,
-    pub posture: String,
-    pub transient_posture: String,
+    pub posture: Posture,
+    pub transient_posture: Posture,
     /// The models `auto` is held to, where the file names them: prefixes, not
     /// ids, since membership is by family plus major (D3). `None` falls to the
     /// agent's own declared gate ([`Policy::gate_for`]).
@@ -210,6 +197,16 @@ fn stated(configured: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// A configured posture through the one reader ([`Posture::read`]), trimmed,
+/// with a blank taken as the key left out: `None` where nothing is written,
+/// and the reader's refusal where a word is and it is not a posture.
+fn posture(configured: Option<&str>) -> Result<Option<Posture>, String> {
+    match configured.map(str::trim) {
+        Some(word) if !word.is_empty() => Posture::read(word).map(Some),
+        _ => Ok(None),
+    }
+}
+
 /// A configured list of model prefixes, trimmed, with blanks dropped, and
 /// `None` where nothing is left.
 fn models(configured: Option<Vec<String>>) -> Option<Vec<String>> {
@@ -259,6 +256,25 @@ pub fn parse(body: &str) -> Result<Policy, String> {
     // model out and leave a fleet that can start nothing under posture `auto`,
     // which is a configuration nobody writes on purpose.
     let auto_capable_models = models(c.and_then(|c| c.auto_capable_models.clone()));
+    // A posture that is no posture is REFUSED, not defaulted: a fleet that
+    // asked its seats to run unattended and was started asking would stop at
+    // the first dialog with nobody there, and one that asked to be asked and
+    // ran unattended would act unasked.
+    let posture_key = |key: &str, configured: Option<&String>, default: Posture| {
+        posture(configured.map(String::as_str))
+            .map(|read| read.unwrap_or(default))
+            .map_err(|why| format!("[controller] `{key}`: {why}"))
+    };
+    let named_posture = posture_key(
+        "posture",
+        c.and_then(|c| c.posture.as_ref()),
+        DEFAULT_POSTURE,
+    )?;
+    let transient_posture = posture_key(
+        "transient_posture",
+        c.and_then(|c| c.transient_posture.as_ref()),
+        DEFAULT_TRANSIENT_POSTURE,
+    )?;
     Ok(Policy {
         poll_seconds,
         rest_threshold_tokens: positive(
@@ -278,11 +294,8 @@ pub fn parse(body: &str) -> Result<Policy, String> {
             DEFAULT_NUDGE_TIMEOUT_SECONDS,
         ),
         default_model: stated(c.and_then(|c| c.default_model.as_deref())),
-        posture: named(c.and_then(|c| c.posture.as_deref()), DEFAULT_POSTURE),
-        transient_posture: named(
-            c.and_then(|c| c.transient_posture.as_deref()),
-            DEFAULT_TRANSIENT_POSTURE,
-        ),
+        posture: named_posture,
+        transient_posture,
         auto_capable_models,
         first_turn: stated(c.and_then(|c| c.first_turn.as_deref())),
         // A ceiling of zero or less refuses every spawn, and one that is not a
@@ -331,11 +344,11 @@ impl Policy {
     }
 
     /// The posture a row of this kind is started under.
-    pub fn posture_for(&self, transient: bool) -> &str {
+    pub fn posture_for(&self, transient: bool) -> Posture {
         if transient {
-            &self.transient_posture
+            self.transient_posture
         } else {
-            &self.posture
+            self.posture
         }
     }
 
@@ -357,9 +370,7 @@ impl Policy {
     /// otherwise the prefixes the agent declares for the row's posture. Empty
     /// is no gate at all.
     pub fn gate_for(&self, transient: bool, agent: &Capabilities) -> Vec<String> {
-        let Some(posture) = stored_posture(self.posture_for(transient)) else {
-            return Vec::new();
-        };
+        let posture = self.posture_for(transient);
         match (&self.auto_capable_models, posture) {
             (Some(models), Posture::Auto) => models.clone(),
             _ => agent
@@ -412,6 +423,10 @@ pub struct Overrides {
     /// Keys that name a `[controller]` key and carry a value of the wrong shape.
     /// Each loses ITSELF and no other, and is named once by the caller.
     pub malformed: Vec<String>,
+    /// Posture keys whose word is no posture, each with the reader's refusal:
+    /// refused the way a wrong shape is — the key loses itself and no other,
+    /// and the caller names it once with the word and the three it can use.
+    pub refused: Vec<(String, String)>,
 }
 
 impl Overrides {
@@ -425,6 +440,11 @@ impl Overrides {
                 self.malformed
                     .iter()
                     .map(|key| format!("`controller.{key}` carries a value of the wrong shape")),
+            )
+            .chain(
+                self.refused
+                    .iter()
+                    .map(|(key, why)| format!("`controller.{key}` is refused: {why}")),
             )
             .collect()
     }
@@ -442,6 +462,7 @@ pub fn overrides_in(value: Option<&serde_json::Value>) -> Overrides {
     };
     let mut unknown = Vec::new();
     let mut malformed = Vec::new();
+    let mut refused = Vec::new();
     let mut kept = serde_json::Map::new();
     for (key, value) in object {
         if !CONTROLLER_KEYS.contains(&key.as_str()) {
@@ -456,10 +477,16 @@ pub fn overrides_in(value: Option<&serde_json::Value>) -> Overrides {
         let alone = serde_json::Value::Object(
             std::iter::once((key.clone(), value.clone())).collect::<serde_json::Map<_, _>>(),
         );
-        if serde_json::from_value::<RawController>(alone).is_ok() {
-            kept.insert(key.clone(), value.clone());
-        } else {
-            malformed.push(key.clone());
+        match serde_json::from_value::<RawController>(alone) {
+            // The same reader the file's posture keys go through, so the
+            // machine's answer is refused in the file's own sentence.
+            Ok(read) => match posture(read.posture.or(read.transient_posture).as_deref()) {
+                Ok(_) => {
+                    kept.insert(key.clone(), value.clone());
+                }
+                Err(why) => refused.push((key.clone(), why)),
+            },
+            Err(_) => malformed.push(key.clone()),
         }
     }
     Overrides {
@@ -468,6 +495,7 @@ pub fn overrides_in(value: Option<&serde_json::Value>) -> Overrides {
         controller: serde_json::from_value(serde_json::Value::Object(kept)).ok(),
         unknown,
         malformed,
+        refused,
     }
 }
 
@@ -506,8 +534,17 @@ impl Policy {
             start_watch_seconds: positive(c.start_watch_seconds, self.start_watch_seconds),
             nudge_timeout_seconds: positive(c.nudge_timeout_seconds, self.nudge_timeout_seconds),
             default_model: stated(c.default_model.as_deref()).or(self.default_model.clone()),
-            posture: named(c.posture.as_deref(), &self.posture),
-            transient_posture: named(c.transient_posture.as_deref(), &self.transient_posture),
+            // A refused word never reaches here ([`overrides_in`] keeps only
+            // the keys that read), so a posture left is one of the three or
+            // blank, and a blank falls to the policy's.
+            posture: posture(c.posture.as_deref())
+                .ok()
+                .flatten()
+                .unwrap_or(self.posture),
+            transient_posture: posture(c.transient_posture.as_deref())
+                .ok()
+                .flatten()
+                .unwrap_or(self.transient_posture),
             auto_capable_models: models(c.auto_capable_models.clone())
                 .or(self.auto_capable_models.clone()),
             first_turn: stated(c.first_turn.as_deref()).or(self.first_turn.clone()),
@@ -573,8 +610,8 @@ mod tests {
              start_watch_seconds = 333\n\
              nudge_timeout_seconds = 444\n\
              default_model = \"a-model\"\n\
-             posture = \"acceptEdits\"\n\
-             transient_posture = \"bypassPermissions\"\n\
+             posture = \"ask\"\n\
+             transient_posture = \"unattended\"\n\
              auto_capable_models = [\"a-model\", \"b-model\"]\n\
              first_turn = \"/hello {seat}\"\n\
              load_ceiling_per_cpu = 2.5\n\
@@ -588,8 +625,8 @@ mod tests {
         assert_eq!(policy.start_watch_seconds, 333);
         assert_eq!(policy.nudge_timeout_seconds, 444);
         assert_eq!(policy.default_model.as_deref(), Some("a-model"));
-        assert_eq!(policy.posture, "acceptEdits");
-        assert_eq!(policy.transient_posture, "bypassPermissions");
+        assert_eq!(policy.posture, Posture::Ask);
+        assert_eq!(policy.transient_posture, Posture::Unattended);
         assert_eq!(
             policy.auto_capable_models,
             Some(vec!["a-model".to_string(), "b-model".to_string()])
@@ -802,24 +839,102 @@ mod tests {
         );
     }
 
-    /// The two stored words and no other cross as fleet's own (the two-word
-    /// reader fleet-1jr1e replaces), and the D3 gate is the file's list for
-    /// `auto` where it names one, and the agent's declared prefixes otherwise.
+    /// A posture key reads fleet's three words, trimmed, and a blank is the
+    /// default the way a blank model is.
     #[test]
-    fn a_stored_posture_crosses_as_fleets_word_and_the_gate_falls_to_the_agent() {
-        assert_eq!(stored_posture("auto"), Some(Posture::Auto));
-        assert_eq!(stored_posture("dontAsk"), Some(Posture::Unattended));
-        for other in [
+    fn a_posture_key_reads_fleets_three_words() {
+        for posture in Posture::ALL {
+            let policy = parse(&format!(
+                "[controller]\nposture = \" {0} \"\ntransient_posture = \"{0}\"\n",
+                posture.word()
+            ))
+            .expect("the file parses");
+            assert_eq!(
+                (policy.posture, policy.transient_posture),
+                (posture, posture)
+            );
+        }
+    }
+
+    /// EVERY OTHER WORD IS REFUSED AT LOAD (ruling 14, amended by 17): an
+    /// agent's own mode names, the two this file once defaulted to among
+    /// them, read as nothing, and no alias turns one into a posture. The refusal names the
+    /// key, the word and the three it can use, and it comes back through
+    /// [`load`], which is what keeps a running loop on its last-good policy
+    /// and refuses a start.
+    #[test]
+    fn a_posture_key_naming_any_other_word_is_refused_at_load_naming_the_three() {
+        for word in [
             "default",
+            "dontAsk",
             "acceptEdits",
             "bypassPermissions",
             "plan",
-            "ask",
-            "",
+            "manual",
         ] {
-            assert_eq!(stored_posture(other), None, "{other:?}");
+            for key in ["posture", "transient_posture"] {
+                let refused = parse(&format!("[controller]\n{key} = \"{word}\"\n"))
+                    .expect_err("a word that is no posture is refused");
+                assert!(refused.contains(&format!("`{key}`")), "{refused}");
+                assert!(refused.contains(&format!("`{word}`")), "{refused}");
+                for three in ["`ask`", "`auto`", "`unattended`"] {
+                    assert!(refused.contains(three), "{refused}");
+                }
+            }
         }
 
+        let dir = std::env::temp_dir().join(format!("fleet-policy-posture-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the fixture directory is made");
+        let file = dir.join("fleet.toml");
+        std::fs::write(&file, "[controller]\nposture = \"bypassPermissions\"\n")
+            .expect("the file is written");
+        let refused = load(&file).expect_err("the loader refuses it too");
+        assert!(refused.contains("bypassPermissions"), "{refused}");
+        assert!(
+            refused.contains("`ask`, `auto` or `unattended`"),
+            "{refused}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The machine's own file answers a posture per key, as every other key:
+    /// a word that is no posture is refused and named with the three, and
+    /// loses itself alone — the policy's posture stands and the machine's
+    /// other answers still land.
+    #[test]
+    fn a_machines_posture_naming_any_other_word_is_refused_and_named_and_the_policys_stands() {
+        let file = parse("[controller]\nposture = \"ask\"\n").expect("the policy parses");
+        let over = overrides_in(Some(&serde_json::json!({
+            "posture": "dontAsk",
+            "transient_posture": "acceptEdits",
+            "poll_seconds": 11,
+        })));
+        assert_eq!(over.refused.len(), 2, "{:?}", over.refused);
+        let said = over.ignored();
+        for (key, word) in [("posture", "dontAsk"), ("transient_posture", "acceptEdits")] {
+            let line = said
+                .iter()
+                .find(|line| line.contains(&format!("`controller.{key}`")))
+                .unwrap_or_else(|| panic!("{key} is named: {said:?}"));
+            assert!(line.contains(&format!("`{word}`")), "{line}");
+            assert!(line.contains("`ask`, `auto` or `unattended`"), "{line}");
+        }
+        let effective = file.overlaid(&over);
+        assert_eq!(effective.posture, Posture::Ask);
+        assert_eq!(effective.transient_posture, DEFAULT_TRANSIENT_POSTURE);
+        assert_eq!(effective.poll_seconds, 11, "the other answer still lands");
+
+        // The control: a posture that is one of the three is the machine's.
+        let good = overrides_in(Some(&serde_json::json!({ "posture": "unattended" })));
+        assert!(good.refused.is_empty());
+        assert_eq!(file.overlaid(&good).posture, Posture::Unattended);
+    }
+
+    /// The D3 gate is the file's list for `auto` where it names one, and the
+    /// agent's declared prefixes otherwise.
+    #[test]
+    fn the_gate_is_the_files_list_for_auto_and_falls_to_the_agent() {
         let agent = declared();
         let unnamed = parse("").unwrap();
         assert_eq!(
@@ -850,8 +965,8 @@ mod tests {
              start_watch_seconds = 7\n\
              nudge_timeout_seconds = 7\n\
              default_model = \"from-policy\"\n\
-             posture = \"from-policy\"\n\
-             transient_posture = \"from-policy\"\n\
+             posture = \"ask\"\n\
+             transient_posture = \"auto\"\n\
              auto_capable_models = [\"from-policy\"]\n\
              first_turn = \"from-policy {seat}\"\n\
              load_ceiling_per_cpu = 7.0\n\
@@ -867,8 +982,8 @@ mod tests {
             "start_watch_seconds": 11,
             "nudge_timeout_seconds": 11,
             "default_model": "from-machine",
-            "posture": "from-machine",
-            "transient_posture": "from-machine",
+            "posture": "unattended",
+            "transient_posture": "ask",
             "auto_capable_models": ["from-machine"],
             "first_turn": "from-machine {seat}",
             "load_ceiling_per_cpu": 11.0,
@@ -883,8 +998,8 @@ mod tests {
         assert_eq!(effective.start_watch_seconds, 11);
         assert_eq!(effective.nudge_timeout_seconds, 11);
         assert_eq!(effective.default_model.as_deref(), Some("from-machine"));
-        assert_eq!(effective.posture, "from-machine");
-        assert_eq!(effective.transient_posture, "from-machine");
+        assert_eq!(effective.posture, Posture::Unattended);
+        assert_eq!(effective.transient_posture, Posture::Ask);
         assert_eq!(
             effective.auto_capable_models,
             Some(vec!["from-machine".to_string()])
@@ -905,6 +1020,10 @@ mod tests {
         assert_eq!(untouched, file);
         assert_eq!(untouched.poll_seconds, 7);
         assert_eq!(untouched.default_model.as_deref(), Some("from-policy"));
+        assert_eq!(
+            (untouched.posture, untouched.transient_posture),
+            (Posture::Ask, Posture::Auto)
+        );
         assert_eq!(
             untouched.auto_capable_models,
             Some(vec!["from-policy".to_string()])

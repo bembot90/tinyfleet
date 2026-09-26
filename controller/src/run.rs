@@ -513,6 +513,12 @@ impl<'a> Observer<'a> {
                 rebuilt
             }
         };
+        // A row written before postures were fleet's own reads as unknown and
+        // is never guessed into one (ruling 17): said once, as the table is
+        // read, and the row rolls off as the seat's next dispatch replaces it.
+        for line in table.unknown_postures() {
+            eprintln!("fleet observe: {line}");
+        }
         // THE UPGRADE ADOPTS NOTHING (ruling 10). A seat whose worktree still
         // holds a session Claude Code's background daemon runs is refused here,
         // before the first poll reads the host or starts anything over it: a
@@ -1605,7 +1611,7 @@ fn target_for<'a>(
         seat: seat.id,
         project,
         worktree: dir_key(worktree),
-        posture: policy.posture_for(seat.transient).to_string(),
+        posture: policy.posture_for(seat.transient),
         first_turn: policy.first_turn_for(&recorded.session_name, capabilities),
         session_name: recorded.session_name,
         model,
@@ -1744,17 +1750,35 @@ fn overlaid(file: &Policy, raw: &MachineConfig, said: &mut BTreeSet<String>) -> 
 /// instrument reads reports the downgrade, and the seat then stops at the first
 /// approval dialog with nobody there to answer. So the row is dropped here,
 /// before any start is attempted, and the drop is loud.
+///
+/// A row whose posture the agent does not take at all is dropped the same
+/// way: its every start would be refused by the adapter, one poll at a time.
 fn admitted(raw: &MachineConfig, policy: &Policy, capabilities: &Capabilities) -> MachineConfig {
     let mut seats = Vec::with_capacity(raw.seats.len());
     let mut skipped = raw.skipped.clone();
     for seat in &raw.seats {
+        let posture = policy.posture_for(seat.transient);
+        if !capabilities.postures.contains(&posture) {
+            skipped.push(format!(
+                "{} would start under posture `{}`, which its agent does not take (it takes {})",
+                seat.machine_name(),
+                posture.word(),
+                capabilities
+                    .postures
+                    .iter()
+                    .map(|taken| taken.word())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            continue;
+        }
         let model = policy.model_for(seat.model.as_deref(), capabilities);
         if policy.posture_is_ungranted(seat.transient, &model, capabilities) {
             skipped.push(format!(
                 "{} would start under posture `{}` on model `{model}`, which matches none of \
                  the models measured to honour it ({})",
                 seat.machine_name(),
-                policy.posture_for(seat.transient),
+                posture.word(),
                 policy.gate_for(seat.transient, capabilities).join(", ")
             ));
             continue;
@@ -1816,6 +1840,7 @@ fn report_skipped(config: &MachineConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::Posture;
     use crate::test_support::FakeClock;
     use std::time::Instant;
 
@@ -1840,5 +1865,52 @@ mod tests {
             wall < Duration::from_millis(10),
             "{interval:?} of fake time cost {wall:?} of wall clock"
         );
+    }
+
+    /// A row whose start would ask for a posture the agent does not take is
+    /// dropped at config read, naming the word and the postures it takes —
+    /// and the row of the kind whose posture it does take stands.
+    #[test]
+    fn a_row_asking_for_a_posture_the_agent_does_not_take_is_dropped_naming_the_word() {
+        let seat = |id: &str, transient: bool| Seat {
+            id: SeatId::parse(id).expect("a well-formed seat id"),
+            name: Some("orla".to_string()),
+            model: None,
+            transient,
+            worktrees: vec![("demo".to_string(), "/wt".to_string())],
+        };
+        let raw = MachineConfig {
+            fleet_toml: PathBuf::from("/fleet.toml"),
+            seats: vec![
+                seat("0199a3c4-7d8e-7f90-a1b2-c3d4e5f60718", false),
+                seat("0199a3c4-8f01-7a23-b456-c789d0e1f234", true),
+            ],
+            skipped: Vec::new(),
+            controller: None,
+        };
+        let policy = policy::parse("").expect("an empty policy parses");
+        let capabilities = Capabilities {
+            postures: vec![Posture::Ask, Posture::Auto],
+            default_model: "a-model".to_string(),
+            first_turn: "/wake {seat}".to_string(),
+            context: true,
+            measured: vec!["9.9.9".to_string()],
+            posture_models: BTreeMap::new(),
+        };
+
+        let config = admitted(&raw, &policy, &capabilities);
+        assert_eq!(config.seats.len(), 1, "{:?}", config.skipped);
+        assert!(!config.seats[0].transient, "the named row stands");
+        assert_eq!(config.skipped.len(), 1, "{:?}", config.skipped);
+        let said = &config.skipped[0];
+        assert!(said.contains("`unattended`"), "{said}");
+        assert!(said.contains("ask, auto"), "and what it takes: {said}");
+
+        // The control: an agent that takes all three drops nothing.
+        let every = Capabilities {
+            postures: Posture::ALL.to_vec(),
+            ..capabilities
+        };
+        assert_eq!(admitted(&raw, &policy, &every).seats.len(), 2);
     }
 }

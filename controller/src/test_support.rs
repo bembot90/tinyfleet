@@ -4,8 +4,8 @@
 //! out of the binary a release build produces.
 
 use crate::adapter::{
-    Agent, AgentError, Argv, Capabilities, Launch, Posture, Resume, SeatActivity, SeatContext,
-    SeatRef, Version,
+    Agent, AgentError, Argv, Capabilities, Launch, Resume, SeatActivity, SeatContext, SeatRef,
+    Version,
 };
 use crate::clock::Clock;
 use std::path::Path;
@@ -263,7 +263,7 @@ impl StubAgent {
             "--model",
             &launch.model,
             "--posture",
-            posture_word(launch.posture),
+            launch.posture.word(),
             &launch.first_turn,
         ]
         .iter()
@@ -285,7 +285,7 @@ impl StubAgent {
             "--model",
             &resume.model,
             "--posture",
-            posture_word(resume.posture),
+            resume.posture.word(),
         ]
         .iter()
         .map(|a| a.to_string())
@@ -301,15 +301,6 @@ impl StubAgent {
             .map(|dir| (StubAgent::CONFIG_DIR_VAR.to_string(), dir.to_string()))
             .into_iter()
             .collect()
-    }
-}
-
-/// A posture's own word, as the contract spells it.
-fn posture_word(posture: Posture) -> &'static str {
-    match posture {
-        Posture::Ask => "ask",
-        Posture::Auto => "auto",
-        Posture::Unattended => "unattended",
     }
 }
 

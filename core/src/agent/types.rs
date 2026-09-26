@@ -51,14 +51,50 @@ pub const CONTRACT_VERSION: u64 = 1;
 /// 14, 2026-09-25): `ask` asks before acting, `auto` acts on what its agent
 /// judges safe, and `unattended` never stops to ask. Each adapter maps the
 /// three onto its agent's own modes; no other word reads.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
-)]
+///
+/// ITS SERDE FORM READS THROUGH [`Posture::read`], so an answer, a policy key
+/// and a stored line are one reader and refuse in one sentence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Posture {
     Ask,
     Auto,
     Unattended,
+}
+
+impl Posture {
+    /// The three, in the order the docs state them.
+    pub const ALL: [Posture; 3] = [Posture::Ask, Posture::Auto, Posture::Unattended];
+
+    /// The posture's own word, as the contract spells it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Posture::Ask => "ask",
+            Posture::Auto => "auto",
+            Posture::Unattended => "unattended",
+        }
+    }
+
+    /// THE ONE READER of a posture word: the three words and nothing else. No
+    /// alias (ruling 17) — an agent's own word for a mode is the adapter's to
+    /// map to and never fleet's to read — and no trimming or case folding, which is the caller's to do
+    /// where its source is a person's. The refusal names the word it met and
+    /// the three it could have been.
+    pub fn read(word: &str) -> Result<Posture, String> {
+        Posture::ALL
+            .into_iter()
+            .find(|posture| posture.word() == word)
+            .ok_or_else(|| {
+                format!("`{word}` is not a posture — a posture is `ask`, `auto` or `unattended`")
+            })
+    }
+}
+
+impl<'de> Deserialize<'de> for Posture {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Posture::read(&word).map_err(serde::de::Error::custom)
+    }
 }
 
 // ---- what an agent is -----------------------------------------------------------
@@ -751,6 +787,38 @@ mod tests {
                 serde_json::from_str::<Posture>(&format!("\"{other}\"")).is_err(),
                 "{other} is not a posture"
             );
+        }
+    }
+
+    /// ONE READER (ruling 17): the three words and nothing else, no alias and
+    /// no case folding, and a refusal that names the word it met and the three
+    /// it could have been. The serde form reads through it, so a stored line,
+    /// a policy key and an answer are refused in the same sentence.
+    #[test]
+    fn a_posture_word_reads_through_the_one_reader_and_every_other_is_refused_naming_the_three() {
+        for posture in [Posture::Ask, Posture::Auto, Posture::Unattended] {
+            assert_eq!(Posture::read(posture.word()), Ok(posture));
+            assert_eq!(json(&posture), format!("\"{}\"", posture.word()));
+        }
+        for other in [
+            "default",
+            "dontAsk",
+            "acceptEdits",
+            "bypassPermissions",
+            "plan",
+            "Auto",
+            " auto",
+            "",
+        ] {
+            let refused = Posture::read(other).expect_err(other);
+            assert!(refused.contains(&format!("`{other}`")), "{refused}");
+            for word in ["`ask`", "`auto`", "`unattended`"] {
+                assert!(refused.contains(word), "{refused}");
+            }
+            let decoded = serde_json::from_str::<Posture>(&format!("\"{other}\""))
+                .expect_err(other)
+                .to_string();
+            assert!(decoded.contains(&refused), "{decoded}");
         }
     }
 
