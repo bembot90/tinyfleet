@@ -66,7 +66,7 @@ pub fn command() -> Exit {
     println!(
         "fleet {version} — packs: {}; guards: {}",
         packs_of(&layering, &machine_dir.join(lock::LOCK)),
-        guards_of(&policy),
+        guards_of(&layering, &policy),
     );
     // The items are held under the seat's full id, which is what every
     // dispatch assigns: a name moves, and the record is keyed by the seat.
@@ -93,11 +93,23 @@ pub fn command() -> Exit {
     Exit::Done
 }
 
-/// Every class this binary carries, on or off, read through the same function
-/// the hook path reads. It ITERATES rather than naming them, so a class a pack
-/// adds reaches this line without an edit here.
-fn guards_of(policy: &str) -> String {
-    guard::CLASSES
+/// Every class the layers declare, on or off, read through the same functions
+/// the hook path reads: core's two, and each class an installed pack's
+/// `guard_classes` turns on.
+///
+/// A layering that refused names core's two alone — they are the classes no
+/// layer has to declare, and the packs half of the line already says why the
+/// rest could not be read. A pack whose manifest cannot say what it turns on
+/// is the line's answer, in its own words.
+fn guards_of(layering: &Layering, policy: &str) -> String {
+    let declared = match layering {
+        Layering::Resolved { layers, .. } => match guard::declared(layers) {
+            Ok(declared) => declared,
+            Err(why) => return format!("could not be read — {why}"),
+        },
+        Layering::Refused(_) => guard::CORE.to_vec(),
+    };
+    declared
         .iter()
         .map(|class| {
             format!(

@@ -161,7 +161,7 @@ pub fn text(packs: &Packs, project: &Project, subject: &Subject) -> Result<Strin
         ))
     })?;
     let touched = command_or(subject.touched, DERIVE_TOUCHED);
-    let guards = guards_of(project);
+    let guards = guards_of(packs, project)?;
 
     render(
         &template,
@@ -273,10 +273,12 @@ fn command_or<'a>(given: Option<&'a str>, absent: &'a str) -> &'a str {
         .unwrap_or(absent)
 }
 
-/// One line per guard class, on or off, read through the same function the
-/// hook path reads.
-fn guards_of(project: &Project) -> String {
-    guard::CLASSES
+/// One line per guard class the layers declare, on or off, read through the
+/// same functions the hook path reads: a class no layer turns on is not in
+/// force, and a brief naming it would teach a seat a guard it never meets.
+fn guards_of(packs: &Packs, project: &Project) -> Result<String, Stop> {
+    let declared = guard::declared(&packs.layers).map_err(Stop::could_not_tell)?;
+    Ok(declared
         .iter()
         .map(|class| {
             let state = if guard::enabled(*class, &project.guards) {
@@ -287,5 +289,5 @@ fn guards_of(project: &Project) -> String {
             format!("- {}: {state}", class.name())
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n"))
 }

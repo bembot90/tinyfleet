@@ -6,9 +6,10 @@
 //! every seat has a shell and every fleet has a record. The other two —
 //! release-ref and production-write — fail it, because a fifty-commit side
 //! project has no release refs and no production cloud, so they are A PACK'S
-//! guards on the same rules: the class lives here, which classes a provider
-//! runs is the pack's overlay to wire, and the `[guards]` table switches any of
-//! them off the same way.
+//! guards on the same rules: the class lives here, a pack turns it on by
+//! naming it in its manifest's `[pack] guard_classes` ([`declared`] reads the
+//! set), and the fleet's `[guards]` table switches any of them off the same
+//! way.
 //!
 //! Three rules hold for every class:
 //!
@@ -27,9 +28,10 @@
 //! runtime's contract: its agent adapter declares both as data, in the
 //! `[hook]` table [`hook`] reads, and a second runtime declares a mapping of
 //! its own and reuses these classes unchanged. Nothing here states a decision
-//! value, touches the filesystem or reads the process table: the caller
-//! resolves the policy and hands it in, which is what keeps the judgment
-//! testable over text alone.
+//! value or reads the process table, and the judgment touches no filesystem:
+//! the caller resolves the policy and hands it in, which is what keeps the
+//! judgment testable over text alone. [`declared`] is the one reader here that
+//! opens a file, and what it opens is the layers' manifests, never a policy.
 
 pub mod hook;
 pub mod lex;
@@ -38,7 +40,9 @@ pub mod record;
 pub mod release_ref;
 pub mod shell_trap;
 
+use crate::pack;
 use crate::policy;
+use crate::resolve::Layer;
 
 /// The escape for each guarded act THAT HAS ONE, as a leading assignment on the
 /// command itself. They are NOT interchangeable: each licenses the act it names and
@@ -92,6 +96,44 @@ pub const CLASSES: [Class; 4] = [
     Class::ReleaseRef,
     Class::ProductionWrite,
 ];
+
+/// The classes that pass core's bar and run in every fleet. They need no
+/// declaration, because the defaults layer carries no manifest to declare them.
+pub const CORE: [Class; 2] = [Class::ShellTrap, Class::Record];
+
+/// The classes a guard with no class runs over these layers: [`CORE`], and
+/// every class an installed layer's `[pack] guard_classes` names, once each and
+/// in [`CLASSES`] order whatever order the packs wrote them in.
+///
+/// A LAYER WHOSE MANIFEST CANNOT BE READ IS AN `Err` naming it, never a layer
+/// read past: a set built without it would run fewer classes than the fleet
+/// declared, and a guard fails open exactly there.
+pub fn declared(layers: &[Layer]) -> Result<Vec<Class>, String> {
+    let mut on: Vec<Class> = CORE.to_vec();
+    for layer in layers.iter().filter(|layer| !layer.defaults) {
+        let manifest = std::fs::read_to_string(layer.root.join(pack::MANIFEST))
+            .map_err(|e| e.to_string())
+            .and_then(|text| {
+                pack::parse_manifest(&text).map_err(|defects| {
+                    defects
+                        .first()
+                        .map(|d| d.to_string())
+                        .unwrap_or_else(|| "the manifest refused and said nothing".to_string())
+                })
+            })
+            .map_err(|why| {
+                format!(
+                    "layer `{}` cannot say which guard classes it turns on: {why}",
+                    layer.name
+                )
+            })?;
+        on.extend(manifest.guards);
+    }
+    Ok(CLASSES
+        .into_iter()
+        .filter(|class| on.contains(class))
+        .collect())
+}
 
 impl Class {
     pub fn parse(name: &str) -> Option<Class> {

@@ -256,6 +256,32 @@ fn a_hook_out_of_place_or_out_of_shape_is_one_defect_line_each() {
     assert_eq!(said.lines().count(), 3, "one line each: {said}");
 }
 
+/// A pack that turns on a guard class core does not carry exits 1 with one
+/// defect line naming the class it wrote and the four it could have.
+///
+/// RED-PROOF: on the base the line is the unknown-key one and names no class.
+#[test]
+fn a_guard_class_outside_the_four_is_one_defect_line_naming_the_four() {
+    let copy = Copy::of_fixture("guard-classes");
+    copy.write(
+        "pack.toml",
+        "[pack]\nname = \"ts\"\nversion = \"0.1.0\"\nschema = 3\nguard_classes = [\"shell\"]\n",
+    );
+    let out = run(&["pack", "check", copy.arg()]);
+    assert_eq!(out.status.code(), Some(1));
+    let said = stderr(&out);
+    assert_eq!(said.lines().count(), 1, "one line: {said}");
+    for name in [
+        "`shell`",
+        "shell-trap",
+        "record",
+        "release-ref",
+        "production-write",
+    ] {
+        assert!(said.contains(name), "the line names {name}: {said}");
+    }
+}
+
 #[test]
 fn a_manifest_at_the_previous_schema_exits_one_and_names_the_number() {
     let copy = Copy::of_fixture("schema");

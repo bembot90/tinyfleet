@@ -8,6 +8,7 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
+use crate::guard;
 use crate::registry;
 
 /// The manifest's file name, and the eight slot directories beside it. A tenth
@@ -102,7 +103,7 @@ pub const AGENT_FORMS: [&str; 2] = ["agent.toml", "prompt.template.md"];
 /// refused when the manifest is read rather than when the exec fails.
 pub const PLACEHOLDERS: [&str; 5] = ["entry", "bundle", "run_dir", "fleet", "inputs"];
 
-const PACK_KEYS: [&str; 4] = ["name", "version", "schema", "description"];
+const PACK_KEYS: [&str; 5] = ["name", "version", "schema", "description", "guard_classes"];
 const TOP_TABLES: [&str; 5] = ["pack", "imports", "named_session", "runtime", "config"];
 const RUNTIME_KEYS: [&str; 4] = ["name", "version", "bundle", "run"];
 
@@ -187,6 +188,10 @@ pub struct Manifest {
     pub runtime: Option<Runtime>,
     /// The settings the pack declares, by name.
     pub config: Vec<Setting>,
+    /// `[pack] guard_classes`: which of core's compiled guard classes the pack
+    /// turns on, in the order it wrote them. A pack names a class and never
+    /// writes one, and a pack that names none turns none on.
+    pub guards: Vec<guard::Class>,
 }
 
 /// One thing wrong with a pack. Every variant prints as one line, because the
@@ -208,6 +213,7 @@ pub enum Defect {
     UnknownManifestKey(String),
     MissingManifestKey(String),
     ManifestKeyType { key: String, want: &'static str },
+    UnknownGuardClass(String),
     UnknownRuntimeKey(String),
     RuntimeTemplate { key: String, why: String },
     Schema(i64),
@@ -249,6 +255,12 @@ impl fmt::Display for Defect {
             Defect::ManifestKeyType { key, want } => {
                 write!(f, "{MANIFEST}'s `{key}` is not {want}")
             }
+            Defect::UnknownGuardClass(name) => write!(
+                f,
+                "[pack] guard_classes names `{name}`, which is not a guard class — the classes \
+                 are {}",
+                guard::CLASSES.map(guard::Class::name).join(", ")
+            ),
             Defect::UnknownRuntimeKey(k) => write!(
                 f,
                 "[runtime] holds an unknown key `{k}` — the table is {}",
@@ -512,6 +524,7 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, Vec<Defect>> {
         }
     };
 
+    let guards = parse_guard_classes(&pack, &mut defects);
     let imports = parse_imports(&doc, &mut defects);
     let named_sessions = parse_named_sessions(&doc, &mut defects);
     let runtime = parse_runtime(&doc, &mut defects);
@@ -527,10 +540,40 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, Vec<Defect>> {
             named_sessions,
             runtime,
             config,
+            guards,
         })
     } else {
         Err(defects)
     }
+}
+
+/// `[pack] guard_classes`, each name read by [`guard::Class::parse`]: a name
+/// outside the four is a defect naming it, and a value that is not a list of
+/// strings is one naming the key. The key sits in `[pack]` rather than in a
+/// table of its own so it is never mistaken for the fleet's `[guards]`
+/// switches, which turn a class off and never on.
+fn parse_guard_classes(pack: &toml::Table, defects: &mut Vec<Defect>) -> Vec<guard::Class> {
+    let Some(value) = pack.get("guard_classes") else {
+        return Vec::new();
+    };
+    let names = match value.as_array() {
+        Some(values) if values.iter().all(toml::Value::is_str) => values,
+        _ => {
+            defects.push(Defect::ManifestKeyType {
+                key: "pack.guard_classes".into(),
+                want: "a list of strings",
+            });
+            return Vec::new();
+        }
+    };
+    let mut classes = Vec::new();
+    for name in names.iter().filter_map(toml::Value::as_str) {
+        match guard::Class::parse(name) {
+            Some(class) => classes.push(class),
+            None => defects.push(Defect::UnknownGuardClass(name.to_string())),
+        }
+    }
+    classes
 }
 
 /// Every `{name}` a template holds, in order, or the first reason the text is

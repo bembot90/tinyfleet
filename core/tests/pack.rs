@@ -5,7 +5,9 @@
 mod common;
 
 use common::{fixture_tiny, Defaults, Fixture};
+use fleet_core::guard::{self, Class};
 use fleet_core::pack::{self, Defect};
+use fleet_core::resolve;
 
 fn defects(root: &std::path::Path) -> Vec<Defect> {
     pack::check(root).defects
@@ -1272,6 +1274,117 @@ fn a_malformed_config_declaration_is_refused_naming_the_setting() {
     }
     .to_string();
     assert_eq!(twice, "[config.takeoff.test] is declared twice");
+}
+
+// ---- the guard classes a pack turns on ----------------------------------------
+
+fn with_guards(line: &str) -> Result<pack::Manifest, Vec<Defect>> {
+    pack::parse_manifest(&format!(
+        "[pack]\nname = \"tiny\"\nversion = \"0.1.0\"\nschema = 3\n{line}"
+    ))
+}
+
+/// The doctrine pack's declaration, read as the two classes it names, in the
+/// order it names them; and a manifest without the key turns nothing on.
+///
+/// RED-PROOF: on the base `guard_classes` is an unknown `[pack]` key.
+#[test]
+fn a_pack_names_the_guard_classes_it_turns_on_in_its_pack_table() {
+    let manifest = with_guards("guard_classes = [\"release-ref\", \"production-write\"]\n")
+        .expect("a declaration of two of the four classes is a real manifest");
+    assert_eq!(
+        manifest.guards,
+        vec![Class::ReleaseRef, Class::ProductionWrite]
+    );
+    assert!(
+        with_guards("").expect("no key").guards.is_empty(),
+        "a pack that names none turns none on"
+    );
+    assert!(
+        with_guards("guard_classes = []\n")
+            .expect("an empty list")
+            .guards
+            .is_empty(),
+        "and an empty list is the same answer"
+    );
+}
+
+/// A name outside the four is a defect naming it and the four, and a value
+/// that is not a list of strings is one naming the key — one case each.
+#[test]
+fn a_guard_class_outside_the_four_or_a_value_not_a_list_of_strings_is_a_defect() {
+    let not_a_list = Defect::ManifestKeyType {
+        key: "pack.guard_classes".into(),
+        want: "a list of strings",
+    };
+    for (line, expected) in [
+        (
+            "guard_classes = [\"shell\"]\n",
+            Defect::UnknownGuardClass("shell".into()),
+        ),
+        ("guard_classes = \"release-ref\"\n", not_a_list.clone()),
+        ("guard_classes = [\"record\", 1]\n", not_a_list.clone()),
+    ] {
+        assert_eq!(with_guards(line), Err(vec![expected]), "{line}");
+    }
+    let said = Defect::UnknownGuardClass("shell".into()).to_string();
+    for name in [
+        "`shell`",
+        "shell-trap",
+        "record",
+        "release-ref",
+        "production-write",
+    ] {
+        assert!(said.contains(name), "the line names {name}: {said}");
+    }
+}
+
+/// THE SET `fleet guard` RUNS WITH NO CLASS. Core's two classes with nothing
+/// installed, because the defaults carry no manifest to declare them; every
+/// class an installed pack declares on top of them, once, in the order the
+/// classes run whatever order the packs wrote them in.
+#[test]
+fn the_declared_set_is_core_s_two_and_every_class_an_installed_pack_names() {
+    let defaults = Defaults::new("declared");
+    let packs = defaults.beside().path("packs");
+    std::fs::create_dir_all(&packs).expect("the packs dir is created");
+    let layers = || resolve::layers(&packs, defaults.path()).expect("the layers order");
+
+    assert_eq!(
+        guard::declared(&layers()),
+        Ok(vec![Class::ShellTrap, Class::Record]),
+        "the defaults alone run core's two"
+    );
+
+    let write = |dir: &str, name: &str, line: &str| {
+        let root = packs.join(dir);
+        std::fs::create_dir_all(&root).expect("the pack dir is created");
+        std::fs::write(
+            root.join("pack.toml"),
+            format!("[pack]\nname = \"{name}\"\nversion = \"0.1.0\"\nschema = 3\n{line}"),
+        )
+        .expect("the manifest is written");
+    };
+    write(
+        "one",
+        "one",
+        "guard_classes = [\"production-write\", \"record\"]\n",
+    );
+    write("two", "two", "guard_classes = [\"release-ref\"]\n");
+    assert_eq!(
+        guard::declared(&layers()),
+        Ok(guard::CLASSES.to_vec()),
+        "the union, in class order"
+    );
+
+    // A layer whose manifest does not parse cannot say what it turns on, and
+    // a set read without it would run fewer classes than the fleet declared.
+    write("two", "two", "guard_classes = [\"shell\"]\n");
+    let why = guard::declared(&layers()).expect_err("a defective declaration is not skipped");
+    assert!(
+        why.contains("`two`") && why.contains("`shell`"),
+        "the line names the layer and the defect: {why}"
+    );
 }
 
 mod lessons {

@@ -422,7 +422,7 @@ line, the project's store on its second, then prints the resolved rules:
 
 ```sh
 $ fleet prime
-fleet 0.1.0 — packs: bd, ts; guards: shell-trap on, record on, release-ref on, production-write on
+fleet 0.1.0 — packs: bd, ts; guards: shell-trap on, record on
 store: bd 1.3.0 (adapter bd)
 Five things no verb guesses, each one a lesson somebody already paid for:
 ...

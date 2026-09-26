@@ -263,13 +263,11 @@ fn every_placeholder_of_the_template_resolves() {
         SEAT,
         "a-project",
         TOUCHED,
-        // One line per class, iterated rather than named: the two a pack
-        // wires reach this list without an edit here, and the one switched off
-        // in POLICY is what makes the other three a reading.
+        // One line per class the layers declare: with nothing installed that
+        // is core's two, and the one switched off in POLICY is what makes the
+        // other a reading.
         "- shell-trap: on",
         "- record: off",
-        "- release-ref: on",
-        "- production-write: on",
         // one line out of rules.md, and one out of each schema
         "The commit, never the branch.",
         "\"spec_corrections\"",
@@ -281,6 +279,10 @@ fn every_placeholder_of_the_template_resolves() {
         );
     }
     assert_eq!(rendered.size, Some(body.len()));
+    assert!(
+        !body.contains("- release-ref:") && !body.contains("- production-write:"),
+        "no installed pack declares the other two, so the brief names neither:\n{body}"
+    );
 
     let template = shipped(brief::BRIEF);
     let names = placeholders(&template);
@@ -304,6 +306,34 @@ fn every_placeholder_of_the_template_resolves() {
             .as_deref(),
         "the first line is the one only `{{item_id}}` fills"
     );
+}
+
+/// A pack's `guard_classes` reach the brief's guard lines, after core's two
+/// and in the order the classes run; a declared class the policy switches off
+/// prints as off, and a class nobody declares prints not at all.
+///
+/// RED-PROOF: on the base the brief names all four classes whatever is
+/// installed, so release-ref sits between record and production-write.
+#[test]
+fn the_brief_names_the_classes_an_installed_pack_declares() {
+    let fixture = Fixture::new("declared");
+    fixture.file(
+        "fleet.toml",
+        "[guards]\nproduction-write = { enabled = false }\n",
+    );
+    fixture.file(
+        "packs/opinion/pack.toml",
+        "[pack]\nname = \"opinion\"\nversion = \"0.1.0\"\nschema = 3\n\
+         guard_classes = [\"production-write\"]\n",
+    );
+    fixture.materialize_defaults();
+    let rig = Rig::over(fixture);
+    let body = rig.render(&ordered(), SEAT).body;
+    assert!(
+        body.contains("- shell-trap: on\n- record: on\n- production-write: off\n"),
+        "core's two, then the declared one, switched off:\n{body}"
+    );
+    assert!(!body.contains("- release-ref:"), "{body}");
 }
 
 /// Every `{name}` the template carries, by the renderer's own grammar.

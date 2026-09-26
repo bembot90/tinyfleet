@@ -23,6 +23,10 @@ You switch classes off, and name what the last two refuse on, in
 - **Hook mapping**: where an agent's pre-tool payload keeps the tool and the
   command, and the shape of the refusal it reads. fleet carries Claude
   Code's, and an agent adapter in a pack declares its own.
+- **Declared classes**: the classes `fleet guard` runs when you name none.
+  Shell-trap and record are always among them. Release-ref and
+  production-write are among them when an installed pack names them in its
+  `pack.toml`'s `guard_classes` (see [Packs](packs.md#the-format)).
 
 ## How a guard judges a command
 
@@ -77,6 +81,32 @@ Both exit 0. An `--adapter` fleet cannot read a mapping from is the one
 judging route that does not: it prints one line on standard error and exits
 2, before it reads the payload, and Claude Code reads a pre-tool hook's 2 as
 blocking the call. The lines are under
+[When it refuses](#when-it-refuses).
+
+### Running the declared classes
+
+With `--adapter` and no class, `fleet guard` runs the declared classes
+against the one payload, in the order shell-trap, record, release-ref,
+production-write, and prints the first refusal alone. A declared class you
+switch off in `[guards]` refuses nothing. With `release_ref_glob =
+"refs/heads/release/*"` set and the defaults alone, a push to `release/1.2`
+is let through, because nothing declares release-ref; with a pack installed
+that names release-ref in its `guard_classes`, the same payload is refused:
+
+```sh
+$ echo '{"tool_name":"Bash","tool_input":{"command":"git push origin release/1.2"},"cwd":"."}' | fleet guard --adapter claude-code
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"fleet guard release-ref: A RELEASE REF — release/1.2 -> refs/heads/release/1.2 → push the same commit to a work branch — `git push <remote> <local>:refs/heads/<your-branch>` — and leave `refs/heads/release/*` to the person cutting the release; no escape at this layer — a release is cut by a person from their own shell. The reason: a release ref deploys, so this push is a deployment wearing the clothes of a branch update — and it is one act, with nothing between it and production."}}
+```
+
+It exits 0. A refusal it prints is the one `fleet guard <class>` prints for
+that class, byte for byte. Naming a class runs that class alone, whether or
+not a pack declares it. `fleet guard` with neither a class nor `--adapter`
+exits 2.
+
+When fleet cannot tell which classes are declared — the installed packs do
+not resolve, or an installed pack's `guard_classes` is a defect — it prints
+one line on standard error and exits 2 before it reads the payload, so
+Claude Code blocks the call. The lines are under
 [When it refuses](#when-it-refuses).
 
 An escape counts only when it is among the assignments that open the command
@@ -159,10 +189,19 @@ standalone project the switches are read from the fleet's `fleet.toml` only;
 a switch set in `.fleet/project.toml` or in a `fleet.toml` beside it changes
 nothing.
 
+A switch only turns a class off. Which classes run with no class named is
+the declared set (see
+[Running the declared classes](#running-the-declared-classes)), and a
+`[guards]` table never adds to it.
+
 `fleet prime`, which a session runs at its start, ends its first line with
-each class and whether it is on, for example `guards: shell-trap off, record
-on, release-ref on, production-write on`. "on" says the class runs, not that
-its targets are set.
+each declared class and whether it is on, for example `guards: shell-trap on,
+record on, release-ref off, production-write on` with a pack installed that
+names the last two. With the defaults alone it names shell-trap and record.
+"on" says the class runs, not that its targets are set. When the installed
+packs do not resolve, the line names shell-trap and record alone; when a
+pack's `guard_classes` is a defect, it reads `guards: could not be read — `
+and the reason.
 
 ## The shell-trap class
 
@@ -392,6 +431,11 @@ directory you run it in, the same way a guard walks up from the command's.
 It does not read the `[guards]` switches: a class you switched off still
 reports its checks, and still exits 1 when a target is not set.
 
+`fleet guard --check` with no class reports every declared class, one after
+another, in the order they run, and exits 1 when any target among them is
+not set. When fleet cannot tell which classes are declared, it prints
+`fleet: ` and the reason on standard error and exits 3.
+
 The defaults every fleet gets carry a doctor entry, `guards-installed`, that
 runs `--check` for shell-trap and record. The tiny pack shadows it with one
 that runs all four. Either prints every line and exits with the first
@@ -407,8 +451,11 @@ non-zero status among them. `fleet doctor` runs it (see
 | `--adapter` names an adapter whose `adapter.toml` has no `[hook]` | 2 | ``fleet guard: the agent adapter at <dir> declares no [hook] — a guard has no mapping to read its payload through`` | add the `[hook]` table to the adapter (see [Packs](packs.md#the-format)) |
 | `--adapter` is neither a bare name nor an absolute path | 2 | ``fleet guard: --adapter `<value>` is neither an agent adapter's name nor an absolute path to its directory`` | give the adapter's name, or its directory's absolute path |
 | `--adapter <name>` and the installed packs do not resolve | 2 | ``fleet guard: the agent adapter `<name>` is looked up in the installed packs:`` and the layering's refusal | fix what the refusal names; `fleet pack check` names a pack's defects |
-| `fleet guard` with no class | 2 | `error: the following required arguments were not provided:` and `<CLASS>` | name one of the four classes |
-| `fleet guard` with a class it does not know | 2 | ``error: invalid value 'shell' for '<CLASS>': unknown class `shell` — one of shell-trap, record, release-ref, production-write`` | use one of the names it lists |
+| `fleet guard` with neither a class nor `--adapter` | 2 | `fleet guard: name a class, or an --adapter to run the classes the layers declare` | name one of the four classes, or give `--adapter` |
+| With no class, an installed pack's `guard_classes` is a defect | 2 | ``fleet guard: layer `<pack>` cannot say which guard classes it turns on:`` and the defect | fix the pack; `fleet pack check` names the defect |
+| With no class and an `--adapter` path, the installed packs do not resolve | 2 | `fleet guard: the declared guard classes: the pack layers do not resolve:` and the layering's refusal | fix what the refusal names |
+| `--check` with no class, and fleet cannot tell which classes are declared | 3 | `fleet: ` and the reason | fix what the reason names |
+| `fleet guard` with a class it does not know | 2 | ``error: invalid value 'shell' for '[CLASS]': unknown class `shell` — one of shell-trap, record, release-ref, production-write`` | use one of the names it lists |
 | `--check` finds a target not set | 1 | `<class> <check>: not configured — <key>` | set the key the line names, or leave it unset if the check does not apply to you |
 | A guard hook finds no fleet binary | 2 | ``fleet: this Bash command is blocked: the `fleet guard <class>` hook has no fleet binary to judge it with, …`` and the two lines under it | build fleet, or start the session with `FLEET_BIN` set to the binary's absolute path |
 | Any other command through `bin/fleet` finds no fleet binary | 127 | `fleet: no built binary under <root>/target, and FLEET_BIN is not set.` | build fleet, or set `FLEET_BIN` to the binary's absolute path |

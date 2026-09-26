@@ -616,6 +616,205 @@ fn an_adapter_that_resolves_nowhere_or_declares_no_hook_exits_two_with_one_line(
     }
 }
 
+// ---- the classes the layers declare -------------------------------------------
+
+/// The doctrine-shaped fixture pack and the runtime-shaped one it imports,
+/// installed on `machine` as `fleet pack add` leaves them.
+fn tiny_on(machine: &Path) {
+    for name in ["tiny", "ts"] {
+        fleet_core::test_support::copy_tree(
+            &fleet_core::test_support::fixture_pack(name),
+            &machine.join("packs").join(name),
+        );
+    }
+}
+
+/// The refusal's class, off the reason the built-in's template carries.
+fn class_of(out: &Output) -> Option<String> {
+    let text = String::from_utf8_lossy(&out.stdout);
+    if text.trim().is_empty() {
+        return None;
+    }
+    let reason = decision_of(&text)["permissionDecisionReason"]
+        .as_str()
+        .expect("the reason is a string")
+        .to_string();
+    let class = reason
+        .strip_prefix("fleet guard ")
+        .and_then(|rest| rest.split_once(':'))
+        .map(|(class, _)| class.to_string());
+    Some(class.expect("the reason opens on its class"))
+}
+
+/// RULING 6'S ONE LINE. `fleet guard --adapter claude-code` with no class runs
+/// core's two classes over the defaults alone, and every class an installed
+/// pack declares on top of them: a trap and a bare-id write are refused with
+/// nothing installed and a push to a release ref is not, and with the
+/// doctrine pack installed the push is refused too. Each refusal is the one
+/// the named class prints, byte for byte.
+///
+/// RED-PROOF: on the base a class is a required argument, a usage error.
+#[test]
+fn with_no_class_the_guard_runs_core_s_two_and_every_class_a_pack_declares() {
+    let scratch = Scratch::new("declared");
+    scratch.write("fleet.toml", TARGETS);
+    let machine = a_machine(&scratch);
+    let run = |args: &[&str], command: &str| {
+        let out = judge_on(&machine, &scratch, args, &payload(command, scratch.path()));
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{args:?} on {command}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    let declared = ["--adapter", "claude-code"];
+
+    for (command, named) in [(TRAP, "shell-trap"), (bare(), "record")] {
+        let out = run(&declared, command);
+        assert_eq!(class_of(&out).as_deref(), Some(named), "{command}");
+        assert_eq!(
+            out.stdout,
+            run(&[named], command).stdout,
+            "{command}: the same bytes as the named class"
+        );
+    }
+    assert_eq!(
+        class_of(&run(&declared, PUSH)),
+        None,
+        "nothing installed declares release-ref"
+    );
+
+    tiny_on(&machine);
+    let out = run(&declared, PUSH);
+    assert_eq!(class_of(&out).as_deref(), Some("release-ref"));
+    assert_eq!(out.stdout, run(&["release-ref"], PUSH).stdout);
+    assert_eq!(
+        class_of(&run(&declared, BUCKET_WRITE)).as_deref(),
+        Some("production-write")
+    );
+    assert_eq!(
+        class_of(&run(&declared, TRAP)).as_deref(),
+        Some("shell-trap"),
+        "core's classes still run first"
+    );
+}
+
+/// The fleet's own `[guards]` switch silences a declared class whatever the
+/// pack declares, and leaves its siblings running.
+#[test]
+fn a_declared_class_the_fleet_switches_off_refuses_nothing() {
+    let scratch = Scratch::new("declared-off");
+    scratch.write(
+        "fleet.toml",
+        &format!("[guards]\nrelease-ref.enabled = false\n\n{TARGETS}"),
+    );
+    let machine = a_machine(&scratch);
+    tiny_on(&machine);
+    let declared = ["--adapter", "claude-code"];
+
+    let out = judge_on(
+        &machine,
+        &scratch,
+        &declared,
+        &payload(PUSH, scratch.path()),
+    );
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(class_of(&out), None, "release-ref is switched off");
+    let out = judge_on(
+        &machine,
+        &scratch,
+        &declared,
+        &payload(BUCKET_WRITE, scratch.path()),
+    );
+    assert_eq!(class_of(&out).as_deref(), Some("production-write"));
+}
+
+/// A MIS-DECLARED FLEET FAILS CLOSED, as a mis-wired one does. A pack whose
+/// manifest names a class that is not one of the four cannot say what it
+/// turns on, so the guard with no class exits 2 with one line naming it and
+/// judges nothing. A named class reads no declaration and still judges.
+#[test]
+fn a_declaration_the_guard_cannot_read_exits_two_and_a_named_class_still_runs() {
+    let scratch = Scratch::new("declared-bad");
+    scratch.write("fleet.toml", TARGETS);
+    let machine = a_machine(&scratch);
+    let root = machine.join("packs/opinion");
+    std::fs::create_dir_all(&root).expect("the pack dir is created");
+    std::fs::write(
+        root.join("pack.toml"),
+        "[pack]\nname = \"opinion\"\nversion = \"0.1.0\"\nschema = 3\n\
+         guard_classes = [\"shell\"]\n",
+    )
+    .expect("the manifest is written");
+    let body = payload(TRAP, scratch.path());
+
+    let out = judge_on(&machine, &scratch, &["--adapter", "claude-code"], &body);
+    let said = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(2), "{said}");
+    assert!(out.stdout.is_empty());
+    assert_eq!(said.lines().count(), 1, "one line — {said}");
+    assert!(
+        said.starts_with("fleet guard: ") && said.contains("`shell`"),
+        "{said}"
+    );
+
+    let out = judge_on(&machine, &scratch, &["shell-trap"], &body);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(class_of(&out).as_deref(), Some("shell-trap"));
+}
+
+/// `--check` with no class reports every class in the declared set, one line
+/// per check, and exits on whether every target is configured.
+#[test]
+fn check_with_no_class_reports_every_declared_class() {
+    let scratch = Scratch::new("declared-check");
+    scratch.write("fleet.toml", "[project]\nitem_prefix = \"acme\"\n");
+    let machine = a_machine(&scratch);
+    let check_all = || {
+        Command::new(env!("CARGO_BIN_EXE_fleet"))
+            .args(["guard", "--check"])
+            .current_dir(&scratch.root)
+            .hermetic(&scratch.root.join("home"), &machine, None)
+            .output()
+            .expect("the built binary runs")
+    };
+
+    let out = check_all();
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "core's two are configured — {text}"
+    );
+    let classes: Vec<&str> = text
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert_eq!(
+        classes.iter().filter(|c| **c == "shell-trap").count(),
+        5,
+        "{text}"
+    );
+    assert_eq!(classes.iter().filter(|c| **c == "record").count(), 4);
+    assert_eq!(classes.len(), 9, "core's two and nothing else — {text}");
+
+    tiny_on(&machine);
+    let out = check_all();
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the pack classes' targets are not configured — {text}"
+    );
+    assert!(
+        text.contains("release-ref push-target: not configured")
+            && text.contains("production-write bucket: not configured"),
+        "{text}"
+    );
+}
+
 // ---- the command the project's store declares ---------------------------------
 
 /// The project's `[store] adapter` as an executable that logs each verb it is

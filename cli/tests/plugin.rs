@@ -768,8 +768,7 @@ fn line_one_reads_the_guards_off_the_machine_policy() {
     assert_eq!(
         line,
         format!(
-            "fleet {} — packs: none installed; guards: shell-trap on, record off, \
-             release-ref on, production-write on",
+            "fleet {} — packs: none installed; guards: shell-trap on, record off",
             env!("CARGO_PKG_VERSION")
         )
     );
@@ -783,9 +782,53 @@ fn line_one_reads_the_guards_off_the_machine_policy() {
     let on_toml = t.write("fleet-root/fleet.toml", "[guards]\n");
     t.write("fleet-dir/config.json", &config_json(&on_toml, ""));
     assert!(
-        line_one(&prime(&on_cwd, &on_dir, &[]))
-            .ends_with("shell-trap on, record on, release-ref on, production-write on"),
+        line_one(&prime(&on_cwd, &on_dir, &[])).ends_with("guards: shell-trap on, record on"),
         "an untouched policy leaves every class on"
+    );
+}
+
+/// The guards half names the classes the layers declare: core's two, then
+/// every class an installed pack's `guard_classes` turns on, in the order the
+/// classes run — and one the fleet switches off still prints, as off. The
+/// doctrine-shaped pack declares both of the other two, and the line names all
+/// four.
+///
+/// RED-PROOF: on the base the line names all four whatever is installed, so
+/// release-ref sits between record and production-write in the first half.
+#[test]
+fn line_one_names_the_classes_an_installed_pack_declares() {
+    let s = Scratch::new("declared");
+    s.shipped_defaults();
+    let cwd = s.dir("cwd");
+    let fleet_dir = s.dir("fleet-dir");
+    let fleet_toml = s.write(
+        "fleet-root/fleet.toml",
+        "[guards]\nproduction-write.enabled = false\n",
+    );
+    s.write("fleet-dir/config.json", &config_json(&fleet_toml, ""));
+    s.pack(
+        "the-opinion",
+        "opinion",
+        "guard_classes = [\"production-write\"]\n",
+    );
+
+    let line = line_one(&prime(&cwd, &fleet_dir, &[]));
+    assert!(
+        line.ends_with("guards: shell-trap on, record on, production-write off"),
+        "{line}"
+    );
+
+    std::fs::remove_dir_all(fleet_dir.join("packs/the-opinion")).expect("the pack is removed");
+    for name in ["tiny", "ts"] {
+        copy_dir(
+            &fleet_core::test_support::fixture_pack(name),
+            &fleet_dir.join("packs").join(name),
+        );
+    }
+    let line = line_one(&prime(&cwd, &fleet_dir, &[]));
+    assert!(
+        line.ends_with("guards: shell-trap on, record on, release-ref on, production-write off"),
+        "{line}"
     );
 }
 
@@ -1043,8 +1086,8 @@ fn a_layering_that_refuses_costs_the_names_and_nothing_else() {
         "the refusal stands where the names would be: {first}"
     );
     assert!(
-        first.ends_with("guards: shell-trap on, record on, release-ref on, production-write on"),
-        "and the guards, which the packs say nothing about, are still read: {first}"
+        first.ends_with("guards: shell-trap on, record on"),
+        "and the guards are still read: core's two, which no layering declares: {first}"
     );
     assert!(
         !text.contains("RULES NOBODY REACHES"),
@@ -1099,7 +1142,7 @@ fn a_resolution_that_refuses_reaches_line_one_too() {
         "resolve's refusal stands where the names would be: {first}"
     );
     assert!(
-        first.ends_with("guards: shell-trap on, record on, release-ref on, production-write on"),
+        first.ends_with("guards: shell-trap on, record on"),
         "and the guards are still read: {first}"
     );
     assert!(

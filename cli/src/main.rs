@@ -357,11 +357,17 @@ refusal is the mapping's deny template with the reason filled in, on stdout,
 and the exit is 0 either way, because a non-zero exit from a pre-tool hook is
 read as non-blocking. An --adapter that resolves nowhere, or declares no
 [hook], exits 2 with one line on stderr. --check reports whether each check's
-target is configured.")]
+target is configured.
+
+With no CLASS, --adapter is required and the guard runs the classes the
+layers declare — shell-trap and record always, and every class an installed
+pack names in its [pack] guard_classes — in the order shell-trap, record,
+release-ref, production-write, and prints the first refusal alone. --check
+with no CLASS reports every class in that set.")]
     Guard {
         /// the guard class: shell-trap, record, release-ref or production-write
         #[arg(value_name = "CLASS", value_parser = parse_class)]
-        class: Class,
+        class: Option<Class>,
 
         /// the agent adapter whose [hook] mapping is read
         #[arg(long, value_name = "NAME|PATH")]
@@ -1174,8 +1180,9 @@ fn lock_table(entries: &[lock::Entry]) -> String {
 
 // ---- the guards -------------------------------------------------------------
 //
-// 2 is a caller who did not name a class, the same usage code the pack verbs
-// use, and a guard wired to an adapter whose mapping cannot be read. The
+// 2 is a caller who named neither a class nor an adapter, the same usage code
+// the pack verbs use, a guard wired to an adapter whose mapping cannot be
+// read, and one whose layers cannot say which classes they declare. The
 // JUDGING path has no other code: a refusal is data on stdout and the exit is 0
 // on every path, because a non-zero exit from a pre-tool hook is read as
 // non-blocking and a guard that signalled by status would fail open exactly
@@ -1186,9 +1193,28 @@ fn lock_table(entries: &[lock::Entry]) -> String {
 // read the payload it was wired for blocks every call until it is wired right,
 // rather than letting each one through unjudged.
 
-fn guard_command(ui: &Ui, class: Class, adapter: Option<&str>, check: bool) -> Result<Exit> {
+fn guard_command(
+    ui: &Ui,
+    class: Option<Class>,
+    adapter: Option<&str>,
+    check: bool,
+) -> Result<Exit> {
     if check {
-        return Ok(guard_check(ui, class));
+        let classes = match class {
+            Some(class) => vec![class],
+            None => declared_classes().map_err(|why| anyhow::anyhow!(why))?,
+        };
+        return Ok(guard_check(ui, &classes));
+    }
+    // A named class runs alone, exactly as it always has. With none, the set is
+    // the layers', and it is ruling 6's one line — `--adapter` names whose
+    // payload the hook hands over — so a bare `fleet guard` is still a caller
+    // who said nothing.
+    if class.is_none() && adapter.is_none() {
+        eprintln!(
+            "fleet guard: name a class, or an --adapter to run the classes the layers declare"
+        );
+        return Ok(Exit::Usage);
     }
     let map = match hook_map(adapter) {
         Ok(map) => map,
@@ -1197,7 +1223,31 @@ fn guard_command(ui: &Ui, class: Class, adapter: Option<&str>, check: bool) -> R
             return Ok(Exit::Usage);
         }
     };
-    Ok(guard_run(class, &map))
+    let classes = match class {
+        Some(class) => vec![class],
+        None => match declared_classes() {
+            Ok(classes) => classes,
+            Err(why) => {
+                eprintln!("fleet guard: {why}");
+                return Ok(Exit::Usage);
+            }
+        },
+    };
+    Ok(guard_run(&classes, &map))
+}
+
+/// The classes the machine's layers declare, through the same packs and
+/// defaults every other reader of a layering resolves: core's two and every
+/// installed pack's `guard_classes`. A layering that does not resolve is an
+/// `Err`, one line — which classes are in force is exactly what it cannot say.
+fn declared_classes() -> Result<Vec<Class>, String> {
+    let machine_dir = platform::machine_dir();
+    let packs = fleet_core::item::brief::Packs::under(
+        &machine_dir.join("packs"),
+        &machine_dir.join(defaults::DIR),
+    )
+    .map_err(|stop| format!("the declared guard classes: {}", stop.message))?;
+    guard::declared(&packs.layers)
 }
 
 /// The mapping a payload is read and a refusal written through: the built-in
@@ -1265,7 +1315,10 @@ fn built_in_hook() -> Result<HookMap, String> {
         .map_err(|why| format!("the built-in {} hook mapping: {why}", claude_code::NAME))
 }
 
-fn guard_run(class: Class, map: &HookMap) -> Exit {
+/// The payload read once and judged by each class in turn, in the order given:
+/// THE FIRST REFUSAL IS THE ONE PRINTED, because a hook's stdout is one
+/// document and a second would make it unreadable.
+fn guard_run(classes: &[Class], map: &HookMap) -> Exit {
     let mut body = String::new();
     if std::io::stdin().read_to_string(&mut body).is_err() {
         return Exit::Done;
@@ -1274,18 +1327,36 @@ fn guard_run(class: Class, map: &HookMap) -> Exit {
         return Exit::Done;
     };
     let cwd = payload.cwd.as_deref().map(Path::new);
-    let mut policy = resolve_policy(class, cwd);
-    caller_readings(class, &payload.command, cwd, &mut policy);
-    // A defect in the reader allows, which is the contract the shell-trap class
-    // states and the reason it has no raw-text fallback.
-    let verdict = std::panic::catch_unwind(|| guard::judge(class, &payload.command, &policy));
-    if let Ok(Verdict::Refused(denial)) = verdict {
-        println!("{}", map.deny(&denial.reason()));
+    for &class in classes {
+        let mut policy = resolve_policy(class, cwd);
+        caller_readings(class, &payload.command, cwd, &mut policy);
+        // A defect in the reader allows, which is the contract the shell-trap
+        // class states and the reason it has no raw-text fallback.
+        let verdict = std::panic::catch_unwind(|| guard::judge(class, &payload.command, &policy));
+        if let Ok(Verdict::Refused(denial)) = verdict {
+            println!("{}", map.deny(&denial.reason()));
+            break;
+        }
     }
     Exit::Done
 }
 
-fn guard_check(ui: &Ui, class: Class) -> Exit {
+/// One line per check of each class, and 1 where any class has a target
+/// that is not configured.
+fn guard_check(ui: &Ui, classes: &[Class]) -> Exit {
+    let mut all = true;
+    for &class in classes {
+        all &= class_check(ui, class);
+    }
+    if all {
+        Exit::Done
+    } else {
+        Exit::Refused
+    }
+}
+
+/// One class's lines, and whether every target it needs is configured.
+fn class_check(ui: &Ui, class: Class) -> bool {
     let policy = resolve_policy(class, None);
     let mut all = true;
     for check in class.checks() {
@@ -1320,11 +1391,7 @@ fn guard_check(ui: &Ui, class: Class) -> Exit {
             }
         }
     }
-    if all {
-        Exit::Done
-    } else {
-        Exit::Refused
-    }
+    all
 }
 
 // A DECLARED PROJECT FIRST, then the embedded file, then neither. The walk is

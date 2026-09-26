@@ -440,6 +440,7 @@ name = "tiny"          # required; the installed directory's name
 version = "0.1.0"      # optional
 schema = 3             # required, and 3
 description = "..."    # optional
+guard_classes = ["release-ref", "production-write"]  # optional; see below
 
 [imports.ts]           # one table per import, keyed by the import's name
 source = "../ts"       # required
@@ -459,7 +460,20 @@ type = "string"
 `[[named_session]]` tables are the fifth: each needs `template` and `mode`, and
 takes an optional `scope`. No verb acts on them.
 
-`[pack]` takes no keys beyond those four. `[runtime]` takes no keys beyond its
+`[pack]` takes no keys beyond those five. `guard_classes` names the guard
+classes the pack turns on, from shell-trap, record, release-ref and
+production-write; shell-trap and record run in every fleet whether a pack
+names them or not. `fleet guard` with no class runs the classes the
+installed packs name (see
+[Guards](guards.md#running-the-declared-classes)). A name outside the four is
+a defect, and so is a value that is not a list of strings:
+
+```text
+p: [pack] guard_classes names `shell`, which is not a guard class — the classes are shell-trap, record, release-ref, production-write
+p: pack.toml's `pack.guard_classes` is not a list of strings
+```
+
+`[runtime]` takes no keys beyond its
 four, and its `bundle` and `run` lines use only the placeholders `{entry}`,
 `{bundle}`, `{run_dir}`, `{fleet}` and `{inputs}`. What fleet does with the
 runtime is on [Runs and workflows](runs.md).
