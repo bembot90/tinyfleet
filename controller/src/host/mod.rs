@@ -30,6 +30,8 @@ use std::time::Duration;
 
 pub mod tmux;
 
+pub use tmux::TmuxHost;
+
 /// The socket fleet's server listens on: one per controller, per machine.
 pub const SOCKET: &str = "fleet";
 
@@ -134,6 +136,71 @@ pub trait Host {
 
     /// The host program's own version, or `None` when it will not say.
     fn version(&self) -> Option<String>;
+}
+
+/// The host where none resolved: every verb refuses with the resolution's own
+/// cause, and the listing is unreadable with it.
+///
+/// A caller that could not resolve its host still holds one, so the seams it
+/// threads carry a host either way; a loop publishes the same cause as effects
+/// off and never reaches a verb, and a verb that does reach one fails naming
+/// why there is no host rather than naming a program nobody ran.
+#[derive(Clone, Debug)]
+pub struct Unresolved {
+    pub cause: String,
+}
+
+impl Host for Unresolved {
+    fn new_session(
+        &self,
+        _name: &str,
+        _cwd: &Path,
+        _argv: &[String],
+        _env: &[(String, String)],
+    ) -> Result<(), String> {
+        Err(self.cause.clone())
+    }
+
+    fn send(&self, _name: &str, _text: &str) -> Result<(), String> {
+        Err(self.cause.clone())
+    }
+
+    fn keys(&self, _name: &str, _keys: &[&str]) -> Result<(), String> {
+        Err(self.cause.clone())
+    }
+
+    fn capture(&self, _name: &str) -> Result<String, String> {
+        Err(self.cause.clone())
+    }
+
+    fn kill(&self, _name: &str) -> Result<(), String> {
+        Err(self.cause.clone())
+    }
+
+    fn list(&self) -> HostRead {
+        HostRead::Unreadable {
+            cause: self.cause.clone(),
+        }
+    }
+
+    /// A command that fails at once and touches no terminal: there is no
+    /// session to attach to.
+    fn attach(&self, _name: &str, _write: bool) -> Command {
+        Command::new("/usr/bin/false")
+    }
+
+    fn version(&self) -> Option<String> {
+        None
+    }
+}
+
+/// The host a process resolves for itself: fleet's own server through the
+/// resolved binary, or [`Unresolved`] carrying why there is none.
+pub fn resolve(child_path: &str) -> Box<dyn Host> {
+    match tmux::TmuxHost::resolve(child_path) {
+        Ok(host) => Box::new(host),
+        Err(cause) => Box::new(Unresolved { cause }),
+    }
 }
 
 #[cfg(test)]

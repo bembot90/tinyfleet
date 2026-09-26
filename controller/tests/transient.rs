@@ -25,10 +25,11 @@ use fleet_controller::adapter::claude_code::ClaudeCode;
 use fleet_controller::adapter::{Agent, RemoveAnswer, RosterRead};
 use fleet_controller::config;
 use fleet_controller::events;
+use fleet_controller::host::{Host, HostRead};
 use fleet_controller::platform;
 use fleet_controller::policy::{self, Policy};
 use fleet_controller::sessions;
-use fleet_controller::test_support::FakeClock;
+use fleet_controller::test_support::{self, FakeClock, FakeHost};
 use fleet_controller::transient::{self, Machine, Readings, Refusal, Spawn};
 use fleet_core::seat::identity::SeatId;
 use std::path::{Path, PathBuf};
@@ -133,8 +134,108 @@ fn copy_tree(from: &Path, to: &Path) {
     }
 }
 
+/// The host a rig's spawns run their sessions on: a [`FakeHost`] that also
+/// does, as a session comes up, what the stub's start branch did while starts
+/// were the agent's own `--bg` children — so the witnesses the arms read stay
+/// the same files.
+///
+/// It records the argv after the program one per line, what the seat's local
+/// settings held as the session came up (the witness that they were written
+/// BEFORE the start), and a `start` line in the call log; it holds inside the
+/// start while the gate stands; it makes a
+/// branch in the worktree where the arm asked for one; and it ends the pane
+/// with the status the arm set, as a session that exits at once does.
+struct RigHost {
+    fake: FakeHost,
+    calls: PathBuf,
+    gate: PathBuf,
+    start_argv: PathBuf,
+    settings_at_start: PathBuf,
+    start_exit: PathBuf,
+    start_makes_branch: PathBuf,
+}
+
+impl Host for RigHost {
+    fn new_session(
+        &self,
+        name: &str,
+        cwd: &Path,
+        argv: &[String],
+        env: &[(String, String)],
+    ) -> Result<(), String> {
+        let mut recorded = String::new();
+        for arg in argv.iter().skip(1) {
+            recorded.push_str(arg);
+            recorded.push('\n');
+        }
+        std::fs::write(&self.start_argv, recorded).expect("the argv is recorded");
+        match std::fs::read_to_string(cwd.join(".claude/settings.local.json")) {
+            Ok(body) => std::fs::write(&self.settings_at_start, body)
+                .expect("the settings at start are recorded"),
+            Err(_) => {
+                let _ = std::fs::remove_file(&self.settings_at_start);
+            }
+        }
+        let mut calls = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.calls)
+            .expect("the call log opens");
+        use std::io::Write as _;
+        writeln!(calls, "start").expect("the call is logged");
+        let mut held = 0;
+        while self.gate.is_file() && held < 200 {
+            held += 1;
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if let Ok(branch) = std::fs::read_to_string(&self.start_makes_branch) {
+            if !branch.trim().is_empty() {
+                git_at(cwd, &["branch", branch.trim()]);
+            }
+        }
+        self.fake.new_session(name, cwd, argv, env)?;
+        if let Some(code) = std::fs::read_to_string(&self.start_exit)
+            .ok()
+            .and_then(|code| code.trim().parse::<i32>().ok())
+            .filter(|code| *code != 0)
+        {
+            self.fake.end(name, Some(code));
+        }
+        Ok(())
+    }
+
+    fn send(&self, name: &str, text: &str) -> Result<(), String> {
+        self.fake.send(name, text)
+    }
+
+    fn keys(&self, name: &str, keys: &[&str]) -> Result<(), String> {
+        self.fake.keys(name, keys)
+    }
+
+    fn capture(&self, name: &str) -> Result<String, String> {
+        self.fake.capture(name)
+    }
+
+    fn kill(&self, name: &str) -> Result<(), String> {
+        self.fake.kill(name)
+    }
+
+    fn list(&self) -> HostRead {
+        self.fake.list()
+    }
+
+    fn attach(&self, name: &str, write: bool) -> std::process::Command {
+        self.fake.attach(name, write)
+    }
+
+    fn version(&self) -> Option<String> {
+        self.fake.version()
+    }
+}
+
 /// A whole machine in a temp directory: a scratch primary with a trunk ref, a
-/// worktrees directory, a machine directory and one stub agent.
+/// worktrees directory, a machine directory, one stub agent and the host its
+/// spawns run on.
 struct Rig {
     root: PathBuf,
     primary: PathBuf,
@@ -144,6 +245,10 @@ struct Rig {
     stub: PathBuf,
     roster: PathBuf,
     roster_fails: PathBuf,
+    /// While this file stands, the FLEET'S OWN listing fails — the one read under
+    /// the adapter's own directory — and a seat's listing under its own still
+    /// answers, which is what a start's watch reads.
+    fleet_roster_fails: PathBuf,
     /// Every configuration directory a listing was asked under, appended one per
     /// line by the stub: the seam that says WHICH directory a read was made
     /// through.
@@ -151,7 +256,6 @@ struct Rig {
     stop_keeps_the_roster: PathBuf,
     calls: PathBuf,
     start_argv: PathBuf,
-    start_cwd: PathBuf,
     /// What the child could read of the seat's local settings when it came up,
     /// which is the only witness that the write happened BEFORE the start.
     settings_at_start: PathBuf,
@@ -171,6 +275,7 @@ struct Rig {
     /// costs no wall clock; the listings inside it are real children and their
     /// number is the same either way.
     clock: FakeClock,
+    host: RigHost,
 }
 
 impl Rig {
@@ -189,11 +294,11 @@ impl Rig {
             stub: root.join("agent-stub"),
             roster: root.join("roster.json"),
             roster_fails: root.join("roster-fails"),
+            fleet_roster_fails: root.join("fleet-roster-fails"),
             listing_dirs: root.join("listing-dirs"),
             stop_keeps_the_roster: root.join("stop-keeps-the-roster"),
             calls: root.join("calls"),
             start_argv: root.join("start-argv"),
-            start_cwd: root.join("start-cwd"),
             settings_at_start: root.join("settings-at-start"),
             nudge_argv: root.join("nudge-argv"),
             start_exit: root.join("start-exit"),
@@ -204,12 +309,22 @@ impl Rig {
             start_makes_branch: root.join("start-makes-branch"),
             gate: root.join("gate"),
             clock: FakeClock::new(),
+            host: RigHost {
+                fake: FakeHost::new(),
+                calls: root.join("calls"),
+                gate: root.join("gate"),
+                start_argv: root.join("start-argv"),
+                settings_at_start: root.join("settings-at-start"),
+                start_exit: root.join("start-exit"),
+                start_makes_branch: root.join("start-makes-branch"),
+            },
             root,
         };
         for dir in [&rig.worktrees, &rig.machine, &rig.home] {
             std::fs::create_dir_all(dir).expect("the fixture directory is created");
         }
         copy_tree(&trunk_template(), &rig.primary);
+        test_support::plant_operator_state(&rig.home);
         rig.write_stub();
         rig.roster("[]");
         rig.write_config("[]");
@@ -248,9 +363,10 @@ impl Rig {
     /// The stub. Every branch records the call it was given, so what a verb
     /// passed is read from what the child received.
     ///
-    /// The `--bg` branch runs in the seat's own worktree, which is what lets an
-    /// arm ask it to make a branch there before it fails — the case a rollback
-    /// must not delete.
+    /// A start is no branch of the stub's: the session comes up on the rig's
+    /// host ([`RigHost`]), which records what the start branch used to. A stop
+    /// clears the listing down to the arrivals every listing carries, so a
+    /// spawn after a retire is still believed.
     fn write_stub(&self) {
         let body = format!(
             "#!/bin/sh\n\
@@ -264,6 +380,7 @@ impl Rig {
              case \"$1\" in\n\
              \x20 agents)\n\
              \x20   [ -f '{roster_fails}' ] && exit 1\n\
+             \x20   [ -f '{fleet_roster_fails}' ] && [ \"$CLAUDE_CONFIG_DIR\" = '{fleet_dir}' ] && exit 1\n\
              \x20   printf '%s\\n' \"$CLAUDE_CONFIG_DIR\" >> '{listing_dirs}'\n\
              \x20   if [ -f \"$CLAUDE_CONFIG_DIR/roster.json\" ]; then\n\
              \x20     /bin/cat \"$CLAUDE_CONFIG_DIR/roster.json\"\n\
@@ -271,23 +388,13 @@ impl Rig {
              \x20     /bin/cat '{roster}'\n\
              \x20   fi\n\
              \x20   ;;\n\
-             \x20 --bg)\n\
-             \x20   printf '%s\\n' \"$@\" > '{start_argv}'\n\
-             \x20   pwd > '{start_cwd}'\n\
-             \x20   /bin/cat .claude/settings.local.json > '{settings_at_start}' 2>/dev/null\n\
-             \x20   echo \"start\" >> '{calls}'\n\
-             \x20   gate\n\
-             \x20   b=$(/bin/cat '{branch}' 2>/dev/null)\n\
-             \x20   [ -n \"$b\" ] && git branch \"$b\"\n\
-             \x20   exit $(/bin/cat '{start_exit}' 2>/dev/null || echo 0)\n\
-             \x20   ;;\n\
              \x20 stop)\n\
              \x20   echo \"stop $2\" >> '{calls}'\n\
              \x20   gate\n\
              \x20   if [ ! -f '{stop_keeps}' ]; then\n\
-             \x20     printf '[]' > '{roster}'\n\
+             \x20     printf '%s' '{cleared}' > '{roster}'\n\
              \x20     [ -f \"$CLAUDE_CONFIG_DIR/roster.json\" ] \\\n\
-             \x20       && printf '[]' > \"$CLAUDE_CONFIG_DIR/roster.json\"\n\
+             \x20       && printf '%s' '{cleared}' > \"$CLAUDE_CONFIG_DIR/roster.json\"\n\
              \x20   fi\n\
              \x20   exit $(/bin/cat '{stop_exit}' 2>/dev/null || echo 0)\n\
              \x20   ;;\n\
@@ -305,16 +412,14 @@ impl Rig {
              esac\n",
             roster = self.roster.display(),
             roster_fails = self.roster_fails.display(),
+            fleet_roster_fails = self.fleet_roster_fails.display(),
+            fleet_dir = self.home.join(".claude").display(),
             listing_dirs = self.listing_dirs.display(),
             stop_keeps = self.stop_keeps_the_roster.display(),
-            start_argv = self.start_argv.display(),
-            start_cwd = self.start_cwd.display(),
-            settings_at_start = self.settings_at_start.display(),
             nudge_argv = self.nudge_argv.display(),
             calls = self.calls.display(),
-            branch = self.start_makes_branch.display(),
             gate = self.gate.display(),
-            start_exit = self.start_exit.display(),
+            cleared = test_support::with_arrivals("[]"),
             stop_exit = self.stop_exit.display(),
             rm_exit = self.rm_exit.display(),
             rm_stdout = self.rm_stdout.display(),
@@ -338,8 +443,10 @@ impl Rig {
         )
     }
 
+    /// The fleet's own listing: the arm's rows and the arrivals ([`test_support::with_arrivals`]).
     fn roster(&self, body: &str) -> &Rig {
-        std::fs::write(&self.roster, body).expect("the roster is written");
+        std::fs::write(&self.roster, test_support::with_arrivals(body))
+            .expect("the roster is written");
         self
     }
 
@@ -347,7 +454,11 @@ impl Rig {
     /// seam that lets an arm tell the two reads apart.
     fn roster_under(&self, config_dir: &Path, body: &str) -> &Rig {
         std::fs::create_dir_all(config_dir).expect("the configuration directory is made");
-        std::fs::write(config_dir.join("roster.json"), body).expect("the roster is written");
+        std::fs::write(
+            config_dir.join("roster.json"),
+            test_support::with_arrivals(body),
+        )
+        .expect("the roster is written");
         self
     }
 
@@ -656,6 +767,7 @@ fn machine_reading<'a>(
     Machine {
         machine_dir: &rig.machine,
         agent,
+        host: &rig.host,
         policy,
         project: "a-project",
         primary: &rig.primary,
@@ -965,7 +1077,9 @@ fn the_transient_cap_refuses_when_more_seats_are_mid_turn_than_the_cap() {
 fn an_unreadable_roster_makes_the_cap_leg_could_not_tell_and_the_spawn_proceeds() {
     let rig = Rig::new("belt-unreadable");
     let policy = a_policy();
-    rig.seam(&rig.roster_fails, "");
+    // The FLEET'S listing, and not the new seat's own: a start is believed
+    // only off the listing under the seat's directory, which is another read.
+    rig.seam(&rig.fleet_roster_fails, "");
 
     let spawn = spawned(&rig, &policy, 0.1, 8, "/work")
         .expect("a cap leg nobody could read refuses nothing");
@@ -1244,10 +1358,11 @@ fn a_spawn_makes_a_detached_worktree_a_row_and_a_session_and_prints_its_name() {
         vec![("a-project".to_string(), worktree.display().to_string())]
     );
 
-    // The start: the file's text is the LAST argument, and the posture is the
-    // transient one rather than a named seat's.
+    // The start: an interactive session, the file's text is the LAST argument,
+    // and the posture is the transient one rather than a named seat's.
     let argv = rig.start_argv();
-    assert_eq!(argv.first().map(String::as_str), Some("--bg"));
+    assert_eq!(argv.first().map(String::as_str), Some("--name"));
+    assert!(!argv.iter().any(|word| word == "--bg"), "{argv:?}");
     assert!(
         rig.start_argv_text()
             .ends_with("the first turn\nand its second line\n\n"),
@@ -1359,14 +1474,14 @@ fn two_concurrent_spawns_take_two_different_names() {
     );
 }
 
-/// A14 in this verb's clothes: a start that exits inside its watch window rolls
-/// the worktree and the row back, and NEVER a branch.
+/// A start whose session exits inside its watch window rolls the worktree and
+/// the row back, leaves nothing on the host, and NEVER deletes a branch.
 #[test]
 fn a_start_that_fails_rolls_back_the_worktree_and_the_row_and_never_the_branch() {
     let rig = Rig::new("spawn-rollback");
     let policy = a_policy();
     rig.seam(&rig.start_exit, "1\n");
-    // The stub makes this branch in the worktree it was started in, BEFORE it
+    // The session makes this branch in the worktree it was started in, BEFORE it
     // fails — which is the commit-bearing ref a rollback must leave alone.
     rig.seam(&rig.start_makes_branch, "a-branch-the-seat-made\n");
 
@@ -1387,7 +1502,7 @@ fn a_start_that_fails_rolls_back_the_worktree_and_the_row_and_never_the_branch()
                 .as_str()
                 .expect("the crash names the output file")
         ),
-        "the refusal names the file the adapter wrote: {}",
+        "the refusal names the capture the start kept: {}",
         refusal.message
     );
     assert!(
@@ -1412,6 +1527,11 @@ fn a_start_that_fails_rolls_back_the_worktree_and_the_row_and_never_the_branch()
     assert!(
         rig.table().sessions.is_empty(),
         "and no session-table row was opened"
+    );
+    assert_eq!(
+        rig.host.list(),
+        HostRead::Readable(Vec::new()),
+        "and the failed start's session is not left on the host"
     );
 
     // THE BRANCH SURVIVES. This is the assertion the rollback exists to keep

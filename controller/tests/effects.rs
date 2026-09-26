@@ -8,23 +8,34 @@
 //! writes, which records the argv, the cwd and the `PATH` it received into files
 //! the arms read. What a call passed is then a reading of what the child got and
 //! never of what a log line said it sent.
+//!
+//! A START runs nothing of the adapter's: `launch` answers the argv and the
+//! environment, and the session is started on the rig's [`FakeHost`], whose
+//! record of it is what a start arm reads. The stub answers the listing a
+//! start's watch reads from `roster.json`, which lists the first few panes a
+//! fresh fake host hands out ([`test_support::with_arrivals`]), so every start
+//! here is believed unless an arm says otherwise.
 
 use fleet_controller::adapter::claude_code::{self, ClaudeCode};
-use fleet_controller::adapter::{Agent, AgentRow, RemoveAnswer, StartOutcome, StartSpec};
+use fleet_controller::adapter::{Agent, AgentRow, RemoveAnswer, RosterRead, StartSpec};
 use fleet_controller::decide::{self, decide, SeatInput, Verdict};
-use fleet_controller::effect::{self, Target};
+use fleet_controller::effect::{self, Target, Watched};
 use fleet_controller::events::{self, EventLog};
+use fleet_controller::host::{self, Host};
 use fleet_controller::observe::RosterState;
 use fleet_controller::platform;
 use fleet_controller::policy::{self, Policy};
 use fleet_controller::sessions::{self, SessionRow, Table};
+use fleet_controller::test_support::{self, Answers, FakeHost, Sent, StubAgent};
 use fleet_core::seat::identity::SeatId;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// A whole machine in a temp directory, with one stub agent on it.
+/// A whole machine in a temp directory, with one stub agent on it and one fake
+/// host its starts run on.
 struct Rig {
     root: PathBuf,
+    host: FakeHost,
 }
 
 /// One executable `name` in `dir`, for an arm that needs a name on a search
@@ -45,9 +56,43 @@ impl Rig {
             std::env::temp_dir().join(format!("fleet-effects-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("wt")).expect("the worktree is made");
-        let rig = Rig { root };
+        let rig = Rig {
+            root,
+            host: FakeHost::new(),
+        };
         rig.write_stub(0);
+        // The rows a fresh fake host's first panes are listed as, by pid: the
+        // listing every start's watch reads, and no seat's worktree.
+        write(&rig.roster_path(), &test_support::with_arrivals("[]"));
         rig
+    }
+
+    /// What the stub answers `agents` with.
+    fn roster_path(&self) -> PathBuf {
+        self.root.join("roster.json")
+    }
+
+    /// The one session a start on this rig's host brings up for [`S1`].
+    fn session(&self) -> String {
+        host::session_for(&s1())
+    }
+
+    /// The argv [`S1`]'s session was started with on this rig's host.
+    fn started_argv(&self) -> Vec<String> {
+        self.host
+            .session(&self.session())
+            .expect("the start left its session on the host")
+            .argv
+    }
+
+    /// The branch every stub here opens with: the listing a start's watch
+    /// reads, answered from [`Rig::roster_path`] and recording nothing, so an
+    /// arm reading the argv reads the last EFFECT's and never a listing's.
+    fn agents_branch(&self) -> String {
+        format!(
+            "[ \"$1\" = agents ] && {{ cat '{}'; exit 0; }}\n",
+            self.roster_path().display()
+        )
     }
 
     fn machine(&self) -> PathBuf {
@@ -85,30 +130,14 @@ impl Rig {
     fn write_stub(&self, code: i32) {
         let body = format!(
             "#!/bin/sh\n\
+             {agents}\
              printf '%s\\n' \"$@\" > '{argv}'\n\
              pwd > '{cwd}'\n\
              printf '%s' \"$PATH\" > '{path}'\n\
              echo 'the stub spoke on stdout'\n\
              echo 'the stub spoke on stderr' >&2\n\
              exit {code}\n",
-            argv = self.argv_path().display(),
-            cwd = self.cwd_path().display(),
-            path = self.path_path().display(),
-        );
-        write(&self.stub_path(), &body);
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(self.stub_path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    /// The same stub, kept alive past any watch window an arm here sets.
-    fn write_slow_stub(&self) {
-        let body = format!(
-            "#!/bin/sh\n\
-             printf '%s\\n' \"$@\" > '{argv}'\n\
-             pwd > '{cwd}'\n\
-             printf '%s' \"$PATH\" > '{path}'\n\
-             echo 'the stub spoke on stdout'\n\
-             sleep 30\n",
+            agents = self.agents_branch(),
             argv = self.argv_path().display(),
             cwd = self.cwd_path().display(),
             path = self.path_path().display(),
@@ -159,7 +188,11 @@ impl Rig {
     /// for the NAMES it carries and one for two of their VALUES.
     fn write_env_recording_stub(&self) -> PathBuf {
         let leaked = self.root.join("leaked");
-        let body = format!("#!/bin/sh\nenv > '{}'\n", leaked.display());
+        let body = format!(
+            "#!/bin/sh\n{}env > '{}'\n",
+            self.agents_branch(),
+            leaked.display()
+        );
         write(&self.stub_path(), &body);
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(self.stub_path(), std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -316,6 +349,22 @@ fn a_row_for(seat: &str, worktree: &str, dispatched_at: u64, session: Option<&st
     }
 }
 
+/// The start every launch arm here asks for, in [`Rig::worktree`] and under the
+/// adapter's own configuration directory, which is a named seat's start.
+fn a_spec(worktree: &str) -> StartSpec {
+    StartSpec {
+        seat: S1.to_string(),
+        worktree: worktree.to_string(),
+        name: "orla".to_string(),
+        actor: format!("seat:{S1}"),
+        model: "claude-opus-5".to_string(),
+        posture: "auto".to_string(),
+        first_turn: "/wake s1".to_string(),
+        plugin_dir: None,
+        config_dir: None,
+    }
+}
+
 /// The position of a flag in an argv, and the element after it.
 fn flag_value<'a>(argv: &'a [String], flag: &str) -> &'a str {
     let at = argv
@@ -423,31 +472,19 @@ mod lessons {
     /// available model, so the model is mandatory on every call and is what
     /// keeps a seat in the class its configuration declares.
     ///
-    /// Read from what the CHILD received, and positionally: a `--name` given an
-    /// empty value would swallow the flag after it, so the arm asserts that the
-    /// element after the name is still `--model`.
+    /// Read off the argv the launch hands the host, which IS the pane's process
+    /// (E2), and positionally: a `--name` given an empty value would swallow
+    /// the flag after it, so the arm asserts that the element after the name is
+    /// still `--model`.
     #[test]
     fn start_names_the_model() {
         let rig = Rig::new("start-names-the-model");
-        let worktree = rig.worktree().display().to_string();
-        let spec = StartSpec {
-            seat: S1.to_string(),
-            worktree: worktree.clone(),
-            name: "orla".to_string(),
-            actor: format!("seat:{S1}"),
-            model: "claude-opus-5".to_string(),
-            posture: "auto".to_string(),
-            first_turn: "/wake s1".to_string(),
-            plugin_dir: None,
-            config_dir: None,
-        };
-        let outcome = rig.agent().start(&spec, Duration::from_secs(30));
-        assert!(
-            matches!(outcome, StartOutcome::Started { .. }),
-            "a stub that exits 0 inside the window is a start that did not fail: {outcome:?}"
-        );
-
-        let argv = rig.argv();
+        let spec = a_spec(&rig.worktree().display().to_string());
+        let argv = rig
+            .agent()
+            .launch(&spec)
+            .expect("an adapter with its binary resolved launches")
+            .argv;
         assert_eq!(flag_value(&argv, "--model"), "claude-opus-5");
         assert_eq!(flag_value(&argv, "--name"), "orla");
         let name_at = argv.iter().position(|a| a == "--name").unwrap();
@@ -456,17 +493,15 @@ mod lessons {
             Some("--model"),
             "the flag after the name's value is --model, not its argument: {argv:?}"
         );
-        assert!(argv.iter().any(|a| a == "--bg"));
         assert_eq!(argv.last().map(String::as_str), Some("/wake s1"));
-        assert_eq!(rig.recorded_cwd(), rig.canonical_worktree());
 
-        // The control on the model: a different model reaches the child as that
+        // The control on the model: a different model reaches the argv as that
         // one, so the reading above is the spec's and not a constant in the
         // adapter.
         let mut other = spec.clone();
         other.model = "claude-sonnet-5".to_string();
-        rig.agent().start(&other, Duration::from_secs(30));
-        assert_eq!(flag_value(&rig.argv(), "--model"), "claude-sonnet-5");
+        let argv = rig.agent().launch(&other).expect("it launches").argv;
+        assert_eq!(flag_value(&argv, "--model"), "claude-sonnet-5");
     }
 
     /// claude-code A6 — identity and invocation address are different values:
@@ -491,6 +526,7 @@ mod lessons {
         let mut log = rig.log();
         let collected = effect::rest(
             &rig.agent(),
+            &rig.host,
             &a_policy(),
             &a_target(&worktree, Some("ab12")),
             &mut log,
@@ -516,73 +552,314 @@ mod lessons {
         );
     }
 
-    /// claude-code A14 — a start that cannot start prints its reason and exits
-    /// non-zero inside the watch window, leaving no roster row. A controller
-    /// that reads its child's own exit status collects that failure for free and
-    /// turns it into a failed outcome with a logged cause.
+    /// The operator's own state file as a seed reads it: the three onboarding
+    /// keys, a theme, a `projects` table of the operator's own trusts, and a key
+    /// the seed has no business copying.
+    const OPERATOR_STATE: &str = r#"{
+        "hasCompletedOnboarding": true,
+        "lastOnboardingVersion": "2.1.220",
+        "theme": "dark",
+        "oauthAccount": {"emailAddress": "someone@example.invalid"},
+        "projects": {"/an/operators/own/checkout": {"hasTrustDialogAccepted": true}},
+        "numStartups": 42
+    }"#;
+
+    /// The workspace-trust question as a pane showed it on 2.1.280 (measured
+    /// 2026-09-26), wrapped at a width the capture keeps.
+    const TRUST_SCREEN: &str = " Accessing workspace:\n\
+         /private/tmp/a-worktree\n\
+         Quick safety check: Is this a project you created or one you trust? (Like your own \
+         code, a well-known open source project, or work from your team).\n\
+         ❯ No, exit\n\
+           Yes, I trust\n\
+         this folder\n\
+         Enter to confirm · Esc to cancel\n";
+
+    /// claude-code D8 — an interactive start meets onboarding and the trust
+    /// question unless its configuration directory is seeded past both, and it
+    /// is believed only when the listing shows the pane's own process.
+    /// Re-measured on 2.1.280 and tmux 3.7b (fleet-rge6.2, 2026-09-26): a
+    /// directory seeded with the onboarding keys and the worktree's trust entry
+    /// came up with no theme picker, no login menu and no trust question; the
+    /// row was listed by the pane's pid 0.5–0.75 s after the session was made
+    /// and carried its status half a second later; `--name` held and the
+    /// positional first turn submitted.
     ///
-    /// The control is the SAME call against a stub that exits 0, which is the
-    /// start that did not fail: without it "Failed" would be an answer this
-    /// adapter might give to everything.
+    /// Four halves: what the launch asks for, what it seeds, what the watch
+    /// believes over a fake host and a stub agent, and the trust fallback — each
+    /// beside the control that says the reading is the rule's and not the
+    /// fixture's.
     #[test]
-    fn a_failed_start_exits_inside_the_watch_window() {
-        let rig = Rig::new("failed-start");
-        rig.write_stub(1);
+    fn an_interactive_start_under_tmux() {
+        // ---- THE LAUNCH: an interactive session, the resolved binary as the
+        // pane's own process, and every flag a start owes.
+        let rig = Rig::new("interactive-start");
         let worktree = rig.worktree().display().to_string();
-        let mut table = Table::default();
-        let mut log = rig.log();
-        let outcome = effect::spawn_woken(
-            &rig.agent(),
-            &a_policy(),
-            &a_target(&worktree, None),
-            &mut log,
-            &mut table,
-            1_000,
+        let config_dir = rig.root.join("seat-config");
+        // The overlay's own state file, which the seed must keep, and the
+        // operator's, which it copies from.
+        write(
+            &config_dir.join(claude_code::STATE_FILE),
+            r#"{"overlayKey": "kept"}"#,
         );
-        assert_eq!(outcome, effect::Outcome::Failed);
-        assert_eq!(rig.events_of(events::SESSION_CRASHED), 1);
+        let operator = rig.home().join(claude_code::STATE_FILE);
+        write(&operator, OPERATOR_STATE);
+        let mut spec = a_spec(&worktree);
+        spec.plugin_dir = Some("/an/overlay".to_string());
+        spec.config_dir = Some(config_dir.display().to_string());
+        let launch = rig.agent().launch(&spec).expect("a seeded start launches");
+        let argv = &launch.argv;
         assert_eq!(
-            rig.events_of(events::SESSION_SPAWNED),
-            0,
-            "a start that failed is not a session this controller believes in"
+            argv[0],
+            rig.stub_path().display().to_string(),
+            "the resolved binary is the pane's own process: {argv:?}"
         );
         assert!(
-            table.sessions.is_empty(),
-            "and it opens no row, which the arrival window would then wait on forever"
+            !argv.iter().any(|a| a == "--bg"),
+            "an interactive session and not a background one: {argv:?}"
+        );
+        assert_eq!(flag_value(argv, "--name"), "orla");
+        assert_eq!(flag_value(argv, "--model"), "claude-opus-5");
+        assert_eq!(flag_value(argv, "--permission-mode"), "auto");
+        assert_eq!(flag_value(argv, "--plugin-dir"), "/an/overlay");
+        assert_eq!(
+            argv.last().map(String::as_str),
+            Some("/wake s1"),
+            "the first turn is the positional prompt: {argv:?}"
+        );
+        for owed in [
+            ("FLEET_ACTOR".to_string(), format!("seat:{S1}")),
+            (
+                "CLAUDE_CONFIG_DIR".to_string(),
+                config_dir.display().to_string(),
+            ),
+            ("CLAUDE_SECURESTORAGE_CONFIG_DIR".to_string(), String::new()),
+        ] {
+            assert!(
+                launch.env.contains(&owed),
+                "the pane's environment carries {owed:?}: {:?}",
+                launch.env
+            );
+        }
+
+        // ---- THE SEED: the three keys and the theme as the operator's file
+        // has them, the overlay's key kept, and ONE trusted path, the spawned
+        // worktree resolved.
+        let seeded: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(config_dir.join(claude_code::STATE_FILE))
+                .expect("the seat's state file is there"),
+        )
+        .expect("the seat's state file is JSON");
+        let theirs: serde_json::Value =
+            serde_json::from_str(OPERATOR_STATE).expect("the fixture is JSON");
+        for key in claude_code::ONBOARDING_KEYS
+            .iter()
+            .chain([&claude_code::THEME_KEY])
+        {
+            assert_eq!(
+                seeded[key], theirs[key],
+                "{key} is the operator's: {seeded}"
+            );
+        }
+        assert_eq!(
+            seeded["overlayKey"], "kept",
+            "the overlay's own key survives the seed: {seeded}"
+        );
+        assert!(
+            seeded.get("numStartups").is_none(),
+            "nothing but the seeded keys is copied: {seeded}"
+        );
+        let canonical = std::fs::canonicalize(rig.worktree())
+            .expect("the worktree resolves")
+            .display()
+            .to_string();
+        let trusted: Vec<&String> = seeded[claude_code::PROJECTS_KEY]
+            .as_object()
+            .expect("a projects table")
+            .keys()
+            .collect();
+        assert_eq!(
+            trusted,
+            vec![&canonical],
+            "the spawned worktree, resolved, is the one path trusted — and none of the \
+             operator's: {seeded}"
+        );
+        assert_eq!(
+            seeded[claude_code::PROJECTS_KEY][&canonical][claude_code::TRUST_KEY],
+            true
+        );
+
+        // The controls on the seed. A named seat's start names no directory and
+        // seeds nothing: the adapter's own configuration space is left without
+        // a state file of fleet's writing.
+        rig.agent()
+            .launch(&a_spec(&worktree))
+            .expect("a named seat's start launches");
+        assert!(
+            !rig.home()
+                .join(".claude")
+                .join(claude_code::STATE_FILE)
+                .exists(),
+            "a start with no directory of its own wrote no seed anywhere"
+        );
+        // And an operator file missing a key refuses the start, naming the key,
+        // rather than bringing a session up at the login menu.
+        let mut short = theirs.clone();
+        short
+            .as_object_mut()
+            .expect("an object")
+            .remove("oauthAccount");
+        write(&operator, &short.to_string());
+        let refused = rig
+            .agent()
+            .launch(&spec)
+            .expect_err("a seed missing a key is no launch");
+        assert!(refused.contains("oauthAccount"), "{refused}");
+        // The theme is NOT such a key: the operator's own file on the measuring
+        // machine carries none, and a directory seeded without it met no picker.
+        let mut themeless = theirs.clone();
+        themeless
+            .as_object_mut()
+            .expect("an object")
+            .remove(claude_code::THEME_KEY);
+        write(&operator, &themeless.to_string());
+        rig.agent()
+            .launch(&spec)
+            .expect("a seed with no theme to copy launches");
+
+        // ---- THE WATCH, over a fake host and a stub agent, in a one-second
+        // window. A row carrying the pane's pid and a status is a start taken.
+        let session = rig.session();
+        let quick =
+            policy::parse("[controller]\nstart_watch_seconds = 1\n").expect("the policy parses");
+        let target = a_target(&worktree, None);
+        let listed = StubAgent::answering(Answers {
+            status: RosterRead::Readable(vec![test_support::arrived(test_support::FIRST_PANE_PID)]),
+            ..Answers::default()
+        });
+        let host = FakeHost::new();
+        let mut table = Table::default();
+        let mut log = rig.log();
+        assert_eq!(
+            effect::spawn_woken(&listed, &host, &quick, &target, &mut log, &mut table, 1_000),
+            effect::Outcome::Spawned
+        );
+        let up = host
+            .session(&session)
+            .expect("the seat's session is on the host, named by its id");
+        assert_eq!(up.cwd, worktree, "in the seat's worktree");
+        assert!(!up.argv.iter().any(|a| a == "--bg"), "{:?}", up.argv);
+        let spawned = rig
+            .events()
+            .into_iter()
+            .find(|e| e["type"] == events::SESSION_SPAWNED)
+            .expect("the start wrote its line");
+        assert_eq!(
+            spawned["payload"]["output"],
+            format!("-L {} -t {session}", host::SOCKET),
+            "the output a reader is pointed at is the session itself: {spawned}"
+        );
+
+        // A pane that ended with status 1 is a failed start carrying 1, and its
+        // session is killed.
+        let host = FakeHost::new();
+        host.end_next_start(Some(1));
+        let mut table = Table::default();
+        assert_eq!(
+            effect::spawn_woken(&listed, &host, &quick, &target, &mut log, &mut table, 1_000),
+            effect::Outcome::Failed
+        );
+        assert!(
+            host.session(&session).is_none(),
+            "the dead session is killed"
+        );
+        assert!(table.sessions.is_empty(), "and no row is opened");
+        let crashed = rig
+            .events()
+            .into_iter()
+            .filter(|e| e["type"] == events::SESSION_CRASHED)
+            .next_back()
+            .expect("the failure is an event");
+        assert_eq!(crashed["payload"]["phase"], effect::PHASE_START);
+        assert_eq!(crashed["payload"]["status"], 1, "{crashed}");
+        let cause = crashed["payload"]["cause"].as_str().unwrap_or_default();
+        assert!(cause.contains("exited 1"), "{cause}");
+
+        // A window that closes with no believable row is a failed start, and
+        // the session is killed with its capture kept. The row here carries the
+        // pane's pid and NO status — listed, and not yet up (B10) — which is the
+        // control on the first reading: the pid alone is not believed.
+        let mut pid_only = test_support::arrived(test_support::FIRST_PANE_PID);
+        pid_only.status = None;
+        let unready = StubAgent::answering(Answers {
+            status: RosterRead::Readable(vec![pid_only]),
+            ..Answers::default()
+        });
+        let host = FakeHost::new();
+        let mut table = Table::default();
+        assert_eq!(
+            effect::spawn_woken(&unready, &host, &quick, &target, &mut log, &mut table, 1_000),
+            effect::Outcome::Failed
+        );
+        assert!(
+            host.session(&session).is_none(),
+            "the silent session is killed"
         );
         let crashed = rig
             .events()
             .into_iter()
-            .find(|e| e["type"] == events::SESSION_CRASHED)
+            .filter(|e| e["type"] == events::SESSION_CRASHED)
+            .next_back()
             .expect("the failure is an event");
-        assert_eq!(crashed["payload"]["phase"], effect::PHASE_START);
         let cause = crashed["payload"]["cause"].as_str().unwrap_or_default();
+        assert!(cause.contains("no listed row within 1s"), "{cause}");
+        let output = crashed["payload"]["output"]
+            .as_str()
+            .expect("the capture was kept");
         assert!(
-            cause.contains("exited 1"),
-            "the cause carries the child's own status: {cause}"
-        );
-        let output = crashed["payload"]["output"].as_str().unwrap_or_default();
-        assert!(
-            std::fs::read_to_string(output)
-                .expect("the cause names the file the output went to")
-                .contains("the stub spoke on stderr"),
-            "and the file holds what the child printed"
+            output.starts_with(&rig.machine().join(effect::STARTS_DIR).display().to_string())
+                && Path::new(output).is_file(),
+            "the capture is under <machine>/starts: {output}"
         );
 
-        // The control: the same call against a stub that exits 0.
-        rig.write_stub(0);
-        let mut table = Table::default();
-        let outcome = effect::spawn_woken(
-            &rig.agent(),
-            &a_policy(),
-            &a_target(&worktree, None),
-            &mut log,
-            &mut table,
-            1_000,
+        // ---- THE TRUST FALLBACK: a start into a worktree fleet created, whose
+        // screen shows the question, is answered Down then Enter. The kill is
+        // refused here so the pane's record outlives the failed watch and what
+        // was typed into it can be read.
+        let silent = StubAgent::new();
+        let host = FakeHost::new();
+        host.draw_next_start(TRUST_SCREEN);
+        host.new_session(&session, &rig.worktree(), &["/a/program".to_string()], &[])
+            .expect("the fake starts it");
+        host.fail(FakeHost::KILL, Some("kept for the arm"));
+        let watched =
+            effect::watch_start(&silent, &host, &session, None, true, Duration::from_secs(1));
+        assert!(matches!(watched, Watched::Failed { .. }), "{watched:?}");
+        assert_eq!(
+            host.sends(&session),
+            vec![Sent::Keys(vec!["Down".to_string(), "C-m".to_string()])],
+            "the question is answered once, Down then Enter"
         );
-        assert_eq!(outcome, effect::Outcome::Spawned);
-        assert_eq!(table.sessions.len(), 1);
-        assert_eq!(rig.events_of(events::SESSION_SPAWNED), 1);
+        // The control: the same screen on a start fleet did not create is
+        // typed into by nothing.
+        let host = FakeHost::new();
+        host.draw_next_start(TRUST_SCREEN);
+        host.new_session(&session, &rig.worktree(), &["/a/program".to_string()], &[])
+            .expect("the fake starts it");
+        host.fail(FakeHost::KILL, Some("kept for the arm"));
+        effect::watch_start(
+            &silent,
+            &host,
+            &session,
+            None,
+            false,
+            Duration::from_secs(1),
+        );
+        assert!(
+            host.sends(&session).is_empty(),
+            "a named seat's worktree is never answered for: {:?}",
+            host.sends(&session)
+        );
     }
 
     /// claude-code C5 — the rest threshold is a fraction of the agent's context
@@ -675,26 +952,28 @@ mod lessons {
             "a different home moves the entry that is keyed on it"
         );
 
-        // What the child actually got. The stub is spawned through the adapter,
-        // which is the one place the PATH is set, and the value it recorded is
-        // the constructed one to the byte.
-        let spec = StartSpec {
-            seat: S1.to_string(),
-            worktree: rig.worktree().display().to_string(),
-            name: "orla".to_string(),
-            actor: format!("seat:{S1}"),
-            model: "claude-opus-5".to_string(),
-            posture: "auto".to_string(),
-            first_turn: "/wake s1".to_string(),
-            plugin_dir: None,
-            config_dir: None,
-        };
-        rig.agent().start(&spec, Duration::from_secs(30));
+        // What a session is handed: the launch's environment, which the host
+        // sets on the pane EXACTLY, carries the constructed value to the byte.
+        let launch = rig
+            .agent()
+            .launch(&a_spec(&rig.worktree().display().to_string()))
+            .expect("it launches");
+        let handed = launch
+            .env
+            .iter()
+            .find(|(key, _)| key == "PATH")
+            .map(|(_, value)| value.clone())
+            .expect("the session is handed a PATH");
+        assert_eq!(handed, built);
+
+        // And what a command child actually got, spawned through the adapter,
+        // which builds its environment from the same list.
+        rig.agent().stop(None, "ab12").expect("the stub exits 0");
         assert_eq!(rig.recorded_path(), built);
 
         // The control: this process's own PATH is not what the child got. A
         // suite whose PATH happened to equal the constructed value would pass the
-        // line above with an adapter that inherited.
+        // lines above with an adapter that inherited.
         let mine = std::env::var("PATH").unwrap_or_default();
         assert_ne!(
             rig.recorded_path(),
@@ -781,59 +1060,6 @@ mod lessons {
                 prefix_python.exists()
             );
         }
-    }
-
-    /// claude-code D2 — collecting a child's output through a pipe waits for EOF
-    /// on the pipe rather than for the child, so anything still holding the
-    /// write end keeps the caller blocked. A file has no EOF to wait for.
-    ///
-    /// The measurement is both halves: the file exists and holds the child's
-    /// own words, AND the call returns while a child that is still running holds
-    /// what would have been the pipe.
-    #[test]
-    fn start_output_goes_to_a_file() {
-        let rig = Rig::new("start-output");
-        let spec = StartSpec {
-            seat: S1.to_string(),
-            worktree: rig.worktree().display().to_string(),
-            name: "orla".to_string(),
-            actor: format!("seat:{S1}"),
-            model: "claude-opus-5".to_string(),
-            posture: "auto".to_string(),
-            first_turn: "/wake s1".to_string(),
-            plugin_dir: None,
-            config_dir: None,
-        };
-        let outcome = rig.agent().start(&spec, Duration::from_secs(30));
-        let StartOutcome::Started { log } = outcome else {
-            panic!("the start did not fail: {outcome:?}");
-        };
-        assert!(
-            log.starts_with(&rig.machine().display().to_string()),
-            "the file is under the machine directory: {log}"
-        );
-        let body = std::fs::read_to_string(&log).expect("the start's output file is there");
-        assert!(body.contains("the stub spoke on stdout"), "{body}");
-        assert!(
-            body.contains("the stub spoke on stderr"),
-            "both streams go to the one file: {body}"
-        );
-
-        // The half a pipe would fail: a child that is STILL RUNNING and holding
-        // the output. The call returns at its watch window rather than at the
-        // child's EOF, which is the whole of the finding.
-        rig.write_slow_stub();
-        let started = std::time::Instant::now();
-        let outcome = rig.agent().start(&spec, Duration::from_millis(300));
-        let elapsed = started.elapsed();
-        assert!(
-            matches!(outcome, StartOutcome::Started { .. }),
-            "a child still running when the window closes is OK: {outcome:?}"
-        );
-        assert!(
-            elapsed < Duration::from_secs(5),
-            "the call returned at its window and not at the child's 30-second end: {elapsed:?}"
-        );
     }
 
     /// claude-code D3 — a session's permission mode is not honoured by every
@@ -1218,11 +1444,11 @@ fn a_second_adopt_over_the_same_table_claims_nothing() {
 /// IMMEDIATELY BEFORE the first turn — which is the position that says the flag
 /// took the directory as its value and did not swallow the prompt.
 ///
-/// Read from what the CHILD received, through the same `spawn_woken` the loop
-/// takes, because the claim is about every start and not about one struct. The
-/// control is the same spawn under a policy that names no root: no such element
-/// is in the argv at all, so what is measured is the key and not a flag the
-/// adapter always passes.
+/// Read from what the PANE was started with, through the same `spawn_woken` the
+/// loop takes, because the claim is about every start and not about one
+/// struct. The control is the same spawn under a policy that names no root: no
+/// such element is in the argv at all, so what is measured is the key and not
+/// a flag the adapter always passes.
 #[test]
 fn a_start_carries_the_plugin_root_the_policy_names() {
     let rig = Rig::new("start-plugin-root");
@@ -1234,6 +1460,7 @@ fn a_start_carries_the_plugin_root_the_policy_names() {
     let mut log = rig.log();
     let outcome = effect::spawn_woken(
         &rig.agent(),
+        &rig.host,
         &named,
         &a_target(&worktree, None),
         &mut log,
@@ -1242,7 +1469,7 @@ fn a_start_carries_the_plugin_root_the_policy_names() {
     );
     assert_eq!(outcome, effect::Outcome::Spawned);
 
-    let argv = rig.argv();
+    let argv = rig.started_argv();
     assert_eq!(flag_value(&argv, "--plugin-dir"), "/an/overlay");
     let at = argv
         .iter()
@@ -1262,6 +1489,7 @@ fn a_start_carries_the_plugin_root_the_policy_names() {
     let mut log = bare.log();
     let outcome = effect::spawn_woken(
         &bare.agent(),
+        &bare.host,
         &a_policy(),
         &a_target(&elsewhere, None),
         &mut log,
@@ -1269,7 +1497,7 @@ fn a_start_carries_the_plugin_root_the_policy_names() {
         1_000,
     );
     assert_eq!(outcome, effect::Outcome::Spawned);
-    let argv = bare.argv();
+    let argv = bare.started_argv();
     assert!(
         !argv.iter().any(|word| word == "--plugin-dir"),
         "a fleet that names no plugin root passes no such element: {argv:?}"
@@ -1292,24 +1520,13 @@ fn an_adapter_with_no_effect_binary_refuses_every_verb_and_execs_nothing() {
     let rig = Rig::new("no-effect-binary");
     let ungated = rig.agent_with_effect_bin(None);
     let worktree = rig.worktree().display().to_string();
-    let spec = StartSpec {
-        seat: S1.to_string(),
-        worktree: worktree.clone(),
-        name: "orla".to_string(),
-        actor: format!("seat:{S1}"),
-        model: "claude-opus-5".to_string(),
-        posture: "auto".to_string(),
-        first_turn: "/wake s1".to_string(),
-        plugin_dir: None,
-        config_dir: None,
-    };
 
-    match ungated.start(&spec, Duration::from_secs(30)) {
-        StartOutcome::Failed { cause, .. } => assert!(
+    match ungated.launch(&a_spec(&worktree)) {
+        Err(cause) => assert!(
             cause.contains("no agent binary is resolved"),
             "the refusal says why: {cause}"
         ),
-        other => panic!("a start with no resolved binary must not run: {other:?}"),
+        Ok(launch) => panic!("a start with no resolved binary must not launch: {launch:?}"),
     }
     let stopped = ungated.stop(None, "ab12");
     assert!(stopped.is_err(), "{stopped:?}");
@@ -1402,6 +1619,7 @@ fn a_rest_whose_stop_failed_starts_nothing_and_removes_nothing() {
     let mut log = rig.log();
     let answer = effect::rest(
         &rig.agent(),
+        &rig.host,
         &a_policy(),
         &a_target(&worktree, Some("ab12")),
         &mut log,
@@ -1418,6 +1636,7 @@ fn a_rest_whose_stop_failed_starts_nothing_and_removes_nothing() {
     rig.write_stub(0);
     let answer = effect::rest(
         &rig.agent(),
+        &rig.host,
         &a_policy(),
         &a_target(&worktree, Some("ab12")),
         &mut log,
@@ -1446,8 +1665,12 @@ fn a_rest_whose_start_failed_after_its_stop_landed_removes_nothing() {
     predecessor.short_id = Some("ab12".to_string());
     table.push(predecessor);
     let mut log = rig.log();
+    // The start fails at the host, before any session is made.
+    rig.host
+        .fail(FakeHost::NEW_SESSION, Some("the arm refused this session"));
     let answer = effect::rest(
         &rig.agent(),
+        &rig.host,
         &a_policy(),
         &a_target(&worktree, Some("ab12")),
         &mut log,
@@ -1646,10 +1869,10 @@ fn a_child_carries_the_configured_credential_scope_and_not_the_resolved_config_d
 /// spawned it. Without it the plugin's shim looks under its root's `target/`,
 /// and a root with no build there blocks every Bash command the session makes.
 ///
-/// EVERY CHILD, and not only the start: a session is claimed from the agent's
-/// background daemon, and any of the adapter's calls — a listing included —
-/// can be the one that starts that daemon (lessons claude-code D1). So the value
-/// is read off a start and off a read, one child each.
+/// EVERY CHILD, and not only the start: any of the adapter's calls — a listing
+/// included — can be the one that starts the agent's background daemon
+/// (lessons claude-code D1). So the value is read off a start's session, as
+/// the host was handed it, and off a read's child.
 ///
 /// Asserted BY VALUE against this process's own path, which is what tells the
 /// value from a pass-through: this process's own `FLEET_BIN` is unset under a
@@ -1668,6 +1891,7 @@ fn every_child_carries_this_processs_own_executable_as_fleet_bin() {
     let mut log = rig.log();
     let outcome = effect::spawn_woken(
         &rig.agent(),
+        &rig.host,
         &a_policy(),
         &a_target(&worktree, None),
         &mut log,
@@ -1675,14 +1899,16 @@ fn every_child_carries_this_processs_own_executable_as_fleet_bin() {
         1_000,
     );
     assert_eq!(outcome, effect::Outcome::Spawned);
-    let env = std::fs::read_to_string(&leaked).expect("the start recorded its environment");
-    let lines: Vec<&str> = env.lines().collect();
+    let env = rig
+        .host
+        .session(&rig.session())
+        .expect("the start left its session on the host")
+        .env;
     assert!(
-        lines.contains(&owed.as_str()),
-        "the start carries {owed}: {lines:?}"
+        env.contains(&("FLEET_BIN".to_string(), own.display().to_string())),
+        "the start carries {owed}: {env:?}"
     );
 
-    std::fs::remove_file(&leaked).expect("the start's record is cleared");
     let _ = rig.agent().daemon();
     let env = std::fs::read_to_string(&leaked).expect("the read recorded its environment");
     let lines: Vec<&str> = env.lines().collect();
@@ -1719,6 +1945,7 @@ fn a_rebuilt_row_carries_the_dispatch_the_live_table_holds() {
     assert_eq!(
         effect::spawn_woken(
             &rig.agent(),
+            &rig.host,
             &a_policy(),
             &a_target(&worktree, None),
             &mut log,

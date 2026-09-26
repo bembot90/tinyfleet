@@ -89,6 +89,10 @@ impl std::fmt::Display for Refusal {
 pub struct Machine<'a> {
     pub machine_dir: &'a Path,
     pub agent: &'a dyn Agent,
+    /// The host a spawned seat's session runs on (`crate::host`). A start
+    /// that fails kills its session there, so a spawn's rollback finds
+    /// nothing of it left on the host.
+    pub host: &'a dyn crate::host::Host,
     pub policy: &'a Policy,
     /// The project a transient seat's worktree is keyed under in the seat list.
     pub project: &'a str,
@@ -779,6 +783,7 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
     let mut opened = Table::default();
     let started = effect::spawn_woken(
         machine.agent,
+        machine.host,
         machine.policy,
         &target,
         &mut log,
@@ -786,18 +791,22 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
         now_ms,
     );
     if started != Outcome::Spawned {
-        // A14: the child exited inside the watch window and said why in-band.
-        // The output file is named from the line the adapter itself wrote, so
-        // the path in the refusal is the one the crash event carries.
-        let output = crashed_output(&machine.stream_path(), before, &claimed.id.to_string());
+        // The session died, never listed, or was never started, and the start
+        // has already killed whatever it made on the host. The cause and the
+        // capture are read from the line the start itself wrote, so the
+        // refusal names what the crash event carries.
+        let (cause, output) =
+            crashed_output(&machine.stream_path(), before, &claimed.id.to_string());
         return Err(rolled_back(
             machine,
             REFUSED,
             Some(&claimed),
             &worktree,
             &format!(
-                "the start for {name} failed inside its {}s watch window; its output is at {}",
+                "the start for {name} failed inside its {}s watch window ({}); its output is at \
+                 {}",
                 machine.policy.start_watch_seconds,
+                cause.as_deref().unwrap_or("the stream names no cause"),
                 output
                     .as_deref()
                     .unwrap_or("(the stream names no output file)")
@@ -1126,22 +1135,27 @@ fn rolled_back(
     )
 }
 
-/// The output file the `session.crashed` line this start wrote names. `seat` is
-/// the seat's id, and the line's actor is that seat.
-fn crashed_output(stream: &Path, after: u64, seat: &str) -> Option<String> {
-    events::read_after(stream, after)
+/// The cause and the output file the `session.crashed` line this start wrote
+/// names, each `None` where the line carries none. `seat` is the seat's id, and
+/// the line's actor is that seat.
+fn crashed_output(stream: &Path, after: u64, seat: &str) -> (Option<String>, Option<String>) {
+    let Some(record) = events::read_after(stream, after)
         .into_iter()
         .rev()
         .find(|record| {
             record.kind == events::SESSION_CRASHED && record.actor.seat_id() == Some(seat)
         })
-        .and_then(|record| {
-            record
-                .payload
-                .get("output")
-                .and_then(|value| value.as_str())
-                .map(str::to_string)
-        })
+    else {
+        return (None, None);
+    };
+    let field = |name: &str| {
+        record
+            .payload
+            .get(name)
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    };
+    (field("cause"), field("output"))
 }
 
 // ---- feed -------------------------------------------------------------------

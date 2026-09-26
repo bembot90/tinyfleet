@@ -26,7 +26,7 @@ use fleet_controller::adapter::{DaemonRead, RosterRead};
 use fleet_controller::clock::Clock;
 use fleet_controller::platform::{self, Grant};
 use fleet_controller::run::{self, Options, Seams, StopHandler};
-use fleet_controller::test_support::{Answers, FakeClock, StubAgent};
+use fleet_controller::test_support::{Answers, FakeClock, FakeHost, StubAgent};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -328,6 +328,8 @@ fn a_session_that_is_re_hosted_between_polls_is_held_and_the_seat_never_seen_liv
     );
     let watchdog = Watchdog::armed();
 
+    let host = FakeHost::new();
+
     let status = run::observe_seamed(
         &Options { once: false },
         rig.grant(),
@@ -335,6 +337,7 @@ fn a_session_that_is_re_hosted_between_polls_is_held_and_the_seat_never_seen_liv
         Seams {
             clock: &clock,
             agent: &stub,
+            host: &host,
             child_path: "",
             effects_off: None,
             stop_handler: StopHandler::Unarmed,

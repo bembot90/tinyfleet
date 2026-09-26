@@ -455,6 +455,13 @@ impl EventLog {
         self.seq
     }
 
+    /// The directory the stream is kept in, which is the machine directory: a
+    /// writer that keeps a file beside its line — a failed start's capture —
+    /// puts it under the same directory the line names it from.
+    pub fn dir(&self) -> Option<&Path> {
+        self.path.parent()
+    }
+
     /// Append one event, at the next sequence THE FILE has room for.
     ///
     /// The file is re-read for its last sequence and the higher of the two wins,

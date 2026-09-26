@@ -462,7 +462,12 @@ mod effects {
         assert_eq!(seat_row(&rig)["outcome"], "spawned");
 
         let argv = rig.start_argv();
-        assert_eq!(argv.first().map(String::as_str), Some("--bg"));
+        assert_eq!(
+            argv.first().map(String::as_str),
+            Some("--name"),
+            "an interactive session, with no --bg ahead of the name: {argv:?}"
+        );
+        assert!(!argv.iter().any(|word| word == "--bg"), "{argv:?}");
         assert_eq!(flag_value(&argv, "--name"), SEAT);
         assert_eq!(flag_value(&argv, "--model"), "claude-opus-5");
         assert_eq!(flag_value(&argv, "--permission-mode"), "auto");
@@ -535,8 +540,9 @@ mod effects {
     }
 
     /// A seat with no name of its own is `agent-<short>` in every name a start
-    /// derives — its session's `--name`, the first turn's argument and its start
-    /// log — while the line the start writes carries the seat's full id.
+    /// derives — its session's `--name` and the first turn's argument — while
+    /// the line the start writes carries the seat's full id, and so does the
+    /// host session it points a reader at.
     #[test]
     fn an_unnamed_seats_start_is_named_agent_short_and_its_line_carries_the_id() {
         let rig = Rig::new("effect-unnamed");
@@ -563,17 +569,6 @@ mod effects {
         assert_eq!(flag_value(&argv, "--name"), named);
         assert_eq!(argv.last(), Some(&format!("/wake {named}")));
 
-        let logs: Vec<String> = std::fs::read_dir(rig.machine().join("starts"))
-            .expect("the starts directory is there")
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(logs.len(), 1, "one start, one log: {logs:?}");
-        assert!(
-            logs[0].starts_with(&format!("{named}-")) && logs[0].ends_with(".log"),
-            "the start log is named by the session: {logs:?}"
-        );
-
         let spawned = rig
             .events()
             .into_iter()
@@ -585,6 +580,16 @@ mod effects {
             "the line's actor is the seat, by its full id"
         );
         assert_eq!(spawned["payload"]["name"], named);
+        assert_eq!(
+            spawned["payload"]["output"],
+            format!("-L fleet -t {SEAT_ID}"),
+            "the session a reader is pointed at is named by the id, never the name"
+        );
+        assert!(
+            rig.host().sessions.contains_key(SEAT_ID),
+            "and it is on the host under that name: {:?}",
+            rig.host()
+        );
     }
 
     /// The plugin root end to end through the BUILT binary: the policy names a
@@ -821,7 +826,7 @@ mod effects {
         let rig = Rig::new("effect-rest-failed-start");
         rig.write_roster(&live_row(&rig.worktree(), "ab12"));
         assert_eq!(rig.observe().status.code(), Some(0));
-        rig.set_seam(START_EXIT, Some(1));
+        rig.set_start_exit(Some(1));
         let out = rig
             .binary()
             .args(["event", "rest", SEAT, "--reason", "a nap"])
@@ -914,7 +919,7 @@ mod effects {
     fn a_start_that_fails_inside_the_window_is_a_crash_with_a_cause_and_no_row() {
         let rig = Rig::new("effect-failed-start");
         rig.write_roster("[]");
-        rig.set_seam(START_EXIT, Some(1));
+        rig.set_start_exit(Some(1));
 
         let out = rig.observe();
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -949,7 +954,7 @@ mod effects {
         );
 
         // The control: the same poll with the stub exiting 0 opens one.
-        rig.set_seam(START_EXIT, None);
+        rig.set_start_exit(None);
         let out = rig.observe();
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         assert_eq!(rig.events_of("session.spawned"), 1);
@@ -1126,7 +1131,7 @@ mod effects {
         // A seat with no row at all: every poll spawns, and the stub's start
         // never puts a row on the roster, so no sighting ever answers.
         rig.write_roster("[]");
-        rig.set_seam(START_EXIT, Some(1));
+        rig.set_start_exit(Some(1));
 
         for poll in 1..=3 {
             let out = rig.observe();
@@ -1376,7 +1381,7 @@ mod effects {
     fn a_rebuilt_table_carries_a_standing_halt_and_no_daemon_pid() {
         let rig = Rig::new("effect-rebuild-halt");
         rig.write_roster("[]");
-        rig.set_seam(START_EXIT, Some(1));
+        rig.set_start_exit(Some(1));
         rig.write_daemon(4242, "1h");
         for _ in 0..3 {
             let out = rig.observe();
@@ -1431,7 +1436,7 @@ mod effects {
     fn a_deleted_table_is_rebuilt_from_the_stream_and_the_halt_survives() {
         let rig = Rig::new("effect-deleted-table");
         rig.write_roster("[]");
-        rig.set_seam(START_EXIT, Some(1));
+        rig.set_start_exit(Some(1));
         rig.write_daemon(4242, "1h");
         for _ in 0..3 {
             let out = rig.observe();

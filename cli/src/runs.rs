@@ -31,7 +31,7 @@ use fleet_core::store::{
 };
 
 use crate::item::{resolve_from, Here, StreamEvents, EVENTS};
-use crate::transient::{as_refusal, effect_agent, machine_of, policy_of, Where};
+use crate::transient::{as_refusal, effect_agent, machine_of, policy_of, verb_host, Where};
 
 /// How the pass gets a store for one project.
 ///
@@ -253,9 +253,10 @@ impl Runs for Engine {
         let here = self.project_holding(run)?;
         let by = self.controller()?;
         let agent = effect_agent(&here, &self.home).map_err(|stop| stop.message)?;
+        let host = verb_host(&self.home);
         let policy = policy_of(&here).map_err(|stop| stop.message)?;
         let at = Where::of(&here).map_err(|stop| stop.message)?;
-        let machine = machine_of(&here, &at, &agent, &policy);
+        let machine = machine_of(&here, &at, &agent, host.as_ref(), &policy);
         // THE RECORD'S HALF, which the controller reaches no work graph to do
         // for itself. A cleanup retires seats whose items were delivered and
         // seats whose items are still open — a park leaves the order standing —

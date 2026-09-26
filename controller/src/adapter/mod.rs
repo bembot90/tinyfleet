@@ -3,8 +3,14 @@
 //! rewrite.
 //!
 //! Observe needs four of the nine verbs — the listing, the transcript, the end
-//! stamp and the version, plus the daemon's own account of itself; `start`,
+//! stamp and the version, plus the daemon's own account of itself; `launch`,
 //! `stop`, `remove`, `nudge` and `revive` are the five an effect issues.
+//!
+//! A START IS TWO HALVES AND ONLY ONE OF THEM IS HERE (ruling 2). The adapter
+//! answers WHAT to run — the argv and the environment, in [`Launch`] — and
+//! core runs it, as a session on the host (`crate::host`), and believes it
+//! only when this trait's own listing shows the pane's process
+//! (`crate::effect::start_once`). No adapter touches the host.
 
 use serde::Deserialize;
 use std::path::Path;
@@ -42,19 +48,24 @@ pub struct StartSpec {
     /// servers — reaches it. It scopes the agent's daemon with it, so a session
     /// started under one is listed by that daemon and by no other, and every
     /// read about this session is made under the same value.
+    ///
+    /// It is also the one mark of a start whose worktree fleet CREATED: a named
+    /// seat comes up in a person's own checkout and carries `None`, so a start
+    /// with a directory here is the only one whose worktree a launch may seed
+    /// as trusted (ruling 13).
     pub config_dir: Option<String>,
 }
 
-/// What a start left behind.
+/// What a start runs: the pane's whole command and its whole environment.
 ///
-/// `Started` is a child STILL RUNNING when the watch window closed, which is
-/// not a claim that the session arrived: arrival is the roster's answer
-/// (lessons claude-code A7). `Failed` is a child that exited inside the window,
-/// which is a failure with a cause the agent itself printed (A14).
-#[derive(Clone, Debug)]
-pub enum StartOutcome {
-    Started { log: String },
-    Failed { cause: String, log: String },
+/// The argv is the pane's own process (reviewer call 2026-09-25, E2), its first
+/// element the absolute binary, and the environment is set EXACTLY — the host
+/// hands the pane these pairs and nothing of its own — so every variable a
+/// session needs is one this value names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Launch {
+    pub argv: Vec<String>,
+    pub env: Vec<(String, String)>,
 }
 
 /// The three answers a removal has, and one of them is an alarm.
@@ -72,9 +83,28 @@ pub enum RemoveAnswer {
 }
 
 pub trait Agent {
-    /// Bring a fresh woken session up in the seat's worktree, watched for
-    /// `watch` for an immediate failure.
-    fn start(&self, spec: &StartSpec, watch: std::time::Duration) -> StartOutcome;
+    /// What to run to bring a fresh woken session up in the seat's worktree.
+    ///
+    /// It RUNS NOTHING: the session is started by core, on the host, from the
+    /// value this answers. It may WRITE — inside the start's own configuration
+    /// directory, which is what that directory is for (reviewer call
+    /// 2026-09-25, E8) — and `Err` is a start that must not be attempted,
+    /// carrying why.
+    fn launch(&self, spec: &StartSpec) -> Result<Launch, String>;
+
+    /// The keys that answer the question a starting session's screen is
+    /// stopped at, where this agent knows the question and a start may answer
+    /// it; `None` for a screen it does not recognise.
+    ///
+    /// The one screen rule a start reads, and read only for a session whose
+    /// worktree fleet itself created: the keys accept the agent's
+    /// workspace-trust question, which the acceptance `launch` seeds should
+    /// already have skipped (ruling 13) — so this is the fallback, not the
+    /// path. The rule is the adapter's because the words on the screen are the
+    /// agent's (ruling 2); core only captures and types.
+    fn trust_keys(&self, _screen: &str) -> Option<Vec<String>> {
+        None
+    }
 
     /// Where this provider reads a session's project-local settings from,
     /// relative to the working directory the session comes up in.

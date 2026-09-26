@@ -1,14 +1,13 @@
 //! The Claude Code adapter — the first implementation of the seam.
 
 use super::{
-    transcript_path, Agent, AgentRow, DaemonRead, DaemonStatus, RemoveAnswer, RosterRead,
-    StartOutcome, StartSpec,
+    transcript_path, Agent, AgentRow, DaemonRead, DaemonStatus, Launch, RemoveAnswer, RosterRead,
+    StartSpec,
 };
 use crate::platform::run_bounded;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub struct ClaudeCode {
@@ -16,10 +15,11 @@ pub struct ClaudeCode {
     /// Where this agent keeps its own state, which is where the transcripts are.
     pub config_dir: PathBuf,
     pub timeout: Duration,
-    /// This machine's fleet directory, under which a start's and a nudge's own
-    /// words are kept. Each goes to ONE FILE, because a pipe waits for EOF
-    /// rather than for the child and any process still holding the write end
-    /// keeps the caller blocked (lessons claude-code D2).
+    /// This machine's fleet directory, under which a nudge's own words are
+    /// kept. They go to ONE FILE, because a pipe waits for EOF rather than for
+    /// the child and any process still holding the write end keeps the caller
+    /// blocked (lessons claude-code D2). A start's words are no longer this
+    /// adapter's: the session runs in a pane, which holds them.
     pub machine_dir: PathBuf,
     /// The `PATH` every child this adapter spawns carries, constructed by the
     /// platform layer and never inherited (D1).
@@ -54,10 +54,6 @@ pub struct ClaudeCode {
     /// answer for every arm of a suite, and a caller handing in some other file
     /// would be naming a binary the session's hooks were never run against.
     fleet_bin: Option<PathBuf>,
-    /// Children still running when their watch window closed. Held so their
-    /// eventual exit is reaped rather than left a zombie per start; never waited
-    /// on, because arrival is the roster's answer and not this handle's.
-    adopted: Mutex<Vec<Child>>,
 }
 
 /// The deadline every call to the agent binary runs on when nothing sets one.
@@ -92,7 +88,6 @@ impl ClaudeCode {
             // rather than letting one fall back to `bin`.
             effect_bin: None,
             fleet_bin: own_executable(),
-            adopted: Mutex::new(Vec::new()),
         }
     }
 
@@ -127,7 +122,6 @@ impl ClaudeCode {
             credential_dir,
             effect_bin,
             fleet_bin: own_executable(),
-            adopted: Mutex::new(Vec::new()),
         }
     }
 
@@ -164,8 +158,23 @@ impl ClaudeCode {
         }
     }
 
-    /// A command against a program that has already been chosen, with the
-    /// constructed environment on it.
+    /// A command against a program that has already been chosen, with
+    /// [`ClaudeCode::environment`] on it and nothing else.
+    ///
+    /// It chooses no program. Its two callers below do, and they choose
+    /// differently on purpose.
+    fn with_environment(&self, program: &str, config_dir: Option<&Path>) -> Command {
+        let mut cmd = Command::new(program);
+        cmd.env_clear();
+        for (key, value) in self.environment(config_dir) {
+            cmd.env(key, value);
+        }
+        cmd
+    }
+
+    /// The whole environment a child of this adapter carries — a command's and
+    /// a session's alike, so the call that reads a listing and the pane that
+    /// holds the session it lists agree on every value.
     ///
     /// NOTHING IS INHERITED (lessons claude-code D1). A service-launched process
     /// carries a minimal `PATH`, and a `claude` that inherits it starts a daemon
@@ -177,37 +186,39 @@ impl ClaudeCode {
     /// directory would otherwise move off the operator's own login, and this
     /// process's own executable as the binary the plugin's hooks run.
     ///
-    /// It chooses no program. Its two callers below do, and they choose
-    /// differently on purpose.
-    ///
     /// `config_dir` is the ONE per-child override: a start that names its own
     /// configuration directory comes up under that one instead of the adapter's:
     /// each spawned seat has its own, holding only the pack's overlay. The
     /// credential knob beside it is unchanged either way — it is the operator's
     /// own configured value, and a child whose two variables agree is the
     /// logged-out child (A11).
-    fn with_environment(&self, program: &str, config_dir: Option<&Path>) -> Command {
-        let mut cmd = Command::new(program);
-        cmd.env_clear().env("PATH", &self.child_path);
+    pub fn environment(&self, config_dir: Option<&Path>) -> Vec<(String, String)> {
+        let mut env = vec![("PATH".to_string(), self.child_path.clone())];
         for pass in PASSED_THROUGH {
             if let Ok(value) = std::env::var(pass) {
-                cmd.env(pass, value);
+                env.push((pass.to_string(), value));
             }
         }
-        cmd.env("CLAUDE_CONFIG_DIR", config_dir.unwrap_or(&self.config_dir));
+        env.push((
+            "CLAUDE_CONFIG_DIR".to_string(),
+            config_dir.unwrap_or(&self.config_dir).display().to_string(),
+        ));
         // Set on EVERY child, defined even when empty: unset falls back to the
         // suffixed credential lookup, which is the logged-out child.
-        cmd.env("CLAUDE_SECURESTORAGE_CONFIG_DIR", &self.credential_dir);
+        env.push((
+            "CLAUDE_SECURESTORAGE_CONFIG_DIR".to_string(),
+            self.credential_dir.clone(),
+        ));
         // Set on EVERY child and not only the start, for the reason the PATH
-        // above is: a session is claimed from the agent's background daemon,
-        // and any of these calls can be the one that starts it (lessons
-        // claude-code D1). Without it the plugin's shim looks for a build under
-        // its own root, and a root holding none blocks every Bash command the
-        // session makes.
+        // above is: any call can be the one that starts the agent's background
+        // daemon (lessons claude-code D1), and a session holds what its own
+        // process was handed. Without it the plugin's shim looks for a build
+        // under its own root, and a root holding none blocks every Bash command
+        // the session makes.
         if let Some(bin) = &self.fleet_bin {
-            cmd.env(FLEET_BIN_VAR, bin);
+            env.push((FLEET_BIN_VAR.to_string(), bin.display().to_string()));
         }
-        cmd
+        env
     }
 
     /// The two READS — the listing and the version — against `bin`, which may be
@@ -254,20 +265,10 @@ impl ClaudeCode {
             None => self.bin.clone(),
         }
     }
-
-    /// Reap what has finished and keep what has not. Called on every start, so
-    /// a controller that starts sessions for weeks holds handles for the ones
-    /// still running and no more.
-    fn sweep_adopted(&self) {
-        if let Ok(mut adopted) = self.adopted.lock() {
-            adopted.retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_))));
-        }
-    }
 }
 
-/// Where a start's output goes, and where a nudge's does, under the machine
-/// directory.
-pub const STARTS_DIR: &str = "starts";
+/// Where a nudge's output goes, under the machine directory. A start's
+/// capture is core's (`crate::effect::STARTS_DIR`).
 pub const NUDGES_DIR: &str = "nudges";
 
 /// The environment a child keeps, beside the constructed `PATH`. Four values a
@@ -432,73 +433,63 @@ impl Agent for ClaudeCode {
         ".claude/settings.local.json"
     }
 
-    /// `--bg`, the name, the model, the posture and the plugin root the fleet
-    /// names, then the first turn as the prompt (lessons claude-code A5, D3,
-    /// D5). The wake rides the spawn: one act,
-    /// one channel, so the instruction cannot be lost without also losing the
-    /// session.
+    /// The resolved binary, the name, the model, the posture and the plugin
+    /// root the fleet names, then the first turn as the positional prompt
+    /// (lessons claude-code A5, D3, D5) — an INTERACTIVE session, with no
+    /// `--bg`: the pane is the session's host now and not the agent's daemon.
+    /// The wake rides the start: one act, one channel, so the instruction
+    /// cannot be lost without also losing the session. The positional turn
+    /// submits on its own (lessons claude-code D8, measured on 2.1.280).
     ///
-    /// The output goes to a FILE and never to a pipe (D2), and the child is
-    /// watched rather than waited on: one that exits inside the window is a
-    /// failed start carrying its own printed reason (A14), and one still running
-    /// when the window closes is OK — arrival is the roster's answer, never this
-    /// exit's (A7).
-    fn start(&self, spec: &StartSpec, watch: Duration) -> StartOutcome {
-        self.sweep_adopted();
-        let log = self.start_log_path(&spec.name);
-        let log_name = log.display().to_string();
-        let mut cmd = match self.effect_command_under(spec.config_dir.as_deref().map(Path::new)) {
-            Ok(cmd) => cmd,
-            Err(cause) => {
-                return StartOutcome::Failed {
-                    cause,
-                    log: log_name,
-                }
-            }
-        };
-        // WHO THE SESSION ACTS AS, on the start and on nothing else [ASSUMES
-        // D7]: its own bare verbs are the seat's. A nudge's print-mode turn
-        // writes nothing, so it carries no actor.
-        cmd.env(FLEET_ACTOR_VAR, &spec.actor);
-        cmd.args([
-            "--bg",
-            "--name",
-            &spec.name,
-            "--model",
-            &spec.model,
-            "--permission-mode",
-            &spec.posture,
-        ]);
+    /// A start under its own configuration directory is SEEDED first
+    /// ([`seed_config`]): that directory begins empty but for the overlay, and
+    /// an interactive session under an empty one stops at onboarding and then at
+    /// the workspace-trust question before any session exists (D8, A15). A
+    /// named seat's start names no directory and is seeded with nothing — its
+    /// checkout is a person's, and fleet trusts only worktrees it created
+    /// (ruling 13).
+    fn launch(&self, spec: &StartSpec) -> Result<Launch, String> {
+        let bin = self.effect_bin.as_ref().ok_or_else(|| {
+            "no agent binary is resolved for effects, so this call issues nothing".to_string()
+        })?;
+        let config_dir = spec.config_dir.as_deref().map(Path::new);
+        if let Some(dir) = config_dir {
+            seed_config(
+                dir,
+                &operator_file(&self.credential_dir, &self.config_dir),
+                Path::new(&spec.worktree),
+            )?;
+        }
+        let mut argv = vec![
+            bin.display().to_string(),
+            "--name".to_string(),
+            spec.name.clone(),
+            "--model".to_string(),
+            spec.model.clone(),
+            "--permission-mode".to_string(),
+            spec.posture.clone(),
+        ];
         // Only a loaded plugin root gives the session the overlay's hooks and
         // the root's bin on its `PATH` (lessons claude-code D5), and a fleet
         // that names none passes no such element.
         if let Some(plugin_dir) = spec.plugin_dir.as_deref() {
-            cmd.args(["--plugin-dir", plugin_dir]);
+            argv.push("--plugin-dir".to_string());
+            argv.push(plugin_dir.to_string());
         }
-        cmd.arg(&spec.first_turn).current_dir(&spec.worktree);
-        match self.spawned_to_file(cmd, &log, watch) {
-            Err(cause) => StartOutcome::Failed {
-                cause,
-                log: log_name,
-            },
-            Ok((_, Some(status))) if status.success() => StartOutcome::Started { log: log_name },
-            Ok((_, Some(status))) => StartOutcome::Failed {
-                cause: format!(
-                    "the start exited {} inside its {watch:?} watch window",
-                    status
-                        .code()
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|| "on a signal".to_string())
-                ),
-                log: log_name,
-            },
-            Ok((child, None)) => {
-                if let Ok(mut adopted) = self.adopted.lock() {
-                    adopted.push(child);
-                }
-                StartOutcome::Started { log: log_name }
-            }
-        }
+        argv.push(spec.first_turn.clone());
+        let mut env = self.environment(config_dir);
+        // WHO THE SESSION ACTS AS, on the start and on nothing else [ASSUMES
+        // D7]: its own bare verbs are the seat's. A nudge's print-mode turn
+        // writes nothing, so it carries no actor.
+        env.push((FLEET_ACTOR_VAR.to_string(), spec.actor.clone()));
+        Ok(Launch { argv, env })
+    }
+
+    /// Down, then Enter, when the screen is the workspace-trust question: its
+    /// default is "No, exit", and the second choice accepts (lessons
+    /// claude-code D8, A15).
+    fn trust_keys(&self, screen: &str) -> Option<Vec<String>> {
+        trust_keys(screen)
     }
 
     fn stop(&self, config_dir: Option<&Path>, short_id: &str) -> Result<(), String> {
@@ -691,38 +682,22 @@ impl ClaudeCode {
         ))
     }
 
-    /// Where one call's words go: named by the session and the moment, so two
-    /// calls for one seat never write over each other and an operator reading
-    /// the directory can tell which is which.
-    pub fn start_log_path(&self, session_name: &str) -> PathBuf {
-        self.log_path(STARTS_DIR, session_name)
-    }
-
+    /// Where one nudge's words go: named by the session and the moment, so two
+    /// nudges for one seat never write over each other and an operator reading
+    /// the directory can tell which is which — the naming a start's capture
+    /// takes too (`crate::effect::start_capture_path`).
     pub fn nudge_log_path(&self, session_name: &str) -> PathBuf {
-        self.log_path(NUDGES_DIR, session_name)
-    }
-
-    fn log_path(&self, dir: &str, session_name: &str) -> PathBuf {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        let safe: String = session_name
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-            .collect();
-        self.machine_dir
-            .join(dir)
-            .join(format!("{safe}-{stamp}.log"))
+        crate::effect::log_path(&self.machine_dir, NUDGES_DIR, session_name)
     }
 
     /// Spawn a child whose output goes to a file, and wait for it inside
     /// `watch`. `Ok(None)` is a child still running when the window closed.
     ///
-    /// A FILE and never a pipe, on both call sites (D2): `.output()` waits for
-    /// EOF rather than for the child, so anything still holding the write end —
-    /// the direct child included — keeps this loop blocked for as long as it
-    /// lives.
+    /// The nudge's alone since starts left `--bg` (fleet-rge6.2), and it goes
+    /// with the print-mode nudge (fleet-rge6.5). A FILE and never a pipe (D2):
+    /// `.output()` waits for EOF rather than for the child, so anything still
+    /// holding the write end — the direct child included — keeps this loop
+    /// blocked for as long as it lives.
     fn spawned_to_file(
         &self,
         mut cmd: Command,
@@ -866,6 +841,143 @@ pub fn parse_version(stdout: &str) -> Option<String> {
     stdout.split_whitespace().next().map(str::to_string)
 }
 
+/// The agent's own state file inside a configuration directory, where the
+/// onboarding stamp and the per-directory trust are kept.
+pub const STATE_FILE: &str = ".claude.json";
+
+/// The keys a seat's configuration directory is seeded with from the
+/// operator's own state file, every one REQUIRED: an interactive session under
+/// a directory missing them stops at the theme picker and then at the
+/// login-method menu before any session exists, and with them it came up
+/// logged in under the operator's subscription (lessons claude-code D8; the
+/// three measured sufficient on 2.1.280, 2026-09-26).
+pub const ONBOARDING_KEYS: [&str; 3] = [
+    "hasCompletedOnboarding",
+    "lastOnboardingVersion",
+    "oauthAccount",
+];
+
+/// The fourth key D8 copied, carried over WHERE THE OPERATOR'S FILE HAS IT and
+/// never required: on 2.1.280 a directory seeded without it met no theme
+/// picker (measured 2026-09-26), and this machine's own state file carries none
+/// — the setting lives in the operator's settings instead — so requiring it
+/// would refuse every spawn here over a key the start does not need.
+pub const THEME_KEY: &str = "theme";
+
+/// The per-directory table in [`STATE_FILE`], and the flag in an entry that
+/// says the workspace-trust question was answered yes (lessons claude-code
+/// A15). A directory whose entry carries it true started with no question on
+/// 2.1.280 (measured 2026-09-26).
+pub const PROJECTS_KEY: &str = "projects";
+pub const TRUST_KEY: &str = "hasTrustDialogAccepted";
+
+/// The operator's own state file, which the seed copies from: inside the
+/// configured configuration directory where the operator configured one, and
+/// beside the default directory — in the home — where they did not, which is
+/// where the agent itself keeps it in each case.
+///
+/// `credential_dir` is the configured value (empty for none) and `config_dir`
+/// the resolved one, so the unconfigured case is `config_dir`'s parent: the
+/// resolved directory is then `<home>/.claude` by `config_dir_from`'s own rule.
+pub fn operator_file(credential_dir: &str, config_dir: &Path) -> PathBuf {
+    if credential_dir.is_empty() {
+        config_dir.parent().unwrap_or(config_dir).join(STATE_FILE)
+    } else {
+        Path::new(credential_dir).join(STATE_FILE)
+    }
+}
+
+/// Seed a seat's configuration directory so an interactive session under it
+/// comes up with no question in front of it: the onboarding keys copied from
+/// `operator`'s state file, and the workspace-trust acceptance for `worktree`
+/// and for no other directory (ruling 13).
+///
+/// MERGED into whatever [`STATE_FILE`] the overlay already put in `dir`, so a
+/// pack's own keys survive: a seeded key is set and nothing else is touched.
+/// Nothing but the three keys and the theme is copied — the operator's own
+/// `projects` table least of all, which would trust every directory they have
+/// ever trusted.
+///
+/// The trust entry is keyed on the worktree RESOLVED, because the session
+/// reads its directory off its own process, which the operating system hands
+/// back resolved: a start given `/tmp/x` on this machine is listed at
+/// `/private/tmp/x`, and an entry keyed on the resolved path held for it
+/// (measured on 2.1.280, 2026-09-26). A path that will not resolve is keyed as
+/// given.
+pub fn seed_config(dir: &Path, operator: &Path, worktree: &Path) -> Result<(), String> {
+    let theirs = read_object(operator)?.ok_or_else(|| {
+        format!(
+            "{} is not there to copy the onboarding keys from",
+            operator.display()
+        )
+    })?;
+    let path = dir.join(STATE_FILE);
+    let mut seeded = read_object(&path)?.unwrap_or_default();
+    for key in ONBOARDING_KEYS {
+        let value = theirs.get(key).ok_or_else(|| {
+            format!(
+                "{} carries no `{key}`, which a seat's configuration directory is seeded with \
+                 so its session meets no onboarding",
+                operator.display()
+            )
+        })?;
+        seeded.insert(key.to_string(), value.clone());
+    }
+    if let Some(theme) = theirs.get(THEME_KEY) {
+        seeded.insert(THEME_KEY.to_string(), theme.clone());
+    }
+    let trusted = std::fs::canonicalize(worktree)
+        .unwrap_or_else(|_| worktree.to_path_buf())
+        .display()
+        .to_string();
+    let projects = seeded
+        .entry(PROJECTS_KEY)
+        .or_insert_with(|| serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .ok_or_else(|| format!("{}: `{PROJECTS_KEY}` is not an object", path.display()))?;
+    let entry = projects
+        .entry(trusted)
+        .or_insert_with(|| serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .ok_or_else(|| format!("{}: the worktree's entry is not an object", path.display()))?;
+    entry.insert(TRUST_KEY.to_string(), serde_json::Value::Bool(true));
+    let body = serde_json::to_vec_pretty(&serde_json::Value::Object(seeded))
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    crate::platform::write_atomic(&path, &body)
+        .map_err(|e| format!("{} was not written: {e}", path.display()))
+}
+
+/// A JSON object read off `path`, `None` where there is no file, and a refusal
+/// naming the file where there is one that is not an object.
+fn read_object(path: &Path) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{} could not be read: {e}", path.display())),
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(serde_json::Value::Object(map)) => Ok(Some(map)),
+        Ok(_) => Err(format!("{} is not a JSON object", path.display())),
+        Err(e) => Err(format!("{} is not JSON: {e}", path.display())),
+    }
+}
+
+/// The workspace-trust question's accepting choice, as the screen spells it on
+/// 2.1.280 (measured 2026-09-26): the dialog lists "No, exit" first, selected,
+/// and this second.
+pub const TRUST_CHOICE: &str = "Yes, I trust this folder";
+
+/// The keys that accept the workspace-trust question, when `screen` shows it:
+/// Down onto the accepting choice, then Enter (lessons claude-code D8).
+///
+/// The screen is read with its whitespace collapsed, so a choice the pane's
+/// width wrapped is still one phrase.
+pub fn trust_keys(screen: &str) -> Option<Vec<String>> {
+    let flat = screen.split_whitespace().collect::<Vec<_>>().join(" ");
+    flat.contains(TRUST_CHOICE)
+        .then(|| vec!["Down".to_string(), "C-m".to_string()])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -950,7 +1062,6 @@ mod tests {
             credential_dir: String::new(),
             effect_bin: None,
             fleet_bin: None,
-            adopted: Mutex::new(Vec::new()),
         };
         let cause = match empty.status(None) {
             RosterRead::Unreadable { cause } => cause,
@@ -994,7 +1105,6 @@ mod tests {
             credential_dir: String::new(),
             effect_bin: None,
             fleet_bin: None,
-            adopted: Mutex::new(Vec::new()),
         };
         let control = match present.status(None) {
             RosterRead::Unreadable { cause } => cause,
@@ -1028,7 +1138,6 @@ mod tests {
             credential_dir: String::new(),
             effect_bin: None,
             fleet_bin: None,
-            adopted: Mutex::new(Vec::new()),
         };
         let answered = match answering.status(None) {
             RosterRead::Unreadable { cause } => cause,
@@ -1147,6 +1256,42 @@ mod tests {
             above_default,
             "a seam above the default is honoured, not capped at it"
         );
+    }
+
+    /// The operator's state file is where the agent itself keeps it: inside a
+    /// configured configuration directory, and in the home — beside the
+    /// default directory — where none is configured. The two cases differ in
+    /// the one input `credential_dir_from` reads, so each is read through it.
+    #[test]
+    fn the_operator_file_is_inside_a_configured_directory_and_in_the_home_otherwise() {
+        let home = Path::new("/a-home");
+        let unconfigured = operator_file(&credential_dir_from(None), &config_dir_from(None, home));
+        assert_eq!(unconfigured, PathBuf::from("/a-home/.claude.json"));
+        let configured = operator_file(
+            &credential_dir_from(Some("/opt/cfg")),
+            &config_dir_from(Some("/opt/cfg"), home),
+        );
+        assert_eq!(configured, PathBuf::from("/opt/cfg/.claude.json"));
+    }
+
+    /// The trust question's keys come back only for a screen showing its
+    /// accepting choice, wrapped or not — and never for a session at its
+    /// prompt, which a start must not type into.
+    #[test]
+    fn the_trust_keys_answer_the_trust_question_and_nothing_else() {
+        let asked = " Quick safety check: Is this a project you created or one you trust?\n\
+                     ❯ No, exit\n   Yes, I trust this folder\n";
+        assert_eq!(
+            trust_keys(asked),
+            Some(vec!["Down".to_string(), "C-m".to_string()])
+        );
+        let wrapped = "❯ No, exit\n   Yes, I trust\nthis folder\n";
+        assert!(
+            trust_keys(wrapped).is_some(),
+            "a wrapped choice is one phrase"
+        );
+        let at_the_prompt = " ▐▛███▜▌   Claude Code v2.1.280\n❯ \n  ⏸ manual mode on\n";
+        assert_eq!(trust_keys(at_the_prompt), None);
     }
 
     /// Every reading that is not a positive whole number of milliseconds is the

@@ -8,18 +8,19 @@
 //! is to dispatch nothing: it is published as its own outcome, and its line and
 //! its event are written once, at the transition into the hold.
 
-use crate::adapter::{Agent, RemoveAnswer, StartOutcome, StartSpec};
+use crate::adapter::{Agent, RemoveAnswer, RosterRead, StartSpec};
 use crate::events::{self, ActorRef, EventLog};
+use crate::host::{self, Host, HostRead, PaneState};
 use crate::policy::Policy;
 use crate::sessions::{SessionRow, Table};
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
-use std::path::Path;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// What an effect DID, for the projection's row. Never a liveness claim: a
-/// start that returned OK is a start that did not fail, and arrival is the
-/// roster's answer on the next poll (lessons claude-code A7).
+/// start that returned OK is one the listing showed as it came up, and whether
+/// it is still there is the next poll's answer, not this one's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     None,
@@ -109,19 +110,20 @@ impl Target<'_> {
 
 /// Start a woken session for this seat, and open its row.
 ///
-/// On a failed start there is NO ROW. A row for a session that never came up is
-/// a dispatch the arrival window then waits on forever, which is the false
-/// success A14 is about — so the failure is an event and nothing else, and the
-/// next poll finds the seat absent and eligible again.
+/// On a failed start there is NO ROW and NO SESSION. A row for a session that
+/// never came up is a dispatch the arrival window then waits on forever — so
+/// the failure is an event and nothing else, the session is killed on the
+/// host, and the next poll finds the seat absent and eligible again.
 pub fn spawn_woken(
     agent: &dyn Agent,
+    host: &dyn Host,
     policy: &Policy,
     target: &Target,
     events_log: &mut EventLog,
     table: &mut Table,
     now_ms: u64,
 ) -> Outcome {
-    match start_once(agent, policy, target, events_log) {
+    match start_once(agent, host, policy, target, events_log) {
         Ok(dispatch_id) => {
             open_row(table, target, dispatch_id, now_ms);
             Outcome::Spawned
@@ -205,9 +207,16 @@ pub enum Rested {
 
 pub const PHASE_START: &str = "start";
 
-/// A `session.crashed` payload, written by the layer that met the failure.
-pub fn crashed_payload(phase: &str, cause: &str, log: &str) -> serde_json::Value {
-    serde_json::json!({ "phase": phase, "cause": cause, "output": log })
+/// A `session.crashed` payload, written by the layer that met the failure:
+/// the cause, the file holding the session's last screen where one was kept,
+/// and the pane's exit status where it died with one.
+pub fn crashed_payload(
+    phase: &str,
+    cause: &str,
+    output: Option<&str>,
+    status: Option<i32>,
+) -> serde_json::Value {
+    serde_json::json!({ "phase": phase, "cause": cause, "output": output, "status": status })
 }
 
 /// Names the event types an EFFECT writes, so a reader of the stream and a
@@ -231,9 +240,164 @@ pub const WRITES: [&str; 9] = [
     events::DISPATCH_BLIND,
 ];
 
+/// Where a start's capture goes, under the machine directory: the pane's text
+/// as it stood when the start was given up on, which is the only account of
+/// why a session that never listed did not.
+pub const STARTS_DIR: &str = "starts";
+
+/// How often a start's watch reads the pane and the listing. The listing
+/// answered in 100–160 ms (lessons claude-code B10) and an interactive row
+/// was listed 0.5–0.75 s after the session was made, carrying its status half
+/// a second later (measured on 2.1.280, 2026-09-26), so a quarter second
+/// believes a start within one read of its row and costs a handful of reads.
+pub const WATCH_TICK: Duration = Duration::from_millis(250);
+
+/// Where one call's words go under the machine directory: named by the
+/// session and the moment, so two calls for one seat never write over each
+/// other and an operator reading the directory can tell which is which.
+pub fn log_path(machine_dir: &Path, dir: &str, session_name: &str) -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let safe: String = session_name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    machine_dir.join(dir).join(format!("{safe}-{stamp}.log"))
+}
+
+/// Where a start's capture is kept: `<machine>/starts/<name>-<ms>.log`.
+pub fn start_capture_path(machine_dir: &Path, session_name: &str) -> PathBuf {
+    log_path(machine_dir, STARTS_DIR, session_name)
+}
+
+/// What a start's watch saw.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Watched {
+    /// The listing shows a row whose pid is the pane's and which carries a
+    /// status (lessons claude-code B10): the agent is up, and up as this
+    /// pane's process. `trust_answered` is a start whose screen stopped at the
+    /// workspace-trust question and was answered from it — the fallback the
+    /// seeded acceptance should leave unused, recorded so a reader of the
+    /// stream sees that it was not.
+    Started { trust_answered: bool },
+    /// The pane died, the session went, or the window closed with no row. The
+    /// session HAS BEEN KILLED — a failed start leaves nothing on the host — and
+    /// `screen` is its last capture where one could be taken.
+    Failed {
+        cause: String,
+        /// The pane's exit status where it died with one.
+        status: Option<i32>,
+        screen: Option<String>,
+    },
+}
+
+/// Watch a session the host has just started until the agent's own listing
+/// shows it, reading the pane and the listing every [`WATCH_TICK`] until
+/// `window` closes.
+///
+/// A DEAD PANE is a failed start carrying its exit status (the pane keeps it,
+/// remain-on-exit), which replaces the in-band exit a background start used to
+/// report (lessons claude-code A14, retired). A LIVE PANE is believed only when
+/// a listed row carries its pid and a status — the pid, because the pane's
+/// process IS the agent (E2) and a row in the same worktree proves nothing
+/// (B5); the status, because a row is listed half a second before it carries
+/// one and a start is not taken until it does (B10). Neither inside the window
+/// is a failure too: a session that runs and never lists is one no read will
+/// ever see.
+///
+/// `answer_trust` is a start into a worktree fleet created, and only such a
+/// start may answer the agent's workspace-trust question from the screen
+/// (ruling 13). The screen is read only while no row is listed, and answered
+/// at most once.
+///
+/// Every `Failed` kills the session first: its capture is taken, then the
+/// session ended, so a failed start's rollback finds nothing left on the host.
+pub fn watch_start(
+    agent: &dyn Agent,
+    host: &dyn Host,
+    session: &str,
+    config_dir: Option<&Path>,
+    answer_trust: bool,
+    window: Duration,
+) -> Watched {
+    let deadline = Instant::now() + window;
+    let mut trust_answered = false;
+    let failed = |cause: String, status: Option<i32>| {
+        let screen = host.capture(session).ok();
+        let _ = host.kill(session);
+        Watched::Failed {
+            cause,
+            status,
+            screen,
+        }
+    };
+    loop {
+        // An unreadable host listing concludes nothing: the pane may be fine
+        // and the read not, and the window is what bounds the wait.
+        if let HostRead::Readable(panes) = host.list() {
+            match panes.into_iter().find(|pane| pane.session == session) {
+                None => {
+                    return failed(format!("the session {session} is gone from the host"), None)
+                }
+                Some(pane) => match pane.state {
+                    PaneState::Dead { status } => {
+                        return failed(
+                            format!(
+                                "the session exited {} inside its {}s watch window",
+                                status
+                                    .map(|code| code.to_string())
+                                    .unwrap_or_else(|| "on a signal".to_string()),
+                                window.as_secs()
+                            ),
+                            status,
+                        )
+                    }
+                    PaneState::Alive => {
+                        if let (Some(pid), RosterRead::Readable(rows)) =
+                            (pane.pid, agent.status(config_dir))
+                        {
+                            if rows
+                                .iter()
+                                .any(|row| row.pid == Some(pid) && row.status.is_some())
+                            {
+                                return Watched::Started { trust_answered };
+                            }
+                        }
+                        if answer_trust && !trust_answered {
+                            if let Some(keys) = host
+                                .capture(session)
+                                .ok()
+                                .and_then(|screen| agent.trust_keys(&screen))
+                            {
+                                let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+                                trust_answered = host.keys(session, &keys).is_ok();
+                            }
+                        }
+                    }
+                },
+            }
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return failed(format!("no listed row within {}s", window.as_secs()), None);
+        }
+        std::thread::sleep(WATCH_TICK.min(deadline - now));
+    }
+}
+
 /// One start, its event, and the id the row is keyed on.
+///
+/// The adapter answers what to run ([`Agent::launch`]), the host runs it as the
+/// seat's own session ([`host::session_for`]), and [`watch_start`] decides
+/// whether it came up. A session already on the host under the seat's name is
+/// looked at first: a DEAD one — a pane kept after its agent ended — is
+/// cleared, because it is no session and it holds the name; a LIVE one is a
+/// start refused, never a session killed, because this start did not make it.
 pub fn start_once(
     agent: &dyn Agent,
+    host: &dyn Host,
     policy: &Policy,
     target: &Target,
     events_log: &mut EventLog,
@@ -255,8 +419,37 @@ pub fn start_once(
             .map(|dir| dir.display().to_string()),
         config_dir: target.config_dir.clone(),
     };
-    match agent.start(&spec, Duration::from_secs(policy.start_watch_seconds)) {
-        StartOutcome::Started { log } => {
+    let session = host::session_for(&target.seat);
+    let window = Duration::from_secs(policy.start_watch_seconds);
+    let watched = match cleared(host, &session)
+        .and_then(|()| agent.launch(&spec))
+        .and_then(|launch| {
+            host.new_session(
+                &session,
+                Path::new(target.worktree),
+                &launch.argv,
+                &launch.env,
+            )
+            .map_err(|cause| format!("the host did not start the session: {cause}"))
+        }) {
+        // Nothing was started, so nothing is killed: a refusal here may be
+        // over a live session that is not this start's to end.
+        Err(cause) => Watched::Failed {
+            cause,
+            status: None,
+            screen: None,
+        },
+        Ok(()) => watch_start(
+            agent,
+            host,
+            &session,
+            target.config_dir(),
+            target.config_dir.is_some(),
+            window,
+        ),
+    };
+    match watched {
+        Watched::Started { trust_answered } => {
             let payload = serde_json::json!({
                 "worktree": target.worktree,
                 "project": target.project,
@@ -270,7 +463,10 @@ pub fn start_once(
                 "settings": target.settings,
                 "belt": target.belt,
                 "run": target.run,
-                "output": log,
+                // The session's words are in its pane, so the output a reader
+                // is pointed at is the session itself, on fleet's own server.
+                "output": format!("-L {} -t {session}", host::SOCKET),
+                "trust_answered": trust_answered,
             });
             Ok(append(
                 events_log,
@@ -279,16 +475,54 @@ pub fn start_once(
                 payload,
             ))
         }
-        StartOutcome::Failed { cause, log } => {
+        Watched::Failed {
+            cause,
+            status,
+            screen,
+        } => {
+            let output = screen
+                .and_then(|screen| keep_capture(events_log.dir()?, &target.session_name, &screen));
             append(
                 events_log,
                 events::SESSION_CRASHED,
                 &ActorRef::seat(target.seat),
-                crashed_payload(PHASE_START, &cause, &log),
+                crashed_payload(PHASE_START, &cause, output.as_deref(), status),
             );
             Err(cause)
         }
     }
+}
+
+/// The seat's name on the host made free for a start, or why it cannot be.
+///
+/// A dead pane under it is killed — its agent is gone and the pane is only its
+/// last screen — and a live one refuses the start. An unreadable host listing
+/// is left to the start itself, which fails at the host in the host's own
+/// words if the name is taken.
+fn cleared(host: &dyn Host, session: &str) -> Result<(), String> {
+    let HostRead::Readable(panes) = host.list() else {
+        return Ok(());
+    };
+    match panes.iter().find(|pane| pane.session == session) {
+        None => Ok(()),
+        Some(pane) if pane.state == PaneState::Alive => Err(format!(
+            "the session {session} is already running on the host, and this start did not \
+             start it"
+        )),
+        Some(_) => host
+            .kill(session)
+            .map_err(|cause| format!("the dead session {session} could not be cleared: {cause}")),
+    }
+}
+
+/// Write a start's last capture under the machine directory and answer where,
+/// or `None` where it could not be kept — the start has failed either way, and
+/// a capture that could not be written is not a second failure.
+fn keep_capture(machine_dir: &Path, session_name: &str, screen: &str) -> Option<String> {
+    let path = start_capture_path(machine_dir, session_name);
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    std::fs::write(&path, screen).ok()?;
+    Some(path.display().to_string())
 }
 
 /// The rest collection, in a fixed order: stop, start the successor, then
@@ -305,6 +539,7 @@ pub fn start_once(
 /// nothing.
 pub fn rest(
     agent: &dyn Agent,
+    host: &dyn Host,
     policy: &Policy,
     target: &Target,
     events_log: &mut EventLog,
@@ -317,7 +552,7 @@ pub fn rest(
     if let Err(cause) = agent.stop(target.config_dir(), short_id) {
         return Rested::StopFailed(cause);
     }
-    let started = start_once(agent, policy, target, events_log);
+    let started = start_once(agent, host, policy, target, events_log);
     let dispatch_id = match started {
         Ok(id) => id,
         // The stop landed and the start did not. The predecessor is down, its

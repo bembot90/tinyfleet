@@ -10,11 +10,11 @@
 //! be setting it for every thread in the binary. Inside this one the rigs are
 //! serialised on the lock each holds for its whole life.
 
-use fleet_controller::adapter::StartOutcome;
+use fleet_controller::adapter::RosterRead;
 use fleet_controller::clock::Clock;
 use fleet_controller::platform::{self, Grant};
 use fleet_controller::run::{self, Options, Seams, StopHandler};
-use fleet_controller::test_support::{Answers, FakeClock, StubAgent};
+use fleet_controller::test_support::{self, Answers, FakeClock, FakeHost, StubAgent};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -205,6 +205,17 @@ const A_TICKS_VERBS: [&str; 4] = [
     StubAgent::START,
 ];
 
+/// A stub whose listing shows the one session a start on a fresh [`FakeHost`]
+/// brings up, by its pane's pid, so the start is believed at its first read
+/// and its watch spends no wall clock. The row stands in no seat's worktree,
+/// so the seat still reads absent on the tick that starts it.
+fn listing_its_arrival() -> StubAgent {
+    StubAgent::answering(Answers {
+        status: RosterRead::Readable(test_support::arrivals(1)),
+        ..Answers::default()
+    })
+}
+
 fn assert_the_tick_ran(stub: &StubAgent) {
     let verbs = stub.verbs();
     for verb in A_TICKS_VERBS {
@@ -226,7 +237,8 @@ fn assert_the_tick_ran(stub: &StubAgent) {
 #[test]
 fn a_run_of_ticks_spends_its_poll_interval_in_fake_time_and_costs_no_wall_clock() {
     let rig = Rig::new("nap");
-    let stub = StubAgent::new();
+    let stub = listing_its_arrival();
+    let host = FakeHost::new();
     let clock = NapThenStop::new(Duration::from_secs(POLL_SECONDS));
     let watchdog = Watchdog::armed();
 
@@ -238,6 +250,7 @@ fn a_run_of_ticks_spends_its_poll_interval_in_fake_time_and_costs_no_wall_clock(
         Seams {
             clock: &clock,
             agent: &stub,
+            host: &host,
             child_path: "",
             effects_off: None,
             stop_handler: StopHandler::Unarmed,
@@ -277,7 +290,8 @@ fn a_run_of_ticks_spends_its_poll_interval_in_fake_time_and_costs_no_wall_clock(
 #[test]
 fn one_tick_reaches_the_agent_for_every_call_the_poll_makes_and_publishes_its_outcome() {
     let rig = Rig::new("tick");
-    let stub = StubAgent::new();
+    let stub = listing_its_arrival();
+    let host = FakeHost::new();
     let clock = FakeClock::new();
 
     let status = run::observe_seamed(
@@ -287,6 +301,7 @@ fn one_tick_reaches_the_agent_for_every_call_the_poll_makes_and_publishes_its_ou
         Seams {
             clock: &clock,
             agent: &stub,
+            host: &host,
             child_path: "",
             effects_off: None,
             stop_handler: StopHandler::Unarmed,
@@ -333,12 +348,10 @@ fn one_tick_reaches_the_agent_for_every_call_the_poll_makes_and_publishes_its_ou
 fn a_start_the_agent_refuses_is_published_as_a_failed_outcome() {
     let rig = Rig::new("refused");
     let stub = StubAgent::answering(Answers {
-        start: StartOutcome::Failed {
-            cause: "the arm refused this start".to_string(),
-            log: String::new(),
-        },
+        launch: Err("the arm refused this start".to_string()),
         ..Answers::default()
     });
+    let host = FakeHost::new();
     let clock = FakeClock::new();
 
     let status = run::observe_seamed(
@@ -348,6 +361,7 @@ fn a_start_the_agent_refuses_is_published_as_a_failed_outcome() {
         Seams {
             clock: &clock,
             agent: &stub,
+            host: &host,
             child_path: "",
             effects_off: None,
             stop_handler: StopHandler::Unarmed,

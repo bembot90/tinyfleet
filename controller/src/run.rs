@@ -103,12 +103,14 @@ pub fn observe_clocked(
 }
 
 /// What the loop acts through that somebody has to OWN: the agent this fleet
-/// runs, the `PATH` a routine's children carry, and why no effect may be issued.
+/// runs, the host its sessions run on, the `PATH` a routine's children carry,
+/// and why no effect may be issued.
 ///
-/// [`Seams`] borrows all three, so a caller driving ticks itself holds one of
+/// [`Seams`] borrows all four, so a caller driving ticks itself holds one of
 /// these for as long as its [`Observer`] lives.
 pub struct Wiring {
     agent: ClaudeCode,
+    host: Box<dyn crate::host::Host>,
     child_path: String,
     effects_off: Option<String>,
 }
@@ -140,11 +142,28 @@ impl Wiring {
         if let Ok(bin) = &effect_bin {
             agent = agent.with_effect_bin(bin.clone());
         }
+        // The host every start runs its session on, resolved ONCE beside the
+        // binary and on the same constructed `PATH`. Unresolvable is effects
+        // off in the same way: every effect that starts a session needs it, so
+        // a loop without one publishes why rather than failing each start in
+        // turn. The agent's cause is named first where both fail — it is the
+        // older gate, and the one an operator already knows to read.
+        let host = crate::host::TmuxHost::resolve(&agent.child_path);
         let child_path = agent.child_path.clone();
+        let effects_off = match (effect_bin, &host) {
+            (Err(cause), _) => Some(cause),
+            (Ok(_), Err(cause)) => Some(cause.clone()),
+            (Ok(_), Ok(_)) => None,
+        };
+        let host: Box<dyn crate::host::Host> = match host {
+            Ok(host) => Box::new(host),
+            Err(cause) => Box::new(crate::host::Unresolved { cause }),
+        };
         Wiring {
             agent,
+            host,
             child_path,
-            effects_off: effect_bin.err(),
+            effects_off,
         }
     }
 
@@ -158,6 +177,7 @@ impl Wiring {
         Seams {
             clock,
             agent: &self.agent,
+            host: self.host.as_ref(),
             child_path: &self.child_path,
             effects_off: self.effects_off.clone(),
             stop_handler,
@@ -187,6 +207,10 @@ pub enum StopHandler {
 pub struct Seams<'a> {
     pub clock: &'a dyn Clock,
     pub agent: &'a dyn Agent,
+    /// The host a start runs the seat's session on (`crate::host`). The agent
+    /// says what to run and this runs it (ruling 2), so the two are separate
+    /// seams and an in-process suite hands in a fake of each.
+    pub host: &'a dyn crate::host::Host,
     /// The `PATH` every child a routine's action starts carries.
     pub child_path: &'a str,
     /// Why no effect may be issued, or `None` for a fleet that can issue them.
@@ -990,6 +1014,7 @@ impl<'a> Observer<'a> {
                 let seat = &self.config.seats[*index];
                 let outcome = act(
                     agent,
+                    self.seams.host,
                     &self.policy,
                     seat,
                     observation,
@@ -1253,6 +1278,7 @@ impl<'a> Observer<'a> {
 #[allow(clippy::too_many_arguments)]
 fn act(
     agent: &dyn Agent,
+    host: &dyn crate::host::Host,
     policy: &Policy,
     seat: &Seat,
     observation: &SeatObservation,
@@ -1290,11 +1316,11 @@ fn act(
             write_projection(machine_dir, document);
             let outcome = match verdict {
                 Verdict::SpawnWoken => {
-                    effect::spawn_woken(agent, policy, &target, events_log, table, now_ms)
+                    effect::spawn_woken(agent, host, policy, &target, events_log, table, now_ms)
                 }
                 Verdict::Revive => effect::revive(agent, &target, events_log, table, now_ms),
                 Verdict::Rest => {
-                    match effect::rest(agent, policy, &target, events_log, table, now_ms) {
+                    match effect::rest(agent, host, policy, &target, events_log, table, now_ms) {
                         effect::Rested::Collected => Outcome::Rested,
                         effect::Rested::StopFailed(cause) => {
                             if rest_failed_said.insert(format!(

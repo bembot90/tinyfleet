@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use fleet_controller::adapter::claude_code::ClaudeCode;
+use fleet_controller::host::{Host, TmuxHost};
 use fleet_controller::transient::{self, Machine, Refusal};
 use fleet_controller::{clock, config, platform, policy as controller, sessions};
 use fleet_core::entry::Entry;
@@ -102,6 +103,12 @@ pub fn spawn_command(args: &SpawnArgs) -> Exit {
         Ok(agent) => agent,
         Err(stop) => return stopped(SPAWN, &stop, args.json),
     };
+    // A spawn IS a session started on the host, so a host that does not
+    // resolve refuses here, before a name is claimed or a worktree made.
+    let host = match spawn_host(&home) {
+        Ok(host) => host,
+        Err(stop) => return stopped(SPAWN, &stop, args.json),
+    };
     let policy = match policy_of(&here) {
         Ok(policy) => policy,
         Err(stop) => return stopped(SPAWN, &stop, args.json),
@@ -118,7 +125,7 @@ pub fn spawn_command(args: &SpawnArgs) -> Exit {
         Ok(files) => files,
         Err(stop) => return stopped(SPAWN, &stop, args.json),
     };
-    let machine = machine_of(&here, &at, &agent, &policy);
+    let machine = machine_of(&here, &at, &agent, &host, &policy);
 
     match transient::spawn(
         &machine,
@@ -199,7 +206,8 @@ pub fn feed_command(args: &FeedArgs) -> Exit {
         Ok(at) => at,
         Err(stop) => return stopped(FEED, &stop, args.json),
     };
-    let machine = machine_of(&here, &at, &agent, &policy);
+    let host = verb_host(&home);
+    let machine = machine_of(&here, &at, &agent, host.as_ref(), &policy);
 
     match transient::feed(&machine, &seat, &first_turn) {
         Ok(fed) => {
@@ -257,7 +265,8 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
         Ok(at) => at,
         Err(stop) => return stopped(RETIRE, &stop, args.json),
     };
-    let machine = machine_of(&here, &at, &agent, &policy);
+    let host = verb_host(&home);
+    let machine = machine_of(&here, &at, &agent, host.as_ref(), &policy);
 
     // THE ITEM THIS SEAT WAS DISPATCHED, and the timeline that answers for it,
     // read BEFORE the retire drops the row that names it. Neither is a reading
@@ -473,6 +482,10 @@ impl Spawner for TransientSpawner<'_> {
             Ok(agent) => agent,
             Err(stop) => return outcome_of(stop.code, stop.message),
         };
+        let host = match spawn_host(&self.home) {
+            Ok(host) => host,
+            Err(stop) => return outcome_of(stop.code, stop.message),
+        };
         let policy = match policy_of(self.here) {
             Ok(policy) => policy,
             Err(stop) => return outcome_of(stop.code, stop.message),
@@ -489,7 +502,7 @@ impl Spawner for TransientSpawner<'_> {
             Ok(files) => files,
             Err(stop) => return outcome_of(stop.code, stop.message),
         };
-        let machine = machine_of(self.here, &at, &agent, &policy);
+        let machine = machine_of(self.here, &at, &agent, &host, &policy);
         match transient::spawn(
             &machine,
             &transient::Spawn {
@@ -551,11 +564,13 @@ pub(crate) fn machine_of<'a>(
     here: &'a Here,
     at: &'a Where,
     agent: &'a ClaudeCode,
+    host: &'a dyn Host,
     policy: &'a controller::Policy,
 ) -> Machine<'a> {
     Machine {
         machine_dir: &here.machine_dir,
         agent,
+        host,
         policy,
         project: &here.project.name,
         primary: &at.primary,
@@ -813,6 +828,22 @@ pub(crate) fn effect_agent(here: &Here, home: &Path) -> Result<ClaudeCode, Stop>
     )
     .map_err(Stop::could_not_tell)?;
     Ok(agent.with_effect_bin(bin))
+}
+
+/// The host a spawn starts its session on, resolved ONCE on the constructed
+/// `PATH` the adapter's children carry, or the refusal naming why there is
+/// none — for a verb whose whole act is a session started, and which must not
+/// claim a name or make a worktree for a start that cannot happen.
+pub(crate) fn spawn_host(home: &Path) -> Result<TmuxHost, Stop> {
+    TmuxHost::resolve(&platform::child_path(home)).map_err(Stop::could_not_tell)
+}
+
+/// The host for a verb that starts no session: resolved the same way, and
+/// where it does not resolve, a host that refuses every call with the cause —
+/// so a machine with no host can still feed and retire, and a call that did
+/// need one names why it failed.
+pub(crate) fn verb_host(home: &Path) -> Box<dyn Host> {
+    fleet_controller::host::resolve(&platform::child_path(home))
 }
 
 /// The first turn's TEXT. A file that is not there is a usage error and not a

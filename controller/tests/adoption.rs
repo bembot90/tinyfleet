@@ -29,7 +29,7 @@ use fleet_controller::adapter::{dir_key, transcript_path, DaemonRead};
 use fleet_controller::clock::Clock;
 use fleet_controller::platform::{self, Grant};
 use fleet_controller::run::{self, Options, Seams, StopHandler};
-use fleet_controller::test_support::{Answers, FakeClock, StubAgent};
+use fleet_controller::test_support::{Answers, FakeClock, FakeHost, StubAgent};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -579,6 +579,8 @@ fn one_controller_polling_twice_revives_a_claimed_pid_less_row_on_neither_tick()
         .then(|| stub.set(|answers| answers.status = hibernated.clone()));
     let watchdog = Watchdog::armed();
 
+    let host = FakeHost::new();
+
     let status = run::observe_seamed(
         &Options { once: false },
         rig.grant(),
@@ -586,6 +588,7 @@ fn one_controller_polling_twice_revives_a_claimed_pid_less_row_on_neither_tick()
         Seams {
             clock: &clock,
             agent: &stub,
+            host: &host,
             child_path: "",
             effects_off: None,
             stop_handler: StopHandler::Unarmed,

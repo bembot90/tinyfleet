@@ -47,7 +47,7 @@ use fleet_controller::adapter::claude_code::ClaudeCode;
 use fleet_controller::adapter::{encode_project_dir, Agent, RosterRead};
 use fleet_controller::platform::child_path;
 use fleet_controller::run;
-use fleet_controller::test_support::FakeClock;
+use fleet_controller::test_support::{FakeClock, FakeServer};
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
@@ -143,10 +143,10 @@ const ESCAPEE: &str = "escapee";
 /// marks on the attempt that is then discarded and not on the retry.
 const PREAMBLE: &str = "preamble";
 
-/// The four effect branches' exit statuses, one seam each. A failed stop and a
-/// failed start are then one file apart, which is what lets an arm drive the
+/// The effect branches' exit statuses, one seam each. A failed start is the
+/// host's and not the stub's ([`Rig::set_start_exit`]), so a failed stop and a
+/// failed start are still one call apart, which is what lets an arm drive the
 /// half of a collection that fails without a second stub.
-const START_EXIT: &str = "start-exit";
 const STOP_EXIT: &str = "stop-exit";
 const RM_EXIT: &str = "rm-exit";
 const NUDGE_EXIT: &str = "nudge-exit";
@@ -511,6 +511,53 @@ struct Rig {
     stub_escapes: std::cell::Cell<bool>,
 }
 
+/// One session start as the host received it: the directory, the environment
+/// the pane was handed and the argv it runs, program first.
+#[derive(Clone, Debug)]
+struct HostStart {
+    cwd: String,
+    env: Vec<(String, String)>,
+    argv: Vec<String>,
+}
+
+impl HostStart {
+    /// A start out of one recorded tmux client call, or `None` for a call that
+    /// started nothing. The call is the host's own shape — `new-session … -c
+    /// <cwd> -- /usr/bin/env -i K=V … TERM=… <argv>` — whose `TERM` is always
+    /// the last assignment, so the argv is everything after it.
+    fn of(args: &[String]) -> Option<HostStart> {
+        let at = args.iter().position(|a| a == "new-session")?;
+        let rest = &args[at..];
+        let cwd = rest
+            .iter()
+            .position(|a| a == "-c")
+            .and_then(|c| rest.get(c + 1))?
+            .clone();
+        let command = &rest[rest.iter().position(|a| a == "--")? + 1..];
+        let term = command.iter().position(|a| a.starts_with("TERM="))?;
+        let env = command[..term]
+            .iter()
+            .filter_map(|pair| pair.split_once('='))
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+        Some(HostStart {
+            cwd,
+            env,
+            argv: command[term + 1..].to_vec(),
+        })
+    }
+
+    /// One variable of the pane's environment, empty where it was not handed
+    /// one.
+    fn var(&self, key: &str) -> String {
+        self.env
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default()
+    }
+}
+
 impl Rig {
     /// A whole machine in a temp directory: the fleet directory, a home the
     /// transcripts sit under, a policy file, and a stub agent on the path the
@@ -548,6 +595,11 @@ impl Rig {
         // a spawn whose working directory is not there fails before the child
         // runs a line — which is a defect of the rig, not of the controller.
         std::fs::create_dir_all(rig.worktree()).unwrap();
+        // The host a start runs its session on: this rig's own tmux stub, which
+        // every fleet the rig runs is pointed at. And the operator's state file
+        // a start under a directory of its own seeds from.
+        common::stub_tmux(&rig.root.join("tmux"));
+        fleet_controller::test_support::plant_operator_state(&rig.home());
         rig.write_policy(POLICY_1S);
         rig.write_config(&rig.one_seat_config(rig.policy_path()));
         rig.write_roster("[]");
@@ -1056,53 +1108,109 @@ impl Rig {
         self.root.join("calls.log")
     }
 
+    /// The calls in the order they arrived, the host's session starts among
+    /// them.
+    ///
+    /// A start is no call of the stub's any more: the session comes up on the
+    /// rig's tmux stub. So each line the stub writes carries, ahead of it, how
+    /// many sessions the host had been asked to start at that moment, and a
+    /// `start <args>` line is put in for each start at the place that count
+    /// says it happened — the args read off the host's own record of the
+    /// start ([`Rig::host_starts`]). The order is the witnesses', never an
+    /// assumption: a start the host recorded after a line is after it here.
     fn calls(&self) -> Vec<String> {
-        std::fs::read_to_string(self.calls_path())
-            .map(|body| body.lines().map(str::to_string).collect())
+        let starts = self.host_starts();
+        let start_line = |k: usize| {
+            let args = starts[k].argv.iter().skip(1).cloned();
+            format!("start {}", args.collect::<Vec<_>>().join(" "))
+        };
+        let mut calls = Vec::new();
+        let mut emitted = 0;
+        for line in std::fs::read_to_string(self.calls_path())
             .unwrap_or_default()
+            .lines()
+        {
+            let (count, call) = line
+                .split_once(' ')
+                .and_then(|(count, call)| Some((count.parse::<usize>().ok()?, call)))
+                .unwrap_or_else(|| panic!("a call line carries its start count: {line:?}"));
+            while emitted < count.min(starts.len()) {
+                calls.push(start_line(emitted));
+                emitted += 1;
+            }
+            calls.push(call.to_string());
+        }
+        while emitted < starts.len() {
+            calls.push(start_line(emitted));
+            emitted += 1;
+        }
+        calls
     }
 
-    /// The argv, cwd and `PATH` the last start received — read from what the
-    /// CHILD got, never from the controller's own log.
-    fn start_argv_path(&self) -> PathBuf {
-        self.root.join("start-argv")
+    /// The link `FLEET_TMUX_BIN` names for every fleet this rig runs: this
+    /// rig's own `fleet-tmux-stub`, whose state sits beside it.
+    fn tmux_link(&self) -> PathBuf {
+        self.root.join("tmux").join("tmux")
     }
 
-    /// WHICH FILE the last start exec'd, as the child's own `$0`.
+    fn tmux_state_path(&self) -> PathBuf {
+        self.root.join("tmux").join("tmux-stub.json")
+    }
+
+    /// The tmux stub's fake server as the controller left it.
+    fn host(&self) -> FakeServer {
+        FakeServer::load(&self.tmux_state_path()).expect("the tmux stub's state reads")
+    }
+
+    /// Make every session the host starts from now on end at once with `code`
+    /// and show the line a start that fails prints, or start them to run where
+    /// `None` — the seam a start failure is driven through now that the start
+    /// is a session on the host and not the stub's own exit.
+    fn set_start_exit(&self, code: Option<i32>) {
+        let mut host = self.host();
+        host.end_every_start = code.map(Some);
+        host.screen_every_start = code.map(|_| "the start spoke\n".to_string());
+        host.save(&self.tmux_state_path())
+            .expect("the tmux stub's state is written");
+    }
+
+    /// Every session start the host was asked for, in order, as the host
+    /// received it — read off the tmux stub's own record of each
+    /// `new-session`, so a start whose session was killed since still reads.
+    fn host_starts(&self) -> Vec<HostStart> {
+        self.host()
+            .invocations
+            .iter()
+            .filter_map(|args| HostStart::of(args))
+            .collect()
+    }
+
+    /// The last start the host was asked for.
+    fn last_start(&self) -> HostStart {
+        self.host_starts()
+            .pop()
+            .unwrap_or_else(|| panic!("no start reached the host: {:?}", self.host()))
+    }
+
+    /// WHICH FILE the last start ran, as the pane's own program.
     ///
     /// The argv beside it says what the call passed; only this says which binary
     /// received it, and the two are different questions the moment more than one
     /// program on the box answers to `claude`.
-    fn start_bin_path(&self) -> PathBuf {
-        self.root.join("start-bin")
-    }
-
     fn start_bin(&self) -> PathBuf {
-        let printed =
-            std::fs::read_to_string(self.start_bin_path()).expect("the start recorded its own $0");
-        PathBuf::from(printed.trim())
+        PathBuf::from(&self.last_start().argv[0])
     }
 
     /// The `FLEET_BIN` the last start was handed — the binary the plugin's hooks
     /// in the session it opens will run. Empty is a start that carried none.
-    fn start_fleet_bin_path(&self) -> PathBuf {
-        self.root.join("start-fleet-bin")
-    }
-
     fn start_fleet_bin(&self) -> String {
-        std::fs::read_to_string(self.start_fleet_bin_path())
-            .expect("the start recorded its FLEET_BIN")
+        self.last_start().var("FLEET_BIN")
     }
 
     /// The `FLEET_ACTOR` the last start was handed — who the session's own
     /// bare verbs act as. Empty is a start that carried none.
-    fn start_actor_path(&self) -> PathBuf {
-        self.root.join("start-actor")
-    }
-
     fn start_actor(&self) -> String {
-        std::fs::read_to_string(self.start_actor_path())
-            .expect("the start recorded its FLEET_ACTOR")
+        self.last_start().var("FLEET_ACTOR")
     }
 
     /// A copy of the recording stub under the ONE NAME the default seam resolves,
@@ -1118,34 +1226,25 @@ impl Rig {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
     }
-    fn start_cwd_path(&self) -> PathBuf {
-        self.root.join("start-cwd")
-    }
-    fn start_path_path(&self) -> PathBuf {
-        self.root.join("start-path")
-    }
     fn nudge_argv_path(&self) -> PathBuf {
         self.root.join("nudge-argv")
     }
 
+    /// The argv the last start's pane runs, after its program.
     fn start_argv(&self) -> Vec<String> {
-        std::fs::read_to_string(self.start_argv_path())
-            .unwrap_or_else(|e| panic!("no start reached the stub: {e}"))
-            .lines()
-            .map(str::to_string)
-            .collect()
+        self.last_start().argv.into_iter().skip(1).collect()
     }
 
-    /// The directory the start was issued in, CANONICAL — `pwd` resolves
-    /// symlinks and the temp directory is one, so both sides go in one form.
+    /// The directory the start was issued in, CANONICAL — the temp directory is
+    /// a symlink, so both sides of a comparison go in one form.
     fn start_cwd(&self) -> PathBuf {
-        let printed =
-            std::fs::read_to_string(self.start_cwd_path()).expect("the start recorded its cwd");
-        PathBuf::from(printed.trim())
+        let cwd = self.last_start().cwd;
+        std::fs::canonicalize(&cwd).unwrap_or_else(|_| PathBuf::from(cwd))
     }
 
+    /// The `PATH` the last start's pane was handed.
     fn start_path(&self) -> String {
-        std::fs::read_to_string(self.start_path_path()).expect("the start recorded its PATH")
+        self.last_start().var("PATH")
     }
 
     fn sessions(&self) -> serde_json::Value {
@@ -1388,8 +1487,14 @@ impl Rig {
     fn write_config(&self, body: &str) {
         write(&self.machine().join("config.json"), body);
     }
+    /// The listing the stub serves: the arm's rows, then the rows a start's
+    /// watch believes the tmux stub's panes by (`test_support::with_arrivals`),
+    /// which stand in no seat's worktree.
     fn write_roster(&self, body: &str) {
-        write(&self.roster_path(), body);
+        write(
+            &self.roster_path(),
+            &fleet_controller::test_support::with_arrivals(body),
+        );
     }
 
     /// The session's transcript, under the agent's configuration directory at
@@ -1465,7 +1570,9 @@ impl Rig {
     /// descendant fork under `agents`, and the version hang, the file-driven
     /// version hang and the version descendant fork under `--version`. The
     /// escapee seam runs `write_escape_helper`'s script, which adds three more
-    /// bare names: `rm`, `python3` and a `sleep` of its own.
+    /// bare names: `rm`, `python3` and a `sleep` of its own. And `grep` counts
+    /// the host's starts ahead of every effect line, so [`Rig::calls`] can put
+    /// each start in the order it happened.
     /// NO START MARK IS AMONG THEM — the stub's own at the top and the listing
     /// and version branches' inside it are each a redirect onto a builtin at an
     /// interpolated absolute path, so each resolves nothing and costs no fork.
@@ -1508,22 +1615,10 @@ impl Rig {
         let escaped = escaped.display();
         let calls = self.calls_path();
         let calls = calls.display();
-        let start_bin = self.start_bin_path();
-        let start_bin = start_bin.display();
-        let start_fleet_bin = self.start_fleet_bin_path();
-        let start_fleet_bin = start_fleet_bin.display();
-        let start_actor = self.start_actor_path();
-        let start_actor = start_actor.display();
-        let start_argv = self.start_argv_path();
-        let start_argv = start_argv.display();
-        let start_cwd = self.start_cwd_path();
-        let start_cwd = start_cwd.display();
-        let start_path = self.start_path_path();
-        let start_path = start_path.display();
+        let tmux_state = self.tmux_state_path();
+        let tmux_state = tmux_state.display();
         let nudge_argv = self.nudge_argv_path();
         let nudge_argv = nudge_argv.display();
-        let seam_start_exit = self.seam_path(START_EXIT);
-        let seam_start_exit = seam_start_exit.display();
         let seam_stop_exit = self.seam_path(STOP_EXIT);
         let seam_stop_exit = seam_stop_exit.display();
         let seam_rm_exit = self.seam_path(RM_EXIT);
@@ -1546,6 +1641,7 @@ impl Rig {
                  p=$({cat} '{seam_preamble}' 2>/dev/null)\n\
                  : > '{seam_preamble}'\n\
                  [ -n \"$p\" ] && sleep \"$p\"\n\
+                 starts() {{ n=$(grep -c '\"new-session\"' '{tmux_state}' 2>/dev/null); echo \"${{n:-0}}\"; }}\n\
                  case \"$1\" in\n\
                  \x20 --version)\n\
                  \x20   : > '{version_started}'\n\
@@ -1575,27 +1671,16 @@ impl Rig {
                  \x20     {cat} '{roster}'\n\
                  \x20   fi\n\
                  \x20   ;;\n\
-                 \x20 --bg)\n\
-                 \x20   printf '%s' \"$0\" > '{start_bin}'\n\
-                 \x20   printf '%s' \"${{FLEET_BIN-}}\" > '{start_fleet_bin}'\n\
-                 \x20   printf '%s' \"${{FLEET_ACTOR-}}\" > '{start_actor}'\n\
-                 \x20   printf '%s\\n' \"$@\" > '{start_argv}'\n\
-                 \x20   pwd > '{start_cwd}'\n\
-                 \x20   printf '%s' \"$PATH\" > '{start_path}'\n\
-                 \x20   echo \"start $*\" >> '{calls}'\n\
-                 \x20   echo 'the start spoke'\n\
-                 \x20   exit $({cat} '{seam_start_exit}' 2>/dev/null || echo 0)\n\
-                 \x20   ;;\n\
                  \x20 stop)\n\
-                 \x20   echo \"stop $2\" >> '{calls}'\n\
+                 \x20   echo \"$(starts) stop $2\" >> '{calls}'\n\
                  \x20   exit $({cat} '{seam_stop_exit}' 2>/dev/null || echo 0)\n\
                  \x20   ;;\n\
                  \x20 rm)\n\
-                 \x20   echo \"rm $2\" >> '{calls}'\n\
+                 \x20   echo \"$(starts) rm $2\" >> '{calls}'\n\
                  \x20   exit $({cat} '{seam_rm_exit}' 2>/dev/null || echo 0)\n\
                  \x20   ;;\n\
                  \x20 attach)\n\
-                 \x20   echo \"attach $2\" >> '{calls}'\n\
+                 \x20   echo \"$(starts) attach $2\" >> '{calls}'\n\
                  \x20   exit $({cat} '{seam_attach_exit}' 2>/dev/null || echo 0)\n\
                  \x20   ;;\n\
                  \x20 daemon)\n\
@@ -1604,7 +1689,7 @@ impl Rig {
                  \x20   ;;\n\
                  \x20 -p)\n\
                  \x20   printf '%s\\n' \"$@\" > '{nudge_argv}'\n\
-                 \x20   echo \"nudge $2 $3\" >> '{calls}'\n\
+                 \x20   echo \"$(starts) nudge $2 $3\" >> '{calls}'\n\
                  \x20   exit $({cat} '{seam_nudge_exit}' 2>/dev/null || echo 0)\n\
                  \x20   ;;\n\
                  \x20 *) exit 64;;\n\
@@ -1783,6 +1868,7 @@ impl Rig {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_fleet"));
         use common::hermetic::Hermetic as _;
         cmd.hermetic(&self.home(), &self.machine(), Some(&self.stub_path()))
+            .env(common::hermetic::TMUX_BIN, self.tmux_link())
             // The routines' clock seam is always pointed at this rig's own file.
             // An arm that never writes it leaves the routines on the machine's
             // clock, which is what every arm that is not about routines wants.
@@ -1877,6 +1963,10 @@ impl Rig {
         {
             env.set(key, value);
         }
+        env.set(
+            common::hermetic::TMUX_BIN,
+            Some(self.tmux_link().into_os_string()),
+        );
         // The routines' clock seam is always pointed at this rig's own file. An
         // arm that never writes it leaves the routines on the machine's clock,
         // which is what every arm that is not about routines wants.

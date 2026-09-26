@@ -24,10 +24,12 @@ pub const DEFAULT_REST_THRESHOLD_TOKENS: u64 = 700_000;
 /// another one.
 pub const DEFAULT_ARRIVAL_WINDOW_SECONDS: u64 = 45;
 
-/// How long a start is watched for an immediate failure. Long enough that a
-/// child dying on its own argv reports the cause (lessons claude-code A14, whose
-/// measured exit lands in 0.01 s), short enough that one poll cannot be lost to
-/// a slow one.
+/// How long a start is watched before it is believed or given up on: until the
+/// agent's listing shows the pane's own process with a status. Measured on
+/// Claude Code 2.1.280 and tmux 3.7b (fleet-rge6.2, 2026-09-26), the row was
+/// listed 0.5–0.75 s after the session was made and carried its status at
+/// 1.0–1.3 s, so five seconds is four times the slowest reading; short enough
+/// that one poll cannot be lost to a start that will never list.
 pub const DEFAULT_START_WATCH_SECONDS: u64 = 5;
 
 /// The deadline one nudge turn runs on.

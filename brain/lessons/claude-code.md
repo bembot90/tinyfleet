@@ -349,6 +349,10 @@ the requirement owed it.
 
 ### A14. A start that cannot start says so in-band, fast, and leaves no row
 
+- **Retired by:** fleet-rge6.2 (2026-09-26). Starts are interactive sessions
+  in fleet's own tmux panes and no longer `--bg`; a start that cannot start
+  is a dead pane carrying its exit status, and a start is believed only when
+  the listing shows the pane's process. Kept here as history.
 - **Fact:** A background start from a directory that had just been deleted used
   to report "backgrounded" and leave a crashed session row — **a success return
   with no live session behind it**, which the controller reads as a session that
@@ -749,6 +753,10 @@ the requirement owed it.
 
 ### D2. A start's output goes to a file, never to a pipe
 
+- **Retired by:** fleet-rge6.2 (2026-09-26). A start's output is its pane's,
+  and a failed start's last screen is captured to a file by core. The
+  print-mode nudge still sends its output to a file until fleet-rge6.5
+  removes it. Kept here as history.
 - **Fact:** Collecting a child's output through a pipe waits for EOF on the
   pipe rather than for the child, so ANY process still holding the write end
   keeps the caller blocked — the direct child included, and a grandchild that
@@ -938,7 +946,7 @@ name.
 | `lessons::the_config_dir_scopes_the_daemon` | A11 |
 | `lessons::an_mcp_call_backgrounds_at_120s` | A12 |
 | `lessons::a_session_locks_only_a_worktree_it_created` | A13 |
-| `lessons::a_failed_start_exits_inside_the_watch_window` | A14 |
+| `lessons::a_failed_start_exits_inside_the_watch_window` | A14 (retired by fleet-rge6.2) |
 | `lessons::a_first_run_meets_the_trust_dialog` | A15 (shared with gas-city.md G12) |
 | `lessons::the_roster_is_one_command` | B1 |
 | `lessons::the_roster_carries_no_token_field` | B2 |
@@ -956,7 +964,7 @@ name.
 | `lessons::the_transcript_outlives_the_process` | C4 |
 | `lessons::the_context_threshold_is_a_fraction_of_a_moving_window` | C5 |
 | `lessons::the_child_path_is_constructed` | D1 |
-| `lessons::start_output_goes_to_a_file` | D2 |
+| `lessons::start_output_goes_to_a_file` | D2 (retired by fleet-rge6.2) |
 | `lessons::the_permission_posture_is_model_gated` | D3 |
 | `lessons::a_blocked_grant_read_is_pending` | D4 |
 | `lessons::the_plugin_root_addresses_the_hook` | D5 |

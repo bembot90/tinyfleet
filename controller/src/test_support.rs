@@ -3,7 +3,7 @@
 //! which a dependent's DEV-dependency turns on: under resolver 2 that keeps it
 //! out of the binary a release build produces.
 
-use crate::adapter::{Agent, DaemonRead, RemoveAnswer, RosterRead, StartOutcome, StartSpec};
+use crate::adapter::{Agent, AgentRow, DaemonRead, Launch, RemoveAnswer, RosterRead, StartSpec};
 use crate::clock::Clock;
 use std::path::Path;
 use std::sync::Mutex;
@@ -92,7 +92,9 @@ pub struct Answers {
     pub status: RosterRead,
     pub version: Option<String>,
     pub daemon: DaemonRead,
-    pub start: StartOutcome,
+    /// `Ok` is a launch built from the start's own spec ([`StubAgent::launched`]),
+    /// and `Err` a launch the agent refuses, with its cause.
+    pub launch: Result<(), String>,
     pub stop: Result<(), String>,
     pub revive: Result<(), String>,
     pub nudge: Result<(), String>,
@@ -109,7 +111,7 @@ impl Default for Answers {
             status: RosterRead::Readable(Vec::new()),
             version: Some(StubAgent::VERSION.to_string()),
             daemon: DaemonRead::Readable(None),
-            start: StartOutcome::Started { log: String::new() },
+            launch: Ok(()),
             stop: Ok(()),
             revive: Ok(()),
             nudge: Ok(()),
@@ -220,14 +222,148 @@ impl Default for StubAgent {
     }
 }
 
+impl StubAgent {
+    /// The program a stub launch names first. Nothing runs it: a host that is
+    /// a fake starts no process, and one that is real is never handed a stub.
+    pub const PROGRAM: &'static str = "/nowhere/stub-agent";
+
+    /// The launch the stub answers for `spec`: the argv in the shape the one
+    /// real adapter builds — the name, the model, the posture, the plugin root
+    /// where one is named, then the first turn — and an environment carrying
+    /// the actor and the configuration directory, so an arm reads what a start
+    /// asked for off the host's own record of the session.
+    pub fn launched(spec: &StartSpec) -> Launch {
+        let mut argv: Vec<String> = [
+            StubAgent::PROGRAM,
+            "--name",
+            &spec.name,
+            "--model",
+            &spec.model,
+            "--permission-mode",
+            &spec.posture,
+        ]
+        .iter()
+        .map(|a| a.to_string())
+        .collect();
+        if let Some(plugin_dir) = &spec.plugin_dir {
+            argv.push("--plugin-dir".to_string());
+            argv.push(plugin_dir.clone());
+        }
+        argv.push(spec.first_turn.clone());
+        let mut env = vec![("FLEET_ACTOR".to_string(), spec.actor.clone())];
+        if let Some(dir) = &spec.config_dir {
+            env.push(("CLAUDE_CONFIG_DIR".to_string(), dir.clone()));
+        }
+        Launch { argv, env }
+    }
+}
+
+/// An operator's own agent state file, as a spawn's seed copies from it: the
+/// three onboarding keys and nothing of the operator's that a seat must not
+/// get. A rig whose spawns start under a configuration directory of their own
+/// plants it with [`plant_operator_state`], or every such spawn is refused
+/// for a key it cannot copy.
+pub const OPERATOR_STATE: &str = r#"{
+  "hasCompletedOnboarding": true,
+  "lastOnboardingVersion": "0.0.0-test",
+  "oauthAccount": {"emailAddress": "nobody@example.invalid"}
+}"#;
+
+/// [`OPERATOR_STATE`] at `<home>/.claude.json`, which is where the adapter
+/// reads it when no configuration directory is configured.
+pub fn plant_operator_state(home: &Path) {
+    std::fs::create_dir_all(home).expect("the home is made");
+    std::fs::write(
+        home.join(crate::adapter::claude_code::STATE_FILE),
+        OPERATOR_STATE,
+    )
+    .expect("the operator's state file is planted");
+}
+
+/// The working directory an [`arrived`] row stands in: a directory no seat
+/// has, so the row is the start's to find by its pid and no seat's to match by
+/// its directory.
+pub const ARRIVED_CWD: &str = "/nowhere/arrived";
+
+/// The row the listing shows for a session a start brought up on a
+/// [`FakeHost`], found by the pane's pid and carrying a status, which is what
+/// a start's watch believes (lessons claude-code B10).
+///
+/// It stands in [`ARRIVED_CWD`] and not in the seat's worktree, so an arm whose
+/// subject is not the start can list its arrival without also handing the
+/// seat a live session on the next poll's read.
+pub fn arrived(pid: u32) -> AgentRow {
+    AgentRow {
+        session_id: format!("arrived-{pid}"),
+        id: None,
+        cwd: ARRIVED_CWD.to_string(),
+        pid: Some(pid),
+        state: None,
+        status: Some("idle".to_string()),
+        started_at: None,
+        waiting_for: None,
+    }
+}
+
+/// [`arrived`] for the first `n` panes a fresh [`FakeHost`] or a fresh
+/// `fleet-tmux-stub` state hands out, in order.
+pub fn arrivals(n: u32) -> Vec<AgentRow> {
+    (0..n).map(|k| arrived(FIRST_PANE_PID + k)).collect()
+}
+
+/// How many arrivals [`with_arrivals`] lists: more panes than any one arm's
+/// host hands out.
+pub const LISTED_ARRIVALS: u32 = 8;
+
+/// A listing's JSON body — what a stub agent serves for `agents` — with the
+/// rows of [`arrivals`] after the arm's own, so every start on a fresh host
+/// is believed and no seat is handed a session by its directory.
+///
+/// Appended AS TEXT, so the arm's own rows keep the bytes it wrote: an arm
+/// reading its row back out of the file finds its own spelling. A body that
+/// is not a JSON array is served as the arm gave it — an arm serving a listing
+/// that does not parse means exactly that.
+pub fn with_arrivals(body: &str) -> String {
+    let rows: Vec<String> = arrivals(LISTED_ARRIVALS)
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "sessionId": row.session_id,
+                "cwd": row.cwd,
+                "pid": row.pid,
+                "status": row.status,
+            })
+            .to_string()
+        })
+        .collect();
+    let trimmed = body.trim_end();
+    match trimmed.strip_suffix(']') {
+        Some(head) if trimmed.trim_start().starts_with('[') => {
+            let separator = if head.trim_end().ends_with('[') {
+                ""
+            } else {
+                ", "
+            };
+            format!("{head}{separator}{}]", rows.join(", "))
+        }
+        _ => body.to_string(),
+    }
+}
+
 impl Agent for StubAgent {
-    fn start(&self, spec: &StartSpec, _watch: Duration) -> StartOutcome {
+    fn launch(&self, spec: &StartSpec) -> Result<Launch, String> {
         self.record(StubAgent::START, spec.name.clone());
         self.starts
             .lock()
             .expect("the stub agent's own lock")
             .push(spec.clone());
-        self.answers().start
+        self.answers().launch.map(|()| StubAgent::launched(spec))
+    }
+
+    /// The one real screen rule, read as the adapter reads it: an arm drives
+    /// the fallback by putting the agent's own question on a fake pane.
+    fn trust_keys(&self, screen: &str) -> Option<Vec<String>> {
+        crate::adapter::claude_code::trust_keys(screen)
     }
 
     fn local_settings(&self) -> &'static str {
@@ -348,7 +484,7 @@ pub struct FakeSession {
 
 /// The first pid a fake pane is given. Far above anything an arm would read as
 /// a real process of its own.
-const FAKE_FIRST_PID: u32 = 90_000;
+pub const FIRST_PANE_PID: u32 = 90_000;
 
 /// A host server with no process behind it.
 ///
@@ -381,6 +517,15 @@ pub struct FakeServer {
     /// none.
     #[serde(default)]
     pub attach_envs: Vec<Vec<(String, String)>>,
+    /// Where set, EVERY session started ends at once with this status and
+    /// shows [`FakeServer::screen_every_start`] — a program that exits before
+    /// anyone reads its pane — until an arm clears it. The stub binary's
+    /// suites set it on the state file, since no client call can time a pane's
+    /// death inside a start.
+    #[serde(default)]
+    pub end_every_start: Option<Option<i32>>,
+    #[serde(default)]
+    pub screen_every_start: Option<String>,
 }
 
 impl FakeServer {
@@ -412,7 +557,7 @@ impl FakeServer {
         if self.sessions.contains_key(name) {
             return Err(format!("duplicate session: {name}"));
         }
-        let pid = FAKE_FIRST_PID + self.started;
+        let pid = FIRST_PANE_PID + self.started;
         self.started += 1;
         let now_ms = crate::clock::now_ms();
         self.sessions.insert(
@@ -422,10 +567,10 @@ impl FakeServer {
                 argv: argv.to_vec(),
                 env: env.to_vec(),
                 pid,
-                ended: None,
                 created_ms: now_ms - now_ms % 1000,
-                screen: String::new(),
+                screen: self.screen_every_start.clone().unwrap_or_default(),
                 sent: Vec::new(),
+                ended: self.end_every_start,
             },
         );
         Ok(())
@@ -517,6 +662,16 @@ pub struct FakeHost {
     calls: Mutex<Vec<Call>>,
     failing: Mutex<std::collections::BTreeMap<&'static str, String>>,
     version: Mutex<Option<String>>,
+    /// What the NEXT session started does before anyone reads it: ends with a
+    /// status, or shows a screen. Taken by that start and gone after it.
+    next_start: Mutex<NextStart>,
+}
+
+/// See [`FakeHost::end_next_start`] and [`FakeHost::draw_next_start`].
+#[derive(Default)]
+struct NextStart {
+    end: Option<Option<i32>>,
+    screen: Option<String>,
 }
 
 impl FakeHost {
@@ -542,6 +697,7 @@ impl FakeHost {
             calls: Mutex::new(Vec::new()),
             failing: Mutex::new(Default::default()),
             version: Mutex::new(Some(FakeHost::VERSION.to_string())),
+            next_start: Mutex::new(NextStart::default()),
         }
     }
 
@@ -556,6 +712,25 @@ impl FakeHost {
 
     pub fn set_version(&self, version: Option<&str>) {
         *self.version.lock().expect("the fake host's own lock") = version.map(str::to_string);
+    }
+
+    /// Make the next session started end at once with `status`, as a program
+    /// that exits before anyone reads its pane does — so a start's watch meets
+    /// a dead pane on its first read.
+    pub fn end_next_start(&self, status: Option<i32>) {
+        self.next_start
+            .lock()
+            .expect("the fake host's own lock")
+            .end = Some(status);
+    }
+
+    /// Make the next session started show `screen` from its first capture, as
+    /// a program that stops at a question before it does anything else.
+    pub fn draw_next_start(&self, screen: &str) {
+        self.next_start
+            .lock()
+            .expect("the fake host's own lock")
+            .screen = Some(screen.to_string());
     }
 
     /// End the session's pane with `status`, and keep it dead in the listing.
@@ -647,7 +822,16 @@ impl crate::host::Host for FakeHost {
         env: &[(String, String)],
     ) -> Result<(), String> {
         self.asked(FakeHost::NEW_SESSION, name)?;
-        self.server().start(name, &cwd.to_string_lossy(), argv, env)
+        let mut server = self.server();
+        server.start(name, &cwd.to_string_lossy(), argv, env)?;
+        let next = std::mem::take(&mut *self.next_start.lock().expect("the fake host's own lock"));
+        if let Some(screen) = next.screen {
+            server.set_screen(name, &screen)?;
+        }
+        if let Some(status) = next.end {
+            server.end(name, status)?;
+        }
+        Ok(())
     }
 
     fn send(&self, name: &str, text: &str) -> Result<(), String> {
@@ -701,6 +885,35 @@ impl crate::host::Host for FakeHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The arrivals follow the arm's own rows, whose bytes are kept, and the
+    /// result still parses as the listing it was — an empty one, a one-row
+    /// one — while a body that is no array is left exactly as the arm wrote it.
+    #[test]
+    fn the_arrivals_follow_the_arms_own_rows_and_keep_their_bytes() {
+        let empty = with_arrivals("[]");
+        let rows = match crate::adapter::claude_code::parse_roster(&empty) {
+            RosterRead::Readable(rows) => rows,
+            RosterRead::Unreadable { cause } => panic!("{cause}: {empty}"),
+        };
+        assert_eq!(rows.len(), LISTED_ARRIVALS as usize);
+        assert_eq!(rows[0].pid, Some(FIRST_PANE_PID));
+
+        let own = "[{\"sessionId\": \"a-session\", \"cwd\": \"/wt\", \"pid\": 4242}]\n";
+        let listed = with_arrivals(own);
+        assert!(
+            listed.starts_with("[{\"sessionId\": \"a-session\", \"cwd\": \"/wt\", \"pid\": 4242}"),
+            "{listed}"
+        );
+        let rows = match crate::adapter::claude_code::parse_roster(&listed) {
+            RosterRead::Readable(rows) => rows,
+            RosterRead::Unreadable { cause } => panic!("{cause}: {listed}"),
+        };
+        assert_eq!(rows.len(), LISTED_ARRIVALS as usize + 1);
+
+        assert_eq!(with_arrivals("not a listing"), "not a listing");
+        assert_eq!(with_arrivals(""), "");
+    }
 
     /// A sleep advances the clock by EXACTLY what it was asked for — not a
     /// slice, not a rounding, and the sum of several is the sum of their

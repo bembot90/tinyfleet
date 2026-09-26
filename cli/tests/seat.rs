@@ -18,6 +18,7 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fleet_controller::platform;
+use fleet_controller::test_support::FakeServer;
 use fleet_core::entry::{Body, CheckRow, Classification, Landed, NotTested, SuiteRun, WorkBranch};
 use fleet_core::item::land::{SAFE, UNTESTED};
 use fleet_core::seat::actor::Actor;
@@ -119,7 +120,9 @@ struct Rig {
     roster: PathBuf,
     calls: PathBuf,
     turn: PathBuf,
-    start_exit: PathBuf,
+    /// The link `FLEET_TMUX_BIN` names: this rig's own `fleet-tmux-stub`, whose
+    /// fake server keeps the sessions a spawn starts.
+    tmux: PathBuf,
     /// The pid every roster row this rig writes carries, taken at the first row
     /// and held so the arms that assert on what a verb printed of it read the
     /// same number the row was written with.
@@ -144,13 +147,16 @@ impl Rig {
             roster: root.join("roster.json"),
             calls: root.join("calls"),
             turn: root.join("a-turn.md"),
-            start_exit: root.join("start-exit"),
+            tmux: common::stub_tmux(&root.join("tmux")),
             pid: Cell::new(None),
             root,
         };
         for dir in [&rig.project, &rig.machine] {
             std::fs::create_dir_all(dir).expect("the fixture directory is created");
         }
+        // What a spawn's seed copies into the seat's own configuration
+        // directory, from where the adapter reads the operator's own.
+        fleet_controller::test_support::plant_operator_state(&rig.root.join("home"));
         defaults_into(&rig.machine);
         std::fs::write(
             rig.project.join("fleet.toml"),
@@ -297,8 +303,10 @@ impl Rig {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// The drive suite's stub shape: the start records its argv and the roster
-    /// branch serves a file the arm writes.
+    /// The drive suite's stub shape: the roster branch serves a file the arm
+    /// writes, and a stop empties it down to the arrivals every listing here
+    /// carries. A start is no branch of the stub's: the session comes up on
+    /// the rig's tmux stub ([`Rig::host`]).
     fn write_stub(&self) {
         std::fs::write(
             &self.stub,
@@ -306,19 +314,14 @@ impl Rig {
                 "#!/bin/sh\n\
                  case \"$1\" in\n\
                  \x20 agents) /bin/cat '{roster}' ;;\n\
-                 \x20 --bg)\n\
-                 \x20   printf '%s\\n' \"$@\" >> '{calls}'\n\
-                 \x20   echo 'START' >> '{calls}'\n\
-                 \x20   exit $(/bin/cat '{start_exit}' 2>/dev/null || echo 0)\n\
-                 \x20   ;;\n\
-                 \x20 stop) echo \"STOP $2\" >> '{calls}'; printf '[]' > '{roster}' ;;\n\
+                 \x20 stop) echo \"STOP $2\" >> '{calls}'; printf '%s' '{cleared}' > '{roster}' ;;\n\
                  \x20 rm) echo \"RM $2\" >> '{calls}' ;;\n\
                  \x20 -p) echo \"NUDGE\" >> '{calls}' ;;\n\
                  \x20 *) exit 64 ;;\n\
                  esac\n",
                 roster = self.roster.display(),
                 calls = self.calls.display(),
-                start_exit = self.start_exit.display(),
+                cleared = fleet_controller::test_support::with_arrivals("[]"),
             ),
         )
         .expect("the stub is written");
@@ -327,9 +330,23 @@ impl Rig {
             .expect("the stub is executable");
     }
 
+    /// The listing the stub serves: the arm's rows, then the rows a start's
+    /// watch believes a fresh tmux stub's panes by
+    /// (`test_support::with_arrivals`), which stand in no seat's worktree.
     fn roster(&self, body: &str) -> &Rig {
-        std::fs::write(&self.roster, body).expect("the roster is written");
+        std::fs::write(
+            &self.roster,
+            fleet_controller::test_support::with_arrivals(body),
+        )
+        .expect("the roster is written");
         self
+    }
+
+    /// The tmux stub's fake server as the verbs left it: every session a
+    /// spawn started and has not killed.
+    fn host(&self) -> FakeServer {
+        FakeServer::load(&self.tmux.with_file_name("tmux-stub.json"))
+            .expect("the tmux stub's state reads")
     }
 
     /// A pack installed ABOVE the binary's own defaults, carrying a manifest
@@ -425,7 +442,11 @@ impl Rig {
             .current_dir(&self.project)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
-            .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub));
+            .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub))
+            .env(common::hermetic::TMUX_BIN, &self.tmux)
+            // The operator's state file a spawn seeds from is read beside the
+            // rig's home only when no configuration directory is configured.
+            .env_remove(common::hermetic::CONFIG_DIR);
         for (key, value) in readings {
             command.env(key, value);
         }
@@ -541,7 +562,31 @@ fn the_three_verbs_run_end_to_end_through_the_shipped_binary() {
         policy,
         "a transient seat is never written to fleet.toml"
     );
-    assert!(rig.calls().contains("START"), "{}", rig.calls());
+    // ONE SESSION on fleet's host, named by the seat's id, running the agent
+    // interactively in the seat's own worktree.
+    let host = rig.host();
+    assert_eq!(
+        host.sessions.keys().collect::<Vec<_>>(),
+        vec![id],
+        "the spawn left exactly the seat's own session: {host:?}"
+    );
+    let session = &host.sessions[id];
+    assert_eq!(
+        Path::new(&session.cwd),
+        rig.worktrees.join(&seat),
+        "in the seat's worktree"
+    );
+    assert!(
+        !session.argv.iter().any(|word| word == "--bg"),
+        "an interactive session: {:?}",
+        session.argv
+    );
+    assert_eq!(
+        session.argv.last().map(String::as_str),
+        Some("the turn this seat comes up on\n"),
+        "the first turn is the positional prompt: {:?}",
+        session.argv
+    );
 
     // The feed: a live idle row takes the next turn.
     rig.live(&seat, "idle");
@@ -573,6 +618,50 @@ fn the_three_verbs_run_end_to_end_through_the_shipped_binary() {
         Some(0),
         "the seat-list row is dropped"
     );
+}
+
+/// A spawn whose session never lists is refused, rolled back, and leaves
+/// NOTHING on fleet's host: the start killed the session it made before the
+/// rollback ran, so no pane outlives the seat it was for.
+///
+/// The listing is served with no row for the pane — the arrivals every other
+/// arm here lists are left out — and the window is one second, so the start
+/// is given up on at the window's close.
+#[test]
+fn a_spawn_whose_session_never_lists_leaves_no_session_on_the_host() {
+    let rig = Rig::new("spawn-unlisted", true);
+    let policy = rig.project.join("fleet.toml");
+    let body = std::fs::read_to_string(&policy).expect("the policy is readable");
+    assert!(body.contains("start_watch_seconds = 10"), "{body}");
+    std::fs::write(
+        &policy,
+        body.replace("start_watch_seconds = 10", "start_watch_seconds = 1"),
+    )
+    .expect("the policy is rewritten");
+    std::fs::write(&rig.roster, "[]").expect("the roster lists nothing");
+
+    let out = rig.run(&[
+        "seat",
+        "spawn",
+        "--first-turn",
+        &rig.turn.display().to_string(),
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("no listed row within 1s"),
+        "the refusal says why the start was given up on: {}",
+        stderr(&out)
+    );
+    let host = rig.host();
+    assert!(
+        host.sessions.is_empty(),
+        "a failed spawn leaves no session on the host: {host:?}"
+    );
+    assert_eq!(
+        host.started, 1,
+        "and it is not that no session was started: one was, and was killed"
+    );
+    assert_eq!(rig.worktree_entries(), Vec::<String>::new());
 }
 
 /// Every seat argument `seat feed` and `seat retire` take goes through the one
@@ -1452,7 +1541,11 @@ fn dispatch_without_a_seat_spawns_through_the_real_spawner_and_assigns_the_name(
         &rig.machine.join("packs").display().to_string(),
     ]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    assert!(rig.calls().contains("START"), "{}", rig.calls());
+    assert_eq!(
+        rig.host().sessions.len(),
+        1,
+        "the spawn started one session on the host"
+    );
 
     let (assignee, orders) = rig.order_of(&item);
     let id = assignee.expect("the item is assigned");
