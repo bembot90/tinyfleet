@@ -54,7 +54,7 @@ Builds in the fleet-packs repository; the beads stay here.
 
 | Landed | Bead | What | Blocked by |
 | --- | --- | --- | --- |
-| ☐ | fleet-3krx.1 | fleet create asks which store the fleet uses and installs its pack from the pinned fleet-packs source and tag | flight 9 |
+| ☑ | fleet-3krx.1 | fleet create asks which store the fleet uses and installs its pack from the pinned fleet-packs source and tag | flight 9 |
 | ☐ | fleet-3krx.2 | Delete core/src/store/bd: the built-in branch, the defaults' bd-version check, the bd arms and tools go | fleet-3krx.1 |
 | ☐ | fleet-3krx.3 | Docs pass: store.md, packs.md, getting-started, README, conventions and CONTRIBUTING | fleet-3krx.1, fleet-3krx.2 |
 
