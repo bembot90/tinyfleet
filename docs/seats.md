@@ -359,7 +359,7 @@ poll. For example, three seat rows the controller does not run:
 $ fleet observe --once
 fleet observe: skipping a seat row — delta-91e8402f carries no worktrees entry
 fleet observe: skipping a seat row — a row carries no id
-fleet observe: skipping a seat row — echo-fe0d9831 would start under posture `auto` on model `claude-haiku-4-5`, which matches none of the models measured to honour it (claude-opus-5, claude-fable-5, claude-sonnet-5)
+fleet observe: skipping a seat row — echo-fe0d9831 would start under posture `auto` on model `claude-sonnet-4-5`, which matches none of the models measured to honour it (claude-opus-5, claude-fable-5, claude-sonnet-5)
 ...
 ```
 
@@ -491,8 +491,7 @@ number or a name is expected is read as the default.
 | `transient_posture` | `dontAsk` | the permission posture of a transient seat's session |
 | `auto_capable_models` | `claude-opus-5`, `claude-fable-5`, `claude-sonnet-5` | model prefixes allowed to run under posture `auto` |
 | `first_turn` | `/wake {seat}` | the first turn of a session the controller starts; `{seat}` is the name the session is started under |
-| `nudge_model` | `claude-haiku-4-5-20251001` | the model that carries a nudge |
-| `nudge_timeout_seconds` | `90` | how long a nudge is given |
+| `nudge_timeout_seconds` | `10` | how long a nudge or a feed typed into a seat's session is given to be taken |
 | `load_ceiling_per_cpu` | `1.0` | `fleet seat spawn` refuses when the five-minute load average is above this times the CPU count |
 | `max_transient_busy` | `3` | `fleet seat spawn` refuses when more than this many transient seats are mid-turn; `0` is kept |
 | `plugin_dir` | none | a plugin directory every session the fleet starts loads; relative to `fleet.toml` |
@@ -502,7 +501,8 @@ policy file, in a `controller` object in the seat list. The running
 controller and `fleet status` read it; the verbs you run — `fleet seat
 spawn`, `feed`, `retire` and `nudge`, and `fleet dispatch` without `--to` —
 read the policy file alone, so a `load_ceiling_per_cpu`,
-`max_transient_busy` or `nudge_model` set only here does not reach them:
+`max_transient_busy` or `nudge_timeout_seconds` set only here does not reach
+them:
 
 ```json
 {
@@ -612,12 +612,15 @@ $ fleet seat nudge orla --text "check your mail"
 nudged orla-10b55fd3 — <session> — sent
 ```
 
-The nudge runs as one turn on `nudge_model` in the seat's worktree, told to
-send your text verbatim to the seat's session, bounded by
-`nudge_timeout_seconds` or by `--timeout <seconds>` when you give it. Every
-nudge that finds a live session writes `session.nudged` to the stream, with
-the outcome and who sent it: `FLEET_ACTOR` where it is set, and otherwise
-this machine's identity (see [Who you are](#who-you-are-identitytoml)).
+Your text is typed, verbatim, into the seat's own session: pasted whole,
+then submitted. The nudge is `sent` only when the agent's own list shows the
+seat's session busy afterwards, within `nudge_timeout_seconds` or
+`--timeout <seconds>` when you give it. A seat already mid-turn takes the
+text after the turn it is on: fleet types it, prints `queued <seat> —
+<session> — queued: the seat was mid-turn`, and exits 0. Every nudge that
+finds a live session writes `session.nudged` to the stream, with the outcome
+and who sent it: `FLEET_ACTOR` where it is set, and otherwise this machine's
+identity (see [Who you are](#who-you-are-identitytoml)).
 
 You run it from inside the project; `--project <name>` makes it refuse (exit
 2) when the directory resolves to a different project. It refuses before
@@ -628,10 +631,14 @@ sending anything when:
   too old, giving its age, and ends ``run `fleet start` ``);
 - the projection carries no row for the seat, or its row is anything but
   `present`, so a session stopped at a prompt is not nudged (exit 4);
-- the agent's own list shows no live session in the seat's worktree (exit 4).
+- the seat has no live session on fleet's host, or the agent's own list
+  carries no row for that session (exit 4).
 
-A nudge the agent could not deliver prints `not nudged <seat> — <session> —
-failed: <why>` and exits 1.
+A seat whose session is stopped at a question, such as a permission prompt,
+is refused before anything is typed: it prints `not nudged <seat> —
+<session> — refused: blocked on <cause>` and exits 1. A nudge the session
+did not take within the bound prints `not nudged <seat> — <session> —
+failed: typed and not taken: still <status> after <n>s` and exits 1.
 
 ## Spawning a transient seat
 
@@ -702,13 +709,15 @@ $ fleet seat feed agent-fe0d9831 --first-turn next.md
 fed agent-fe0d9831 — the turn in the seat is now the new one
 ```
 
-The file's text is run as one turn on `nudge_model` in the seat's worktree,
-and `session.nudged` records the first line of the old turn and of the new
-one. It refuses when the seat argument names no row of the seat list, or
-more than one (exit 1), is a named seat (exit 6), has no live session
-(exit 4), or is mid-turn (exit 1: `` `agent-fe0d9831` is still holding a
-turn — the agent reports its session busy ``). A delivery that fails exits
-1, and a second `session.nudged` records the old turn put back.
+The file's text is typed into the seat's own session, pasted whole and then
+submitted, and `session.nudged` records the first line of the old turn and
+of the new one. It refuses when the seat argument names no row of the seat
+list, or more than one (exit 1), is a named seat (exit 6), has no live
+session (exit 4), is mid-turn (exit 1: `` `agent-fe0d9831` is still holding
+a turn — the agent reports its session busy ``), or is stopped at a question
+(exit 1, naming what it is blocked on). The feed counts only when the agent's
+own list shows the session busy within `nudge_timeout_seconds`; otherwise it
+exits 1, and a second `session.nudged` records the old turn put back.
 
 ## Retiring a transient seat
 
@@ -787,7 +796,8 @@ branch.
 | `fleet event woke`, `handed-off` or `exited` with `--reason` | 2 | `error: unexpected argument '--reason' found` | drop `--reason` |
 | a lifecycle word under `fleet seat` | 2 | `fleet seat <word>: the seat noun is what is done to a seat — say fleet event <word>` | `fleet event <word>` |
 | `fleet seat nudge` for a seat not `present` | 4 | ``fleet seat nudge: `<seat>` has no live session — its row reads <state> and not present`` | wait for the seat, or answer its prompt |
-| `fleet seat nudge` that the agent could not deliver | 1 | `not nudged <seat> — <session> — failed: <why>` | read the file it names |
+| `fleet seat nudge` for a seat stopped at a question | 1 | `not nudged <seat> — <session> — refused: blocked on <cause>` | answer the seat's question, then nudge again |
+| `fleet seat nudge` the session did not take | 1 | `not nudged <seat> — <session> — failed: typed and not taken: still <status> after <n>s` | look at it with `fleet seat attach <seat>`, or nudge again |
 | `fleet seat add`, `nudge`, `spawn`, `feed` or `retire` outside every project | 3 | ``no `fleet.toml` and no `.fleet/project.toml` above <dir> — `fleet create` writes one`` | run it inside the project |
 | `--project` naming another project | 2 | `--project <name> names a project this directory does not resolve to — ...` | run it in that project |
 | `fleet seat spawn` with a first-turn file that cannot be read | 2 | `fleet seat spawn: the first turn at <file> could not be read: ...` | fix the path |
@@ -798,6 +808,8 @@ branch.
 | `fleet seat feed` or `retire` for a named seat | 6 | `<machine-name> is a named seat — named seats are rung and rested, and only a transient row is fed and retired` | `fleet seat nudge` or `fleet event rest` |
 | `fleet seat feed` with no live session | 4 | `` `<seat>` has no live session in <worktree>, so there is nothing to feed `` | retire it, and spawn again |
 | `fleet seat feed` while the seat is mid-turn | 1 | `` `<seat>` is still holding a turn — the agent reports its session busy `` | wait for the turn to end |
+| `fleet seat feed` while the seat is stopped at a question | 1 | `` `<seat>` is stopped in front of a person — blocked on <cause> — and nothing is typed at a dialog `` | answer the seat's question |
+| `fleet seat feed` the session did not take | 1 | `` `<seat>` was not fed — failed: typed and not taken: still <status> after <n>s; the occupant marker was put back `` | feed it again |
 | `fleet seat retire --dead` for a live seat | 1 | `` `<seat>` is not dead — the roster names a live session ... `` | retire without `--dead` |
 
 ## See also

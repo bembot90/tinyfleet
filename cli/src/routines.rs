@@ -111,6 +111,8 @@ fn exit_of(code: u8) -> Exit {
 struct Fleet {
     machine_dir: PathBuf,
     child_path: String,
+    /// The host the seats' sessions run on, which a ring types into.
+    host: Box<dyn fleet_controller::host::Host>,
     policy: Policy,
     seats: Vec<config::Seat>,
     registry: Registry,
@@ -142,13 +144,15 @@ fn resolve() -> Result<Fleet, String> {
         &directory,
     );
     // A policy that will not read is the defaults: the four verbs below need
-    // the nudge model and its bound, and refusing to LIST routines over a policy
-    // file is a refusal nobody asked for.
+    // the bound a ring is typed under, and refusing to LIST routines over a
+    // policy file is a refusal nobody asked for.
     let policy = policy::load(&fleet_root.join("fleet.toml"))
         .or_else(|_| policy::parse(""))
         .map_err(|why| format!("the policy could not be read: {why}"))?;
+    let child_path = platform::child_path(&platform::home_dir());
     Ok(Fleet {
-        child_path: platform::child_path(&platform::home_dir()),
+        host: fleet_controller::host::resolve(&child_path),
+        child_path,
         machine_dir,
         policy,
         seats,
@@ -254,6 +258,7 @@ fn machine_of<'a>(
         policy: &fleet.policy,
         seats,
         agent,
+        host: fleet.host.as_ref(),
         effects_off,
     }
 }

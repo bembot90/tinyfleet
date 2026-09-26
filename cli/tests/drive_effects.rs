@@ -864,7 +864,7 @@ mod effects {
         rig.write_policy(&policy_with(&format!(
             "rest_threshold_tokens = {LOW_THRESHOLD}\n"
         )));
-        rig.write_roster(&live_row(&rig.worktree(), "ab12"));
+        rig.write_roster_taking("ab12");
         rig.write_transcript("ab12", &transcript_of(LOW_THRESHOLD + 5));
 
         let out = rig.observe();
@@ -873,11 +873,10 @@ mod effects {
         assert_eq!(seat_row(&rig)["outcome"], "nudged");
         assert_eq!(rig.events_of("session.nudged"), 1);
         assert_eq!(
-            rig.calls()
-                .iter()
-                .filter(|c| c.starts_with("nudge "))
-                .count(),
-            1
+            rig.typed().len(),
+            1,
+            "the suggestion is typed into the seat's session: {:?}",
+            rig.typed()
         );
         let nudged = rig
             .events()
@@ -894,18 +893,17 @@ mod effects {
         }
         assert_eq!(rig.events_of("session.nudged"), 1);
         assert_eq!(
-            rig.calls()
-                .iter()
-                .filter(|c| c.starts_with("nudge "))
-                .count(),
+            rig.typed().len(),
             1,
             "the budget is per session, not per poll: {:?}",
-            rig.calls()
+            rig.typed()
         );
 
         // A new session for the same seat re-arms it, with no bookkeeping of its
-        // own — the map is keyed on the session id.
-        rig.write_roster(&live_row(&rig.worktree(), "cd34"));
+        // own — the map is keyed on the session id. The first one's turn has
+        // ended, so the seat reads idle again.
+        common::turns_end(&rig.tmux_state_path());
+        rig.write_roster_taking("cd34");
         rig.write_transcript("cd34", &transcript_of(LOW_THRESHOLD + 5));
         let out = rig.observe();
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -970,7 +968,7 @@ mod effects {
         rig.write_config(&format!(
             r#"{{"fleet_toml": "{}", "children": [
                  {{"id":"{SEAT_ID}","name":"Orla",
-                   "model":"claude-haiku-4-5-20251001",
+                   "model":"claude-sonnet-4-5-20250929",
                    "worktrees":{{"demo":"{}"}}}}
                ]}}"#,
             rig.policy_path().display(),
@@ -981,7 +979,7 @@ mod effects {
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         let said = stderr(&out);
         assert!(
-            said.contains("claude-haiku-4-5-20251001") && said.contains("claude-opus-5"),
+            said.contains("claude-sonnet-4-5-20250929") && said.contains("claude-opus-5"),
             "the drop names the model and the list it is outside of: {said}"
         );
         assert!(

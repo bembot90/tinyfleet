@@ -1,10 +1,10 @@
-//! `fleet dispatch` through the shipped binary, with the ring reaching a stub
-//! that stands in for the provider.
+//! `fleet dispatch` through the shipped binary, with the ring TYPED into the
+//! seat's own session on `fleet-tmux-stub` and the agent's listing answered by
+//! a stub script.
 //!
-//! The stub answers both halves the ring uses — the roster read and the one
-//! print-mode turn — and records the argv of the turn, so what the ring passed
-//! is read from what the stub was given rather than from the code that passed
-//! it.
+//! The listing reads the seat's row idle until its pane has taken a submit and
+//! busy after it, so what the ring passed is read from what the fake server
+//! recorded as typed rather than from the code that typed it.
 //!
 //! One project and one store per test process, on the store stub. Nothing here
 //! reads the store as a whole: each arm names its own item and its own seat, so
@@ -25,8 +25,6 @@ use common::hermetic::Hermetic;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
-const MODEL: &str = "a-cheap-model";
-
 /// The id every arm's one seat row is keyed by. Each arm's seat carries a name
 /// of its own, which is what `--to` names it by and what the order is written
 /// against, so the shared store still holds one seat's work per arm.
@@ -44,8 +42,7 @@ const TWIN_B: &str = "01a0d1f1-0aec-765f-9abe-00000000000d";
 /// absence writes into its own machine directory.
 const LISTED_IDENTITY: &str = "01a0d1f1-0aec-765f-9abe-00000000000e";
 
-const POLICY: &str = "[controller]\nnudge_model = \"a-cheap-model\"\n\
-                      nudge_timeout_seconds = 20\n\
+const POLICY: &str = "[controller]\nnudge_timeout_seconds = 1\n\
                       [seats.01a0d1f1-0aec-765f-9abe-00000000000a]\n\
                       kind = \"human\"\nname = \"lead-1\"\n\
                       [seats.01a0d1f1-0aec-765f-9abe-00000000000b]\n\
@@ -167,8 +164,11 @@ struct Rig {
     worktree: PathBuf,
     stub: PathBuf,
     roster: PathBuf,
-    nudge_argv: PathBuf,
-    nudge_exit: PathBuf,
+    /// What the listing reads once the seat's pane has taken a submit.
+    roster_taken: PathBuf,
+    /// The link `FLEET_TMUX_BIN` names, and the fake server's state beside it.
+    tmux: PathBuf,
+    state: PathBuf,
     /// One seat name per arm. The store is the process's one, and `seat holds
     /// an item` is a query across the whole of it, so two arms on one seat name
     /// would each be refused for the other's work.
@@ -190,8 +190,9 @@ impl Rig {
         let rig = Rig {
             stub: root.join("agent.sh"),
             roster: root.join("roster.json"),
-            nudge_argv: root.join("nudge-argv"),
-            nudge_exit: root.join("nudge-exit"),
+            roster_taken: root.join("roster-taken.json"),
+            tmux: common::stub_tmux(&root.join("tmux")),
+            state: root.join("tmux").join("tmux-stub.json"),
             seat: format!("s-cli-{label}"),
             root,
             machine,
@@ -221,25 +222,14 @@ impl Rig {
         rig
     }
 
-    /// The stub: `agents` is the roster read, `-p` is the one print-mode turn.
-    /// Nothing is inherited by an effect's child, so `cat` is named by its
-    /// absolute path rather than found on a `PATH` the adapter rebuilds.
+    /// The stub: `agents` is the listing, which turns once the seat's pane has
+    /// taken a submit ([`common::listing_branch`]).
     fn write_stub(&self) {
         std::fs::write(
             &self.stub,
             format!(
-                "#!/bin/sh\n\
-                 case \"$1\" in\n\
-                 \x20 agents) /bin/cat '{roster}' ;;\n\
-                 \x20 -p)\n\
-                 \x20   printf '%s\\n' \"$@\" > '{argv}'\n\
-                 \x20   exit $(/bin/cat '{exit_file}' 2>/dev/null || echo 0)\n\
-                 \x20   ;;\n\
-                 \x20 *) exit 64 ;;\n\
-                 esac\n",
-                roster = self.roster.display(),
-                argv = self.nudge_argv.display(),
-                exit_file = self.nudge_exit.display(),
+                "#!/bin/sh\ncase \"$1\" in\n{agents}\x20 *) exit 64 ;;\nesac\n",
+                agents = common::listing_branch(&self.roster, &self.roster_taken, &self.state),
             ),
         )
         .expect("the stub is written");
@@ -253,16 +243,22 @@ impl Rig {
         self
     }
 
-    /// A roster carrying one LIVE row in this seat's worktree.
+    /// The seat's live pane, and a listed row carrying its pid that reads idle
+    /// and busy once the pane has taken a submit: a session that takes a ring.
     fn live(&self) -> &Rig {
-        self.roster(&format!(
-            r#"[{{"sessionId": "abcdef", "id": "s0", "cwd": {cwd}, "pid": 4242}}]"#,
-            cwd = json_string(&self.worktree.display().to_string())
-        ))
+        let pid = common::live_pane(&self.state, SEAT_ID, &self.worktree);
+        std::fs::write(
+            &self.roster_taken,
+            format!("[{}]", common::listed_row("abcdef", pid, "busy")),
+        )
+        .expect("the roster is written");
+        self.roster(&format!("[{}]", common::listed_row("abcdef", pid, "idle")))
     }
 
-    fn nudge_exits(&self, code: u8) -> &Rig {
-        std::fs::write(&self.nudge_exit, format!("{code}\n")).expect("the seam is written");
+    /// A live seat that leaves a ring at its prompt: idle, and idle.
+    fn never_takes(&self) -> &Rig {
+        self.live();
+        std::fs::remove_file(&self.roster_taken).expect("the taken roster is removed");
         self
     }
 
@@ -286,17 +282,17 @@ impl Rig {
             .arg(self.machine.join("packs"))
             .current_dir(&Project::shared().root)
             .hermetic(&self.root.join("home"), &self.machine, Some(&bin))
+            .env(common::hermetic::TMUX_BIN, &self.tmux)
             .env("FLEET_LOAD_AVERAGE", "0.1")
             .env("FLEET_CPUS", "8")
             .output()
             .expect("the built binary runs")
     }
 
-    /// What the turn was given, as one text. The stub writes one argument per
-    /// line and the prompt is many lines long, so the lines are not the
-    /// arguments and only the whole text can be read for a value.
-    fn nudge_argv(&self) -> String {
-        std::fs::read_to_string(&self.nudge_argv).unwrap_or_default()
+    /// Every text the ring pasted into the seat's session, joined: empty where
+    /// nothing was typed.
+    fn typed(&self) -> String {
+        common::pasted_into(&self.state, SEAT_ID).join("\n")
     }
 
     /// The item's timeline as `fleet item show --json` lists it: the reader's
@@ -378,29 +374,22 @@ fn a_live_row_in_the_seats_worktree_is_rung_with_the_item_and_the_brief() {
         "the brief renders the touched command handed to dispatch:\n{brief}"
     );
 
-    let argv = rig.nudge_argv();
-    let mut lines = argv.lines();
-    assert_eq!(lines.next(), Some("-p"), "print mode is the first argument");
-    assert_eq!(lines.next(), Some("--model"));
-    assert_eq!(
-        lines.next(),
-        Some(MODEL),
-        "the policy's model, not a default"
-    );
-    assert!(argv.contains(&item), "the prompt names the item:\n{argv}");
+    // The ring is TYPED into the session the seat's id names: one paste of
+    // the ring's text, then one submit, and no turn of anybody else's.
+    let typed = common::typed_into(&rig.state, SEAT_ID);
+    assert_eq!(typed.len(), 2, "one paste and one submit: {typed:?}");
+    assert_eq!(typed[1], fleet_controller::test_support::Sent::Submit);
+    let text = rig.typed();
+    assert!(text.contains(&item), "the ring names the item:\n{text}");
     assert!(
-        argv.contains(
+        text.contains(
             &rig.machine
                 .join("briefs")
                 .join(format!("{item}.md"))
                 .display()
                 .to_string()
         ),
-        "the prompt names the brief's path:\n{argv}"
-    );
-    assert!(
-        argv.contains(&format!("{}-93b9739a", rig.seat)),
-        "the seat is addressed by the machine name its name resolved to:\n{argv}"
+        "the ring names the brief's path:\n{text}"
     );
 
     // The record carries the seat's FULL ID, whatever name the `--to` said: in
@@ -462,12 +451,13 @@ fn a_dispatch_answers_the_ordered_entry_item_show_lists_and_writes_no_note() {
     );
 }
 
-/// The ring addresses the session by the name its newest session row RECORDED
-/// at start, and not by the seat's machine name today: a seat renamed since its
-/// session started is still answering to the old name. The seat here was
-/// started as `orla-93b9739a`, and the seat list names it otherwise now.
+/// The ring is typed into the session the seat's ID names on fleet's own
+/// server, and no name reaches the address (fleet-fmver): not the machine name
+/// the seat carries today, and not the one its newest session row recorded at
+/// start. The seat here was started as `orla-93b9739a`, and the seat list names
+/// it otherwise now.
 #[test]
-fn a_ring_addresses_the_session_by_the_name_its_row_recorded() {
+fn a_ring_is_typed_into_the_session_the_seats_id_names() {
     let project = Project::shared();
     let rig = Rig::new("recorded-name");
     rig.live();
@@ -488,14 +478,17 @@ fn a_ring_addresses_the_session_by_the_name_its_row_recorded() {
 
     let out = rig.run(&["dispatch", &item, "--to", &rig.seat, "--by", "lead-1"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    let argv = rig.nudge_argv();
     assert!(
-        argv.contains("session named `orla-93b9739a`"),
-        "the ring addresses the name the session was started under:\n{argv}"
+        rig.typed().contains(&item),
+        "the ring reached the session named {SEAT_ID}: {:?}",
+        common::typed_into(&rig.state, SEAT_ID)
     );
-    assert!(
-        !argv.contains(&format!("{}-93b9739a", rig.seat)),
-        "and not the machine name the seat carries now:\n{argv}"
+    let server = fleet_controller::test_support::FakeServer::load(&rig.state)
+        .expect("the stub's state reads");
+    assert_eq!(
+        server.sessions.keys().collect::<Vec<_>>(),
+        vec![SEAT_ID],
+        "and no session under any name was asked for"
     );
 }
 
@@ -516,10 +509,7 @@ fn an_empty_roster_exits_four_and_the_three_writes_stand() {
         out.stdout.is_empty(),
         "the order line is stdout's on success only"
     );
-    assert!(
-        rig.nudge_argv().is_empty(),
-        "an absent seat is not rung at all"
-    );
+    assert!(rig.typed().is_empty(), "an absent seat is not rung at all");
 
     let (assignee, orders) = project.order_of(&item);
     assert_eq!(assignee.as_deref(), Some(SEAT_ID), "the assignment stands");
@@ -543,11 +533,13 @@ fn an_empty_roster_exits_four_and_the_three_writes_stand() {
     );
 }
 
+/// A ring typed and never taken — the seat's row still idle when the bound
+/// closes — is a ring that did not land, whatever the host returned.
 #[test]
-fn a_ring_the_provider_refuses_exits_one_and_the_three_writes_stand() {
+fn a_ring_the_session_never_takes_exits_one_and_the_three_writes_stand() {
     let project = Project::shared();
     let rig = Rig::new("failed");
-    rig.live().nudge_exits(1);
+    rig.never_takes();
     let item = project.item("a ready item whose ring will not land");
 
     let out = rig.run(&["dispatch", &item, "--to", &rig.seat, "--by", "lead-1"]);
@@ -558,8 +550,13 @@ fn a_ring_the_provider_refuses_exits_one_and_the_three_writes_stand() {
         stderr(&out)
     );
     assert!(
-        !rig.nudge_argv().is_empty(),
-        "the turn was attempted, and it is its exit that refused"
+        stderr(&out).contains("typed and not taken"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        !rig.typed().is_empty(),
+        "the ring was typed, and it is the taking that failed"
     );
 
     let (assignee, orders) = project.order_of(&item);
@@ -682,6 +679,7 @@ fn nameless_under(rig: &Rig, args: &[&str], inherited: Option<&str>) -> Command 
         .arg(rig.machine.join("packs"))
         .current_dir(&Project::shared().root)
         .hermetic(&rig.root.join("home"), &rig.machine, Some(&rig.stub))
+        .env(common::hermetic::TMUX_BIN, &rig.tmux)
         .env("FLEET_LOAD_AVERAGE", "0.1")
         .env("FLEET_CPUS", "8");
     command
@@ -766,7 +764,9 @@ fn a_dispatcher_the_call_does_not_name_is_this_machines_identity() {
     assert_eq!(said.matches("fleet seat add --human").count(), 1, "{said}");
 
     // The second call reads the identity the first minted: no mint prefix.
+    // The first ring's turn is over, and the seat back at its prompt.
     project.done(&item);
+    common::turns_end(&rig.state);
     let item = project.item("a second item the same machine dispatches");
     let out = nameless(&rig, &["dispatch", &item, "--to", &rig.seat])
         .output()
@@ -833,6 +833,9 @@ fn an_actor_is_a_seat_argument_or_a_typed_actor() {
             call.env("FLEET_ACTOR", actor);
         }
         let out = call.output().expect("the built binary runs");
+        // The ring's turn is over before the next dispatch: the seat is back
+        // at its prompt to take the next one.
+        common::turns_end(&rig.state);
         (item, out)
     };
     // The seat takes one item at a time, so each dispatch that lands frees it.

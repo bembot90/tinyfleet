@@ -1146,7 +1146,7 @@ fn answered_body() -> String {
     concat!(
         r#"{"type":"user","isSidechain":false,"message":{"role":"user"}}"#,
         "\n",
-        r#"{"type":"assistant","isSidechain":false,"message":{"model":"claude-haiku-4-5","#,
+        r#"{"type":"assistant","isSidechain":false,"message":{"model":"claude-sonnet-4-5","#,
         r#""usage":{"input_tokens":10,"output_tokens":219,"#,
         r#""cache_creation_input_tokens":36062,"cache_read_input_tokens":0}}}"#,
         "\n",

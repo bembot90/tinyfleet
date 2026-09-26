@@ -145,8 +145,20 @@ fn copy_tree(from: &Path, to: &Path) {
 /// start while the gate stands; it makes a
 /// branch in the worktree where the arm asked for one; and it ends the pane
 /// with the status the arm set, as a session that exits at once does.
+///
+/// A turn typed into a pane is TAKEN, as a live session takes one: every
+/// listed row carrying that pane's pid reads `busy` from the next read on — in
+/// the fleet's listing and in every seat's own under the machine directory —
+/// unless the arm planted `never_taken`, which is a session that leaves what
+/// was typed at its prompt.
 struct RigHost {
     fake: FakeHost,
+    roster: PathBuf,
+    machine: PathBuf,
+    never_taken: PathBuf,
+    /// Held across a listing's rewrite, so two feeds typing at once each see
+    /// their own row turn.
+    rewriting: std::sync::Mutex<()>,
     calls: PathBuf,
     gate: PathBuf,
     start_argv: PathBuf,
@@ -205,7 +217,35 @@ impl Host for RigHost {
     }
 
     fn send(&self, name: &str, text: &str) -> Result<(), String> {
-        self.fake.send(name, text)
+        self.fake.send(name, text)?;
+        if self.never_taken.is_file() {
+            return Ok(());
+        }
+        let Some(pid) = self.fake.session(name).map(|pane| pane.pid) else {
+            return Ok(());
+        };
+        let _held = self.rewriting.lock().expect("the rig host's own lock");
+        let seats = std::fs::read_dir(self.machine.join("config"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|dir| dir.path().join("roster.json"));
+        for listing in std::iter::once(self.roster.clone()).chain(seats) {
+            let Ok(body) = std::fs::read_to_string(&listing) else {
+                continue;
+            };
+            let Ok(mut rows) = serde_json::from_str::<Vec<serde_json::Value>>(&body) else {
+                continue;
+            };
+            for row in rows.iter_mut().filter(|row| row["pid"] == pid) {
+                row["status"] = "busy".into();
+            }
+            // Renamed into place, so a listing read beside the rewrite meets
+            // the old rows or the new ones and never half of either.
+            let rows = serde_json::to_string(&rows).expect("the rows serialize");
+            platform::write_atomic(&listing, rows.as_bytes()).expect("the listing is rewritten");
+        }
+        Ok(())
     }
 
     fn keys(&self, name: &str, keys: &[&str]) -> Result<(), String> {
@@ -259,12 +299,12 @@ struct Rig {
     /// What the child could read of the seat's local settings when it came up,
     /// which is the only witness that the write happened BEFORE the start.
     settings_at_start: PathBuf,
-    nudge_argv: PathBuf,
+    /// Planted, a turn typed into a seat's pane is never taken ([`RigHost`]).
+    never_taken: PathBuf,
     start_exit: PathBuf,
     stop_exit: PathBuf,
     rm_exit: PathBuf,
     rm_stdout: PathBuf,
-    nudge_exit: PathBuf,
     start_makes_branch: PathBuf,
     /// While this file stands, the stub's start and stop block in it — so an arm
     /// can hold a verb inside one of its windows and read what a SECOND verb
@@ -300,17 +340,20 @@ impl Rig {
             calls: root.join("calls"),
             start_argv: root.join("start-argv"),
             settings_at_start: root.join("settings-at-start"),
-            nudge_argv: root.join("nudge-argv"),
+            never_taken: root.join("never-taken"),
             start_exit: root.join("start-exit"),
             stop_exit: root.join("stop-exit"),
             rm_exit: root.join("rm-exit"),
             rm_stdout: root.join("rm-stdout"),
-            nudge_exit: root.join("nudge-exit"),
             start_makes_branch: root.join("start-makes-branch"),
             gate: root.join("gate"),
             clock: FakeClock::new(),
             host: RigHost {
                 fake: FakeHost::new(),
+                roster: root.join("roster.json"),
+                machine: root.join("machine"),
+                never_taken: root.join("never-taken"),
+                rewriting: std::sync::Mutex::new(()),
                 calls: root.join("calls"),
                 gate: root.join("gate"),
                 start_argv: root.join("start-argv"),
@@ -403,11 +446,6 @@ impl Rig {
              \x20   /bin/cat '{rm_stdout}' 2>/dev/null\n\
              \x20   exit $(/bin/cat '{rm_exit}' 2>/dev/null || echo 0)\n\
              \x20   ;;\n\
-             \x20 -p)\n\
-             \x20   printf '%s\\n' \"$@\" > '{nudge_argv}'\n\
-             \x20   echo \"nudge\" >> '{calls}'\n\
-             \x20   exit $(/bin/cat '{nudge_exit}' 2>/dev/null || echo 0)\n\
-             \x20   ;;\n\
              \x20 *) exit 64 ;;\n\
              esac\n",
             roster = self.roster.display(),
@@ -416,14 +454,12 @@ impl Rig {
             fleet_dir = self.home.join(".claude").display(),
             listing_dirs = self.listing_dirs.display(),
             stop_keeps = self.stop_keeps_the_roster.display(),
-            nudge_argv = self.nudge_argv.display(),
             calls = self.calls.display(),
             gate = self.gate.display(),
             cleared = test_support::with_arrivals("[]"),
             stop_exit = self.stop_exit.display(),
             rm_exit = self.rm_exit.display(),
             rm_stdout = self.rm_stdout.display(),
-            nudge_exit = self.nudge_exit.display(),
         );
         std::fs::write(&self.stub, body).expect("the stub is written");
         use std::os::unix::fs::PermissionsExt;
@@ -741,8 +777,8 @@ fn assert_agent_name(seat: &str) {
 /// roster still, so it spends the whole window on purpose and says so.
 fn a_policy() -> Policy {
     policy::parse(
-        "[controller]\nstart_watch_seconds = 10\nnudge_timeout_seconds = 30\n\
-         nudge_model = \"a-cheap-model\"\ndefault_model = \"a-model\"\n\
+        "[controller]\nstart_watch_seconds = 10\nnudge_timeout_seconds = 1\n\
+         default_model = \"a-model\"\n\
          max_transient_busy = 3\n",
     )
     .expect("the policy parses")
@@ -1567,7 +1603,18 @@ fn a_spawned_seat(rig: &Rig, policy: &Policy, status: &str) -> (String, u32) {
     (spawn.seat, pid)
 }
 
-/// The feed's four refusals, each with its own status.
+/// The pid the rig's host gave `seat`'s pane — the pid the seat's row is
+/// found by.
+fn pane_pid(rig: &Rig, seat: &str) -> u32 {
+    rig.host
+        .fake
+        .session(&rig.id_of(seat))
+        .expect("the spawn left the seat's pane on the host")
+        .pid
+}
+
+/// The feed's refusals, each with its own status, and none of them typing a
+/// byte into the seat's pane.
 #[test]
 fn feed_refuses_a_named_row_an_absent_session_an_unreadable_roster_and_a_busy_one() {
     let rig = Rig::new("feed-refusals");
@@ -1575,6 +1622,8 @@ fn feed_refuses_a_named_row_an_absent_session_an_unreadable_roster_and_a_busy_on
     let (seat, _) = a_spawned_seat(&rig, &policy, "idle");
     let agent = rig.agent();
     let machine = machine_of(&rig, &agent, &policy);
+    let session = rig.id_of(&seat);
+    let pid = pane_pid(&rig, &seat);
 
     // A named row: 6. Added beside the transient one the spawn wrote, through
     // the same file, so both kinds are on one list.
@@ -1605,40 +1654,59 @@ fn feed_refuses_a_named_row_an_absent_session_an_unreadable_roster_and_a_busy_on
         transient::feed(&machine, "nobody", "a turn").expect_err("an unknown seat is refused");
     assert_eq!(unknown.code, 1, "{}", unknown.message);
 
-    // No live row: 4.
+    // An unreadable roster: 3 — a session nobody could ask is a question and
+    // not an absence.
     let before = rig.table_bytes();
-    rig.roster("[]");
-    let absent = transient::feed(&machine, &seat, "a turn").expect_err("nothing to feed");
-    assert_eq!(absent.code, 4, "{}", absent.message);
-    assert_eq!(rig.table_bytes(), before, "and the table is untouched");
-
-    // An unreadable roster: 3, which is not the 4 above — a session nobody could
-    // ask is a question and not an absence.
     rig.seam(&rig.roster_fails, "");
     let unreadable =
         transient::feed(&machine, &seat, "a turn").expect_err("an unreadable roster is a question");
     assert_eq!(unreadable.code, 3, "{}", unreadable.message);
     let _ = std::fs::remove_file(&rig.roster_fails);
 
-    // A live row the agent reports mid-turn: 1, and the table byte-identical.
+    // The row carrying the pane's pid reads mid-turn: 1, and the table
+    // byte-identical.
     let worktree = rig.worktrees.join(&seat).display().to_string();
     rig.roster(&format!(
         "[{}]",
-        rig.row("a-session", "ab12", &worktree, 4242, "busy")
+        rig.row("a-session", "ab12", &worktree, pid, "busy")
     ));
     let busy = transient::feed(&machine, &seat, "a turn").expect_err("a seat holding a turn");
     assert_eq!(busy.code, 1, "{}", busy.message);
     assert!(busy.message.contains(&seat), "{}", busy.message);
     assert_eq!(rig.table_bytes(), before, "the table is byte-identical");
+
+    // The row stopped in front of a person: 1, before any byte.
+    rig.roster(&format!(
+        "[{}]",
+        rig.row("a-session", "ab12", &worktree, pid, "waiting")
+    ));
+    let blocked = transient::feed(&machine, &seat, "a turn").expect_err("a seat at a dialog");
+    assert_eq!(blocked.code, 1, "{}", blocked.message);
     assert!(
-        !rig.calls().contains("nudge"),
-        "and no turn was delivered: {}",
-        rig.calls()
+        blocked.message.contains("blocked on"),
+        "{}",
+        blocked.message
+    );
+    assert_eq!(rig.table_bytes(), before, "the table is byte-identical");
+
+    // The pane has died: 4, whatever the listing still says.
+    rig.roster("[]");
+    rig.host.fake.end(&session, Some(0));
+    let absent = transient::feed(&machine, &seat, "a turn").expect_err("nothing to feed");
+    assert_eq!(absent.code, 4, "{}", absent.message);
+    assert_eq!(rig.table_bytes(), before, "and the table is untouched");
+
+    assert!(
+        rig.host.fake.sends(&session).is_empty(),
+        "and no refused feed typed a byte: {:?}",
+        rig.host.fake.sends(&session)
     );
 }
 
-/// The feed's happy path: the marker moves, the turn is delivered, and the
-/// move is journaled on the stream.
+/// The feed's happy path, and fleet-nrl's arm: the brief is PASTED INTO THE
+/// SEAT'S OWN PANE — one paste of the whole turn, then one submit, to the
+/// session its id names — and nothing else runs it. The marker moves, and the
+/// move is journaled on the stream as delivered once the row turned busy.
 #[test]
 fn a_live_idle_row_is_fed_and_the_occupant_marker_moves() {
     let rig = Rig::new("feed");
@@ -1646,18 +1714,29 @@ fn a_live_idle_row_is_fed_and_the_occupant_marker_moves() {
     let (seat, _) = a_spawned_seat(&rig, &policy, "idle");
     let agent = rig.agent();
     let machine = machine_of(&rig, &agent, &policy);
+    let calls_before = rig.calls();
 
     let fed = transient::feed(&machine, &seat, "the next turn\nwith a second line\n")
         .expect("an idle seat is fed");
     assert_eq!(fed.prior, "the turn it came up with");
 
-    let argv = std::fs::read_to_string(&rig.nudge_argv).expect("the stub recorded the turn");
-    assert!(
-        argv.contains("the next turn"),
-        "the file's text reached the agent: {argv}"
+    let id = rig.id_of(&seat);
+    assert_eq!(
+        rig.host.fake.sends(&fleet_controller::host::session_for(
+            &SeatId::parse(&id).expect("the seat's id parses")
+        )),
+        vec![
+            test_support::Sent::Paste("the next turn\nwith a second line\n".to_string()),
+            test_support::Sent::Submit
+        ],
+        "the whole brief, pasted once into the seat's own session, then submitted"
+    );
+    assert_eq!(
+        rig.calls(),
+        calls_before,
+        "and the agent ran nothing — no turn of its own carries the brief"
     );
 
-    let id = rig.id_of(&seat);
     let marker = rig
         .table()
         .newest_for(&id)
@@ -1682,8 +1761,9 @@ fn a_live_idle_row_is_fed_and_the_occupant_marker_moves() {
     assert_eq!(nudged[0]["payload"]["put_back"], false);
 }
 
-/// A delivery the adapter reports failed puts the marker back, says so in a
-/// SECOND line, and leaves the table byte-identical to before the feed.
+/// A turn typed and never taken puts the marker back — the paste returning is
+/// no delivery — says so in a SECOND line, and leaves the table byte-identical
+/// to before the feed.
 #[test]
 fn a_delivery_the_adapter_refuses_puts_the_occupant_marker_back() {
     let rig = Rig::new("feed-putback");
@@ -1692,12 +1772,17 @@ fn a_delivery_the_adapter_refuses_puts_the_occupant_marker_back() {
     let agent = rig.agent();
     let machine = machine_of(&rig, &agent, &policy);
     let before = rig.table_bytes();
-    rig.seam(&rig.nudge_exit, "1\n");
+    rig.seam(&rig.never_taken, "");
 
     let refusal = transient::feed(&machine, &seat, "the turn that will not land")
-        .expect_err("a delivery the adapter refuses");
+        .expect_err("a turn the session never takes");
     assert_eq!(refusal.code, 1, "{}", refusal.message);
     assert!(refusal.message.contains("put back"), "{}", refusal.message);
+    assert!(
+        refusal.message.contains("typed and not taken"),
+        "{}",
+        refusal.message
+    );
 
     assert_eq!(
         rig.table_bytes(),
@@ -1707,6 +1792,13 @@ fn a_delivery_the_adapter_refuses_puts_the_occupant_marker_back() {
     let nudged = rig.events_of(events::SESSION_NUDGED);
     assert_eq!(nudged.len(), 2, "the attempt and the put-back: {nudged:?}");
     assert_eq!(nudged[0]["payload"]["put_back"], false);
+    assert!(
+        nudged[0]["payload"]["outcome"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("failed: typed and not taken"),
+        "{nudged:?}"
+    );
     assert_eq!(nudged[1]["payload"]["put_back"], true);
     assert_eq!(
         nudged[1]["payload"]["first_turn"], "the turn it came up with",

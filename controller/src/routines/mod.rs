@@ -32,12 +32,15 @@ pub const CLOCK_SEAM: &str = "FLEET_ORDERS_CLOCK";
 
 /// What one routine's action produced, terminally.
 ///
-/// Four are a success and three are not, and the streak below counts only the
+/// Five are a success and three are not, and the streak below counts only the
 /// second kind — a could-not-tell that reset the streak would hide a duty whose
 /// instrument has been unreadable for a week.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Delivered,
+    /// A ring typed into a seat that was mid-turn: it waits behind the turn in
+    /// hand, and is never called delivered (`crate::effect::Typed::Queued`).
+    Queued,
     Filed,
     Deduped,
     Ran,
@@ -50,6 +53,7 @@ impl Outcome {
     pub fn as_str(self) -> &'static str {
         match self {
             Outcome::Delivered => "delivered",
+            Outcome::Queued => "queued",
             Outcome::Filed => "filed",
             Outcome::Deduped => "deduped",
             Outcome::Ran => "ran",
@@ -72,7 +76,11 @@ impl Outcome {
     /// table every verb shares.
     pub fn exit_code(self) -> u8 {
         match self {
-            Outcome::Delivered | Outcome::Filed | Outcome::Deduped | Outcome::Ran => 0,
+            Outcome::Delivered
+            | Outcome::Queued
+            | Outcome::Filed
+            | Outcome::Deduped
+            | Outcome::Ran => 0,
             Outcome::CouldNotTell => 3,
             Outcome::Absent => 4,
             Outcome::Failed => 1,

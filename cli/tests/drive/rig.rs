@@ -149,7 +149,6 @@ const PREAMBLE: &str = "preamble";
 /// half of a collection that fails without a second stub.
 const STOP_EXIT: &str = "stop-exit";
 const RM_EXIT: &str = "rm-exit";
-const NUDGE_EXIT: &str = "nudge-exit";
 const ATTACH_EXIT: &str = "attach-exit";
 const DAEMON_EXIT: &str = "daemon-exit";
 
@@ -1226,8 +1225,35 @@ impl Rig {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
     }
-    fn nudge_argv_path(&self) -> PathBuf {
-        self.root.join("nudge-argv")
+    /// What the listing reads once a pane on the tmux stub has taken a submit,
+    /// where an arm wrote one ([`Rig::write_roster_taking`]).
+    fn roster_taken_path(&self) -> PathBuf {
+        self.root.join("roster-taken.json")
+    }
+
+    /// The seat's live pane on the tmux stub, as a start leaves one, and a
+    /// listing carrying `session`'s row in the seat's worktree under the
+    /// pane's pid — idle, and busy once the pane has taken a submit: a session
+    /// that takes a typed turn.
+    fn write_roster_taking(&self, session: &str) {
+        let pid = common::live_pane(&self.tmux_state_path(), SEAT_ID, &self.worktree());
+        let row = |status: &str| {
+            format!(
+                r#"[{{"id":"{session}","sessionId":"{session}","cwd":"{}","kind":"interactive",
+                      "pid":{pid},"status":"{status}","startedAt":1000}}]"#,
+                self.worktree().display()
+            )
+        };
+        write(
+            &self.roster_taken_path(),
+            &fleet_controller::test_support::with_arrivals(&row("busy")),
+        );
+        self.write_roster(&row("idle"));
+    }
+
+    /// Every text typed into the seat's session on the tmux stub, in order.
+    fn typed(&self) -> Vec<String> {
+        common::pasted_into(&self.tmux_state_path(), SEAT_ID)
     }
 
     /// The argv the last start's pane runs, after its program.
@@ -1617,14 +1643,12 @@ impl Rig {
         let calls = calls.display();
         let tmux_state = self.tmux_state_path();
         let tmux_state = tmux_state.display();
-        let nudge_argv = self.nudge_argv_path();
-        let nudge_argv = nudge_argv.display();
+        let roster_taken = self.roster_taken_path();
+        let roster_taken = roster_taken.display();
         let seam_stop_exit = self.seam_path(STOP_EXIT);
         let seam_stop_exit = seam_stop_exit.display();
         let seam_rm_exit = self.seam_path(RM_EXIT);
         let seam_rm_exit = seam_rm_exit.display();
-        let seam_nudge_exit = self.seam_path(NUDGE_EXIT);
-        let seam_nudge_exit = seam_nudge_exit.display();
         let seam_attach_exit = self.seam_path(ATTACH_EXIT);
         let seam_attach_exit = seam_attach_exit.display();
         let seam_daemon_exit = self.seam_path(DAEMON_EXIT);
@@ -1665,7 +1689,9 @@ impl Rig {
                  \x20   h=$({cat} '{seam_hang}' 2>/dev/null)\n\
                  \x20   [ -n \"$h\" ] && sleep \"$h\"\n\
                  \x20   printf '%s\\n' \"$CLAUDE_CONFIG_DIR\" >> '{listing_dirs}'\n\
-                 \x20   if [ -f \"$CLAUDE_CONFIG_DIR/roster.json\" ]; then\n\
+                 \x20   if [ -f '{roster_taken}' ] && grep -q '\"submit\"' '{tmux_state}' 2>/dev/null; then\n\
+                 \x20     {cat} '{roster_taken}'\n\
+                 \x20   elif [ -f \"$CLAUDE_CONFIG_DIR/roster.json\" ]; then\n\
                  \x20     {cat} \"$CLAUDE_CONFIG_DIR/roster.json\"\n\
                  \x20   else\n\
                  \x20     {cat} '{roster}'\n\
@@ -1686,11 +1712,6 @@ impl Rig {
                  \x20 daemon)\n\
                  \x20   {cat} '{daemon_status}' 2>/dev/null\n\
                  \x20   exit $({cat} '{seam_daemon_exit}' 2>/dev/null || echo 0)\n\
-                 \x20   ;;\n\
-                 \x20 -p)\n\
-                 \x20   printf '%s\\n' \"$@\" > '{nudge_argv}'\n\
-                 \x20   echo \"$(starts) nudge $2 $3\" >> '{calls}'\n\
-                 \x20   exit $({cat} '{seam_nudge_exit}' 2>/dev/null || echo 0)\n\
                  \x20   ;;\n\
                  \x20 *) exit 64;;\n\
                  esac\n"

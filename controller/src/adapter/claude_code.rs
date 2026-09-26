@@ -5,21 +5,18 @@ use super::{
     StartSpec,
 };
 use crate::platform::run_bounded;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 pub struct ClaudeCode {
     pub bin: String,
     /// Where this agent keeps its own state, which is where the transcripts are.
     pub config_dir: PathBuf,
     pub timeout: Duration,
-    /// This machine's fleet directory, under which a nudge's own words are
-    /// kept. They go to ONE FILE, because a pipe waits for EOF rather than for
-    /// the child and any process still holding the write end keeps the caller
-    /// blocked (lessons claude-code D2). A start's words are no longer this
-    /// adapter's: the session runs in a pane, which holds them.
+    /// This machine's fleet directory. Nothing this adapter runs writes under
+    /// it any more: a start's words and a typed turn's are the pane's, which
+    /// holds them (fleet-rge6.2, fleet-rge6.5).
     pub machine_dir: PathBuf,
     /// The `PATH` every child this adapter spawns carries, constructed by the
     /// platform layer and never inherited (D1).
@@ -267,10 +264,6 @@ impl ClaudeCode {
     }
 }
 
-/// Where a nudge's output goes, under the machine directory. A start's
-/// capture is core's (`crate::effect::STARTS_DIR`).
-pub const NUDGES_DIR: &str = "nudges";
-
 /// The environment a child keeps, beside the constructed `PATH`. Four values a
 /// shell needs to be one, and nothing else: a variable this list does not name
 /// cannot reach a session through this controller.
@@ -479,8 +472,7 @@ impl Agent for ClaudeCode {
         argv.push(spec.first_turn.clone());
         let mut env = self.environment(config_dir);
         // WHO THE SESSION ACTS AS, on the start and on nothing else [ASSUMES
-        // D7]: its own bare verbs are the seat's. A nudge's print-mode turn
-        // writes nothing, so it carries no actor.
+        // D7]: its own bare verbs are the seat's.
         env.push((FLEET_ACTOR_VAR.to_string(), spec.actor.clone()));
         Ok(Launch { argv, env })
     }
@@ -537,48 +529,6 @@ impl Agent for ClaudeCode {
                 Some(path) => RemoveAnswer::RemovedAWorktree { path },
                 None => RemoveAnswer::Removed,
             },
-        }
-    }
-
-    /// One print-mode turn in the seat's own worktree, on the fleet's cheapest
-    /// model, whose whole job is to carry one sentence to one session.
-    ///
-    /// Its output goes to a file for the same reason a start's does (D2), and it
-    /// is bounded: a turn that does not come back must not hold the poll.
-    fn nudge(
-        &self,
-        config_dir: Option<&Path>,
-        session_name: &str,
-        worktree: &str,
-        model: &str,
-        prompt: &str,
-        timeout: Duration,
-    ) -> Result<(), String> {
-        let log = self.nudge_log_path(session_name);
-        let mut cmd = self.effect_command_under(config_dir)?;
-        cmd.args(["-p", "--model", model, prompt])
-            .current_dir(worktree);
-        match self.spawned_to_file(cmd, &log, timeout)? {
-            (_, Some(status)) if status.success() => Ok(()),
-            (_, Some(status)) => Err(format!(
-                "the nudge exited {}; its output is at {}",
-                status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "on a signal".to_string()),
-                log.display()
-            )),
-            // A turn that outran its bound is ended WHOLE rather than left
-            // running: it holds a session's attention, and the next poll's
-            // nudge beside it would be two turns nobody asked for.
-            (mut child, None) => {
-                crate::platform::kill_process_group(child.id());
-                let _ = child.wait();
-                Err(format!(
-                    "the nudge did not answer within {timeout:?}; its output is at {}",
-                    log.display()
-                ))
-            }
         }
     }
 
@@ -680,87 +630,6 @@ impl ClaudeCode {
                 .unwrap_or_else(|| "on a signal".to_string()),
             String::from_utf8_lossy(&run.stderr).trim()
         ))
-    }
-
-    /// Where one nudge's words go: named by the session and the moment, so two
-    /// nudges for one seat never write over each other and an operator reading
-    /// the directory can tell which is which — the naming a start's capture
-    /// takes too (`crate::effect::start_capture_path`).
-    pub fn nudge_log_path(&self, session_name: &str) -> PathBuf {
-        crate::effect::log_path(&self.machine_dir, NUDGES_DIR, session_name)
-    }
-
-    /// Spawn a child whose output goes to a file, and wait for it inside
-    /// `watch`. `Ok(None)` is a child still running when the window closed.
-    ///
-    /// The nudge's alone since starts left `--bg` (fleet-rge6.2), and it goes
-    /// with the print-mode nudge (fleet-rge6.5). A FILE and never a pipe (D2):
-    /// `.output()` waits for EOF rather than for the child, so anything still
-    /// holding the write end — the direct child included — keeps this loop
-    /// blocked for as long as it lives.
-    fn spawned_to_file(
-        &self,
-        mut cmd: Command,
-        log: &Path,
-        watch: Duration,
-    ) -> Result<(Child, Option<std::process::ExitStatus>), String> {
-        if let Some(dir) = log.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| {
-                format!("the log directory {} could not be made: {e}", dir.display())
-            })?;
-        }
-        let sink = std::fs::File::create(log)
-            .map_err(|e| format!("the log {} could not be opened: {e}", log.display()))?;
-        let sink_err = sink
-            .try_clone()
-            .map_err(|e| format!("the log {} could not be cloned: {e}", log.display()))?;
-        // A group of its own, so a call that outruns its window can be ended
-        // whole rather than leaving what it forked behind.
-        unsafe {
-            cmd.pre_exec(crate::platform::own_process_group);
-        }
-        // The cause names the working directory as well as the binary: a spawn
-        // that carries one fails with the same `No such file or directory` for a
-        // missing program and for a missing cwd, and a fleet creates and retires
-        // worktrees constantly (lessons claude-code A14), so the second is the
-        // live case and a cause naming only the binary sends the operator to the
-        // wrong file.
-        let mut child = cmd
-            .stdin(Stdio::null())
-            .stdout(sink)
-            .stderr(sink_err)
-            .spawn()
-            .map_err(|e| {
-                format!(
-                    "could not start {} in {}: {e}",
-                    self.effect_bin_name(),
-                    cmd.get_current_dir()
-                        .map(|d| d.display().to_string())
-                        .unwrap_or_else(|| "this process's own directory".to_string())
-                )
-            })?;
-        let status = wait_within(&mut child, watch);
-        Ok((child, status))
-    }
-}
-
-/// `try_wait` until the window closes; `None` is a child that outlived it.
-///
-/// An unreadable status ends the wait rather than looping to the deadline on a
-/// child nobody can ask about any more.
-fn wait_within(child: &mut Child, watch: Duration) -> Option<std::process::ExitStatus> {
-    let deadline = Instant::now() + watch;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
-            Err(_) => return None,
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-        }
     }
 }
 

@@ -97,7 +97,6 @@ pub struct Answers {
     pub launch: Result<(), String>,
     pub stop: Result<(), String>,
     pub revive: Result<(), String>,
-    pub nudge: Result<(), String>,
     pub remove: RemoveAnswer,
     pub transcript: Option<String>,
     pub ended_at: Option<u64>,
@@ -114,7 +113,6 @@ impl Default for Answers {
             launch: Ok(()),
             stop: Ok(()),
             revive: Ok(()),
-            nudge: Ok(()),
             remove: RemoveAnswer::Removed,
             transcript: None,
             ended_at: None,
@@ -132,6 +130,9 @@ pub struct StubAgent {
     answers: Mutex<Answers>,
     calls: Mutex<Vec<Call>>,
     starts: Mutex<Vec<StartSpec>>,
+    /// Listings answered ahead of [`Answers::status`], one per read, in order:
+    /// see [`StubAgent::list_next`].
+    listed_next: Mutex<std::collections::VecDeque<RosterRead>>,
 }
 
 impl StubAgent {
@@ -140,7 +141,6 @@ impl StubAgent {
     pub const REMOVE: &'static str = "remove";
     pub const REVIVE: &'static str = "revive";
     pub const DAEMON: &'static str = "daemon";
-    pub const NUDGE: &'static str = "nudge";
     pub const STATUS: &'static str = "status";
     pub const TRANSCRIPT: &'static str = "transcript";
     pub const ENDED_AT: &'static str = "ended_at";
@@ -162,7 +162,18 @@ impl StubAgent {
             answers: Mutex::new(answers),
             calls: Mutex::new(Vec::new()),
             starts: Mutex::new(Vec::new()),
+            listed_next: Mutex::new(Default::default()),
         }
+    }
+
+    /// Answer the next reads of the listing with `reads`, one each and in
+    /// order, and [`Answers::status`] once they are spent — how an arm says
+    /// what a row read before a turn was typed and what it reads after.
+    pub fn list_next(&self, reads: impl IntoIterator<Item = RosterRead>) {
+        self.listed_next
+            .lock()
+            .expect("the stub agent's own lock")
+            .extend(reads);
     }
 
     /// Change what the next call is told.
@@ -390,19 +401,6 @@ impl Agent for StubAgent {
         self.answers().daemon
     }
 
-    fn nudge(
-        &self,
-        _config_dir: Option<&Path>,
-        session_name: &str,
-        _worktree: &str,
-        _model: &str,
-        _prompt: &str,
-        _timeout: Duration,
-    ) -> Result<(), String> {
-        self.record(StubAgent::NUDGE, session_name);
-        self.answers().nudge
-    }
-
     fn status(&self, config_dir: Option<&Path>) -> RosterRead {
         self.record(
             StubAgent::STATUS,
@@ -410,7 +408,12 @@ impl Agent for StubAgent {
                 .map(|dir| dir.display().to_string())
                 .unwrap_or_default(),
         );
-        self.answers().status
+        let next = self
+            .listed_next
+            .lock()
+            .expect("the stub agent's own lock")
+            .pop_front();
+        next.unwrap_or_else(|| self.answers().status)
     }
 
     fn transcript(

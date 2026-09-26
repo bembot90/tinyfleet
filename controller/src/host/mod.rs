@@ -38,8 +38,9 @@ pub const SOCKET: &str = "fleet";
 /// The pause between a paste and the separate keystroke that submits it.
 ///
 /// A burst of text followed by Enter in the same write did not submit (lessons
-/// claude-code D8, measured on 2.1.282 and not yet on the supported 2.1.280),
-/// so the submit is its own call after this gap — herdr's spacing.
+/// claude-code D8, on 2.1.282), so the submit is its own call after this gap —
+/// herdr's spacing. On the supported 2.1.280 a bracketed paste and a `C-m`
+/// this far apart submitted one two-line turn (measured 2026-09-26).
 pub const SUBMIT_GAP: Duration = Duration::from_millis(300);
 
 /// A seat's session name: the seat's id, hyphenated.

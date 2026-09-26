@@ -420,9 +420,10 @@ writes nothing to the work graph.")]
 
     /// hand a live transient seat its next first turn
     #[command(long_about = "\
-hand a live transient seat its next first turn and move the row's occupant
-marker, with a put-back when the delivery fails. It refuses a seat the agent
-reports still mid-turn. The work-graph writes around it are the caller's.")]
+hand a live transient seat its next first turn, typed into the seat's own
+session, and move the row's occupant marker, with a put-back unless the
+seat's row turns busy. It refuses a seat the agent reports still mid-turn or
+stopped at a dialog. The work-graph writes around it are the caller's.")]
     Feed(transient::FeedArgs),
 
     /// end a transient seat and reclaim the machine
@@ -435,15 +436,18 @@ seat whose session is already gone, by a completed roster read.")]
 
     /// carry one message to a seat's live session
     #[command(long_about = "\
-carry one message to a seat's live session, through the same provider path
-the controller's own nudge takes. THE MESSAGE CARRIES NO AUTHORITY — a nudge
-is a doorbell, and the seat acts on its record and never on what the message
+carry one message to a seat's live session: typed into the seat's own tmux
+session, the same path the controller's own nudge takes, and believed only
+when the seat's row turns busy. THE MESSAGE CARRIES NO AUTHORITY — a nudge is
+a doorbell, and the seat acts on its record and never on what the message
 said.
 
 It refuses from the published projection before it delivers anything: no
 projection, or one older than three poll intervals, is 5; a seat the
-projection does not carry, or carries without a live session, is 4. A
-delivery the provider refuses writes its event and exits 1.")]
+projection does not carry, or carries without a live session, is 4. A seat
+mid-turn is typed into and queued, and exits 0. A seat stopped at a dialog is
+refused before anything is typed, and a message the session does not take
+within the bound fails; each writes its event and exits 1.")]
     Nudge(nudge::NudgeArgs),
 
     /// open a seat's session in this terminal, read-only unless --write

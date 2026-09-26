@@ -2,8 +2,9 @@
 //! outside any session.
 //!
 //! It delivers through the ring `fleet dispatch` already has, so the row
-//! lookup, the worktree choice, the roster read and the adapter's turn are one
-//! path for both callers and the provider is reached from one place.
+//! lookup, the pane and listing read and the turn typed into the seat's own
+//! session are one path for both callers (`effect::type_turn`). The event says
+//! `sent` only where the listing witnessed the turn taken.
 //!
 //! The seat argument is resolved first, through the seat list, and a name that
 //! names no one seat is refused with the resolver's own exit. The two refusals
@@ -15,11 +16,11 @@
 use std::path::Path;
 use std::time::Duration;
 
+use fleet_controller::effect::Typed;
 use fleet_controller::events::{self, ActorRef, EventLog};
 use fleet_controller::observe::RosterState;
 use fleet_controller::seat::COLLECTOR_STALE_POLLS;
 use fleet_controller::{clock, policy as controller};
-use fleet_core::item::RingOutcome;
 
 use crate::exit::Exit;
 use crate::item::{acting, stream_actor, SeatRing};
@@ -43,7 +44,7 @@ pub struct NudgeArgs {
     /// the message, carried verbatim
     #[arg(long, value_name = "TEXT")]
     pub text: String,
-    /// how long the turn has, over the policy's bound
+    /// how long the seat has to take it, over the policy's
     #[arg(long, value_name = "SECONDS")]
     pub timeout: Option<u64>,
     /// the project this directory must resolve to
@@ -83,25 +84,27 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
 
     let ring = SeatRing {
         machine_dir: here.machine_dir.clone(),
-        project: here.project.name.clone(),
     };
     let rung = ring.ring_with(&key, &args.text, args.timeout.map(Duration::from_secs));
-    let (outcome, exit) = match &rung.outcome {
-        RingOutcome::Delivered => ("sent".to_string(), Exit::Done),
-        RingOutcome::Failed(cause) => (format!("failed: {cause}"), Exit::Refused),
-        // The verb's own roster read is the fresher instrument and answers in
-        // the same row the projection's read does. Nothing was delivered, so
-        // nothing is written to the stream either.
-        RingOutcome::Absent => {
+    // `sent` only where the listing witnessed the turn taken; a turn queued
+    // behind the one in hand is typed and exits 0 too, and says it is queued.
+    let exit = match &rung.typed {
+        Typed::Delivered | Typed::Queued => Exit::Done,
+        Typed::Blocked(_) | Typed::Failed(_) => Exit::Refused,
+        // The verb's own read is the fresher instrument: no live pane under
+        // the seat's session, or no listed row carrying its pid. Nothing was
+        // typed, so nothing is written to the stream either.
+        Typed::Absent => {
             return stopped(
                 &format!(
-                    "`{seat}` has no live session in its worktree — the roster read carries no \
-                     live row there, whatever the projection published"
+                    "`{seat}` has no live session — no live pane under its session, or no \
+                     listed row carrying the pane's pid, whatever the projection published"
                 ),
                 Exit::NoSession.code(),
             )
         }
     };
+    let outcome = rung.typed.recorded();
 
     let stream = here.machine_dir.join(STREAM);
     let mut log = EventLog::open(&stream);
@@ -124,8 +127,9 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
     }
 
     let session = rung.session.as_deref().unwrap_or("no session id");
-    let (verb, tone) = match exit {
-        Exit::Done => ("nudged", Tone::Good),
+    let (verb, tone) = match (&rung.typed, exit) {
+        (Typed::Queued, _) => ("queued", Tone::Good),
+        (_, Exit::Done) => ("nudged", Tone::Good),
         _ => ("not nudged", Tone::Bad),
     };
     ui.status(

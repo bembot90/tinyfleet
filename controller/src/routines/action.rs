@@ -10,6 +10,8 @@
 use super::file::{Item, Routine, Run, When};
 use super::{Outcome, SeatView};
 use crate::adapter::Agent;
+use crate::effect::{self, TurnTarget, Typed};
+use crate::host::{self, Host};
 use crate::observe::RosterState;
 use crate::platform;
 use crate::policy::Policy;
@@ -49,6 +51,8 @@ pub struct Machine<'a> {
     /// `None` is effects off, with the cause, which turns a nudge into
     /// could-not-tell and leaves an item and an exec running.
     pub agent: Option<&'a dyn Agent>,
+    /// The host the seats' sessions run on, which a ring types into.
+    pub host: &'a dyn Host,
     pub effects_off: Option<String>,
 }
 
@@ -164,19 +168,18 @@ pub fn argv_of(routine: &Routine, machine: &Machine) -> Vec<String> {
         let binary = fleet_binary(machine).unwrap_or_else(|| FLEET.to_string());
         return run_argv(&binary, routine, workflow);
     }
+    // A ring runs no program: its text is typed into the seat's own session on
+    // the host, so what a dry run prints is that session and the text.
     if let Some(nudge) = &action.nudge {
-        let seat = view_of(nudge, machine);
-        let (worktree, display) = match seat {
-            Some(row) => (row.worktree.clone(), row.session_name.clone()),
-            None => (String::new(), nudge.seat.clone()),
+        let session = match nudge.seat_id {
+            Some(id) => host::session_for(&id),
+            None => format!("(no session: `{}` names no seat)", nudge.seat),
         };
         return vec![
-            "claude".to_string(),
-            "-p".to_string(),
-            "--model".to_string(),
-            machine.policy.nudge_model.clone(),
-            crate::effect::nudge_prompt(&display, &nudge_text(nudge)),
-            format!("(in {worktree})"),
+            "type".to_string(),
+            "-t".to_string(),
+            session,
+            nudge_text(nudge),
         ];
     }
     match &action.item {
@@ -246,21 +249,44 @@ fn run_nudge(nudge: &super::file::Nudge, machine: &Machine) -> Done {
                 .unwrap_or_else(|| "effects are off".to_string()),
         );
     };
-    let text = nudge_text(nudge);
-    let sent = agent.nudge(
-        seat.config_dir.as_deref().map(Path::new),
-        &seat.session_name,
-        &seat.worktree,
-        &machine.policy.nudge_model,
-        &crate::effect::nudge_prompt(&seat.session_name, &text),
+    let typed = effect::type_turn(
+        agent,
+        machine.host,
+        &TurnTarget {
+            seat: &seat.id,
+            config_dir: seat.config_dir.as_deref().map(Path::new),
+        },
+        &nudge_text(nudge),
         Duration::from_secs(machine.policy.nudge_timeout_seconds),
     );
-    match sent {
-        Ok(()) => Done::plain(
+    match typed {
+        Typed::Delivered => Done::plain(
             Outcome::Delivered,
-            format!("the ring reached `{}` in {}", nudge.seat, seat.worktree),
+            format!("the ring was taken by `{}`'s session", nudge.seat),
         ),
-        Err(cause) => Done::plain(
+        Typed::Queued => Done::plain(
+            Outcome::Queued,
+            format!(
+                "the ring waits behind the turn `{}` was holding",
+                nudge.seat
+            ),
+        ),
+        Typed::Absent => Done::plain(
+            Outcome::Absent,
+            format!(
+                "`{}` has no live session to type into — no live pane, or no listed row \
+                 carrying its pid",
+                nudge.seat
+            ),
+        ),
+        Typed::Blocked(cause) => Done::plain(
+            Outcome::Failed,
+            format!(
+                "the ring to `{}` was refused: blocked on {cause}",
+                nudge.seat
+            ),
+        ),
+        Typed::Failed(cause) => Done::plain(
             Outcome::Failed,
             format!("the ring to `{}` did not land: {cause}", nudge.seat),
         ),

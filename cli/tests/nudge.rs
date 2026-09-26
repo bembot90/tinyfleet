@@ -1,10 +1,12 @@
-//! `fleet seat nudge` through the shipped binary, with the ring reaching a stub
-//! that stands in for the provider.
+//! `fleet seat nudge` through the shipped binary, with the ring TYPED into the
+//! seat's own session on `fleet-tmux-stub` and the agent's listing answered by
+//! a stub script.
 //!
-//! The stub is `dispatch.rs`'s: `agents` serves a roster file and `-p` records
-//! the turn's argv and exits by a seam. What the projection says is a file each
-//! arm writes, because the two refusals in front of the delivery are readings of
-//! that document and of nothing else.
+//! The stub's `agents` serves a roster file until the seat's pane has taken a
+//! submit, and the "taken" roster after it, where the arm wrote one — a session
+//! that takes a typed turn reads busy on its next listing. What the projection
+//! says is a file each arm writes, because the two refusals in front of the
+//! delivery are readings of that document and of nothing else.
 //!
 //! No work graph anywhere: this verb writes to the event stream and never to the
 //! store, so the project here is a directory with a policy file in it.
@@ -13,16 +15,18 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use fleet_controller::test_support::{FakeServer, Sent};
+
 mod common;
 use common::hermetic::Hermetic;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 const POLL_SECONDS: u64 = 5;
-const POLICY: &str = "[controller]\nnudge_model = \"a-cheap-model\"\n\
-                      nudge_timeout_seconds = 20\n";
+const POLICY: &str = "[controller]\nnudge_timeout_seconds = 20\n";
 
-/// One arm's project, machine directory, seat worktree and provider stub.
+/// One arm's project, machine directory, seat worktree, provider stub and tmux
+/// stub.
 struct Rig {
     root: PathBuf,
     project: PathBuf,
@@ -30,18 +34,16 @@ struct Rig {
     worktree: PathBuf,
     stub: PathBuf,
     roster: PathBuf,
-    nudge_argv: PathBuf,
-    nudge_exit: PathBuf,
-    nudge_sleep: PathBuf,
-    /// The seat's machine name: what a sentence names it by, and what its
-    /// session is addressed by where no session row recorded another. The
-    /// projection and the stream key it on [`SEAT_ID`]. The verb is handed the
-    /// seat's own name, [`NAME`], and resolves it.
-    seat: String,
+    /// What the listing reads once the seat's pane has taken a submit. Absent,
+    /// the listing never moves: a session that leaves a typed turn untaken.
+    roster_taken: PathBuf,
+    /// The link `FLEET_TMUX_BIN` names, and the fake server's state beside it.
+    tmux: PathBuf,
+    state: PathBuf,
 }
 
-/// The seat's id and its own name. Its row is keyed by the id, and a person
-/// names it by the name.
+/// The seat's id and its own name. Its row is keyed by the id, its session on
+/// the host is named by the id, and a person names it by the name.
 const SEAT_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
 const NAME: &str = "Orla";
 
@@ -61,13 +63,13 @@ impl Rig {
         }
         std::fs::write(project.join("fleet.toml"), POLICY).expect("the policy file is written");
 
+        let tmux = common::stub_tmux(&root.join("tmux"));
         let rig = Rig {
             stub: root.join("agent.sh"),
             roster: root.join("roster.json"),
-            nudge_argv: root.join("nudge-argv"),
-            nudge_exit: root.join("nudge-exit"),
-            nudge_sleep: root.join("nudge-sleep"),
-            seat: "orla-93b9739a".to_string(),
+            roster_taken: root.join("roster-taken.json"),
+            state: root.join("tmux").join("tmux-stub.json"),
+            tmux,
             root,
             project,
             machine,
@@ -116,27 +118,15 @@ impl Rig {
         self
     }
 
-    /// The stub: `agents` is the roster read, `-p` is the one print-mode turn.
-    /// Nothing is inherited by an effect's child, so `cat` and `sleep` are named
-    /// by absolute path rather than found on a `PATH` the adapter rebuilds.
+    /// The stub: `agents` is the listing, which reads the "taken" roster once
+    /// the seat's pane has taken a submit and the arm wrote one
+    /// ([`common::listing_branch`]).
     fn write_stub(&self) {
         std::fs::write(
             &self.stub,
             format!(
-                "#!/bin/sh\n\
-                 case \"$1\" in\n\
-                 \x20 agents) /bin/cat '{roster}' ;;\n\
-                 \x20 -p)\n\
-                 \x20   printf '%s\\n' \"$@\" > '{argv}'\n\
-                 \x20   /bin/sleep $(/bin/cat '{sleep_file}' 2>/dev/null || echo 0)\n\
-                 \x20   exit $(/bin/cat '{exit_file}' 2>/dev/null || echo 0)\n\
-                 \x20   ;;\n\
-                 \x20 *) exit 64 ;;\n\
-                 esac\n",
-                roster = self.roster.display(),
-                argv = self.nudge_argv.display(),
-                sleep_file = self.nudge_sleep.display(),
-                exit_file = self.nudge_exit.display(),
+                "#!/bin/sh\ncase \"$1\" in\n{agents}\x20 *) exit 64 ;;\nesac\n",
+                agents = common::listing_branch(&self.roster, &self.roster_taken, &self.state),
             ),
         )
         .expect("the stub is written");
@@ -150,21 +140,30 @@ impl Rig {
         self
     }
 
-    /// A roster carrying one LIVE row in this seat's worktree.
-    fn live(&self) -> &Rig {
-        self.roster(&format!(
-            r#"[{{"sessionId": "abcdef", "id": "s0", "cwd": {cwd}, "pid": 4242}}]"#,
-            cwd = json_string(&self.worktree.display().to_string())
-        ))
+    /// The seat's session on the fake server, its pane alive, as the
+    /// controller's start leaves it — named by the seat's id.
+    fn pane(&self) -> u32 {
+        common::live_pane(&self.state, SEAT_ID, &self.worktree)
     }
 
-    fn nudge_exits(&self, code: u8) -> &Rig {
-        std::fs::write(&self.nudge_exit, format!("{code}\n")).expect("the seam is written");
+    /// A live pane, and a listed row carrying its pid that reads `status` and
+    /// `busy` once the pane has taken a submit.
+    fn listed(&self, status: &str) -> &Rig {
+        let pid = self.pane();
+        self.roster(&row(pid, status));
+        std::fs::write(&self.roster_taken, row(pid, "busy")).expect("the roster is written");
         self
     }
 
-    fn nudge_sleeps(&self, seconds: u64) -> &Rig {
-        std::fs::write(&self.nudge_sleep, format!("{seconds}\n")).expect("the seam is written");
+    /// A live seat that takes what is typed: idle, then busy.
+    fn live(&self) -> &Rig {
+        self.listed("idle")
+    }
+
+    /// A live seat that leaves what is typed at its prompt: idle, and idle.
+    fn never_takes(&self) -> &Rig {
+        self.live();
+        std::fs::remove_file(&self.roster_taken).expect("the taken roster is removed");
         self
     }
 
@@ -193,12 +192,14 @@ impl Rig {
         self
     }
 
-    /// The shipped binary, run inside the project the policy file names.
+    /// The shipped binary, run inside the project the policy file names, its
+    /// tmux the stub.
     fn run(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_fleet"))
             .args(args)
             .current_dir(&self.project)
             .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub))
+            .env(common::hermetic::TMUX_BIN, &self.tmux)
             .env("FLEET_ACTOR", "run:a-caller")
             .output()
             .expect("the built binary runs")
@@ -209,11 +210,9 @@ impl Rig {
         self.run(&[&call[..], extra].concat())
     }
 
-    /// What the turn was given, as one text. The stub writes one argument per
-    /// line and the prompt is many lines long, so the lines are not the
-    /// arguments and only the whole text can be read for a value.
-    fn nudge_argv(&self) -> String {
-        std::fs::read_to_string(&self.nudge_argv).unwrap_or_default()
+    /// Everything typed into the seat's session, in order.
+    fn sends(&self) -> Vec<Sent> {
+        common::typed_into(&self.state, SEAT_ID)
     }
 
     /// Every `session.nudged` line on the stream, parsed.
@@ -235,6 +234,11 @@ impl Drop for Rig {
 /// The message, with a shape no template around it would produce by accident.
 const TEXT: &str = "look at the record — item q7 is yours";
 
+/// The listing's one row: the session `abcdef`, its pid the pane's.
+fn row(pid: u32, status: &str) -> String {
+    format!("[{}]", common::listed_row("abcdef", pid, status))
+}
+
 fn json_string(value: &str) -> String {
     serde_json::Value::String(value.to_string()).to_string()
 }
@@ -253,6 +257,8 @@ fn stamp_secs_ago(age: u64) -> String {
     fleet_controller::clock::stamp_secs(now.saturating_sub(age))
 }
 
+/// The text is TYPED into the seat's own session — one paste of it, verbatim,
+/// then one submit — and the line says `sent` because the listing turned busy.
 #[test]
 fn a_live_row_and_a_fresh_projection_carry_the_text_and_say_sent() {
     let rig = Rig::new("sent");
@@ -265,12 +271,10 @@ fn a_live_row_and_a_fresh_projection_carry_the_text_and_say_sent() {
         "nothing goes to stdout: {:?}",
         String::from_utf8_lossy(&out.stdout)
     );
-
-    let argv = rig.nudge_argv();
-    assert!(argv.contains(TEXT), "the text is carried verbatim:\n{argv}");
-    assert!(
-        argv.contains(&format!("session named `{}`", rig.seat)),
-        "a seat no session row names is addressed by its machine name:\n{argv}"
+    assert_eq!(
+        rig.sends(),
+        vec![Sent::Paste(TEXT.to_string()), Sent::Submit],
+        "the text is typed verbatim, and nothing wraps it"
     );
 
     let events = rig.nudged_events();
@@ -296,15 +300,15 @@ fn a_live_row_and_a_fresh_projection_carry_the_text_and_say_sent() {
     );
 }
 
-/// A seat renamed since its session started is still ADDRESSED BY THE NAME THE
-/// SESSION WAS STARTED UNDER — the one its newest session row recorded — and
-/// never by the name the seat carries now: the live session answers to its
-/// `--name`, and a ring addressed by the new one reaches nobody.
+/// fleet-fmver's addressing: the seat is reached at the session ITS ID names on
+/// fleet's own server, whatever it is called. No name reaches the address — not
+/// the one the policy gives it today, and not the one its session row recorded
+/// at start.
 ///
 /// Orla's session came up as `orla-93b9739a`; the policy names her Wren now, so
 /// her machine name is `wren-93b9739a`. She is nudged by her new name.
 #[test]
-fn a_renamed_seat_is_rung_by_the_session_name_its_row_recorded() {
+fn a_renamed_seat_is_typed_into_the_session_its_id_names() {
     let rig = Rig::new("renamed");
     rig.named("Wren");
     rig.session_row("orla-93b9739a");
@@ -312,15 +316,16 @@ fn a_renamed_seat_is_rung_by_the_session_name_its_row_recorded() {
 
     let out = rig.run(&["seat", "nudge", "wren", "--text", TEXT]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-
-    let argv = rig.nudge_argv();
-    assert!(
-        argv.contains("session named `orla-93b9739a`"),
-        "the session is addressed by the name it was started under:\n{argv}"
+    assert_eq!(
+        rig.sends(),
+        vec![Sent::Paste(TEXT.to_string()), Sent::Submit],
+        "typed into the session named {SEAT_ID}"
     );
-    assert!(
-        !argv.contains("wren-93b9739a"),
-        "and never by the machine name the rename gives:\n{argv}"
+    let server = FakeServer::load(&rig.state).expect("the stub's state reads");
+    assert_eq!(
+        server.sessions.keys().collect::<Vec<_>>(),
+        vec![SEAT_ID],
+        "and no session under any name was asked for"
     );
     let events = rig.nudged_events();
     assert_eq!(events.len(), 1, "one event: {events:?}");
@@ -330,16 +335,20 @@ fn a_renamed_seat_is_rung_by_the_session_name_its_row_recorded() {
     );
 }
 
+/// fleet-fmver's outcome: a turn that was typed and NEVER TAKEN — the listing
+/// still idle when the bound closes — writes `failed` and exits 1, though every
+/// host call returned 0. The send returning is a dispatch and never a witness.
 #[test]
-fn a_turn_the_provider_refuses_writes_a_failed_event_and_exits_one() {
+fn a_turn_the_session_never_takes_writes_a_failed_event_and_exits_one() {
     let rig = Rig::new("failed");
-    rig.live().projection("present", 0).nudge_exits(1);
+    rig.never_takes().projection("present", 0);
 
-    let out = rig.nudge(&[]);
+    let out = rig.nudge(&["--timeout", "1"]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    assert!(
-        !rig.nudge_argv().is_empty(),
-        "the turn was attempted, and it is its exit that refused"
+    assert_eq!(
+        rig.sends(),
+        vec![Sent::Paste(TEXT.to_string()), Sent::Submit],
+        "the turn was typed, and it is the taking that failed"
     );
 
     let events = rig.nudged_events();
@@ -348,7 +357,55 @@ fn a_turn_the_provider_refuses_writes_a_failed_event_and_exits_one() {
         .as_str()
         .expect("the outcome is a string")
         .to_string();
-    assert!(outcome.starts_with("failed:"), "{outcome}");
+    assert!(
+        outcome.starts_with("failed: typed and not taken: still idle"),
+        "{outcome}"
+    );
+}
+
+/// A seat already mid-turn is typed into and QUEUED: exit 0, and the line says
+/// queued and never sent (E5).
+#[test]
+fn a_seat_mid_turn_is_queued_and_exits_zero() {
+    let rig = Rig::new("queued");
+    rig.listed("busy").projection("present", 0);
+
+    let out = rig.nudge(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(stderr(&out).contains("queued"), "{}", stderr(&out));
+    assert_eq!(
+        rig.sends(),
+        vec![Sent::Paste(TEXT.to_string()), Sent::Submit]
+    );
+    let events = rig.nudged_events();
+    assert_eq!(events.len(), 1, "one event: {events:?}");
+    assert_eq!(
+        events[0]["payload"]["outcome"],
+        serde_json::json!("queued: the seat was mid-turn")
+    );
+}
+
+/// A seat whose row stands in front of a person is refused before any byte:
+/// exit 1, and the line names the block.
+#[test]
+fn a_seat_at_a_dialog_is_refused_before_any_byte_and_exits_one() {
+    let rig = Rig::new("blocked");
+    let pid = rig.pane();
+    rig.roster(&format!(
+        r#"[{{"sessionId": "abcdef", "cwd": "/anywhere", "pid": {pid}, "status": "waiting",
+             "waitingFor": "permission prompt"}}]"#
+    ))
+    .projection("present", 0);
+
+    let out = rig.nudge(&[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(rig.sends().is_empty(), "no byte: {:?}", rig.sends());
+    let events = rig.nudged_events();
+    assert_eq!(events.len(), 1, "one event: {events:?}");
+    assert_eq!(
+        events[0]["payload"]["outcome"],
+        serde_json::json!("refused: blocked on permission prompt")
+    );
 }
 
 #[test]
@@ -365,7 +422,7 @@ fn no_projection_is_five_and_names_the_path_and_fleet_start() {
     );
     assert!(said.contains("fleet start"), "{said}");
     assert!(
-        rig.nudge_argv().is_empty(),
+        rig.sends().is_empty(),
         "the refusal is in front of the delivery"
     );
 }
@@ -390,7 +447,7 @@ fn a_projection_older_than_three_polls_is_five_with_its_age() {
         .unwrap_or_else(|| panic!("the refusal prints an age: {said}"));
     assert!(reported >= age, "the age is the document's own: {said}");
     assert!(
-        rig.nudge_argv().is_empty(),
+        rig.sends().is_empty(),
         "the refusal is in front of the delivery"
     );
 
@@ -410,7 +467,7 @@ fn a_seat_the_projection_does_not_carry_is_four() {
     assert_eq!(out.status.code(), Some(4), "{}", stderr(&out));
     assert!(stderr(&out).contains("no row"), "{}", stderr(&out));
     assert!(
-        rig.nudge_argv().is_empty(),
+        rig.sends().is_empty(),
         "a seat the collector has not published is not rung"
     );
 }
@@ -425,23 +482,31 @@ fn a_published_row_that_is_not_present_is_four() {
     assert!(stderr(&out).contains("prompt-blocked"), "{}", stderr(&out));
 }
 
+/// The verb's own reading is the fresher one: a published live row over a pane
+/// the listing carries no row for, and over no pane at all, is 4 — and nothing
+/// was typed, so nothing is on the stream.
 #[test]
 fn a_live_published_row_over_an_empty_roster_is_four() {
     let rig = Rig::new("empty-roster");
     rig.projection("present", 0);
 
     let out = rig.nudge(&[]);
-    assert_eq!(out.status.code(), Some(4), "{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(4), "no pane: {}", stderr(&out));
+
+    rig.pane();
+    let out = rig.nudge(&[]);
+    assert_eq!(out.status.code(), Some(4), "no row: {}", stderr(&out));
     assert!(
         rig.nudged_events().is_empty(),
         "nothing was delivered, so nothing is on the stream"
     );
+    assert!(rig.sends().is_empty(), "{:?}", rig.sends());
 }
 
 #[test]
 fn a_timeout_flag_bounds_the_turn_and_the_event_says_failed() {
     let rig = Rig::new("timeout");
-    rig.live().projection("present", 0).nudge_sleeps(3);
+    rig.never_takes().projection("present", 0);
 
     let started = std::time::Instant::now();
     let out = rig.nudge(&["--timeout", "1"]);
@@ -454,14 +519,14 @@ fn a_timeout_flag_bounds_the_turn_and_the_event_says_failed() {
         .as_str()
         .expect("the outcome is a string")
         .to_string();
-    assert!(outcome.starts_with("failed:"), "{outcome}");
+    assert!(outcome.contains("after 1s"), "{outcome}");
 
     // A LOWER BOUND ONLY. That the bound was honoured is what this asserts —
     // the turn was not refused instantly — and an upper bound here would be a
     // claim about how loaded the machine running it is.
     assert!(
         elapsed >= std::time::Duration::from_secs(1),
-        "the turn ran until its bound: {elapsed:?}"
+        "the turn was watched until its bound: {elapsed:?}"
     );
 }
 

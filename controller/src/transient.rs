@@ -31,7 +31,7 @@
 use crate::adapter::{dir_key, Agent, RemoveAnswer, RosterRead};
 use crate::clock::Clock;
 use crate::config::{self, Seat};
-use crate::effect::{self, Outcome, Target};
+use crate::effect::{self, Outcome, Target, Typed};
 use crate::events::{self, ActorRef, EventLog};
 use crate::platform;
 use crate::policy::Policy;
@@ -1170,11 +1170,15 @@ pub struct Fed {
 }
 
 /// Hand a live transient seat its next first turn, moving the occupant marker
-/// with a put-back on a delivery that failed.
+/// with a put-back on a delivery that was not witnessed.
 ///
 /// THE MARKER IS THE SESSION-TABLE ROW'S `first_turn`, which the spawn set and
 /// this verb moves; the move is journaled on the event stream, which is the
 /// controller's one ledger, and never in a file beside it.
+///
+/// The turn is TYPED into the seat's own session ([`effect::type_turn`]), so
+/// the session that holds the seat receives it, and it is believed only when
+/// the listing turns busy.
 pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refusal> {
     let seats = machine.seats()?;
     let row = machine.transient_row(&seats, seat)?;
@@ -1184,23 +1188,31 @@ pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refu
     let seat = name.as_str();
     let seat_id = row.id.to_string();
     let worktree = machine.worktree_of(&row)?;
-    let key = dir_key(&worktree);
 
     // Under the seat's own configuration directory, for the same reason the
     // retire reads there: the fleet's listing does not name a spawned seat's
     // session, and a feed that read it would refuse every live seat as having
-    // none.
+    // none. The row is the one carrying the seat's pane's pid.
     let config_dir = machine.recorded_config_dir(&seat_id);
     let under = config_dir.as_deref().map(Path::new);
-    let rows = machine.roster_under(under)?;
-    let live = rows
-        .iter()
-        .find(|row| row.is_live() && row.cwd_key() == key);
-    let Some(live) = live else {
-        return Err(Refusal::at(
-            NO_SESSION,
-            format!("`{seat}` has no live session in {worktree}, so there is nothing to feed"),
-        ));
+    let target = effect::TurnTarget {
+        seat: &row.id,
+        config_dir: under,
+    };
+    let live = match effect::seat_row(machine.agent, machine.host, &target) {
+        Ok(live) => live,
+        Err(Typed::Absent) => {
+            return Err(Refusal::at(
+                NO_SESSION,
+                format!("`{seat}` has no live session in {worktree}, so there is nothing to feed"),
+            ))
+        }
+        Err(other) => {
+            return Err(Refusal::could_not_tell(format!(
+                "no session can be named for `{seat}` — {}",
+                other.recorded()
+            )))
+        }
     };
     // The primitive knows only what the AGENT says. Whether the seat is holding
     // a work item is the caller's half and is not asked here.
@@ -1208,6 +1220,12 @@ pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refu
         return Err(Refusal::refused(format!(
             "`{seat}` is still holding a turn — the agent reports its session {}",
             crate::adapter::BUSY
+        )));
+    }
+    if let Some(cause) = live.blocked_on() {
+        return Err(Refusal::refused(format!(
+            "`{seat}` is stopped in front of a person — blocked on {cause} — and nothing is \
+             typed at a dialog"
         )));
     }
 
@@ -1218,7 +1236,6 @@ pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refu
     // delivery to the put-back below: a second feed landing between the move
     // and its put-back would have its own move undone by this one.
     let (held, mut table) = machine.table_under_lock()?;
-    let session_name = table.session_name(&row.as_ref());
     let Some(marker) = table.newest_for_mut(&seat_id) else {
         return Err(Refusal::refused(format!(
             "the session table carries no row for `{seat}`, so there is no occupant marker to \
@@ -1230,17 +1247,22 @@ pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refu
     machine.write_table(&held, &table)?;
 
     let mut log = machine.log();
-    let delivered = machine.agent.nudge(
-        under,
-        &session_name,
-        &worktree,
-        &machine.policy.nudge_model,
+    let typed = effect::type_turn(
+        machine.agent,
+        machine.host,
+        &target,
         first_turn,
         Duration::from_secs(machine.policy.nudge_timeout_seconds),
     );
+    // ONLY A WITNESSED TURN IS A FEED. A turn queued behind another, refused
+    // at a dialog or never taken leaves the seat on the turn it had.
+    let delivered = match &typed {
+        Typed::Delivered => Ok(()),
+        other => Err(other.recorded()),
+    };
     let outcome = match &delivered {
         Ok(()) => "delivered".to_string(),
-        Err(cause) => format!("failed: {cause}"),
+        Err(recorded) => recorded.clone(),
     };
     // The journal BEFORE the put-back, so a line that cannot land is met with
     // the marker still where this verb moved it and the message saying so.

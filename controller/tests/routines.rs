@@ -11,6 +11,12 @@ use fleet_controller::routines::trigger::{self, CheckOutcome, Due, LocalMinute, 
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
 use std::path::{Path, PathBuf};
 
+/// The host a machine whose actions ring nobody carries: every verb refuses,
+/// so an arm that reached one would say so.
+static NO_HOST: fleet_controller::host::Unresolved = fleet_controller::host::Unresolved {
+    cause: String::new(),
+};
+
 /// The fixed ids this suite's seats carry.
 const BUILDER: &str = "01a0d1f1-0aec-765f-9abe-5c21e8a04b17";
 const ARCHITECT: &str = "01a0d1f1-0aec-765f-9abe-0000000a90e5";
@@ -408,15 +414,17 @@ fn a_nudge_to_a_seat_this_machine_does_not_carry_is_refused() {
 }
 
 /// The ring goes to the ROW THE LOAD RESOLVED, found by its id: a nudge naming
-/// `Orla` rings Orla's session, under the machine name her directory and her
-/// session are keyed on, and never a neighbour's — the control is a second live
-/// seat on the same machine that the ring passes by.
+/// `Orla` is typed into Orla's session, the one her id names on the host, and
+/// never a neighbour's — the control is a second live seat on the same
+/// machine that the ring passes by.
 #[test]
 fn a_nudge_to_a_seat_by_its_name_fires_at_that_seats_row() {
+    use fleet_controller::adapter::{AgentRow, RosterRead};
+    use fleet_controller::host::{self, Host};
     use fleet_controller::observe::RosterState;
     use fleet_controller::policy;
     use fleet_controller::routines::{action, action::Machine, Outcome, SeatView};
-    use fleet_controller::test_support::StubAgent;
+    use fleet_controller::test_support::{Answers, FakeHost, Sent, StubAgent};
 
     let routine = routine_of(
         "[order]\ndescription = \"d\"\ntrigger = \"cron\"\nschedule = \"* * * * *\"\n\
@@ -433,8 +441,41 @@ fn a_nudge_to_a_seat_by_its_name_fires_at_that_seats_row() {
         view(BUILDER, "builder-1-e8a04b17", "/wt/builder"),
         view(ORLA, "orla-93b9739a", "/wt/orla"),
     ];
+    // Both seats live on the host, each in its own pane; the listing reads
+    // both idle before the ring and both busy after it.
+    let fake = FakeHost::new();
+    let session = |id: &str| host::session_for(&SeatId::parse(id).unwrap());
+    for id in [BUILDER, ORLA] {
+        fake.new_session(
+            &session(id),
+            Path::new("/"),
+            &["/nowhere/agent".to_string()],
+            &[],
+        )
+        .expect("the fake host starts the pane");
+    }
+    let rows = |status: &str| {
+        let rows = [BUILDER, ORLA]
+            .iter()
+            .map(|id| AgentRow {
+                session_id: format!("{id}-session"),
+                id: None,
+                cwd: "/anywhere".to_string(),
+                pid: fake.session(&session(id)).map(|pane| pane.pid),
+                state: None,
+                status: Some(status.to_string()),
+                started_at: None,
+                waiting_for: None,
+            })
+            .collect();
+        RosterRead::Readable(rows)
+    };
+    let agent = StubAgent::answering(Answers {
+        status: rows("busy"),
+        ..Answers::default()
+    });
+    agent.list_next([rows("idle")]);
     let policy = policy::parse("").expect("the empty policy is the defaults");
-    let agent = StubAgent::new();
     let root = scratch("nudge-by-name");
     let machine = Machine {
         machine_dir: &root,
@@ -442,22 +483,34 @@ fn a_nudge_to_a_seat_by_its_name_fires_at_that_seats_row() {
         policy: &policy,
         seats: &views,
         agent: Some(&agent),
+        host: &fake,
         effects_off: None,
     };
 
     let done = action::run(&routine, &machine);
     assert_eq!(done.outcome, Outcome::Delivered, "{}", done.detail);
-    assert!(done.detail.contains("/wt/orla"), "{}", done.detail);
-    let rung: Vec<String> = agent
-        .calls_of(StubAgent::NUDGE)
-        .into_iter()
-        .map(|call| call.about)
-        .collect();
-    assert_eq!(rung, vec!["orla-93b9739a".to_string()], "only Orla is rung");
+    assert_eq!(
+        fake.sends(&session(ORLA)),
+        vec![Sent::Paste("t\nauthority: a".to_string()), Sent::Submit],
+        "Orla's session takes the ring's text and its authority, typed"
+    );
+    assert!(
+        fake.sends(&session(BUILDER)).is_empty(),
+        "only Orla is rung: {:?}",
+        fake.sends(&session(BUILDER))
+    );
 
-    // The dry run reads the same row.
+    // The dry run reads the same row, and names the session it would type into.
     let argv = action::argv_of(&routine, &machine);
-    assert_eq!(argv.last().map(String::as_str), Some("(in /wt/orla)"));
+    assert_eq!(
+        argv,
+        vec![
+            "type".to_string(),
+            "-t".to_string(),
+            session(ORLA),
+            "t\nauthority: a".to_string()
+        ]
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -584,6 +637,7 @@ fn an_item_machine<'a>(
         policy,
         seats: &[],
         agent: None,
+        host: &NO_HOST,
         effects_off: None,
     }
 }
@@ -1677,6 +1731,7 @@ fn fire_run_routine(
                 policy: &policy,
                 seats: &[],
                 agent: None,
+                host: &NO_HOST,
                 effects_off: None,
             },
             events: &mut log,
@@ -1817,6 +1872,7 @@ fn a_run_action_with_no_fleet_on_the_child_path_is_could_not_tell() {
         policy: &policy,
         seats: &[],
         agent: None,
+        host: &NO_HOST,
         effects_off: None,
     };
     let done = action::run(&routine, &machine);

@@ -2426,7 +2426,7 @@ fn a_seat_table_keyed_by_a_name_is_refused_by_start() {
 fn the_seat_list_overrides_policy_per_key_and_a_zero_falls_back_to_it() {
     let rig = Rig::new("override");
     rig.created()
-        .policy_says("\n[controller]\npoll_seconds = 7\nnudge_model = \"from-policy\"\n");
+        .policy_says("\n[controller]\npoll_seconds = 7\ndefault_model = \"from-policy\"\n");
     assert_eq!(code(&rig.run(&["start"])), 0);
     assert_eq!(code(&rig.run(&["stop"])), 0);
 
@@ -2466,7 +2466,6 @@ fn the_seat_list_overrides_policy_per_key_and_a_zero_falls_back_to_it() {
     let mut seats = rig.seat_list();
     seats["controller"] = serde_json::json!({
         "poll_seconds": 11,
-        "nudge_model": "not-a-number-either",
         "stopped_recency_hours": "a string where a count goes",
     });
     write(

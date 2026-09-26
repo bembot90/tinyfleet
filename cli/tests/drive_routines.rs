@@ -163,12 +163,12 @@ mod routines {
         assert!(row["last_fired"].is_null(), "nothing ever fired: {row}");
     }
 
-    /// (c) A ring that lands: the argv the stub received is the policy's model
-    /// and a prompt carrying the routine's own sentence.
+    /// (c) A ring that lands: the routine's own sentence and its authority,
+    /// typed into the seat's own session and taken.
     #[test]
     fn a_nudge_routine_rings_a_live_seat_with_its_text_and_its_authority() {
         let rig = Rig::new("routines-nudge");
-        rig.write_roster(&live_row(&rig.worktree(), "a-session"));
+        rig.write_roster_taking("a-session");
         rig.write_routine(
             "ring",
             &a_cooldown_nudge("Orla", "look at the board", "the operator"),
@@ -176,15 +176,11 @@ mod routines {
         rig.set_clock(BASE);
         assert_eq!(rig.observe().status.code(), Some(0));
 
-        let argv =
-            std::fs::read_to_string(rig.nudge_argv_path()).expect("the ring reached the stub");
-        assert!(argv.lines().any(|line| line == "-p"), "{argv}");
-        assert!(
-            argv.lines().any(|line| line == "claude-haiku-4-5-20251001"),
-            "the ring runs on the policy's nudge model: {argv}"
+        assert_eq!(
+            rig.typed(),
+            vec!["look at the board\nauthority: the operator".to_string()],
+            "the ring's text, verbatim, is the one thing typed into the seat's session"
         );
-        assert!(argv.contains("look at the board"), "{argv}");
-        assert!(argv.contains("authority: the operator"), "{argv}");
 
         let events = rig.routine_events();
         assert_eq!(events.len(), 2, "{events:#?}");

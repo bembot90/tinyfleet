@@ -32,8 +32,13 @@ pub const DEFAULT_ARRIVAL_WINDOW_SECONDS: u64 = 45;
 /// that one poll cannot be lost to a start that will never list.
 pub const DEFAULT_START_WATCH_SECONDS: u64 = 5;
 
-/// The deadline one nudge turn runs on.
-pub const DEFAULT_NUDGE_TIMEOUT_SECONDS: u64 = 90;
+/// How long a turn typed into a seat's session is given to be taken: the row
+/// must read busy inside it (`crate::effect::type_turn`). On Claude Code
+/// 2.1.280 a typed turn read busy on the first read after its submit, 0.14 s
+/// on (fleet-rge6.5, 2026-09-26), so ten seconds is far past any turn that
+/// will be taken, and short enough that a poll is not held long by one that
+/// will not.
+pub const DEFAULT_NUDGE_TIMEOUT_SECONDS: u64 = 10;
 
 /// The model a start names when the seat's row does not. The model is mandatory
 /// on every start, because a start with no model flag comes up on the cheapest
@@ -60,10 +65,6 @@ pub const DEFAULT_AUTO_CAPABLE_MODELS: [&str; 3] =
 /// directory. The wake rides the spawn: one act, one channel, so the instruction
 /// cannot be lost without also losing the session.
 pub const DEFAULT_FIRST_TURN: &str = "/wake {seat}";
-
-/// The model one nudge turn runs on. A nudge is one sentence to one session, so
-/// it is the cheapest model the fleet keeps rather than the seat's own.
-pub const DEFAULT_NUDGE_MODEL: &str = "claude-haiku-4-5-20251001";
 
 /// The load belt's first leg: how much five-minute load average this fleet will
 /// carry per processor before a spawn is refused. One load unit per cpu is a
@@ -104,7 +105,6 @@ pub struct Policy {
     pub auto_capable_models: Vec<String>,
     /// The template, with `{seat}` still in it — rendered per seat at the start.
     pub first_turn: String,
-    pub nudge_model: String,
     /// The stopped-row window, in hours as the file writes it. A fleet whose
     /// sessions are long-lived wants a different figure from one whose seats
     /// turn over hourly, and neither is a number this code can choose.
@@ -180,8 +180,6 @@ struct RawController {
     auto_capable_models: Option<Vec<String>>,
     #[serde(default)]
     first_turn: Option<String>,
-    #[serde(default)]
-    nudge_model: Option<String>,
     #[serde(default)]
     load_ceiling_per_cpu: Option<f64>,
     #[serde(default)]
@@ -293,10 +291,6 @@ pub fn parse(body: &str) -> Result<Policy, String> {
         ),
         auto_capable_models,
         first_turn: named(c.and_then(|c| c.first_turn.as_deref()), DEFAULT_FIRST_TURN),
-        nudge_model: named(
-            c.and_then(|c| c.nudge_model.as_deref()),
-            DEFAULT_NUDGE_MODEL,
-        ),
         stopped_recency_hours,
         // A ceiling of zero or less refuses every spawn, and one that is not a
         // number at all is no reading: both fall to the default, the way a zero
@@ -460,7 +454,7 @@ pub fn overrides_in(value: Option<&serde_json::Value>) -> Overrides {
 
 /// The keys the object above may carry — `[controller]`'s own, listed once so a
 /// key the reader does not wire is named rather than silently kept.
-pub const CONTROLLER_KEYS: [&str; 14] = [
+pub const CONTROLLER_KEYS: [&str; 13] = [
     "poll_seconds",
     "stopped_recency_hours",
     "rest_threshold_tokens",
@@ -472,7 +466,6 @@ pub const CONTROLLER_KEYS: [&str; 14] = [
     "transient_posture",
     "auto_capable_models",
     "first_turn",
-    "nudge_model",
     "load_ceiling_per_cpu",
     "max_transient_busy",
 ];
@@ -510,7 +503,6 @@ impl Policy {
                 .filter(|models| !models.is_empty())
                 .unwrap_or_else(|| self.auto_capable_models.clone()),
             first_turn: named(c.first_turn.as_deref(), &self.first_turn),
-            nudge_model: named(c.nudge_model.as_deref(), &self.nudge_model),
             stopped_recency_hours: positive(c.stopped_recency_hours, self.stopped_recency_hours),
             load_ceiling_per_cpu: c
                 .load_ceiling_per_cpu
@@ -578,7 +570,6 @@ mod tests {
              transient_posture = \"bypassPermissions\"\n\
              auto_capable_models = [\"a-model\", \"b-model\"]\n\
              first_turn = \"/hello {seat}\"\n\
-             nudge_model = \"a-cheap-model\"\n\
              load_ceiling_per_cpu = 2.5\n\
              max_transient_busy = 7\n",
         )
@@ -594,7 +585,6 @@ mod tests {
         assert_eq!(policy.transient_posture, "bypassPermissions");
         assert_eq!(policy.auto_capable_models, vec!["a-model", "b-model"]);
         assert_eq!(policy.first_turn, "/hello {seat}");
-        assert_eq!(policy.nudge_model, "a-cheap-model");
     }
 
     /// The same keys, absent — each at the figure or the name the constant
@@ -618,7 +608,6 @@ mod tests {
             DEFAULT_AUTO_CAPABLE_MODELS.to_vec()
         );
         assert_eq!(policy.first_turn, DEFAULT_FIRST_TURN);
-        assert_eq!(policy.nudge_model, DEFAULT_NUDGE_MODEL);
         assert_eq!(policy.load_ceiling_per_cpu, DEFAULT_LOAD_CEILING_PER_CPU);
         assert_eq!(policy.max_transient_busy, DEFAULT_MAX_TRANSIENT_BUSY);
     }
@@ -727,8 +716,7 @@ mod tests {
              posture = \"\"\n\
              transient_posture = \"\"\n\
              auto_capable_models = []\n\
-             first_turn = \"\"\n\
-             nudge_model = \"   \"\n",
+             first_turn = \"\"\n",
         )
         .expect("the file parses");
         assert_eq!(zeroed.rest_threshold_tokens, DEFAULT_REST_THRESHOLD_TOKENS);
@@ -747,7 +735,6 @@ mod tests {
             "a present but empty list would keep every model out"
         );
         assert_eq!(zeroed.first_turn, DEFAULT_FIRST_TURN);
-        assert_eq!(zeroed.nudge_model, DEFAULT_NUDGE_MODEL);
     }
 
     /// The four readings a start is composed from, each with the case that is
@@ -793,7 +780,6 @@ mod tests {
              transient_posture = \"from-policy\"\n\
              auto_capable_models = [\"from-policy\"]\n\
              first_turn = \"from-policy {seat}\"\n\
-             nudge_model = \"from-policy\"\n\
              load_ceiling_per_cpu = 7.0\n\
              max_transient_busy = 7\n\
              \n[substrate.claude_code]\nversion = \"2.1.261\"\n",
@@ -812,7 +798,6 @@ mod tests {
             "transient_posture": "from-machine",
             "auto_capable_models": ["from-machine"],
             "first_turn": "from-machine {seat}",
-            "nudge_model": "from-machine",
             "load_ceiling_per_cpu": 11.0,
             "max_transient_busy": 11,
         })));
@@ -830,7 +815,6 @@ mod tests {
         assert_eq!(effective.transient_posture, "from-machine");
         assert_eq!(effective.auto_capable_models, vec!["from-machine"]);
         assert_eq!(effective.first_turn, "from-machine {seat}");
-        assert_eq!(effective.nudge_model, "from-machine");
         assert_eq!(effective.load_ceiling_per_cpu, 11.0);
         assert_eq!(effective.max_transient_busy, 11);
         assert_eq!(
@@ -850,7 +834,7 @@ mod tests {
 
         // Every key in the census is one the object above named, so a key added
         // to `[controller]` and forgotten here is a failure and not a silence.
-        assert_eq!(CONTROLLER_KEYS.len(), 14);
+        assert_eq!(CONTROLLER_KEYS.len(), 13);
         for key in CONTROLLER_KEYS {
             let named = overrides_in(Some(&serde_json::json!({ key: 1 })));
             assert!(
@@ -911,14 +895,14 @@ mod tests {
     #[test]
     fn one_wrongly_typed_override_loses_itself_and_leaves_every_other_one_standing() {
         let file = parse(
-            "[controller]\npoll_seconds = 7\nnudge_model = \"from-policy\"\n\
+            "[controller]\npoll_seconds = 7\ndefault_model = \"from-policy\"\n\
              rest_threshold_tokens = 77\n",
         )
         .expect("the policy parses");
 
         let over = overrides_in(Some(&serde_json::json!({
             "poll_seconds": "30",
-            "nudge_model": "from-machine",
+            "default_model": "from-machine",
             "rest_threshold_tokens": 111,
         })));
         assert_eq!(over.malformed, vec!["poll_seconds"]);
@@ -930,7 +914,7 @@ mod tests {
             "the wrongly-typed key falls back to policy"
         );
         assert_eq!(
-            effective.nudge_model, "from-machine",
+            effective.default_model, "from-machine",
             "and the other overrides on the same machine still land"
         );
         assert_eq!(effective.rest_threshold_tokens, 111);
@@ -945,10 +929,10 @@ mod tests {
         // so the fallback above is the VALUE's and not a key this reader drops.
         let good = file.overlaid(&overrides_in(Some(&serde_json::json!({
             "poll_seconds": 30,
-            "nudge_model": "from-machine",
+            "default_model": "from-machine",
         }))));
         assert_eq!(good.poll_seconds, 30);
-        assert_eq!(good.nudge_model, "from-machine");
+        assert_eq!(good.default_model, "from-machine");
     }
 
     /// A key the object carries that names no `[controller]` key is IGNORED and

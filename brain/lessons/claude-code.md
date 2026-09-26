@@ -563,6 +563,10 @@ the requirement owed it.
 
 ### B9. Resuming a running background session adds a row rather than continuing one
 
+- **Retired by:** fleet-rge6.5 (2026-09-26). A turn for a live seat is typed
+  into its own tmux pane and believed when the listing turns busy (D8); no
+  print-mode turn carries it and nothing resumes a live session to reach it.
+  Kept here as history.
 - **Fact:** `--bg --resume` against a background session that is ALREADY
   RUNNING starts a COPY, under a new id, and says so: "session `<id>` is
   already running in the background, so this started a copy as `<new id>`".
@@ -902,19 +906,31 @@ the requirement owed it.
   session came up logged in under the same subscription. **The trust
   question.** A15's dialog waits interactively instead of exiting, its default
   is "No, exit", and Down then Enter accepts it; the session is not listed
-  until then (B10). **The submit.** Text and Enter sent to the pane in one
-  `send-keys` burst left the text in the input box unsubmitted; a lone Enter
-  sent a minute later did not submit it either; a `C-m` sent 66 s after that
-  did, and the row read `busy` within a second and `waiting` at the approval
-  dialog two seconds after. Whether the first two were swallowed by timing or
-  by the keysym is not separated by this measurement; herdr, which types into
-  the same agent, sends the text and the Enter 300 ms apart as one ordered
-  submission and then requires `working` or `blocked` within five seconds
-  before it believes the turn was taken. The typed `/exit` ended the session
-  and so did killing the tmux session under it, each with the row gone within
-  a second.
-- **Version:** Claude Code 2.1.282; tmux 3.7b.
-- **Date:** 2026-09-24.
+  until then (B10). **The submit** (re-measured on 2.1.280, 2026-09-26). A
+  two-line text loaded with `load-buffer` and pasted with `paste-buffer -p`
+  (bracketed) sat in the input box, both lines, and the row stayed `idle`;
+  a separate `send-keys C-m` 300 ms after the paste submitted it as ONE turn
+  carrying both lines, and the row read `busy` on the first listing after
+  the submit, 0.14 s on, holding `busy` for 0.5–1 s on a one-word haiku
+  turn. A paste and a submit into a session already `busy` was QUEUED, not
+  dropped: the row stayed `busy` throughout and the text ran as its own turn
+  the moment the first ended. At a permission prompt the row read
+  `status: waiting` and `waitingFor: permission prompt` 1.3–1.7 s after the
+  tool call; a paste and a submit sent there LOST THE TEXT and the submit
+  answered the dialog with its default, `1. Yes`, running the tool call, and
+  the row read `busy` — so a turn believed on `busy` alone would be called
+  delivered at a dialog, which is why a blocked row is refused before any
+  byte. On 2.1.282 text and Enter in one `send-keys` burst left the text
+  unsubmitted and a lone Enter a minute later did not submit it either
+  (whether by timing or by the keysym was not separated); herdr, which types
+  into the same agent, sends the text and the Enter 300 ms apart as one
+  ordered submission and then requires `working` or `blocked` within five
+  seconds before it believes the turn was taken. The typed `/exit` ended the
+  session and so did killing the tmux session under it, each with the row
+  gone within a second.
+- **Version:** Claude Code 2.1.282, the submit re-measured on 2.1.280; tmux
+  3.7b.
+- **Date:** 2026-09-24; the submit 2026-09-26.
 - **Implies:** the adapters-and-sessions design: a spawn that starts a seat
   interactively owes the configuration directory an onboarding stamp it does
   not write today, and the first-run gate of A15 stays an install step. A
@@ -956,7 +972,7 @@ name.
 | `lessons::a_prewarmed_worker_is_not_a_seat` | B6 |
 | `lessons::a_truncated_listing_is_not_absence` | B7 |
 | `lessons::waiting_for_names_the_block` | B8 |
-| `lessons::a_live_session_is_reached_without_a_resume` | B9 |
+| `lessons::a_live_session_is_reached_without_a_resume` | B9 (retired by fleet-rge6.5) |
 | `lessons::an_interactive_row_is_listed_without_an_address` | B10 |
 | `lessons::the_transcript_path_encoding` | C1 |
 | `lessons::the_transcript_entry_shape` | C2 |

@@ -15,10 +15,10 @@ rest_threshold_tokens = 700000
 # another one.
 arrival_window_seconds = 45
 
-# How long a start is watched for an immediate failure, and how long one nudge
-# turn may run.
+# How long a start is watched for an immediate failure, and how long a turn
+# typed into a seat's session has to be taken — the seat's row reading busy.
 start_watch_seconds = 5
-nudge_timeout_seconds = 90
+nudge_timeout_seconds = 10
 
 # The model a start names when the seat's own row does not. Mandatory on every
 # start: a start with no model comes up on the cheapest model available.
@@ -38,10 +38,6 @@ auto_capable_models = ["claude-opus-5", "claude-fable-5", "claude-sonnet-5"]
 # The first turn a woken session is started with. `{seat}` is the seat
 # directory.
 first_turn = "/wake {seat}"
-
-# The model one nudge turn runs on: one sentence to one session, so the cheapest
-# model the fleet keeps rather than the seat's own.
-nudge_model = "claude-haiku-4-5-20251001"
 
 [substrate.claude_code]
 # The agent release this fleet expects. With no pin, fleet expects the version

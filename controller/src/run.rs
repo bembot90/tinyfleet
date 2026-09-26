@@ -1110,11 +1110,12 @@ impl<'a> Observer<'a> {
                         &self.table,
                     ),
                     // THE SAME GATE the per-seat effects take. A routine's ring
-                    // is an effect — it starts a turn in a seat's worktree —
+                    // is an effect — it types a turn into a seat's session —
                     // and a pending grant means no effect is issued, so a pass
                     // that read only the binary would fire one while the
                     // projection said effects were off with the grant as cause.
                     agent: acting.then_some(agent),
+                    host: self.seams.host,
                     effects_off: document.effects.cause.clone(),
                 },
                 events: &mut self.events_log,
@@ -1361,7 +1362,7 @@ fn act(
                         }
                     }
                 }
-                _ => effect::nudge(agent, policy, &target, events_log, table),
+                _ => effect::nudge(agent, host, policy, &target, events_log, table),
             };
             document.in_flight = None;
             outcome

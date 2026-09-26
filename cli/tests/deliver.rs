@@ -27,8 +27,7 @@ const REVIEWER_ID: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
 /// this file could have put there.
 const POLICY: &str = "[guards]\nrecord = { enabled = false }\n\n\
                       [core]\nreviewer = \"a-reviewer\"\n\n\
-                      [controller]\nnudge_model = \"a-cheap-model\"\n\
-                      nudge_timeout_seconds = 20\n";
+                      [controller]\nnudge_timeout_seconds = 1\n";
 
 /// The delivery the seat hands in: the JSON its brief's schema shows. The
 /// commit, the branch, the base and the time are the verb's, so it names none.
@@ -71,7 +70,11 @@ struct Rig {
     worktree: PathBuf,
     stub: PathBuf,
     roster: PathBuf,
-    nudge_argv: PathBuf,
+    /// What the listing reads once the reviewer's pane has taken a submit.
+    roster_taken: PathBuf,
+    /// The link `FLEET_TMUX_BIN` names, and the fake server's state beside it.
+    tmux: PathBuf,
+    state: PathBuf,
     /// The delivery file, beside the project and never in it: a file in the
     /// tree would be one the delivery left unstaged.
     delivery: PathBuf,
@@ -99,7 +102,9 @@ impl Rig {
         let rig = Rig {
             stub: root.join("agent.sh"),
             roster: root.join("roster.json"),
-            nudge_argv: root.join("nudge-argv"),
+            roster_taken: root.join("roster-taken.json"),
+            tmux: common::stub_tmux(&root.join("tmux")),
+            state: root.join("tmux").join("tmux-stub.json"),
             delivery: root.join("delivery.json"),
             seat: format!("a-builder-{label}"),
             root,
@@ -300,19 +305,14 @@ impl Rig {
             .unwrap_or_else(|| panic!("the timeline carries a {kind} entry: {document}"))
     }
 
-    /// The stub: `agents` is the roster read, `-p` is the one print-mode turn.
+    /// The stub: `agents` is the listing, which turns once the reviewer's pane
+    /// has taken a submit ([`common::listing_branch`]).
     fn write_stub(&self) {
         std::fs::write(
             &self.stub,
             format!(
-                "#!/bin/sh\n\
-                 case \"$1\" in\n\
-                 \x20 agents) /bin/cat '{roster}' ;;\n\
-                 \x20 -p) printf '%s\\n' \"$@\" > '{argv}' ;;\n\
-                 \x20 *) exit 64 ;;\n\
-                 esac\n",
-                roster = self.roster.display(),
-                argv = self.nudge_argv.display(),
+                "#!/bin/sh\ncase \"$1\" in\n{agents}\x20 *) exit 64 ;;\nesac\n",
+                agents = common::listing_branch(&self.roster, &self.roster_taken, &self.state),
             ),
         )
         .expect("the stub is written");
@@ -326,12 +326,16 @@ impl Rig {
         self
     }
 
-    /// A roster carrying one LIVE row in the reviewer's worktree.
+    /// The reviewer's live pane, and a listed row carrying its pid that reads
+    /// idle and busy once the pane has taken a submit.
     fn live(&self) -> &Rig {
-        self.roster(&format!(
-            r#"[{{"sessionId": "abcdef", "id": "s0", "cwd": {cwd}, "pid": 4242}}]"#,
-            cwd = json_string(&self.worktree.display().to_string())
-        ))
+        let pid = common::live_pane(&self.state, REVIEWER_ID, &self.worktree);
+        std::fs::write(
+            &self.roster_taken,
+            format!("[{}]", common::listed_row("abcdef", pid, "busy")),
+        )
+        .expect("the roster is written");
+        self.roster(&format!("[{}]", common::listed_row("abcdef", pid, "idle")))
     }
 
     fn run(&self, args: &[&str]) -> Output {
@@ -347,6 +351,7 @@ impl Rig {
             .arg(self.machine.join("packs"))
             .current_dir(cwd)
             .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub))
+            .env(common::hermetic::TMUX_BIN, &self.tmux)
             // The identity the delivery's own commit is made under. Named here
             // because `HOME` is the rig's: without it `git commit` reads the
             // operator's global configuration, and these arms passed on this
@@ -360,8 +365,10 @@ impl Rig {
             .expect("the built binary runs")
     }
 
-    fn nudge_argv(&self) -> String {
-        std::fs::read_to_string(&self.nudge_argv).unwrap_or_default()
+    /// Every text the ring pasted into the reviewer's session, joined: empty
+    /// where nothing was typed.
+    fn typed(&self) -> String {
+        common::pasted_into(&self.state, REVIEWER_ID).join("\n")
     }
 
     /// Every event the machine directory's stream holds, newest last.
@@ -465,14 +472,11 @@ fn a_live_reviewer_is_rung_with_the_item_and_the_commit_the_delivery_made() {
         "{last}\n{delivered}"
     );
 
-    let argv = rig.nudge_argv();
+    let typed = rig.typed();
     assert!(
-        argv.contains(&item) && argv.contains(&head),
-        "the reviewer is rung with the item and the commit:\n{argv}"
-    );
-    assert!(
-        argv.contains("a-reviewer-93b9739a"),
-        "the reviewer is addressed by the machine name its name resolved to:\n{argv}"
+        typed.contains(&item) && typed.contains(&head),
+        "the reviewer's own session, the one its id names, is typed the item and the \
+         commit:\n{typed}"
     );
 }
 
@@ -494,7 +498,7 @@ fn an_empty_roster_exits_zero_and_the_delivery_stands() {
         stdout(&out)
     );
     assert!(
-        rig.nudge_argv().is_empty(),
+        rig.typed().is_empty(),
         "an absent reviewer is not rung at all"
     );
 

@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use fleet_controller::adapter::claude_code::ClaudeCode;
-use fleet_controller::adapter::{Agent, RosterRead};
+use fleet_controller::effect::{TurnTarget, Typed};
 use fleet_controller::{clock, config, effect, platform, policy as controller, sessions};
 use fleet_core::input::{DELIVERY_SCHEMA, QUESTION_SCHEMA};
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
@@ -593,7 +593,6 @@ fn run_deliver(
     };
     let ring = SeatRing {
         machine_dir: here.machine_dir.clone(),
-        project: here.project.name.clone(),
     };
     let events = StreamEvents {
         path: here.machine_dir.join(EVENTS),
@@ -635,7 +634,6 @@ fn run_review(
     };
     let ring = SeatRing {
         machine_dir: here.machine_dir.clone(),
-        project: here.project.name.clone(),
     };
     let events = StreamEvents {
         path: here.machine_dir.join(EVENTS),
@@ -772,7 +770,6 @@ fn run_dispatch(
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     let ring = SeatRing {
         machine_dir: here.machine_dir.clone(),
-        project: here.project.name.clone(),
     };
     // The real thing: a dispatch with no `--to` runs the controller's spawn,
     // belt and all, and a refusal from it withdraws the order in the same act.
@@ -1240,11 +1237,10 @@ pub(crate) fn acting(verb: &str, by: Option<&str>, here: &Here) -> Result<Actor,
 
 // ---- the two seams ----------------------------------------------------------
 
-/// The ring: one print-mode turn in the seat's own worktree, through the same
-/// adapter path the controller's own nudge takes.
+/// The ring: one turn typed into the seat's own session, through the same path
+/// the controller's own nudge takes (`effect::type_turn`).
 pub(crate) struct SeatRing {
     pub(crate) machine_dir: PathBuf,
-    pub(crate) project: String,
 }
 
 /// What the ring's body knows beyond the outcome: the live session it reached.
@@ -1254,25 +1250,34 @@ pub(crate) struct SeatRing {
 /// second reader to take the same reading against a roster that has moved.
 pub(crate) struct Rung {
     pub(crate) session: Option<String>,
-    pub(crate) outcome: RingOutcome,
+    pub(crate) typed: Typed,
 }
 
 fn rang_nobody(cause: String) -> Rung {
     Rung {
         session: None,
-        outcome: RingOutcome::Failed(cause),
+        typed: Typed::Failed(cause),
     }
 }
 
 impl Ring for SeatRing {
+    /// A ring's three answers out of the typed turn's five. A turn QUEUED
+    /// behind the one the seat is holding is never called delivered (reviewer
+    /// call 2026-09-25, E5), and a refusal at a dialog is a ring that did not
+    /// land: each is a failed ring carrying what it was.
     fn ring(&self, seat: &str, text: &str) -> RingOutcome {
-        self.ring_with(seat, text, None).outcome
+        match self.ring_with(seat, text, None).typed {
+            Typed::Delivered => RingOutcome::Delivered,
+            Typed::Absent => RingOutcome::Absent,
+            Typed::Failed(cause) => RingOutcome::Failed(cause),
+            other => RingOutcome::Failed(other.recorded()),
+        }
     }
 }
 
 impl SeatRing {
-    /// The one path both callers take: the row lookup, the worktree choice, the
-    /// roster read, the once-resolved effect binary and the adapter's nudge.
+    /// The one path both callers take: the row lookup, the seat's recorded
+    /// configuration directory, and the typed turn into its session.
     ///
     /// `timeout` stands in for the policy's bound on this call alone.
     pub(crate) fn ring_with(&self, seat: &str, text: &str, timeout: Option<Duration>) -> Rung {
@@ -1282,26 +1287,12 @@ impl SeatRing {
         };
         // THE ROW THROUGH THE RESOLVER, so a ring names its seat the way every
         // other seat argument does. From here the session table is asked by the
-        // seat's id, and a sentence names it by its machine name.
+        // seat's id, and the host by the session that id names.
         let row = match machine.resolve(seat) {
             Ok(row) => row,
             Err(unresolved) => return rang_nobody(unresolved.to_string()),
         };
-        let name = row.machine_name();
-        let seat = name.as_str();
         let key = row.id.to_string();
-        // A seat may hold worktrees for several projects; the one this order is
-        // about is the session to ring, and the first is the answer only where
-        // the project names none.
-        let worktree = row
-            .worktrees
-            .iter()
-            .find(|(project, _)| project == &self.project)
-            .or_else(|| row.worktrees.first())
-            .map(|(_, path)| path.clone());
-        let Some(worktree) = worktree else {
-            return rang_nobody(format!("`{seat}` carries no worktree"));
-        };
         let policy = match controller::load(&machine.fleet_toml) {
             Ok(policy) => policy,
             Err(cause) => return rang_nobody(cause),
@@ -1309,63 +1300,38 @@ impl SeatRing {
 
         let home = platform::home_dir();
         let agent = ClaudeCode::new(&home, &self.machine_dir);
-        // A spawned seat's session is held by its own daemon, under the
-        // configuration directory that seat alone starts with, and named by no
-        // other listing, so the ring reads — and rings — under the directory
-        // that seat's own session row recorded.
+        let host = fleet_controller::host::resolve(&platform::child_path(&home));
+        // A spawned seat's session is listed under the configuration directory
+        // that seat alone starts with, and named by no other listing, so the
+        // ring reads under the directory that seat's own session row recorded.
         let table = sessions::read(&sessions::path_in(&self.machine_dir)).0;
         let config_dir = table
             .as_ref()
             .and_then(|table| table.newest_for(&key))
             .and_then(|row| row.config_dir.clone());
-        // THE NAME THE SESSION WAS STARTED UNDER, off the same row: a seat
-        // renamed since is still answering to it, and a ring addressed by the
-        // seat's name today reaches nobody.
-        let session_name = match &table {
-            Some(table) => table.session_name(&row.as_ref()),
-            None => row.machine_name(),
+        let target = TurnTarget {
+            seat: &row.id,
+            config_dir: config_dir.as_deref().map(Path::new),
         };
-        let under = config_dir.as_deref().map(Path::new);
-        let rows = match agent.status(under) {
-            RosterRead::Readable(rows) => rows,
-            RosterRead::Unreadable { cause } => return rang_nobody(cause),
+        // The session the courier's event names, off the row carrying the
+        // seat's pane's pid; the turn itself reads both again, fresh.
+        let session = match effect::seat_row(&agent, host.as_ref(), &target) {
+            Ok(live) => Some(live.session_id),
+            Err(typed) => {
+                return Rung {
+                    session: None,
+                    typed,
+                }
+            }
         };
-        let key = fleet_controller::adapter::dir_key(&worktree);
-        let live = rows
-            .iter()
-            .find(|row| row.is_live() && row.cwd_key() == key);
-        let Some(live) = live else {
-            return Rung {
-                session: None,
-                outcome: RingOutcome::Absent,
-            };
-        };
-        let session = Some(live.session_id.clone());
-
-        // The binary an effect execs is resolved ONCE and handed in, which is
-        // the adapter's own contract: a verb that let it fall back to a bare
-        // name would exec a file nothing checked.
-        let child_path = platform::child_path(&home);
-        let effect_bin = match ClaudeCode::resolve_effect_bin(
-            fleet_controller::adapter::claude_code::configured_bin().as_deref(),
-            &child_path,
-        ) {
-            Ok(bin) => bin,
-            Err(cause) => return rang_nobody(cause),
-        };
-        let agent = agent.with_effect_bin(effect_bin);
-        let outcome = match agent.nudge(
-            under,
-            &session_name,
-            &worktree,
-            &policy.nudge_model,
-            &effect::nudge_prompt(&session_name, text),
+        let typed = effect::type_turn(
+            &agent,
+            host.as_ref(),
+            &target,
+            text,
             timeout.unwrap_or_else(|| Duration::from_secs(policy.nudge_timeout_seconds)),
-        ) {
-            Ok(()) => RingOutcome::Delivered,
-            Err(cause) => RingOutcome::Failed(cause),
-        };
-        Rung { session, outcome }
+        );
+        Rung { session, typed }
     }
 }
 

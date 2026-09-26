@@ -41,8 +41,7 @@ const PERSON: &str = "seat:01a0d1f1-0aec-765f-9abe-00000000fe25";
 /// The id of the seat the rig's second dispatch names.
 const OTHER_TARGET_ID: &str = "01a0d1f1-0aec-765f-9abe-00007e3fa2c0";
 const POLICY: &str = "[core]\nreviewer = \"ij-a-reviewer\"\n\n\
-                      [controller]\nnudge_model = \"a-cheap-model\"\n\
-                      nudge_timeout_seconds = 20\n";
+                      [controller]\nnudge_timeout_seconds = 1\n";
 
 /// The delivery a seat hands in, as the JSON its brief's schema shows.
 const DELIVERY: &str = r#"{
@@ -132,6 +131,11 @@ struct Rig {
     other_worktree: PathBuf,
     stub: PathBuf,
     roster: PathBuf,
+    /// What the listing reads once a pane has taken a submit.
+    roster_taken: PathBuf,
+    /// The link `FLEET_TMUX_BIN` names, and the fake server's state beside it.
+    tmux: PathBuf,
+    state: PathBuf,
     delivery: PathBuf,
     question: PathBuf,
     /// The seat that delivers and asks.
@@ -170,6 +174,9 @@ impl Rig {
         let rig = Rig {
             stub: root.join("agent.sh"),
             roster: root.join("roster.json"),
+            roster_taken: root.join("roster-taken.json"),
+            tmux: common::stub_tmux(&root.join("tmux")),
+            state: root.join("tmux").join("tmux-stub.json"),
             delivery: root.join("delivery.json"),
             question: root.join("question.json"),
             seat: format!("ij-a-builder-{label}"),
@@ -306,18 +313,14 @@ impl Rig {
         common::shown(&self.project, item)
     }
 
-    /// The stub: `agents` is the roster read, `-p` is the one print-mode turn.
+    /// The stub: `agents` is the listing, which turns once a pane has taken a
+    /// submit ([`common::listing_branch`]).
     fn write_stub(&self) {
         std::fs::write(
             &self.stub,
             format!(
-                "#!/bin/sh\n\
-                 case \"$1\" in\n\
-                 \x20 agents) /bin/cat '{roster}' ;;\n\
-                 \x20 -p) /bin/cat > /dev/null ;;\n\
-                 \x20 *) exit 64 ;;\n\
-                 esac\n",
-                roster = self.roster.display(),
+                "#!/bin/sh\ncase \"$1\" in\n{agents}\x20 *) exit 64 ;;\nesac\n",
+                agents = common::listing_branch(&self.roster, &self.roster_taken, &self.state),
             ),
         )
         .expect("the stub is written");
@@ -331,24 +334,37 @@ impl Rig {
         self
     }
 
-    /// A roster carrying a live row in each of the three checkouts, so a ring
-    /// at any seat is delivered.
+    /// A live pane for each of the three seats, and a listing carrying a row
+    /// for each pane's pid that reads busy once a pane has taken a submit — so
+    /// a ring at any seat is delivered. Every verb's turns end with it
+    /// ([`Rig::run`]), so the next verb meets the seats idle again.
     fn live(&self) -> &Rig {
-        self.roster(&format!(
-            r#"[{{"sessionId": "abcdef", "id": "s0", "cwd": {reviewer}, "pid": 4242}},
-                {{"sessionId": "beefed", "id": "s1", "cwd": {target}, "pid": 4243}},
-                {{"sessionId": "cafe00", "id": "s2", "cwd": {other}, "pid": 4244}}]"#,
-            reviewer = json_string(&self.worktree.display().to_string()),
-            target = json_string(&self.target_worktree.display().to_string()),
-            other = json_string(&self.other_worktree.display().to_string()),
-        ))
+        let seats = [
+            (REVIEWER_ID, "abcdef", &self.worktree),
+            (TARGET_ID, "beefed", &self.target_worktree),
+            (OTHER_TARGET_ID, "cafe00", &self.other_worktree),
+        ];
+        let rows = |status: &str| {
+            let rows: Vec<String> = seats
+                .iter()
+                .map(|(id, session, cwd)| {
+                    common::listed_row(session, common::live_pane(&self.state, id, cwd), status)
+                })
+                .collect();
+            format!("[{}]", rows.join(", "))
+        };
+        std::fs::write(&self.roster_taken, rows("busy")).expect("the roster is written");
+        self.roster(&rows("idle"))
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        self.command(args)
+        let out = self
+            .command(args)
             .env("FLEET_ACTOR", &self.seat)
             .output()
-            .expect("the built binary runs")
+            .expect("the built binary runs");
+        common::turns_end(&self.state);
+        out
     }
 
     fn command(&self, args: &[&str]) -> Command {
@@ -359,6 +375,7 @@ impl Rig {
             .arg(self.machine.join("packs"))
             .current_dir(&self.project)
             .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub))
+            .env(common::hermetic::TMUX_BIN, &self.tmux)
             // The identity the delivery's and the hold's own commits are made
             // under. Named here because `HOME` is the rig's.
             .env("GIT_AUTHOR_NAME", "fleet tests")

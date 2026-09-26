@@ -13,6 +13,7 @@
 
 use fleet_controller::platform::{self, Grant, Listing};
 use fleet_controller::run::{self, Options};
+use fleet_controller::test_support::FakeServer;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -44,8 +45,9 @@ fn projection(machine: &Path) -> serde_json::Value {
     serde_json::from_str(&body).expect("the projection parses")
 }
 
-/// The rig: a machine directory naming one seat in a worktree that exists, and
-/// an agent stub that records every call it is given.
+/// The rig: a machine directory naming one seat in a worktree that exists, an
+/// agent stub that records every call it is given, and `fleet-tmux-stub` as
+/// the host every session is started on and every turn typed into.
 struct Rig {
     root: PathBuf,
     machine: PathBuf,
@@ -53,8 +55,14 @@ struct Rig {
     /// The second seat's worktree, where the roster's one live row stands.
     live: PathBuf,
     argv: PathBuf,
+    /// The tmux stub's state, beside the link `FLEET_TMUX_BIN` names.
+    host_state: PathBuf,
     _held: MutexGuard<'static, ()>,
 }
+
+/// The two seats' ids: `a-seat` is absent, `b-seat` live.
+const A_SEAT: &str = "01a0d1f1-0aec-765f-9abe-5c21e8a04b17";
+const B_SEAT: &str = "01a0d1f1-0aec-765f-9abe-d4f993b9739a";
 
 impl Rig {
     fn new(label: &str) -> Rig {
@@ -66,6 +74,7 @@ impl Rig {
             worktree: root.join("wt/a-seat"),
             live: root.join("wt/b-seat"),
             argv: root.join("agent-argv"),
+            host_state: root.join("tmux").join("tmux-stub.json"),
             root,
             _held: held,
         };
@@ -94,9 +103,9 @@ impl Rig {
             &rig.machine.join("config.json"),
             &format!(
                 "{{\"fleet_toml\": \"{}\", \"children\": [\
-                 {{\"id\": \"01a0d1f1-0aec-765f-9abe-5c21e8a04b17\", \"name\": \"a-seat\", \
+                 {{\"id\": \"{A_SEAT}\", \"name\": \"a-seat\", \
                    \"worktrees\": {{\"a-project\": \"{}\"}}}}, \
-                 {{\"id\": \"01a0d1f1-0aec-765f-9abe-d4f993b9739a\", \"name\": \"b-seat\", \
+                 {{\"id\": \"{B_SEAT}\", \"name\": \"b-seat\", \
                    \"worktrees\": {{\"a-project\": \"{}\"}}}}]}}\n",
                 rig.root.join("fleet.toml").display(),
                 rig.worktree.display(),
@@ -111,11 +120,37 @@ impl Rig {
         // `b-seat` is live, so the routine's ring has somebody to reach — the
         // routines pass's effect. A ring at an absent seat fails for its own
         // reason and would say nothing about the gate.
+        //
+        // `b-seat`'s session is a live pane on the tmux stub, and its row carries
+        // that pane's pid, MID-TURN, so a ring is typed and queued without a
+        // wait. The second row is the pane `a-seat`'s start will be given, so
+        // the start is believed on its first read.
+        let tmux = rig.root.join("tmux").join("tmux");
+        std::fs::create_dir_all(tmux.parent().expect("the link has a directory"))
+            .expect("the tmux stub's directory is made");
+        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_fleet-tmux-stub"), &tmux)
+            .expect("the link to the tmux stub is made");
+        let mut server = FakeServer::default();
+        server
+            .start(
+                B_SEAT,
+                &rig.live.display().to_string(),
+                &["/bin/agent".to_string()],
+                &[],
+            )
+            .expect("b-seat's pane starts on the fake server");
+        server
+            .save(&rig.host_state)
+            .expect("the tmux stub's state is written");
+        let b_pid = server.sessions[B_SEAT].pid;
         let stub = rig.root.join("agent.sh");
         let roster = format!(
-            "[{{\"id\":\"bb\",\"sessionId\":\"b-session\",\"cwd\":\"{}\",\
-             \"kind\":\"background\",\"pid\":4242,\"status\":\"idle\",\"startedAt\":1000}}]",
-            rig.live.display()
+            "[{{\"sessionId\":\"b-session\",\"cwd\":\"{}\",\"kind\":\"interactive\",\
+             \"pid\":{b_pid},\"status\":\"busy\",\"startedAt\":1000}}, \
+             {{\"sessionId\":\"a-session\",\"cwd\":\"/nowhere/arrived\",\
+             \"kind\":\"interactive\",\"pid\":{},\"status\":\"idle\"}}]",
+            rig.live.display(),
+            b_pid + 1
         );
         write(
             &stub,
@@ -127,18 +162,27 @@ impl Rig {
         );
         executable(&stub);
         common::hermetic::export(common::hermetic::vars(&rig.root, &rig.machine, Some(&stub)));
+        common::hermetic::export(vec![(
+            common::hermetic::TMUX_BIN,
+            Some(tmux.into_os_string()),
+        )]);
         rig
     }
 
-    /// The agent calls that are EFFECTS, told from the observation calls the
-    /// loop makes every poll whatever the gate says: a start names the model
-    /// and the permission posture, and a roster read names neither.
+    /// The host calls that are EFFECTS, told from the listing the loop reads
+    /// every poll whatever the gate says: a session started (the per-seat
+    /// effect) and a turn pasted into one (the routine's ring). Both are the
+    /// host's now — a start's argv is the pane's, and a ring is typed.
     fn effect_calls(&self) -> Vec<String> {
-        std::fs::read_to_string(&self.argv)
-            .unwrap_or_default()
-            .lines()
-            .filter(|line| line.contains("--model") || line.contains("--permission-mode"))
-            .map(str::to_string)
+        FakeServer::load(&self.host_state)
+            .expect("the tmux stub's state reads")
+            .invocations
+            .iter()
+            .filter(|args| {
+                args.iter()
+                    .any(|arg| arg == "new-session" || arg == "paste-buffer")
+            })
+            .map(|args| args.join(" "))
             .collect()
     }
 

@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
+use fleet_controller::test_support::{FakeServer, Sent};
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
 use fleet_core::store::exec::Exec;
@@ -84,6 +85,93 @@ pub fn stub_tmux(dir: &Path) -> PathBuf {
     let link = dir.join("tmux");
     std::os::unix::fs::symlink(&stub, &link).expect("the link to the tmux stub is made");
     link
+}
+
+/// A seat's LIVE PANE on the fake server behind the tmux stub whose state is
+/// `state`, under the session `seat_id` names — as the controller's start
+/// leaves one — and the pid the server gave it, which is what the seat's
+/// listed row is found by. A pane already there is kept.
+pub fn live_pane(state: &Path, seat_id: &str, cwd: &Path) -> u32 {
+    let mut server = FakeServer::load(state).expect("the tmux stub's state reads");
+    if !server.sessions.contains_key(seat_id) {
+        server
+            .start(
+                seat_id,
+                &cwd.display().to_string(),
+                &["/bin/agent".to_string()],
+                &[],
+            )
+            .expect("the session starts on the fake server");
+        server
+            .save(state)
+            .expect("the tmux stub's state is written");
+    }
+    server.sessions[seat_id].pid
+}
+
+/// Everything typed into `seat_id`'s session on the tmux stub, in order.
+pub fn typed_into(state: &Path, seat_id: &str) -> Vec<Sent> {
+    FakeServer::load(state)
+        .expect("the tmux stub's state reads")
+        .sessions
+        .get(seat_id)
+        .map(|session| session.sent.clone())
+        .unwrap_or_default()
+}
+
+/// Every turn typed on the tmux stub ENDED: what each pane was typed is
+/// cleared, so a listing written by [`listing_branch`] reads idle again — a
+/// session back at its prompt once its turn is done. For a rig whose verbs
+/// ring more than one seat in turn.
+pub fn turns_end(state: &Path) {
+    let Ok(mut server) = FakeServer::load(state) else {
+        return;
+    };
+    for session in server.sessions.values_mut() {
+        session.sent.clear();
+    }
+    server
+        .save(state)
+        .expect("the tmux stub's state is written");
+}
+
+/// The texts pasted into `seat_id`'s session, in order.
+pub fn pasted_into(state: &Path, seat_id: &str) -> Vec<String> {
+    typed_into(state, seat_id)
+        .into_iter()
+        .filter_map(|sent| match sent {
+            Sent::Paste(text) => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+/// One listed row as the agent's listing shapes an interactive one: the
+/// session `session`, its pid the pane's, reading `status`.
+pub fn listed_row(session: &str, pid: u32, status: &str) -> String {
+    format!(
+        r#"{{"sessionId": "{session}", "cwd": "/anywhere", "kind": "interactive", "pid": {pid}, "status": "{status}"}}"#
+    )
+}
+
+/// A stub agent script's `agents` branch: the listing at `taken` once the tmux
+/// stub's state at `state` carries a submit and the arm wrote `taken`, and the
+/// one at `roster` before — a session that takes a typed turn reads busy on
+/// its next listing. Tools by absolute path: the adapter's child inherits no
+/// `PATH` to find them on.
+pub fn listing_branch(roster: &Path, taken: &Path, state: &Path) -> String {
+    format!(
+        "\x20 agents)\n\
+         \x20   if [ -f '{taken}' ] && /usr/bin/grep -q '\"submit\"' '{state}' 2>/dev/null; then\n\
+         \x20     /bin/cat '{taken}'\n\
+         \x20   else\n\
+         \x20     /bin/cat '{roster}'\n\
+         \x20   fi\n\
+         \x20   ;;\n",
+        roster = roster.display(),
+        taken = taken.display(),
+        state = state.display(),
+    )
 }
 
 /// The project at `root` kept on the stub: `[store] adapter` naming it

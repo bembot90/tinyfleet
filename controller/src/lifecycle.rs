@@ -886,7 +886,7 @@ mod tests {
 
         // Nothing the controller defaults: the keys a reader would otherwise
         // check against the code are absent, and the file still parses.
-        for key in ["poll_seconds", "posture", "first_turn", "nudge_model"] {
+        for key in ["poll_seconds", "posture", "first_turn"] {
             assert!(
                 !text.contains(&format!("\n{key} =")),
                 "{key} is defaulted: {text}"

@@ -2,9 +2,12 @@
 //! through one trait, so the second agent is a second module and not a
 //! rewrite.
 //!
-//! Observe needs four of the nine verbs — the listing, the transcript, the end
+//! Observe needs four of the eight verbs — the listing, the transcript, the end
 //! stamp and the version, plus the daemon's own account of itself; `launch`,
-//! `stop`, `remove`, `nudge` and `revive` are the five an effect issues.
+//! `stop`, `remove` and `revive` are the four an effect issues. A turn for a
+//! live seat is none of them: it is typed into the seat's pane by core
+//! (`crate::effect::type_turn`), and this trait's listing is what says whether
+//! it was taken.
 //!
 //! A START IS TWO HALVES AND ONLY ONE OF THEM IS HERE (ruling 2). The adapter
 //! answers WHAT to run — the argv and the environment, in [`Launch`] — and
@@ -141,19 +144,6 @@ pub trait Agent {
     /// mid-replacement.
     fn daemon(&self) -> DaemonRead;
 
-    /// One print-mode turn that asks a session to carry one message to another.
-    /// `session_name` is the addressed session's name, which names the turn's
-    /// log.
-    fn nudge(
-        &self,
-        config_dir: Option<&Path>,
-        session_name: &str,
-        worktree: &str,
-        model: &str,
-        prompt: &str,
-        timeout: std::time::Duration,
-    ) -> Result<(), String>;
-
     /// The listing under one configuration directory, or the adapter's own when
     /// `config_dir` is `None`.
     ///
@@ -235,6 +225,12 @@ pub struct AgentRow {
 /// recognise counts as not-busy rather than as a fifth state to reason about.
 pub const BUSY: &str = "busy";
 
+/// The agent's word for a session stopped in front of a human, which an
+/// interactive row carries beside [`AgentRow::waiting_for`] (lessons claude-code
+/// B10). Read as a block on its own too, so a row that names no cause is still
+/// one nothing is typed into.
+pub const WAITING: &str = "waiting";
+
 /// The state word a live IDLE session carries, alongside every pid-less shape
 /// the roster holds — hibernated, deliberately stopped from idle, and killed
 /// from outside the fleet (lessons claude-code A3). It is therefore a reading
@@ -254,6 +250,15 @@ impl AgentRow {
     /// Whether this row is a session mid-turn.
     pub fn is_busy(&self) -> bool {
         self.status.as_deref() == Some(BUSY)
+    }
+
+    /// What this row is stopped in front of a human on, where it is: the cause
+    /// [`AgentRow::waiting_for`] names, else the [`WAITING`] status word itself.
+    /// Read for presence (B8), so a cause this fleet does not know still blocks.
+    pub fn blocked_on(&self) -> Option<String> {
+        self.waiting_for.clone().or_else(|| {
+            (self.status.as_deref() == Some(WAITING)).then(|| format!("status {WAITING}"))
+        })
     }
 
     /// Whether the row carries [`DONE`], which is a reading of the state field

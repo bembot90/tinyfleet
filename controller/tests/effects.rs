@@ -208,26 +208,6 @@ impl Rig {
             .collect()
     }
 
-    /// The argv file as it was written, unsplit. An element carrying newlines —
-    /// the nudge prompt is several paragraphs — is several LINES here, so an arm
-    /// about that element reads the text and never `argv().last()`.
-    fn argv_text(&self) -> String {
-        std::fs::read_to_string(self.argv_path()).expect("the stub recorded an argv")
-    }
-
-    /// The directory the stub found itself in, CANONICAL. `pwd` resolves
-    /// symlinks and the temp directory is one on macOS, so an arm comparing it
-    /// against the path it configured has to put both sides in the same form.
-    fn recorded_cwd(&self) -> PathBuf {
-        let printed = std::fs::read_to_string(self.cwd_path()).expect("the stub recorded its cwd");
-        PathBuf::from(printed.trim())
-    }
-
-    /// The same path the arm configured, in that form.
-    fn canonical_worktree(&self) -> PathBuf {
-        std::fs::canonicalize(self.worktree()).expect("the worktree is there to resolve")
-    }
-
     fn recorded_path(&self) -> String {
         std::fs::read_to_string(self.path_path()).expect("the stub recorded its PATH")
     }
@@ -1077,24 +1057,24 @@ mod lessons {
         assert!(fleet.model_can_honour("claude-opus-5-20260901"));
         assert!(fleet.model_can_honour("claude-sonnet-5-1m"));
         assert!(
-            !fleet.model_can_honour("claude-haiku-4-5-20251001"),
+            !fleet.model_can_honour("claude-sonnet-4-5-20250929"),
             "a model outside the measured set is not in it by being close"
         );
 
         // The gate is on the REQUESTED posture, so a transient row asking for
         // less is not gated at all — which is what keeps a spawned builder on a
         // cheaper model startable.
-        assert!(fleet.posture_is_ungranted(false, "claude-haiku-4-5-20251001"));
+        assert!(fleet.posture_is_ungranted(false, "claude-sonnet-4-5-20250929"));
         assert!(
-            !fleet.posture_is_ungranted(true, "claude-haiku-4-5-20251001"),
+            !fleet.posture_is_ungranted(true, "claude-sonnet-4-5-20250929"),
             "the transient posture asks for less than the model's own default"
         );
         assert!(!fleet.posture_is_ungranted(false, "claude-opus-5"));
 
         // And the list is policy: a fleet that names its own set moves the gate.
-        let named = policy::parse("[controller]\nauto_capable_models = [\"claude-haiku-4-5\"]\n")
+        let named = policy::parse("[controller]\nauto_capable_models = [\"claude-sonnet-4-5\"]\n")
             .expect("the policy parses");
-        assert!(named.model_can_honour("claude-haiku-4-5-20251001"));
+        assert!(named.model_can_honour("claude-sonnet-4-5-20250929"));
         assert!(
             !named.model_can_honour("claude-opus-5"),
             "the named list REPLACES the default rather than adding to it"
@@ -1251,54 +1231,6 @@ mod lessons {
             !rig.argv_path().exists(),
             "a row with no address issues nothing"
         );
-    }
-
-    /// claude-code B9 — a resume of a session that is ALREADY RUNNING starts a
-    /// copy, and the copy is a row of its own: by short id or by full id, the
-    /// original keeps its id and its pid and a second row appears beside it. So
-    /// a verb that wants a turn on a LIVE session cannot resume it, and this
-    /// controller's one such verb is the nudge.
-    ///
-    /// Read from the argv the child received: a print-mode turn of its own,
-    /// carrying no resume and no address that would name the session. The
-    /// address is what makes the forked copy — it is present on the revive,
-    /// which addresses a session that is NOT running — so a nudge that carried
-    /// one would be the fork this lesson is about.
-    #[test]
-    fn a_live_session_is_reached_without_a_resume() {
-        let rig = Rig::new("lesson-b9");
-        let worktree = rig.worktree().display().to_string();
-        let mut table = Table::default();
-        let mut log = rig.log();
-        assert_eq!(
-            effect::nudge(
-                &rig.agent(),
-                &a_policy(),
-                &a_target(&worktree, Some("ab12")),
-                &mut log,
-                &mut table,
-            ),
-            effect::Outcome::Nudged
-        );
-
-        let argv = rig.argv();
-        assert_eq!(
-            argv.first().map(String::as_str),
-            Some("-p"),
-            "the turn is the nudge's own: {argv:?}"
-        );
-        for forking in ["--resume", "-r", "--continue", "-c", "attach"] {
-            assert!(
-                !argv.iter().any(|word| word == forking),
-                "{forking} would start a copy beside the live session: {argv:?}"
-            );
-        }
-        for address in ["a-session", "ab12"] {
-            assert!(
-                !argv.iter().any(|word| word == address),
-                "and no address rides along for one to resume: {argv:?}"
-            );
-        }
     }
 
     /// gas-city G7 — a restart ADOPTS the sessions it already owns rather than
@@ -1505,7 +1437,7 @@ fn a_start_carries_the_plugin_root_the_policy_names() {
     assert_eq!(argv.last().map(String::as_str), Some("/wake s1"));
 }
 
-/// An adapter carrying no effect binary REFUSES all five verbs rather than
+/// An adapter carrying no effect binary REFUSES all four verbs rather than
 /// falling back to the one the reads use.
 ///
 /// The fallback is the shape the gate exists to prevent: effects read `off` in
@@ -1536,16 +1468,6 @@ fn an_adapter_with_no_effect_binary_refuses_every_verb_and_execs_nothing() {
         ungated.remove(None, "ab12"),
         RemoveAnswer::Refused { .. }
     ));
-    assert!(ungated
-        .nudge(
-            None,
-            "s1",
-            &worktree,
-            "a-model",
-            "hello",
-            Duration::from_secs(5)
-        )
-        .is_err());
 
     // NOTHING RAN. The stub records its argv on every branch, so a file that is
     // not there is the reading: no verb reached a program.
@@ -1697,83 +1619,321 @@ fn a_rest_whose_start_failed_after_its_stop_landed_removes_nothing() {
     );
 }
 
-/// One nudge marks its session whatever the turn returned, and the event carries
-/// the reading, the threshold and the outcome.
+// ---- typing a turn ------------------------------------------------------------
+//
+// A turn for a live seat is PASTED into its own session and believed only when
+// the listing turns busy (fleet-rge6.5). The arms below drive `type_turn` on a
+// stub agent and a fake host: the host holds the seat's pane and records every
+// paste and submit, and the agent's listing is answered read by read, so an arm
+// says what the row read before the send and what it read after.
+
+/// The seat's live pane on the rig's host, as the start would have left it,
+/// and the pid the host gave it.
+fn a_live_pane(rig: &Rig) -> u32 {
+    rig.host
+        .new_session(
+            &rig.session(),
+            &rig.worktree(),
+            &["/nowhere/agent".to_string()],
+            &[],
+        )
+        .expect("the fake host starts the pane");
+    rig.host
+        .session(&rig.session())
+        .expect("the pane stands")
+        .pid
+}
+
+/// The listing's row for the pane with `pid`, reading `status`.
+fn a_row_reading(pid: u32, status: &str) -> AgentRow {
+    AgentRow {
+        session_id: "a-session".to_string(),
+        id: None,
+        cwd: "/anywhere".to_string(),
+        pid: Some(pid),
+        state: None,
+        status: Some(status.to_string()),
+        started_at: None,
+        waiting_for: None,
+    }
+}
+
+fn listing(rows: Vec<AgentRow>) -> RosterRead {
+    RosterRead::Readable(rows)
+}
+
+/// A stub agent whose listing reads `first` once and then `then` on every read
+/// after it: the row before the send, and the row the poll meets.
+fn an_agent_reading(first: AgentRow, then: AgentRow) -> StubAgent {
+    let agent = StubAgent::answering(Answers {
+        status: listing(vec![then]),
+        ..Answers::default()
+    });
+    agent.list_next([listing(vec![first])]);
+    agent
+}
+
+fn turn_for(seat: &SeatId) -> effect::TurnTarget<'_> {
+    effect::TurnTarget {
+        seat,
+        config_dir: None,
+    }
+}
+
+/// The bound every arm types under: one poll's worth past the first reads.
+const BOUND: Duration = Duration::from_secs(1);
+
+/// An idle row that turns busy on the same pid after the send is DELIVERED:
+/// one paste of the text and one submit, into the seat's own session — and no
+/// launch and no resume, because a turn for a live seat starts nothing.
+#[test]
+fn an_idle_seat_that_turns_busy_is_delivered_with_one_paste_and_one_submit() {
+    let rig = Rig::new("typed-delivered");
+    let pid = a_live_pane(&rig);
+    let agent = an_agent_reading(a_row_reading(pid, "idle"), a_row_reading(pid, "busy"));
+    let seat = s1();
+
+    let typed = effect::type_turn(
+        &agent,
+        &rig.host,
+        &turn_for(&seat),
+        "two lines\nof one turn",
+        BOUND,
+    );
+    assert_eq!(typed, effect::Typed::Delivered);
+    assert_eq!(
+        rig.host.sends(&rig.session()),
+        vec![
+            Sent::Paste("two lines\nof one turn".to_string()),
+            Sent::Submit
+        ],
+        "one paste, whole, and one submit"
+    );
+    for verb in [StubAgent::START, StubAgent::REVIVE] {
+        assert!(
+            agent.calls_of(verb).is_empty(),
+            "a turn for a live seat makes no {verb} call: {:?}",
+            agent.verbs()
+        );
+    }
+}
+
+/// An idle row that STAYS idle after the send is a failed turn, whatever the
+/// host answered: the send returning is a dispatch and never a witness
+/// (fleet-fmver defect 2). A typing that believed the host's `Ok` reads this
+/// arm delivered.
+#[test]
+fn an_idle_seat_that_stays_idle_is_failed_and_never_believed_off_the_send() {
+    let rig = Rig::new("typed-failed");
+    let pid = a_live_pane(&rig);
+    let agent = an_agent_reading(a_row_reading(pid, "idle"), a_row_reading(pid, "idle"));
+    let seat = s1();
+
+    let typed = effect::type_turn(&agent, &rig.host, &turn_for(&seat), "a turn", BOUND);
+    match typed {
+        effect::Typed::Failed(cause) => assert!(
+            cause.contains("typed and not taken: still idle after 1s"),
+            "{cause}"
+        ),
+        other => panic!("a row that never turned busy is a failed turn: {other:?}"),
+    }
+    assert_eq!(
+        rig.host.sends(&rig.session()),
+        vec![Sent::Paste("a turn".to_string()), Sent::Submit],
+        "the text was typed; it is the taking that failed"
+    );
+}
+
+/// A row already busy before the send is QUEUED: the text is typed and waits
+/// for the turn in hand, and it is never called delivered (E5) — a busy
+/// reading after the send cannot tell the queued turn from the one ahead of it.
+#[test]
+fn a_busy_seat_is_queued_and_never_called_delivered() {
+    let rig = Rig::new("typed-queued");
+    let pid = a_live_pane(&rig);
+    let agent = an_agent_reading(a_row_reading(pid, "busy"), a_row_reading(pid, "busy"));
+    let seat = s1();
+
+    let typed = effect::type_turn(&agent, &rig.host, &turn_for(&seat), "a turn", BOUND);
+    assert_eq!(typed, effect::Typed::Queued);
+    assert_eq!(
+        rig.host.sends(&rig.session()),
+        vec![Sent::Paste("a turn".to_string()), Sent::Submit]
+    );
+}
+
+/// A row stopped in front of a person is refused BEFORE ANY BYTE: keys sent at
+/// a dialog answer it (lessons claude-code B8, B10). By the field, carrying the
+/// cause the row names, and by the status word alone where no field is there.
+#[test]
+fn a_blocked_seat_is_refused_before_any_byte() {
+    let rig = Rig::new("typed-blocked");
+    let pid = a_live_pane(&rig);
+    let seat = s1();
+
+    let mut asked = a_row_reading(pid, "waiting");
+    asked.waiting_for = Some("permission prompt".to_string());
+    let agent = an_agent_reading(asked.clone(), asked);
+    let typed = effect::type_turn(&agent, &rig.host, &turn_for(&seat), "a turn", BOUND);
+    assert_eq!(
+        typed,
+        effect::Typed::Blocked("permission prompt".to_string())
+    );
+
+    let waiting = a_row_reading(pid, "waiting");
+    let agent = an_agent_reading(waiting.clone(), waiting);
+    let typed = effect::type_turn(&agent, &rig.host, &turn_for(&seat), "a turn", BOUND);
+    assert!(
+        matches!(&typed, effect::Typed::Blocked(cause) if cause.contains("waiting")),
+        "{typed:?}"
+    );
+
+    assert!(
+        rig.host.sends(&rig.session()).is_empty(),
+        "nothing was typed at the dialog: {:?}",
+        rig.host.sends(&rig.session())
+    );
+    assert!(rig.host.calls_of(FakeHost::SEND).is_empty());
+}
+
+/// No session to type into is ABSENT, and nothing is sent: no pane under the
+/// seat's session, a pane that has died, and a live pane no listed row carries.
+/// A listing that could not be read is a failure that says so, never absence.
+#[test]
+fn a_seat_with_no_live_pane_or_no_listed_row_is_absent_and_nothing_is_sent() {
+    let rig = Rig::new("typed-absent");
+    let seat = s1();
+    let idle = |pid| an_agent_reading(a_row_reading(pid, "idle"), a_row_reading(pid, "idle"));
+
+    // No pane at all.
+    let typed = effect::type_turn(&idle(4242), &rig.host, &turn_for(&seat), "a turn", BOUND);
+    assert_eq!(typed, effect::Typed::Absent);
+
+    // A live pane whose pid no row carries: a row in the seat's worktree
+    // proves nothing (B5), and the row here is some other process's.
+    let pid = a_live_pane(&rig);
+    let typed = effect::type_turn(&idle(pid + 1), &rig.host, &turn_for(&seat), "a turn", BOUND);
+    assert_eq!(typed, effect::Typed::Absent);
+
+    // A dead pane, whose pid a row still carries.
+    rig.host.end(&rig.session(), Some(0));
+    let typed = effect::type_turn(&idle(pid), &rig.host, &turn_for(&seat), "a turn", BOUND);
+    assert_eq!(typed, effect::Typed::Absent);
+
+    // A listing that could not be read.
+    let unreadable = StubAgent::answering(Answers {
+        status: RosterRead::Unreadable {
+            cause: "the listing timed out".to_string(),
+        },
+        ..Answers::default()
+    });
+    let rig = Rig::new("typed-unreadable");
+    a_live_pane(&rig);
+    let typed = effect::type_turn(&unreadable, &rig.host, &turn_for(&seat), "a turn", BOUND);
+    assert!(
+        matches!(&typed, effect::Typed::Failed(cause) if cause.contains("the listing timed out")),
+        "{typed:?}"
+    );
+    assert!(
+        rig.host.sends(&rig.session()).is_empty(),
+        "nothing is typed into a session nobody could read"
+    );
+}
+
+/// One nudge marks its session whatever became of the turn, and the event
+/// carries the reading, the threshold and the outcome — `sent` only where the
+/// listing witnessed the turn taken, and each other outcome in its own words.
 #[test]
 fn a_nudge_marks_its_session_and_states_what_it_carried() {
     let rig = Rig::new("nudge");
+    let policy = policy::parse("[controller]\nnudge_timeout_seconds = 1\n").expect("it parses");
     let worktree = rig.worktree().display().to_string();
-    let policy = a_policy();
-    let mut table = Table::default();
+    let pid = a_live_pane(&rig);
     let mut log = rig.log();
-    let outcome = effect::nudge(
-        &rig.agent(),
-        &policy,
-        &a_target(&worktree, Some("ab12")),
-        &mut log,
-        &mut table,
-    );
+    let nudged = |agent: &StubAgent, table: &mut Table, log: &mut EventLog| {
+        let outcome = effect::nudge(
+            agent,
+            &rig.host,
+            &policy,
+            &a_target(&worktree, Some("ab12")),
+            log,
+            table,
+        );
+        let event = rig
+            .events()
+            .into_iter()
+            .filter(|e| e["type"] == events::SESSION_NUDGED)
+            .next_back()
+            .expect("the nudge wrote its event");
+        (outcome, event)
+    };
+
+    let agent = an_agent_reading(a_row_reading(pid, "idle"), a_row_reading(pid, "busy"));
+    let mut table = Table::default();
+    let (outcome, event) = nudged(&agent, &mut table, &mut log);
     assert_eq!(outcome, effect::Outcome::Nudged);
     assert!(table.is_nudged(S1, "a-session"));
     assert!(
         !table.is_nudged(S1, "another-session"),
         "the mark is the session's and not the seat's"
     );
-
-    let event = rig
-        .events()
-        .into_iter()
-        .find(|e| e["type"] == events::SESSION_NUDGED)
-        .expect("the nudge wrote its event");
     assert_eq!(event["payload"]["session"], "a-session");
     assert_eq!(event["payload"]["context_tokens"], 1_000);
     assert_eq!(event["payload"]["threshold"], policy.rest_threshold_tokens);
     assert_eq!(event["payload"]["outcome"], "sent");
 
-    // The turn itself: print mode, the nudge model, the seat's own worktree.
-    let argv = rig.argv();
-    assert_eq!(argv.first().map(String::as_str), Some("-p"));
-    assert_eq!(flag_value(&argv, "--model"), policy.nudge_model);
-    assert_eq!(rig.recorded_cwd(), rig.canonical_worktree());
-    // The prompt spans several lines, so it is read from the argv file whole:
-    // its last LINE is not its last ELEMENT.
-    let prompt = rig.argv_text();
-    for needle in [
-        "orla",
-        "700000",
-        "fleet event rest orla",
-        "exactly one message",
-    ] {
-        assert!(
-            prompt.contains(needle),
-            "the prompt carries the sentence the seat is meant to receive ({needle}): {prompt}"
-        );
+    // What was typed is the sentence itself, verbatim — no prompt around it
+    // and no model to carry it — as one paste and one submit.
+    let text = effect::nudge_text("orla", 1_000, policy.rest_threshold_tokens, "orla");
+    assert_eq!(
+        rig.host.sends(&rig.session()),
+        vec![Sent::Paste(text.clone()), Sent::Submit]
+    );
+    for needle in ["orla", "700000", "fleet event rest orla"] {
+        assert!(text.contains(needle), "{needle}: {text}");
+    }
+    for verb in [StubAgent::START, StubAgent::REVIVE] {
+        assert!(agent.calls_of(verb).is_empty(), "{:?}", agent.verbs());
     }
 
-    // A turn that failed is still one nudge: the budget is per session, and a
-    // retry loop against a session that cannot be reached is the noise that
-    // budget exists to prevent.
-    rig.write_stub(1);
+    // A turn that was typed and never taken is still one nudge: the budget is
+    // per session, and a retry loop against a session that will not take one
+    // is the noise that budget exists to prevent.
+    let agent = an_agent_reading(a_row_reading(pid, "idle"), a_row_reading(pid, "idle"));
     let mut table = Table::default();
-    let outcome = effect::nudge(
-        &rig.agent(),
-        &policy,
-        &a_target(&worktree, Some("ab12")),
-        &mut log,
-        &mut table,
-    );
+    let (outcome, event) = nudged(&agent, &mut table, &mut log);
     assert_eq!(outcome, effect::Outcome::Failed);
     assert!(table.is_nudged(S1, "a-session"));
-    let failed = rig
-        .events()
-        .into_iter()
-        .filter(|e| e["type"] == events::SESSION_NUDGED)
-        .next_back()
-        .expect("the failure is an event too");
-    assert!(failed["payload"]["outcome"]
-        .as_str()
-        .unwrap_or_default()
-        .starts_with("failed:"));
+    assert!(
+        event["payload"]["outcome"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("failed: typed and not taken"),
+        "{event}"
+    );
+
+    // A seat mid-turn is queued, and marked.
+    let agent = an_agent_reading(a_row_reading(pid, "busy"), a_row_reading(pid, "busy"));
+    let mut table = Table::default();
+    let (outcome, event) = nudged(&agent, &mut table, &mut log);
+    assert_eq!(outcome, effect::Outcome::Nudged);
+    assert!(table.is_nudged(S1, "a-session"));
+    assert_eq!(event["payload"]["outcome"], "queued: the seat was mid-turn");
+
+    // A seat at a dialog is refused before any byte, and marked.
+    let before = rig.host.sends(&rig.session()).len();
+    let mut asked = a_row_reading(pid, "waiting");
+    asked.waiting_for = Some("permission prompt".to_string());
+    let agent = an_agent_reading(asked.clone(), asked);
+    let mut table = Table::default();
+    let (outcome, event) = nudged(&agent, &mut table, &mut log);
+    assert_eq!(outcome, effect::Outcome::Failed);
+    assert!(table.is_nudged(S1, "a-session"));
+    assert_eq!(
+        event["payload"]["outcome"],
+        "refused: blocked on permission prompt"
+    );
+    assert_eq!(rig.host.sends(&rig.session()).len(), before, "no byte");
 }
 
 /// The environment a child carries is BUILT and not inherited: the constructed

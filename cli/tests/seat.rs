@@ -163,8 +163,7 @@ impl Rig {
             if declared {
                 format!(
                     "[permissions]\n\n\
-                     [controller]\nnudge_model = \"a-cheap-model\"\n\
-                     nudge_timeout_seconds = 30\nstart_watch_seconds = 10\n\
+                     [controller]\nnudge_timeout_seconds = 30\nstart_watch_seconds = 10\n\
                      default_model = \"a-model\"\n\n\
                      [project]\nprimary = {primary}\nworktrees = {worktrees}\n",
                     primary = toml_string(&rig.project.display().to_string()),
@@ -172,8 +171,7 @@ impl Rig {
                 )
             } else {
                 "[permissions]\n\n\
-                 [controller]\nnudge_model = \"a-cheap-model\"\n\
-                 nudge_timeout_seconds = 30\nstart_watch_seconds = 10\n\
+                 [controller]\nnudge_timeout_seconds = 30\nstart_watch_seconds = 10\n\
                  default_model = \"a-model\"\n"
                     .to_string()
             },
@@ -304,21 +302,27 @@ impl Rig {
     }
 
     /// The drive suite's stub shape: the roster branch serves a file the arm
-    /// writes, and a stop empties it down to the arrivals every listing here
-    /// carries. A start is no branch of the stub's: the session comes up on
-    /// the rig's tmux stub ([`Rig::host`]).
+    /// writes — its busy twin once a pane has taken a submit, so a feed typed
+    /// into a seat is taken ([`common::listing_branch`]) — and a stop empties
+    /// it down to the arrivals every listing here carries. A start is no
+    /// branch of the stub's: the session comes up on the rig's tmux stub
+    /// ([`Rig::host`]).
     fn write_stub(&self) {
         std::fs::write(
             &self.stub,
             format!(
                 "#!/bin/sh\n\
                  case \"$1\" in\n\
-                 \x20 agents) /bin/cat '{roster}' ;;\n\
+                 {agents}\
                  \x20 stop) echo \"STOP $2\" >> '{calls}'; printf '%s' '{cleared}' > '{roster}' ;;\n\
                  \x20 rm) echo \"RM $2\" >> '{calls}' ;;\n\
-                 \x20 -p) echo \"NUDGE\" >> '{calls}' ;;\n\
                  \x20 *) exit 64 ;;\n\
                  esac\n",
+                agents = common::listing_branch(
+                    &self.roster,
+                    &self.roster.with_file_name("roster-taken.json"),
+                    &self.tmux.with_file_name("tmux-stub.json"),
+                ),
                 roster = self.roster.display(),
                 calls = self.calls.display(),
                 cleared = fleet_controller::test_support::with_arrivals("[]"),
@@ -333,12 +337,19 @@ impl Rig {
     /// The listing the stub serves: the arm's rows, then the rows a start's
     /// watch believes a fresh tmux stub's panes by
     /// (`test_support::with_arrivals`), which stand in no seat's worktree.
+    ///
+    /// Its busy twin is written beside it — every row reading `busy` — which
+    /// the stub serves once a pane has taken a submit.
     fn roster(&self, body: &str) -> &Rig {
+        let listed = fleet_controller::test_support::with_arrivals(body);
+        std::fs::write(&self.roster, &listed).expect("the roster is written");
         std::fs::write(
-            &self.roster,
-            fleet_controller::test_support::with_arrivals(body),
+            self.roster.with_file_name("roster-taken.json"),
+            listed
+                .replace("\"status\":\"idle\"", "\"status\":\"busy\"")
+                .replace("\"status\": \"idle\"", "\"status\": \"busy\""),
         )
-        .expect("the roster is written");
+        .expect("the taken roster is written");
         self
     }
 
@@ -450,7 +461,11 @@ impl Rig {
         for (key, value) in readings {
             command.env(key, value);
         }
-        command.output().expect("the built binary runs")
+        let out = command.output().expect("the built binary runs");
+        // Whatever a verb typed, its turn is over before the next verb runs:
+        // the seat is back at its prompt.
+        common::turns_end(&self.tmux.with_file_name("tmux-stub.json"));
+        out
     }
 
     fn calls(&self) -> String {
@@ -600,7 +615,6 @@ fn the_three_verbs_run_end_to_end_through_the_shipped_binary() {
         &next.display().to_string(),
     ]);
     assert_eq!(fed.status.code(), Some(0), "{}", stderr(&fed));
-    assert!(rig.calls().contains("NUDGE"), "{}", rig.calls());
 
     // The retire: stopped, removed, both rows dropped, the reclaim printed.
     let retired = rig.run(&["seat", "retire", &seat]);
@@ -1694,6 +1708,13 @@ fn a_dispatch_that_starts_nothing_prints_no_belt_legs() {
     )
     .expect("the seat list is written");
     rig.live_in_the_checkout();
+    // Its session is a live pane on fleet's host, whose row the listing's
+    // arrivals carry: the ring is typed there and taken.
+    common::live_pane(
+        &rig.tmux.with_file_name("tmux-stub.json"),
+        NAMED_ID,
+        &rig.project,
+    );
     let named = rig.item("a ready item for a seat that is already up");
     let out = rig.run_at(
         &[
@@ -2281,7 +2302,6 @@ fn the_json_feed_prints_the_seat_and_the_turn_that_replaced_the_last() {
         parsed["data"]["prior_first_turn"], "the turn this seat comes up on",
         "the turn that was in the seat, which is what the marker held"
     );
-    assert!(rig.calls().contains("NUDGE"), "{}", rig.calls());
 }
 
 /// AC1, retire — `seat retire --json` answers what the controller's `Reclaimed`

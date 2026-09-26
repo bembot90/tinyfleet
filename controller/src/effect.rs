@@ -8,7 +8,7 @@
 //! is to dispatch nothing: it is published as its own outcome, and its line and
 //! its event are written once, at the transition into the hold.
 
-use crate::adapter::{Agent, RemoveAnswer, RosterRead, StartSpec};
+use crate::adapter::{Agent, AgentRow, RemoveAnswer, RosterRead, StartSpec};
 use crate::events::{self, ActorRef, EventLog};
 use crate::host::{self, Host, HostRead, PaneState};
 use crate::policy::Policy;
@@ -161,7 +161,9 @@ fn open_row(table: &mut Table, target: &Target, dispatch_id: String, now_ms: u64
 /// It names the reading, the threshold it crossed and the command that answers
 /// it, because a suggestion whose recipient has to go and look up all three is
 /// one that costs more attention than it saves. It suggests and never enforces:
-/// there is deliberately no path from the threshold to an automatic rest.
+/// there is deliberately no path from the threshold to an automatic rest. It is
+/// the whole of what is typed into the seat's session ([`type_turn`]): no turn
+/// of anybody else's carries it.
 ///
 /// The seat is named by its session's name in both places. The command's
 /// argument resolves through the machine-name rule, which matches on the id
@@ -170,21 +172,6 @@ pub fn nudge_text(session_name: &str, tokens: u64, threshold: u64, seat: &str) -
     format!(
         "{session_name}: context at {tokens} tokens, over the rest threshold {threshold} — \
          rest when your work allows: fleet event rest {seat} --reason <why>"
-    )
-}
-
-/// The turn that carries it: one message, to one session, verbatim.
-///
-/// The nudge runs as a print-mode turn in the seat's own worktree, so the
-/// session it addresses is one the agent can already see; the instruction is to
-/// send EXACTLY ONE message and nothing else, because a turn that takes
-/// initiative here is a second voice in a seat's session that nobody asked for.
-pub fn nudge_prompt(session_name: &str, text: &str) -> String {
-    format!(
-        "Send exactly one message to the session named `{session_name}` through the \
-         cross-session send tool, with this text verbatim and nothing added:\n\n{text}\n\n\
-         Send that one message and then stop. Do not act on the message yourself, do not \
-         open any file, and do not reply here with anything but whether the send returned."
     )
 }
 
@@ -771,8 +758,13 @@ pub fn blind_dispatch(seat: &SeatId, blind: u32, verdict: &str, events_log: &mut
 }
 
 /// One nudge, its event, and the session id that must never be nudged again.
+///
+/// The sentence is TYPED into the seat's own session ([`type_turn`]) under the
+/// policy's bound. `sent` is written only where the listing witnessed the turn
+/// taken; every other outcome says what it was instead.
 pub fn nudge(
     agent: &dyn Agent,
+    host: &dyn Host,
     policy: &Policy,
     target: &Target,
     events_log: &mut EventLog,
@@ -787,22 +779,20 @@ pub fn nudge(
         policy.rest_threshold_tokens,
         &target.session_name,
     );
-    let sent = agent.nudge(
-        target.config_dir(),
-        &target.session_name,
-        target.worktree,
-        &policy.nudge_model,
-        &nudge_prompt(&target.session_name, &text),
+    let typed = type_turn(
+        agent,
+        host,
+        &TurnTarget {
+            seat: &target.seat,
+            config_dir: target.config_dir(),
+        },
+        &text,
         Duration::from_secs(policy.nudge_timeout_seconds),
     );
-    let outcome = match &sent {
-        Ok(()) => "sent".to_string(),
-        Err(cause) => format!("failed: {cause}"),
-    };
-    // The session is marked WHETHER OR NOT the turn landed. The budget is one
+    // The session is marked WHATEVER BECAME OF THE TURN. The budget is one
     // nudge per session and a retry loop against a session that cannot be
     // reached is the noise that budget exists to prevent; the event carries the
-    // failure for the person who reads the stream.
+    // outcome for the person who reads the stream.
     let seat = target.seat.to_string();
     table.mark_nudged(&seat, session_id);
     append(
@@ -813,12 +803,174 @@ pub fn nudge(
             "session": session_id,
             "context_tokens": tokens,
             "threshold": policy.rest_threshold_tokens,
-            "outcome": outcome,
+            "outcome": typed.recorded(),
         }),
     );
-    match sent {
-        Ok(()) => Outcome::Nudged,
-        Err(_) => Outcome::Failed,
+    match typed {
+        Typed::Delivered | Typed::Queued => Outcome::Nudged,
+        Typed::Blocked(_) | Typed::Absent | Typed::Failed(_) => Outcome::Failed,
+    }
+}
+
+// ---- typing a turn ----------------------------------------------------------
+
+/// The seat a turn is typed for: its session on the host is named by its id
+/// ([`host::session_for`]), and its row is listed under `config_dir`, the
+/// directory its session was started under (`None` for the adapter's own).
+pub struct TurnTarget<'a> {
+    pub seat: &'a SeatId,
+    pub config_dir: Option<&'a Path>,
+}
+
+/// What typing one turn into a seat's session came to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Typed {
+    /// The row was idle, the turn was typed, and the row turned busy on the
+    /// same pid inside the bound: the session took it.
+    Delivered,
+    /// The row was already busy, so the turn was typed and WAITS behind the one
+    /// in hand. Never called delivered (reviewer call 2026-09-25, E5): a busy
+    /// row after the send cannot tell the queued turn from the one ahead of it.
+    /// On Claude Code 2.1.280 a turn typed into a busy session ran as its own
+    /// turn once the first had ended (measured 2026-09-26).
+    Queued,
+    /// The row stood in front of a human, carrying what on, and NOTHING WAS
+    /// TYPED: keys sent at a dialog answer it (lessons claude-code B8, B10). On
+    /// 2.1.280 a paste and a submit at a permission prompt lost the text and
+    /// approved the tool call (measured 2026-09-26).
+    Blocked(String),
+    /// No live pane under the seat's session, or no listed row carrying the
+    /// pane's pid: there is no session to type into, and nothing was.
+    Absent,
+    /// Why the turn was not taken: a reading that could not be made, a host
+    /// that refused the text, or a row that never turned busy.
+    Failed(String),
+}
+
+impl Typed {
+    /// What a `session.nudged` line records for this outcome: `sent` for a
+    /// witnessed turn and for nothing else.
+    pub fn recorded(&self) -> String {
+        match self {
+            Typed::Delivered => "sent".to_string(),
+            Typed::Queued => "queued: the seat was mid-turn".to_string(),
+            Typed::Blocked(cause) => format!("refused: blocked on {cause}"),
+            Typed::Absent => "failed: the seat has no live session to type into — no live pane, \
+                              or no listed row carrying its pid"
+                .to_string(),
+            Typed::Failed(cause) => format!("failed: {cause}"),
+        }
+    }
+}
+
+/// How often a typed turn's listing is read for the row turning busy. On Claude
+/// Code 2.1.280 the row read busy on the first read after the submit, 0.14 s
+/// on, and a one-word turn held busy for half a second and more (measured
+/// 2026-09-26), so a quarter second meets even the shortest turn.
+pub const TURN_TICK: Duration = WATCH_TICK;
+
+/// The seat's live pane and the listed row carrying its pid, read FRESH: the
+/// host's listing, then the agent's under the seat's own directory.
+///
+/// The row is found BY THE PANE'S PID and by nothing else — the pane's process
+/// IS the agent (E2), and a row in the same worktree proves nothing (B5). No
+/// pane, a dead one, or no row carrying its pid is [`Typed::Absent`]; a listing
+/// that could not be read is [`Typed::Failed`] naming it, never an absence.
+pub fn seat_row(
+    agent: &dyn Agent,
+    host: &dyn Host,
+    target: &TurnTarget,
+) -> Result<AgentRow, Typed> {
+    let session = host::session_for(target.seat);
+    let panes = match host.list() {
+        HostRead::Readable(panes) => panes,
+        HostRead::Unreadable { cause } => {
+            return Err(Typed::Failed(format!(
+                "the host's listing could not be read: {cause}"
+            )))
+        }
+    };
+    let Some(pid) = panes
+        .iter()
+        .find(|pane| pane.session == session && pane.state == PaneState::Alive)
+        .and_then(|pane| pane.pid)
+    else {
+        return Err(Typed::Absent);
+    };
+    match agent.status(target.config_dir) {
+        RosterRead::Readable(rows) => rows
+            .into_iter()
+            .find(|row| row.pid == Some(pid))
+            .ok_or(Typed::Absent),
+        RosterRead::Unreadable { cause } => Err(Typed::Failed(format!(
+            "the agent's listing could not be read: {cause}"
+        ))),
+    }
+}
+
+/// Type one turn into a seat's own session and say whether it was taken — the
+/// one path the controller's rest suggestion, `fleet seat nudge`, a routine's
+/// ring and `fleet seat feed` all take.
+///
+/// In order: the pane and its row are read fresh ([`seat_row`]); a row stopped
+/// in front of a human is refused BEFORE ANY BYTE; the text goes to the host as
+/// one paste and a separate submit ([`Host::send`]); and a row that was idle is
+/// then read every [`TURN_TICK`] for `busy` on the same pid until `bound`
+/// closes. The host's `Ok` is a dispatch and never a witness: only the listing
+/// says the turn was taken (lessons claude-code D8). A row that was busy
+/// already is [`Typed::Queued`] at once.
+pub fn type_turn(
+    agent: &dyn Agent,
+    host: &dyn Host,
+    target: &TurnTarget,
+    text: &str,
+    bound: Duration,
+) -> Typed {
+    let row = match seat_row(agent, host, target) {
+        Ok(row) => row,
+        Err(typed) => return typed,
+    };
+    if let Some(cause) = row.blocked_on() {
+        return Typed::Blocked(cause);
+    }
+    if let Err(cause) = host.send(&host::session_for(target.seat), text) {
+        return Typed::Failed(format!("the host did not take the text: {cause}"));
+    }
+    if row.is_busy() {
+        return Typed::Queued;
+    }
+    let deadline = Instant::now() + bound;
+    let mut last = status_word(Some(&row));
+    loop {
+        // An unreadable listing concludes nothing: the turn may have been
+        // taken and the read not, and the bound is what ends the wait.
+        if let RosterRead::Readable(rows) = agent.status(target.config_dir) {
+            let listed = rows.iter().find(|listed| listed.pid == row.pid);
+            if listed.is_some_and(AgentRow::is_busy) {
+                return Typed::Delivered;
+            }
+            last = status_word(listed);
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Typed::Failed(format!(
+                "typed and not taken: still {last} after {}s",
+                bound.as_secs()
+            ));
+        }
+        std::thread::sleep(TURN_TICK.min(deadline - now));
+    }
+}
+
+/// The word a turn that was not taken names its row by: the row's status, or
+/// why there is none to name.
+fn status_word(row: Option<&AgentRow>) -> String {
+    match row {
+        Some(row) => row
+            .status
+            .clone()
+            .unwrap_or_else(|| "no status".to_string()),
+        None => "unlisted".to_string(),
     }
 }
 
