@@ -106,7 +106,7 @@ Builds in the fleet-packs repository; the beads stay here.
 
 | Landed | Bead | What | Blocked by |
 | --- | --- | --- | --- |
-| ☐ | fleet-x93d.1 | `fleet create` asks which agent, installs its pack from the pinned fleet-packs tag, writes `[agent] adapter` | flight 13, fleet-3krx.1, fleet-14p8.6 |
+| ☑ | fleet-x93d.1 | `fleet create` asks which agent, installs its pack from the pinned fleet-packs tag, writes `[agent] adapter` | flight 13, fleet-3krx.1, fleet-14p8.6 |
 | ☐ | fleet-x93d.2 | Delete the in-process adapter, its pin, doctor checks, per-provider overlay, `FLEET_CLAUDE_BIN` and the root plugin | fleet-x93d.1 |
 | ☐ | fleet-x93d.3 | Docs pass, and a workspace arm keeps Claude Code out of core, cli, controller and docs except as the pack | fleet-x93d.1, .2 |
 
