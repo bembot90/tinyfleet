@@ -48,7 +48,9 @@ use fleet_controller::adapter::claude_code::encode_project_dir;
 use fleet_controller::adapter::{Activity, Agent, SeatRef};
 use fleet_controller::platform::child_path;
 use fleet_controller::run;
-use fleet_controller::test_support::{FakeClock, FakeServer, FakeSession, FIRST_PANE_PID};
+use fleet_controller::test_support::{
+    agent_stub, FakeClock, FakeServer, FakeSession, StubAgent, FIRST_PANE_PID,
+};
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
@@ -404,8 +406,30 @@ impl Drop for EnvHeld {
     }
 }
 
+/// Which agent a rig's fleet runs on.
+///
+/// THE AGENT STUB BY DEFAULT: `fleet-agent-stub`, named by `[agent] adapter` in
+/// the rig's own `fleet.toml` and spoken to through the Exec like any adapter
+/// executable, its answers scripted into its state beside that file. So an arm
+/// about the LOOP — what a poll reads, decides, starts, types and publishes —
+/// runs with no agent binary and no shell stub standing in for one.
+///
+/// THE IN-PROCESS CLAUDE CODE ADAPTER for the arms whose subject is that
+/// adapter itself: its `claude agents` and `claude --version` calls, their
+/// bound and the descendants that outlive them, the binary it resolves, its
+/// transcripts under a configuration directory and its argv. It reads the
+/// shell `claude` this rig writes, through `FLEET_CLAUDE_BIN`, and goes with
+/// the adapter when the adapter leaves the binary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RigAgent {
+    Stub,
+    ClaudeCode,
+}
+
 struct Rig {
     root: PathBuf,
+    /// Which agent the fleet runs on.
+    agent: RigAgent,
     /// The last component of the seat's worktree. One arm gives it a dot,
     /// because a path the encoding has to touch beyond its separators is the
     /// case a separator-only reader publishes a null context for.
@@ -553,18 +577,33 @@ impl HostStart {
 }
 
 impl Rig {
-    /// A whole machine in a temp directory: the fleet directory, a home the
-    /// transcripts sit under, a policy file, and a stub agent on the path the
-    /// adapter is told to use.
+    /// A whole machine in a temp directory: the fleet directory, a home, a
+    /// policy file naming the agent stub, and the stub's state beside it.
     fn new(name: &str) -> Rig {
         Rig::with_leaf(name, "builder-1")
     }
 
     fn with_leaf(name: &str, leaf: &str) -> Rig {
+        Rig::on(RigAgent::Stub, name, leaf)
+    }
+
+    /// The same machine on the in-process Claude Code adapter, over a shell
+    /// `claude` on the path the adapter is told to use, for an arm whose
+    /// subject is that adapter ([`RigAgent::ClaudeCode`]).
+    fn claude_code(name: &str) -> Rig {
+        Rig::claude_code_with_leaf(name, "builder-1")
+    }
+
+    fn claude_code_with_leaf(name: &str, leaf: &str) -> Rig {
+        Rig::on(RigAgent::ClaudeCode, name, leaf)
+    }
+
+    fn on(agent: RigAgent, name: &str, leaf: &str) -> Rig {
         let root = std::env::temp_dir().join(format!("fleet-drive-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let rig = Rig {
             root,
+            agent,
             leaf: leaf.to_string(),
             scoped_config_dir: None,
             agent_timeout_ms: None,
@@ -596,10 +635,45 @@ impl Rig {
         fleet_controller::test_support::plant_operator_state(&rig.home());
         rig.write_policy(POLICY_1S);
         rig.write_config(&rig.one_seat_config(rig.policy_path()));
+        if rig.agent == RigAgent::ClaudeCode {
+            rig.write_stub_agent();
+        }
         rig.write_roster("[]");
-        rig.write_stub_agent();
         rig.set_version("9.9.9");
         rig
+    }
+
+    /// The shell `claude` a verb or a poll is pointed at through
+    /// `FLEET_CLAUDE_BIN` on the in-process adapter, and none on the stub,
+    /// whose fleet names its adapter in its own file.
+    fn claude_bin(&self) -> Option<PathBuf> {
+        (self.agent == RigAgent::ClaudeCode).then(|| self.stub_path())
+    }
+
+    /// A fixture only the in-process adapter reads, refused on the stub: an
+    /// arm reaching it runs on the wrong rig, and the stub would ignore the
+    /// fixture and let the arm pass over nothing.
+    fn claude_code_only(&self, what: &str) {
+        assert_eq!(
+            self.agent,
+            RigAgent::ClaudeCode,
+            "{what} is the in-process Claude Code adapter's: this arm runs on Rig::claude_code"
+        );
+    }
+
+    /// The argv a start ran, after its program — and, on the stub, after the
+    /// `session` and the seat the stub's own launch puts ahead of its flags,
+    /// so an arm reads the flags in the same place on either agent.
+    fn flags_of(&self, argv: &[String]) -> Vec<String> {
+        let mut flags = argv.iter().skip(1).peekable();
+        let session = flags.peek().map(|a| a.as_str()) == Some(agent_stub::SESSION);
+        if self.agent == RigAgent::Stub && session {
+            flags.next();
+            if flags.peek().is_some_and(|a| !a.starts_with("--")) {
+                flags.next();
+            }
+        }
+        flags.cloned().collect()
     }
 
     /// The seat list as every arm but the re-point one uses it.
@@ -734,7 +808,18 @@ impl Rig {
     ///
     /// A discarded attempt says so on stderr, which libtest prints only when
     /// the arm fails, so a green run says nothing about what it discarded.
+    ///
+    /// ON THE AGENT STUB NOTHING IS WITNESSED: the call is taken once, as it
+    /// came. The stub marks no start, and none of its arms runs on a seam the
+    /// box's spawn cost can reach — every one of them is on the agent's own
+    /// bound.
     fn witnessed<T>(&self, call: impl Fn() -> T) -> T {
+        if self.agent == RigAgent::Stub {
+            let started = Instant::now();
+            let out = call();
+            self.last_call.set(started.elapsed());
+            return out;
+        }
         // What a discarded attempt would otherwise leave behind. `observe`
         // publishes a projection and APPENDS events, so an attempt that took no
         // reading would still double an event count and overwrite a seeded
@@ -1099,8 +1184,7 @@ impl Rig {
             .iter()
             .filter_map(|args| {
                 if let Some(start) = HostStart::of(args) {
-                    let argv = start.argv.iter().skip(1).cloned();
-                    return Some(format!("start {}", argv.collect::<Vec<_>>().join(" ")));
+                    return Some(format!("start {}", self.flags_of(&start.argv).join(" ")));
                 }
                 if args.iter().any(|arg| arg == "kill-session") {
                     return Some("kill".to_string());
@@ -1199,6 +1283,7 @@ impl Rig {
     /// which `platform::child_path` carries and which this rig owns because it
     /// sets `HOME`.
     fn plant_stub_on_the_constructed_path(&self) -> PathBuf {
+        self.claude_code_only("the shell `claude` on the constructed path");
         let dir = self.home().join(".local").join("bin");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(fleet_controller::adapter::claude_code::DEFAULT_BIN);
@@ -1216,7 +1301,8 @@ impl Rig {
     /// The seat's live pane on the tmux stub, as a start leaves one, and a
     /// listing carrying `session`'s row in the seat's worktree under the
     /// pane's pid — idle, and busy once the pane has taken a submit: a session
-    /// that takes a typed turn.
+    /// that takes a typed turn. The agent stub reads it so by following the
+    /// tmux stub's panes (`agent_stub::follow_host`).
     fn write_roster_taking(&self, session: &str) {
         let pid = common::live_pane(&self.tmux_state_path(), SEAT_ID, &self.worktree());
         let row = |status: &str| {
@@ -1226,10 +1312,15 @@ impl Rig {
                 self.worktree().display()
             )
         };
-        write(
-            &self.roster_taken_path(),
-            &fleet_controller::test_support::with_arrivals(&row("busy")),
-        );
+        match self.agent {
+            RigAgent::Stub => {
+                agent_stub::follow_host(&self.root, Some(&self.tmux_state_path()));
+            }
+            RigAgent::ClaudeCode => write(
+                &self.roster_taken_path(),
+                &fleet_controller::test_support::with_arrivals(&row("busy")),
+            ),
+        }
         self.write_roster(&row("idle"));
     }
 
@@ -1238,9 +1329,9 @@ impl Rig {
         common::pasted_into(&self.tmux_state_path(), SEAT_ID)
     }
 
-    /// The argv the last start's pane runs, after its program.
+    /// The argv the last start's pane runs, after its program ([`Rig::flags_of`]).
     fn start_argv(&self) -> Vec<String> {
-        self.last_start().argv.into_iter().skip(1).collect()
+        self.flags_of(&self.last_start().argv)
     }
 
     /// The directory the start was issued in, CANONICAL — the temp directory is
@@ -1284,6 +1375,7 @@ impl Rig {
     /// `PATH` is the default's, and a reading taken with a box's own `PATH` in
     /// place would be whatever agent that box has installed.
     fn write_default_named_stub(&self) -> PathBuf {
+        self.claude_code_only("the shell `claude` under the default name");
         let dir = self.root.join("default-bin");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(fleet_controller::adapter::claude_code::DEFAULT_BIN);
@@ -1462,12 +1554,24 @@ impl Rig {
     /// measured raising a neighbouring arm's failure rate about threefold under
     /// two concurrent runs of this binary — a stub that then missed its start
     /// twice instead of once — so the first write is left exactly as it was.
+    ///
+    /// ON THE AGENT STUB the body is followed by the `[agent]` table naming it,
+    /// so every policy an arm writes runs the fleet on the stub — a body that
+    /// does not parse still does not.
     fn write_policy(&self, body: &str) {
         let path = self.policy_path();
         let before = std::fs::metadata(&path)
             .ok()
             .and_then(|m| m.modified().ok());
-        write(&path, body);
+        let body = match self.agent {
+            RigAgent::ClaudeCode => body.to_string(),
+            RigAgent::Stub => format!(
+                "{body}\n[agent]\nadapter = {}\n",
+                serde_json::to_string(&common::agent_stub_path().display().to_string())
+                    .expect("a path is JSON text")
+            ),
+        };
+        write(&path, &body);
         let Some(was) = before else {
             return;
         };
@@ -1504,11 +1608,15 @@ impl Rig {
     /// seat's worktree is the seat's session only where the host holds a live
     /// pane for the seat with that pid, so the pane is put there — see
     /// [`Rig::host_the_listed_seat`].
+    ///
+    /// On the agent stub the listing is its state's; on the in-process adapter
+    /// it is the file the shell `claude` serves.
     fn write_roster(&self, body: &str) {
-        write(
-            &self.roster_path(),
-            &fleet_controller::test_support::with_arrivals(body),
-        );
+        let listing = fleet_controller::test_support::with_arrivals(body);
+        match self.agent {
+            RigAgent::Stub => agent_stub::script(&self.root, |a| a.listing = Ok(listing)),
+            RigAgent::ClaudeCode => write(&self.roster_path(), &listing),
+        }
         self.host_the_listed_seat(body);
     }
 
@@ -1642,6 +1750,7 @@ impl Rig {
     /// Spelled out here rather than called from the crate, so a change to the
     /// implementation's rule is caught instead of followed.
     fn write_transcript_under(&self, config_dir: &Path, session: &str, body: &str) {
+        self.claude_code_only("a transcript under a configuration directory");
         let encoded: String = self
             .worktree()
             .display()
@@ -1658,8 +1767,18 @@ impl Rig {
         );
     }
 
+    /// On the agent stub, the log every session reads as, last written now:
+    /// the stub keeps one for all of them, which is every arm's one session.
     fn write_transcript(&self, session: &str, body: &str) {
-        self.write_transcript_under(&self.home().join(".claude"), session, body);
+        match self.agent {
+            RigAgent::Stub => agent_stub::script(&self.root, |a| {
+                a.session_log = Some(body.to_string());
+                a.last_write = Some(now_ms());
+            }),
+            RigAgent::ClaudeCode => {
+                self.write_transcript_under(&self.home().join(".claude"), session, body)
+            }
+        }
     }
 
     /// The same transcript, with its last write placed in the past.
@@ -1669,6 +1788,10 @@ impl Rig {
     /// row's start stamp — the two answer different questions and that is the
     /// whole subject of the window.
     fn age_transcript(&self, session: &str, ms_ago: u64) {
+        if self.agent == RigAgent::Stub {
+            agent_stub::script(&self.root, |a| a.last_write = Some(now_ms() - ms_ago));
+            return;
+        }
         let path = self
             .home()
             .join(".claude")
@@ -1855,11 +1978,24 @@ impl Rig {
             .unwrap();
     }
 
-    /// What `claude --version` reports from now on. `FAIL` makes the read fail
+    /// What the agent's version reports from now on. `FAIL` makes the read fail
     /// the way a broken or missing binary does, and `SILENT` answers with
-    /// success and nothing to read, which is the other way to have no version.
+    /// success and nothing to read, which is the other way to have no version —
+    /// on the agent stub, a version call answered could not tell and a null
+    /// version.
     fn set_version(&self, version: &str) {
-        write(&self.version_path(), version);
+        if self.agent == RigAgent::ClaudeCode {
+            write(&self.version_path(), version);
+            return;
+        }
+        let failing = (version == "FAIL").then_some("the version call failed");
+        agent_stub::untold(&self.root, StubAgent::VERSION_CALL, failing);
+        agent_stub::script(&self.root, |a| {
+            a.version = match version {
+                "FAIL" | "SILENT" => None,
+                version => Some(version.to_string()),
+            }
+        });
     }
 
     /// How long the `--version` branch sleeps from now on, in seconds.
@@ -1870,6 +2006,7 @@ impl Rig {
     /// from the environment at the child's spawn, which fixes it for the life of
     /// a controller and cannot drive a poll that differs from the one before it.
     fn set_version_hang(&self, seconds: u64) {
+        self.claude_code_only("a hang on the version call alone");
         write(&self.version_hang_path(), &seconds.to_string());
     }
 
@@ -1892,6 +2029,7 @@ impl Rig {
     /// unwitnessed stub would retry three times and panic, which reads as this
     /// bead's class when it is really a malformed body.
     fn stub_adapter(&self, name: &str, body: &str, timeout: Duration) -> ClaudeCode {
+        self.claude_code_only("a one-purpose `claude` and the adapter over it");
         let path = self.root.join(name);
         let (shebang, rest) = body
             .split_once('\n')
@@ -1957,6 +2095,22 @@ impl Rig {
     /// a rig makes goes through here, whichever side of the process boundary it
     /// runs on.
     fn arm_seams(&self) {
+        if self.agent == RigAgent::Stub {
+            let seamed = [
+                self.hang_seconds,
+                self.version_hang_seconds,
+                self.descendant_seconds,
+                self.version_descendant_seconds,
+                self.escapee_seconds,
+            ]
+            .iter()
+            .any(Option::is_some)
+                || self.one_shot_preamble_ms.get().is_some();
+            if seamed {
+                self.claude_code_only("a per-call seam");
+            }
+            return;
+        }
         self.set_seam(HANG, self.hang_seconds);
         self.set_seam(VERSION_HANG, self.version_hang_seconds);
         self.set_seam(DESCENDANT, self.descendant_seconds);
@@ -1979,7 +2133,7 @@ impl Rig {
         self.arm_seams();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_fleet"));
         use common::hermetic::Hermetic as _;
-        cmd.hermetic(&self.home(), &self.machine(), Some(&self.stub_path()))
+        cmd.hermetic(&self.home(), &self.machine(), self.claude_bin().as_deref())
             .env(common::hermetic::TMUX_BIN, self.tmux_link())
             // The routines' clock seam is always pointed at this rig's own file.
             // An arm that never writes it leaves the routines on the machine's
@@ -2075,7 +2229,7 @@ impl Rig {
 
         let mut env = EnvHeld::new();
         for (key, value) in
-            common::hermetic::vars(&self.home(), &self.machine(), Some(&self.stub_path()))
+            common::hermetic::vars(&self.home(), &self.machine(), self.claude_bin().as_deref())
         {
             env.set(key, value);
         }
@@ -2181,7 +2335,7 @@ impl Rig {
 
         let mut env = EnvHeld::new();
         for (key, value) in
-            common::hermetic::vars(&self.home(), &self.machine(), Some(&self.stub_path()))
+            common::hermetic::vars(&self.home(), &self.machine(), self.claude_bin().as_deref())
         {
             env.set(key, value);
         }

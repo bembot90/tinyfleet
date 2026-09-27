@@ -1,10 +1,10 @@
 //! The file-access gate AS THE LOOP READS IT (lessons claude-code D4).
 //!
 //! A test binary of its own, because these arms drive `run::observe_with` and
-//! that reads the PROCESS's environment for the machine directory and the agent
-//! binary: an arm setting those beside arms that do not would be setting them
-//! for every thread in the binary. Inside this one they are serialized on the
-//! lock below, which each rig holds for its whole life.
+//! that reads the PROCESS's environment for the machine directory and the
+//! host's binary: an arm setting those beside arms that do not would be setting
+//! them for every thread in the binary. Inside this one they are serialized on
+//! the lock below, which each rig holds for its whole life.
 //!
 //! What it measures is the thing a pure reading of `projection::effects_of`
 //! cannot: that the loop's per-seat effects AND its routines pass are both behind
@@ -13,7 +13,7 @@
 
 use fleet_controller::platform::{self, Grant, Listing};
 use fleet_controller::run::{self, Options};
-use fleet_controller::test_support::FakeServer;
+use fleet_controller::test_support::{agent_stub, FakeServer};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -33,28 +33,22 @@ fn write(path: &Path, body: &str) {
     std::fs::write(path, body).expect("the fixture file is written");
 }
 
-fn executable(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-        .expect("the stub is executable");
-}
-
 fn projection(machine: &Path) -> serde_json::Value {
     let body = std::fs::read_to_string(machine.join("projection.json"))
         .expect("a projection is published");
     serde_json::from_str(&body).expect("the projection parses")
 }
 
-/// The rig: a machine directory naming one seat in a worktree that exists, an
-/// agent stub that records every call it is given, and `fleet-tmux-stub` as
-/// the host every session is started on and every turn typed into.
+/// The rig: a machine directory naming one seat in a worktree that exists,
+/// `fleet-agent-stub` as the agent `[agent] adapter` names, and
+/// `fleet-tmux-stub` as the host every session is started on and every turn
+/// typed into.
 struct Rig {
     root: PathBuf,
     machine: PathBuf,
     worktree: PathBuf,
     /// The second seat's worktree, where the roster's one live row stands.
     live: PathBuf,
-    argv: PathBuf,
     /// The tmux stub's state, beside the link `FLEET_TMUX_BIN` names.
     host_state: PathBuf,
     _held: MutexGuard<'static, ()>,
@@ -73,7 +67,6 @@ impl Rig {
             machine: root.join("machine"),
             worktree: root.join("wt/a-seat"),
             live: root.join("wt/b-seat"),
-            argv: root.join("agent-argv"),
             host_state: root.join("tmux").join("tmux-stub.json"),
             root,
             _held: held,
@@ -83,7 +76,10 @@ impl Rig {
 
         write(
             &rig.root.join("fleet.toml"),
-            "[controller]\npoll_seconds = 1\n",
+            &format!(
+                "[controller]\npoll_seconds = 1\n\n[agent]\nadapter = \"{}\"\n",
+                agent_stub::path().display()
+            ),
         );
         // A routine that rings the seat and is due on every tick. The routines pass
         // is the SECOND place the loop issues an effect, and it reads its own
@@ -143,7 +139,6 @@ impl Rig {
             .save(&rig.host_state)
             .expect("the tmux stub's state is written");
         let b_pid = server.sessions[B_SEAT].pid;
-        let stub = rig.root.join("agent.sh");
         let roster = format!(
             "[{{\"sessionId\":\"b-session\",\"cwd\":\"{}\",\"kind\":\"interactive\",\
              \"pid\":{b_pid},\"status\":\"busy\",\"startedAt\":1000}}, \
@@ -152,16 +147,11 @@ impl Rig {
             rig.live.display(),
             b_pid + 1
         );
-        write(
-            &stub,
-            &format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {argv}\ncase \"$*\" in\n  \
-                 *--version*) echo 2.1.261 ;;\n  *) printf '%s' '{roster}' ;;\nesac\nexit 0\n",
-                argv = rig.argv.display(),
-            ),
-        );
-        executable(&stub);
-        common::hermetic::export(common::hermetic::vars(&rig.root, &rig.machine, Some(&stub)));
+        agent_stub::script(&rig.root, |a| {
+            a.listing = Ok(roster);
+            a.version = Some(String::from("2.1.261"));
+        });
+        common::hermetic::export(common::hermetic::vars(&rig.root, &rig.machine, None));
         common::hermetic::export(vec![(
             common::hermetic::TMUX_BIN,
             Some(tmux.into_os_string()),
@@ -362,7 +352,7 @@ fn a_pending_grant_holds_every_effect_and_an_answered_one_releases_them() {
     // THE ORDERS PASS IS THE SECOND EFFECT PATH and it is behind the same gate.
     // A due routine that rings the LIVE seat reaches no agent: it is answered
     // could-not-tell with the grant as the cause, exactly as it is answered
-    // when the agent binary cannot be resolved.
+    // when the agent cannot issue effects at all.
     assert!(
         rig.routine_events()
             .iter()

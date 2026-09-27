@@ -470,7 +470,7 @@ mod effects {
         assert!(!argv.iter().any(|word| word == "--bg"), "{argv:?}");
         assert_eq!(flag_value(&argv, "--name"), SEAT);
         assert_eq!(flag_value(&argv, "--model"), "claude-opus-5");
-        assert_eq!(flag_value(&argv, "--permission-mode"), "auto");
+        assert_eq!(flag_value(&argv, "--posture"), "auto");
         assert_eq!(argv.last(), Some(&format!("/wake {SEAT}")));
         assert_eq!(
             rig.start_cwd(),
@@ -606,7 +606,7 @@ mod effects {
     /// the process's cwd and one resolved against the file's differ here.
     #[test]
     fn a_start_carries_the_plugin_root_and_the_projection_reports_it() {
-        let rig = Rig::new("effect-plugin-root");
+        let rig = Rig::claude_code("effect-plugin-root");
         rig.write_policy(&policy_with("plugin_dir = \"the-overlay\""));
         rig.write_roster("[]");
 
@@ -640,7 +640,7 @@ mod effects {
 
         // The control: a fleet whose policy names none starts with no such
         // element and publishes null, so the readings above are the key's.
-        let bare = Rig::new("effect-plugin-root-control");
+        let bare = Rig::claude_code("effect-plugin-root-control");
         bare.write_roster("[]");
         let out = bare.observe();
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -712,7 +712,7 @@ mod effects {
     /// arm above proves the start was issued for.
     #[test]
     fn a_named_seats_start_leaves_the_persons_own_settings_alone() {
-        let rig = Rig::new("effect-named-settings");
+        let rig = Rig::claude_code("effect-named-settings");
         rig.write_roster("[]");
 
         let out = rig.observe();
@@ -976,6 +976,51 @@ mod effects {
         assert_eq!(rig.sessions()["sessions"].as_array().map(Vec::len), Some(1));
     }
 
+    /// A launch the AGENT REFUSES is a start that must not be attempted: one
+    /// `session.crashed` whose cause carries the agent's own message and
+    /// reason, nothing started on the host, and no row — read through the Exec,
+    /// from the agent stub's exit 1.
+    #[test]
+    fn a_launch_the_agent_refuses_is_one_crash_naming_the_agents_message() {
+        use fleet_controller::adapter::{Refusal, RefusalReason};
+        use fleet_controller::test_support::Declined;
+
+        let rig = Rig::new("effect-launch-refused");
+        rig.write_roster("[]");
+        agent_stub::script(&rig.root, |a| {
+            a.launch = Err(Declined::Refused(Refusal {
+                reason: RefusalReason::Unsupported,
+                message: String::from("the stub takes no such posture"),
+            }))
+        });
+
+        let out = rig.observe();
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert_eq!(seat_row(&rig)["outcome"], "failed");
+        assert_eq!(rig.events_of("session.crashed"), 1, "{:?}", rig.events());
+        assert_eq!(rig.events_of("session.spawned"), 0);
+        let crashed = rig
+            .events()
+            .into_iter()
+            .find(|e| e["type"] == "session.crashed")
+            .expect("the refusal is an event");
+        let cause = crashed["payload"]["cause"].as_str().unwrap_or_default();
+        assert!(
+            cause.contains("the stub takes no such posture") && cause.contains("unsupported"),
+            "the cause names the agent's refusal: {crashed}"
+        );
+        assert!(
+            rig.host_starts().is_empty(),
+            "nothing is started for a launch the agent refused: {:?}",
+            rig.host_starts()
+        );
+        assert_eq!(
+            agent_stub::calls_of(&rig.root, StubAgent::LAUNCH).len(),
+            1,
+            "the refusal was the agent's, asked once"
+        );
+    }
+
     /// AC3(f) — a row whose model cannot honour the posture its start would ask
     /// for is dropped at config read, and nothing is started for it.
     #[test]
@@ -1036,16 +1081,33 @@ mod effects {
             "a gate that is open carries no cause: {published}"
         );
 
-        // With the agent binary unresolvable the loop still observes and
-        // publishes, and says why it is issuing nothing.
-        let out = rig.observe_with_env(&[(
-            common::hermetic::CLAUDE_BIN,
-            Some(rig.root.join("no-such-agent").as_os_str()),
-        )]);
+        // With an adapter that answers no agent is installed — its version
+        // null — the loop still observes and publishes, and says why it is
+        // issuing nothing.
+        rig.set_version("SILENT");
+        let out = rig.observe();
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         let published = rig.projection();
         assert_eq!(published["effects"]["state"], "off");
         let cause = published["effects"]["cause"].as_str().unwrap_or_default();
+        assert!(
+            cause.contains(&common::agent_stub_path().display().to_string())
+                && cause.contains("its version is null"),
+            "the gate names the adapter and why it is off: {cause}"
+        );
+
+        // The in-process adapter's own shape of the same gate: its agent
+        // binary unresolvable.
+        let in_process = Rig::claude_code("effect-projection-unresolved");
+        in_process.write_roster(&live_row(&in_process.worktree(), "ab12"));
+        let out = in_process.observe_with_env(&[(
+            common::hermetic::CLAUDE_BIN,
+            Some(in_process.root.join("no-such-agent").as_os_str()),
+        )]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let unresolved = in_process.projection();
+        assert_eq!(unresolved["effects"]["state"], "off");
+        let cause = unresolved["effects"]["cause"].as_str().unwrap_or_default();
         assert!(
             cause.contains("no-such-agent"),
             "the gate names what it could not resolve: {cause}"
@@ -1094,7 +1156,7 @@ mod effects {
             ["start", "--resume", "a-session"],
             "the FULL id the table recorded: {calls:?}"
         );
-        for flag in ["--model", "--permission-mode"] {
+        for flag in ["--model", "--posture"] {
             assert!(
                 resumed.contains(&flag),
                 "the start's {flag} rides: {calls:?}"
@@ -1596,7 +1658,7 @@ mod effects {
     /// the shadow instead.
     #[test]
     fn an_effect_execs_the_resolved_binary_and_not_the_first_claude_on_this_processs_path() {
-        let rig = Rig::new("effect-binary");
+        let rig = Rig::claude_code("effect-binary");
         rig.write_roster("[]");
 
         let constructed = rig.plant_stub_on_the_constructed_path();
@@ -1784,7 +1846,7 @@ mod isolation {
     /// the session.
     #[test]
     fn a_transient_rows_listing_is_read_under_its_own_configuration_directory() {
-        let rig = Rig::new("isolation-per-row-listing");
+        let rig = Rig::claude_code("isolation-per-row-listing");
         let config_dir = rig.machine().join("config").join(SEAT);
         std::fs::create_dir_all(&config_dir).expect("the per-row directory is made");
         rig.write_config(&one_transient_seat(&rig));
@@ -1838,7 +1900,7 @@ mod isolation {
     /// turn carrying 36,072 tokens of window.
     #[test]
     fn a_logged_out_first_turn_writes_one_dispatch_failed_naming_the_seat_and_the_item() {
-        let rig = Rig::new("isolation-logged-out");
+        let rig = Rig::claude_code("isolation-logged-out");
         let config_dir = rig.machine().join("config").join(SEAT);
         std::fs::create_dir_all(&config_dir).expect("the per-row directory is made");
         rig.write_config(&one_transient_seat(&rig));
@@ -1899,7 +1961,7 @@ mod isolation {
     /// the line for every transient row it sighted.
     #[test]
     fn a_first_turn_that_answered_writes_no_dispatch_failed() {
-        let rig = Rig::new("isolation-answered");
+        let rig = Rig::claude_code("isolation-answered");
         let config_dir = rig.machine().join("config").join(SEAT);
         std::fs::create_dir_all(&config_dir).expect("the per-row directory is made");
         rig.write_config(&one_transient_seat(&rig));

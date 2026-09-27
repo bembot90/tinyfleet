@@ -50,6 +50,16 @@ pub const HERMETIC: &str = "FLEET_TEST_HERMETIC";
 /// sets it itself, after the block.
 pub const FLEET_ACTOR: &str = "FLEET_ACTOR";
 
+/// The agent stub's two knobs (`fleet_controller::test_support::agent_stub`):
+/// a call that sleeps before it answers, and one that writes nothing back.
+/// Each is read off the environment of the call that carries it, and every
+/// agent call inherits the environment of the `fleet` that makes it, so one
+/// left set in the shell a suite runs from would slow or deafen every stub a
+/// rig drives. STRIPPED, never set: an arm whose subject is a knob sets it
+/// itself, after the block.
+pub const AGENT_STUB_SLOW: &str = "FLEET_AGENT_STUB_SLOW";
+pub const AGENT_STUB_DEAF: &str = "FLEET_AGENT_STUB_DEAF";
+
 /// The agent's config directory, read BEFORE the home beside it
 /// (`fleet_controller::adapter::claude_code::config_dir_from`), so a rig whose
 /// transcripts live under its own `home/.claude` is read out of the operator's
@@ -88,6 +98,8 @@ pub fn vars(
         (TMUX_BIN, Some(refusing_tmux().into_os_string())),
         (HERMETIC, Some(OsString::from("1"))),
         (FLEET_ACTOR, None),
+        (AGENT_STUB_SLOW, None),
+        (AGENT_STUB_DEAF, None),
     ]
 }
 

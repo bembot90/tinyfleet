@@ -100,7 +100,7 @@ mod unreadable_causes {
     /// decision instead, with no spawn in it at all.
     #[test]
     fn a_stub_that_ran_and_misbehaved_is_not_retried() {
-        let rig = Rig::new("ran-and-misbehaved");
+        let rig = Rig::claude_code("ran-and-misbehaved");
         let cause = cause_of(rig.read_with(&rig.stub_adapter(
             "misbehaving-stub",
             "#!/bin/sh\nexit 3\n",
@@ -128,7 +128,7 @@ mod unreadable_causes {
     /// stated where a stalled box cannot reach it.
     #[test]
     fn a_call_whose_stub_marked_its_start_is_never_retried() {
-        let rig = Rig::new("marked-its-start");
+        let rig = Rig::claude_code("marked-its-start");
         let seen = rig.witnessed(|| {
             write(&rig.stub_started_path(), "");
             "the first attempt's own answer"
@@ -159,7 +159,7 @@ mod unreadable_causes {
     /// all would pass this just as well.
     #[test]
     fn a_stub_that_misses_its_start_once_is_rescued_by_the_patience() {
-        let rig = Rig::new("misses-once");
+        let rig = Rig::claude_code("misses-once");
         let adapter = rig.stub_adapter(
             "balking-stub",
             "#!/bin/sh\nexit 0\n",
@@ -215,7 +215,7 @@ mod unreadable_causes {
     #[test]
     #[should_panic(expected = "the stub never started before the call returned")]
     fn a_call_whose_stub_never_starts_is_refused_when_the_patience_runs_out() {
-        let rig = Rig::new("never-starts");
+        let rig = Rig::claude_code("never-starts");
         rig.calm_budget.set(Duration::from_millis(300));
         rig.witnessed(|| ());
     }
@@ -232,7 +232,7 @@ mod unreadable_causes {
     /// would pass on the first attempt's answer just as well.
     #[test]
     fn a_call_that_misses_the_witness_it_owes_once_is_rescued_by_the_patience() {
-        let rig = Rig::new("owes-once");
+        let rig = Rig::claude_code("owes-once");
         let owed = rig.root.join("the-witness-this-arm-owes");
         rig.owes_witness(&owed);
         let reached = std::cell::Cell::new(false);
@@ -270,7 +270,7 @@ mod unreadable_causes {
     /// refusal's words, which is the mutant that proves the floor is read.
     #[test]
     fn a_call_whose_attempt_outspends_the_budget_is_still_given_the_floors_retries() {
-        let rig = Rig::new("attempt-floor");
+        let rig = Rig::claude_code("attempt-floor");
         rig.attempt_budget.set(Duration::ZERO);
         let reached = std::cell::Cell::new(false);
 
@@ -303,7 +303,7 @@ mod unreadable_causes {
     #[test]
     #[should_panic(expected = "the stub never reached the witness this arm owes")]
     fn a_call_that_never_reaches_the_witness_it_owes_is_refused_when_the_patience_runs_out() {
-        let rig = Rig::new("owes-forever");
+        let rig = Rig::claude_code("owes-forever");
         rig.calm_budget.set(Duration::from_millis(300));
         rig.owes_witness(&rig.root.join("a-witness-nothing-writes"));
         rig.witnessed(|| write(&rig.stub_started_path(), ""));
@@ -327,7 +327,7 @@ mod unreadable_causes {
     #[test]
     #[should_panic(expected = "no spawn cleared inside")]
     fn a_spawn_probe_that_cannot_run_is_never_clear_and_the_wait_refuses() {
-        let rig = Rig::new("no-probe");
+        let rig = Rig::claude_code("no-probe");
         rig.calm_budget.set(Duration::from_millis(300));
         *rig.spawn_probe.borrow_mut() = rig.root.join("no-such-shell");
         rig.witnessed(|| ());
@@ -392,7 +392,7 @@ mod unreadable_causes {
     #[test]
     #[should_panic(expected = "no spawn cleared inside")]
     fn a_probe_that_is_never_prompt_twice_running_never_reads_calm() {
-        let rig = Rig::new("alternating-probe");
+        let rig = Rig::claude_code("alternating-probe");
         rig.calm_budget.set(Duration::from_secs(2));
         *rig.spawn_probe.borrow_mut() = an_alternating_probe(&rig.root);
         let reached = std::cell::Cell::new(false);
@@ -428,7 +428,7 @@ mod unreadable_causes {
     #[test]
     #[should_panic(expected = "the stub never reached the witness this arm owes")]
     fn a_witness_refusal_keeps_its_words_when_the_patience_goes_into_the_wait() {
-        let rig = Rig::new("owes-forever-slow-probe");
+        let rig = Rig::claude_code("owes-forever-slow-probe");
         rig.calm_budget.set(Duration::from_millis(300));
         rig.owes_witness(&rig.root.join("a-witness-nothing-writes"));
         *rig.spawn_probe.borrow_mut() = a_probe_that_never_clears(&rig.root);
@@ -445,7 +445,7 @@ mod unreadable_causes {
     #[test]
     #[should_panic(expected = "the stub never started before the call returned")]
     fn a_start_refusal_keeps_its_words_when_the_patience_goes_into_the_wait() {
-        let rig = Rig::new("never-starts-slow-probe");
+        let rig = Rig::claude_code("never-starts-slow-probe");
         rig.calm_budget.set(Duration::from_millis(300));
         *rig.spawn_probe.borrow_mut() = a_probe_that_never_clears(&rig.root);
         rig.witnessed(|| ());
@@ -473,7 +473,7 @@ mod unreadable_causes {
 
     #[test]
     fn a_listing_that_exits_non_zero_is_unreadable_and_names_the_status() {
-        let rig = Rig::new("exit-non-zero");
+        let rig = Rig::claude_code("exit-non-zero");
         let cause = cause_of(rig.read_with(&rig.stub_adapter(
             "refusing-stub",
             "#!/bin/sh\necho 'the account is not signed in' >&2\nexit 3\n",
@@ -499,7 +499,7 @@ mod unreadable_causes {
     /// acts on, so it names the binary AND what the OS said about it.
     #[test]
     fn a_binary_that_cannot_be_spawned_is_unreadable_and_names_it_and_why() {
-        let rig = Rig::new("no-binary");
+        let rig = Rig::claude_code("no-binary");
         let absent = rig.root.join("no-such-agent").display().to_string();
         let missing = rig.adapter_at(absent.clone(), Duration::from_secs(5));
         let cause = cause_of(listing_read(&missing));
@@ -546,7 +546,7 @@ mod unreadable_causes {
     /// be 20 s of every run of this suite.
     #[test]
     fn a_listing_that_outruns_the_deadline_is_killed_and_read_as_unreadable() {
-        let rig = Rig::new("deadline");
+        let rig = Rig::claude_code("deadline");
         let cause = cause_of(rig.read_with(&rig.stub_adapter(
             "hanging-stub",
             "#!/bin/sh\nsleep 5\necho '[]'\n",
@@ -610,7 +610,7 @@ mod unreadable_causes {
             + fleet_controller::platform::DRAIN_GRACE.as_millis() as u64
             + START_COST_MARGIN_MS;
 
-        let rig = Rig::new("kill");
+        let rig = Rig::claude_code("kill");
         let marker = rig.root.join("the-stub-finished");
         // Single-quoted into the shell text: a TMPDIR carrying a space otherwise
         // splits the redirection and writes outside the rig.
@@ -672,7 +672,7 @@ mod unreadable_causes {
         const DESCENDANT_SECONDS: u64 = 5;
         const CHILD_SECONDS: u64 = 6;
 
-        let rig = Rig::new("group-kill");
+        let rig = Rig::claude_code("group-kill");
         let started = rig.root.join("the-descendant-started");
         let marker = rig.root.join("the-descendant-finished");
         // Both paths are single-quoted into the shell text: a TMPDIR carrying a
@@ -756,7 +756,7 @@ mod unreadable_causes {
         const SEAM_MS: u64 = 3000;
         const DESCENDANT_SECONDS: u64 = 5;
 
-        let rig = Rig::new("exit-path-group-kill");
+        let rig = Rig::claude_code("exit-path-group-kill");
         let started = rig.root.join("the-descendant-started");
         let marker = rig.root.join("the-descendant-finished");
         // Both paths are single-quoted into the shell text: a TMPDIR carrying a
@@ -835,7 +835,7 @@ mod unreadable_causes {
     /// than waited for: a kill that lands before it is discarded, not asserted over.
     #[test]
     fn an_outrun_version_calls_in_group_descendant_is_killed_with_the_group() {
-        let rig = Rig::new("group-kill-version");
+        let rig = Rig::claude_code("group-kill-version");
         let started = rig.root.join("the-descendant-started");
         let marker = rig.root.join("the-descendant-finished");
         let body = version_keeper_body(&started, &marker, None);
@@ -946,7 +946,7 @@ mod unreadable_causes {
     /// equality one number lower, for the same reason.
     #[test]
     fn a_version_call_killed_before_its_fork_once_is_rescued_by_the_patience() {
-        let rig = Rig::new("version-balks-once");
+        let rig = Rig::claude_code("version-balks-once");
         let started = rig.root.join("the-descendant-started");
         let balked = rig.root.join("the-version-stub-balked");
         let body = version_keeper_body(
@@ -1009,7 +1009,7 @@ mod unreadable_causes {
         // deadline, and the margin is this minus that.
         const ESCAPEE_LIFE_SECONDS: u64 = 30;
 
-        let rig = Rig::new("blast-radius");
+        let rig = Rig::claude_code("blast-radius");
 
         // The reader's control, taken before the subject: a pid this arm reaps
         // itself reads NOT alive, so the aliveness below is a state this reader
@@ -1127,7 +1127,7 @@ mod unreadable_causes {
         // about the code.
         const SLACK_MS: u64 = 15_000;
 
-        let rig = Rig::new("exit-path-grace");
+        let rig = Rig::claude_code("exit-path-grace");
         let answered = rig.root.join("the-child-answered");
         // Single-quoted for the reason the group-kill arms give.
         let body = format!(
@@ -1190,7 +1190,7 @@ mod unreadable_causes {
     /// `SETTLE_WINDOW` is the unit of.
     #[test]
     fn an_outrun_listing_is_reaped_and_not_left_a_zombie() {
-        let rig = Rig::new("zombie");
+        let rig = Rig::claude_code("zombie");
 
         // The probe's positive control, taken before the subject: a child this
         // arm spawns and deliberately does not wait on IS read as a zombie, so
@@ -1293,7 +1293,7 @@ mod unreadable_causes {
     /// the kill, and nothing is left parked on a pipe the deadline cannot close.
     #[test]
     fn an_outrun_listing_answers_while_a_descendant_still_holds_the_pipe() {
-        let rig = Rig::new("held-pipe");
+        let rig = Rig::claude_code("held-pipe");
         let cause = cause_of(rig.read_with(&rig.stub_adapter(
             "held-pipe-stub",
             "#!/bin/sh\n( sleep 5 ) &\nsleep 5\necho '[]'\n",
@@ -1320,7 +1320,7 @@ mod unreadable_causes {
     /// "exited " with nothing after it reads as a listing that answered.
     #[test]
     fn a_listing_that_dies_on_a_signal_is_unreadable_and_names_no_status() {
-        let rig = Rig::new("signalled");
+        let rig = Rig::claude_code("signalled");
         let cause = cause_of(rig.read_with(&rig.stub_adapter(
             "signalled-stub",
             "#!/bin/sh\nkill -TERM $$\n",
@@ -1386,7 +1386,7 @@ mod causes_end_to_end {
 
     #[test]
     fn a_listing_that_exits_non_zero_reaches_the_document_with_its_status() {
-        let rig = Rig::new("e2e-exit");
+        let rig = Rig::claude_code("e2e-exit");
         rig.write_roster(&live_row(&rig.worktree(), "a-session"));
         // The stub's listing branch is `cat "$FLEET_TEST_ROSTER"`, so a roster
         // that is not there is a listing that exits non-zero end to end.
@@ -1415,7 +1415,7 @@ mod causes_end_to_end {
 
     #[test]
     fn a_binary_that_cannot_be_spawned_reaches_the_document_and_says_so() {
-        let rig = Rig::new("e2e-spawn");
+        let rig = Rig::claude_code("e2e-spawn");
         rig.write_roster(&live_row(&rig.worktree(), "a-session"));
         std::fs::remove_file(rig.stub_path()).unwrap();
 
@@ -1458,7 +1458,7 @@ mod causes_end_to_end {
     /// would show as an empty program named to an operator.
     #[test]
     fn a_blank_binary_seam_reaches_the_document_naming_the_default_binary() {
-        let rig = Rig::new("e2e-blank-bin");
+        let rig = Rig::claude_code("e2e-blank-bin");
         rig.write_roster(&live_row(&rig.worktree(), "a-session"));
         let broken_path = rig.root.join("no-such-path");
 
@@ -1511,7 +1511,7 @@ mod causes_end_to_end {
     /// bare name the blank seam falls to.
     #[test]
     fn an_absent_binary_seam_reaches_the_document_naming_the_default_binary() {
-        let rig = Rig::new("e2e-absent-bin");
+        let rig = Rig::claude_code("e2e-absent-bin");
         rig.write_roster(&live_row(&rig.worktree(), "a-session"));
         let broken_path = rig.root.join("no-such-path");
 
@@ -1551,7 +1551,7 @@ mod causes_end_to_end {
     /// and the document carries what it answered.
     #[test]
     fn a_blank_binary_seam_resolves_the_default_on_path_and_reads_it() {
-        let rig = Rig::new("e2e-default-read");
+        let rig = Rig::claude_code("e2e-default-read");
         rig.write_roster(&live_row(&rig.worktree(), "a-session"));
         let bin_dir = rig.write_default_named_stub();
 
@@ -1594,7 +1594,7 @@ mod causes_end_to_end {
     /// which names no deadline at all.
     #[test]
     fn a_listing_that_outruns_the_deadline_reaches_the_document_naming_the_deadline() {
-        let mut rig = Rig::new("e2e-deadline");
+        let mut rig = Rig::claude_code("e2e-deadline");
         rig.write_roster(&live_row(&rig.worktree(), "a-session"));
         rig.agent_timeout_ms = Some(300);
         rig.hang_seconds = Some(3);

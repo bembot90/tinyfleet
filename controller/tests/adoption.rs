@@ -31,7 +31,9 @@ use fleet_controller::events;
 use fleet_controller::host::{session_for, Host};
 use fleet_controller::platform::{self, Grant};
 use fleet_controller::run::{self, Options, Seams, StopHandler};
-use fleet_controller::test_support::{Answers, FakeClock, FakeHost, StubAgent, FIRST_PANE_PID};
+use fleet_controller::test_support::{
+    Answers, Declined, FakeClock, FakeHost, StubAgent, FIRST_PANE_PID,
+};
 use fleet_core::seat::identity::SeatId;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -114,7 +116,9 @@ impl Rig {
             stub: StubAgent::answering(Answers {
                 session_log: Some(A_LIGHT_TRANSCRIPT.to_string()),
                 last_write: Some(now_ms()),
-                resume: Err("this rig's agent resumes nothing".to_string()),
+                resume: Err(Declined::Untold(
+                    "this rig's agent resumes nothing".to_string(),
+                )),
                 ..Answers::default()
             }),
             root,

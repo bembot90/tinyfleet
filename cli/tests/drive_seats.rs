@@ -221,7 +221,7 @@ fn a_seat_at_a_permission_dialog_publishes_prompt_blocked_and_no_reading() {
 /// last component carries a dot.
 #[test]
 fn a_scoped_config_directory_and_a_dotted_worktree_still_read_a_context() {
-    let mut rig = Rig::with_leaf("scoped", "builder-1.wt");
+    let mut rig = Rig::claude_code_with_leaf("scoped", "builder-1.wt");
     let scoped = rig.root.join("elsewhere").join("agent-state");
     rig.scoped_config_dir = Some(scoped.clone());
     rig.write_roster(&live_row(&rig.worktree(), "a-session"));
@@ -362,5 +362,37 @@ fn a_row_with_no_worktree_is_skipped_loudly_and_never_defaulted() {
         rig.projection()["seats"].as_array().map(Vec::len),
         Some(0),
         "a skipped row is not published as a seat"
+    );
+}
+
+/// `common::stub_agent`, the one line a suite outside this family puts a fleet
+/// on the agent stub with: the `[agent]` key after the fleet's own policy and
+/// the stub's state reset to its defaults. A poll of that fleet reaches the
+/// stub through the Exec — the version it publishes is the stub's own, the
+/// adapter it names is the stub's path, and the stub logged the poll's read.
+#[test]
+fn a_fleet_the_common_helper_puts_on_the_agent_stub_polls_through_it() {
+    let rig = Rig::new("common-helper");
+    write(&rig.policy_path(), "[controller]\npoll_seconds = 1\n");
+    let stub = common::stub_agent(&rig.root);
+    // A live pane, so the poll asks the agent about the seat.
+    common::live_pane(&rig.tmux_state_path(), SEAT_ID, &rig.worktree());
+
+    assert_eq!(rig.observe().status.code(), Some(0));
+    let published = rig.projection();
+    assert_eq!(
+        published["agent_version"],
+        StubAgent::VERSION,
+        "{published}"
+    );
+    assert_eq!(
+        published["agent"]["adapter"],
+        serde_json::json!(stub.display().to_string()),
+        "{published}"
+    );
+    assert!(
+        agent_stub::verbs(&rig.root).contains(&StubAgent::READ),
+        "the poll's read reached the stub: {:?}",
+        agent_stub::verbs(&rig.root)
     );
 }

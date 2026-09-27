@@ -28,6 +28,15 @@ name = "fleet-tmux-stub"
 path = "src/bin/tmux_stub.rs"
 required-features = ["test-support"]
 
+# The agent contract answered from the fake agent kept in a file, as an adapter
+# executable, for the suites that drive every agent path through the Exec with
+# no agent installed on the box. Under the feature alone, for the reason the
+# tmux stub above is; the cli builds it as an example of its own too.
+[[bin]]
+name = "fleet-agent-stub"
+path = "src/bin/agent_stub.rs"
+required-features = ["test-support"]
+
 # Any crate, each added with a work item that says why. The work item that
 # adds each of these is the observe slice; it cannot be named here, because the
 # boundary check forbids this directory from naming the surrounding project.
@@ -79,5 +88,9 @@ toml.workspace = true
 # This crate's own suites reach `test_support` the same way a dependent's do:
 # through a dev-dependency that turns the feature on. `cfg(test)` is not set for
 # the library an INTEGRATION test links against, so the feature is the only door.
+#
+# fleet-core the same way, for the schema check (`fleet_core::schema::check`)
+# the agent stub's own arms hold every answer it prints to.
 [dev-dependencies]
 fleet-controller = { path = ".", features = ["test-support"] }
+fleet-core = { path = "../core", features = ["test-support"] }

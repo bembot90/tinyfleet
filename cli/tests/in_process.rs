@@ -13,7 +13,7 @@
 use fleet_controller::clock::Clock;
 use fleet_controller::platform::{self, Grant};
 use fleet_controller::run::{self, Options, Seams, StopHandler};
-use fleet_controller::test_support::{self, Answers, FakeClock, FakeHost, StubAgent};
+use fleet_controller::test_support::{self, Answers, Declined, FakeClock, FakeHost, StubAgent};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -356,7 +356,7 @@ fn one_tick_reaches_the_agent_for_every_call_the_poll_makes_and_publishes_its_ou
 fn a_start_the_agent_refuses_is_published_as_a_failed_outcome() {
     let rig = Rig::new("refused");
     let stub = StubAgent::answering(Answers {
-        launch: Err("the arm refused this start".to_string()),
+        launch: Err(Declined::Untold("the arm refused this start".to_string())),
         ..Answers::default()
     });
     let host = FakeHost::new();

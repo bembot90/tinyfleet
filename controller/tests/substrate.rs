@@ -4,14 +4,20 @@
 //!
 //! A test binary of its own, for the reason `grant.rs` is one: these arms drive
 //! `run::observe_with`, which reads the PROCESS's environment for the machine
-//! directory and the agent binary, so the rigs are serialized on the lock below.
+//! directory, so the rigs are serialized on the lock below.
 //!
 //! What it measures is the thing the policy's own unit arms cannot: that the
 //! expectation a file that pins nothing falls to is the one the poll publishes
 //! AND the one it writes `substrate.moved` against.
+//!
+//! The agent is `fleet-agent-stub`, named by `[agent] adapter` and spoken to
+//! through the Exec as any adapter executable is: it declares the one real
+//! adapter's capabilities, so the release it was measured against is the
+//! supported one, and it answers the version the arm scripts.
 
 use fleet_controller::platform::{self, Grant};
 use fleet_controller::run::{self, Options};
+use fleet_controller::test_support::agent_stub;
 use fleet_core::supported::PINNED_CLAUDE_CODE;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -24,8 +30,8 @@ mod common;
 /// refusing it here would fail every other arm for it.
 static ENV: Mutex<()> = Mutex::new(());
 
-/// A release the supported one is not, in the shape `claude --version` prints
-/// it — the spread every arm below either announces or does not.
+/// A release the supported one is not — the spread every arm below either
+/// announces or does not.
 const ANOTHER: &str = "0.0.1";
 
 fn write(path: &Path, body: &str) {
@@ -36,8 +42,8 @@ fn write(path: &Path, body: &str) {
 }
 
 /// The rig: a machine directory naming no seat, a policy file whose body the
-/// arm chooses, and an agent stub answering `--version` with the release the
-/// arm chooses and an empty roster to everything else.
+/// arm chooses with `[agent] adapter` naming the stub after it, and the stub
+/// answering `version` with the release the arm chooses.
 struct Rig {
     root: PathBuf,
     machine: PathBuf,
@@ -55,7 +61,13 @@ impl Rig {
             root,
             _held: held,
         };
-        write(&rig.root.join("fleet.toml"), policy);
+        write(
+            &rig.root.join("fleet.toml"),
+            &format!(
+                "{policy}\n[agent]\nadapter = \"{}\"\n",
+                agent_stub::path().display()
+            ),
+        );
         write(
             &rig.machine.join("config.json"),
             &format!(
@@ -63,21 +75,11 @@ impl Rig {
                 rig.root.join("fleet.toml").display()
             ),
         );
-        let stub = rig.root.join("agent.sh");
-        write(
-            &stub,
-            &format!(
-                "#!/bin/sh\ncase \"$*\" in\n  *--version*) echo \"{running} (Claude Code)\" ;;\n  \
-                 *) printf '%s' '[]' ;;\nesac\nexit 0\n"
-            ),
-        );
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
-            .expect("the stub is executable");
+        agent_stub::script(&rig.root, |a| a.version = Some(running.to_string()));
         common::hermetic::export(common::hermetic::in_process_vars(
             &rig.root,
             &rig.machine,
-            Some(&stub),
+            None,
         ));
         rig
     }

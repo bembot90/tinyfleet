@@ -195,7 +195,7 @@ fn a_siblings_kill_to_wait_window_outlives_the_settle_and_is_not_a_leak() {
 /// is a much later poll's count wearing the label of the next one.
 #[test]
 fn a_running_controller_holds_no_zombie_children_across_polls() {
-    let mut rig = Rig::new("zombie-loop");
+    let mut rig = Rig::claude_code("zombie-loop");
     rig.write_roster(&live_row(&rig.worktree(), "a-session"));
     rig.agent_timeout_ms = Some(200);
     rig.hang_seconds = Some(5);
@@ -358,7 +358,7 @@ fn a_running_controller_holds_no_zombie_children_across_polls() {
 fn a_descendant_holding_the_pipe_cannot_hold_the_poll_past_the_deadline() {
     // The unit, measured on this box rather than assumed: the same stub under a
     // deadline long enough to sit through the descendant.
-    let mut patient = Rig::new("held-pipe-patient");
+    let mut patient = Rig::claude_code("held-pipe-patient");
     patient.write_roster(&live_row(&patient.worktree(), "a-session"));
     patient.descendant_seconds = Some(HELD_PIPE_DESCENDANT_SECONDS);
     // Named, not omitted: by omission this ran on the controller's 20 s
@@ -388,7 +388,7 @@ fn a_descendant_holding_the_pipe_cannot_hold_the_poll_past_the_deadline() {
          margin below is its lifetime: {unbounded:?}"
     );
 
-    let mut rig = Rig::new("held-pipe-bounded");
+    let mut rig = Rig::claude_code("held-pipe-bounded");
     rig.write_roster(&live_row(&rig.worktree(), "a-session"));
     rig.descendant_seconds = Some(HELD_PIPE_DESCENDANT_SECONDS);
     // The hoisted constant at the site that spends it, for the reason the
@@ -457,7 +457,7 @@ fn a_kill_between_the_stubs_two_marks_once_is_rescued_by_the_patience() {
     /// the same order as the seams around it.
     const PREAMBLE_MS: u64 = 1500;
 
-    let mut rig = Rig::new("held-pipe-preamble");
+    let mut rig = Rig::claude_code("held-pipe-preamble");
     rig.write_roster(&live_row(&rig.worktree(), "a-session"));
     rig.descendant_seconds = Some(HELD_PIPE_DESCENDANT_SECONDS);
     rig.agent_timeout_ms = Some(HELD_PIPE_SEAM_MS);
@@ -551,7 +551,7 @@ fn a_descendant_holding_the_version_pipe_publishes_no_agent_version() {
     const DESCENDANT_SECONDS: u64 = 30;
     const SEAM_MS: u64 = 3000;
 
-    let mut rig = Rig::new("held-version-pipe");
+    let mut rig = Rig::claude_code("held-version-pipe");
     rig.write_roster(&live_row(&rig.worktree(), "a-session"));
     rig.agent_timeout_ms = Some(SEAM_MS);
     // The span below is the VERSION branch's, so the version mark is the witness
@@ -650,7 +650,7 @@ fn an_escaped_descendant_cannot_hold_the_poll_on_the_exit_path() {
     // THROUGH THE BUILT BINARY, both rigs. The escapee leaves its group to
     // outlive the poll, so a poll run in this process leaves it holding the test
     // binary's own streams for the rest of its life.
-    let mut patient = Rig::new("escapee-exit-patient");
+    let mut patient = Rig::claude_code("escapee-exit-patient");
     patient.write_roster(&live_row(&patient.worktree(), "a-session"));
     patient.escapee_seconds = Some(ESCAPEE_SECONDS);
     // Named, not omitted, for the reason the held-pipe patient's own line gives:
@@ -675,7 +675,7 @@ fn an_escaped_descendant_cannot_hold_the_poll_on_the_exit_path() {
          margin below is its life: {unbounded:?}"
     );
 
-    let mut rig = Rig::new("escapee-exit-bounded");
+    let mut rig = Rig::claude_code("escapee-exit-bounded");
     rig.write_roster(&live_row(&rig.worktree(), "a-session"));
     rig.escapee_seconds = Some(ESCAPEE_SECONDS);
     // The hoisted constant is read AT THE SITE THAT SPENDS IT. Through a local
@@ -731,7 +731,7 @@ fn an_escaped_descendant_cannot_hold_the_poll_on_the_deadline_path() {
     // THROUGH THE BUILT BINARY, both rigs. The escapee leaves its group to
     // outlive the poll, so a poll run in this process leaves it holding the test
     // binary's own streams for the rest of its life.
-    let mut patient = Rig::new("escapee-deadline-patient");
+    let mut patient = Rig::claude_code("escapee-deadline-patient");
     patient.write_roster(&live_row(&patient.worktree(), "a-session"));
     patient.escapee_seconds = Some(ESCAPEE_SECONDS);
     patient.hang_seconds = Some(ESCAPEE_SECONDS);
@@ -752,7 +752,7 @@ fn an_escaped_descendant_cannot_hold_the_poll_on_the_deadline_path() {
          for: {unbounded:?}"
     );
 
-    let mut rig = Rig::new("escapee-deadline-bounded");
+    let mut rig = Rig::claude_code("escapee-deadline-bounded");
     rig.write_roster(&live_row(&rig.worktree(), "a-session"));
     rig.escapee_seconds = Some(ESCAPEE_SECONDS);
     rig.hang_seconds = Some(ESCAPEE_SECONDS);
@@ -916,7 +916,7 @@ fn the_escapee_seams_sit_above_the_cheap_seam_and_under_the_ratios_ceiling() {
 /// four outrun polls that never give a pair back read eight above the first.
 #[test]
 fn a_running_controller_accumulates_no_drain_pipes_across_polls() {
-    let mut rig = Rig::new("drain-loop");
+    let mut rig = Rig::claude_code("drain-loop");
     rig.write_roster(&live_row(&rig.worktree(), "a-session"));
     rig.agent_timeout_ms = Some(200);
     rig.hang_seconds = Some(DRAIN_LOOP_DESCENDANT_SECONDS);
@@ -989,7 +989,7 @@ fn a_running_controller_parks_one_drain_pair_per_escaped_poll() {
     // holder inside the group, which is the other arm's case. Read from the const
     // at the site that spends it, so the floor guard below reaches this line and
     // not a declaration beside it.
-    let mut rig = Rig::new("escaped-drain-loop");
+    let mut rig = Rig::claude_code("escaped-drain-loop");
     rig.write_roster(&live_row(&rig.worktree(), "a-session"));
     rig.agent_timeout_ms = Some(ESCAPEE_PARKED_PAIR_SEAM_MS);
     rig.hang_seconds = Some(60);

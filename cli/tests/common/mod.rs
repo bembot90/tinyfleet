@@ -58,6 +58,52 @@ pub fn stub_path() -> PathBuf {
     stub
 }
 
+/// The agent stub this crate's test build made: its example
+/// `fleet-agent-stub`, in `examples/` beside the `fleet` it builds, for the
+/// reason [`stub_path`]'s store stub is there. ABSOLUTE, as `[agent] adapter`
+/// must name it.
+pub fn agent_stub_path() -> PathBuf {
+    let stub = Path::new(env!("CARGO_BIN_EXE_fleet"))
+        .parent()
+        .expect("the built binary sits in a directory")
+        .join("examples/fleet-agent-stub");
+    assert!(
+        stub.is_file(),
+        "{} is built by a test build of fleet-cli — `cargo nextest run -p fleet-cli`, or \
+         `cargo build -p fleet-cli --examples`",
+        stub.display()
+    );
+    stub
+}
+
+/// The fleet whose own file sits at `fleet_root` run on the agent stub:
+/// `[agent] adapter` naming it appended to `<fleet_root>/fleet.toml`, made
+/// where it is not, and the stub's state scratched beside it answering
+/// `fleet_controller::test_support::Answers::default()`. Answers the stub's
+/// path.
+///
+/// Every agent call the fleet then makes is one `fleet-agent-stub <verb>`
+/// through the Exec, its request carrying `fleet_root` — so a rig scripts what
+/// the agent answers with `fleet_controller::test_support::agent_stub::script`
+/// on that root, and reads what it was asked with `agent_stub::calls`.
+///
+/// THE POLICY COMES FIRST, as [`take_a_store`]'s does: the file must not
+/// already carry an `[agent]` table, and a rig that writes the file whole
+/// after this call writes the setting away with it.
+pub fn stub_agent(fleet_root: &Path) -> PathBuf {
+    let stub = agent_stub_path();
+    let file = fleet_root.join("fleet.toml");
+    let mut policy = std::fs::read_to_string(&file).unwrap_or_default();
+    let named = serde_json::to_string(&stub.display().to_string()).expect("a path is JSON text");
+    policy.push_str(&format!("\n[agent]\nadapter = {named}\n"));
+    std::fs::create_dir_all(fleet_root).expect("the fleet's root is made");
+    std::fs::write(&file, policy).expect("the fleet's file names the agent stub");
+    fleet_controller::test_support::agent_stub::script(fleet_root, |answers| {
+        *answers = fleet_controller::test_support::Answers::default();
+    });
+    stub
+}
+
 /// A tmux for a rig's `fleet` to run: the path to set `FLEET_TMUX_BIN` to,
 /// after the hermetic block, whose own value is the refusing tmux.
 ///

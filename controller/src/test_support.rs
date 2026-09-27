@@ -4,13 +4,15 @@
 //! out of the binary a release build produces.
 
 use crate::adapter::{
-    Agent, AgentError, Argv, Capabilities, Launch, Resume, SeatActivity, SeatContext, SeatRef,
-    Version,
+    Agent, AgentError, Argv, Capabilities, Launch, Refusal, Resume, SeatActivity, SeatContext,
+    SeatRef, Version,
 };
 use crate::clock::Clock;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+pub mod agent_stub;
 
 /// Time a test owns. [`Clock::sleep`] advances it by exactly the duration asked
 /// for and returns, so a wait spent against this clock costs no wall clock and a
@@ -92,7 +94,13 @@ pub struct Call {
 /// Set per arm at construction, and settable again between ticks through
 /// [`StubAgent::set`]: a loop's second tick can be told something its first was
 /// not, which is how an agent that changes under the controller is driven.
-#[derive(Clone, Debug)]
+///
+/// JSON as well, because `fleet-agent-stub` keeps it in a file between the
+/// processes it answers one call each in ([`agent_stub`]), and
+/// [`agent_stub::script`] is [`StubAgent::set`] over that file. A key the file
+/// leaves out is the default's.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Answers {
     /// The listing `read` is answered from, in the shape the one real adapter
     /// reads (`claude agents --json --all`'s JSON rows), or why none could be
@@ -102,10 +110,10 @@ pub struct Answers {
     pub listing: Result<String, String>,
     pub version: Option<String>,
     /// `Ok` is a launch built from the request ([`StubAgent::launched`]), and
-    /// `Err` a launch the agent could not build, with its cause.
-    pub launch: Result<(), String>,
+    /// `Err` a launch the agent refused or could not build.
+    pub launch: Result<(), Declined>,
     /// The same for a resume ([`StubAgent::resumed`]).
-    pub resume: Result<(), String>,
+    pub resume: Result<(), Declined>,
     /// The log every session reads as, in the shape the one real adapter reads
     /// a transcript in — its first turn for `read`'s
     /// logged-out answer, and its window and turns for `context`.
@@ -129,6 +137,25 @@ impl Default for Answers {
             session_log: None,
             last_write: None,
             capabilities: crate::adapter::claude_code::capabilities(),
+        }
+    }
+}
+
+/// Why a launch or a resume answers no argv, by the row of the contract's exit
+/// table it is: the agent's own refusal, naming its reason (exit 1), or no
+/// answer it could give, carrying why (exit 3).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Declined {
+    Refused(Refusal),
+    Untold(String),
+}
+
+impl From<Declined> for AgentError {
+    fn from(declined: Declined) -> AgentError {
+        match declined {
+            Declined::Refused(refusal) => AgentError::Refused(refusal),
+            Declined::Untold(cause) => AgentError::Unreadable(cause),
         }
     }
 }
@@ -420,7 +447,7 @@ impl Agent for StubAgent {
         self.answers()
             .launch
             .map(|()| StubAgent::launched(launch))
-            .map_err(AgentError::Unreadable)
+            .map_err(AgentError::from)
     }
 
     fn resume(&self, resume: &Resume) -> Result<Argv, AgentError> {
@@ -428,7 +455,7 @@ impl Agent for StubAgent {
         self.answers()
             .resume
             .map(|()| StubAgent::resumed(resume))
-            .map_err(AgentError::Unreadable)
+            .map_err(AgentError::from)
     }
 
     /// The one real adapter's own rules, over the stub's listing and its one

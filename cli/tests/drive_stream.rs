@@ -392,7 +392,7 @@ fn a_publish_that_cannot_land_is_named_and_is_not_a_failure() {
 /// the deadline.
 #[test]
 fn a_version_call_that_outruns_the_deadline_publishes_no_version() {
-    let mut rig = Rig::new("version-deadline");
+    let mut rig = Rig::claude_code("version-deadline");
     rig.write_roster(&live_row(&rig.worktree(), "a-session"));
     rig.version_hang_seconds = Some(5);
 
@@ -527,7 +527,7 @@ fn a_spread_that_returns_after_it_was_closed_is_announced_again() {
 /// measures, and a standing one does not.
 #[test]
 fn an_outrun_version_call_does_not_close_a_standing_announcement() {
-    let mut rig = Rig::new("outrun-close");
+    let mut rig = Rig::claude_code("outrun-close");
     rig.write_roster(&live_row(&rig.worktree(), "a-session"));
     rig.agent_timeout_ms = Some(300);
     rig.set_version("9.9.10");
@@ -582,7 +582,7 @@ fn an_outrun_version_call_does_not_close_a_standing_announcement() {
 /// wrote — a seat that reads Present and carries no context, forever.
 #[test]
 fn a_configured_worktree_with_a_trailing_separator_still_reads_a_context() {
-    let rig = Rig::new("slashed");
+    let rig = Rig::claude_code("slashed");
     rig.write_config(&format!(
         r#"{{"fleet_toml": "{}", "children": [
              {{"id":"{SEAT_ID}","name":"Orla","worktrees":{{"demo":"{}/"}}}}
