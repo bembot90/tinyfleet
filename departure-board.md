@@ -95,7 +95,7 @@ Builds in the fleet-packs repository; the beads stay here.
 | Landed | Bead | What | Blocked by |
 | --- | --- | --- | --- |
 | ☑ | fleet-jymr.1 | The claude-code pack's skeleton: manifest with its hook mapping, `main.ts`, generated types, least Deno grant | fleet-rsia.1, fleet-14p8.4, .5 |
-| ☐ | fleet-jymr.2 | capabilities, version, launch and resume: the onboarding and trust seed, three posture words, the two doctor checks | fleet-jymr.1, fleet-031, fleet-rge6.2, .4 |
+| ☑ | fleet-jymr.2 | capabilities, version, launch and resume: the onboarding and trust seed, three posture words, the two doctor checks | fleet-jymr.1, fleet-031, fleet-rge6.2, .4 |
 | ☑ | fleet-jymr.4 | context: tokens, turns and last write from the transcript, with recorded fixtures | fleet-jymr.1 |
 | ☑ | fleet-jymr.3 | read: one listing per config dir, status and waitingFor as activity, logged-out as blocked, recorded fixtures | fleet-jymr.1, fleet-jymr.4 |
 | ☐ | fleet-jymr.5 | The pack carries fleet's plugin and renders fleet's neutral permissions; launch loads it (closes fleet-78r, fleet-bz9) | fleet-jymr.1, .2, fleet-14p8.2, .4, .9 |
