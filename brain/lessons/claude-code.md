@@ -8,6 +8,18 @@ rests on one **R**. This file is where those measurements live as fleet's own
 knowledge, so a builder changing the behaviour one fences can cite the fact
 instead of trusting the letter beside it.
 
+**The entries the claude-code pack rests on live in the pack**, beside its
+fixtures: A1, A5, A9, A11, A12, A15, B1–B5, B7, B8, B10, C1–C4, D3, D5, D6 and
+D8, in the adapter's
+[`LESSONS.md`](https://github.com/bembot90/fleet-packs/blob/v0.2.0/adapters/agent/claude-code/adapters/agent/claude-code/LESSONS.md)
+at fleet-packs v0.2.0, the first tag carrying it and the one fleet pins from
+flight 14 on (`core/src/supported.rs` `PINNED_PACKS`). They moved there with
+their ids, slugs, Versions and Dates (fleet-jymr.6, ruling 15). What stays here
+is two kinds of entry. The daemon-era entries flight 11 retired, each marked
+with the row that retired it and otherwise left as written, as history. And
+the facts about the host and fleet's own loop — A13, C5, D1, D4 and D7 — which
+were measured on a Claude Code fleet but are core's, kept live.
+
 **Every fact here is version-scoped.** Claude Code's session lifecycle is
 observed behaviour, not a published contract; a fact without the release it
 was measured on is a rumour. Each entry therefore carries **Version** and
@@ -16,11 +28,12 @@ says so — an unrecorded provenance is a fact about the fact, and inventing one
 would be worse than carrying it.
 
 **Every fact owes a test.** The **Test** field names a fixture test,
-`lessons::<slug>`, in snake_case. That name is the contract between this file
-and the slice that lands the code the fact exercises: the slice writes a test
-under that exact name, and `## Test inventory` at the foot of this file is what
-the scaffold and the slices read. A fact with nothing to exercise says
-`none — <why>`.
+`lessons::<slug>`, in snake_case. A core entry's test is written under that
+exact name in a `lessons` module of the crate that lands its code; a retired
+entry's test was deleted with the behaviour it held, and its name stays here
+as history; a moved entry's test is the pack's. `## Test inventory` at the foot
+of this file says, for every name, which of the three it is. A fact with
+nothing to exercise says `none — <why>`.
 
 **Reading the entries.** *Fact* is the measurement in one paragraph. *Implies*
 names the archived PRD's requirement the fact fed, by R-number, and says what
@@ -29,41 +42,6 @@ the requirement owed it.
 ---
 
 ## A. Session lifecycle
-
-### A1. The pin is a measurement, not a version number
-
-- **Fact:** Every behaviour in this file was observed against one release, and
-  the release is part of the fact. The controller therefore records the
-  release each behaviour was measured against and publishes it beside the
-  version the agent binary reports this poll, so a disagreement is a flag to
-  re-measure rather than a failure. A spread between the two is an *unfinished
-  move* — someone installed a new binary and the pin has not followed — and not
-  drift that arrived on its own, provided the agent's background auto-updater
-  is off. The measurement obligation is real work: one move re-measured twelve
-  entries on a checksum-verified scratch binary and answered every one.
-- **Version:** Claude Code 2.1.233 (the first pin) through 2.1.261, with
-  re-measures at 2.1.240, 2.1.247, 2.1.251, 2.1.257 and 2.1.261.
-- **Version 2.1.280:** the pin since fleet-a7h, and re-measured on it by
-  fleet-031 (2026-09-26): every entry the claude-code pack keeps — A5, A9,
-  A11, A12, A15, B1–B5, B7, B8, B10, C1–C4, D3, D5, D6 and D8 — re-read on
-  the binary at `~/.local/share/claude/versions/2.1.280` (sha256
-  `387a5c5dcdbb815085edf0baf79591f9d8894efe922bceaf3d75b1b08055229d`) under
-  scratch configuration directories and a scratch tmux socket, each entry's
-  own 2.1.280 line saying held or moved and on what evidence. The daemon-era
-  entries flight 11 retired were not re-measured (reviewer call E15). Held
-  here: `--version` answers `2.1.280 (Claude Code)`, the version its first
-  token. The auto-updater proviso above was measured the hard way: an
-  interactive 2.1.280 session started without `DISABLE_AUTOUPDATER=1`
-  installed 2.1.283 and re-pointed the operator's own `claude` to it
-  (fleet-rge6.2's INCIDENT), which is why every child fleet starts carries
-  the updater off.
-- **Date:** 2026-08-06 through 2026-09-04.
-- **Implies:** R29 — `[substrate.<agent>]` pins, and a live version that
-  differs is a flag in the projection and a `substrate.moved` event, never a
-  failure. R8 — the version is read every poll and published beside the pin,
-  never measured once at startup and republished (a controller that cached it
-  advertised its boot version for as long as it lived).
-- **Test:** `lessons::version_pin_is_published_beside_the_live_version`
 
 ### A2. A row with no pid is two different states
 
@@ -154,36 +132,6 @@ the requirement owed it.
   R12 — transient rows get no session-creating verdict.
 - **Test:** `lessons::a_dead_host_has_two_shapes`
 
-### A5. `start` must name the model; the default is not the fleet's
-
-- **Fact:** A background session started with no model flag was measured to
-  come up on the cheapest available model. The model is therefore mandatory on
-  every start, and it is what keeps a seat in the class its config declares.
-  The same explicit flag is what makes the environment's own default-model
-  variable harmless: an inherited default cannot reach a seat whose start names
-  its model. One behaviour rode this shape — a background start on the top
-  model could stall at birth asking for usage credit while an interactive
-  session on the same account still had allowance — so a seat that never draws
-  its first breath is read against that behaviour first.
-- **Version:** the default-model measurement carries no release in the source
-  that states it; the credit stall was fixed in Claude Code 2.1.251.
-- **Version 2.1.280:** the rule HELD and the fact MOVED (fleet-031,
-  2026-09-26; zero-turn interactive starts under a seeded scratch
-  directory, each read off its own header). A start with no `--model` came
-  up on `Opus 5.5 (1M context)` — the account's top model, not the
-  cheapest — and, with no `--permission-mode` either, in `auto` mode, the
-  screen saying "Auto mode is now Claude Code's default permission mode".
-  The default is still the agent's and not the fleet's, which is all the
-  rule needs. `ANTHROPIC_MODEL=claude-sonnet-5` alone came up on `Sonnet 5`;
-  beside `--model haiku` it came up on `Haiku 4.5`, so the flag still keeps
-  an inherited default out. The credit stall was a background start's and
-  was not re-measured.
-- **Date:** not recorded with the default-model measurement; 2026-08-31 for the
-  credit stall's fix.
-- **Implies:** R18 — `start` passes model, name and the fleet's permission
-  posture on every call, and the default is never the agent's.
-- **Test:** `lessons::start_names_the_model`
-
 ### A6. `stop` takes the short id and refuses the full session id
 
 - **Retired by:** fleet-rge6.4 (2026-09-26). A seat's session is stopped on
@@ -270,40 +218,6 @@ the requirement owed it.
   the delete outcome can reach.
 - **Test:** `lessons::remove_answers_three_ways`
 
-### A9. A resume by the full id keeps the session, flags and all, when the session is interactive
-
-- **Fact:** An INTERACTIVE session started as the pane's own process in a tmux
-  session, with `--plugin-dir`, `--model haiku` and
-  `--permission-mode acceptEdits`, took a turn, had a second turn interrupted
-  and was killed with `kill-session`. A NEW tmux session whose command was
-  `--resume <full id>` with the same three flags came back as the SAME
-  session: listed 0.67 s after it was made under the same `sessionId`, on the
-  new pane's pid, idle, and under the name the first start gave it though no
-  `--name` was passed; `Haiku 4.5` on the header and `accept edits on` on the
-  footer; the plugin's `SessionStart` hook fired with `source: resume` and the
-  same `session_id`, and its `UserPromptSubmit` hook on the next turn read
-  `permission_mode: acceptEdits`; that turn was answered by
-  `claude-haiku-4-5-20251001` into the SAME transcript file — no second one
-  appeared — and it recalled the first turn's answer. The earlier reading was
-  of BACKGROUND sessions: there, resuming by short id forked a copy, by full
-  id with any flag forked a copy under the original's name, and only a
-  flagless full-id resume continued in place, the CLI naming each outcome in
-  its own notice. That fork is the daemon's, and it is why a revive's watch
-  still refuses a resumed row under any other id.
-- **Version:** Claude Code 2.1.280 and tmux 3.7b for the interactive reading;
-  2.1.257 and 2.1.261, identical on both, for the background one.
-- **Version 2.1.280:** held as measured above (fleet-rge6.4). Beside it on
-  the same release: one C-c never ends an interactive session, idle or busy
-  (fleet-rge6.4), and two C-c 300 ms apart do, the pane reading dead within
-  5 s (fleet-14p8.8's `--live` run).
-- **Date:** 2026-09-26 (fleet-rge6.4); 2026-09-04 for the background reading.
-- **Implies:** a revive is a new session on the host whose command is the
-  full-id resume carrying the start's flags (reviewer call 2026-09-25, E2,
-  E3), believed only when the listing shows the pane's own process under the
-  resumed id — any other id is a fork, failed and killed. R17 is unchanged:
-  startup adopts a LIVE session by its session id and issues nothing at it.
-- **Test:** `lessons::a_resume_by_full_id_keeps_the_session`
-
 ### A10. A newer client replaces the daemon and re-hosts the sessions under it
 
 - **Retired by:** fleet-rge6.3 (2026-09-26). Fleet's seats are no longer
@@ -335,101 +249,6 @@ the requirement owed it.
   session id is what survives the re-host. R34 — this is one of the named
   behaviours measured per platform at the pin.
 - **Test:** `lessons::a_newer_client_replaces_the_daemon_and_rehosts`
-
-### A11. The config directory scopes the daemon, and a scratch one is logged out
-
-- **Fact:** The daemon's socket directory is derived from the agent's config
-  directory, so overriding the config directory starts a *second* daemon with
-  its own socket and its own workers while the fleet's keeps its pid, its
-  uptime and its binary. This is **not described in the docs we read at these
-  releases**, and it is therefore verified at every use rather than trusted:
-  two daemons were observed side by side on two binaries, with the fleet's pid
-  rising monotonically across every read. A
-  scratch config directory is also **logged out**, because the credential
-  item's service name carries a hash of the config directory — and the escape
-  is a *second*, separate variable that overrides the credential input, which
-  when defined-but-empty restores the default service name. The two knobs point
-  in opposite directions on purpose: one scopes the daemon, one scopes the
-  credential. Re-measured session-free at the pin under a cleared environment:
-  the config directory set to the home **default**, explicitly, logs a child out
-  exactly as a scratch one does, and the credential knob set to any
-  **directory** — the home default included — logs it out too, while
-  defined-but-empty, under either config directory and under none, is logged in.
-  So a process that sets the config directory on its children carries the
-  credential knob as the **configured value**, empty when nothing configured
-  one, and never the path it resolved: a resolved directory there is a third
-  credential nobody wrote. And the daemon the directory scopes holds its OWN
-  roster: a session started under a per-row directory is named by that daemon's
-  listing and by **no other**, the fleet's included, so a controller that reads
-  one listing per poll publishes every such seat absent and a stop, a removal, a
-  nudge or a transcript read made under the wrong directory reaches nothing.
-  Measured on two live sessions side by side: the fleet's listing answered nine
-  rows and named neither the scratch-directory session nor its short id, whose
-  own listing answered exactly one and named only it, `logs <short id>` from the
-  fleet's directory exited 1 with `No job matching`, and the fleet daemon's pid
-  was unchanged before and after. A logged-out session is **live** in that
-  listing — a pid, an idle status — so the roster cannot report the failure and
-  the transcript is the only surface that carries it: one user turn, then one
-  synthetic assistant entry with `error` `authentication_failed`,
-  `isApiErrorMessage` true and a window of zero.
-- **Version:** Claude Code 2.1.251 (the scoping), 2.1.261 (re-measured, the
-  credential knob read out of the binary, and the per-daemon roster).
-- **Version 2.1.280:** HELD for the credential and the per-directory
-  listing; the daemon half was not re-measured (fleet-031, 2026-09-26, and
-  the beads cited). Three zero-turn starts under one seeded scratch
-  directory: `CLAUDE_SECURESTORAGE_CONFIG_DIR` defined-but-empty came up
-  logged in under the subscription; set to that scratch directory, and
-  unset, each came up `API Usage Billing` with `Not logged in · Run /login`
-  on screen — and all three were listed `idle` with a pid, so the listing
-  still cannot say so. A logged-out turn writes one synthetic assistant
-  entry, `error` `authentication_failed`, `isApiErrorMessage` true, zero
-  usage (fleet-jymr.3, fleet-jymr.4). A session under one scratch directory
-  is listed by that directory's listing only, and an empty directory lists
-  `[]` (fleet-jymr.3). About 400 listings across five scratch directories
-  started no daemon; the listing reads `<config dir>/sessions/<pid>.json`
-  (fleet-jymr.3). Not re-measured: the config directory set explicitly to
-  the home default, which would take the operator's own directory as a
-  scratch one.
-- **Date:** 2026-09-01, 2026-09-04 and 2026-09-12.
-- **Implies:** R29 — a pin move needs a way to probe a new binary without
-  moving the running fleet, and this is the only isolation route there is; a
-  release that changes the socket-directory derivation removes it, with nothing
-  on fleet's side to report the loss, so the probe gate goes red rather than
-  proceeding. R34 — measuring a platform at the pin needs this isolation to be
-  safe on a machine that is running.
-- **Test:** `lessons::the_config_dir_scopes_the_daemon`
-
-### A12. An MCP tool call backgrounds after 120 s unless a human is being asked
-
-- **Fact:** A tool call still running at 120,000 ms is registered as a
-  background task and the model is handed a "still running" result, so the turn
-  continues. Three things switch that off and each lets one call hold a session
-  open with no bound: a pending elicitation on the call (the timer restarts for
-  as long as one is outstanding), a server of an IDE transport type, and the
-  auto-background interval set to zero. This is what decides which blocked
-  classes can outlive an operator — a hung call that asks nobody anything
-  self-heals in two minutes, while one that raises a dialog waits as long as
-  the human does. Measured by three arms against a server whose tool never
-  returns, with the constants and the three exemptions read out of the
-  installed binary rather than inferred from the arms.
-- **Version:** Claude Code 2.1.247.
-- **Version 2.1.280:** held, read out of the installed binary (fleet-031,
-  2026-09-26; the three arms were not re-run). The constant is still
-  `120000`; the timer still restarts while an elicitation is pending; an
-  `sse-ide` or `ws-ide` server still gets no timer; and
-  `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` still sets the interval, `0` turning
-  it off. Three further switches in the same function return no timer:
-  background tasks disabled (the setting or
-  `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`), a non-interactive session without
-  `CLAUDE_AUTO_BACKGROUND_TASKS`, and the `tengu_mcp_auto_background` flag,
-  on by default. A seat's session is interactive, so none of the three
-  reaches it unless someone sets one.
-- **Date:** 2026-08-31.
-- **Implies:** R26 — the projection's per-seat roster state is only *complete*
-  for stalls this rule does not end; a release that removes the timeout widens
-  that blind spot with nothing on fleet's side to report it, because the class
-  it currently ends would start persisting.
-- **Test:** `lessons::an_mcp_call_backgrounds_at_120s`
 
 ### A13. A session locks only a worktree the agent created for it
 
@@ -478,159 +297,16 @@ the requirement owed it.
   against R14's three. R18 — `start` is an effect whose exit status is read.
 - **Test:** `lessons::a_failed_start_exits_inside_the_watch_window`
 
-### A15. A first start in an untrusted directory blocks on the workspace-trust question
-
-- **Fact:** In a directory the agent has not been trusted in, a session started
-  there blocks at startup on the agent's own workspace-trust question ("Is this
-  a project you created or one you trust?") and the process exits non-zero. The
-  trust state is per-directory and recorded in the agent's own configuration —
-  a folder reads a trust-accepted flag once the question has been answered —
-  and the only way to answer it is interactively, once, in that directory.
-  Met under the Gas City trial (gas-city.md G12), where the controller's
-  always-on session died this way at startup and its reconciler re-created it
-  every few seconds, with the only readable trace a per-session stderr log:
-  nothing in the controller's log and nothing in its events. This is the agent's
-  behaviour, not the engine's, and it reaches any fleet the same way — a fleet
-  that makes a fresh worktree and starts a session in it meets a **new
-  directory on every spawn**, so the question is asked mid-spawn unless install
-  has already answered it.
-- **Version:** Claude Code 2.1.261, met under gc 1.4.1.
-- **Version 2.1.280:** MOVED for an interactive start (fleet-rge6.2, and
-  fleet-031, 2026-09-26). The question WAITS rather than exiting: `No, exit`
-  first and selected, `Yes, I trust this folder` second, and the listing
-  `[]` for as long as it is up. Down, then C-m 300 ms later, accepted it:
-  the row was listed `idle` 0.15 s on, and the directory's `.claude.json`
-  gained `projects["<resolved worktree>"].hasTrustDialogAccepted: true`
-  (fleet-031). An entry seeded that way before the start met no question,
-  and keyed on the RESOLVED path it held for a start given the `/tmp`
-  symlink (fleet-rge6.2). The exit above was met under gc and is not an
-  interactive start's answer.
-- **Date:** 2026-09-05.
-- **Implies:** R1 — a first-run gate belongs in install, answered in the minute
-  the service loads, beside the file-access grant of D4; a start is not where a
-  person should meet a dialog. R30 — a spawn's worktree is a new directory, so
-  the trust state has to be established for it or inherited. R14 — three
-  consecutive blind dispatches halt the seat and the halt is announced: an
-  unbounded re-create loop against a dialog nobody can answer is the failure
-  that requirement exists to stop.
-- **Test:** `lessons::a_first_run_meets_the_trust_dialog` — shared with
-  gas-city.md's G12 deliberately. One behaviour, one fixture, cited from both
-  files; a second name would be a second test of the same fact.
-
 ---
 
 ## B. The roster listing
 
-### B1. The roster is one command, and it tolerates fields it does not know
-
-- **Fact:** The whole observation layer is one listing command asking for JSON
-  across all sessions. The fields consumed are `id`, `sessionId`, `cwd`,
-  `kind`, `pid`, `status`, `state`, `name` and `startedAt`. The listing carries
-  at least one field beyond those, which is harmless because the reader does
-  not deny unknown fields. Field presence is kind-dependent — an interactive
-  row and a background row do not carry the same set — so a reader that
-  requires a field on every row fails on the first mixed listing.
-- **Version:** schema measured against Claude Code 2.1.233; an extra field
-  observed on 2.1.247.
-- **Version 2.1.280:** held (fleet-rge6.3, fleet-jymr.3, and fleet-031's
-  rows, 2026-09-26). Still one command, `agents --json --all`, read once per
-  configuration directory. An interactive row carries `pid`, `cwd`, `kind`,
-  `startedAt`, `sessionId`, `name`, `status`, and `waitingFor` only while
-  blocked — never `id` or `state` (B10) — so the kind-dependence stands.
-- **Date:** 2026-08-14 and 2026-08-27.
-- **Implies:** R5 — rows are matched to seats by cwd and the short id is never
-  compared. R6 — an unreadable roster is Unknown for every seat.
-- **Test:** `lessons::the_roster_is_one_command`
-
-### B2. The roster carries no token field of any kind
-
-- **Fact:** There is no context or token figure anywhere in the listing.
-  Context accounting cannot come from the roster; it comes from the transcript
-  on disk. A release that added token figures to the listing would be an
-  **adoption opportunity**, not a break, and should be routed as one.
-- **Version:** no release recorded with the measurement.
-- **Version 2.1.280:** held: no token or context figure on any recorded
-  row (fleet-rge6.3's four recordings, fleet-jymr.3's fixtures, and
-  fleet-031's rows, 2026-09-26).
-- **Date:** not recorded with the measurement.
-- **Implies:** R7 — context tokens come from the transcript's main chain, and
-  the requirement says so explicitly because the cheaper-looking source does
-  not exist.
-- **Test:** `lessons::the_roster_carries_no_token_field`
-
-### B3. The display name is not an address and not a key
-
-- **Fact:** The name on a roster row is model-generated when nothing set it,
-  and unstable in several directions at once. Repeat-backgrounding a named
-  session **numbers** the row (`my-session (2)`) rather than listing it twice.
-  A rename warns that other sessions may still show the old name when the
-  registry could not be updated, so a rename is not guaranteed to propagate
-  across rows. And forks inherit the name they copied, so a roster does not
-  guarantee one row per name: four rows were observed with three of them
-  carrying one name and one of them alive. The reversion-to-session-id shape
-  the rule was first written from has now gone two releases without an
-  observation — an explicit name survived four revivals — and should be read as
-  history rather than current behaviour. The rule it protects is unchanged and
-  is vindicated by the forks instead.
-- **Version:** Claude Code 2.1.246 (numbering), 2.1.247 (the rename warning and
-  the name-survives-revive reading), 2.1.261 (the forks).
-- **Version 2.1.280:** the rule held; the background shapes it was written
-  from — the numbering, the rename warning, the forks — are daemon-era and
-  were not re-measured. A session started with `--name` kept that name on
-  every read, with no rename (fleet-jymr.3; fleet-031's rows, 2026-09-26),
-  and a resume passing no `--name` came back under the name its start gave
-  it (fleet-rge6.4). A seat is matched by its session id, else by its pane's
-  pid, and never by the name.
-- **Date:** 2026-08-27 and 2026-09-04.
-- **Implies:** R5 — the short id is never compared and rows are matched by cwd;
-  a name-keyed reader meets a collision the moment a fork exists.
-- **Test:** `lessons::the_name_is_not_an_address`
-
-### B4. The listing answered zero bytes and exit 0 while sessions were live
-
-- **Fact:** The listing has been observed answering with zero bytes and exit 0
-  while seventeen peers were reachable from inside a live session, and while
-  the controller's own collector had published three seconds earlier — so the
-  empty answer came from the listing and not from the reader. The founding
-  incident's own cause was later attributed to a collapsed environment rather
-  than to the listing, and the exit-0/zero-byte read itself has no attributed
-  cause on either side, so fleet keeps the **class** open. A reader that treats
-  an empty listing as "no sessions" turns this into every seat reading absent
-  at once.
-- **Version:** no release recorded with the measurement.
-- **Version 2.1.280:** not reproduced, and the class stays open: no
-  zero-byte answer in about 400 listings across five scratch directories
-  (fleet-jymr.3), nor in fleet-031's (2026-09-26). An empty directory
-  answers `[]`, which is a listing that answered and not this.
-- **Date:** 2026-08-18.
-- **Implies:** R6 — an unreadable roster is Unknown for every seat, and Unknown
-  is always leave-alone. The requirement's force is that **empty is
-  unreadable**, not a reading of zero.
-- **Test:** `lessons::the_roster_read_can_go_silently_dead`
-
-### B5. `cwd` names a seat and proves nothing
-
-- **Fact:** One worktree per seat makes the map from working directory to seat
-  a function, which is what the whole matching rests on. But the working
-  directory is where a process was launched, never who dispatched it. A session
-  that no dispatch record accounts for is **unattributed** — it is standing in
-  a seat's worktree and it is not the fleet's. Nothing the substrate reports is
-  an owner field, so the working directory is safe for acts that are harmless
-  against a session the controller did not start, and never for acts that are
-  not.
-- **Version:** no release recorded with the measurement.
-- **Version 2.1.280:** held: two sessions in one worktree were two rows,
-  each found by its own session id or its own pid (fleet-jymr.3). The
-  adapter and the pack match a seat by session id, else by the pane's pid,
-  and never by `cwd`.
-- **Date:** 2026-08-14.
-- **Implies:** R5 — two live rows in one worktree is Unknown, not a contest.
-  R30 and R32 — a spawn's load belt and a retire's resource check both read
-  rows the controller may not own.
-- **Test:** `lessons::cwd_names_a_seat_and_proves_nothing`
-
 ### B6. A pre-warmed worker was a claimless row, and the fix is why an unattributed row is now worth investigating
 
+- **Retired by:** fleet-rge6.3 (2026-09-26). The pre-warmed worker was
+  the background daemon's, and no interactive session under tmux meets it:
+  a seat's session is the pane's own process, and a background row is
+  never a seat's (the claude-code pack's B1 and B5). Kept here as history.
 - **Fact:** Until 2.1.238 the idle worker the agent pre-warms for the next
   background session appeared on the listing before any task claimed it — a row
   with a working directory and no dispatcher, which is B5's unattributed shape
@@ -643,76 +319,6 @@ the requirement owed it.
   in a seat's worktree belongs to that seat; this entry is the record of the
   one time it did not, and of that cause being closed.
 - **Test:** `lessons::a_prewarmed_worker_is_not_a_seat`
-
-### B7. A truncated listing is a third state, never absence
-
-- **Fact:** Since 2.1.234 a roster read can report that the account's session
-  list was too long to check completely, instead of presenting the unsearched
-  remainder as absent. Any rule that rests on "no live row bears this seat's
-  name" therefore has three answers, not two: present, absent, and
-  **unjudgeable**. The same wording also reaches a caller on the message-send
-  path, appended to a name that did not resolve — which is the surface where it
-  is most likely to be misread as "they are gone". The strings were confirmed
-  present in the installed bundle with a positive and a negative control over
-  the same search, because a plain search reports a false absence on a bundle
-  that large. No truncation line has been observed in a real read (32 rows).
-- **Version:** Claude Code 2.1.234 for the behaviour, strings confirmed in the
-  2.1.240 bundle.
-- **Version 2.1.280:** held by the same kind of read (fleet-031,
-  2026-09-26): the installed binary carries "your session list was too long
-  to check completely", alone and with each of its two same-named-session
-  tails, six occurrences in all, while a one-letter-off control string
-  occurs zero times. No truncation line was observed in a real read.
-- **Date:** 2026-08-22.
-- **Implies:** R6 — Unknown for every seat, and Unknown is always leave-alone.
-  R32 — `--dead` is licensed by a **completed** roster read that names no live
-  session, never by silence, and this entry is the shape that makes silence and
-  completion different things.
-- **Test:** `lessons::a_truncated_listing_is_not_absence`
-
-### B8. One field says a session is stopped in front of a human, and it is keyed on presence
-
-- **Fact:** A roster row carries a "waiting for" field **only** while the
-  session is stopped waiting on a human, and its value names the cause. The
-  whole vocabulary is six causes, read out of the installed binary rather than
-  enumerated by measurement: a sandbox request, input needed, a worker request,
-  a dialog being open, the top dialog's own label, and **a permission-prompt
-  default that any dialog kind with no label of its own falls back to**. That
-  default is why keying the detector on the field's PRESENCE holds: a dialog
-  nobody has seen still arrives named rather than absent. Two causes are
-  measured live. The neighbouring `status` and `state` fields move alongside it
-  but neither is safe alone — a refusal that lets the turn continue also reads
-  blocked. Measured across 72 snapshots: the field appeared on only the two
-  prompt-blocked arms, replicated across two permission postures, and on none
-  of four negative controls (a long foreground tool call, a finished turn with
-  a live background shell, a refused turn, an idle session). **Two gaps.** A
-  session stopped at an operating-system permission dialog is expected to carry
-  nothing and read busy — reasoned, not measured, because forcing that dialog
-  puts a modal on a shared machine. A session inside a tool call that raises no
-  dialog is invisible too, and that one is measured: identical to an ordinary
-  long tool call on every stable field. The second gap is the lesser one,
-  because A12 ends that class at 120 s.
-- **Version:** Claude Code 2.1.247.
-- **Version 2.1.280:** held, read out of the installed binary and measured
-  live (fleet-031, 2026-09-26; fleet-rge6.3, fleet-rge6.5, fleet-jymr.3).
-  The cause function answers, in order: `input needed` (a queued
-  elicitation), the top dialog's own label, `worker request`,
-  `sandbox request` and `dialog open`; a dialog kind with no label of its
-  own still falls back to `permission prompt`. One label in the table is new
-  to this file, `goal proposal`. On an interactive row `status` is
-  `waiting` exactly when a cause is present, and `busy` or `idle` otherwise,
-  so keying on presence still holds. Live, the Bash approval dialog read
-  `waiting` with `permission prompt` within 1.3–1.7 s, steady while it was
-  up, and gone on the next read after it was answered.
-- **Date:** 2026-08-28.
-- **Implies:** R26 — the projection's per-seat rows carry the roster state, and
-  this field is the only thing on any surface that distinguishes *stopped
-  waiting for a human* from *working*. R27 — which is why the status command
-  prints the grant and the block above the roster rather than below it. A
-  rename or a new cause value is a **silent break** of any detector keyed on
-  the field, since a renamed field reads as absent, which is
-  indistinguishable from a healthy working session.
-- **Test:** `lessons::waiting_for_names_the_block`
 
 ### B9. Resuming a running background session adds a row rather than continuing one
 
@@ -740,177 +346,9 @@ the requirement owed it.
   it.
 - **Test:** `lessons::a_live_session_is_reached_without_a_resume`
 
-### B10. An interactive session is listed without an address, and its blocked cause is typed
-
-- **Fact:** An interactive `claude` started inside a tmux session fleet
-  controls is a row in the same listing as the background sessions, with
-  `kind: interactive`, and the listing read in 100–160 ms across 40 reads.
-  The row carries `cwd`, `kind`, `name`, `pid`, `sessionId`, `startedAt` and
-  `status`, and **never `id` and never `state`**: the short-id address and the
-  five-word state vocabulary of A3 are background-only. `status` is the whole
-  reading, and it is three words — `idle` at the prompt, `busy` mid-turn, and
-  `waiting` while the session is stopped in front of a human — where B8's
-  background reading knew two. The `waitingFor` field of B8 holds on the
-  interactive row exactly as keyed there: absent while idle and busy, present
-  as `permission prompt` the second the Bash approval dialog came up, gone on
-  the next read after the dialog was answered (busy, then idle three seconds
-  later). The row is **absent while the workspace-trust question is up** (A15
-  interactively: the dialog waits rather than exiting, and the row appears
-  only once it is answered), and the agent renamed the session on its own
-  within ten seconds of arrival, which is B3 measured again. A session under a
-  scoped configuration directory is listed by that directory's daemon and by
-  no other, so A11 holds for interactive rows too. **On the session's end the
-  row is gone by the next read, within one second, whether the end was a typed
-  `/exit` or the tmux session killed under it, and no pid-less row remains:**
-  the ended-but-listed reading A3 and the stopped-row window of `observe` are
-  background-only, so an interactive session's end has no stamp on the listing
-  and its transcript's last write is the only one there is (the transcript
-  outlived the process, as C4 says, under the default projects directory; the
-  scoped session took no turn and left none to find, so where a scoped
-  interactive transcript lands is unmeasured).
-- **Version:** Claude Code 2.1.282, on a binary that had moved past the
-  2.1.280 pin by itself (A1); tmux 3.7b. Re-measured on the pin, 2.1.280,
-  with tmux 3.7b (fleet-rge6.3): the same row — `pid` equal to the pane's,
-  `status`, and no `id` and no `state` — at idle, busy and `waiting` with
-  `waitingFor` `permission prompt`, and gone by the next read after the tmux
-  session was killed. That re-measure also answers the open clause above: a
-  scoped session's transcript lands under the scoped directory's own
-  `projects/`, its mtime the second the session was killed. The recording is
-  the fixture in `controller/tests/observe.rs`.
-- **Version 2.1.280, further:** measured by fleet-jymr.3, fleet-jymr.4 and
-  fleet-031 (2026-09-26). A row is listed 0.53–0.74 s after `new-session`,
-  before it carries a status; a session started with `--name` kept that name
-  on every read, so the rename above was not seen on the pin; `/clear` gives
-  the SAME pid a NEW `sessionId`; and the scoped transcript lands at
-  `<config dir>/projects/<encoded RESOLVED cwd>/<session id>.jsonl`, which
-  the session rewrites as it exits.
-- **Date:** 2026-09-24; re-measured 2026-09-26.
-- **Implies:** the adapters-and-sessions design (fleet-notes, 2026-09-24):
-  fleet owning the session under tmux keeps the listing as a read — presence,
-  pid, busy or idle, and the typed blocked cause — so a screen rule is a
-  second source for an agent whose listing carries less, never the first for
-  this one. The address is gone with `--bg`, so stop and revive are tmux's
-  and a resume by the full id carrying the start's own flags (A9, measured
-  interactively by fleet-rge6.4). A stopped interactive session
-  cannot be aged off the listing: recency for such a seat reads the
-  transcript's mtime alone.
-- **Test:** `lessons::an_interactive_row_is_listed_without_an_address`
-
 ---
 
 ## C. The transcript on disk
-
-### C1. The transcript path is an encoding, and one variable blinds every reader at once
-
-- **Fact:** The agent encodes a project directory by replacing NON-ALPHANUMERIC
-  characters with `-` — not the separators alone — and writes the session's
-  JSONL under a per-project directory keyed by that encoding. The census, on
-  this machine: of 235 per-project directories, zero carry any character
-  outside `[A-Za-z0-9-]`, and a path under a dot-directory resolves with the
-  dot as a dash too, so a dot following a separator is two dashes — 103 of the
-  235 carry that doubled dash. The separator-only rule is refuted by specimen
-  and not by argument. WHAT THE CENSUS REACHES IS `/` AND `.` AND NO OTHER
-  non-alphanumeric character, and that was searched for rather than assumed: of
-  the 235 names, 27 resolve back to a directory that still exists and not one
-  of those paths carries an underscore or a space, while 208 name a path that
-  is gone. So the rule stated above is what the controller implements, held
-  against a census that contradicts no part of it and exercises two characters
-  of it. Two further parts are unmeasured for the same want of a specimen — a
-  path past roughly 200 characters, which the agent is said to truncate with a
-  hash suffix and whose longest local specimen is 136 characters, and a
-  non-ASCII character. All three yield a path that does not exist, which every
-  reader renders as a seat with no context reading. Every
-  context instrument resolves the same way, which means they all go blind
-  together: a change to the encoding, or the environment variable that renames
-  the per-project directory, takes out the context read, the cost read and the
-  rest trigger in one act, and none of them reports anything — they find no
-  file and read no context.
-- **Version:** Claude Code 2.1.261 for the census; the directory-renaming
-  variable arrived in 2.1.234, and no release was recorded with the
-  separator-only claim this entry replaces.
-- **Version 2.1.280:** held, and the two unmeasured parts measured
-  (fleet-jymr.4; fleet-031, 2026-09-26). A dot, an underscore and a space
-  each encode to `-`, and the directory is keyed on the RESOLVED cwd: a
-  start given `/tmp/…` wrote under `-private-tmp-…` (fleet-jymr.4). A
-  non-ASCII character is one dash: a worktree `…/wt-é` wrote under
-  `…-wt--`. A path past 200 characters is truncated and suffixed: a
-  235-character worktree wrote under the encoding's first 200 characters, a
-  dash, and `yidia0` — the base-36 absolute value of a 32-bit string hash
-  (`h = h*31 + unit`, over the resolved path's UTF-16 units). That rule was
-  read out of the binary (`[^a-zA-Z0-9]` to `-`, limit 200) and reproduces
-  the directory exactly. The replacement is per UTF-16 unit, so a character
-  outside the Basic Multilingual Plane would be two dashes (reasoned, not
-  measured). Both transcripts were written by a logged-out first turn, which
-  makes no model call.
-- **Date:** 2026-09-06, re-taken 2026-09-08 with every figure unchanged.
-- **Implies:** R7 — context tokens come from the transcript, so the path is a
-  hard dependency of the observe layer. R34 — the transcript location is one of
-  the named behaviours measured per platform at the pin, because a path
-  encoding is exactly the kind of thing that differs across operating systems.
-- **Test:** `lessons::the_transcript_path_encoding`
-
-### C2. The transcript entry shape
-
-- **Fact:** Entries carry a `type` (user or assistant), a sidechain flag, a
-  meta flag, and a usage object holding the input tokens and both cache
-  figures. Context for a session is the arithmetic over those fields on the
-  main chain; there is no single "context" number to read.
-- **Version:** no release recorded with the measurement.
-- **Version 2.1.280:** held (fleet-jymr.4's recordings, read by fleet-031,
-  2026-09-26). `user` and `assistant` entries carry `type` and
-  `isSidechain`, and an assistant entry `message.usage` with
-  `input_tokens`, `cache_read_input_tokens` and
-  `cache_creation_input_tokens`; `isMeta` appeared only on `system` entries
-  there. ONE MODEL RESPONSE IS ONE ENTRY PER CONTENT BLOCK, each carrying the
-  response's whole usage under one `message.id` — and that did not move: a
-  read-only census of the operator's recent transcripts shows the same split
-  on every release from 2.1.260 on (2.1.261: 28,388 responses in 61,907
-  entries). So a reader counting turns counts distinct `message.id`s, not
-  entries.
-- **Date:** not recorded with the measurement.
-- **Implies:** R7 — the requirement names the main chain and the sidechain skip
-  because the shape forces both.
-- **Test:** `lessons::the_transcript_entry_shape`
-
-### C3. A sidechain entry carries a different context window
-
-- **Fact:** A sidechain entry is a subagent's turn and carries the subagent's
-  window, not the session's. Counting one publishes a number from a different
-  context and feeds it to whatever decides when a seat should rest. The flag is
-  present on every entry, so the skip is a filter and not an inference.
-- **Version:** no release recorded with the measurement.
-- **Version 2.1.280:** the rule held; where the entries live is new to this
-  file (fleet-jymr.4, read by fleet-031, 2026-09-26). A subagent writes its
-  own file, `<session id>/subagents/agent-<id>.jsonl` beside a
-  `.meta.json`, every entry `isSidechain: true`, and the session's own file
-  carries no sidechain entry at all; the subagent's window (21,862) was not
-  the session's (38,458). The flag is on every `user`, `assistant`,
-  `attachment` and `system` entry, and not on the bookkeeping entries beside
-  them (`mode`, `permission-mode`, `ai-title`, `last-prompt` and others), so
-  the skip is still a filter over the entries a reader counts.
-- **Date:** 2026-08-14.
-- **Implies:** R7 — sidechains skipped, stated in the requirement rather than
-  left to the implementation.
-- **Test:** `lessons::sidechains_carry_another_window`
-
-### C4. A hibernated session's transcript outlives the process that wrote it
-
-- **Fact:** The transcript stays readable after the process that wrote it is
-  gone, which is what makes a pid-less row answerable at all: the question
-  "how much context is this hibernated session carrying" has an answer, and it
-  is read the same way as for a live row. Without it, a revive would be a guess
-  and the only safe verdict on a pid-less row would be to leave it alone
-  forever.
-- **Version:** Claude Code 2.1.234, confirmed running at the measurement.
-- **Version 2.1.280:** held (fleet-rge6.3, fleet-rge6.4, fleet-jymr.4): an
-  interactive session's transcript stays after its pane is killed, its
-  mtime the second of the kill, and a resume by the full id writes on into
-  the same file.
-- **Date:** 2026-08-18.
-- **Implies:** R10 — the discriminator for a pid-less non-newborn row is the
-  deliberate-end event **plus context**, and the context half is only available
-  because of this.
-- **Test:** `lessons::the_transcript_outlives_the_process`
 
 ### C5. The rest threshold is a fraction of a window that moves
 
@@ -983,32 +421,6 @@ the requirement owed it.
   running to close it.
 - **Test:** `lessons::start_output_goes_to_a_file`
 
-### D3. The permission posture is model-gated, and the downgrade is reported only on screen
-
-- **Fact:** A session's permission mode is not honoured by every model. Across
-  four models measured on one release, three came up in the requested mode and
-  one came up in the default and said so **only on screen** — nothing any
-  instrument reads reports the downgrade. A seat on such a model renders an
-  approval dialog at the first call needing one and stops with nobody there to
-  answer. Membership in the capable set is by prefix (family plus major),
-  because live model ids carry suffixes that name the same model: one is dated
-  and another is windowed.
-- **Version:** Claude Code 2.1.257.
-- **Version 2.1.280:** held (fleet-031, 2026-09-26; zero-turn interactive
-  starts, each read off its own screen and row). `--permission-mode auto`
-  came up `auto mode on` on `claude-sonnet-5`, `claude-opus-5` and
-  `claude-fable-5`, and A5's unflagged start came up in `auto` by default on
-  Opus 5.5, which the prefix `claude-opus-5` covers. On `claude-haiku-4-5`
-  it came up `manual mode on` with "auto mode unavailable for this model" on
-  screen, and its row read `idle` and nothing else, so the downgrade still
-  reaches no instrument. `dontAsk` on `claude-haiku-4-5` came up
-  `don't ask on`, and `default` `manual mode on`.
-- **Date:** 2026-09-01.
-- **Implies:** R18 — `start` passes the fleet's permission posture on every
-  call, and the fleet checks that the model can honour it rather than assuming
-  the call was enough.
-- **Test:** `lessons::the_permission_posture_is_model_gated`
-
 ### D4. A blocked permission read is pending, not denied
 
 - **Fact:** The operating system's file-access dialog does not return a
@@ -1033,64 +445,6 @@ the requirement owed it.
   the roster. R33 — the permission gate is one of the six things the platform
   layer owns.
 - **Test:** `lessons::a_blocked_grant_read_is_pending`
-
-### D5. A plugin's hook and its Bash tool reach `bin/` by different addresses
-
-- **Fact:** A plugin root loaded into a session gives the agent's Bash tool a
-  `PATH` that carries the root's `bin/`, so a bare `fleet` in a shell command
-  resolves to the plugin's own copy — measured with a stub root whose
-  `bin/fleet` recorded every invocation, while `command -v fleet` outside the
-  session exited 1. **A hook process gets neither.** Its `PATH` does not carry
-  `bin/`, and what it does carry is `CLAUDE_PLUGIN_ROOT` in its environment,
-  set to the root the session loaded. So the two wirings are not
-  interchangeable: a hook command written as a bare name finds nothing, and the
-  same command addressed through `"${CLAUDE_PLUGIN_ROOT}"/bin/` finds the copy
-  the session is running. The per-provider overlay keeps the bare form, because
-  that is the pack's own wiring for a session that already resolves the binary;
-  the plugin's hook file is that same command list with the root prefixed.
-- **Version:** Claude Code 2.1.261.
-- **Version 2.1.280:** held (fleet-031, 2026-09-26; one haiku turn). A
-  plugin root loaded with `--plugin-dir`: its `SessionStart` hook ran with
-  `CLAUDE_PLUGIN_ROOT` set to the root and a `PATH` without the root's
-  `bin/`, where `command -v fleet` found nothing; the Bash tool's
-  `fleet probe-d5` ran the root's `bin/fleet` stub, whose `PATH` was the
-  session's with the root's `bin` APPENDED LAST; and outside the session
-  `command -v fleet` exited 1. Appended last, a `fleet` earlier on the
-  session's `PATH` would win over the plugin's copy — reasoned, not
-  measured: this probe's `PATH` held none.
-- **Date:** 2026-09-08.
-- **Implies:** The plan's § 4.4 — the plugin shape is how the per-provider
-  overlay reaches a session at all, and the address a hook uses is the only
-  part of it the overlay cannot state for itself.
-- **Test:** `lessons::the_plugin_root_addresses_the_hook`
-
-### D6. The plugin loader follows a symbolic link into a pack
-
-- **Fact:** A plugin root's `skills/` entry may be a **symbolic link** to a
-  directory elsewhere in the checkout, and the loader follows it: measured
-  three ways in one sitting on one root. A skill whose entry was a link to a
-  pack's own skill directory resolved under the plugin's namespace and answered
-  with the token only the linked file carried. A real directory beside it, the
-  positive control, answered with its own token, so the session was loading
-  plugin skills at all. And with the link removed and the target file left
-  exactly where it was, the same invocation answered `Unknown command` — which
-  is what says the link was the route rather than some other path to the same
-  bytes. So a pack's skills reach a session by being linked from the plugin
-  root, and the pack keeps the only copy; a pinned duplicate under the plugin
-  root, which is what a loader that did not follow links would have forced, is
-  not needed.
-- **Version:** Claude Code 2.1.261.
-- **Version 2.1.280:** held (fleet-031, 2026-09-26; two haiku turns). With
-  `skills/linked` a symbolic link to a directory outside the plugin root,
-  `/probe:linked` answered the token only the linked file carried;
-  `/probe:real`, a real directory beside it, answered its own; and with the
-  link removed and its target left in place, a new session answered
-  `Unknown command: /probe:linked` without a model call.
-- **Date:** 2026-09-13.
-- **Implies:** The plan's § 4.4 — the plugin shape is how a pack's opinion
-  reaches a session, and a link is what puts a pack's skills into that shape
-  without a second copy to drift out of agreement with the first.
-- **Test:** `lessons::the_plugin_loader_follows_a_skill_link`
 
 ### D7. A process is ended by the pid you started, never by a pattern on its name
 
@@ -1124,107 +478,51 @@ the requirement owed it.
   recorded address and R32's verification from outside; it names no behaviour
   of its own to exercise.`
 
-### D8. An interactive start under tmux meets onboarding, waits at the trust question, and a burst Enter does not submit
-
-- **Fact:** Three things a `--bg` start never shows. **Onboarding.** An
-  interactive start under an EMPTY scoped configuration directory — the
-  directory a spawn makes today, whose whole content is its emptiness — stops
-  at the theme picker and then at the login-method menu before any session
-  exists, while a background start under the same emptiness comes up. A
-  `.claude.json` seeded in that directory with `hasCompletedOnboarding`,
-  `lastOnboardingVersion`, `theme` and `oauthAccount` copied from the default
-  one skipped both, and with the credential knob defined-but-empty (A11) the
-  session came up logged in under the same subscription. **The trust
-  question.** A15's dialog waits interactively instead of exiting, its default
-  is "No, exit", and Down then Enter accepts it; the session is not listed
-  until then (B10). **The submit** (re-measured on 2.1.280, 2026-09-26). A
-  two-line text loaded with `load-buffer` and pasted with `paste-buffer -p`
-  (bracketed) sat in the input box, both lines, and the row stayed `idle`;
-  a separate `send-keys C-m` 300 ms after the paste submitted it as ONE turn
-  carrying both lines, and the row read `busy` on the first listing after
-  the submit, 0.14 s on, holding `busy` for 0.5–1 s on a one-word haiku
-  turn. A paste and a submit into a session already `busy` was QUEUED, not
-  dropped: the row stayed `busy` throughout and the text ran as its own turn
-  the moment the first ended. At a permission prompt the row read
-  `status: waiting` and `waitingFor: permission prompt` 1.3–1.7 s after the
-  tool call; a paste and a submit sent there LOST THE TEXT and the submit
-  answered the dialog with its default, `1. Yes`, running the tool call, and
-  the row read `busy` — so a turn believed on `busy` alone would be called
-  delivered at a dialog, which is why a blocked row is refused before any
-  byte. On 2.1.282 text and Enter in one `send-keys` burst left the text
-  unsubmitted and a lone Enter a minute later did not submit it either
-  (whether by timing or by the keysym was not separated); herdr, which types
-  into the same agent, sends the text and the Enter 300 ms apart as one
-  ordered submission and then requires `working` or `blocked` within five
-  seconds before it believes the turn was taken. The typed `/exit` ended the
-  session and so did killing the tmux session under it, each with the row
-  gone within a second.
-- **Version:** Claude Code 2.1.282, the submit re-measured on 2.1.280; tmux
-  3.7b.
-- **Version 2.1.280, the rest:** held (fleet-031 and fleet-rge6.2,
-  2026-09-26). Under an EMPTY scoped directory an interactive start stopped
-  at the theme picker, and after one Enter at the login-method menu, the
-  listing `[]` throughout (fleet-031). A `.claude.json` seeded with
-  `hasCompletedOnboarding`, `lastOnboardingVersion` and `oauthAccount`
-  alone — no `theme` — met neither, and with the credential knob
-  defined-but-empty came up logged in (fleet-rge6.2; whether each of the
-  three is needed on its own was not separated). The trust question waited
-  with `No, exit` selected, and Down then C-m accepted it (fleet-031; A15).
-  A typed `/exit` and a killed tmux session each left the listing by the
-  next read (fleet-rge6.3).
-- **Date:** 2026-09-24; the submit 2026-09-26.
-- **Implies:** the adapters-and-sessions design: a spawn that starts a seat
-  interactively owes the configuration directory an onboarding stamp it does
-  not write today, and the first-run gate of A15 stays an install step. A
-  nudge or a feed typed into the pane is two acts, the text and the submit,
-  and it is verified by the listing's `status` turning `busy`, never by the
-  send returning — the same activity gate herdr keeps.
-- **Test:** `lessons::an_interactive_start_under_tmux`
-
 ---
 
 ## Test inventory
 
-Every fixture test named above, once. The scaffold reads this table; each
-slice that lands the code a fact exercises writes the test under this exact
-name.
+Every fixture test named in this file or moved from it, once, and where it
+lives: in core, under this exact name in a `lessons` module; in the
+claude-code pack, whose own inventory is its `LESSONS.md`'s; or nowhere,
+retired with its entry. D7 names no test.
 
-| Test | Entry |
-| --- | --- |
-| `lessons::version_pin_is_published_beside_the_live_version` | A1 |
-| `lessons::pid_null_is_two_states` | A2 (retired by fleet-rge6.3) |
-| `lessons::hibernation_reads_as_a_deliberate_stop` | A3 (retired by fleet-rge6.3) |
-| `lessons::a_dead_host_has_two_shapes` | A4 (retired by fleet-rge6.3) |
-| `lessons::start_names_the_model` | A5 |
-| `lessons::stop_takes_the_short_id` | A6 (retired by fleet-rge6.4) |
-| `lessons::attach_exit_is_not_a_witness` | A7 (retired by fleet-rge6.4) |
-| `lessons::remove_answers_three_ways` | A8 (retired by fleet-rge6.4) |
-| `lessons::a_resume_by_full_id_keeps_the_session` | A9 |
-| `lessons::a_newer_client_replaces_the_daemon_and_rehosts` | A10 (retired by fleet-rge6.3) |
-| `lessons::the_config_dir_scopes_the_daemon` | A11 |
-| `lessons::an_mcp_call_backgrounds_at_120s` | A12 |
-| `lessons::a_session_locks_only_a_worktree_it_created` | A13 |
-| `lessons::a_failed_start_exits_inside_the_watch_window` | A14 (retired by fleet-rge6.2) |
-| `lessons::a_first_run_meets_the_trust_dialog` | A15 (shared with gas-city.md G12) |
-| `lessons::the_roster_is_one_command` | B1 |
-| `lessons::the_roster_carries_no_token_field` | B2 |
-| `lessons::the_name_is_not_an_address` | B3 |
-| `lessons::the_roster_read_can_go_silently_dead` | B4 |
-| `lessons::cwd_names_a_seat_and_proves_nothing` | B5 |
-| `lessons::a_prewarmed_worker_is_not_a_seat` | B6 |
-| `lessons::a_truncated_listing_is_not_absence` | B7 |
-| `lessons::waiting_for_names_the_block` | B8 |
-| `lessons::a_live_session_is_reached_without_a_resume` | B9 (retired by fleet-rge6.5) |
-| `lessons::an_interactive_row_is_listed_without_an_address` | B10 |
-| `lessons::the_transcript_path_encoding` | C1 |
-| `lessons::the_transcript_entry_shape` | C2 |
-| `lessons::sidechains_carry_another_window` | C3 |
-| `lessons::the_transcript_outlives_the_process` | C4 |
-| `lessons::the_context_threshold_is_a_fraction_of_a_moving_window` | C5 |
-| `lessons::the_child_path_is_constructed` | D1 |
-| `lessons::start_output_goes_to_a_file` | D2 (retired by fleet-rge6.2) |
-| `lessons::the_permission_posture_is_model_gated` | D3 |
-| `lessons::a_blocked_grant_read_is_pending` | D4 |
-| `lessons::the_plugin_root_addresses_the_hook` | D5 |
-| `lessons::the_plugin_loader_follows_a_skill_link` | D6 |
-| `lessons::an_interactive_start_under_tmux` | D8 |
+| Test | Entry | Where it lives |
+| --- | --- | --- |
+| `lessons::version_pin_is_published_beside_the_live_version` | A1 | the claude-code pack, `test/lessons/version_pin_is_published_beside_the_live_version.test.ts` |
+| `lessons::pid_null_is_two_states` | A2 | retired with its entry by fleet-rge6.3 |
+| `lessons::hibernation_reads_as_a_deliberate_stop` | A3 | retired with its entry by fleet-rge6.3 |
+| `lessons::a_dead_host_has_two_shapes` | A4 | retired with its entry by fleet-rge6.3 |
+| `lessons::start_names_the_model` | A5 | the claude-code pack, `test/lessons/start_names_the_model.test.ts` |
+| `lessons::stop_takes_the_short_id` | A6 | retired with its entry by fleet-rge6.4 |
+| `lessons::attach_exit_is_not_a_witness` | A7 | retired with its entry by fleet-rge6.4 |
+| `lessons::remove_answers_three_ways` | A8 | retired with its entry by fleet-rge6.4 |
+| `lessons::a_resume_by_full_id_keeps_the_session` | A9 | the claude-code pack, `test/lessons/a_resume_by_full_id_keeps_the_session.test.ts` |
+| `lessons::a_newer_client_replaces_the_daemon_and_rehosts` | A10 | retired with its entry by fleet-rge6.3 |
+| `lessons::the_config_dir_scopes_the_daemon` | A11 | the claude-code pack, `test/lessons/the_config_dir_scopes_the_daemon.test.ts` |
+| `lessons::an_mcp_call_backgrounds_at_120s` | A12 | the claude-code pack, `test/lessons/an_mcp_call_backgrounds_at_120s.test.ts` |
+| `lessons::a_session_locks_only_a_worktree_it_created` | A13 | core, `cli/tests/seat.rs` |
+| `lessons::a_failed_start_exits_inside_the_watch_window` | A14 | retired with its entry by fleet-rge6.2 |
+| `lessons::a_first_run_meets_the_trust_dialog` | A15 | the claude-code pack, `test/lessons/a_first_run_meets_the_trust_dialog.test.ts` (shared with gas-city.md G12) |
+| `lessons::the_roster_is_one_command` | B1 | the claude-code pack, `test/lessons/the_roster_is_one_command.test.ts` |
+| `lessons::the_roster_carries_no_token_field` | B2 | the claude-code pack, `test/lessons/the_roster_carries_no_token_field.test.ts` |
+| `lessons::the_name_is_not_an_address` | B3 | the claude-code pack, `test/lessons/the_name_is_not_an_address.test.ts` |
+| `lessons::the_roster_read_can_go_silently_dead` | B4 | the claude-code pack, `test/lessons/the_roster_read_can_go_silently_dead.test.ts` |
+| `lessons::cwd_names_a_seat_and_proves_nothing` | B5 | the claude-code pack, `test/lessons/cwd_names_a_seat_and_proves_nothing.test.ts` |
+| `lessons::a_prewarmed_worker_is_not_a_seat` | B6 | retired with its entry by fleet-rge6.3 |
+| `lessons::a_truncated_listing_is_not_absence` | B7 | the claude-code pack, `test/lessons/a_truncated_listing_is_not_absence.test.ts` |
+| `lessons::waiting_for_names_the_block` | B8 | the claude-code pack, `test/lessons/waiting_for_names_the_block.test.ts` |
+| `lessons::a_live_session_is_reached_without_a_resume` | B9 | retired with its entry by fleet-rge6.5 |
+| `lessons::an_interactive_row_is_listed_without_an_address` | B10 | the claude-code pack, `test/lessons/an_interactive_row_is_listed_without_an_address.test.ts` |
+| `lessons::the_transcript_path_encoding` | C1 | the claude-code pack, `test/lessons/the_transcript_path_encoding.test.ts` |
+| `lessons::the_transcript_entry_shape` | C2 | the claude-code pack, `test/lessons/the_transcript_entry_shape.test.ts` |
+| `lessons::sidechains_carry_another_window` | C3 | the claude-code pack, `test/lessons/sidechains_carry_another_window.test.ts` |
+| `lessons::the_transcript_outlives_the_process` | C4 | the claude-code pack, `test/lessons/the_transcript_outlives_the_process.test.ts` |
+| `lessons::the_context_threshold_is_a_fraction_of_a_moving_window` | C5 | core, `controller/tests/effects.rs` |
+| `lessons::the_child_path_is_constructed` | D1 | core, `controller/tests/effects.rs` |
+| `lessons::start_output_goes_to_a_file` | D2 | retired with its entry by fleet-rge6.2 |
+| `lessons::the_permission_posture_is_model_gated` | D3 | the claude-code pack, `test/lessons/the_permission_posture_is_model_gated.test.ts` |
+| `lessons::a_blocked_grant_read_is_pending` | D4 | core, `controller/tests/observe.rs` |
+| `lessons::the_plugin_root_addresses_the_hook` | D5 | the claude-code pack, `test/lessons/the_plugin_root_addresses_the_hook.test.ts` |
+| `lessons::the_plugin_loader_follows_a_skill_link` | D6 | the claude-code pack, `test/lessons/the_plugin_loader_follows_a_skill_link.test.ts` |
+| `lessons::an_interactive_start_under_tmux` | D8 | the claude-code pack, `test/lessons/an_interactive_start_under_tmux.test.ts` |

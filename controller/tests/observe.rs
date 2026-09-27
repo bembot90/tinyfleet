@@ -2,11 +2,12 @@
 //!
 //! The `lessons::` module below is the contract named in
 //! `fleet/brain/lessons/*.md` § Test inventory: each fact the code in this slice
-//! exercises owes a test under the exact name the inventory carries. The facts
-//! about the agent's own listing and transcript — how a row is parsed, found
-//! and read, and what a transcript says — are the in-process adapter's and are
-//! held by its own arms (`adapter::claude_code`'s `tests::lessons`); what is
-//! here is core's.
+//! exercises owes a test under the exact name the inventory carries, and the
+//! one this file holds is core's (D4). The facts about the agent's own listing
+//! and transcript — how a row is parsed, found and read, and what a transcript
+//! says — are the claude-code pack's lessons since fleet-jymr.6, tested in
+//! fleet-packs; what core asks of three of them (A1, B8, B10) is held by the
+//! plain arms above the module.
 //!
 //! A seat is read from TWO answers (ruling 3): the host's, which says whether
 //! its session is there, and the agent's `read`, which says what the session is
@@ -284,154 +285,161 @@ impl<F: Fn(Option<&str>) -> Result<String, String>> Agent for ByDirectory<F> {
     }
 }
 
+// ------------------------------------- core's arms of the pack's lessons
+//
+// A1, B8 and B10 are the claude-code pack's lessons since fleet-jymr.6, and
+// their tests are the pack's. What each asks of core is held here, under
+// core's own names.
+
+/// Core's comparison arm of the claude-code pack's lessons A1 (whose own
+/// test, holding `measured` to A1's Version, is the pack's since
+/// fleet-jymr.6): the release each behaviour was measured against is
+/// published BESIDE the version the binary reports this poll, and a spread
+/// between them is a flag, never a refusal.
+#[test]
+fn the_live_version_is_published_beside_the_expected_one() {
+    let drifted = projection(Some("2.1.262"), Some("2.1.261"));
+    let body: serde_json::Value = serde_json::from_str(&render(&drifted).unwrap()).unwrap();
+    assert_eq!(body["agent_version"], "2.1.262");
+    assert_eq!(body["agent_version_expected"], "2.1.261");
+    assert_eq!(
+        body["seats"].as_array().map(Vec::len),
+        Some(0),
+        "a spread publishes the document, it does not refuse it"
+    );
+
+    // A binary that did not answer publishes a named absence, not the pin.
+    let silent = projection(None, Some("2.1.261"));
+    let body: serde_json::Value = serde_json::from_str(&render(&silent).unwrap()).unwrap();
+    assert!(body["agent_version"].is_null());
+    assert_eq!(body["agent_version_expected"], "2.1.261");
+}
+
+/// The claude-code pack's lessons B8, core's half (the listing's half is
+/// the pack's `waiting_for_names_the_block`) — a session stopped in front of a human is keyed on the
+/// agent's reading being BLOCKED, never on what it names: the vocabulary
+/// is the agent's, so a cause this fleet has never seen must still stop the
+/// seat rather than read as a healthy one; the control is the busy row.
+///
+/// On the INTERACTIVE row the recording read (B10): `waiting` and
+/// `permission prompt` at the approval dialog, carried verbatim.
+#[test]
+fn a_blocked_reading_is_prompt_blocked_whatever_it_names() {
+    let at_the_dialog = recorded_seat();
+    let blocked = observe_seat(
+        &recorded_pane(&at_the_dialog, PaneState::Alive),
+        &at_the_dialog,
+        Some(&read_off(RECORDED_WAITING, &at_the_dialog, RECORDED_PID)),
+        RECORDED_CREATED_MS + 30_000,
+    );
+    assert_eq!(blocked.state, RosterState::PromptBlocked);
+    assert_eq!(blocked.waiting_for.as_deref(), Some("permission prompt"));
+    assert_eq!(blocked.blocked_on, Some(BlockedOn::Permission));
+    assert_eq!(blocked.activity, Some(Activity::Blocked));
+    assert_eq!(blocked.session_id.as_deref(), Some(RECORDED_SESSION));
+
+    let (host, _) = hosting(&seat());
+    let unrecognised = observe_seat(
+        &host.list(),
+        &seat(),
+        Some(&reading(
+            &seat(),
+            Activity::Blocked,
+            Some("aa"),
+            Some("a cause nobody has enumerated"),
+        )),
+        settled(&host),
+    );
+    assert_eq!(
+        unrecognised.state,
+        RosterState::PromptBlocked,
+        "presence, never the value: an unknown cause still stops the seat"
+    );
+    assert_eq!(
+        unrecognised.waiting_for.as_deref(),
+        Some("a cause nobody has enumerated")
+    );
+    // And a block the agent names nothing for at all is blocked all the
+    // same, published as the bare word.
+    let nameless = observe_seat(
+        &host.list(),
+        &seat(),
+        Some(&reading(&seat(), Activity::Blocked, None, None)),
+        settled(&host),
+    );
+    assert_eq!(nameless.state, RosterState::PromptBlocked);
+    assert_eq!(nameless.waiting_for.as_deref(), Some("blocked"));
+
+    let control = observe_seat(
+        &recorded_pane(&at_the_dialog, PaneState::Alive),
+        &at_the_dialog,
+        Some(&read_off(RECORDED_BUSY, &at_the_dialog, RECORDED_PID)),
+        RECORDED_CREATED_MS + 30_000,
+    );
+    assert_eq!(control.state, RosterState::Present);
+    assert_eq!(control.waiting_for, None);
+
+    // The reference publishes no context reading for this state, and the
+    // acceptance is row-for-row parity with it.
+    assert!(!RosterState::PromptBlocked.has_context_reading());
+    assert!(RosterState::Present.has_context_reading());
+    assert!(RosterState::Stopped.has_context_reading());
+    assert!(!RosterState::Starting.has_context_reading());
+}
+
+/// The claude-code pack's lessons B10, core's half (the listing's half is
+/// the pack's `an_interactive_row_is_listed_without_an_address`) — the recording, decided: every row the agent printed,
+/// read by the adapter's rules and laid beside the pane the host listed,
+/// is the seat's live session with its activity; and the session's end is
+/// the HOST's reading — the listing's empty answer after `kill-session`
+/// beside no pane is absent, and `/exit`'s dead pane is stopped.
+#[test]
+fn the_recording_decided_is_the_seats_live_session_and_its_end_the_hosts() {
+    let recorded = recorded_seat();
+    let alive = recorded_pane(&recorded, PaneState::Alive);
+    let at = RECORDED_CREATED_MS + 30_000;
+
+    for (body, activity) in [
+        (RECORDED_IDLE, Activity::Idle),
+        (RECORDED_BUSY, Activity::Busy),
+        (RECORDED_WAITING, Activity::Blocked),
+    ] {
+        let read = read_off(body, &recorded, RECORDED_PID);
+        let seen = observe_seat(&alive, &recorded, Some(&read), at);
+        assert!(
+            matches!(
+                seen.state,
+                RosterState::Present | RosterState::PromptBlocked
+            ),
+            "{body}: {seen:?}"
+        );
+        assert_eq!(seen.activity, Some(activity));
+        assert_eq!(seen.pane_pid, Some(RECORDED_PID));
+        assert_eq!(seen.project.as_deref(), Some("measured"));
+    }
+
+    // `kill-session`: the next read lists nothing, and the host holds no
+    // session. The seat is absent, and nothing stands in for an end.
+    let killed = observe_seat(&nothing_hosted(), &recorded, None, at);
+    assert_eq!(killed.state, RosterState::Absent);
+    assert_eq!(killed.session_id, None);
+
+    // `/exit`: the row went as fast (0.22 s), and the pane stayed, dead
+    // with status 0 and its pid, under remain-on-exit. The end is the
+    // host's reading and the agent has nothing to add to it.
+    let exited = observe_seat(
+        &recorded_pane(&recorded, PaneState::Dead { status: Some(0) }),
+        &recorded,
+        Some(&read_off(RECORDED_GONE, &recorded, RECORDED_PID)),
+        at,
+    );
+    assert_eq!(exited.state, RosterState::Stopped);
+    assert_eq!(exited.exit_status, Some(0));
+    assert_eq!(exited.pane_pid, Some(RECORDED_PID));
+}
+
 mod lessons {
     use super::*;
-
-    /// claude-code A1 — the pin is a measurement, not a version number: the
-    /// release each behaviour was measured against is published BESIDE the
-    /// version the binary reports this poll, and a spread between them is a
-    /// flag, never a refusal.
-    #[test]
-    fn version_pin_is_published_beside_the_live_version() {
-        let drifted = projection(Some("2.1.262"), Some("2.1.261"));
-        let body: serde_json::Value = serde_json::from_str(&render(&drifted).unwrap()).unwrap();
-        assert_eq!(body["agent_version"], "2.1.262");
-        assert_eq!(body["agent_version_expected"], "2.1.261");
-        assert_eq!(
-            body["seats"].as_array().map(Vec::len),
-            Some(0),
-            "a spread publishes the document, it does not refuse it"
-        );
-
-        // A binary that did not answer publishes a named absence, not the pin.
-        let silent = projection(None, Some("2.1.261"));
-        let body: serde_json::Value = serde_json::from_str(&render(&silent).unwrap()).unwrap();
-        assert!(body["agent_version"].is_null());
-        assert_eq!(body["agent_version_expected"], "2.1.261");
-    }
-
-    /// claude-code B8, core's half (the listing's half is the adapter's
-    /// `waiting_for_names_the_block`) — a session stopped in front of a human is keyed on the
-    /// agent's reading being BLOCKED, never on what it names: the vocabulary
-    /// is the agent's, so a cause this fleet has never seen must still stop the
-    /// seat rather than read as a healthy one; the control is the busy row.
-    ///
-    /// On the INTERACTIVE row the recording read (B10): `waiting` and
-    /// `permission prompt` at the approval dialog, carried verbatim.
-    #[test]
-    fn a_blocked_reading_is_prompt_blocked_whatever_it_names() {
-        let at_the_dialog = recorded_seat();
-        let blocked = observe_seat(
-            &recorded_pane(&at_the_dialog, PaneState::Alive),
-            &at_the_dialog,
-            Some(&read_off(RECORDED_WAITING, &at_the_dialog, RECORDED_PID)),
-            RECORDED_CREATED_MS + 30_000,
-        );
-        assert_eq!(blocked.state, RosterState::PromptBlocked);
-        assert_eq!(blocked.waiting_for.as_deref(), Some("permission prompt"));
-        assert_eq!(blocked.blocked_on, Some(BlockedOn::Permission));
-        assert_eq!(blocked.activity, Some(Activity::Blocked));
-        assert_eq!(blocked.session_id.as_deref(), Some(RECORDED_SESSION));
-
-        let (host, _) = hosting(&seat());
-        let unrecognised = observe_seat(
-            &host.list(),
-            &seat(),
-            Some(&reading(
-                &seat(),
-                Activity::Blocked,
-                Some("aa"),
-                Some("a cause nobody has enumerated"),
-            )),
-            settled(&host),
-        );
-        assert_eq!(
-            unrecognised.state,
-            RosterState::PromptBlocked,
-            "presence, never the value: an unknown cause still stops the seat"
-        );
-        assert_eq!(
-            unrecognised.waiting_for.as_deref(),
-            Some("a cause nobody has enumerated")
-        );
-        // And a block the agent names nothing for at all is blocked all the
-        // same, published as the bare word.
-        let nameless = observe_seat(
-            &host.list(),
-            &seat(),
-            Some(&reading(&seat(), Activity::Blocked, None, None)),
-            settled(&host),
-        );
-        assert_eq!(nameless.state, RosterState::PromptBlocked);
-        assert_eq!(nameless.waiting_for.as_deref(), Some("blocked"));
-
-        let control = observe_seat(
-            &recorded_pane(&at_the_dialog, PaneState::Alive),
-            &at_the_dialog,
-            Some(&read_off(RECORDED_BUSY, &at_the_dialog, RECORDED_PID)),
-            RECORDED_CREATED_MS + 30_000,
-        );
-        assert_eq!(control.state, RosterState::Present);
-        assert_eq!(control.waiting_for, None);
-
-        // The reference publishes no context reading for this state, and the
-        // acceptance is row-for-row parity with it.
-        assert!(!RosterState::PromptBlocked.has_context_reading());
-        assert!(RosterState::Present.has_context_reading());
-        assert!(RosterState::Stopped.has_context_reading());
-        assert!(!RosterState::Starting.has_context_reading());
-    }
-
-    /// claude-code B10, core's half (the adapter's is
-    /// `an_interactive_row_is_listed_without_an_address`) — the recording, decided: every row the agent printed,
-    /// read by the adapter's rules and laid beside the pane the host listed,
-    /// is the seat's live session with its activity; and the session's end is
-    /// the HOST's reading — the listing's empty answer after `kill-session`
-    /// beside no pane is absent, and `/exit`'s dead pane is stopped.
-    #[test]
-    fn the_recording_decided_is_the_seats_live_session_and_its_end_the_hosts() {
-        let recorded = recorded_seat();
-        let alive = recorded_pane(&recorded, PaneState::Alive);
-        let at = RECORDED_CREATED_MS + 30_000;
-
-        for (body, activity) in [
-            (RECORDED_IDLE, Activity::Idle),
-            (RECORDED_BUSY, Activity::Busy),
-            (RECORDED_WAITING, Activity::Blocked),
-        ] {
-            let read = read_off(body, &recorded, RECORDED_PID);
-            let seen = observe_seat(&alive, &recorded, Some(&read), at);
-            assert!(
-                matches!(
-                    seen.state,
-                    RosterState::Present | RosterState::PromptBlocked
-                ),
-                "{body}: {seen:?}"
-            );
-            assert_eq!(seen.activity, Some(activity));
-            assert_eq!(seen.pane_pid, Some(RECORDED_PID));
-            assert_eq!(seen.project.as_deref(), Some("measured"));
-        }
-
-        // `kill-session`: the next read lists nothing, and the host holds no
-        // session. The seat is absent, and nothing stands in for an end.
-        let killed = observe_seat(&nothing_hosted(), &recorded, None, at);
-        assert_eq!(killed.state, RosterState::Absent);
-        assert_eq!(killed.session_id, None);
-
-        // `/exit`: the row went as fast (0.22 s), and the pane stayed, dead
-        // with status 0 and its pid, under remain-on-exit. The end is the
-        // host's reading and the agent has nothing to add to it.
-        let exited = observe_seat(
-            &recorded_pane(&recorded, PaneState::Dead { status: Some(0) }),
-            &recorded,
-            Some(&read_off(RECORDED_GONE, &recorded, RECORDED_PID)),
-            at,
-        );
-        assert_eq!(exited.state, RosterState::Stopped);
-        assert_eq!(exited.exit_status, Some(0));
-        assert_eq!(exited.pane_pid, Some(RECORDED_PID));
-    }
 
     /// claude-code D4 — the host's file-access dialog does not refuse, it BLOCKS
     /// until somebody answers, and whether a guarded read under it returns an

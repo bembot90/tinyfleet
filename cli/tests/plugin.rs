@@ -433,9 +433,12 @@ fn the_probe_skill_is_named_version() {
     );
 }
 
-mod lessons {
-    //! `claude-code.md` D5's fixture test: the hook file is a command list
-    //! addressed through the one variable a hook process carries.
+mod plugin_root {
+    //! The hook file is a command list addressed through the one variable a
+    //! hook process carries: the claude-code pack's lessons D5, whose
+    //! `lessons::` test is the pack's since fleet-jymr.6 (fleet-packs'
+    //! `test/lessons/`). This arm holds the root's own plugin to it until
+    //! fleet-x93d.2 deletes both.
     //!
     //! WHICH LIST. The plugin root is this repository's, and it wires every
     //! guard class the binary compiles: the two the defaults' overlay wires
@@ -464,7 +467,7 @@ mod lessons {
     }
 
     #[test]
-    fn the_plugin_root_addresses_the_hook() {
+    fn every_plugin_hook_is_addressed_through_the_plugin_root() {
         let plugin = json("hooks/hooks.json");
         let pre = plugin["hooks"]["PreToolUse"]
             .as_array()

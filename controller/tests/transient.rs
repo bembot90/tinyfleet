@@ -1,8 +1,8 @@
 //! Fixture tests for the transient-seat primitives.
 //!
-//! The `lessons::` module below is the contract named in
-//! `fleet/brain/lessons/*.md` § Test inventory: each fact the code in this slice
-//! exercises owes a test under the exact name the inventory carries.
+//! No lessons arm is left here: the one this file held, claude-code A8's
+//! `remove_answers_three_ways`, was retired with its entry by fleet-rge6.4
+//! (`fleet/brain/lessons/claude-code.md` § Test inventory).
 //!
 //! The three verbs are driven against a STUB AGENT — a shell script this file
 //! writes, which serves a roster the arm controls, records every call it was

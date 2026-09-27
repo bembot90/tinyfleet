@@ -332,16 +332,323 @@ fn flag_value<'a>(argv: &'a [String], flag: &str) -> &'a str {
 mod lessons {
     use super::*;
 
-    /// claude-code A5 — a start with no model flag comes up on the cheapest
-    /// available model, so the model is mandatory on every call and is what
-    /// keeps a seat in the class its configuration declares.
+    /// claude-code C5 — the rest threshold is a fraction of the agent's context
+    /// window, and the window is the agent's to change. It is therefore POLICY
+    /// and not a constant this code owns: a window that moves makes the number
+    /// wrong with no tool reporting anything.
+    #[test]
+    fn the_context_threshold_is_a_fraction_of_a_moving_window() {
+        let from_file = policy::parse("[controller]\nrest_threshold_tokens = 400000\n")
+            .expect("the policy parses");
+        assert_eq!(from_file.rest_threshold_tokens, 400_000);
+
+        // The default is a figure the file can move, not one the table reads
+        // for itself.
+        let silent = policy::parse("").expect("an empty policy parses");
+        assert_eq!(
+            silent.rest_threshold_tokens,
+            policy::DEFAULT_REST_THRESHOLD_TOKENS
+        );
+
+        // And the decision keys on the value it is HANDED: one seat, one
+        // reading, two thresholds, two verdicts.
+        let mut seat = SeatInput {
+            seat_dir: "s1",
+            state: RosterState::Present,
+            unknown_cause: None,
+            transient: false,
+            pending_rest: false,
+            pending_deliberate_end: false,
+            context_tokens: Some(500_000),
+            rest_threshold_tokens: from_file.rest_threshold_tokens,
+            session_id: Some("a-session"),
+            already_nudged: false,
+            dispatch_age_ms: None,
+            sighted: false,
+            arrival_window_ms: 45_000,
+            halted: false,
+            blind: 0,
+        };
+        assert_eq!(decide(&seat), Verdict::SuggestRest);
+        seat.rest_threshold_tokens = silent.rest_threshold_tokens;
+        assert_eq!(
+            decide(&seat),
+            Verdict::LeaveAlone,
+            "the same reading is under the other threshold"
+        );
+    }
+
+    /// claude-code D1 — the child PATH is constructed, never inherited. A
+    /// service environment carries neither a package manager's prefix nor the
+    /// user's local bin, and a daemon started under it hands every later session
+    /// a PATH that collapses mid-run.
+    ///
+    /// Read from what the CHILD received, and against a process `PATH` that has
+    /// been set to something the constructed one does not contain — so a child
+    /// that inherited would be caught rather than accidentally agreeing.
+    #[test]
+    fn the_child_path_is_constructed() {
+        let rig = Rig::new("child-path");
+        let home = rig.home();
+        let built = platform::child_path(&home);
+
+        // The entries the service environment lacks are in it, keyed on the home
+        // it was handed rather than on this box's own.
+        let entries: Vec<PathBuf> = std::env::split_paths(&built).collect();
+        assert!(
+            entries.contains(&home.join(".local").join("bin")),
+            "the user's local bin, under the home passed in: {built}"
+        );
+        assert!(
+            entries.contains(&PathBuf::from("/usr/bin"))
+                && entries.contains(&PathBuf::from("/bin")),
+            "and the base of any POSIX system: {built}"
+        );
+        let elsewhere = platform::child_path(Path::new("/elsewhere"));
+        let somewhere_else = platform::child_path(Path::new("/somewhere-else"));
+        assert!(elsewhere.contains("/elsewhere/.local/bin"), "{elsewhere}");
+        assert!(
+            somewhere_else.contains("/somewhere-else/.local/bin"),
+            "{somewhere_else}"
+        );
+        assert_ne!(
+            elsewhere, somewhere_else,
+            "a different home moves the entry that is keyed on it"
+        );
+
+        // What a session is handed: the variables fleet sets for every seat's
+        // session, which the launch carries through and the host sets on the
+        // pane EXACTLY, hold the constructed value to the byte — built off the
+        // home this process runs under, as the controller builds it.
+        let launch = rig
+            .agent()
+            .launch(&a_spec(&rig.worktree().display().to_string()))
+            .expect("it launches");
+        assert_eq!(
+            launch.env.get("PATH"),
+            Some(&platform::child_path(&platform::home_dir())),
+            "the session is handed the constructed PATH"
+        );
+
+        // And what a command child actually got, spawned through the adapter,
+        // which builds its environment from the same list.
+        let _ = rig.agent().version();
+        assert_eq!(rig.recorded_path(), built);
+
+        // The control: this process's own PATH is not what the child got. A
+        // suite whose PATH happened to equal the constructed value would pass the
+        // lines above with an adapter that inherited.
+        let mine = std::env::var("PATH").unwrap_or_default();
+        assert_ne!(
+            rig.recorded_path(),
+            mine,
+            "the child's PATH is not this process's: {mine}"
+        );
+    }
+
+    /// THE SYSTEM DIRECTORIES COME FIRST ON THE CONSTRUCTED PATH, ahead of the
+    /// package manager's prefix and the user's local bin.
+    ///
+    /// THE ORDER IS PINNED WHOLE, not sampled. A pair of "x is before y"
+    /// readings passes under orders nobody intended; the equality below fails on
+    /// any edit that moves a directory, adds one or drops one, which is the
+    /// point — a prefix put back in front of the system directories has to fail
+    /// here rather than go quiet and be found again in a landing's suite log.
+    ///
+    /// THEN BOTH DIRECTIONS OF WHAT THE ORDER MEANS, over the resolver that
+    /// reads it. An order-only reading says the list changed, never that it
+    /// changed correctly: the prefix must keep every name the system does not
+    /// ship, and it is nearly all of them.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn the_child_path_puts_the_system_directories_before_the_prefix() {
+        let home = Path::new("/a-home");
+        let entries: Vec<PathBuf> = std::env::split_paths(&platform::child_path(home)).collect();
+        assert_eq!(
+            entries,
+            vec![
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/bin"),
+                PathBuf::from("/usr/sbin"),
+                PathBuf::from("/sbin"),
+                PathBuf::from("/opt/homebrew/bin"),
+                PathBuf::from("/usr/local/bin"),
+                PathBuf::from("/a-home/.local/bin"),
+            ],
+            "the constructed order, whole"
+        );
+
+        // BOTH DIRECTIONS, one command, on directories this arm owns and in the
+        // shape the pin above proves the real path has: a system pair ahead of a
+        // prefix pair. `shared` is in both and must resolve to the system copy;
+        // `prefix-only` is in one and must still resolve to the prefix's.
+        let rig = Rig::new("child-path-order");
+        let system = rig.root.join("system-dir");
+        let prefix = rig.root.join("prefix-dir");
+        let shared = plant(&system, "tt-shared");
+        let shadowed = plant(&prefix, "tt-shared");
+        let only = plant(&prefix, "tt-prefix-only");
+        let shaped = std::env::join_paths([&system, &prefix])
+            .expect("the shaped path joins")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            platform::resolve_on_path(&shaped, "tt-shared"),
+            Some(shared),
+            "a name both halves hold resolves to the system's copy, not {}",
+            shadowed.display()
+        );
+        assert_eq!(
+            platform::resolve_on_path(&shaped, "tt-prefix-only"),
+            Some(only),
+            "and a name only the prefix holds still resolves there"
+        );
+
+        // THE SAME READING ON THE BOX'S OWN NAME, where the box has both copies:
+        // python3 is the name the field failure was about and the platform
+        // ships one too. A box missing either copy cannot be read, so the arm
+        // says which copy it did not find rather than passing in silence.
+        let built = platform::child_path(&platform::home_dir());
+        let system_python = PathBuf::from("/usr/bin/python3");
+        let prefix_python = PathBuf::from("/opt/homebrew/bin/python3");
+        if system_python.exists() && prefix_python.exists() {
+            assert_eq!(
+                platform::resolve_on_path(&built, "python3"),
+                Some(system_python),
+                "the interpreter a child of this controller runs is the platform's"
+            );
+        } else {
+            println!(
+                "python3 not read on this box: /usr/bin {} , /opt/homebrew/bin {}",
+                system_python.exists(),
+                prefix_python.exists()
+            );
+        }
+    }
+
+    /// gas-city G7 — a restart ADOPTS the sessions it already owns rather than
+    /// re-hosting them, and this fleet adds the event the reference engine
+    /// omits: adoption by SESSION ID, no respawn, one line each.
+    ///
+    /// Four table rows against one poll's reading, so the predicate is measured
+    /// and not merely exercised. The LIVE session is claimed and it is the
+    /// only one: a session the agent named for a pane the host holds alive is
+    /// one running now, which is the whole of the sighting (the host's
+    /// presence and the agent's `read` decide which ids those are, upstream of
+    /// this call). The rows whose sessions nobody named live are left to the
+    /// discriminator — a claim taken on a session nobody saw running is a claim
+    /// on a session that may be over.
+    #[test]
+    fn a_restart_adopts_and_says_so() {
+        let rig = Rig::new("lesson-g7");
+        let mut table = Table::default();
+        table.push(a_row_for(S1, "/wt/s1", 100, Some("a-session")));
+        table.push(a_row_for("s2", "/wt/s2", 200, Some("a-hibernated-session")));
+        table.push(a_row_for("s3", "/wt/s3", 300, Some("a-stopped-session")));
+        table.push(a_row_for("s4", "/wt/s4", 400, Some("a-gone-session")));
+        let mut log = rig.log();
+
+        // The one session the agent named for a live pane this poll.
+        let live = vec!["a-session".to_string()];
+
+        let claimed = effect::adopt(&live, &mut table, &mut log, 5_000);
+        assert_eq!(claimed, vec!["a-session".to_string()]);
+        assert_eq!(rig.events_of(events::SESSION_ADOPTED), 1);
+        assert_eq!(
+            table.sessions[0].first_seen_at,
+            Some(5_000),
+            "the claimed row is sighted from the roster this poll read"
+        );
+        let adopted = rig
+            .events()
+            .into_iter()
+            .find(|e| e["type"] == events::SESSION_ADOPTED)
+            .expect("the claim wrote its line");
+        assert!(
+            adopted["payload"].get("short_id").is_none(),
+            "the listing's address rides nowhere, though the row carried one: {adopted}"
+        );
+        assert_eq!(
+            table.sessions[1].first_seen_at, None,
+            "a session named for no live pane is left to the discriminator: nobody saw it \
+             running"
+        );
+        assert_eq!(table.sessions[2].first_seen_at, None, "and so is a second");
+        assert_eq!(table.sessions[3].first_seen_at, None, "and so is a third");
+        assert!(
+            !rig.argv_path().exists(),
+            "and adoption runs nothing of the agent's"
+        );
+    }
+
+    /// gas-city G14 — a hold that a restart silently clears is a hold that
+    /// protects nothing, and a hold recorded only in a trace is one nobody can
+    /// answer.
+    ///
+    /// So the latch survives the table being lost — it is folded back out of the
+    /// stream, where a `session.halted` with no clear after it is a STANDING
+    /// hold — and it is announced once, by the layer that latched it.
+    #[test]
+    fn a_hold_persists_and_is_announced() {
+        let rig = Rig::new("lesson-g14");
+        let stream = rig.machine().join("events.jsonl");
+        let mut log = rig.log();
+
+        effect::halted(&s1(), "orla-4f5e6a7b8c91", decide::BLIND_LIMIT, &mut log);
+        assert_eq!(
+            rig.events_of(events::SESSION_HALTED),
+            1,
+            "one event for one transition"
+        );
+
+        // The table is not consulted: the hold comes back out of the stream.
+        let rebuilt = sessions::rebuild(&stream);
+        assert!(rebuilt.seat_state(S1).halted);
+        assert_eq!(rebuilt.seat_state(S1).blind, decide::BLIND_LIMIT);
+
+        // The control: a clear after it, and the same fold reads no hold. It is
+        // the ORDER that decides — a clear before the halt leaves the hold
+        // standing.
+        let mut log = rig.log();
+        log.append(
+            events::SEAT_CLEAR_HALT,
+            &events::ActorRef::seat(S1),
+            serde_json::json!({}),
+        )
+        .expect("the request lands");
+        let cleared = sessions::rebuild(&stream);
+        assert!(!cleared.seat_state(S1).halted);
+        assert_eq!(cleared.seat_state(S1).blind, 0);
+
+        let mut log = rig.log();
+        effect::halted(&s1(), "orla-4f5e6a7b8c91", decide::BLIND_LIMIT, &mut log);
+        assert!(
+            sessions::rebuild(&stream).seat_state(S1).halted,
+            "a halt after the clear is a hold again"
+        );
+    }
+}
+
+/// The arms written for four lessons the claude-code pack keeps since
+/// fleet-jymr.6 — A5, A9, D3 and D8 — whose `lessons::` tests are the pack's,
+/// in fleet-packs' `test/lessons/`. Each holds the in-process adapter's half
+/// (the argv, the seed, the declared models) beside core's (the watch, the
+/// revive, the gate); fleet-x93d.2 deletes the first with the adapter and
+/// keeps the second.
+mod the_claude_code_packs_lessons {
+    use super::*;
+
+    /// The claude-code pack's lessons A5 — a start with no model flag comes up
+    /// on the agent's default and not the fleet's (on 2.1.280, Opus 5.5 in
+    /// auto mode), so the model is mandatory on every call and is what keeps a
+    /// seat in the class its configuration declares.
     ///
     /// Read off the argv the launch hands the host, which IS the pane's process
     /// (E2), and positionally: a `--name` given an empty value would swallow
     /// the flag after it, so the arm asserts that the element after the name is
     /// still `--model`.
     #[test]
-    fn start_names_the_model() {
+    fn a_launch_names_the_model_the_spec_carries() {
         let rig = Rig::new("start-names-the-model");
         let spec = a_spec(&rig.worktree().display().to_string());
         let argv = rig
@@ -391,22 +698,22 @@ mod lessons {
          this folder\n\
          Enter to confirm · Esc to cancel\n";
 
-    /// claude-code D8 — an interactive start meets onboarding and the trust
-    /// question unless its configuration directory is seeded past both, and it
-    /// is believed only when the listing shows the pane's own process.
-    /// Re-measured on 2.1.280 and tmux 3.7b (fleet-rge6.2, 2026-09-26): a
-    /// directory seeded with the onboarding keys and the worktree's trust entry
-    /// came up with no theme picker, no login menu and no trust question; the
-    /// row was listed by the pane's pid 0.5–0.75 s after the session was made
-    /// and carried its status half a second later; `--name` held and the
-    /// positional first turn submitted.
+    /// The claude-code pack's lessons D8 — an interactive start meets
+    /// onboarding and the trust question unless its configuration directory is
+    /// seeded past both, and it is believed only when the listing shows the
+    /// pane's own process. Re-measured on 2.1.280 and tmux 3.7b (fleet-rge6.2,
+    /// 2026-09-26): a directory seeded with the onboarding keys and the
+    /// worktree's trust entry came up with no theme picker, no login menu and
+    /// no trust question; the row was listed by the pane's pid 0.5–0.75 s after
+    /// the session was made and carried its status half a second later;
+    /// `--name` held and the positional first turn submitted.
     ///
     /// Four halves: what the launch asks for, what it seeds, what the watch
     /// believes over a fake host and a stub agent, and the trust fallback — each
     /// beside the control that says the reading is the rule's and not the
     /// fixture's.
     #[test]
-    fn an_interactive_start_under_tmux() {
+    fn an_interactive_start_is_seeded_watched_and_answered_for_trust() {
         // ---- THE LAUNCH: an interactive session, the resolved binary as the
         // pane's own process, and every flag a start owes.
         let rig = Rig::new("interactive-start");
@@ -703,207 +1010,13 @@ mod lessons {
         );
     }
 
-    /// claude-code C5 — the rest threshold is a fraction of the agent's context
-    /// window, and the window is the agent's to change. It is therefore POLICY
-    /// and not a constant this code owns: a window that moves makes the number
-    /// wrong with no tool reporting anything.
+    /// The claude-code pack's lessons D3 — a session's permission mode is not
+    /// honoured by every model, and the downgrade is reported by nothing an
+    /// instrument reads. So the fleet checks that the model CAN honour the
+    /// posture rather than assuming the call was enough, and membership is by
+    /// prefix because live ids carry suffixes naming the same model.
     #[test]
-    fn the_context_threshold_is_a_fraction_of_a_moving_window() {
-        let from_file = policy::parse("[controller]\nrest_threshold_tokens = 400000\n")
-            .expect("the policy parses");
-        assert_eq!(from_file.rest_threshold_tokens, 400_000);
-
-        // The default is a figure the file can move, not one the table reads
-        // for itself.
-        let silent = policy::parse("").expect("an empty policy parses");
-        assert_eq!(
-            silent.rest_threshold_tokens,
-            policy::DEFAULT_REST_THRESHOLD_TOKENS
-        );
-
-        // And the decision keys on the value it is HANDED: one seat, one
-        // reading, two thresholds, two verdicts.
-        let mut seat = SeatInput {
-            seat_dir: "s1",
-            state: RosterState::Present,
-            unknown_cause: None,
-            transient: false,
-            pending_rest: false,
-            pending_deliberate_end: false,
-            context_tokens: Some(500_000),
-            rest_threshold_tokens: from_file.rest_threshold_tokens,
-            session_id: Some("a-session"),
-            already_nudged: false,
-            dispatch_age_ms: None,
-            sighted: false,
-            arrival_window_ms: 45_000,
-            halted: false,
-            blind: 0,
-        };
-        assert_eq!(decide(&seat), Verdict::SuggestRest);
-        seat.rest_threshold_tokens = silent.rest_threshold_tokens;
-        assert_eq!(
-            decide(&seat),
-            Verdict::LeaveAlone,
-            "the same reading is under the other threshold"
-        );
-    }
-
-    /// claude-code D1 — the child PATH is constructed, never inherited. A
-    /// service environment carries neither a package manager's prefix nor the
-    /// user's local bin, and a daemon started under it hands every later session
-    /// a PATH that collapses mid-run.
-    ///
-    /// Read from what the CHILD received, and against a process `PATH` that has
-    /// been set to something the constructed one does not contain — so a child
-    /// that inherited would be caught rather than accidentally agreeing.
-    #[test]
-    fn the_child_path_is_constructed() {
-        let rig = Rig::new("child-path");
-        let home = rig.home();
-        let built = platform::child_path(&home);
-
-        // The entries the service environment lacks are in it, keyed on the home
-        // it was handed rather than on this box's own.
-        let entries: Vec<PathBuf> = std::env::split_paths(&built).collect();
-        assert!(
-            entries.contains(&home.join(".local").join("bin")),
-            "the user's local bin, under the home passed in: {built}"
-        );
-        assert!(
-            entries.contains(&PathBuf::from("/usr/bin"))
-                && entries.contains(&PathBuf::from("/bin")),
-            "and the base of any POSIX system: {built}"
-        );
-        let elsewhere = platform::child_path(Path::new("/elsewhere"));
-        let somewhere_else = platform::child_path(Path::new("/somewhere-else"));
-        assert!(elsewhere.contains("/elsewhere/.local/bin"), "{elsewhere}");
-        assert!(
-            somewhere_else.contains("/somewhere-else/.local/bin"),
-            "{somewhere_else}"
-        );
-        assert_ne!(
-            elsewhere, somewhere_else,
-            "a different home moves the entry that is keyed on it"
-        );
-
-        // What a session is handed: the variables fleet sets for every seat's
-        // session, which the launch carries through and the host sets on the
-        // pane EXACTLY, hold the constructed value to the byte — built off the
-        // home this process runs under, as the controller builds it.
-        let launch = rig
-            .agent()
-            .launch(&a_spec(&rig.worktree().display().to_string()))
-            .expect("it launches");
-        assert_eq!(
-            launch.env.get("PATH"),
-            Some(&platform::child_path(&platform::home_dir())),
-            "the session is handed the constructed PATH"
-        );
-
-        // And what a command child actually got, spawned through the adapter,
-        // which builds its environment from the same list.
-        let _ = rig.agent().version();
-        assert_eq!(rig.recorded_path(), built);
-
-        // The control: this process's own PATH is not what the child got. A
-        // suite whose PATH happened to equal the constructed value would pass the
-        // lines above with an adapter that inherited.
-        let mine = std::env::var("PATH").unwrap_or_default();
-        assert_ne!(
-            rig.recorded_path(),
-            mine,
-            "the child's PATH is not this process's: {mine}"
-        );
-    }
-
-    /// THE SYSTEM DIRECTORIES COME FIRST ON THE CONSTRUCTED PATH, ahead of the
-    /// package manager's prefix and the user's local bin.
-    ///
-    /// THE ORDER IS PINNED WHOLE, not sampled. A pair of "x is before y"
-    /// readings passes under orders nobody intended; the equality below fails on
-    /// any edit that moves a directory, adds one or drops one, which is the
-    /// point — a prefix put back in front of the system directories has to fail
-    /// here rather than go quiet and be found again in a landing's suite log.
-    ///
-    /// THEN BOTH DIRECTIONS OF WHAT THE ORDER MEANS, over the resolver that
-    /// reads it. An order-only reading says the list changed, never that it
-    /// changed correctly: the prefix must keep every name the system does not
-    /// ship, and it is nearly all of them.
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn the_child_path_puts_the_system_directories_before_the_prefix() {
-        let home = Path::new("/a-home");
-        let entries: Vec<PathBuf> = std::env::split_paths(&platform::child_path(home)).collect();
-        assert_eq!(
-            entries,
-            vec![
-                PathBuf::from("/usr/bin"),
-                PathBuf::from("/bin"),
-                PathBuf::from("/usr/sbin"),
-                PathBuf::from("/sbin"),
-                PathBuf::from("/opt/homebrew/bin"),
-                PathBuf::from("/usr/local/bin"),
-                PathBuf::from("/a-home/.local/bin"),
-            ],
-            "the constructed order, whole"
-        );
-
-        // BOTH DIRECTIONS, one command, on directories this arm owns and in the
-        // shape the pin above proves the real path has: a system pair ahead of a
-        // prefix pair. `shared` is in both and must resolve to the system copy;
-        // `prefix-only` is in one and must still resolve to the prefix's.
-        let rig = Rig::new("child-path-order");
-        let system = rig.root.join("system-dir");
-        let prefix = rig.root.join("prefix-dir");
-        let shared = plant(&system, "tt-shared");
-        let shadowed = plant(&prefix, "tt-shared");
-        let only = plant(&prefix, "tt-prefix-only");
-        let shaped = std::env::join_paths([&system, &prefix])
-            .expect("the shaped path joins")
-            .to_string_lossy()
-            .into_owned();
-        assert_eq!(
-            platform::resolve_on_path(&shaped, "tt-shared"),
-            Some(shared),
-            "a name both halves hold resolves to the system's copy, not {}",
-            shadowed.display()
-        );
-        assert_eq!(
-            platform::resolve_on_path(&shaped, "tt-prefix-only"),
-            Some(only),
-            "and a name only the prefix holds still resolves there"
-        );
-
-        // THE SAME READING ON THE BOX'S OWN NAME, where the box has both copies:
-        // python3 is the name the field failure was about and the platform
-        // ships one too. A box missing either copy cannot be read, so the arm
-        // says which copy it did not find rather than passing in silence.
-        let built = platform::child_path(&platform::home_dir());
-        let system_python = PathBuf::from("/usr/bin/python3");
-        let prefix_python = PathBuf::from("/opt/homebrew/bin/python3");
-        if system_python.exists() && prefix_python.exists() {
-            assert_eq!(
-                platform::resolve_on_path(&built, "python3"),
-                Some(system_python),
-                "the interpreter a child of this controller runs is the platform's"
-            );
-        } else {
-            println!(
-                "python3 not read on this box: /usr/bin {} , /opt/homebrew/bin {}",
-                system_python.exists(),
-                prefix_python.exists()
-            );
-        }
-    }
-
-    /// claude-code D3 — a session's permission mode is not honoured by every
-    /// model, and the downgrade is reported by nothing an instrument reads. So
-    /// the fleet checks that the model CAN honour the posture rather than
-    /// assuming the call was enough, and membership is by prefix because live
-    /// ids carry suffixes naming the same model.
-    #[test]
-    fn the_permission_posture_is_model_gated() {
+    fn auto_is_held_to_the_declared_models_by_prefix() {
         // The gate is the agent's own declaration (E9) where the policy names
         // none: Claude Code's `auto` held to the models measured to honour it.
         let agent = claude_code::capabilities();
@@ -944,14 +1057,15 @@ mod lessons {
         );
     }
 
-    /// claude-code A9 — a resume by the FULL id keeps the session. Re-measured
-    /// on 2.1.280 and tmux 3.7b for an INTERACTIVE session (fleet-rge6.4,
-    /// 2026-09-26): killed after a turn and resumed as a new tmux session with
-    /// the start's `--model`, `--permission-mode` and `--plugin-dir`, it was
-    /// listed under the same session id on the new pane's pid, on the flags'
-    /// model and posture, its plugin's session-start hook firing with source
-    /// `resume` and its next turn going to the same transcript. The fork A9 read
-    /// off a flagged resume was a background session's.
+    /// The claude-code pack's lessons A9 — a resume by the FULL id keeps the
+    /// session. Re-measured on 2.1.280 and tmux 3.7b for an INTERACTIVE session
+    /// (fleet-rge6.4, 2026-09-26): killed after a turn and resumed as a new
+    /// tmux session with the start's `--model`, `--permission-mode` and
+    /// `--plugin-dir`, it was listed under the same session id on the new
+    /// pane's pid, on the flags' model and posture, its plugin's session-start
+    /// hook firing with source `resume` and its next turn going to the same
+    /// transcript. The fork A9 read off a flagged resume was a background
+    /// session's.
     ///
     /// Three halves. What the resume asks for: the full id and the start's own
     /// flags, no name and no first turn, under the start's environment. What a
@@ -960,7 +1074,7 @@ mod lessons {
     /// fork a resume can still be: a row under any other id is Failed, killed,
     /// and moves no row.
     #[test]
-    fn a_resume_by_full_id_keeps_the_session() {
+    fn a_revive_resumes_the_full_id_and_kills_a_fork() {
         // ---- THE ARGV.
         let rig = Rig::new("lesson-a9");
         test_support::plant_operator_state(&rig.home());
@@ -1136,108 +1250,6 @@ mod lessons {
             rig.host.calls_of(FakeHost::NEW_SESSION).is_empty(),
             "{:?}",
             rig.host.verbs()
-        );
-    }
-
-    /// gas-city G7 — a restart ADOPTS the sessions it already owns rather than
-    /// re-hosting them, and this fleet adds the event the reference engine
-    /// omits: adoption by SESSION ID, no respawn, one line each.
-    ///
-    /// Four table rows against one poll's reading, so the predicate is measured
-    /// and not merely exercised. The LIVE session is claimed and it is the
-    /// only one: a session the agent named for a pane the host holds alive is
-    /// one running now, which is the whole of the sighting (the host's
-    /// presence and the agent's `read` decide which ids those are, upstream of
-    /// this call). The rows whose sessions nobody named live are left to the
-    /// discriminator — a claim taken on a session nobody saw running is a claim
-    /// on a session that may be over.
-    #[test]
-    fn a_restart_adopts_and_says_so() {
-        let rig = Rig::new("lesson-g7");
-        let mut table = Table::default();
-        table.push(a_row_for(S1, "/wt/s1", 100, Some("a-session")));
-        table.push(a_row_for("s2", "/wt/s2", 200, Some("a-hibernated-session")));
-        table.push(a_row_for("s3", "/wt/s3", 300, Some("a-stopped-session")));
-        table.push(a_row_for("s4", "/wt/s4", 400, Some("a-gone-session")));
-        let mut log = rig.log();
-
-        // The one session the agent named for a live pane this poll.
-        let live = vec!["a-session".to_string()];
-
-        let claimed = effect::adopt(&live, &mut table, &mut log, 5_000);
-        assert_eq!(claimed, vec!["a-session".to_string()]);
-        assert_eq!(rig.events_of(events::SESSION_ADOPTED), 1);
-        assert_eq!(
-            table.sessions[0].first_seen_at,
-            Some(5_000),
-            "the claimed row is sighted from the roster this poll read"
-        );
-        let adopted = rig
-            .events()
-            .into_iter()
-            .find(|e| e["type"] == events::SESSION_ADOPTED)
-            .expect("the claim wrote its line");
-        assert!(
-            adopted["payload"].get("short_id").is_none(),
-            "the listing's address rides nowhere, though the row carried one: {adopted}"
-        );
-        assert_eq!(
-            table.sessions[1].first_seen_at, None,
-            "a session named for no live pane is left to the discriminator: nobody saw it \
-             running"
-        );
-        assert_eq!(table.sessions[2].first_seen_at, None, "and so is a second");
-        assert_eq!(table.sessions[3].first_seen_at, None, "and so is a third");
-        assert!(
-            !rig.argv_path().exists(),
-            "and adoption runs nothing of the agent's"
-        );
-    }
-
-    /// gas-city G14 — a hold that a restart silently clears is a hold that
-    /// protects nothing, and a hold recorded only in a trace is one nobody can
-    /// answer.
-    ///
-    /// So the latch survives the table being lost — it is folded back out of the
-    /// stream, where a `session.halted` with no clear after it is a STANDING
-    /// hold — and it is announced once, by the layer that latched it.
-    #[test]
-    fn a_hold_persists_and_is_announced() {
-        let rig = Rig::new("lesson-g14");
-        let stream = rig.machine().join("events.jsonl");
-        let mut log = rig.log();
-
-        effect::halted(&s1(), "orla-4f5e6a7b8c91", decide::BLIND_LIMIT, &mut log);
-        assert_eq!(
-            rig.events_of(events::SESSION_HALTED),
-            1,
-            "one event for one transition"
-        );
-
-        // The table is not consulted: the hold comes back out of the stream.
-        let rebuilt = sessions::rebuild(&stream);
-        assert!(rebuilt.seat_state(S1).halted);
-        assert_eq!(rebuilt.seat_state(S1).blind, decide::BLIND_LIMIT);
-
-        // The control: a clear after it, and the same fold reads no hold. It is
-        // the ORDER that decides — a clear before the halt leaves the hold
-        // standing.
-        let mut log = rig.log();
-        log.append(
-            events::SEAT_CLEAR_HALT,
-            &events::ActorRef::seat(S1),
-            serde_json::json!({}),
-        )
-        .expect("the request lands");
-        let cleared = sessions::rebuild(&stream);
-        assert!(!cleared.seat_state(S1).halted);
-        assert_eq!(cleared.seat_state(S1).blind, 0);
-
-        let mut log = rig.log();
-        effect::halted(&s1(), "orla-4f5e6a7b8c91", decide::BLIND_LIMIT, &mut log);
-        assert!(
-            sessions::rebuild(&stream).seat_state(S1).halted,
-            "a halt after the clear is a hold again"
         );
     }
 }

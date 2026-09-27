@@ -30,8 +30,9 @@ mod common;
 /// The zero-bytes branch has THREE drivers, none in this module and none reading
 /// which cause it is, only that one is there:
 /// `an_unreadable_listing_is_unknown_for_every_seat_and_never_absent` in
-/// `drive_seats.rs`, and
-/// `lessons::the_roster_read_can_go_silently_dead` and
+/// `drive_seats.rs`,
+/// `a_zero_byte_listing_is_unknown_and_an_empty_array_is_not` in
+/// `adapter::claude_code`'s tests (the claude-code pack's lessons B4), and
 /// `an_unknown_seat_publishes_its_cause_and_no_reading` in `observe.rs`. The
 /// JSON-parse cause has none: every listing every arm hands the reader is valid
 /// JSON, an empty array, or zero bytes. And the wait error needs a `try_wait`

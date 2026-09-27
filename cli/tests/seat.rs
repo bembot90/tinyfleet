@@ -1306,6 +1306,72 @@ fn a_project_settings_file_that_already_denies_a_shape_keeps_it_beside_the_five(
     }
 }
 
+mod lessons {
+    //! The contract named in `fleet/brain/lessons/claude-code.md` § Test
+    //! inventory: a fact the code in this file exercises owes a test under the
+    //! exact name the inventory carries.
+
+    use super::*;
+
+    /// The `git worktree list --porcelain` block for `worktree`, found by its
+    /// resolved path, or a panic naming what was listed.
+    fn porcelain_block(listed: &str, worktree: &Path) -> String {
+        let want = std::fs::canonicalize(worktree).expect("the worktree resolves");
+        listed
+            .split("\n\n")
+            .find(|block| {
+                block
+                    .lines()
+                    .next()
+                    .and_then(|line| line.strip_prefix("worktree "))
+                    .and_then(|path| std::fs::canonicalize(path).ok())
+                    .is_some_and(|path| path == want)
+            })
+            .unwrap_or_else(|| panic!("{} is not listed: {listed}", want.display()))
+            .to_string()
+    }
+
+    fn locked(block: &str) -> bool {
+        block
+            .lines()
+            .any(|line| line == "locked" || line.starts_with("locked "))
+    }
+
+    /// claude-code A13 — a session locks only a worktree the agent created for
+    /// it, and every worktree fleet makes for a seat is the other shape: fleet
+    /// cuts it with its own `git worktree add` and locks nothing, so a removal
+    /// that reached it would take the checkout out from under a live session,
+    /// and nothing but fleet's own care — a retire that verifies from outside —
+    /// stands in the way. The control locks the same tree by hand and reads the
+    /// lock back, so the unlocked reading is the tree's own and not a listing
+    /// this arm cannot see a lock in.
+    #[test]
+    fn a_session_locks_only_a_worktree_it_created() {
+        let rig = Rig::new("a13-unlocked", false);
+        let spawned = rig.run(&[
+            "seat",
+            "spawn",
+            "--first-turn",
+            &rig.turn.display().to_string(),
+        ]);
+        assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
+        let worktree = rig.worktrees.join(the_seat(&spawned));
+        assert!(worktree.is_dir(), "{}", worktree.display());
+
+        let block = porcelain_block(&rig.git(&["worktree", "list", "--porcelain"]), &worktree);
+        assert!(
+            !locked(&block),
+            "a seat's worktree is fleet's own and carries no lock: {block}"
+        );
+
+        let path = worktree.display().to_string();
+        rig.git(&["worktree", "lock", "--reason", "the A13 control", &path]);
+        let block = porcelain_block(&rig.git(&["worktree", "list", "--porcelain"]), &worktree);
+        assert!(locked(&block), "the control's lock is read back: {block}");
+        rig.git(&["worktree", "unlock", &path]);
+    }
+}
+
 /// With the project's own file naming neither directory, the primary is the
 /// project root and the worktrees directory is its `-worktrees` sibling.
 #[test]

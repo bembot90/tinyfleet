@@ -2164,320 +2164,322 @@ mod tests {
         .remove(0)
     }
 
-    mod lessons {
-        use super::*;
+    // The lessons these arms were written for are the claude-code pack's
+    // now (fleet-jymr.6): each is `lessons::<slug>` in fleet-packs'
+    // `test/lessons/`, over the pack's own fixtures. These arms hold THIS
+    // adapter to the same facts until fleet-x93d.2 deletes it with them.
 
-        /// claude-code B1 — the roster is one command, and the reader tolerates
-        /// fields it does not know. Field presence is kind-dependent, so a reader
-        /// that requires a field on every row fails on the first mixed listing:
-        /// here a background row beside the recorded interactive one.
-        #[test]
-        fn the_roster_is_one_command() {
-            let recorded = RECORDED_IDLE.trim_start_matches('[').trim_end_matches(']');
-            let mixed = format!(
-                r#"[
-                  {{"id":"aa","sessionId":"aa","cwd":"/wt/builder-1","kind":"background",
-                   "pid":1,"status":"idle","state":"running","name":"orla","startedAt":10,
-                   "someFieldNobodyHasSeen":"harmless"}},
-                  {recorded}
-                ]"#
+    /// The claude-code pack's lessons B1 — the roster is one command, and the
+    /// reader tolerates fields it does not know. Field presence is
+    /// kind-dependent, so a reader that requires a field on every row fails on
+    /// the first mixed listing: here a background row beside the recorded
+    /// interactive one.
+    #[test]
+    fn a_mixed_listing_parses_and_unknown_fields_are_nothing() {
+        let recorded = RECORDED_IDLE.trim_start_matches('[').trim_end_matches(']');
+        let mixed = format!(
+            r#"[
+              {{"id":"aa","sessionId":"aa","cwd":"/wt/builder-1","kind":"background",
+               "pid":1,"status":"idle","state":"running","name":"orla","startedAt":10,
+               "someFieldNobodyHasSeen":"harmless"}},
+              {recorded}
+            ]"#
+        );
+        let rows = parse_listing(&mixed).expect("the listing must parse");
+        assert_eq!(rows.len(), 2, "both kinds survive one read");
+        assert_eq!(rows[1].pid, Some(RECORDED_PID));
+        let seen = read_one(&by_pid(RECORDED_PID), &mixed);
+        assert_eq!(seen.activity, Activity::Idle);
+        assert_eq!(seen.session_id.as_deref(), Some(RECORDED_SESSION));
+    }
+
+    /// The claude-code pack's lessons B2 — there is no token figure anywhere in
+    /// the listing, so context accounting cannot come from it. A number that
+    /// looks like one on a row is not the seat's context: the transcript is.
+    #[test]
+    fn a_token_figure_on_a_row_is_never_the_seats_context() {
+        let listed = r#"[{"sessionId":"aa","cwd":"/wt/builder-1","kind":"interactive",
+             "pid":4242,"status":"idle","startedAt":10,"tokens":999999,"input_tokens":999999}]"#;
+        let seen = read_one(&by_pid(4242), listed);
+        assert_eq!(seen.activity, Activity::Idle);
+        let context = context_of(&by_pid(4242), None, None);
+        assert_eq!(context.tokens, None, "999999 has no path into a reading");
+
+        let from_transcript =
+            context_tokens_in(r#"{"type":"assistant","message":{"usage":{"input_tokens":7}}}"#);
+        assert_eq!(
+            from_transcript,
+            Some(7),
+            "the reading is the transcript's, and 999999 has no path into it"
+        );
+    }
+
+    /// The claude-code pack's lessons B4 — the listing has been observed
+    /// answering with zero bytes and a success status while sessions were live.
+    /// Empty is UNREADABLE, never a reading of zero; the control is an empty
+    /// JSON array, which is a listing that answered and said there is nothing.
+    #[test]
+    fn a_zero_byte_listing_is_unknown_and_an_empty_array_is_not() {
+        let silent = read_one(&by_pid(RECORDED_PID), "");
+        assert_eq!(silent.activity, Activity::Unknown);
+        assert!(
+            silent
+                .cause
+                .as_deref()
+                .is_some_and(|cause| cause.contains("zero bytes")),
+            "the cause travels with the unknown: {silent:?}"
+        );
+        assert_eq!(silent.session_id, None);
+
+        let answered = read_one(&by_pid(RECORDED_PID), RECORDED_GONE);
+        assert_eq!(
+            answered.activity,
+            Activity::Starting,
+            "a listing that answered and said nothing is not the same read"
+        );
+    }
+
+    /// The claude-code pack's lessons B5 — `cwd` names a seat and proves
+    /// nothing. A row is the seat's by its session id, else by the PANE's pid,
+    /// whatever directory it stands in, and a row in the seat's worktree with
+    /// neither is never the seat's.
+    #[test]
+    fn a_row_is_the_seats_by_session_or_pid_and_never_by_cwd() {
+        let listing = format!(
+            r#"[{{"sessionId":"not-mine","cwd":"{RECORDED_CWD}","pid":4242,"status":"busy"}},
+                {{"sessionId":"mine","cwd":"/somewhere/else","pid":{RECORDED_PID},"status":"idle"}}]"#
+        );
+        let seen = read_one(&by_pid(RECORDED_PID), &listing);
+        assert_eq!(
+            seen.session_id.as_deref(),
+            Some("mine"),
+            "the pid attributes the row, and the directory does not"
+        );
+        assert_eq!(seen.activity, Activity::Idle);
+
+        // The control: a pane whose pid no row carries is found by nothing, the
+        // row standing in its worktree included.
+        let nobody = read_one(&by_pid(7), &listing);
+        assert_eq!(nobody.session_id, None);
+        assert_eq!(nobody.activity, Activity::Starting);
+    }
+
+    /// The claude-code pack's lessons C1 — the transcript path is an encoding,
+    /// and every context instrument resolves the same way, so a change to it
+    /// blinds them all at once. The rule is EVERY non-alphanumeric character,
+    /// not the separator alone: a worktree carrying a dot, an underscore or a
+    /// space is the case a separator-only reader publishes a null context for
+    /// forever.
+    #[test]
+    fn every_non_alphanumeric_character_of_the_worktree_is_a_dash() {
+        let path = transcript_path(Path::new("/home/av/.claude"), "/wt/builder-1", "aa-bb");
+        assert_eq!(
+            path,
+            Path::new("/home/av/.claude/projects/-wt-builder-1/aa-bb.jsonl")
+        );
+
+        assert_eq!(
+            encode_project_dir("/Users/av/.claude/jobs/tmp"),
+            "-Users-av--claude-jobs-tmp",
+            "a dot is a dash, and a dot after a separator is two"
+        );
+        assert_eq!(
+            encode_project_dir("/wt/my_seat/a b.c"),
+            "-wt-my-seat-a-b-c",
+            "an underscore, a space and a dot are all dashes"
+        );
+        assert_eq!(encode_project_dir("plain123"), "plain123");
+        // Measured on 2.1.280: the scoped session's transcript landed at
+        // `<config dir>/projects/-private-tmp-fleet-measure-rge63-wt/<id>.jsonl`.
+        assert_eq!(
+            encode_project_dir(RECORDED_CWD),
+            "-private-tmp-fleet-measure-rge63-wt"
+        );
+    }
+
+    /// The claude-code pack's lessons B8 — one field says a session is stopped
+    /// in front of a human, and it is keyed on PRESENCE. The vocabulary is the
+    /// agent's, so a cause this fleet has never seen must still stop the seat
+    /// rather than read as a healthy one; the control is the same row without
+    /// the field.
+    ///
+    /// On the INTERACTIVE row the recording read (B10): `waiting` and
+    /// `permission prompt` at the approval dialog.
+    #[test]
+    fn waiting_for_is_read_on_its_presence() {
+        let blocked = read_one(&by_pid(RECORDED_PID), RECORDED_WAITING);
+        assert_eq!(blocked.activity, Activity::Blocked);
+        assert_eq!(blocked.blocked_on, Some(BlockedOn::Permission));
+        assert_eq!(blocked.cause.as_deref(), Some("permission prompt"));
+        assert_eq!(blocked.evidence, Evidence::Typed);
+        assert_eq!(blocked.session_id.as_deref(), Some(RECORDED_SESSION));
+
+        let unrecognised = read_one(
+            &by_pid(RECORDED_PID),
+            &RECORDED_BUSY.replace(
+                r#""status":"busy""#,
+                r#""status":"busy","waitingFor":"a cause nobody has enumerated""#,
+            ),
+        );
+        assert_eq!(
+            unrecognised.activity,
+            Activity::Blocked,
+            "presence, never the value: an unknown cause still stops the seat"
+        );
+        assert_eq!(
+            unrecognised.blocked_on, None,
+            "and names no reason it cannot"
+        );
+        assert_eq!(
+            unrecognised.cause.as_deref(),
+            Some("a cause nobody has enumerated")
+        );
+
+        // `waiting` with no cause beside it is a block all the same.
+        let causeless = read_one(
+            &by_pid(RECORDED_PID),
+            &RECORDED_WAITING.replace(r#","waitingFor":"permission prompt""#, ""),
+        );
+        assert_eq!(causeless.activity, Activity::Blocked);
+        assert_eq!(causeless.cause.as_deref(), Some("status waiting"));
+
+        let control = read_one(&by_pid(RECORDED_PID), RECORDED_BUSY);
+        assert_eq!(control.activity, Activity::Busy);
+        assert_eq!(control.cause, None);
+    }
+
+    /// The claude-code pack's lessons B10 — an interactive session is listed
+    /// WITHOUT AN ADDRESS, its pid is the pane's, its activity is a three-word
+    /// status and its blocked cause is typed. Re-measured on the supported
+    /// 2.1.280 (reviewer call E14; B10 was first read on 2.1.282), and the
+    /// recording is the fixture.
+    #[test]
+    fn the_recorded_interactive_rows_carry_no_address() {
+        for (body, activity) in [
+            (RECORDED_IDLE, Activity::Idle),
+            (RECORDED_BUSY, Activity::Busy),
+            (RECORDED_WAITING, Activity::Blocked),
+        ] {
+            assert!(
+                !body.contains("\"id\""),
+                "no address on an interactive row: {body}"
             );
-            let rows = parse_listing(&mixed).expect("the listing must parse");
-            assert_eq!(rows.len(), 2, "both kinds survive one read");
-            assert_eq!(rows[1].pid, Some(RECORDED_PID));
-            let seen = read_one(&by_pid(RECORDED_PID), &mixed);
-            assert_eq!(seen.activity, Activity::Idle);
+            let seen = read_one(&by_pid(RECORDED_PID), body);
+            assert_eq!(seen.activity, activity, "{body}");
+            assert_eq!(seen.evidence, Evidence::Typed);
             assert_eq!(seen.session_id.as_deref(), Some(RECORDED_SESSION));
         }
+        // `kill-session`: the next read lists nothing, and a pane still asked
+        // about by its pid is a pane with no row — starting, never an end,
+        // which is the host's reading to make.
+        let gone = read_one(&by_pid(RECORDED_PID), RECORDED_GONE);
+        assert_eq!(gone.activity, Activity::Starting);
+        assert_eq!(gone.session_id, None);
+    }
 
-        /// claude-code B2 — there is no token figure anywhere in the listing, so
-        /// context accounting cannot come from it. A number that looks like one on
-        /// a row is not the seat's context: the transcript is.
-        #[test]
-        fn the_roster_carries_no_token_field() {
-            let listed = r#"[{"sessionId":"aa","cwd":"/wt/builder-1","kind":"interactive",
-                 "pid":4242,"status":"idle","startedAt":10,"tokens":999999,"input_tokens":999999}]"#;
-            let seen = read_one(&by_pid(4242), listed);
-            assert_eq!(seen.activity, Activity::Idle);
-            let context = context_of(&by_pid(4242), None, None);
-            assert_eq!(context.tokens, None, "999999 has no path into a reading");
+    /// The claude-code pack's lessons C2 — the entry shape: there is no single
+    /// context number, and the reading is the arithmetic over the input tokens
+    /// and both cache figures on the LAST main-chain assistant entry.
+    #[test]
+    fn the_window_is_the_last_main_chain_entrys_three_figures() {
+        let body = r#"
+{"type":"user","message":{"usage":{"input_tokens":900}}}
+{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_read_input_tokens":2,"cache_creation_input_tokens":3}}}
+{"type":"assistant","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":20,"cache_creation_input_tokens":30}}}
+{"type":"assistant","message":{"usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}
+{"type":"assistant","message":{"usage":{"inp"#;
+        assert_eq!(
+            context_tokens_in(body),
+            Some(60),
+            "the last entry stating a window, summed over all three figures"
+        );
+        assert_eq!(
+            context_tokens_in(r#"{"type":"assistant","message":{}}"#),
+            None,
+            "an entry with no usage block states no window"
+        );
+        assert_eq!(context_tokens_in(""), None);
+    }
 
-            let from_transcript =
-                context_tokens_in(r#"{"type":"assistant","message":{"usage":{"input_tokens":7}}}"#);
-            assert_eq!(
-                from_transcript,
-                Some(7),
-                "the reading is the transcript's, and 999999 has no path into it"
-            );
-        }
+    /// The claude-code pack's lessons C3 — a sidechain entry is a subagent's
+    /// turn carrying the subagent's window. The flag is on every entry, so the
+    /// skip is a filter and not an inference; the control below is the same
+    /// file with the flag cleared, where the entry IS the reading.
+    #[test]
+    fn a_sidechain_entry_is_never_the_window() {
+        let with_subagent = r#"
+{"type":"assistant","isSidechain":false,"message":{"usage":{"input_tokens":11}}}
+{"type":"assistant","isSidechain":true,"message":{"usage":{"input_tokens":2600000}}}"#;
+        assert_eq!(context_tokens_in(with_subagent), Some(11));
 
-        /// claude-code B4 — the listing has been observed answering with zero bytes
-        /// and a success status while sessions were live. Empty is UNREADABLE,
-        /// never a reading of zero; the control is an empty JSON array, which is a
-        /// listing that answered and said there is nothing.
-        #[test]
-        fn the_roster_read_can_go_silently_dead() {
-            let silent = read_one(&by_pid(RECORDED_PID), "");
-            assert_eq!(silent.activity, Activity::Unknown);
-            assert!(
-                silent
-                    .cause
-                    .as_deref()
-                    .is_some_and(|cause| cause.contains("zero bytes")),
-                "the cause travels with the unknown: {silent:?}"
-            );
-            assert_eq!(silent.session_id, None);
+        let control = with_subagent.replace("\"isSidechain\":true", "\"isSidechain\":false");
+        assert_eq!(
+            context_tokens_in(&control),
+            Some(2_600_000),
+            "the control must read the entry the skip drops, or the skip proves nothing"
+        );
 
-            let answered = read_one(&by_pid(RECORDED_PID), RECORDED_GONE);
-            assert_eq!(
-                answered.activity,
-                Activity::Starting,
-                "a listing that answered and said nothing is not the same read"
-            );
-        }
+        let absent_flag = r#"{"type":"assistant","message":{"usage":{"input_tokens":42}}}"#;
+        assert_eq!(
+            context_tokens_in(absent_flag),
+            Some(42),
+            "an absent flag reads as main chain"
+        );
+    }
 
-        /// claude-code B5 — `cwd` names a seat and proves nothing. A row is the
-        /// seat's by its session id, else by the PANE's pid, whatever directory it
-        /// stands in, and a row in the seat's worktree with neither is never the
-        /// seat's.
-        #[test]
-        fn cwd_names_a_seat_and_proves_nothing() {
-            let listing = format!(
-                r#"[{{"sessionId":"not-mine","cwd":"{RECORDED_CWD}","pid":4242,"status":"busy"}},
-                    {{"sessionId":"mine","cwd":"/somewhere/else","pid":{RECORDED_PID},"status":"idle"}}]"#
-            );
-            let seen = read_one(&by_pid(RECORDED_PID), &listing);
-            assert_eq!(
-                seen.session_id.as_deref(),
-                Some("mine"),
-                "the pid attributes the row, and the directory does not"
-            );
-            assert_eq!(seen.activity, Activity::Idle);
+    /// The claude-code pack's lessons A11 — the configuration directory scopes
+    /// the provider's listing: a session started under a per-row directory is
+    /// listed under that directory and under no other, so every read about that
+    /// session has to be made under the same directory. It held for interactive
+    /// rows too (B10, re-read on 2.1.280: the scratch directory's listing named
+    /// the session and its transcript landed under it).
+    ///
+    /// The fixture is the FOLD: the directories asked for are recorded, and
+    /// each seat is read off the listing that could see it.
+    #[test]
+    fn each_config_dir_is_listed_once_and_scopes_its_seats() {
+        let per_row_dir = "/machine/config/builder-9";
+        let named = by_pid(1111);
+        let spawned = SeatRef {
+            seat: id(OTHER_ID),
+            config_dir: Some(format!("{per_row_dir}/")),
+            ..by_pid(2222)
+        };
+        let fleets = r#"[{"sessionId":"named","pid":1111,"status":"idle"}]"#;
+        let asked = std::cell::RefCell::new(Vec::new());
+        let listing = |dir: Option<&str>| {
+            asked.borrow_mut().push(dir.map(str::to_string));
+            Ok(match dir {
+                None => fleets.to_string(),
+                Some(_) => r#"[{"sessionId":"spawned","pid":2222,"status":"busy"}]"#.to_string(),
+            })
+        };
+        let seen = readings_from(
+            &[named, spawned.clone(), spawned.clone()],
+            &listing,
+            &|_: &SeatRef, _: &str| None,
+        );
 
-            // The control: a pane whose pid no row carries is found by nothing, the
-            // row standing in its worktree included.
-            let nobody = read_one(&by_pid(7), &listing);
-            assert_eq!(nobody.session_id, None);
-            assert_eq!(nobody.activity, Activity::Starting);
-        }
+        // ONE READ PER DISTINCT DIRECTORY: a read that listed once could not
+        // see the spawned session at all, and one per seat would ask the same
+        // directory twice.
+        assert_eq!(
+            asked.into_inner(),
+            vec![None, Some(per_row_dir.to_string())],
+            "the fleet's directory and the row's own, once each"
+        );
+        assert_eq!(seen.len(), 3, "one reading per seat asked");
+        assert_eq!(seen[0].session_id.as_deref(), Some("named"));
+        assert_eq!(seen[1].session_id.as_deref(), Some("spawned"));
+        assert_eq!(seen[1].activity, Activity::Busy);
 
-        /// claude-code C1 — the transcript path is an encoding, and every context
-        /// instrument resolves the same way, so a change to it blinds them all at
-        /// once. The rule is EVERY non-alphanumeric character, not the separator
-        /// alone: a worktree carrying a dot, an underscore or a space is the case a
-        /// separator-only reader publishes a null context for forever.
-        #[test]
-        fn the_transcript_path_encoding() {
-            let path = transcript_path(Path::new("/home/av/.claude"), "/wt/builder-1", "aa-bb");
-            assert_eq!(
-                path,
-                Path::new("/home/av/.claude/projects/-wt-builder-1/aa-bb.jsonl")
-            );
-
-            assert_eq!(
-                encode_project_dir("/Users/av/.claude/jobs/tmp"),
-                "-Users-av--claude-jobs-tmp",
-                "a dot is a dash, and a dot after a separator is two"
-            );
-            assert_eq!(
-                encode_project_dir("/wt/my_seat/a b.c"),
-                "-wt-my-seat-a-b-c",
-                "an underscore, a space and a dot are all dashes"
-            );
-            assert_eq!(encode_project_dir("plain123"), "plain123");
-            // Measured on 2.1.280: the scoped session's transcript landed at
-            // `<config dir>/projects/-private-tmp-fleet-measure-rge63-wt/<id>.jsonl`.
-            assert_eq!(
-                encode_project_dir(RECORDED_CWD),
-                "-private-tmp-fleet-measure-rge63-wt"
-            );
-        }
-
-        /// claude-code B8 — one field says a session is stopped in front of a
-        /// human, and it is keyed on PRESENCE. The vocabulary is the agent's, so a
-        /// cause this fleet has never seen must still stop the seat rather than
-        /// read as a healthy one; the control is the same row without the field.
-        ///
-        /// On the INTERACTIVE row the recording read (B10): `waiting` and
-        /// `permission prompt` at the approval dialog.
-        #[test]
-        fn waiting_for_names_the_block() {
-            let blocked = read_one(&by_pid(RECORDED_PID), RECORDED_WAITING);
-            assert_eq!(blocked.activity, Activity::Blocked);
-            assert_eq!(blocked.blocked_on, Some(BlockedOn::Permission));
-            assert_eq!(blocked.cause.as_deref(), Some("permission prompt"));
-            assert_eq!(blocked.evidence, Evidence::Typed);
-            assert_eq!(blocked.session_id.as_deref(), Some(RECORDED_SESSION));
-
-            let unrecognised = read_one(
-                &by_pid(RECORDED_PID),
-                &RECORDED_BUSY.replace(
-                    r#""status":"busy""#,
-                    r#""status":"busy","waitingFor":"a cause nobody has enumerated""#,
-                ),
-            );
-            assert_eq!(
-                unrecognised.activity,
-                Activity::Blocked,
-                "presence, never the value: an unknown cause still stops the seat"
-            );
-            assert_eq!(
-                unrecognised.blocked_on, None,
-                "and names no reason it cannot"
-            );
-            assert_eq!(
-                unrecognised.cause.as_deref(),
-                Some("a cause nobody has enumerated")
-            );
-
-            // `waiting` with no cause beside it is a block all the same.
-            let causeless = read_one(
-                &by_pid(RECORDED_PID),
-                &RECORDED_WAITING.replace(r#","waitingFor":"permission prompt""#, ""),
-            );
-            assert_eq!(causeless.activity, Activity::Blocked);
-            assert_eq!(causeless.cause.as_deref(), Some("status waiting"));
-
-            let control = read_one(&by_pid(RECORDED_PID), RECORDED_BUSY);
-            assert_eq!(control.activity, Activity::Busy);
-            assert_eq!(control.cause, None);
-        }
-
-        /// claude-code B10 — an interactive session is listed WITHOUT AN ADDRESS,
-        /// its pid is the pane's, its activity is a three-word status and its
-        /// blocked cause is typed. Re-measured on the supported 2.1.280 (reviewer
-        /// call E14; B10 was first read on 2.1.282), and the recording is the
-        /// fixture.
-        #[test]
-        fn an_interactive_row_is_listed_without_an_address() {
-            for (body, activity) in [
-                (RECORDED_IDLE, Activity::Idle),
-                (RECORDED_BUSY, Activity::Busy),
-                (RECORDED_WAITING, Activity::Blocked),
-            ] {
-                assert!(
-                    !body.contains("\"id\""),
-                    "no address on an interactive row: {body}"
-                );
-                let seen = read_one(&by_pid(RECORDED_PID), body);
-                assert_eq!(seen.activity, activity, "{body}");
-                assert_eq!(seen.evidence, Evidence::Typed);
-                assert_eq!(seen.session_id.as_deref(), Some(RECORDED_SESSION));
-            }
-            // `kill-session`: the next read lists nothing, and a pane still asked
-            // about by its pid is a pane with no row — starting, never an end,
-            // which is the host's reading to make.
-            let gone = read_one(&by_pid(RECORDED_PID), RECORDED_GONE);
-            assert_eq!(gone.activity, Activity::Starting);
-            assert_eq!(gone.session_id, None);
-        }
-
-        /// claude-code C2 — the entry shape: there is no single context number, and
-        /// the reading is the arithmetic over the input tokens and both cache
-        /// figures on the LAST main-chain assistant entry.
-        #[test]
-        fn the_transcript_entry_shape() {
-            let body = r#"
-    {"type":"user","message":{"usage":{"input_tokens":900}}}
-    {"type":"assistant","message":{"usage":{"input_tokens":1,"cache_read_input_tokens":2,"cache_creation_input_tokens":3}}}
-    {"type":"assistant","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":20,"cache_creation_input_tokens":30}}}
-    {"type":"assistant","message":{"usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}
-    {"type":"assistant","message":{"usage":{"inp"#;
-            assert_eq!(
-                context_tokens_in(body),
-                Some(60),
-                "the last entry stating a window, summed over all three figures"
-            );
-            assert_eq!(
-                context_tokens_in(r#"{"type":"assistant","message":{}}"#),
-                None,
-                "an entry with no usage block states no window"
-            );
-            assert_eq!(context_tokens_in(""), None);
-        }
-
-        /// claude-code C3 — a sidechain entry is a subagent's turn carrying the
-        /// subagent's window. The flag is on every entry, so the skip is a filter
-        /// and not an inference; the control below is the same file with the flag
-        /// cleared, where the entry IS the reading.
-        #[test]
-        fn sidechains_carry_another_window() {
-            let with_subagent = r#"
-    {"type":"assistant","isSidechain":false,"message":{"usage":{"input_tokens":11}}}
-    {"type":"assistant","isSidechain":true,"message":{"usage":{"input_tokens":2600000}}}"#;
-            assert_eq!(context_tokens_in(with_subagent), Some(11));
-
-            let control = with_subagent.replace("\"isSidechain\":true", "\"isSidechain\":false");
-            assert_eq!(
-                context_tokens_in(&control),
-                Some(2_600_000),
-                "the control must read the entry the skip drops, or the skip proves nothing"
-            );
-
-            let absent_flag = r#"{"type":"assistant","message":{"usage":{"input_tokens":42}}}"#;
-            assert_eq!(
-                context_tokens_in(absent_flag),
-                Some(42),
-                "an absent flag reads as main chain"
-            );
-        }
-
-        /// claude-code A11 — the configuration directory scopes the provider's
-        /// listing: a session started under a per-row directory is listed under
-        /// that directory and under no other, so every read about that session has
-        /// to be made under the same directory. It held for interactive rows too
-        /// (B10, re-read on 2.1.280: the scratch directory's listing named the
-        /// session and its transcript landed under it).
-        ///
-        /// The fixture is the FOLD: the directories asked for are recorded, and
-        /// each seat is read off the listing that could see it.
-        #[test]
-        fn the_config_dir_scopes_the_daemon() {
-            let per_row_dir = "/machine/config/builder-9";
-            let named = by_pid(1111);
-            let spawned = SeatRef {
-                seat: id(OTHER_ID),
-                config_dir: Some(format!("{per_row_dir}/")),
-                ..by_pid(2222)
-            };
-            let fleets = r#"[{"sessionId":"named","pid":1111,"status":"idle"}]"#;
-            let asked = std::cell::RefCell::new(Vec::new());
-            let listing = |dir: Option<&str>| {
-                asked.borrow_mut().push(dir.map(str::to_string));
-                Ok(match dir {
-                    None => fleets.to_string(),
-                    Some(_) => {
-                        r#"[{"sessionId":"spawned","pid":2222,"status":"busy"}]"#.to_string()
-                    }
-                })
-            };
-            let seen = readings_from(
-                &[named, spawned.clone(), spawned.clone()],
-                &listing,
-                &|_: &SeatRef, _: &str| None,
-            );
-
-            // ONE READ PER DISTINCT DIRECTORY: a read that listed once could not
-            // see the spawned session at all, and one per seat would ask the same
-            // directory twice.
-            assert_eq!(
-                asked.into_inner(),
-                vec![None, Some(per_row_dir.to_string())],
-                "the fleet's directory and the row's own, once each"
-            );
-            assert_eq!(seen.len(), 3, "one reading per seat asked");
-            assert_eq!(seen[0].session_id.as_deref(), Some("named"));
-            assert_eq!(seen[1].session_id.as_deref(), Some("spawned"));
-            assert_eq!(seen[1].activity, Activity::Busy);
-
-            // The control: the same spawned seat asked under the fleet's own
-            // directory is found nowhere.
-            let unscoped = SeatRef {
-                config_dir: None,
-                ..spawned
-            };
-            assert_eq!(read_one(&unscoped, fleets).session_id, None);
-        }
+        // The control: the same spawned seat asked under the fleet's own
+        // directory is found nowhere.
+        let unscoped = SeatRef {
+            config_dir: None,
+            ..spawned
+        };
+        assert_eq!(read_one(&unscoped, fleets).session_id, None);
     }
 
     /// A session id the agent has is found by it, whatever the pid, and one it no

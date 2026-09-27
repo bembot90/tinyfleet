@@ -269,8 +269,10 @@ exercise says `none — <why>`.
   first-run gate belongs in install, answered in the minute the service loads,
   not discovered by a seat that cannot start.
 - **Test:** `lessons::a_first_run_meets_the_trust_dialog` — shared with
-  claude-code.md's A15, which states the same behaviour as the agent's rather
-  than the engine's. One behaviour, one fixture.
+  A15, which states the same behaviour as the agent's rather than the
+  engine's. One behaviour, one fixture: A15 moved to the claude-code pack's
+  `LESSONS.md` (fleet-jymr.6), and the test is the pack's,
+  `test/lessons/a_first_run_meets_the_trust_dialog.test.ts` in fleet-packs.
 
 ### G13. Crashes restarted within a tick and left no event at all
 
@@ -569,7 +571,7 @@ name.
 | `lessons::a_stop_that_cannot_stop_says_so` | G9 |
 | `lessons::config_is_reread_without_a_restart` | G10 |
 | `lessons::the_posture_is_the_adapters_to_set` | G11 |
-| `lessons::a_first_run_meets_the_trust_dialog` | G12 |
+| `lessons::a_first_run_meets_the_trust_dialog` | G12 (the claude-code pack's test, shared with its A15) |
 | `lessons::a_crash_is_an_event` | G13 |
 | `lessons::a_hold_persists_and_is_announced` | G14 |
 | `lessons::idle_detection_needs_a_probe_that_can_be_idle` | G15 |
