@@ -40,7 +40,7 @@ in `packs.lock`, and every `fleet start` does the same. You get them before you
 install any pack, and every verb resolves through them.
 
 ```sh
-$ fleet create --embedded --agent claude_code
+$ fleet create --embedded --store none --packs-from <checkout>
 ...
 defaults: installed 0.1.0 — <machine-dir>/defaults
 ...

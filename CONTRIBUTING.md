@@ -50,7 +50,7 @@ what they date:
 | Tool | Constant | Where it is declared | Checked by |
 | --- | --- | --- | --- |
 | Claude Code | `PINNED_CLAUDE_CODE` | `core/src/supported.rs` | `doctor/claude-code-version`, the controller's `substrate.moved` when a fleet pins none |
-| fleet-packs | `PINNED_PACKS_SOURCE` and `PINNED_PACKS` (the tag) | `core/src/supported.rs` | `doctor/fleet-packs-version`, over every pack `packs.lock` pins from the source; `fleet create` installs the store's pack at the tag |
+| fleet-packs | `PINNED_PACKS_SOURCE` and `PINNED_PACKS` (the tag) | `core/src/supported.rs` | `doctor/fleet-packs-version`, over every pack `packs.lock` pins from the source; `fleet create` installs the agent's pack and the store's pack at the tag |
 
 Deno is a pack's, not the binary's: the ts pack's `[runtime]` table
 (`runtimes/ts/pack.toml` in the fleet-packs repository), measured by
@@ -70,8 +70,8 @@ no pin.
    Claude Code, the version-scoped entries in `brain/lessons/claude-code.md` the adapter
    reads. Restate each one that held, and change the code where a behaviour
    moved. For fleet-packs, re-check the packs at the new tag against this
-   binary: `fleet store check --adapter` over each store adapter, and the
-   `fleet create` suites.
+   binary: `fleet store check --adapter` over each store adapter, `fleet agent
+   check --adapter` over each agent adapter, and the `fleet create` suites.
 3. The version is also in the "What fleet runs on" table of
    `docs/getting-started.md`, which only the docs skill edits: ask for the
    edit on the item's bead, or the release pass catches it up.

@@ -164,7 +164,7 @@ pub struct Opening<'a> {
     pub root: &'a Path,
     /// Where an adapter's bare name is resolved, or `None` for a caller with no
     /// machine's packs behind it, where a name resolves nowhere — and
-    /// [`DEFAULT_NAME`] opens the in-process adapter.
+    /// [`DEFAULT_AGENT_ADAPTER`] opens the in-process adapter.
     pub packs: Option<PackDirs<'a>>,
     /// The bound on each call of an adapter executable opened: what
     /// [`TIMEOUT_VAR`] sets, else [`fleet_core::agent::types::AGENT_TIMEOUT`].
@@ -212,22 +212,28 @@ pub struct Opened {
 }
 
 /// The adapter a fleet whose file names none opens, by name through the
-/// installed packs like any other (reviewer call 2026-09-25, E12): the one the
-/// claude-code pack carries.
-pub const DEFAULT_NAME: &str = "claude-code";
+/// installed packs like any other, as the store's missing key opens its own
+/// default (reviewer call 2026-09-25, E12): the one the claude-code pack
+/// carries. It is also the first, and today the only, agent `fleet create`
+/// installs a pack for and writes into `[agent] adapter`.
+///
+/// THE ONE SPELLING of that name in core, cli and controller: the create
+/// menu, the file it writes and the suites all read it here.
+pub const DEFAULT_AGENT_ADAPTER: &str = "claude-code";
 
 /// The one opener every caller takes: the agent `[agent] adapter` in the
 /// fleet's own file names. An absolute path to an executable file is an
 /// adapter that answers the contract at that path; a name is the agent adapter
-/// the installed packs carry under it; and no key at all is [`DEFAULT_NAME`],
-/// resolved as a name. Anything else is refused, naming what was written where
-/// it was ([`AdapterSource`]), and nothing is run.
+/// the installed packs carry under it; and no key at all is
+/// [`DEFAULT_AGENT_ADAPTER`], resolved as a name. Anything else is refused,
+/// naming what was written where it was ([`AdapterSource`]), and nothing is
+/// run.
 ///
-/// WHILE THE IN-PROCESS ADAPTER STANDS, [`DEFAULT_NAME`] where no installed
-/// pack carries it is that adapter, built from this process's environment,
-/// with the binary its effects exec resolved ONCE — the same resolution the
-/// gate in [`Opened::effects_off`] is read from, so a caller that gated on one
-/// file cannot act through another. Every other name no pack carries is
+/// WHILE THE IN-PROCESS ADAPTER STANDS, [`DEFAULT_AGENT_ADAPTER`] where no
+/// installed pack carries it is that adapter, built from this process's
+/// environment, with the binary its effects exec resolved ONCE — the same
+/// resolution the gate in [`Opened::effects_off`] is read from, so a caller
+/// that gated on one file cannot act through another. Every other name no pack carries is
 /// refused, `claude_code` among them: there is one spelling (ruling 17).
 ///
 /// AN ADAPTER EXECUTABLE'S GATE IS ITS OWN ANSWERS: [`Opened::effects_off`]
@@ -238,14 +244,7 @@ pub fn open(opening: &Opening) -> Result<Opened, String> {
     let named = fleet_core::policy::read("agent", "adapter", opening.policy)
         .map_err(|unlisted| unlisted.to_string())?;
     match named {
-        None => {
-            // UNDER FLEET_TEST_HERMETIC a fleet that names no adapter is
-            // refused where it names no agent binary either, BEFORE the packs
-            // are read: a pack carrying the default name would otherwise run
-            // an agent adapter that finds the account's own agent.
-            claude_code::refuse_an_unnamed_binary_under_test();
-            by_name(opening, DEFAULT_NAME)
-        }
+        None => by_name(opening, DEFAULT_AGENT_ADAPTER),
         Some(toml::Value::String(path)) if path.starts_with('/') => {
             let adapter = Path::new(path);
             if !fleet_core::store::executable_file(adapter) {
@@ -283,6 +282,13 @@ pub fn open(opening: &Opening) -> Result<Opened, String> {
 /// the directory of each runtime that layer runs under put in front where the
 /// path misses it, as a store adapter's does.
 fn by_name(opening: &Opening, name: &str) -> Result<Opened, String> {
+    // UNDER FLEET_TEST_HERMETIC the default's name is refused where no agent
+    // binary is named either, BEFORE the packs are read: a pack carrying it
+    // would otherwise run an agent adapter that finds the account's own agent.
+    // Written or left out alike, because `fleet create` writes the key.
+    if name == DEFAULT_AGENT_ADAPTER {
+        claude_code::refuse_an_unnamed_binary_under_test();
+    }
     let in_process = name == claude_code::NAME;
     let Some(installed) = opening.packs else {
         if in_process {
@@ -354,12 +360,22 @@ fn gated(name: String, agent: AgentExec, dir: Option<PathBuf>) -> Opened {
 }
 
 /// Where the pack carrying the agent adapter `name` sits in a repository laid
-/// out as fleet-packs is, and the line that installs it at `version`.
-pub fn pack_line(repo: &str, name: &str, version: &str) -> String {
+/// out as fleet-packs is: the source `fleet create` installs it from.
+pub fn pack_source(repo: &str, name: &str) -> String {
     format!(
-        "fleet pack add {repo}//{}/{}/{name} --version {version}",
+        "{repo}//{}/{}/{name}",
         pack::ADAPTERS,
         pack::AdapterKind::Agent.as_str()
+    )
+}
+
+/// The line that installs the agent adapter `name` out of `repo` at
+/// `version`: what a refusal of a name no installed pack carries names, and
+/// what `fleet create` names where it could not install that pack.
+pub fn pack_line(repo: &str, name: &str, version: &str) -> String {
+    format!(
+        "fleet pack add {} --version {version}",
+        pack_source(repo, name)
     )
 }
 
@@ -435,6 +451,18 @@ impl Setting {
             fleet_toml,
             machine_dir,
         ))
+    }
+
+    /// The fleet whose own file will sit at `fleet_toml` and name the adapter
+    /// `name` in `[agent] adapter`, before that file is written: what `fleet
+    /// create` asks the adapter it just installed through, as every later
+    /// verb will open it.
+    pub fn naming(name: &str, fleet_toml: &Path, machine_dir: &Path) -> Setting {
+        let mut agent = toml::Table::new();
+        agent.insert("adapter".to_string(), toml::Value::String(name.to_string()));
+        let mut policy = toml::Table::new();
+        policy.insert("agent".to_string(), toml::Value::Table(agent));
+        Setting::of(policy, fleet_toml, machine_dir)
     }
 
     /// The same over a table the caller already holds.
@@ -871,14 +899,14 @@ mod tests {
                 Some(machine.packs()),
             )
             .expect("the in-process adapter opens");
-            assert_eq!(opened.name, DEFAULT_NAME);
+            assert_eq!(opened.name, DEFAULT_AGENT_ADAPTER);
             assert!(opened.daemon.is_some(), "the in-process adapter's daemon");
         }
         let opened_packless = opened(&policy_of(""), AdapterSource::Setting, &machine.dir, None)
             .expect("the in-process adapter opens with no packs");
         assert!(opened_packless.daemon.is_some());
 
-        let dir = machine.adapter(DEFAULT_NAME, &a_good_agent(), true);
+        let dir = machine.adapter(DEFAULT_AGENT_ADAPTER, &a_good_agent(), true);
         for policy in [policy_of(""), named("claude-code")] {
             let _ = std::fs::remove_file(dir.join("argv"));
             let opened = opened(
@@ -888,7 +916,7 @@ mod tests {
                 Some(machine.packs()),
             )
             .expect("the pack's adapter opens");
-            assert_eq!(opened.name, DEFAULT_NAME);
+            assert_eq!(opened.name, DEFAULT_AGENT_ADAPTER);
             assert!(
                 opened.daemon.is_none(),
                 "the pack's adapter, not in-process"

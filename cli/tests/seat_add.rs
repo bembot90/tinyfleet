@@ -59,13 +59,16 @@ impl Rig {
         write(&rig.agent, "#!/bin/sh\nexit 0\n");
         executable(&rig.agent);
 
+        let packs = common::packs_checkout(&rig.root);
         let out = rig.run(&[
             "create",
             "--embedded",
             "--agent",
-            "claude_code",
+            fleet_controller::adapter::DEFAULT_AGENT_ADAPTER,
             "--store",
             "none",
+            "--packs-from",
+            &packs,
         ]);
         assert_eq!(out.status.code(), Some(0), "create: {}", stderr(&out));
         rig.as_before_its_creator_was_listed();

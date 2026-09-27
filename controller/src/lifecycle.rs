@@ -81,18 +81,30 @@ pub fn written_by(flags: &[&str], asked: bool) -> String {
 /// opt-out and so have to be visible to be opted out of, and telemetry, which is
 /// off and said.
 ///
-/// The agent is written on a line of its own rather than read out of the
-/// invocation, because it is a choice this file records and the invocation is
-/// only how the choice was made.
+/// The agent is written as `[agent] adapter` even though a missing key opens
+/// the same adapter, because it is a choice this file records and the
+/// invocation is only how the choice was made (ruling 11).
+///
+/// `model` is the model the installed agent adapter's capabilities name as its
+/// default, which the example seat row carries; `None`, for an adapter that
+/// could not be asked, leaves the row's model out rather than guessing one.
 ///
 /// `store` is the store adapter `fleet create` installed a pack for, written as
 /// `[store] adapter`; `None` writes no table, for a fleet whose store pack is
 /// installed later.
-pub fn embedded_text(agent: &str, store: Option<&str>, written_by: &str) -> String {
+pub fn embedded_text(
+    agent: &str,
+    model: Option<&str>,
+    store: Option<&str>,
+    written_by: &str,
+) -> String {
+    let model = match model {
+        Some(model) => format!("#   model = \"{}\"\n", basic(model)),
+        None => String::new(),
+    };
     format!(
         "# This fleet is EMBEDDED: this file is its policy and it sits at the\n\
          # project's root, so the fleet and the project are one directory.\n\
-         # Its agent is `{agent}`.\n\
          # Written by {written_by}.\n\
          #\n\
          # Every key the controller defaults is left out on purpose. Add one here\n\
@@ -107,6 +119,11 @@ pub fn embedded_text(agent: &str, store: Option<&str>, written_by: &str) -> Stri
          [telemetry]\n\
          enabled = false\n\
          \n\
+         # The agent every seat of this fleet runs on: the agent adapter an\n\
+         # installed pack carries under this name.\n\
+         [agent]\n\
+         adapter = \"{agent}\"\n\
+         \n\
          {store}\
          # One table per seat, keyed by the seat's id. fleet seat add writes them\n\
          # and fleet start renders the agent seats into the machine's seat list.\n\
@@ -115,10 +132,10 @@ pub fn embedded_text(agent: &str, store: Option<&str>, written_by: &str) -> Stri
          #   [seats.01a0d1f1-0aec-765f-9abe-d4f993b9739a]\n\
          #   kind = \"agent\"\n\
          #   name = \"what a person calls it\"\n\
-         #   model = \"{model}\"\n\
+         {model}\
          #   status = \"active\"\n\
          [seats]\n",
-        model = crate::adapter::claude_code::DEFAULT_MODEL,
+        agent = basic(agent),
         store = store_table(store),
     )
 }
@@ -787,15 +804,25 @@ pub fn stamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::DEFAULT_AGENT_ADAPTER as AGENT;
     use crate::policy;
+
+    /// The model the example seat row carries in these arms: any adapter's
+    /// answer, so none of the vendor's own.
+    const MODEL: &str = "quill-large-2";
+
+    /// The `--agent` flag as a call carrying it spells it.
+    fn agent_flag() -> String {
+        format!("--agent {AGENT}")
+    }
 
     /// A header claiming a flag nobody passed is the only thing a later reader
     /// has to go on, so an answer given at a prompt is said to be one.
     #[test]
     fn the_written_by_line_names_only_the_flags_the_call_carried() {
         assert_eq!(
-            written_by(&["--embedded", "--agent claude_code"], false),
-            "`fleet create --embedded --agent claude_code`"
+            written_by(&["--embedded", &agent_flag()], false),
+            format!("`fleet create --embedded {}`", agent_flag())
         );
         assert_eq!(
             written_by(&[], true),
@@ -814,7 +841,7 @@ mod tests {
 
         // Every rendering reaches the file the same way, so the arm above is
         // about what `create` writes and not about a helper nobody calls.
-        let asked = embedded_text("claude_code", None, &written_by(&[], true));
+        let asked = embedded_text(AGENT, Some(MODEL), None, &written_by(&[], true));
         assert!(
             asked.contains("# Written by `fleet create`, answered at its prompts."),
             "{asked}"
@@ -822,7 +849,7 @@ mod tests {
         assert!(!asked.contains("--embedded"), "{asked}");
         assert!(!asked.contains("--agent"), "{asked}");
         assert!(
-            asked.contains("# Its agent is `claude_code`."),
+            asked.contains(&format!("[agent]\nadapter = \"{AGENT}\"\n")),
             "the choice survives the flag it was not made with: {asked}"
         );
         let declared = project_text(
@@ -842,28 +869,35 @@ mod tests {
 
     #[test]
     fn the_embedded_file_names_the_mode_the_command_the_guards_and_telemetry() {
-        let text = embedded_text(
-            "claude_code",
-            Some("tk"),
-            &written_by(&["--embedded", "--agent claude_code"], false),
-        );
+        let by = written_by(&["--embedded", &agent_flag()], false);
+        let text = embedded_text(AGENT, Some(MODEL), Some("tk"), &by);
         assert!(text.contains("EMBEDDED"), "{text}");
+        assert!(
+            text.contains(&format!(
+                "enabled = false\n\n\
+                 # The agent every seat of this fleet runs on: the agent adapter an\n\
+                 # installed pack carries under this name.\n\
+                 [agent]\nadapter = \"{AGENT}\"\n\n# The store"
+            )),
+            "the agent create installed is named, after telemetry and before the store: {text}"
+        );
         assert!(
             text.contains("[store]\nadapter = \"tk\"\n\n# One table per seat"),
             "the store create installed is named, before the seats table: {text}"
         );
-        let storeless = embedded_text(
-            "claude_code",
-            None,
-            &written_by(&["--embedded", "--agent claude_code"], false),
-        );
+        let storeless = embedded_text(AGENT, Some(MODEL), None, &by);
         assert!(
-            !storeless.contains("[store]") && storeless.contains("enabled = false\n\n# One table"),
+            !storeless.contains("[store]")
+                && storeless.contains(&format!("adapter = \"{AGENT}\"\n\n# One table")),
             "no store installed, no table: {storeless}"
         );
         assert!(
-            text.contains("fleet create --embedded --agent claude_code"),
+            text.contains(&format!("fleet create --embedded {}", agent_flag())),
             "{text}"
+        );
+        assert!(
+            !text.contains("# Its agent is"),
+            "the key replaces the comment: {text}"
         );
         assert!(
             text.contains("[guards]\nshell-trap.enabled = true\nrecord.enabled = true"),
@@ -880,13 +914,22 @@ mod tests {
                  #   [seats.01a0d1f1-0aec-765f-9abe-d4f993b9739a]\n\
                  #   kind = \"agent\"\n\
                  #   name = \"what a person calls it\"\n\
-                 #   model = \"{}\"\n\
+                 #   model = \"{MODEL}\"\n\
                  #   status = \"active\"\n\
                  [seats]\n",
-                crate::adapter::claude_code::DEFAULT_MODEL
             )),
             "the file ends on the seats table, keyed by an id: {text}"
         );
+
+        // An adapter that could not be asked for its model leaves the row's
+        // model out rather than guessing one: the row is the same without it.
+        let unasked = embedded_text(AGENT, None, Some("tk"), &by);
+        assert_eq!(
+            unasked,
+            text.replace(&format!("#   model = \"{MODEL}\"\n"), ""),
+            "only the model line is left out"
+        );
+        assert!(!unasked.contains("model ="), "{unasked}");
 
         // Nothing the controller defaults: the keys a reader would otherwise
         // check against the code are absent, and the file still parses.
@@ -911,6 +954,16 @@ mod tests {
             "the guard spelling core's reader walks: {text}"
         );
         assert_eq!(table["guards"]["record"]["enabled"].as_bool(), Some(true));
+
+        // The agent reads back through the opener's own key, so the file names
+        // the adapter `fleet start` opens and not a comment about it.
+        assert_eq!(
+            fleet_core::policy::read("agent", "adapter", &table)
+                .expect("[agent] adapter is a key core's policy lists")
+                .and_then(|value| value.as_str()),
+            Some(AGENT),
+            "{text}"
+        );
     }
 
     #[test]

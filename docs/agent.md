@@ -630,7 +630,7 @@ It exits 0.
 | `--adapter` names a relative path, or nothing | 2 | ``fleet agent check: --adapter takes an absolute path to an executable or the name of an agent adapter an installed pack carries, and `<value>` is neither`` |
 | `--fixtures` names no directory | 2 | ``fleet agent check: --fixtures names `<dir>`, which is not a directory`` |
 | nothing executable is at the path `--adapter` names | 3 | ``fleet agent check: --adapter names `<path>`, which is not an executable file`` |
-| no installed pack carries the name | 3 | ``fleet agent check: no agent adapter named `<name>` in the installed packs — `fleet pack add https://github.com/bembot90/fleet-packs//adapters/agent/<name> --version v0.1.0` installs the one fleet-packs carries`` |
+| no installed pack carries the name | 3 | ``fleet agent check: no agent adapter named `<name>` in the installed packs — `fleet pack add https://github.com/bembot90/fleet-packs//adapters/agent/<name> --version v0.2.0` installs the one fleet-packs carries`` |
 | the installed packs do not resolve | 3 | ``fleet agent check: no agent adapter named `<name>` resolves:`` and the reason |
 | the fleet's own `fleet.toml` does not read, or names an adapter that cannot be opened | 3 | `fleet agent check:` and the reason |
 | `--live` finds no tmux | 3 | `fleet agent check: --live starts the agent on tmux, and there is none:` and the reason |

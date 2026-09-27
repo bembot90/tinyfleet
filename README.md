@@ -159,12 +159,16 @@ the one the bd pack carries. fleet-packs holds one pack per store under
 installs its pack from `supported::PINNED_PACKS_SOURCE` at
 `supported::PINNED_PACKS`; the default, `bd`, is the same install as
 
-    fleet pack add https://github.com/bembot90/fleet-packs//adapters/store/bd --version v0.1.0
+    fleet pack add https://github.com/bembot90/fleet-packs//adapters/store/bd --version v0.2.0
 
-`--store none` installs nothing and prints that line, and `--packs-from <dir>`
-installs from a checkout of fleet-packs instead. The bd pack imports ts, as
-tiny does, and two installed packs that each declare an import do not layer,
-so a fleet that takes tiny is created with `--store none`.
+`--store none` installs no store pack and prints that line, and
+`--packs-from <dir>` installs from a checkout of fleet-packs instead. It
+installs the agent's pack the same way, `adapters/agent/claude-code` (the
+one agent, `adapter::DEFAULT_AGENT_ADAPTER`), and writes `[agent] adapter`.
+The bd and claude-code packs import ts, as tiny does, and two installed
+packs that each declare an import do not layer: until they do, a default
+`fleet create` refuses the agent's pack over the bd pack (use `--store
+none`), and tiny cannot be added to a fleet `fleet create` made.
 
 A pack's settings are set in `fleet.toml`, under the pack's name, and only the
 keys the pack declares. A pack declares each one in its `pack.toml` with a

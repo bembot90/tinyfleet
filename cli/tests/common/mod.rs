@@ -104,6 +104,121 @@ pub fn stub_agent(fleet_root: &Path) -> PathBuf {
     stub
 }
 
+/// A checkout laid out as fleet-packs is, for `fleet create --packs-from`, at
+/// `<root>/fleet-packs`, committed and tagged at the version this binary pins;
+/// a second call on the same root answers the one already there. Its path.
+///
+/// It carries the two packs `create` installs by default:
+///
+/// - the store pack `adapters/store/<store::DEFAULT_ADAPTER>`, whose adapter is
+///   a shell stub that answers `capabilities` with the prefix `zz` and nothing
+///   else, importing the runtime pack `runtimes/ts` from the same repository;
+/// - the agent pack `adapters/agent/<adapter::DEFAULT_AGENT_ADAPTER>`, whose
+///   entry is a SYMLINK to this crate's example `fleet-agent-stub`, for the
+///   reason [`stub_tmux`]'s is: a script written a moment ago can wait on this
+///   platform's first-exec assessment past the agent's own bound. It imports
+///   nothing — the published pack imports `ts`, and two importing packs do not
+///   layer yet (fleet-6oc) — and answers every verb as [`stub_agent`]'s does,
+///   off the state under the request's root.
+pub fn packs_checkout(root: &Path) -> String {
+    let repo = root.join("fleet-packs");
+    if repo.join(".git").is_dir() {
+        return repo.display().to_string();
+    }
+    let store_name = fleet_core::store::DEFAULT_ADAPTER;
+    let agent_name = fleet_controller::adapter::DEFAULT_AGENT_ADAPTER;
+    let store = format!("adapters/store/{store_name}");
+    let agent = format!("adapters/agent/{agent_name}");
+    let store_entry = repo.join(format!("{store}/adapters/store/{store_name}/main.sh"));
+    for (relative, body) in [
+        (
+            format!("{store}/pack.toml"),
+            format!(
+                "[pack]\nname = \"{store_name}\"\nversion = \"0.1.0\"\nschema = 3\n\
+                 description = \"a stand-in for the default store pack\"\n\
+                 \n[imports.ts]\nsource = \"../../../runtimes/ts\"\nversion = \"0.1.0\"\n"
+            ),
+        ),
+        (
+            format!("{store}/adapters/store/{store_name}/adapter.toml"),
+            format!(
+                "[adapter]\nname = \"{store_name}\"\nkind = \"store\"\nversion = \"0.1.0\"\n\
+                 entry = \"main.sh\"\n"
+            ),
+        ),
+        (
+            format!("{store}/adapters/store/{store_name}/main.sh"),
+            String::from(
+                "#!/bin/sh\ncat > /dev/null\ncase \"$1\" in\n\
+                 capabilities) echo '{\"schema_version\":1,\"item_prefix\":\"zz\"}' ;;\n\
+                 *) echo 'a stand-in adapter answers nothing else' >&2; exit 3 ;;\n\
+                 esac\n",
+            ),
+        ),
+        (
+            String::from("runtimes/ts/pack.toml"),
+            String::from(
+                "[pack]\nname = \"ts\"\nversion = \"0.1.0\"\nschema = 3\n\
+                 description = \"a stand-in for the runtime pack\"\n",
+            ),
+        ),
+        (
+            format!("{agent}/pack.toml"),
+            format!(
+                "[pack]\nname = \"{agent_name}\"\nversion = \"0.1.0\"\nschema = 3\n\
+                 description = \"a stand-in for the default agent pack\"\n"
+            ),
+        ),
+        (
+            format!("{agent}/adapters/agent/{agent_name}/adapter.toml"),
+            format!(
+                "[adapter]\nname = \"{agent_name}\"\nkind = \"agent\"\nversion = \"0.1.0\"\n\
+                 entry = \"main\"\n"
+            ),
+        ),
+    ] {
+        let path = repo.join(relative);
+        std::fs::create_dir_all(path.parent().expect("a fixture file has a directory"))
+            .expect("the fixture directory is made");
+        std::fs::write(&path, body).expect("the fixture file is written");
+    }
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&store_entry, std::fs::Permissions::from_mode(0o755))
+            .expect("the store stub is executable");
+    }
+    std::os::unix::fs::symlink(
+        agent_stub_path(),
+        repo.join(format!("{agent}/adapters/agent/{agent_name}/main")),
+    )
+    .expect("the agent pack's entry links to the agent stub");
+    let tag = fleet_core::supported::PINNED_PACKS;
+    for args in [
+        &["init", "--quiet", "-b", "main"][..],
+        &["add", "--all"],
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "the packs"],
+        &["tag", tag],
+    ] {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "fleet tests")
+            .env("GIT_AUTHOR_EMAIL", "fleet@example.invalid")
+            .env("GIT_COMMITTER_NAME", "fleet tests")
+            .env("GIT_COMMITTER_EMAIL", "fleet@example.invalid")
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    repo.display().to_string()
+}
+
 /// A tmux for a rig's `fleet` to run: the path to set `FLEET_TMUX_BIN` to,
 /// after the hermetic block, whose own value is the refusing tmux.
 ///

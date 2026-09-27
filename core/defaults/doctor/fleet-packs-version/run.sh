@@ -6,8 +6,8 @@
 # THREE readings, and the check reports which one it got:
 #
 #   nothing installed  no line of the lock names the pinned source, so there is
-#                      nothing to compare. A fleet created with --store none,
-#                      or whose packs came from a checkout, is this one.
+#                      nothing to compare. A fleet whose packs came from a
+#                      checkout, or were all added from elsewhere, is this one.
 #   holds              every pack installed from the source is pinned at the
 #                      supported tag.
 #   broken             one or more is pinned at another version. Each is named
@@ -32,7 +32,7 @@ set -u
 set -f
 
 SOURCE=https://github.com/bembot90/fleet-packs
-PINNED=v0.1.0
+PINNED=v0.2.0
 FLEET=${FLEET_BIN:-fleet}
 
 # Read from the command's own status, never through a pipe, so its exit is its

@@ -3,7 +3,8 @@
 //! checks and the controller compare the installed one with.
 //!
 //! TWO ARE DECLARED HERE: Claude Code's, and the fleet-packs repository's —
-//! the source and the tag `fleet create` installs a store pack from — beside
+//! the source and the tag `fleet create` installs the agent's pack and a store
+//! pack from — beside
 //! tmux's MINIMUM, a floor rather than a pin. A store's
 //! own pin is its pack's and not this binary's: the pack at that tag pins the
 //! store it drives and carries the doctor check that measures it. The workflow
@@ -47,21 +48,25 @@ pub const PINNED_CLAUDE_CODE: &str = "2.1.280";
 pub const MINIMUM_TMUX: &str = "3.7b";
 
 /// The repository fleet's packs are published from: the store adapters, the
-/// runtimes and the tiny pack, one directory each. `fleet create` installs the
-/// store pack it is asked for from here, `<this>//adapters/store/<name>`, and a
-/// refusal naming a store adapter no installed pack carries names the same
+/// runtimes, the agent adapters and the tiny pack, one directory each. `fleet
+/// create` installs the agent's pack and the store pack it is asked for from
+/// here, `<this>//adapters/agent/<name>` and `<this>//adapters/store/<name>`,
+/// and a refusal naming an adapter no installed pack carries names the same
 /// line. `fleet create --packs-from <dir>` replaces it for one call, with a
 /// checkout of the same repository.
 pub const PINNED_PACKS_SOURCE: &str = "https://github.com/bembot90/fleet-packs";
 
 /// The tag of [`PINNED_PACKS_SOURCE`] this release of fleet was checked
-/// against: the version `fleet create` installs a store pack at, and the one
+/// against: the version `fleet create` installs the agent's pack and a store
+/// pack at, and the one
 /// the defaults' `fleet-packs-version` doctor check compares every pack the
 /// lock pins from that source with.
 ///
 /// A move is THIS LINE PLUS THE RE-CHECK: the packs at the new tag run against
-/// this binary — `fleet store check --adapter` over each store adapter, and the
-/// suites beside `fleet create` — before the line changes. The doctor check
+/// this binary — `fleet store check --adapter` over each store adapter, `fleet
+/// agent check --adapter` over each agent adapter, and the suites beside `fleet
+/// create` — before the line changes. v0.2.0 is the first tag that carries the
+/// claude-code pack. The doctor check
 /// carries its own copy of this and of the source, because a shell script
 /// cannot read either, and a suite arm fails until the three agree.
-pub const PINNED_PACKS: &str = "v0.1.0";
+pub const PINNED_PACKS: &str = "v0.2.0";

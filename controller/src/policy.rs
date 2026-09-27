@@ -569,12 +569,13 @@ impl Policy {
     }
 }
 
-/// The one agent this fleet has an adapter for, spelled as `[substrate.<agent>]`
-/// spells it. ONE SPELLING: `create` checks the name it is given against this
-/// list, and the pin below reads the same key off the file.
+/// The in-process adapter's key under `[substrate]`, which the pin below reads
+/// off the file. Not an adapter's name: `fleet create` offers the agents it
+/// installs a pack for ([`crate::adapter::DEFAULT_AGENT_ADAPTER`]) and reads
+/// neither this nor [`AGENTS`]; fleet-x93d.2 deletes both with the pin.
 pub const AGENT_CLAUDE_CODE: &str = "claude_code";
 
-/// Every agent name the adapters answer to.
+/// The `[substrate]` keys the pin is read under.
 pub const AGENTS: [&str; 1] = [AGENT_CLAUDE_CODE];
 
 /// The pin under `[substrate.claude_code]`, in either shape a person writes it:

@@ -75,7 +75,7 @@ measures the one you have installed against it.
 | Claude Code (`claude`) | 2.1.280 | the `claude-code-version` doctor check, and the controller's `substrate.moved` event |
 | tmux (`tmux`) | 3.7b or later | the `tmux-version` doctor check |
 | Deno (`deno`) | 2.9.7, pinned by the `ts` pack | the `runtime-version` doctor check, which `fleet run` runs before it opens a run, and the `ts` pack's `deno-version` |
-| fleet-packs | the tag `v0.1.0`, which `fleet create` installs the store's pack at | the `fleet-packs-version` doctor check, over every pack `packs.lock` pins from that repository |
+| fleet-packs | the tag `v0.2.0`, which `fleet create` installs the agent's pack and the store's pack at | the `fleet-packs-version` doctor check, over every pack `packs.lock` pins from that repository |
 | `git` | none: fleet pins no version | nothing |
 
 The bd pack pins the versions its store runs on and carries the doctor check
@@ -122,12 +122,12 @@ answered.
 
 `fleet-packs-version` comes with the defaults too. It reads `packs.lock`
 through `fleet pack list` and compares every pack installed from
-`https://github.com/bembot90/fleet-packs` with `v0.1.0`, so run it through
+`https://github.com/bembot90/fleet-packs` with `v0.2.0`, so run it through
 `fleet doctor`, inside the project:
 
 ```sh
 $ fleet doctor fleet-packs-version
-pass fleet-packs-version (defaults) — fleet-packs-version: holds — bd, ts at v0.1.0
+pass fleet-packs-version (defaults) — fleet-packs-version: holds — claude-code, ts at v0.2.0
 doctor 1 check — 1 pass, 0 finding, 0 could not tell
 ```
 
@@ -135,7 +135,7 @@ It exits 0. A lock with no line from that repository passes too, with
 `nothing installed from fleet-packs`; a pack installed from a checkout you
 named with `--packs-from` is not read. A pack from the repository at another
 tag is a finding and exits 1, naming it with
-`` `fleet pack remove <source>` and then `fleet pack add <source> --version v0.1.0` ``.
+`` `fleet pack remove <source>` and then `fleet pack add <source> --version v0.2.0` ``.
 
 `claude-code-version` asks the binary `FLEET_CLAUDE_BIN` names, or else the
 first `claude` on your `PATH`, which is not the search path the controller
@@ -213,7 +213,7 @@ carries the reason fleet gives. A name no installed pack carries names the
 
 ```sh
 $ fleet doctor store-adapter
-could not tell store-adapter (built-in) — no store adapter named `nowhere` in the installed packs — `fleet pack add https://github.com/bembot90/fleet-packs//adapters/store/nowhere --version v0.1.0` installs the one fleet-packs carries
+could not tell store-adapter (built-in) — no store adapter named `nowhere` in the installed packs — `fleet pack add https://github.com/bembot90/fleet-packs//adapters/store/nowhere --version v0.2.0` installs the one fleet-packs carries
 doctor 1 check — 0 pass, 0 finding, 1 could not tell
 ```
 
@@ -234,18 +234,19 @@ It exits 1. Whether an adapter keeps the rest of its contract is
 ## Creating a fleet
 
 `fleet create` writes a project's fleet from inside the project's directory.
-It asks three questions: embedded or standalone, which agent, and which
-store. It installs the store's pack, then writes the file for the mode into
-the directory you ran it in. It also writes the defaults into the machine
-directory and lists you, whoever ran it, as the fleet's first seat: a human
-one, under this machine's identity. It makes nothing of the store's own in
-the project (see [The store's pack](#the-stores-pack)). Everything it prints
-goes to standard error.
+It asks three questions: embedded or standalone, which store, and which
+agent. It writes the defaults into the machine directory, installs the
+store's pack and the agent's pack, then writes the file for the mode into the
+directory you ran it in. It also lists you, whoever ran it, as the fleet's
+first seat: a human one, under this machine's identity. It makes nothing of
+the store's own in the project (see [The store's pack](#the-stores-pack)).
+Everything it prints goes to standard error.
 
 On a terminal, each question is a list you pick from, and Enter takes the
-first row: `embedded`, `claude_code` and `bd`, the bd pack's store. Where
-standard input is not a terminal, pass the mode and the agent as flags. The
-store has a default: with no `--store` and no terminal, the store is `bd`.
+first row: `embedded`, `bd`, the bd pack's store, and `claude-code`, the
+claude-code pack's agent. Where standard input is not a terminal, pass the
+mode as a flag. The store and the agent have defaults: with no terminal, no
+`--store` means `bd` and no `--agent` means `claude-code`.
 
 ### The store's pack
 
@@ -254,7 +255,7 @@ The store is where the fleet's items live, and a pack carries it. The answer
 supports, the same install as:
 
 ```sh
-$ fleet pack add https://github.com/bembot90/fleet-packs//adapters/store/bd --version v0.1.0
+$ fleet pack add https://github.com/bembot90/fleet-packs//adapters/store/bd --version v0.2.0
 ```
 
 It fetches with git, so `create` needs the network. The bd pack imports the
@@ -282,42 +283,96 @@ $ fleet item list --ready
 It exits 0. Before the board is there, it refuses and exits 3, with the
 store's reason (see [When it refuses](#when-it-refuses)).
 
-`--store none` installs nothing, writes no `[store]` table, and prints the
-line that installs the pack later:
+`--store none` installs no store pack, writes no `[store]` table, and prints
+the line that installs the pack later:
 
 ```text
-store: none installed — `fleet pack add https://github.com/bembot90/fleet-packs//adapters/store/bd --version v0.1.0` installs one
+store: none installed — `fleet pack add https://github.com/bembot90/fleet-packs//adapters/store/bd --version v0.2.0` installs one
 ```
 
-`--packs-from <dir>` installs the store's pack from a checkout of fleet-packs
+`--packs-from <dir>` installs the packs from a checkout of fleet-packs
 instead, at the same tag: the checkout's git history is what is read, not its
-working tree. The lock records the checkout's path as the source.
+working tree. The lock records the checkout's path as the source, and the
+`store: none installed` line names the checkout.
 
 When the fetch fails, `create` refuses and exits 1 with no fleet file
 written, naming git's reason and `fleet create --store none` as the way to
 create the fleet without the pack. The defaults are already written by then.
 
+### The agent's pack
+
+The agent is what the fleet's agent seats run on, and a pack carries it too.
+The one answer is `claude-code`, which installs the claude-code pack from
+fleet-packs at the same tag, the same install as:
+
+```sh
+$ fleet pack add https://github.com/bembot90/fleet-packs//adapters/agent/claude-code --version v0.2.0
+```
+
+The claude-code pack imports the `ts` pack as well, installed and pinned
+with it. The file `create` writes names the agent:
+
+```toml
+[agent]
+adapter = "claude-code"
+```
+
+`--agent` takes that name, spelled that way; any other name is refused
+before anything is asked or written. Where a pack named `claude-code` is
+already installed, `create` leaves it as it stands, as it does the store's.
+
+The bd pack and the claude-code pack each declare an import of `ts`, and two
+installed packs that each declare an import do not layer. With both
+defaults, `create` installs the bd pack and then refuses the agent's pack,
+exits 1, and writes no fleet file. Here `<checkout>` is a checkout of
+fleet-packs, named with `--packs-from` (below):
+
+```sh
+$ fleet create --embedded --packs-from <checkout>
+store: bd v0.2.0 at <sha>, installed and pinned — <machine>/packs/bd
+store: ts v0.2.0 at <sha>, which bd imports — <machine>/packs/ts
+fleet create: the agent's pack was not installed, so no fleet file was written: layer `claude-code` declares its own import `ts` — imports are one level deep — `fleet pack add <checkout>//adapters/agent/claude-code --version v0.2.0` installs it
+```
+
+The `fleet pack add` line it names meets the same refusal while the bd pack
+is installed.
+
+Create the fleet with `--store none`, and it installs the agent's pack
+alone. See [Packs](packs.md#imports-are-one-level-deep).
+
+When the agent's pack cannot be fetched, `create` refuses and exits 1 with
+no fleet file written, naming git's reason and the `fleet pack add` line
+that installs the pack.
+
+A standalone project is not asked which agent: it runs on the agent of the
+fleet it is declared to, and `create --standalone` installs no agent's pack.
+
 ### An embedded fleet
 
 ```sh
-$ fleet create --embedded --agent claude_code
-store: bd v0.1.0 at <sha>, installed and pinned — <machine>/packs/bd
-store: ts v0.1.0 at <sha>, which bd imports — <machine>/packs/ts
+$ fleet create --embedded --store none --packs-from <checkout>
+store: none installed — `fleet pack add <checkout>//adapters/store/bd --version v0.2.0` installs one
+agent: claude-code v0.2.0 at <sha>, installed and pinned — <machine>/packs/claude-code
+agent: ts v0.2.0 at <sha>, which claude-code imports — <machine>/packs/ts
 created embedded fleet — <project>/fleet.toml
 guards: shell-trap on, record on
 telemetry: off — nothing leaves this machine
 defaults: installed 0.1.0 — <machine>/defaults
-seat: you — human human-8bdbe55a, listed as [seats.01a0dc3e-c99c-77f0-af71-8fe28bdbe55a] — <project>/fleet.toml
+seat: you — human human-4d9ad4b3, listed as [seats.01a0e17f-8e64-76a3-ba77-c80c4d9ad4b3] — <project>/fleet.toml
 identity: minted — who acts here when no --by is given — <machine>/identity.toml
 next: fleet start — it installs the service on its first run and loads it
 ```
 
-It exits 0. The `fleet.toml` it writes opens with a comment naming the agent
-and the command that wrote it, then carries `[guards]` with
-`shell-trap.enabled = true` and `record.enabled = true`, `[telemetry]` with
-`enabled = false`, `[store]` with `adapter = "bd"` (none with `--store none`),
-and `[seats]`, under a comment showing what a seat's table looks like, with
-one table in it: yours.
+It exits 0. `<checkout>` is a checkout of fleet-packs; without
+`--packs-from`, the packs come from `https://github.com/bembot90/fleet-packs`.
+The `fleet.toml` it writes opens with a comment naming the command that wrote
+it, then carries `[guards]` with `shell-trap.enabled = true` and
+`record.enabled = true`, `[telemetry]` with `enabled = false`, `[agent]` with
+`adapter = "claude-code"`, `[store]` with `adapter = "bd"` (none with
+`--store none`), and `[seats]`, under a comment showing what a seat's table
+looks like, with one table in it: yours. The example row in that comment
+carries the model the agent's adapter names as its default, and no model
+line where the adapter does not answer.
 
 ```toml
 [seats.01a0dc3e-c99c-77f0-af71-8fe28bdbe55a]
@@ -344,18 +399,23 @@ Before the fleet has been started on this machine, name its directory with
 `--fleet`:
 
 ```sh
-$ fleet create --standalone --agent claude_code --fleet <fleet>
-store: bd, already installed on this machine at v0.1.0 from https://github.com/bembot90/fleet-packs//adapters/store/bd — left as it stands — <machine>/packs/bd
+$ fleet create --standalone --store none --fleet <fleet>
+store: none installed — `fleet pack add https://github.com/bembot90/fleet-packs//adapters/store/bd --version v0.2.0` installs one
 fleet: registered on this machine — <fleet>/fleet.toml — <machine>/config.json
 registered <name> at <project> — <machine>/projects.toml
 created standalone fleet — <project>/.fleet/project.toml
 defaults: already at 0.1.0 — <machine>/defaults
-seat: you — human human-8bdbe55a, already listed — <fleet>/fleet.toml
+seat: you — human human-4d9ad4b3, already listed — <fleet>/fleet.toml
 next: fleet start — it installs the service on its first run and loads it
 ```
 
-It exits 0. Here the embedded fleet's `create` had already installed the bd
-pack and listed you. `<name>` is the project directory's own name. The
+It exits 0. Here the embedded fleet's `create` had already listed you. With
+no `--store`, the store's pack is installed as for an embedded fleet, and
+where the embedded fleet's `create` installed it already, the `store:` line
+says so and leaves it as it stands. `<name>` is the project directory's own
+name. The project runs on the fleet's agent: `--agent` naming another than
+the one the fleet's `fleet.toml` names, `claude-code` where it names none,
+is refused. The
 `fleet:` line appears only when this call wrote `<machine>/config.json`. Once a fleet is
 registered on the machine, `--fleet` is not needed. Registering a project
 also writes a `project.registered` event to the stream, and that event mints
@@ -397,13 +457,13 @@ its id), and run `fleet start`. See
 
 ## Adding the tiny pack
 
-A fresh fleet runs on the defaults and its store's pack. The tiny pack is the
-doctrine layered over them, and its workflows run under the TypeScript runtime
-the `ts` pack declares. Both live in the fleet-packs repository,
-`https://github.com/bembot90/fleet-packs`, written `<fleet-packs>` below: tiny
-at `tiny` and ts at `runtimes/ts`. tiny imports ts and the repository holds
-both, so one add installs the two, after `fleet create --store none` has run
-on this machine:
+A fresh fleet runs on the defaults, its agent's pack and its store's pack.
+The tiny pack is the doctrine layered over them, and its workflows run under
+the TypeScript runtime the `ts` pack declares. Both live in the fleet-packs
+repository, `https://github.com/bembot90/fleet-packs`, written
+`<fleet-packs>` below: tiny at `tiny` and ts at `runtimes/ts`. tiny imports
+ts and the repository holds both, so on a machine where no installed pack
+declares an import of its own, one add installs the two:
 
 ```sh
 $ fleet pack add <fleet-packs>//tiny --version <version>
@@ -415,13 +475,14 @@ pinned in <machine>/packs.lock
 It exits 0. `<version>` is a tag, a branch such as `main`, or `sha:` followed
 by a full 40-character commit, and ts is pinned at the same commit as tiny.
 
-The bd store's pack imports ts too, and two installed packs that each declare
-an import do not layer. On a machine where `fleet create` installed the bd
-pack, adding tiny refuses and exits 1, and so does adding the bd pack where
-tiny is installed:
+The claude-code pack and the bd store's pack import ts too, and two installed
+packs that each declare an import do not layer. `fleet create` installs the
+claude-code pack on every embedded fleet, so on a machine where it has run,
+adding tiny refuses and exits 1, and so does adding the bd pack where tiny
+is installed:
 
 ```sh
-$ fleet pack add <fleet-packs>//tiny --version v0.1.0
+$ fleet pack add <fleet-packs>//tiny --version v0.2.0
 fleet pack add: layer `tiny` declares its own import `ts` — imports are one level deep
 ```
 
@@ -582,12 +643,13 @@ A relative path is read from the directory `fleet.toml` is in. With no
 | Situation | Exit | What you see | What to do |
 | --- | --- | --- | --- |
 | `fleet create` with no mode flag and no terminal | 2 | `fleet create: fleet: embedded or standalone? — stdin is not a terminal; answer it with --embedded` | Pass `--embedded` or `--standalone`. |
-| `fleet create` with no `--agent` and no terminal | 2 | `fleet create: fleet: which agent? — stdin is not a terminal; answer it with --agent` | Pass `--agent claude_code`. |
-| `--agent` names an agent fleet has no adapter for | 2 | ``fleet create: no adapter answers to `<name>` — this fleet knows claude_code`` | Pass `--agent claude_code`. |
+| `--agent` names an agent fleet installs no pack for, `claude_code` among them | 2 | ``fleet create: no agent pack answers to `<name>` — this fleet installs claude-code`` | Pass `--agent claude-code`, or leave it out. |
+| `--standalone` with an `--agent` that is not the fleet's | 2 | ``fleet create: --agent <name> is not this fleet's agent — <fleet>/fleet.toml runs `<adapter>`, and a project declared to it runs on that one; drop --agent`` | Drop `--agent`. |
 | `--store` names a store fleet installs no pack for | 2 | ``fleet create: no store pack answers to `<name>` — this fleet installs bd, or none`` | Pass `--store bd` or `--store none`. |
-| `--store none` together with `--packs-from` | 2 | `fleet create: --packs-from names where the store's pack comes from, and --store none installs none — drop one of them` | Drop one of the two. |
+| `--standalone --store none` together with `--packs-from` | 2 | `fleet create: --packs-from names where the packs come from, and a standalone project with --store none installs none — drop one of them` | Drop one of the two. |
 | `--packs-from` names no directory | 2 | `fleet create: --packs-from <dir> is not a directory — name a checkout of fleet-packs` | Name a checkout of fleet-packs. |
 | The store's pack cannot be fetched: no network, or a checkout without the tag | 1 | ``fleet create: the store's pack was not installed, so no fleet file was written: git <step> exited <n>: <git's reason> — `fleet create --store none` creates the fleet without one`` | Fix what git names, or pass `--store none` and install the pack later. |
+| The agent's pack cannot be fetched, or does not layer over what is installed, as over the bd pack | 1 | ``fleet create: the agent's pack was not installed, so no fleet file was written: <the reason> — `fleet pack add <fleet-packs>//adapters/agent/claude-code --version v0.2.0` installs it`` | Fix what the reason names; over the bd pack, create the fleet with `--store none`. |
 | `--embedded` together with `--standalone` or `--fleet` | 2 | `error: the argument '--embedded' cannot be used with '--standalone'` | Pass one mode. `--fleet` goes with `--standalone`. |
 | The directory already holds a `fleet.toml` | 1 | `fleet create: <project>/fleet.toml is already here, so this directory is already a fleet` | Nothing to do: the fleet exists. |
 | The directory holds a `.fleet` with no `project.toml` in it | 1 | `fleet create: <project>/.fleet is here and carries no .fleet/project.toml — a directory that is not this project's own declaration is not one this verb will write into` | Move the `.fleet` directory aside. |
@@ -595,9 +657,9 @@ A relative path is read from the directory `fleet.toml` is in. With no
 | `--fleet` names a directory with no `fleet.toml` | 1 | ``fleet create: --fleet <dir> holds no fleet.toml — name the directory of an embedded fleet, the one `fleet create --embedded` wrote that file in`` | Name the fleet's own directory. |
 | `--standalone` again, in a project whose declaration has no `item_prefix` | 1 | ``fleet create: <project>/.fleet/project.toml carries no `[project] item_prefix`, which a project declared to this fleet needs`` | Set `item_prefix` in `[project]`. |
 | `fleet pack add` before `fleet create` or `fleet start` has run on this machine | 1 | ``fleet pack add: the defaults this binary carries are not at <machine>/defaults — `fleet start` writes them, and every template resolves through them`` | Run `fleet create` first. |
-| `fleet pack add` of tiny where the bd store's pack is installed, or the reverse | 1 | ``fleet pack add: layer `tiny` declares its own import `ts` — imports are one level deep`` | Keep one of the two: create the fleet with `--store none` to add tiny. |
+| `fleet pack add` of tiny where the claude-code pack or the bd store's pack is installed, or the bd pack where tiny is | 1 | ``fleet pack add: layer `tiny` declares its own import `ts` — imports are one level deep`` | The two do not install together on one machine: keep one. |
 | `fleet run takeoff` with tiny installed and ts not | 1 | ``fleet run: `tiny` carries `workflows/takeoff.ts` and declares no [runtime] table, and no installed pack it imports declares one: `tiny` imports `ts`, which is not installed — `fleet pack add <fleet-packs>//runtimes/ts --version <version>` adds it`` | Run the `fleet pack add` it names. |
-| A verb that reads the store where no installed pack carries the store's adapter, as after `fleet create --store none` | 3 | ``fleet item list: no store adapter named `bd` in the installed packs — `fleet pack add https://github.com/bembot90/fleet-packs//adapters/store/bd --version v0.1.0` installs the one fleet-packs carries`` | Run the `fleet pack add` it names. |
+| A verb that reads the store where no installed pack carries the store's adapter, as after `fleet create --store none` | 3 | ``fleet item list: no store adapter named `bd` in the installed packs — `fleet pack add https://github.com/bembot90/fleet-packs//adapters/store/bd --version v0.2.0` installs the one fleet-packs carries`` | Run the `fleet pack add` it names. |
 | `fleet item list --ready` or `fleet run` where the store cannot read the project's items, as with the bd pack's store before the project has a board | 3 | `fleet item list: the store's ready set could not be read: ` or `fleet run: the work graph could not be read: `, then the adapter's reason | Make the board, as the bd pack's README says. |
 | `fleet start` with no `fleet.toml` above the directory and no fleet named by the seat list | 1 | ``fleet start: no fleet.toml above this directory and no fleet named by <machine>/config.json — `fleet create` writes one`` | Run it inside the fleet's project, or `fleet create` first. |
 | `fleet start` while the controller is running | 1 | `fleet start: the controller is already running as pid <pid>; its last tick was <stamp>` | Nothing to do, or `fleet stop` first. |

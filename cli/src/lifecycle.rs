@@ -5,8 +5,9 @@
 //! directory the call was made in, which executable is running, and the three
 //! questions `create` asks. The files, the register, the install work and the
 //! confirmations are `fleet_controller::lifecycle`'s, the binary's own
-//! defaults are `fleet_core::defaults`'s, and the store's pack is installed by
-//! `fleet_core::add`, the function `fleet pack add` calls.
+//! defaults are `fleet_core::defaults`'s, and the agent's and the store's
+//! packs are installed by `fleet_core::add`, the function `fleet pack add`
+//! calls.
 //!
 //! THERE IS NO `fleet install`. Its work runs on the first `fleet start`, in one
 //! function, so a later installer script calls the same one.
@@ -27,9 +28,10 @@ use crate::item::{derived_worktrees_dir, resolve_at, resolve_from};
 use crate::seat_add::{self, Listed};
 use crate::ui::{Prompt, Stream, Tone, Ui};
 
-/// What `create` takes. The mode, agent and store flags are the three
+/// What `create` takes. The mode, store and agent flags are the three
 /// questions' answers, for a caller with no terminal to answer them on; the
-/// store's has a default, which such a caller takes by leaving it out.
+/// store's and the agent's have a default, which such a caller takes by
+/// leaving the flag out.
 #[derive(clap::Args)]
 pub struct CreateArgs {
     /// one fleet.toml at this project's root
@@ -38,13 +40,13 @@ pub struct CreateArgs {
     /// declare this project to the fleet this machine runs
     #[arg(long)]
     pub standalone: bool,
-    /// the agent the fleet's seats run on
+    /// the agent pack the fleet's seats run on
     #[arg(long, value_name = "NAME")]
     pub agent: Option<String>,
     /// the store's pack to install: bd, or none
     #[arg(long, value_name = "NAME")]
     pub store: Option<String>,
-    /// a fleet-packs checkout to install it from
+    /// a fleet-packs checkout to install them from
     #[arg(long = "packs-from", value_name = "DIR")]
     pub packs_from: Option<PathBuf>,
     /// the embedded fleet's directory, before it has started
@@ -65,6 +67,19 @@ const STORE_ROWS: [&str; 2] = [
     "bd — beads, installed from fleet-packs",
     "none — install a store pack later",
 ];
+
+/// The agents `create` installs a pack for, in the order the question lists
+/// them: the first is the default, the one a missing `[agent] adapter` opens.
+/// The name is the one `[agent] adapter` takes, and the pack is fleet-packs'
+/// `adapters/agent/<name>`. There is no answer that installs none (E12): a
+/// fleet whose seats run on nothing is not one a script meant.
+const AGENTS: [&str; 1] = [adapter::DEFAULT_AGENT_ADAPTER];
+
+/// The question's row for the agent `name`: its pack's name, and where it
+/// comes from.
+fn agent_row(name: &str) -> String {
+    format!("{name} — installed from fleet-packs")
+}
 
 /// What `start` takes.
 #[derive(clap::Args)]
@@ -115,22 +130,18 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
     }
     // Every scripted answer is checked before any question is asked, so a
     // caller that gave them meets every refusal at once.
-    if let Some(named) = &args.agent {
-        known_agent(named)?;
-    }
+    let scripted_agent = args.agent.as_deref().map(known_agent).transpose()?;
     let scripted_store = args.store.as_deref().map(known_store).transpose()?;
     let packs_repo = packs_repo(&root, args.packs_from.as_deref())?;
-    if scripted_store == Some(None) && args.packs_from.is_some() {
-        return Err(Stop::usage(format!(
-            "--packs-from names where the store's pack comes from, and --store {NO_STORE} \
-             installs none — drop one of them"
-        )));
+    if args.standalone && scripted_store == Some(None) && args.packs_from.is_some() {
+        return Err(packs_for_nothing());
     }
     // Relative to the directory the call was made in, the way every other path
     // this verb stores is.
     let named_fleet = args.fleet.as_ref().map(|dir| root.join(dir));
     if args.standalone {
-        registered_fleet(&machine_dir, named_fleet.as_deref())?;
+        let fleet = registered_fleet(&machine_dir, named_fleet.as_deref())?;
+        the_fleets_agent(fleet.file(), scripted_agent.as_deref())?;
     }
 
     let mode = match (args.embedded, args.standalone) {
@@ -150,21 +161,18 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
         },
     };
     if mode == Mode::Standalone {
-        registered_fleet(&machine_dir, named_fleet.as_deref())?;
+        let fleet = registered_fleet(&machine_dir, named_fleet.as_deref())?;
+        the_fleets_agent(fleet.file(), scripted_agent.as_deref())?;
+        if scripted_store == Some(None) && args.packs_from.is_some() {
+            return Err(packs_for_nothing());
+        }
     }
 
-    let agent = match &args.agent {
-        Some(named) => known_agent(named)?,
-        None => match ui.select("which agent?", &controller::AGENTS, "--agent") {
-            Ok(index) => controller::AGENTS[index].to_string(),
-            Err(prompt) => return Err(asked(&prompt)),
-        },
-    };
-
-    // THE STORE IS THE ONE QUESTION WITH A DEFAULT: a call with no terminal and
-    // no --store takes the first store rather than being refused, because a
-    // fleet whose items have nowhere to live is not what a script meant by
-    // leaving the flag out.
+    // THE STORE AND THE AGENT ARE THE QUESTIONS WITH A DEFAULT: a call with no
+    // terminal and no --store takes the first store rather than being refused,
+    // because a fleet whose items have nowhere to live is not what a script
+    // meant by leaving the flag out, and the same holds for a fleet whose seats
+    // run on nothing.
     let store: Option<String> = match scripted_store {
         Some(chosen) => chosen,
         None => match ui.select_or("which store?", &STORE_ROWS, 0) {
@@ -173,14 +181,38 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
         },
     };
 
+    // THE AGENT IS ASKED ONLY WHERE THIS CALL WRITES THE FLEET'S OWN FILE. A
+    // standalone project runs on the agent of the fleet it is declared to
+    // (ruling 11), which that fleet's own create installed.
+    let agent: Option<String> = match (mode, scripted_agent) {
+        (Mode::Standalone, _) => None,
+        (Mode::Embedded, Some(named)) => Some(named),
+        (Mode::Embedded, None) => {
+            let rows: Vec<String> = AGENTS.iter().map(|name| agent_row(name)).collect();
+            let rows: Vec<&str> = rows.iter().map(String::as_str).collect();
+            match ui.select_or("which agent?", &rows, 0) {
+                Ok(index) => AGENTS.get(index).map(|name| name.to_string()),
+                Err(prompt) => return Err(asked(&prompt)),
+            }
+        }
+    };
+
     // The header the two writers put at the top of the file says how this call
-    // reached its answers, so only a flag this call actually carried is named.
+    // reached its answers, so only a flag this call actually carried is named
+    // — and `--agent` only where the file records the agent: a standalone
+    // project's declaration does not.
     let mode_flag = match (args.embedded, args.standalone) {
         (true, _) => Some("--embedded"),
         (_, true) => Some("--standalone"),
         _ => None,
     };
-    let agent_flag = args.agent.as_ref().map(|named| format!("--agent {named}"));
+    let agent_flag = match mode {
+        Mode::Embedded => args
+            .agent
+            .as_ref()
+            .map(|named| format!("--agent {}", named.trim())),
+        Mode::Standalone => None,
+    };
     let store_flag = args
         .store
         .as_ref()
@@ -196,26 +228,30 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
         flags.push(flag);
     }
     let store_asked = store_flag.is_none() && ui.can_ask();
-    let written_by = lifecycle::written_by(
-        &flags,
-        mode_flag.is_none() || agent_flag.is_none() || store_asked,
-    );
+    let agent_asked = mode == Mode::Embedded && args.agent.is_none() && ui.can_ask();
+    let written_by =
+        lifecycle::written_by(&flags, mode_flag.is_none() || agent_asked || store_asked);
 
-    // THE STORE'S PACK BEFORE ANY FILE: a standalone declaration reads its
-    // item prefix off the store it names, so the adapter has to be installed
-    // for that read to reach it, and a fetch that fails — no network, a tag the
+    // THE PACKS BEFORE ANY FILE: a standalone declaration reads its item
+    // prefix off the store it names, and the embedded file's example row the
+    // model off the agent it names, so each adapter has to be installed for
+    // its read to reach it; and a fetch that fails — no network, a tag the
     // source does not carry — refuses with no fleet file written.
     //
     // THE DEFAULTS GO FIRST WHERE A PACK IS INSTALLED: a pack is checked
     // against the layers it lands on, and the defaults are the bottom one, so
-    // `fleet pack add` refuses a machine without them. Where none is, they go
-    // in at the end as they always have, after the creator is listed.
-    let mut early_defaults = None;
+    // `fleet pack add` refuses a machine without them. Where none is — a
+    // standalone project with no store — they go in at the end as they always
+    // have, after the creator is listed.
+    let early_defaults = if store.is_some() || agent.is_some() {
+        Some(defaults_into(&machine_dir)?)
+    } else {
+        None
+    };
     match &store {
         Some(name) => {
-            early_defaults = Some(defaults_into(&machine_dir)?);
             let installed = install_store(ui, &machine_dir, &packs_repo, name)?;
-            say_store(ui, name, &installed);
+            say_pack(ui, "store:", name, &installed);
         }
         None => ui.status(
             Stream::Err,
@@ -228,15 +264,27 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
             None,
         ),
     }
+    // The model the example seat row carries is the installed adapter's own
+    // default, asked the way every later verb opens it.
+    let model = match &agent {
+        Some(name) => {
+            let installed = install_agent(ui, &machine_dir, &packs_repo, name)?;
+            say_pack(ui, "agent:", name, &installed);
+            default_model(&machine_dir, &fleet_toml, name)
+        }
+        None => None,
+    };
 
     let written = match mode {
         Mode::Embedded => {
             if fleet_toml.is_file() {
                 return Err(already_a_fleet(&fleet_toml));
             }
+            // Answered in this mode, by the flag or the question.
+            let agent = agent.as_deref().unwrap_or(AGENTS[0]);
             write_new(
                 &fleet_toml,
-                &lifecycle::embedded_text(&agent, store.as_deref(), &written_by),
+                &lifecycle::embedded_text(agent, model.as_deref(), store.as_deref(), &written_by),
             )?;
             fleet_toml.clone()
         }
@@ -412,16 +460,55 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
     Ok(Exit::Done)
 }
 
-/// The name as the adapters spell it, or the usage refusal naming what is known.
+/// The agent `--agent` names, or the usage refusal naming the ones `create`
+/// installs a pack for. One spelling per agent and no alias (ruling 17): a
+/// name spelled another way is refused like any unknown one.
 fn known_agent(named: &str) -> Result<String, Stop> {
     let named = named.trim();
-    if controller::AGENTS.contains(&named) {
+    if AGENTS.contains(&named) {
         return Ok(named.to_string());
     }
     Err(Stop::usage(format!(
-        "no adapter answers to `{named}` — this fleet knows {}",
-        controller::AGENTS.join(", ")
+        "no agent pack answers to `{named}` — this fleet installs {}",
+        AGENTS.join(", ")
     )))
+}
+
+/// A standalone project runs on the agent of the fleet it is declared to
+/// (ruling 11), so an `--agent` naming another is refused, naming the one the
+/// fleet's own file runs — the default where it names none. No flag is no
+/// refusal.
+fn the_fleets_agent(fleet_file: &Path, named: Option<&str>) -> Result<(), Stop> {
+    let Some(named) = named else {
+        return Ok(());
+    };
+    let policy = fleet_core::item::read_table(fleet_file).map_err(Stop::could_not_tell)?;
+    let fleets = match fleet_core::policy::read("agent", "adapter", &policy)
+        .map_err(|unlisted| Stop::could_not_tell(unlisted.to_string()))?
+    {
+        None => adapter::DEFAULT_AGENT_ADAPTER.to_string(),
+        Some(value) => value
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| value.to_string()),
+    };
+    if fleets == named {
+        return Ok(());
+    }
+    Err(Stop::usage(format!(
+        "--agent {named} is not this fleet's agent — {} runs `{fleets}`, and a project \
+         declared to it runs on that one; drop --agent",
+        fleet_file.display()
+    )))
+}
+
+/// `--packs-from` beside `--standalone --store none`, where it would name a
+/// source for nothing: a standalone project installs no agent's pack.
+fn packs_for_nothing() -> Stop {
+    Stop::usage(format!(
+        "--packs-from names where the packs come from, and a standalone project with \
+         --store {NO_STORE} installs none — drop one of them"
+    ))
 }
 
 /// The store `--store` names — `None` for [`NO_STORE`] — or the usage refusal
@@ -440,10 +527,10 @@ fn known_store(named: &str) -> Result<Option<String>, Stop> {
     )))
 }
 
-/// The repository the store's pack is installed from: the source this binary
-/// pins, or the checkout `--packs-from` names, resolved against the directory
-/// the call was made in so the lock records a source that reads the same from
-/// anywhere.
+/// The repository the agent's and the store's packs are installed from: the
+/// source this binary pins, or the checkout `--packs-from` names, resolved
+/// against the directory the call was made in so the lock records a source
+/// that reads the same from anywhere.
 fn packs_repo(root: &Path, from: Option<&Path>) -> Result<String, Stop> {
     let Some(dir) = from else {
         return Ok(supported::PINNED_PACKS_SOURCE.to_string());
@@ -458,8 +545,8 @@ fn packs_repo(root: &Path, from: Option<&Path>) -> Result<String, Stop> {
     Ok(dir.canonicalize().unwrap_or(dir).display().to_string())
 }
 
-/// What became of the store's pack.
-enum StorePack {
+/// What became of a pack `create` installs: the store's or the agent's.
+enum Pack {
     /// Fetched, moved in and pinned by this call, with the imports its
     /// checkout carried.
     Added(add::Installed),
@@ -472,15 +559,20 @@ enum StorePack {
     },
 }
 
-/// The store `name`'s pack installed from `repo` at the tag this binary pins,
-/// the same work `fleet pack add <repo>//adapters/store/<name> --version <tag>`
-/// does: fetched, checked against what is installed, moved in with the
-/// imports its checkout carries, and pinned in the machine's lock.
+/// The pack `name` installed from `source` at the tag this binary pins, the
+/// same work `fleet pack add <source> --version <tag>` does: fetched, checked
+/// against what is installed, moved in with the imports its checkout carries,
+/// and pinned in the machine's lock.
 ///
 /// A pack of that name already installed is left alone, whatever it was
 /// installed from: a second fleet on a machine reads the one the first
 /// installed, and replacing it is `fleet pack remove` and `fleet pack add`.
-fn install_store(ui: &Ui, machine_dir: &Path, repo: &str, name: &str) -> Result<StorePack, Stop> {
+fn install(
+    ui: &Ui,
+    machine_dir: &Path,
+    source: &str,
+    name: &str,
+) -> Result<Pack, Vec<add::Refusal>> {
     let packs_dir = machine_dir.join("packs");
     let lock_path = machine_dir.join(lock::LOCK);
     let root = packs_dir.join(name);
@@ -490,39 +582,77 @@ fn install_store(ui: &Ui, machine_dir: &Path, repo: &str, name: &str) -> Result<
                 .into_iter()
                 .find(|line| line.name.as_deref() == Some(name))
         });
-        return Ok(StorePack::Already { root, pinned });
+        return Ok(Pack::Already { root, pinned });
     }
 
-    let source = store::pack_source(repo, name);
     let version = supported::PINNED_PACKS;
     let wait = ui.spinner(&format!("fetching {source} at {version}"));
     let added = add::add(
         &packs_dir,
         &machine_dir.join(defaults::DIR),
         &lock_path,
-        &source,
+        source,
         version,
         &lifecycle::stamp(),
     );
     wait.done();
-    added.map(StorePack::Added).map_err(|refusals| {
-        let said: Vec<String> = refusals.iter().map(ToString::to_string).collect();
+    added.map(Pack::Added)
+}
+
+/// Every refusal an install met, as one clause.
+fn refusals(refused: &[add::Refusal]) -> String {
+    let said: Vec<String> = refused.iter().map(ToString::to_string).collect();
+    said.join("; ")
+}
+
+/// The store `name`'s pack, `<repo>//adapters/store/<name>`, or the refusal
+/// naming `--store none` as the way to create the fleet without it.
+fn install_store(ui: &Ui, machine_dir: &Path, repo: &str, name: &str) -> Result<Pack, Stop> {
+    install(ui, machine_dir, &store::pack_source(repo, name), name).map_err(|refused| {
         Stop::refused(format!(
             "the store's pack was not installed, so no fleet file was written: {} — `fleet create \
              --store {NO_STORE}` creates the fleet without one",
-            said.join("; ")
+            refusals(&refused)
         ))
     })
 }
 
-/// The lines that say which store pack the fleet reads, and what came with it.
-fn say_store(ui: &Ui, name: &str, pack: &StorePack) {
+/// The agent `name`'s pack, `<repo>//adapters/agent/<name>`, or the refusal
+/// naming the `fleet pack add` line that installs it. There is no `none` to
+/// name instead (E12).
+fn install_agent(ui: &Ui, machine_dir: &Path, repo: &str, name: &str) -> Result<Pack, Stop> {
+    install(ui, machine_dir, &adapter::pack_source(repo, name), name).map_err(|refused| {
+        Stop::refused(format!(
+            "the agent's pack was not installed, so no fleet file was written: {} — `{}` \
+             installs it",
+            refusals(&refused),
+            adapter::pack_line(repo, name, supported::PINNED_PACKS)
+        ))
+    })
+}
+
+/// The model the agent adapter `name` names as its default, asked the way
+/// every later verb opens it: through the installed packs, for the fleet whose
+/// own file will sit at `fleet_toml`. An adapter that cannot be opened or does
+/// not answer names none, and the example row goes without one rather than
+/// with a guess.
+fn default_model(machine_dir: &Path, fleet_toml: &Path, name: &str) -> Option<String> {
+    let setting = adapter::Setting::naming(name, fleet_toml, machine_dir);
+    let home = platform::home_dir();
+    let opened = adapter::open(&setting.opening(&home, None, None)).ok()?;
+    let model = opened.agent.capabilities().ok()?.default_model;
+    (!model.trim().is_empty()).then_some(model)
+}
+
+/// The lines, under `label`, that say which pack the fleet reads and what
+/// came with it.
+fn say_pack(ui: &Ui, label: &str, name: &str, pack: &Pack) {
     match pack {
-        StorePack::Added(installed) => {
+        Pack::Added(installed) => {
             ui.status(
                 Stream::Err,
                 Tone::Good,
-                "store:",
+                label,
                 &format!(
                     "{} {} at {}, installed and pinned",
                     installed.name, installed.entry.version, installed.entry.commit
@@ -533,7 +663,7 @@ fn say_store(ui: &Ui, name: &str, pack: &StorePack) {
                 ui.status(
                     Stream::Err,
                     Tone::Good,
-                    "store:",
+                    label,
                     &format!(
                         "{} {} at {}, which {} imports",
                         import.name, import.entry.version, import.entry.commit, installed.name
@@ -542,16 +672,10 @@ fn say_store(ui: &Ui, name: &str, pack: &StorePack) {
                 );
             }
             for missing in &installed.missing {
-                ui.status(
-                    Stream::Err,
-                    Tone::Flat,
-                    "store:",
-                    &missing.to_string(),
-                    None,
-                );
+                ui.status(Stream::Err, Tone::Flat, label, &missing.to_string(), None);
             }
         }
-        StorePack::Already { root, pinned } => {
+        Pack::Already { root, pinned } => {
             let at = match pinned {
                 Some(line) => format!(" at {} from {}", line.version, line.source),
                 None => String::new(),
@@ -559,7 +683,7 @@ fn say_store(ui: &Ui, name: &str, pack: &StorePack) {
             ui.status(
                 Stream::Err,
                 Tone::Flat,
-                "store:",
+                label,
                 &format!("{name}, already installed on this machine{at} — left as it stands"),
                 Some(&root.display().to_string()),
             );
@@ -660,6 +784,15 @@ enum MachineFleet {
     /// No seat list yet, and `--fleet` named this readable policy file — the
     /// caller writes the record before it registers the project.
     Named(PathBuf),
+}
+
+impl MachineFleet {
+    /// The fleet's own policy file, either way.
+    fn file(&self) -> &Path {
+        match self {
+            MachineFleet::Registered(file) | MachineFleet::Named(file) => file,
+        }
+    }
 }
 
 /// A standalone fleet needs one already on the machine: its file is the one the
