@@ -587,8 +587,8 @@ fn a_named_adapter_runs_on_the_search_path_with_its_runtime_in_front() {
         "tracker",
         "\n[imports.rt]\nsource = \"../rt\"\nversion = \"0.1.0\"\n",
     );
-    // A pack of no runtime on a machine of its own: only the top layer may
-    // import (fleet-6oc), so it cannot sit beside the importer.
+    // A pack of no runtime and no import, on a machine of its own: no pack it
+    // could take a runtime from is installed beside it.
     let bare = Machine::new("store-open-path-bare");
     let plain = bare.pack("plain", "");
     let seen = |machine: &Machine, pack: &Path, name: &str, search_path: &str| {

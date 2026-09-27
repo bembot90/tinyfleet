@@ -90,10 +90,17 @@ fn agent_names_unique_across_layers_resolve() {
     );
 }
 
+/// A chain: `top` imports `middle`, which declares an import of its own. The
+/// refusal names the pack in the middle and the pack that imports it, and never
+/// the one on top, whose import is what a layering is for.
 #[test]
 fn a_listed_import_declaring_its_own_import_is_refused_by_name() {
     let top = Fixture::new("trans-top");
-    top.manifest("top");
+    top.file(
+        "pack.toml",
+        "[pack]\nname = \"top\"\nversion = \"1\"\nschema = 3\n\n\
+         [imports.middle]\nsource = \"git@example:middle\"\nversion = \"^1\"\n",
+    );
     let middle = Fixture::new("trans-middle");
     middle.file(
         "pack.toml",
@@ -108,8 +115,48 @@ fn a_listed_import_declaring_its_own_import_is_refused_by_name() {
         vec![Refusal::TransitiveImport {
             layer: "middle".into(),
             import: "deeper".into(),
+            importers: vec!["top".into()],
         }]
     );
+    assert_eq!(
+        refusals[0].to_string(),
+        "layer `middle` declares its own import `deeper` and is imported by `top` — \
+         imports are one level deep"
+    );
+}
+
+/// fleet-6oc: a layer BELOW the top that declares an import is not a chain
+/// when nothing above it imports it. The store's pack and the agent's pack
+/// both import the runtime, neither imports the other, and whichever of the
+/// two sits higher, the three resolve.
+#[test]
+fn two_packs_importing_one_pack_resolve_whichever_sits_higher() {
+    let store = Fixture::new("two-bd");
+    store.file(
+        "pack.toml",
+        "[pack]\nname = \"bd\"\nversion = \"1\"\nschema = 3\n\n\
+         [imports.ts]\nsource = \"../../../runtimes/ts\"\nversion = \"1\"\n",
+    );
+    let agent = Fixture::new("two-claude-code");
+    agent.file(
+        "pack.toml",
+        "[pack]\nname = \"claude-code\"\nversion = \"1\"\nschema = 3\n\n\
+         [imports.ts]\nsource = \"../../../runtimes/ts\"\nversion = \"1\"\n",
+    );
+    let runtime = Fixture::new("two-ts");
+    runtime.manifest("ts");
+
+    for order in [
+        [("bd", &store), ("claude-code", &agent), ("ts", &runtime)],
+        [("claude-code", &agent), ("bd", &store), ("ts", &runtime)],
+    ] {
+        resolve::resolve(&layers(&order)).unwrap_or_else(|refusals| {
+            panic!(
+                "{:?} resolve: {refusals:?}",
+                order.iter().map(|(name, _)| *name).collect::<Vec<_>>()
+            )
+        });
+    }
 }
 
 #[test]
@@ -295,6 +342,138 @@ fn ordered_puts_every_pack_before_what_it_imports() {
     assert_eq!(
         names_of(resolve::ordered(resolve::installed(&plain.root)).expect("no cycle")),
         vec!["alpha".to_string(), "beta".to_string()]
+    );
+}
+
+/// fleet-6oc: every pack nothing imports sits above every pack one of them
+/// imports, so a pack's NAME moves it only among the packs of its own kind.
+/// With tiny importing ts, `abc` and `zed` both land above ts — never one
+/// above tiny and the other beneath the runtime.
+#[test]
+fn ordered_lays_every_pack_nothing_imports_above_every_pack_imported() {
+    for (name, wanted) in [
+        ("abc", ["abc", "tiny", "ts"]),
+        ("zed", ["tiny", "zed", "ts"]),
+    ] {
+        let dir = Fixture::new(&format!("tiers-{name}"));
+        pack_in(&dir, "tiny", &["ts"]);
+        pack_in(&dir, "ts", &[]);
+        pack_in(&dir, name, &[]);
+        assert_eq!(
+            names_of(resolve::ordered(resolve::installed(&dir.root)).expect("no cycle")),
+            wanted.map(String::from).to_vec(),
+            "{name} sits among the packs nothing imports"
+        );
+    }
+}
+
+/// fleet-6oc's arm on the resolution itself: whatever a third pack is called,
+/// and whether it imports ts or nothing, it resolves beside tiny over the
+/// defaults. Before this, `abc` took the top and pushed tiny down, and the
+/// refusal named tiny for an import it had always declared.
+#[test]
+fn a_third_pack_resolves_the_same_whatever_its_name_and_whatever_it_imports() {
+    for name in ["abc", "zed"] {
+        for imports in [&[][..], &["ts"][..]] {
+            let dir = Fixture::new(&format!("named-{name}-{}", imports.len()));
+            pack_in(&dir, "tiny", &["ts"]);
+            pack_in(&dir, "ts", &[]);
+            pack_in(&dir, name, imports);
+            let held = Defaults::new("bottom");
+            let layers = resolve::layers(&dir.root, held.path())
+                .unwrap_or_else(|r| panic!("{name} importing {imports:?} orders: {r:?}"));
+            resolve::resolve(&layers)
+                .unwrap_or_else(|r| panic!("{name} importing {imports:?} resolves: {r:?}"));
+        }
+    }
+}
+
+/// fleet-6oc's fleet: the store's pack, the agent's pack and tiny, each
+/// importing ts, placed straight into a packs directory. The one reading every
+/// verb makes of it — `fleet prime`'s through [`resolve::layers`], and the
+/// brief's, dispatch's and run's through `Packs::under` — resolves, with the
+/// runtime beneath all three.
+#[test]
+fn three_packs_importing_one_runtime_resolve_for_every_verb() {
+    let held = Defaults::new("three");
+    let dir = Fixture::new("three-packs");
+    for name in ["tiny", "claude-code", "bd"] {
+        pack_in(&dir, name, &["ts"]);
+    }
+    pack_in(&dir, "ts", &[]);
+    let packs = &dir.root;
+
+    let layers = resolve::layers(packs, held.path()).expect("no cycle");
+    assert_eq!(
+        names_of(layers.clone()),
+        vec![
+            "bd",
+            "claude-code",
+            "tiny",
+            "ts",
+            fleet_core::defaults::LAYER
+        ]
+    );
+    resolve::resolve(&layers).expect("the layering resolves");
+    fleet_core::item::brief::Packs::under(packs, held.path())
+        .unwrap_or_else(|stop| panic!("the packs every verb reads resolve: {stop:?}"));
+}
+
+/// A genuine chain is refused whatever the packs are called: `top` imports
+/// `middle`, which imports `bottom`, beside a pack named to sort before all
+/// three. The refusal names the pack in the middle and the one importing it,
+/// and nothing else — the bystander and the top are not blamed.
+#[test]
+fn a_chain_is_refused_naming_the_middle_pack_whatever_the_names() {
+    for (top, middle, bottom) in [("abc", "mid", "zed"), ("zed", "mid", "abc")] {
+        let dir = Fixture::new(&format!("chain-{top}"));
+        pack_in(&dir, "aaa", &[]);
+        pack_in(&dir, top, &[middle]);
+        pack_in(&dir, middle, &[bottom]);
+        pack_in(&dir, bottom, &[]);
+        let held = Defaults::new("bottom");
+
+        let refusals = resolve::resolve(
+            &resolve::layers(&dir.root, held.path()).expect("a chain is not a cycle"),
+        )
+        .expect_err("imports are one level deep");
+        assert_eq!(
+            refusals,
+            vec![Refusal::TransitiveImport {
+                layer: middle.into(),
+                import: bottom.into(),
+                importers: vec![top.into()],
+            }],
+            "{top} -> {middle} -> {bottom}"
+        );
+    }
+}
+
+/// A manifest that does not parse, on a pack nothing imports, is not the
+/// import rule's to refuse — whatever the pack is called, where the rule once
+/// read every manifest but the top one's. On a pack something imports it is
+/// refused by name: that pack cannot show it declares no import of its own.
+#[test]
+fn an_unparsable_manifest_is_refused_only_on_a_pack_something_imports() {
+    for name in ["abc", "zed"] {
+        let dir = Fixture::new(&format!("broken-{name}"));
+        pack_in(&dir, "tiny", &["ts"]);
+        pack_in(&dir, "ts", &[]);
+        dir.file(&format!("{name}/pack.toml"), "[pack\nname = \n");
+        let held = Defaults::new("bottom");
+        resolve::resolve(&resolve::layers(&dir.root, held.path()).expect("no cycle"))
+            .unwrap_or_else(|r| panic!("a broken {name} nothing imports resolves: {r:?}"));
+    }
+
+    let dir = Fixture::new("broken-imported");
+    pack_in(&dir, "tiny", &["ts"]);
+    dir.file("ts/pack.toml", "[pack\nname = \n");
+    let held = Defaults::new("bottom");
+    let refusals = resolve::resolve(&resolve::layers(&dir.root, held.path()).expect("no cycle"))
+        .expect_err("an import whose manifest cannot be read");
+    assert!(
+        matches!(refusals.as_slice(), [Refusal::Manifest { layer, .. }] if layer == "ts"),
+        "{refusals:?}"
     );
 }
 

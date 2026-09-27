@@ -165,10 +165,10 @@ installs its pack from `supported::PINNED_PACKS_SOURCE` at
 `--packs-from <dir>` installs from a checkout of fleet-packs instead. It
 installs the agent's pack the same way, `adapters/agent/claude-code` (the
 one agent, `adapter::DEFAULT_AGENT_ADAPTER`), and writes `[agent] adapter`.
-The bd and claude-code packs import ts, as tiny does, and two installed
-packs that each declare an import do not layer: until they do, a default
-`fleet create` refuses the agent's pack over the bd pack (use `--store
-none`), and tiny cannot be added to a fleet `fleet create` made.
+The bd and claude-code packs import ts, as tiny does, and all three install
+beside the one ts: packs layer in two tiers, every pack nothing imports
+above every pack one of them imports, and only an imported pack is refused
+an import of its own.
 
 A pack's settings are set in `fleet.toml`, under the pack's name, and only the
 keys the pack declares. A pack declares each one in its `pack.toml` with a

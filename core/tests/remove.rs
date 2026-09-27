@@ -265,9 +265,8 @@ fn a_pack_imported_by_source_is_refused_naming_the_importer() {
 }
 
 /// A pack directory written straight into the packs dir, with no lock line and
-/// no fetch. The resolver refuses a layer that declares an import of its own —
-/// imports are one level deep — so a second importer is planted rather than
-/// added, and this verb's walk reads the directory either way.
+/// no fetch: this verb's walk reads the directory, and an importer placed by
+/// hand is named as one that was added would be.
 fn plant_importer(machine: &Machine, name: &str, import: &str) {
     let root = machine.packs().join(name);
     std::fs::create_dir_all(root.join("skills/greet")).expect("the planted pack is created");

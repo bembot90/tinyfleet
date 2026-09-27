@@ -40,7 +40,7 @@ in `packs.lock`, and every `fleet start` does the same. You get them before you
 install any pack, and every verb resolves through them.
 
 ```sh
-$ fleet create --embedded --store none --packs-from <checkout>
+$ fleet create --embedded --packs-from <checkout>
 ...
 defaults: installed 0.1.0 — <machine-dir>/defaults
 ...
@@ -118,11 +118,13 @@ pinned in <machine-dir>/packs.lock
 `<fleet-packs>` is the fleet-packs repository,
 `https://github.com/bembot90/fleet-packs`, which holds the tiny pack at `tiny`
 and the ts pack it imports at `runtimes/ts`. It also holds one pack per store
-adapter, under `adapters/store/<name>`: `fleet create` installs the bd pack
-from there (see [Getting started](getting-started.md#the-stores-pack)), and
-the bd pack imports ts too, so a machine holds tiny or the bd pack, not both
-(see [Imports are one level deep](#imports-are-one-level-deep)). `v0.1.0` is
-the tag this binary supports.
+adapter, under `adapters/store/<name>`, and the claude-code pack at
+`adapters/agent/claude-code`: `fleet create` installs the bd pack and the
+claude-code pack from there (see
+[Getting started](getting-started.md#the-stores-pack)). Both import ts too,
+and tiny, the bd pack and the claude-code pack install side by side over the
+one ts (see [Imports are one level deep](#imports-are-one-level-deep)).
+`v0.2.0` is the tag this binary supports.
 
 Each exits 0. The directory is named by the `name` in the pack's own
 `pack.toml`, not by the source.
@@ -262,10 +264,12 @@ file path, the highest layer that carries the path answers.
 
 ### The order
 
-fleet orders the installed packs so that each pack sits above the packs it
-imports, and otherwise by name, a before z. The defaults are always last. An
-import is matched by its name — the key under `[imports]` — against each
-installed pack's own name.
+fleet orders the installed packs in two tiers: first every pack no other
+installed pack imports, by name, a before z; then every pack one of those
+imports, by name. So each pack sits above the packs it imports, and a pack's
+name orders it only among the packs of its own tier. The defaults are always
+last. An import is matched by its name — the key under `[imports]` — against
+each installed pack's own name.
 
 `fleet prime` prints the order on its first line, top first, and never names
 the defaults:
@@ -283,19 +287,27 @@ layer, whether `packs.lock` names it or not.
 
 ### Imports are one level deep
 
-Only the top layer can declare imports. A pack below it that declares one is
-refused:
+Any number of installed packs can declare imports, and several can import the
+same pack. tiny, the bd pack and the claude-code pack each import ts, and
+with the four installed:
 
-```text
-fleet pack add: layer `tiny` declares its own import `ts` — imports are one level deep
+```sh
+$ fleet prime
+fleet 0.1.0 — packs: bd, claude-code, tiny, ts; guards: shell-trap on, record on
+...
 ```
 
-The top layer is the pack that sorts first by name among the packs no other
-installed pack imports. So a machine holds at most one pack that declares
-imports, and that pack's name sorts before every other pack nothing imports.
-With `tiny` and `ts` installed, a pack named `zed` installs and layers below
-`ts`; a pack named `abc` is refused with the message above, because it would
-take the top.
+A pack that another installed pack imports cannot declare imports of its own.
+The refusal names that pack, its import, and every installed pack that
+imports it:
+
+```text
+fleet pack add: layer `ts` declares its own import `deno` and is imported by `tiny` — imports are one level deep
+```
+
+A pack's name does not decide whether it installs. With `tiny` and `ts`
+installed, a pack named `abc` and a pack named `zed` both install, and both
+layer above `ts`.
 
 When the layers cannot be resolved, `fleet prime` prints
 `packs: could not be resolved — ` and the first reason.
@@ -718,7 +730,7 @@ A `fleet.toml` that does not parse stops `fleet run` with exit 3.
 | The fetched pack fails the format | 1 | `fleet pack add: <name>: ` and each defect | Fix the pack; `fleet pack check` shows every defect. |
 | A pack of that name is already installed | 1 | ``fleet pack add: a pack named `<name>` is already installed at `<dir>` — remove it before adding another`` | `fleet pack remove` it first. |
 | The defaults are not in the machine directory | 1 | ``fleet pack add: the defaults this binary carries are not at <dir> — `fleet start` writes them, and every template resolves through them`` | Run `fleet create` or `fleet start`. |
-| A pack below the top layer declares an import | 1 | ``fleet pack add: layer `<pack>` declares its own import `<import>` — imports are one level deep`` | The message names the pack pushed down, which is not always the one you were adding. Install at most one pack that declares imports, and no other pack nothing imports whose name sorts before it. |
+| A pack another installed pack imports declares an import of its own | 1 | ``fleet pack add: layer `<pack>` declares its own import `<import>` and is imported by `<importer>` — imports are one level deep`` | Install a `<pack>` that declares no import, or leave out the pack that imports it. |
 | Two layers carry the same agent name | 1 | ``the agent name `<agent>` is in both `<upper>` and `<lower>` — a collision is refused, never resolved by precedence`` | Rename one pack's agent. |
 | A pack names itself `defaults` | 1 | ``the pack at <dir> calls itself `defaults`, which is the binary's own bottom layer — rename it or take it out`` | Rename the pack in its `pack.toml`. |
 | The lock cannot be read or written, on add or remove | 1 | `fleet pack add: ` or `fleet pack remove: `, then `packs.lock cannot be read: ` and the reason | Fix or move the lock file. |

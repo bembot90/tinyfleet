@@ -108,18 +108,21 @@ pub fn stub_agent(fleet_root: &Path) -> PathBuf {
 /// `<root>/fleet-packs`, committed and tagged at the version this binary pins;
 /// a second call on the same root answers the one already there. Its path.
 ///
-/// It carries the two packs `create` installs by default:
+/// It carries the two packs `create` installs by default, each importing the
+/// runtime pack `runtimes/ts` from the same repository as the published ones
+/// do, and tiny beside them:
 ///
 /// - the store pack `adapters/store/<store::DEFAULT_ADAPTER>`, whose adapter is
 ///   a shell stub that answers `capabilities` with the prefix `zz` and nothing
-///   else, importing the runtime pack `runtimes/ts` from the same repository;
+///   else;
 /// - the agent pack `adapters/agent/<adapter::DEFAULT_AGENT_ADAPTER>`, whose
 ///   entry is a SYMLINK to this crate's example `fleet-agent-stub`, for the
 ///   reason [`stub_tmux`]'s is: a script written a moment ago can wait on this
-///   platform's first-exec assessment past the agent's own bound. It imports
-///   nothing — the published pack imports `ts`, and two importing packs do not
-///   layer yet (fleet-6oc) — and answers every verb as [`stub_agent`]'s does,
-///   off the state under the request's root.
+///   platform's first-exec assessment past the agent's own bound. It answers
+///   every verb as [`stub_agent`]'s does, off the state under the request's
+///   root;
+/// - `tiny`, a manifest alone, for an arm that adds a third pack importing ts
+///   beside the two (fleet-6oc).
 pub fn packs_checkout(root: &Path) -> String {
     let repo = root.join("fleet-packs");
     if repo.join(".git").is_dir() {
@@ -166,7 +169,16 @@ pub fn packs_checkout(root: &Path) -> String {
             format!("{agent}/pack.toml"),
             format!(
                 "[pack]\nname = \"{agent_name}\"\nversion = \"0.1.0\"\nschema = 3\n\
-                 description = \"a stand-in for the default agent pack\"\n"
+                 description = \"a stand-in for the default agent pack\"\n\
+                 \n[imports.ts]\nsource = \"../../../runtimes/ts\"\nversion = \"0.1.0\"\n"
+            ),
+        ),
+        (
+            String::from("tiny/pack.toml"),
+            String::from(
+                "[pack]\nname = \"tiny\"\nversion = \"0.1.0\"\nschema = 3\n\
+                 description = \"a stand-in for the doctrine pack\"\n\
+                 \n[imports.ts]\nsource = \"../runtimes/ts\"\nversion = \"0.1.0\"\n",
             ),
         ),
         (

@@ -471,49 +471,113 @@ fn the_importer_beneath_by_name_is_still_placed_above_what_it_imports() {
     assert_eq!(names, vec!["zeta", "alpha", "base"]);
 }
 
-/// A candidate nothing installed imports, over a pack that imports: the fleet's
-/// own pack is the one layer that declares imports, so a second pack laid
-/// beside it is refused as before, naming the importer.
+/// fleet-6oc: a candidate nothing installed imports, beside a pack that
+/// imports. Its NAME does not decide whether it installs: `abc`, which sorts
+/// before the importer, and `zed`, which sorts after it, each install, whether
+/// they import `base` too or nothing at all, and the layering resolves.
 #[test]
-fn a_pack_nothing_imports_over_an_importer_still_refuses_and_leaves_nothing() {
+fn a_pack_nothing_imports_installs_beside_an_importer_whatever_its_name() {
     let (base_src, _) = a_pack("stray-base", "base");
     let (tiny_src, _) = repo(
         "stray-tiny",
         &[("pack.toml", &manifest_importing("tiny", &["base"]))],
     );
-    let (stray_src, _) = repo("stray-stray", &[("pack.toml", &manifest("stray"))]);
-    let machine = Machine::new("stray-machine");
+    for name in ["abc", "zed"] {
+        for imports in [&[][..], &["base"][..]] {
+            let label = format!("stray-{name}-{}", imports.len());
+            let (stray_src, _) = repo(&label, &[("pack.toml", &manifest_importing(name, imports))]);
+            let machine = Machine::new(&format!("{label}-machine"));
 
-    for source in [&base_src, &tiny_src] {
-        add::add(
-            &machine.packs(),
-            &machine.defaults(),
-            &machine.lock(),
-            &source_of(source),
-            "v1",
-            WHEN,
-        )
-        .unwrap_or_else(|r| panic!("{} installs: {}", source_of(source), lines(&r)));
+            for source in [&base_src, &tiny_src, &stray_src] {
+                add::add(
+                    &machine.packs(),
+                    &machine.defaults(),
+                    &machine.lock(),
+                    &source_of(source),
+                    "v1",
+                    WHEN,
+                )
+                .unwrap_or_else(|r| {
+                    panic!(
+                        "{name} importing {imports:?}: {} installs: {}",
+                        source_of(source),
+                        lines(&r)
+                    )
+                });
+            }
+            let mut wanted = vec![name, "base", "tiny"];
+            wanted.sort_unstable();
+            assert_eq!(machine.installed(), wanted);
+            assert_eq!(
+                lock::read(&machine.lock()).expect("the lock parses").len(),
+                3
+            );
+            resolve::resolve(
+                &resolve::layers(&machine.packs(), &machine.defaults()).expect("no cycle"),
+            )
+            .unwrap_or_else(|r| panic!("{name} importing {imports:?} resolves: {r:?}"));
+        }
     }
-    let refused = add::add(
-        &machine.packs(),
-        &machine.defaults(),
-        &machine.lock(),
-        &source_of(&stray_src),
-        "v1",
-        WHEN,
-    )
-    .expect_err("a pack nothing imports cannot sit beside the fleet's own");
-    assert!(
-        lines(&refused).contains("layer `tiny` declares its own import `base`"),
-        "{}",
-        lines(&refused)
+}
+
+/// fleet-6oc's fleet, through the verb: a checkout shaped as fleet-packs holds
+/// the store's pack, the agent's pack and tiny, each importing the runtime pack
+/// beside them. Added in any order — the runtime first, last, or brought in by
+/// whichever importer comes first — all four install and resolve.
+#[test]
+fn packs_importing_one_runtime_install_in_any_order() {
+    let importing = |name: &str, climb: &str| {
+        format!(
+            "{}\n[imports.ts]\nsource = \"{climb}runtimes/ts\"\nversion = \"0.1.0\"\n",
+            manifest(name)
+        )
+    };
+    let (checkout, _) = repo(
+        "importers",
+        &[
+            ("adapters/store/bd/pack.toml", &importing("bd", "../../../")),
+            (
+                "adapters/agent/claude-code/pack.toml",
+                &importing("claude-code", "../../../"),
+            ),
+            ("tiny/pack.toml", &importing("tiny", "../")),
+            ("runtimes/ts/pack.toml", &manifest("ts")),
+        ],
     );
-    assert_eq!(machine.installed(), vec!["base", "tiny"]);
-    assert_eq!(
-        lock::read(&machine.lock()).expect("the lock parses").len(),
-        2
-    );
+    let store = "adapters/store/bd";
+    let agent = "adapters/agent/claude-code";
+    for (label, order) in [
+        ("forward", [store, agent, "tiny", "runtimes/ts"]),
+        ("backward", ["runtimes/ts", "tiny", agent, store]),
+        ("tiny-first", ["tiny", store, "runtimes/ts", agent]),
+    ] {
+        let machine = Machine::new(&format!("importers-{label}"));
+        for subdir in order {
+            // The runtime an importer already brought in is the import
+            // answered, and adding it again is the refusal of a name installed.
+            if subdir == "runtimes/ts" && machine.installed().contains(&"ts".to_string()) {
+                continue;
+            }
+            add::add(
+                &machine.packs(),
+                &machine.defaults(),
+                &machine.lock(),
+                &format!("{}//{subdir}", source_of(&checkout)),
+                "v1",
+                WHEN,
+            )
+            .unwrap_or_else(|r| panic!("{label}: {subdir} installs: {}", lines(&r)));
+        }
+        assert_eq!(
+            machine.installed(),
+            vec!["bd", "claude-code", "tiny", "ts"],
+            "{label}"
+        );
+        resolve::resolve(
+            &resolve::layers(&machine.packs(), &machine.defaults()).expect("no cycle"),
+        )
+        .unwrap_or_else(|r| panic!("{label} resolves: {r:?}"));
+    }
 }
 
 // ------------------------------- AC3: the caret refusal and the subdirectory
@@ -1066,7 +1130,8 @@ fn an_import_the_layering_refuses_leaves_neither_pack() {
     .expect_err("a transitive import is a refusal");
 
     assert!(
-        lines(&refused).contains("layer `ts` declares its own import `deno`"),
+        lines(&refused)
+            .contains("layer `ts` declares its own import `deno` and is imported by `tiny`"),
         "{}",
         lines(&refused)
     );

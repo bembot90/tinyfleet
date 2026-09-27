@@ -1212,8 +1212,66 @@ fn create_with_no_terminal_installs_the_default_store_pack_and_pins_it() {
     );
 }
 
-/// `--store none`: no store pack fetched, nothing pinned but the defaults and
-/// the agent's pack, no `[store]` table, and the line that installs the
+/// fleet-6oc: a DEFAULT embedded create over a checkout whose store pack and
+/// agent pack both import ts, as the published two do. Both install beside the
+/// one ts, the file is written naming both, and tiny — a third pack importing
+/// ts — then adds beside them; `prime` reads the four in one layering, the three
+/// importers above the runtime they share. Before, the second importer was
+/// refused for the import it declares, and no file was written.
+#[test]
+fn a_default_create_installs_two_packs_importing_ts_and_tiny_adds_beside_them() {
+    let rig = Rig::new("importers");
+    let packs = rig.a_packs_checkout();
+    let out = rig.run(&["create", "--embedded", "--packs-from", &packs]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let written = std::fs::read_to_string(rig.project.join("fleet.toml")).expect("the file landed");
+    assert_eq!(
+        store_named(&rig.project).as_deref(),
+        Some(STORE),
+        "{written}"
+    );
+    assert!(
+        written.contains(&format!("[agent]\nadapter = \"{AGENT}\"\n")),
+        "{written}"
+    );
+    let mut installed: Vec<String> = locked(&rig.machine)
+        .into_iter()
+        .map(|(source, _, _)| source)
+        .collect();
+    installed.sort();
+    assert_eq!(
+        installed,
+        vec![
+            format!("{packs}//adapters/agent/{AGENT}"),
+            format!("{packs}//adapters/store/{STORE}"),
+            format!("{packs}//runtimes/ts"),
+            String::from("embedded:defaults"),
+        ],
+        "both importers and the one runtime they share"
+    );
+
+    let added = rig.run(&[
+        "pack",
+        "add",
+        &format!("{packs}//tiny"),
+        "--version",
+        fleet_core::supported::PINNED_PACKS,
+    ]);
+    assert_eq!(code(&added), 0, "{}", stderr(&added));
+
+    let primed = rig.run(&["prime"]);
+    assert_eq!(code(&primed), 0, "{}", stderr(&primed));
+    let page = stdout(&primed);
+    let line_one = page.lines().next().expect("prime printed a line");
+    assert!(
+        line_one.contains(&format!("packs: {STORE}, {AGENT}, tiny, ts;")),
+        "line 1 names the four, the runtime last: {line_one}"
+    );
+}
+
+/// `--store none`: no store pack fetched, nothing pinned but the defaults, the
+/// agent's pack and the ts it imports, no `[store]` table, and the line that installs the
 /// default store pack later printed with the source this call named and the
 /// tag this binary pins.
 #[test]
@@ -1239,10 +1297,14 @@ fn create_with_store_none_installs_nothing_and_prints_the_line_that_does() {
     sources.sort();
     let mut expected = vec![
         format!("{}//adapters/agent/{AGENT}", rig.packs),
+        format!("{}//runtimes/ts", rig.packs),
         fleet_core::defaults::SOURCE.to_string(),
     ];
     expected.sort();
-    assert_eq!(sources, expected, "only the defaults and the agent's pack");
+    assert_eq!(
+        sources, expected,
+        "only the defaults, the agent's pack and the ts it imports"
+    );
     assert!(
         !rig.machine.join("packs").join(STORE).exists(),
         "no pack installed"
@@ -1407,11 +1469,8 @@ fn create_leaves_a_store_pack_already_on_the_machine_as_it_stands() {
 /// from the source and tag this binary pins, the real fleet-packs on GitHub,
 /// and the file names both. Skipped, with a line saying so, unless
 /// `FLEET_TEST_NETWORK` is set, and when it is set and the source does not
-/// answer for the tag.
-///
-/// The published bd and claude-code packs both import `ts`, and two importing
-/// packs do not layer until fleet-6oc lands: until then this arm is red once
-/// the tag is published.
+/// answer for the tag. The published bd and claude-code packs both import
+/// `ts`, and install beside the one ts they share.
 #[test]
 fn create_installs_the_pinned_packs_from_the_published_source() {
     let arm = "create_installs_the_pinned_packs_from_the_published_source";
@@ -1463,7 +1522,8 @@ fn create_installs_the_pinned_packs_from_the_published_source() {
 }
 
 /// The embedded file, byte for byte, with the binary's own defaults
-/// materialized beside it and NO PACK INSTALLED but the agent's (AC1).
+/// materialized beside it and NO PACK INSTALLED but the agent's and the ts it
+/// imports (AC1).
 #[test]
 fn create_embedded_writes_the_smallest_file_that_runs_and_materializes_the_defaults() {
     let rig = Rig::new("embedded");
@@ -1477,10 +1537,11 @@ fn create_embedded_writes_the_smallest_file_that_runs_and_materializes_the_defau
         "the file is not the expected text"
     );
 
-    // NOTHING under packs but the agent's: `create --store none` installs no
-    // store pack, and the word core names no directory a person could meet.
+    // NOTHING under packs but the agent's and the ts it imports: `create
+    // --store none` installs no store pack, and the word core names no
+    // directory a person could meet.
     let packs = rig.machine.join("packs");
-    let installed: Vec<String> = std::fs::read_dir(&packs)
+    let mut installed: Vec<String> = std::fs::read_dir(&packs)
         .map(|entries| {
             entries
                 .filter_map(Result::ok)
@@ -1488,7 +1549,8 @@ fn create_embedded_writes_the_smallest_file_that_runs_and_materializes_the_defau
                 .collect()
         })
         .unwrap_or_default();
-    assert_eq!(installed, [AGENT], "another pack was installed");
+    installed.sort();
+    assert_eq!(installed, [AGENT, "ts"], "another pack was installed");
 
     // The defaults: the whole embedded set, file for file, and the lock line
     // that says which binary put it there.
@@ -1517,7 +1579,8 @@ fn create_embedded_writes_the_smallest_file_that_runs_and_materializes_the_defau
     );
 
     // And what a person reads after it: `prime` names the installed packs, the
-    // agent's alone, and never the defaults — which resolve all the same, or
+    // agent's over the ts it imports, and never the defaults — which resolve
+    // all the same, or
     // the rules file below line 1 would be missing.
     // Line 2 is the store's own version, and the file `create` wrote names
     // none: the project is kept on the stub before it is asked.
@@ -1527,8 +1590,8 @@ fn create_embedded_writes_the_smallest_file_that_runs_and_materializes_the_defau
     let page = stdout(&primed);
     let line_one = page.lines().next().expect("prime printed a line");
     assert!(
-        line_one.contains(&format!("packs: {AGENT};")),
-        "line 1 names the agent's pack alone: {line_one}"
+        line_one.contains(&format!("packs: {AGENT}, ts;")),
+        "line 1 names the agent's pack over its ts alone: {line_one}"
     );
     assert!(
         !line_one.contains(fleet_core::defaults::LAYER),
@@ -2369,14 +2432,14 @@ fn create_retires_the_bundled_core_pack_a_previous_binary_installed() {
     );
 
     // What a person reads afterwards: the added pack and the agent's this
-    // create installed, over the defaults.
+    // create installed, over the ts the agent's imports and the defaults.
     common::take_a_store(&rig.project);
     let primed = rig.run(&["prime"]);
     assert_eq!(code(&primed), 0, "{}", stderr(&primed));
     let page = stdout(&primed);
     let line_one = page.lines().next().expect("prime printed a line");
     assert!(
-        line_one.contains(&format!("packs: {AGENT}, tiny;")),
+        line_one.contains(&format!("packs: {AGENT}, tiny, ts;")),
         "line 1 does not read the added packs alone: {line_one}"
     );
     assert!(
