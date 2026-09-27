@@ -222,7 +222,7 @@ The process starts with a cleared environment. It gets:
 - `FLEET_PROJECT`, the project the run was started in;
 - `FLEET_DIR`, the machine directory;
 - `PATH`, built as described under *Which file runs*;
-- `HOME`, `FLEET_CLAUDE_BIN`, `USER`, `TMPDIR` and `LANG`, each copied from
+- `HOME`, `USER`, `TMPDIR` and `LANG`, each copied from
   your environment when it is set there.
 
 Nothing else from your environment reaches it.

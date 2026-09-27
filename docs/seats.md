@@ -50,9 +50,9 @@ the rests seats ask for, and publishes what it saw. You list seats in
   back.
 - **posture**: how much a seat's session does without asking, as one of
   fleet's three words: `ask`, `auto` or `unattended` (what each means is on
-  [The agent contract](agent.md#posture)). Claude Code runs `ask` in its
-  `default` permission mode, `auto` in `auto`, and `unattended` in
-  `dontAsk`.
+  [The agent contract](agent.md#posture)). The agent's adapter maps each
+  onto its agent's own modes; the claude-code pack's README names the Claude
+  Code mode each one is.
 - **controller**: the loop behind `fleet observe`, run as a user service by
   `fleet start`. One poll every `poll_seconds` (5 unless your policy says
   otherwise).
@@ -91,10 +91,11 @@ kinds are flags, and you give exactly one.
 ### An agent seat
 
 `--agent` mints a fresh id for a seat the controller runs. `--name` gives it
-a name and `--model` the model its sessions run on; both are optional:
+a name and `--model` the model its sessions run on; both are optional. A
+model is the agent's own string, written `<model>` on this page:
 
 ```sh
-$ fleet seat add --agent --name Orla --model claude-opus-5
+$ fleet seat add --agent --name Orla --model <model>
 added: agent orla-10b55fd3 — [seats.01a0d5ff-b143-7781-9967-5ccd10b55fd3] in <project>/fleet.toml
 next: git worktree add <worktrees>/orla-10b55fd3 <a branch>, then fleet start renders it
 01a0d5ff-b143-7781-9967-5ccd10b55fd3
@@ -107,7 +108,7 @@ on standard output. The table it appends reads:
 [seats.01a0d5ff-b143-7781-9967-5ccd10b55fd3]
 kind = "agent"
 name = "Orla"
-model = "claude-opus-5"
+model = "<model>"
 ```
 
 The `next:` line names the worktree the seat works in, which you make
@@ -222,7 +223,7 @@ kind = "human"
 [seats.01a0d5ff-b143-7781-9967-5ccd10b55fd3]
 kind = "agent"
 name = "Orla"
-model = "claude-opus-5"
+model = "<model>"
 
 [seats.01a0d5ff-b14e-7d43-809e-43b851df4f54]
 kind = "agent"
@@ -234,8 +235,9 @@ status = "parked"
 - `name` is what a person calls the seat. Change it or remove it at will: the
   id stays the key, so a rename moves no worktree and no work.
 - `model` is the model an agent seat's sessions run on. Without it the seat
-  takes `[controller] default_model`, which is `claude-opus-5` unless you set
-  it.
+  takes `[controller] default_model`, and where that is not set, the
+  `default_model` the fleet's agent adapter declares (see
+  [Capabilities](agent.md#capabilities)).
 - `status` is `active` (the same as leaving it out), or `parked`,
   `vacationing` or `chartered`, which all mean the fleet keeps the agent seat
   and does not run it.
@@ -277,16 +279,20 @@ written or loaded when:
   (exit 1);
 - the controller's service is already running (exit 1, naming its pid and the
   time of its last published poll);
-- no agent binary can be found (exit 3, naming the search path it used);
-- no tmux can be found (exit 3, naming the search path it used);
-- a seat's worktree holds a session fleet did not start (exit 1; see
-  [Seats Claude Code still runs](#seats-claude-code-still-runs)).
+- the fleet's agent adapter does not open, as when no installed pack carries
+  it (exit 3, naming the `fleet pack add` line that installs it);
+- the agent's adapter does not answer its `capabilities` or its `version`,
+  or answers that its agent is not installed (exit 3);
+- no tmux can be found (exit 3, naming the search path it used).
 
-The agent binary is `FLEET_CLAUDE_BIN` where that names an absolute path, and
-otherwise the first `claude` on a search path fleet builds for its children,
+fleet runs the agent's adapter on a search path it builds for its children,
 not your shell's `PATH`: `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`,
 `/opt/homebrew/bin`, `/usr/local/bin` and `~/.local/bin` on macOS, and
-`~/.local/bin`, `/usr/local/bin`, `/usr/bin` and `/bin` on Linux. The tmux
+`~/.local/bin`, `/usr/local/bin`, `/usr/bin` and `/bin` on Linux, with the
+directory of the runtime its pack runs under in front where the path misses
+it (see [Choosing an adapter](agent.md#choosing-an-adapter)). The agent the
+adapter drives is found the way its pack says:
+the claude-code pack's README says how it finds Claude Code. The tmux
 binary is `FLEET_TMUX_BIN` where that names an absolute path, and otherwise
 the first `tmux` on the same search path.
 
@@ -342,36 +348,6 @@ $ fleet start --foreground
 It does the same checks and the same first-run steps, loads no service, and
 runs the controller in your terminal until you stop it with Ctrl-C.
 
-### Seats Claude Code still runs
-
-A seat whose worktree holds a live session that Claude Code's background
-daemon runs, and not fleet's tmux server, is one fleet does not take over.
-`fleet start` reads the agent's list of sessions — under the agent's own
-configuration directory, and under each directory a seat's sessions were
-started with — and refuses with exit 1 when a row there carries the daemon's
-short id and a process and stands in a seat's worktree. Nothing is written or
-loaded. `fleet observe` makes the same check before its first poll and exits
-1 the same way:
-
-```sh
-$ fleet observe --once
-...
-fleet observe: orla-10b55fd3 is hosted by the Claude Code daemon: session <session>, short id <short>, in <worktrees>/orla-10b55fd3
-fleet observe: stop each with the command below, then start again:
-fleet observe:   claude stop <short>
-```
-
-`fleet start` prints the same lines with `fleet start:` before the first
-alone, then `nothing was loaded`. A seat whose sessions were started under a
-configuration directory of their own is named with
-`CLAUDE_CONFIG_DIR=<dir> claude stop <short>`. A row the daemon lists with no
-process, as a stopped session reads, does not refuse the start. A seat list
-with no seats in it is not checked. When a list cannot be read and no other
-names such a session, the start goes on, saying once
-`could not tell whether Claude Code's daemon still hosts a seat's session —
-<why>; starting anyway: a poll that cannot read the listing reads a seat
-unknown unless its session has ended`.
-
 ## Stopping the controller
 
 ```sh
@@ -408,15 +384,18 @@ poll. For example, three seat rows the controller does not run:
 $ fleet observe --once
 fleet observe: skipping a seat row — delta-91e8402f carries no worktrees entry
 fleet observe: skipping a seat row — a row carries no id
-fleet observe: skipping a seat row — echo-fe0d9831 would start under posture `auto` on model `claude-sonnet-4-5`, which matches none of the models measured to honour it (claude-opus-5, claude-fable-5, claude-sonnet-5)
+fleet observe: skipping a seat row — echo-fe0d9831 would start under posture `auto` on model `<model>`, which matches none of the models measured to honour it (<prefixes>)
 ...
 ```
 
+`<prefixes>` are the model prefixes posture `auto` is held to (see
+[Tuning the controller](#tuning-the-controller)).
+
 It exits 3 without polling when the seat list cannot be read
-(`fleet observe: cannot read the seat list at ...`) or when the policy file
-it names cannot be read (`fleet observe: cannot read policy at ...`). It
-exits 1 without polling when a seat's worktree holds a session fleet did not
-start (see [Seats Claude Code still runs](#seats-claude-code-still-runs)).
+(`fleet observe: cannot read the seat list at ...`), when the policy file
+it names cannot be read (`fleet observe: cannot read policy at ...`), or
+when the agent's capabilities cannot be read
+(`fleet observe: the agent's capabilities could not be read: ...`).
 
 ## What the controller does each poll
 
@@ -455,8 +434,8 @@ seat's decision:
   seat's worktree with the first turn `/wake <session-name>`. A named seat
   runs under the posture `auto` and a transient one under `unattended`.
 - **revive**: the seat's ended session is brought back, context intact: a new
-  tmux session resumes the agent's session by its id, on the model, posture
-  and plugin directory it was started with. The controller revives only a
+  tmux session resumes the agent's session by its id, on the model and
+  posture it was started with. The controller revives only a
   session whose context it read and found under the rest threshold; an ended
   session at or over the threshold, or one whose context could not be read,
   gets a new session instead.
@@ -479,9 +458,12 @@ name still names the seat in every verb.
 Every session the controller starts, named or transient, carries
 `FLEET_ACTOR=seat:<id>` in its environment, so the verbs the seat runs act as
 that seat (see [Items and the record](items.md)). It also carries
-`DISABLE_AUTOUPDATER=1`, which turns Claude Code's own updater off inside the
-session. The environment is set whole: a variable fleet does not name does
-not reach the session.
+`FLEET_BIN`, the absolute path of the fleet binary that started it, the
+search path above as `PATH`, and `HOME`, `USER`, `TMPDIR` and `LANG` where
+the controller's own environment has them. The agent's adapter adds the
+variables its agent needs over those; the claude-code pack's README lists
+the ones it adds. The environment is set whole: a variable neither fleet nor
+the adapter names does not reach the session.
 
 A start counts only once the agent lists the new session's own process with
 a status, within `start_watch_seconds` (5). A session that ends inside that
@@ -522,46 +504,37 @@ unknown posture, and the controller says so once as it starts:
 unknown posture: `<word>` is not a posture — a posture is `ask`, `auto` or
 `unattended` ``. The row keeps the word it carried.
 
-The controller starts, stops and nudges nothing, and says why, when no agent
-binary or no tmux can be found (`fleet observe: effects are off — <why>`).
+The controller starts, stops and nudges nothing, and says why, when the
+agent's adapter does not answer its `version`, or answers that its agent is
+not installed, and when no tmux can be found
+(`fleet observe: effects are off — <why>`).
 On macOS it also holds every such act while the permission to read the
 seats' worktrees is pending. In both cases it keeps polling and publishing.
 
-### The Claude Code version
+### The agent's version
 
-On every poll the controller asks `claude` for its version and compares it
-with the version it expects. That is the version the fleet's `fleet.toml`
-pins under `[substrate]`, in either of two forms:
+On every poll the controller asks the agent's adapter for its agent's
+version and compares it with the versions the adapter declares it was
+measured against, the `measured` of its capabilities (see
+[Capabilities](agent.md#capabilities)). The version it expects is the one it
+read, where that is among them, and otherwise the first they name.
 
-```toml
-[substrate.claude_code]
-version = "<version>"
-```
-
-```toml
-[substrate]
-claude_code = "<version>"
-```
-
-With no pin, it expects the version fleet supports, 2.1.280 (see
-[What fleet runs on](getting-started.md#what-fleet-runs-on)). A blank pin, or
-a `claude_code` entry in any other shape, pins nothing.
-
-When the version it reads differs from the one it expects, the controller
-writes a `substrate.moved` event naming the agent, the version it observed
+When the version it reads is none of them, the controller writes a
+`substrate.moved` event naming the agent adapter, the version it observed
 and the version it expected, and carries on: it refuses, stops and holds
-nothing for it.
+nothing for it. Here `<agent>` is the adapter's name, `<version>` the
+version read, and `<measured>` the first measured one:
 
 ```sh
 $ fleet event tail --type substrate.moved
-{"id":"<id>","seq":2,"ts":"<event-stamp>","type":"substrate.moved","actor":{"kind":"controller","id":"<identity>"},"payload":{"agent":"claude_code","expected":"2.1.280","observed":"<version>"}}
+{"id":"<id>","seq":2,"ts":"<event-stamp>","type":"substrate.moved","actor":{"kind":"controller","id":"<identity>"},"payload":{"agent":"<agent>","expected":"<measured>","observed":"<version>"}}
 ```
 
 `<identity>` is the id in this machine's `identity.toml`: the controller's
 own lines are written as the controller under that id.
 
 A running controller writes one event per difference, not one per poll. A
-poll that reads the expected version again ends the difference, so the next
+poll that reads a measured version again ends the difference, so the next
 one is a new event. A poll that cannot read the version writes nothing and
 does not end it. A controller that starts again writes the event again on
 its first poll. `fleet status` prints both versions on its first line while
@@ -579,17 +552,19 @@ number or a name is expected is read as the default.
 | `rest_threshold_tokens` | `700000` | context at or over which a live seat is nudged to rest, and an ended session gets a new one instead of coming back |
 | `arrival_window_seconds` | `45` | how long a start is given to appear before the seat is eligible again |
 | `start_watch_seconds` | `5` | how long a start or a revive is given for the agent to list the new session before it counts as failed |
-| `default_model` | `claude-opus-5` | the model of a seat that names none |
+| `default_model` | the agent's declared `default_model` | the model of a seat that names none |
 | `posture` | `auto` | the posture of a named seat's session |
 | `transient_posture` | `unattended` | the posture of a transient seat's session |
-| `auto_capable_models` | `claude-opus-5`, `claude-fable-5`, `claude-sonnet-5` | model prefixes allowed to run under posture `auto` |
-| `first_turn` | `/wake {seat}` | the first turn of a session the controller starts; `{seat}` is the name the session is started under |
+| `auto_capable_models` | the agent's declared `posture_models` for `auto` | model prefixes allowed to run under posture `auto` |
+| `first_turn` | the agent's declared `first_turn` | the first turn of a session the controller starts; `{seat}` is the name the session is started under |
 | `nudge_timeout_seconds` | `10` | how long a nudge or a feed typed into a seat's session is given to be taken |
 | `load_ceiling_per_cpu` | `1.0` | `fleet seat spawn` refuses when the five-minute load average is above this times the CPU count |
 | `max_transient_busy` | `3` | `fleet seat spawn` refuses when more than this many transient seats are mid-turn; `0` is kept |
-| `plugin_dir` | none | a plugin directory every session the fleet starts loads; relative to `fleet.toml` |
 
-Any of these except `plugin_dir` can also be set for one machine, over the
+The three defaults the agent declares are its adapter's capabilities (see
+[Capabilities](agent.md#capabilities)).
+
+Any of these can also be set for one machine, over the
 policy file, in a `controller` object in the seat list. The running
 controller and `fleet status` read it; the verbs you run — `fleet seat
 spawn`, `feed`, `retire` and `nudge`, and `fleet dispatch` without `--to` —
@@ -818,31 +793,28 @@ standard error. `fleet seat spawn`:
    `<worktrees>/agent-<short id>` from the project's `origin/main` as your
    clone has it, or from `--base <commit>`, and adds its row to the seat
    list, marked transient;
-3. writes the seat's permission rules into `.claude/settings.local.json` in
-   the worktree, from the pack layers (see [Packs](packs.md));
+3. makes the seat a configuration directory of its own in the machine
+   directory, empty;
 4. starts a session in the worktree with the file's text as its first turn,
-   on `--model <id>` or the default model, under `transient_posture`, with a
-   configuration directory of its own in the machine directory.
+   on `--model <model>` or the default model, under `transient_posture`.
 
 The seat's configuration directory is `config/agent-<short id>` in the
-machine directory. The spawn empties it, then fills it with the files the installed
-packs and the defaults carry under `overlay/per-provider/claude/config/`;
-the packs fleet ships carry none there. The start then writes `.claude.json`
-into it, merged over any the packs put there: `hasCompletedOnboarding`,
-`lastOnboardingVersion` and `oauthAccount`, and `theme` where you have one,
-copied from your own `~/.claude.json` (or `<dir>/.claude.json` where you set
-`CLAUDE_CONFIG_DIR=<dir>`), and the seat's worktree marked trusted. The
-session comes up with no onboarding and no question about trusting the
-folder; fleet marks no other directory trusted, and copies nothing else
-from your file. A `.claude.json` of yours missing one of the three keys
-stops the spawn, naming the key. The settings, memory, instructions and
-servers in your own agent configuration do not reach the seat. The session
-starts with `CLAUDE_CONFIG_DIR` set to that directory, and with
-`CLAUDE_SECURESTORAGE_CONFIG_DIR` set to the `CLAUDE_CONFIG_DIR` the
-spawning command ran with, or empty where it had none, so the seat finds the
-login your own configuration stored. A named
-seat has no directory of its own: it runs under the `CLAUDE_CONFIG_DIR` the
-controller runs with, or `~/.claude` where that is not set.
+machine directory. The spawn empties it where it stands, and puts nothing of
+fleet's in it: the agent's adapter fills it as it builds the session's
+launch. The launch also carries the seat's permissions in fleet's own words,
+which the adapter renders into its agent's own format: the command word the
+project's store declares, where it declares one, then the project's
+`[permissions] tool_commands`, each once, and the command `--touched` names
+(see [Permissions](agent.md#permissions)). The agent contract lets a launch
+write inside that directory and the seat's worktree, and nowhere else (see
+[Launching](agent.md#launching)).
+
+The claude-code pack's launch seeds the directory with your own onboarding
+answers and the seat's worktree marked trusted, so the session comes up
+without asking either, and writes the permission rules into the worktree;
+the claude-code pack's README says what it copies and where it writes. A
+named seat has no directory of its own: it runs under its agent's own
+configuration.
 
 When a transient seat's first turn answers that it is not logged in, the
 seat reads `prompt-blocked`, waiting for `logged_out`, and the controller
@@ -941,9 +913,9 @@ branch.
 | --- | --- | --- | --- |
 | `fleet start` with no fleet above the directory and none in the seat list | 1 | ``fleet start: no fleet.toml above this directory and no fleet named by <fleet-dir>/config.json — `fleet create` writes one`` | run it inside the project, or run `fleet create` |
 | `fleet start` while the controller runs | 1 | `fleet start: the controller is already running as pid <pid>; its last tick was <time>` | nothing, or `fleet stop` first |
-| `fleet start` with no agent binary | 3 | `fleet start: <why> — nothing was loaded; the search path is <path>` | install `claude` on that path, or set `FLEET_CLAUDE_BIN` |
+| `fleet start` where no installed pack carries the fleet's agent adapter | 3 | ``fleet start: no agent adapter named `<agent>` in the installed packs — `fleet pack add <fleet-packs>//adapters/agent/<agent> --version <tag>` installs the one fleet-packs carries — nothing was loaded`` | run the `fleet pack add` it names |
+| `fleet start` where the agent's adapter answers that its agent is not installed, or its `version` does not answer | 3 | `fleet start: <why> — nothing was loaded; the search path is <path>` | install the agent where that path finds it, as its pack's README says |
 | `fleet start` with no tmux | 3 | `fleet start: <why> — nothing was loaded; the search path is <path>` | install tmux on that path, or set `FLEET_TMUX_BIN` |
-| `fleet start` or `fleet observe` over a seat whose worktree holds a session fleet did not start | 1 | `fleet start: <machine-name> is hosted by ...`, and the command that stops each (see [Seats Claude Code still runs](#seats-claude-code-still-runs)) | run each command it names, then start again |
 | `fleet start` with a `[seats]` table keyed by anything but an id | 3 | `fleet start: [seats.<key>] is keyed by a name — a seat is keyed by its id now; fleet seat add --agent --name <key> mints one` | run the `fleet seat add` it names, and delete the old table |
 | `fleet start` with a seat table carrying the retired name key | 3 | `fleet start: [seats.<id>] carries <retired-key>, which is name now` | rename the key to `name` |
 | `fleet start` with a seat table carrying no `kind`, or another kind | 3 | `fleet start: [seats.<id>] carries no kind — say kind = "agent" or kind = "human"`, or `[seats.<id>] kind = "<value>" is neither agent nor human` | set `kind` |
@@ -998,7 +970,9 @@ branch.
   transient seat when given no `--to`, and `--by`, `FLEET_ACTOR` and the
   actor every entry names.
 - [Runs and workflows](runs.md): workflows that spawn, feed and retire seats.
-- [Packs](packs.md): the defaults, and the permission rules a spawned seat
-  gets.
+- [Packs](packs.md): the defaults, and the pack that carries the fleet's
+  agent adapter.
+- [The agent contract](agent.md): what the agent's adapter answers, and what
+  a launch may write.
 - [Exit codes and conventions](conventions.md): the exit table every command
   shares.

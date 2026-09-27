@@ -1,10 +1,10 @@
 # Getting started
 
 This area takes you from a checkout of fleet to a fleet that runs: building
-the binary, writing a project's fleet with `fleet create`, adding the tiny
-pack, bringing the controller up with `fleet start`, and wiring fleet into a
-Claude Code session through its plugin. Every step here is one you take once
-per machine or once per project.
+the binary, writing a project's fleet with `fleet create`, which installs
+the packs its store and its agent run from, adding the tiny pack, and
+bringing the controller up with `fleet start`. Every step here is one you
+take once per machine or once per project.
 
 ## Terms
 
@@ -20,12 +20,14 @@ per machine or once per project.
 - **Standalone fleet**: a fleet whose `fleet.toml` lives in its own directory.
   Each project it works on declares itself to it with a `.fleet/project.toml`
   and is registered on the machine.
-- **Defaults**: the record templates, guard wiring and health checks built into
-  the binary. `fleet create` and `fleet start` write them into
+- **Defaults**: the record templates and health checks built into the
+  binary. `fleet create` and `fleet start` write them into
   `<machine>/defaults`. See [Packs](packs.md).
-- **The plugin**: the fleet checkout is also a Claude Code plugin named
-  `fleet`. It runs `fleet prime` when a session starts and the four guards
-  before each shell command.
+- **Agent pack**: the pack that carries the agent adapter a fleet's seats
+  run through (see [The agent contract](agent.md)). The one `fleet create`
+  installs is the claude-code pack, whose adapter runs Claude Code. The
+  examples below write the claude-code pack's name, `claude-code`, which is
+  also its adapter's, as `<agent>`.
 
 ## Building fleet
 
@@ -38,10 +40,11 @@ $ cargo build --release
 
 The binary lands at `target/release/fleet`, or at `target/debug/fleet` for a
 plain `cargo build`. Fleet also calls other tools as you go further: `git` to
-fetch a pack, `claude` for the sessions the controller starts, and `deno`
-for the tiny pack's workflows. The store's pack runs what its store needs:
-the bd pack runs `deno` and `bd`. The version of each that fleet supports is
-in [What fleet runs on](#what-fleet-runs-on).
+fetch a pack, `tmux` to host the sessions the controller starts, and `deno`
+for the tiny pack's workflows. The agent's pack and the store's pack run
+what they need: the claude-code pack runs `deno` and Claude Code, `claude`,
+and the bd pack runs `deno` and `bd`. The version of each that fleet
+supports is in [What fleet runs on](#what-fleet-runs-on).
 
 `--version` prints the version and nothing else:
 
@@ -65,26 +68,30 @@ full path, so start the controller from the copy you mean to keep.
 Fleet runs on macOS and Linux. Windows is not supported: fleet does not
 build there.
 
-Fleet runs four other tools, and installs packs from one repository,
-fleet-packs, at `https://github.com/bembot90/fleet-packs`. Every one but
-`git` has a supported version, or for tmux a minimum, and a doctor check
-measures the one you have installed against it.
+Fleet runs three other tools itself, and installs packs from one
+repository, fleet-packs, at `https://github.com/bembot90/fleet-packs`.
+Every one but `git` has a supported version, or for tmux a minimum, and a
+doctor check measures the one you have installed against it.
 
 | Tool | Supported version | What measures it |
 | --- | --- | --- |
-| Claude Code (`claude`) | 2.1.280 | the `claude-code-version` doctor check, and the controller's `substrate.moved` event |
 | tmux (`tmux`) | 3.7b or later | the `tmux-version` doctor check |
 | Deno (`deno`) | 2.9.7, pinned by the `ts` pack | the `runtime-version` doctor check, which `fleet run` runs before it opens a run, and the `ts` pack's `deno-version` |
 | fleet-packs | the tag `v0.2.0`, which `fleet create` installs the agent's pack and the store's pack at | the `fleet-packs-version` doctor check, over every pack `packs.lock` pins from that repository |
 | `git` | none: fleet pins no version | nothing |
 
-The bd pack pins the versions its store runs on and carries the doctor check
-that measures them. Its README says what the pack needs, how to install it,
-and which check measures what. The installed copy is at
-`<machine>/packs/bd/adapters/store/bd/README.md`, and fleet-packs holds it
-at `adapters/store/bd/adapters/store/bd/README.md`.
+The agent is its pack's, and so is the store.
+The claude-code pack pins the Claude Code it runs, declares the versions its
+adapter was measured against, and carries the doctor checks that measure
+them. The bd pack pins the versions its store runs on and carries the check
+that measures them. Each pack's README says what the pack needs, how to
+install it, and which check measures what. It sits beside the adapter's
+entry: installed, at
+`<machine>/packs/<name>/adapters/<kind>/<name>/README.md`, and in
+fleet-packs at `adapters/<kind>/<name>/adapters/<kind>/<name>/README.md`,
+where `<kind>` is `agent` or `store`.
 
-Another version of Claude Code or of a pack from fleet-packs is named and not
+Another version of the agent, or of a pack from fleet-packs, is named and not
 refused: the verbs and the controller still run on it. Deno is
 different: while the `runtime-version` check is red, `fleet run` refuses to
 open a run. See [Runs and workflows](runs.md).
@@ -94,40 +101,30 @@ of fleet's own (see [The sessions the controller starts](#the-sessions-the-contr
 `fleet start` refuses to start without a tmux. An older tmux is named by the
 `tmux-version` check and not refused.
 
-The controller compares Claude Code's version with the one it expects on
-every poll. That is 2.1.280 unless the fleet's `fleet.toml` pins another; see
-[The controller and seats](seats.md#the-claude-code-version).
+The controller compares the agent's version with the versions its adapter
+declares it was measured against, on every poll; see
+[The controller and seats](seats.md#the-agents-version).
 
 ### Running a doctor check
 
-`claude-code-version` comes with the defaults every fleet gets, which
-`fleet create` and `fleet start` write under `<machine>/defaults`. A pack
-carries checks of its own, under its directory in `<machine>/packs`: the ts
-pack's `deno-version` (below), and the bd pack's check on what its store
-runs. Each is a shell script you run with `sh`. On another version, a check
-says `broken`, says how to install the supported one, and exits 1:
+`tmux-version`, `fleet-packs-version` and `runtime-version` come with the
+defaults every fleet gets, which `fleet create` and `fleet start` write
+under `<machine>/defaults`. A pack carries checks of its own, under its
+directory in `<machine>/packs`: the ts pack's `deno-version` (below), the bd
+pack's check on what its store runs, and the claude-code pack's two checks
+on Claude Code, which the claude-code pack's README describes. Each is a
+shell script you run with `sh`, or through `fleet doctor`. On another
+version, a check says `broken`, says how to install the supported one, and
+exits 1.
 
-```sh
-$ sh <machine>/defaults/doctor/claude-code-version/run.sh
-claude-code-version: supported Claude Code 2.1.280; `claude --version` answers: <version> (Claude Code)
-claude-code-version: broken — this claude is not the supported 2.1.280, so the shapes the controller reads were not measured on it; the controller still runs. Install the supported release: claude install 2.1.280
-```
-
-A tool that does not answer at all is `broken` too, with the exit it gave:
-`did not answer (exit 127)` when it is not on your `PATH`.
-`claude-code-version` names `claude install 2.1.280` when `claude` answered
-another version, and
-`curl -fsSL https://claude.ai/install.sh | bash -s 2.1.280` when nothing
-answered.
-
-`fleet-packs-version` comes with the defaults too. It reads `packs.lock`
-through `fleet pack list` and compares every pack installed from
+`fleet-packs-version` reads `packs.lock` through `fleet pack list` and
+compares every pack installed from
 `https://github.com/bembot90/fleet-packs` with `v0.2.0`, so run it through
 `fleet doctor`, inside the project:
 
 ```sh
 $ fleet doctor fleet-packs-version
-pass fleet-packs-version (defaults) — fleet-packs-version: holds — claude-code, ts at v0.2.0
+pass fleet-packs-version (defaults) — fleet-packs-version: holds — <agent>, bd, ts at v0.2.0
 doctor 1 check — 1 pass, 0 finding, 0 could not tell
 ```
 
@@ -137,12 +134,11 @@ named with `--packs-from` is not read. A pack from the repository at another
 tag is a finding and exits 1, naming it with
 `` `fleet pack remove <source>` and then `fleet pack add <source> --version v0.2.0` ``.
 
-`claude-code-version` asks the binary `FLEET_CLAUDE_BIN` names, or else the
-first `claude` on your `PATH`, which is not the search path the controller
-uses (see [Starting the controller](#starting-the-controller)). The bd pack's
-README says which `bd` its check and its store run.
+The bd pack's README says which `bd` its check and its store run, and
+the claude-code pack's README says which Claude Code its checks and its
+adapter run.
 
-`tmux-version` comes with the defaults too. It holds when `tmux -V` answers
+`tmux-version` holds when `tmux -V` answers
 3.7b or later, reading a trailing letter as a later release (3.7b is after
 3.7a, which is after 3.7), and says whether fleet's own tmux server is
 running and with how many sessions; either way it passes:
@@ -192,17 +188,18 @@ one.
 ```sh
 $ fleet doctor store-adapter agent-adapter
 pass store-adapter (built-in) — <store> <version> via <adapter> — schema 1, capabilities valid
-pass agent-adapter (built-in) — claude 2.1.280 via claude-code — measured 2.1.280
+pass agent-adapter (built-in) — <name> <version> via <agent> — measured <version>
 doctor 2 checks — 2 pass, 0 finding, 0 could not tell
 ```
 
-It exits 0. The agent row names the version the adapter answered and the
-versions it was measured against. An installed version that is not among
-them still passes, and the row says to re-measure:
+It exits 0. The agent row names the agent the adapter drives, as its
+`version` names it, the version the adapter answered, and the versions it
+was measured against. An installed version that is not among them still
+passes, and the row says to re-measure:
 
 ```sh
 $ fleet doctor agent-adapter
-pass agent-adapter (built-in) — claude 2.1.999 via claude-code — installed 2.1.999 is not among the measured 2.1.280: re-measure
+pass agent-adapter (built-in) — <name> <installed> via <agent> — installed <installed> is not among the measured <version>: re-measure
 doctor 1 check — 1 pass, 0 finding, 0 could not tell
 ```
 
@@ -223,7 +220,7 @@ means no agent is installed for it to drive:
 
 ```sh
 $ fleet doctor agent-adapter
-finding agent-adapter (built-in) — claude-code answers that no claude is installed (its version is null)
+finding agent-adapter (built-in) — <agent> answers that no <name> is installed (its version is null)
 doctor 1 check — 0 pass, 1 finding, 0 could not tell
 ```
 
@@ -243,10 +240,11 @@ the store's own in the project (see [The store's pack](#the-stores-pack)).
 Everything it prints goes to standard error.
 
 On a terminal, each question is a list you pick from, and Enter takes the
-first row: `embedded`, `bd`, the bd pack's store, and `claude-code`, the
-claude-code pack's agent. Where standard input is not a terminal, pass the
-mode as a flag. The store and the agent have defaults: with no terminal, no
-`--store` means `bd` and no `--agent` means `claude-code`.
+first row: `embedded`; `bd`, the bd pack's store; and
+`claude-code`, the claude-code pack's agent. Where standard input is not a
+terminal, pass the mode as a flag. The store and the agent have defaults:
+with no terminal, no `--store` means `bd`, and no `--agent` means the
+claude-code pack's `claude-code`.
 
 ### The store's pack
 
@@ -306,7 +304,7 @@ The one answer is `claude-code`, which installs the claude-code pack from
 fleet-packs at the same tag, the same install as:
 
 ```sh
-$ fleet pack add https://github.com/bembot90/fleet-packs//adapters/agent/claude-code --version v0.2.0
+$ fleet pack add https://github.com/bembot90/fleet-packs//adapters/agent/<agent> --version v0.2.0
 ```
 
 The claude-code pack imports the `ts` pack as well: where the store's pack
@@ -315,12 +313,12 @@ The file `create` writes names the agent:
 
 ```toml
 [agent]
-adapter = "claude-code"
+adapter = "<agent>"
 ```
 
 `--agent` takes that name, spelled that way; any other name is refused
-before anything is asked or written. Where a pack named `claude-code` is
-already installed, `create` leaves it as it stands, as it does the store's.
+before anything is asked or written. Where a pack of that name is already
+installed, `create` leaves it as it stands, as it does the store's.
 
 The bd pack and the claude-code pack each import `ts`, and both install
 beside the one ts. With both defaults, `create` installs the bd pack with
@@ -331,7 +329,7 @@ fleet-packs, named with `--packs-from` (below):
 $ fleet create --embedded --packs-from <checkout>
 store: bd v0.2.0 at <sha>, installed and pinned — <machine>/packs/bd
 store: ts v0.2.0 at <sha>, which bd imports — <machine>/packs/ts
-agent: claude-code v0.2.0 at <sha>, installed and pinned — <machine>/packs/claude-code
+agent: <agent> v0.2.0 at <sha>, installed and pinned — <machine>/packs/<agent>
 created embedded fleet — <project>/fleet.toml
 ...
 ```
@@ -342,8 +340,8 @@ ts it imports:
 ```sh
 $ fleet create --embedded --store none --packs-from <checkout>
 store: none installed — `fleet pack add <checkout>//adapters/store/bd --version v0.2.0` installs one
-agent: claude-code v0.2.0 at <sha>, installed and pinned — <machine>/packs/claude-code
-agent: ts v0.2.0 at <sha>, which claude-code imports — <machine>/packs/ts
+agent: <agent> v0.2.0 at <sha>, installed and pinned — <machine>/packs/<agent>
+agent: ts v0.2.0 at <sha>, which <agent> imports — <machine>/packs/ts
 created embedded fleet — <project>/fleet.toml
 ...
 ```
@@ -362,8 +360,8 @@ fleet it is declared to, and `create --standalone` installs no agent's pack.
 ```sh
 $ fleet create --embedded --store none --packs-from <checkout>
 store: none installed — `fleet pack add <checkout>//adapters/store/bd --version v0.2.0` installs one
-agent: claude-code v0.2.0 at <sha>, installed and pinned — <machine>/packs/claude-code
-agent: ts v0.2.0 at <sha>, which claude-code imports — <machine>/packs/ts
+agent: <agent> v0.2.0 at <sha>, installed and pinned — <machine>/packs/<agent>
+agent: ts v0.2.0 at <sha>, which <agent> imports — <machine>/packs/ts
 created embedded fleet — <project>/fleet.toml
 guards: shell-trap on, record on
 telemetry: off — nothing leaves this machine
@@ -378,7 +376,7 @@ It exits 0. `<checkout>` is a checkout of fleet-packs; without
 The `fleet.toml` it writes opens with a comment naming the command that wrote
 it, then carries `[guards]` with `shell-trap.enabled = true` and
 `record.enabled = true`, `[telemetry]` with `enabled = false`, `[agent]` with
-`adapter = "claude-code"`, `[store]` with `adapter = "bd"` (none with
+`adapter = "<agent>"`, `[store]` with `adapter = "bd"` (none with
 `--store none`), and `[seats]`, under a comment showing what a seat's table
 looks like, with one table in it: yours. The example row in that comment
 carries the model the agent's adapter names as its default, and no model
@@ -424,8 +422,8 @@ no `--store`, the store's pack is installed as for an embedded fleet, and
 where the embedded fleet's `create` installed it already, the `store:` line
 says so and leaves it as it stands. `<name>` is the project directory's own
 name. The project runs on the fleet's agent: `--agent` naming another than
-the one the fleet's `fleet.toml` names, `claude-code` where it names none,
-is refused. The
+the one the fleet's `fleet.toml` names, or than `<agent>` where it names
+none, is refused. The
 `fleet:` line appears only when this call wrote `<machine>/config.json`. Once a fleet is
 registered on the machine, `--fleet` is not needed. Registering a project
 also writes a `project.registered` event to the stream, and that event mints
@@ -454,11 +452,16 @@ inside the project; it writes the seat's table into the fleet's own
 `fleet.toml` and prints the `git worktree add` line for its worktree:
 
 ```sh
-$ fleet seat add --agent --name Orla --model claude-opus-5
+$ fleet seat add --agent --name Orla --model <model>
 added: agent orla-10b55fd3 — [seats.01a0d5ff-b143-7781-9967-5ccd10b55fd3] in <project>/fleet.toml
 next: git worktree add <project>-worktrees/orla-10b55fd3 <a branch>, then fleet start renders it
 01a0d5ff-b143-7781-9967-5ccd10b55fd3
 ```
+
+`<model>` is a model the agent takes, in its own words. Leave `--model` out
+and the seat runs on the default model the agent's adapter declares, the one
+the example row in `fleet.toml`'s comment carries, unless
+`[controller] default_model` names another.
 
 Cut the worktree with that line, set `[core] reviewer` in `fleet.toml` to
 the seat deliveries go to (any seat argument: its name, its machine name or
@@ -512,14 +515,17 @@ $ fleet start
 
 Run it inside the embedded fleet's project, or inside any directory once the
 machine's seat list names a fleet. Before it does anything, it refuses when
-the controller is already running, when it cannot find the `claude` binary
-or `tmux`, and when a seat's worktree holds a session fleet did not start
-(see [The controller and seats](seats.md#seats-claude-code-still-runs)). It
-looks for `claude` and `tmux` on a fixed search path, not your shell's
-`PATH`: `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`, `/opt/homebrew/bin`,
-`/usr/local/bin` and `~/.local/bin` on macOS, and `~/.local/bin`,
-`/usr/local/bin`, `/usr/bin` and `/bin` on Linux. `FLEET_CLAUDE_BIN` and
-`FLEET_TMUX_BIN`, set to an absolute path, name the binaries instead.
+the controller is already running, when no installed pack carries the
+fleet's agent adapter, when that adapter answers that its agent is not
+installed, and when it cannot find `tmux` (see
+[Starting the controller](seats.md#starting-the-controller)). It runs the
+agent's adapter, and looks for `tmux`, on a fixed search path, not your
+shell's `PATH`: `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`,
+`/opt/homebrew/bin`, `/usr/local/bin` and `~/.local/bin` on macOS, and
+`~/.local/bin`, `/usr/local/bin`, `/usr/bin` and `/bin` on Linux.
+`FLEET_TMUX_BIN`, set to an absolute path, names the tmux binary instead.
+How the agent is found on that path is its pack's to say:
+the claude-code pack's README says how it finds Claude Code.
 
 Then it does the first-run work, one line each on standard error, each line
 starting `first run:`. It makes the machine directory, and writes the seat
@@ -554,33 +560,27 @@ work, and says
 the service file, then runs the controller's loop in your terminal and loads
 nothing. It prints `running in this process — nothing was loaded`.
 
-## Using fleet in a Claude Code session
+## Fleet inside a session
 
-The checkout is a Claude Code plugin. To load it for one session:
+What wires fleet into a seat's session is its agent's pack.
+The claude-code pack carries a plugin, and its adapter names it on every
+launch and resume, so every seat's session loads it and no setting of yours
+names it. It runs `fleet prime` when a session starts, and before every Bash
+command it runs `fleet guard --adapter <agent>`, which runs the declared
+guard classes (see [Guards](guards.md)).
 
-```sh
-$ claude --plugin-dir <checkout>
-```
-
-To install it into a project's Claude Code settings, add the checkout as a
-marketplace, then install the plugin from it. The marketplace and the plugin
-are both named `fleet`:
-
-```sh
-$ claude plugin marketplace add <checkout>
-$ claude plugin install fleet@fleet --scope project
-```
-
-A session with the plugin loaded runs `fleet prime` when it starts, and
-before every shell command it runs the four guards in order: `shell-trap`,
-`record`, `release-ref` and `production-write`. See [Guards](guards.md).
+A session of your own loads the same plugin from fleet-packs, and
+the claude-code pack's README says how for Claude Code: under "Loading it in
+a session of your own" it gives the two lines that install it, and the one
+that loads it for a single session.
 
 `fleet prime` names the fleet's installed packs and its guards on its first
-line, the project's store on its second, then prints the resolved rules:
+line, the project's store on its second, then prints the resolved rules. In
+the fleet `fleet create` made with both defaults:
 
 ```sh
 $ fleet prime
-fleet 0.1.0 — packs: bd, ts; guards: shell-trap on, record on
+fleet 0.1.0 — packs: bd, <agent>, ts; guards: shell-trap on, record on
 store: bd 1.3.0 (adapter bd)
 Five things no verb guesses, each one a lesson somebody already paid for:
 ...
@@ -605,25 +605,20 @@ With no project, it reads `store: none (no project here)`. Outside every fleet i
 prints one line, `fleet 0.1.0 — no fleet config found above <directory>`. When the directory
 is a seat's worktree, it also lists the items assigned to that seat.
 
-The plugin carries one skill, `version`, which runs `fleet --version`.
-
 ### Which fleet binary the plugin runs
 
-The plugin's hooks run its own `bin/fleet`, which runs the first of:
-
-1. `FLEET_BIN`, when it is set to an absolute path of an executable file;
-2. `<checkout>/target/release/fleet`;
-3. `<checkout>/target/debug/fleet`.
-
-So a checkout loaded with `--plugin-dir` needs a build in it, and a copy of
-the plugin with no `target` directory needs `FLEET_BIN` set in the
-environment Claude Code runs in. When none of the three answers, `bin/fleet`
-prints why on standard error and exits 127.
+fleet sets `FLEET_BIN` to the absolute path of its own binary in every
+seat's session it starts (see
+[What the controller does each poll](seats.md#what-the-controller-does-each-poll)).
+The claude-code pack's plugin runs the binary `FLEET_BIN` names, and no
+other. A session of your own needs `FLEET_BIN` set once, in the environment
+the session starts in, as the claude-code pack's README shows; without it,
+the plugin blocks every Bash command in the session.
 
 ### The sessions the controller starts
 
-Each agent seat's session is an interactive Claude Code session, run as the
-process of its own tmux session on a tmux server that is fleet's alone: the
+Each agent seat's session is its agent run interactively, as the process of
+its own tmux session on a tmux server that is fleet's alone: the
 server on the socket `fleet`, which `tmux -L fleet` reaches, started with no
 configuration file, so your own `~/.tmux.conf` does not shape it. The tmux
 session is named by the seat's full id, and `fleet seat attach <seat>`
@@ -631,34 +626,24 @@ opens it in your terminal (see
 [The controller and seats](seats.md#attaching-to-a-seat)).
 
 A transient seat's session runs under a configuration directory of its own,
-which fleet seeds with your onboarding answers and with the seat's worktree
-marked trusted, so the session starts without asking either (see
-[Spawning a transient seat](seats.md#spawning-a-transient-seat)). A named
-seat's session runs under your own configuration.
-
-The controller starts each seat's session with the plugin only when the
-fleet's `fleet.toml` names the plugin's directory:
-
-```toml
-[controller]
-plugin_dir = "<checkout>"
-```
-
-A relative path is read from the directory `fleet.toml` is in. With no
-`plugin_dir`, the seats' sessions start without fleet's hooks.
+which the agent's adapter fills as it launches the session.
+The claude-code pack's launch seeds it with your onboarding answers and the
+seat's worktree marked trusted, so the session starts without asking either
+(see [Spawning a transient seat](seats.md#spawning-a-transient-seat)). A
+named seat's session runs under your own configuration of its agent.
 
 ## When it refuses
 
 | Situation | Exit | What you see | What to do |
 | --- | --- | --- | --- |
 | `fleet create` with no mode flag and no terminal | 2 | `fleet create: fleet: embedded or standalone? — stdin is not a terminal; answer it with --embedded` | Pass `--embedded` or `--standalone`. |
-| `--agent` names an agent fleet installs no pack for, `claude_code` among them | 2 | ``fleet create: no agent pack answers to `<name>` — this fleet installs claude-code`` | Pass `--agent claude-code`, or leave it out. |
+| `--agent` names an agent fleet installs no pack for | 2 | ``fleet create: no agent pack answers to `<name>` — this fleet installs <agent>`` | Pass `--agent <agent>`, or leave it out. |
 | `--standalone` with an `--agent` that is not the fleet's | 2 | ``fleet create: --agent <name> is not this fleet's agent — <fleet>/fleet.toml runs `<adapter>`, and a project declared to it runs on that one; drop --agent`` | Drop `--agent`. |
 | `--store` names a store fleet installs no pack for | 2 | ``fleet create: no store pack answers to `<name>` — this fleet installs bd, or none`` | Pass `--store bd` or `--store none`. |
 | `--standalone --store none` together with `--packs-from` | 2 | `fleet create: --packs-from names where the packs come from, and a standalone project with --store none installs none — drop one of them` | Drop one of the two. |
 | `--packs-from` names no directory | 2 | `fleet create: --packs-from <dir> is not a directory — name a checkout of fleet-packs` | Name a checkout of fleet-packs. |
 | The store's pack cannot be fetched: no network, or a checkout without the tag | 1 | ``fleet create: the store's pack was not installed, so no fleet file was written: git <step> exited <n>: <git's reason> — `fleet create --store none` creates the fleet without one`` | Fix what git names, or pass `--store none` and install the pack later. |
-| The agent's pack cannot be fetched, or does not layer over what is installed | 1 | ``fleet create: the agent's pack was not installed, so no fleet file was written: <the reason> — `fleet pack add <fleet-packs>//adapters/agent/claude-code --version v0.2.0` installs it`` | Fix what the reason names. |
+| The agent's pack cannot be fetched, or does not layer over what is installed | 1 | ``fleet create: the agent's pack was not installed, so no fleet file was written: <the reason> — `fleet pack add <fleet-packs>//adapters/agent/<agent> --version v0.2.0` installs it`` | Fix what the reason names. |
 | `--embedded` together with `--standalone` or `--fleet` | 2 | `error: the argument '--embedded' cannot be used with '--standalone'` | Pass one mode. `--fleet` goes with `--standalone`. |
 | The directory already holds a `fleet.toml` | 1 | `fleet create: <project>/fleet.toml is already here, so this directory is already a fleet` | Nothing to do: the fleet exists. |
 | The directory holds a `.fleet` with no `project.toml` in it | 1 | `fleet create: <project>/.fleet is here and carries no .fleet/project.toml — a directory that is not this project's own declaration is not one this verb will write into` | Move the `.fleet` directory aside. |
@@ -671,13 +656,10 @@ A relative path is read from the directory `fleet.toml` is in. With no
 | `fleet item list --ready` or `fleet run` where the store cannot read the project's items, as with the bd pack's store before the project has a board | 3 | `fleet item list: the store's ready set could not be read: ` or `fleet run: the work graph could not be read: `, then the adapter's reason | Make the board, as the bd pack's README says. |
 | `fleet start` with no `fleet.toml` above the directory and no fleet named by the seat list | 1 | ``fleet start: no fleet.toml above this directory and no fleet named by <machine>/config.json — `fleet create` writes one`` | Run it inside the fleet's project, or `fleet create` first. |
 | `fleet start` while the controller is running | 1 | `fleet start: the controller is already running as pid <pid>; its last tick was <stamp>` | Nothing to do, or `fleet stop` first. |
-| `fleet start` cannot find `claude` | 3 | ``fleet start: no `claude` on the constructed child PATH (<path>) — nothing was loaded; the search path is <path>`` | Install `claude` into a directory on that path, or set `FLEET_CLAUDE_BIN`. |
+| `fleet start` where no installed pack carries the fleet's agent adapter | 3 | ``fleet start: no agent adapter named `<agent>` in the installed packs — `fleet pack add https://github.com/bembot90/fleet-packs//adapters/agent/<agent> --version v0.2.0` installs the one fleet-packs carries — nothing was loaded`` | Run the `fleet pack add` it names. |
+| `fleet start` where the agent's adapter answers that its agent is not installed | 3 | ``fleet start: <agent> answers that no <name> is installed (its version is null), so no session can be started through it — nothing was loaded; the search path is <path>`` | Install the agent where the search path finds it, as its pack's README says. |
 | `fleet start` cannot find `tmux` | 3 | ``fleet start: no `tmux` on the constructed child PATH (<path>) — nothing was loaded; the search path is <path>`` | Install tmux into a directory on that path (`brew install tmux` on macOS, the distribution's `tmux` package on Linux), or set `FLEET_TMUX_BIN`. |
-| `fleet start` over a seat whose worktree holds a session fleet did not start | 1 | `fleet start: <machine-name> is hosted by ...` and the command that stops each | Run each command it names, then start again; see [The controller and seats](seats.md#seats-claude-code-still-runs). |
 | The service loaded and no `controller.started` arrived within 30 seconds | 3 | `fleet start: no controller.started was written within 30s — nothing fresh reached <machine>/events.jsonl; what the service printed is at <machine>/service.err.log` | Read the service's log. |
-| The plugin's `bin/fleet` finds no binary | 127 | `fleet: no built binary under <checkout>/target — run cargo build --release in <checkout>, or set FLEET_BIN` | Build the checkout, or set `FLEET_BIN`. |
-| `FLEET_BIN` is not an absolute path | 127 | ``fleet: FLEET_BIN names `<value>`, which is not an absolute path`` | Set it to an absolute path. |
-| `FLEET_BIN` names no executable file | 127 | ``fleet: FLEET_BIN names `<value>`, which is not an executable file`` | Point it at the built binary. |
 
 ## See also
 
@@ -685,7 +667,9 @@ A relative path is read from the directory `fleet.toml` is in. With no
   over the defaults.
 - [The controller and seats](seats.md): adding seats, stopping the
   controller, and what it does once it runs.
-- [Guards](guards.md): what the four guards the plugin runs refuse.
+- [Guards](guards.md): what the guards a seat's hook runs refuse.
+- [The agent contract](agent.md): the agent adapter an agent pack carries,
+  and how to write one.
 - [Runs and workflows](runs.md): `fleet run` and the takeoff workflow.
 - [Status and the event stream](status.md): reading the controller once it
   is up.

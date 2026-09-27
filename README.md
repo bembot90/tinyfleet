@@ -15,8 +15,8 @@ work and the process table is kept in the type system rather than in discipline:
 `cli/tests/workspace.rs` reads `cargo metadata --no-deps` and refuses the edge.
 Core depends on neither of the other members. The dependency that is allowed
 runs the other way: the controller depends on core, for the bounded runner
-(`fleet_core::process`), the Claude Code release it supports
-(`fleet_core::supported`), a seat's identity (`fleet_core::seat::identity`:
+(`fleet_core::process`), the fleet-packs source and tag its refusal of a
+missing agent pack names (`fleet_core::supported`), a seat's identity (`fleet_core::seat::identity`:
 the id, the fleet.toml roster and the resolver), the typed actor
 (`fleet_core::seat::actor::Actor`, `<kind>:<id>`) and the policy-file reader
 (`fleet_core::item::table_at`), and nothing else, and the cli crate is where
@@ -89,39 +89,31 @@ cap; off, nothing opens (`brain/fleet-layers.md` § tiny). The three verbs
 `fleet plan`, `fleet fly` and `fleet autopilot on|off` were core's until
 2026-09-17 (workflows-formula-fate).
 
-## The plugin shape
+## The plugin
 
-This directory is also a Claude Code plugin root: `.claude-plugin/plugin.json`
-is the manifest, `.claude-plugin/marketplace.json` publishes this directory as a
-one-plugin marketplace, `hooks/hooks.json` wires the guards and `fleet prime`
-into a session, `bin/fleet` is the shim those hooks address, and `skills/` holds
-the plugin's skills. The hooks reach the shim through `${CLAUDE_PLUGIN_ROOT}`
-because a hook's `PATH` does not carry `bin/` and the Bash tool's does
-(`brain/lessons/claude-code.md` D5).
+This directory is not a plugin root, and the binary spells its default
+agent's name once, `adapter::DEFAULT_AGENT_ADAPTER`; `cli/tests/workspace.rs`
+refuses any other mention of that agent in core, cli, controller and docs
+but prose naming the claude-code pack. The plugin a seat's session loads is its agent pack's: the claude-code pack,
+in the fleet-packs repository, carries fleet's Claude Code plugin — a
+pre-tool hook on Bash that runs `fleet guard --adapter claude-code`, a
+session-start hook that runs `fleet prime`, the `bin/fleet` shim both
+address, the `version` probe and copies of tiny's skills — and its adapter's
+`launch` and `resume` name it with `--plugin-dir` on every seat. The shim
+runs `$FLEET_BIN` and nothing else, and fails closed without it: a guard
+hook exits 2, which blocks the Bash command. The controller sets `$FLEET_BIN`
+to its own binary on every session it starts, so a seat's hooks run the
+binary that started it.
 
-`bin/fleet` resolves the real binary by explicit path: `$FLEET_BIN` when it
-names an absolute executable, else `target/release/fleet`, else
-`target/debug/fleet` under this directory — never a bare `fleet` on `PATH`,
-which a service environment does not carry. The controller sets `$FLEET_BIN`
-to its own binary on every session it spawns, so a seat's hooks run the binary
-that spawned it. A session with no binary to find — started from a checkout
-nobody built, or from an installed copy, which carries no `target/` and which
-nothing yet points at a binary — fails closed: each guard hook exits 2, which
-blocks the Bash command, and says what is missing and how to supply it, while
-the session-start hook says the same and lets the session come up.
-
-### The skill a session gets
-
-`skills/version` is the plugin's own probe, and the only skill under
-`skills/`. The rituals a seat runs under the `fleet:` namespace — wake,
-handoff, rest, takeoff and the rest — are the tiny pack's, and live with it in
-the fleet-packs repository; this plugin carries none of them.
+The pack's README — `adapters/agent/claude-code/adapters/agent/claude-code/README.md`
+in fleet-packs — carries the plugin's story: the hooks, the shim, setting
+`FLEET_BIN` once for a session of your own, and the lines that install it.
 
 ### The defaults and the packs
 
 `core/defaults/` is what every fleet gets: the brief, the every-turn rules,
-the JSON schemas of a delivery, a question and a return's findings, the
-guards' wiring and their health checks, with no opinion about the work. It is
+the JSON schemas of a delivery, a question and a return's findings, and the
+health checks, with no opinion about the work. It is
 not a pack — `core/build.rs` walks it into the executable, and `fleet create`
 and every `fleet start` materialize it into the machine directory's `defaults/`,
 a sibling of `packs/`, pinned by content hash. Every verb reads those files
@@ -228,23 +220,24 @@ takeoff.touched = "make test-touched"
 
 ### Driving it from a checkout
 
-    cargo build                       # in this directory, so target/debug/fleet exists
-    claude --plugin-dir <checkout>
+    cargo build                                    # in this directory, so target/debug/fleet exists
+    export FLEET_BIN="$PWD/target/debug/fleet"     # the plugin runs this binary and no other
+    claude --plugin-dir <fleet-packs>/adapters/agent/claude-code/adapters/agent/claude-code/plugin
 
-`--plugin-dir` loads the plugin for that session only and shadows an installed
+`<fleet-packs>` is a checkout of the fleet-packs repository, where the plugin
+lives. `--plugin-dir` loads it for that session only and shadows an installed
 plugin of the same name. Four probes say it worked:
 
 1. the session's `SessionStart` hook output carries `fleet prime`'s first line;
 2. a `Bash` call on `git show "$S:tools/land"` is denied, and the reason names
    `fleet guard shell-trap` and prints the rewrite;
-3. a `Bash` call on `fleet --version` answers this crate's version — the bare
-   name resolved to `bin/`, which nothing outside the session resolves;
+3. a `Bash` call on `fleet --version` answers this crate's version, where no
+   other `fleet` is earlier on the session's `PATH` — the plugin's `bin/` is
+   appended last;
 4. `claude -p '/fleet:version'` answers with the version, which is the skill
    namespace.
 
-`claude plugin validate <checkout>` checks the manifests.
-
-A project INSTALLS the plugin instead, with
-`claude plugin marketplace add <path to this directory>` followed by
-`claude plugin install fleet@fleet --scope project`. That is a decision about a
-project's settings and is not run from here.
+A project INSTALLS the plugin instead, from fleet-packs' marketplace, with
+`claude plugin marketplace add https://github.com/bembot90/fleet-packs`
+followed by `claude plugin install fleet@fleet`, as the pack's README says.
+That is a decision about a project's settings and is not run from here.

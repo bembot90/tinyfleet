@@ -137,18 +137,18 @@ fn two_packs_importing_one_pack_resolve_whichever_sits_higher() {
         "[pack]\nname = \"bd\"\nversion = \"1\"\nschema = 3\n\n\
          [imports.ts]\nsource = \"../../../runtimes/ts\"\nversion = \"1\"\n",
     );
-    let agent = Fixture::new("two-claude-code");
+    let agent = Fixture::new("two-coder");
     agent.file(
         "pack.toml",
-        "[pack]\nname = \"claude-code\"\nversion = \"1\"\nschema = 3\n\n\
+        "[pack]\nname = \"coder\"\nversion = \"1\"\nschema = 3\n\n\
          [imports.ts]\nsource = \"../../../runtimes/ts\"\nversion = \"1\"\n",
     );
     let runtime = Fixture::new("two-ts");
     runtime.manifest("ts");
 
     for order in [
-        [("bd", &store), ("claude-code", &agent), ("ts", &runtime)],
-        [("claude-code", &agent), ("bd", &store), ("ts", &runtime)],
+        [("bd", &store), ("coder", &agent), ("ts", &runtime)],
+        [("coder", &agent), ("bd", &store), ("ts", &runtime)],
     ] {
         resolve::resolve(&layers(&order)).unwrap_or_else(|refusals| {
             panic!(
@@ -397,7 +397,7 @@ fn a_third_pack_resolves_the_same_whatever_its_name_and_whatever_it_imports() {
 fn three_packs_importing_one_runtime_resolve_for_every_verb() {
     let held = Defaults::new("three");
     let dir = Fixture::new("three-packs");
-    for name in ["tiny", "claude-code", "bd"] {
+    for name in ["tiny", "coder", "bd"] {
         pack_in(&dir, name, &["ts"]);
     }
     pack_in(&dir, "ts", &[]);
@@ -406,13 +406,7 @@ fn three_packs_importing_one_runtime_resolve_for_every_verb() {
     let layers = resolve::layers(packs, held.path()).expect("no cycle");
     assert_eq!(
         names_of(layers.clone()),
-        vec![
-            "bd",
-            "claude-code",
-            "tiny",
-            "ts",
-            fleet_core::defaults::LAYER
-        ]
+        vec!["bd", "coder", "tiny", "ts", fleet_core::defaults::LAYER]
     );
     resolve::resolve(&layers).expect("the layering resolves");
     fleet_core::item::brief::Packs::under(packs, held.path())

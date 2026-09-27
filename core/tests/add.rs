@@ -537,15 +537,15 @@ fn packs_importing_one_runtime_install_in_any_order() {
         &[
             ("adapters/store/bd/pack.toml", &importing("bd", "../../../")),
             (
-                "adapters/agent/claude-code/pack.toml",
-                &importing("claude-code", "../../../"),
+                "adapters/agent/coder/pack.toml",
+                &importing("coder", "../../../"),
             ),
             ("tiny/pack.toml", &importing("tiny", "../")),
             ("runtimes/ts/pack.toml", &manifest("ts")),
         ],
     );
     let store = "adapters/store/bd";
-    let agent = "adapters/agent/claude-code";
+    let agent = "adapters/agent/coder";
     for (label, order) in [
         ("forward", [store, agent, "tiny", "runtimes/ts"]),
         ("backward", ["runtimes/ts", "tiny", agent, store]),
@@ -570,7 +570,7 @@ fn packs_importing_one_runtime_install_in_any_order() {
         }
         assert_eq!(
             machine.installed(),
-            vec!["bd", "claude-code", "tiny", "ts"],
+            vec!["bd", "coder", "tiny", "ts"],
             "{label}"
         );
         resolve::resolve(

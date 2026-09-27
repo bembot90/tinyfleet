@@ -89,9 +89,9 @@ reads `STALE, <stale-age>s old`. A stamp fleet cannot read as a time reads
 
 When the agent version the controller read differs from the one it expects,
 both are printed: `agent 2.1.261 (expected 2.1.280)`. The version it expects
-is the fleet's own `[substrate]` pin, or the version fleet supports when
-there is none; see
-[The controller and seats](seats.md#the-claude-code-version). When the
+is one of the versions the agent's adapter declares it was measured against:
+the one read, where it is among them, and otherwise the first; see
+[The controller and seats](seats.md#the-agents-version). When the
 controller could not read the agent's version, the line says
 `agent not read (expected 2.1.280)`.
 
@@ -265,9 +265,9 @@ The document's `agent` object names the agent your seats run:
 - `name` is the agent the adapter drives, and `version` its version as the
   controller read it on that poll. Both are null when the adapter could not
   be read; `version` alone is null when no binary of the agent is installed.
-- `expected` is the version the controller expects: the fleet's own
-  `[substrate]` pin, or the version the adapter was measured against when
-  there is none.
+- `expected` is the version the controller expects: the version read, where
+  the adapter declares it was measured against it, and otherwise the first
+  version the adapter declares.
 - `postures` lists the postures the agent takes, among `ask`, `auto` and
   `unattended`.
 

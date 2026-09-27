@@ -49,29 +49,31 @@ what they date:
 
 | Tool | Constant | Where it is declared | Checked by |
 | --- | --- | --- | --- |
-| Claude Code | `PINNED_CLAUDE_CODE` | `core/src/supported.rs` | `doctor/claude-code-version`, the controller's `substrate.moved` when a fleet pins none |
 | fleet-packs | `PINNED_PACKS_SOURCE` and `PINNED_PACKS` (the tag) | `core/src/supported.rs` | `doctor/fleet-packs-version`, over every pack `packs.lock` pins from the source; `fleet create` installs the agent's pack and the store's pack at the tag |
 
-Deno is a pack's, not the binary's: the ts pack's `[runtime]` table
-(`runtimes/ts/pack.toml` in the fleet-packs repository), measured by
-`doctor/runtime-version`. So is bd: the bd pack pins it and carries the
-`doctor/bd-version` check that measures it (`adapters/store/bd` in the
-fleet-packs repository), and a move of it is that repository's. git carries
-no pin.
+Claude Code is a pack's, not the binary's: the claude-code pack
+(`adapters/agent/claude-code` in the fleet-packs repository) pins the release
+its adapter was measured against, declares it as `measured` in its
+capabilities — which the controller's `substrate.moved` and
+`fleet doctor agent-adapter` compare the installed one with — and carries
+the `doctor/claude-code-version` check that measures it. A re-pin is that
+repository's work: the pack moves, its lessons are re-measured beside its
+fixtures, and it reaches this binary as a `PINNED_PACKS` move below. Deno is
+a pack's too: the ts pack's `[runtime]` table (`runtimes/ts/pack.toml` in
+the fleet-packs repository), measured by `doctor/runtime-version`. So is bd:
+the bd pack pins it and carries the `doctor/bd-version` check that measures
+it (`adapters/store/bd` in the fleet-packs repository), and a move of it is
+that repository's. git carries no pin.
 
-**A supported-version move is one constant plus a re-measure**, as one item:
+**A supported-version move is one constant plus a re-check**, as one item:
 
 1. Change the constant, and the one copy of it in its doctor check's `run.sh`
-   (`PINNED=` or `SUPPORTED=`; fleet-packs' check also copies the source as
-   `SOURCE=`). The core suite fails until the copies agree.
-   The install pointers follow the copy: Claude Code's check names
-   `claude install <version>` and the native installer at that version.
-2. Re-measure every claim that rests on the old release, on the new one: for
-   Claude Code, the version-scoped entries in `brain/lessons/claude-code.md` the adapter
-   reads. Restate each one that held, and change the code where a behaviour
-   moved. For fleet-packs, re-check the packs at the new tag against this
-   binary: `fleet store check --adapter` over each store adapter, `fleet agent
-   check --adapter` over each agent adapter, and the `fleet create` suites.
+   (`PINNED=`; fleet-packs' check also copies the source as `SOURCE=`). The
+   core suite fails until the copies agree.
+2. Re-check the packs at the new tag against this binary: `fleet store check
+   --adapter` over each store adapter, `fleet agent check --adapter` over
+   each agent adapter, and the `fleet create` suites. Change the code where a
+   behaviour moved.
 3. The version is also in the "What fleet runs on" table of
    `docs/getting-started.md`, which only the docs skill edits: ask for the
    edit on the item's bead, or the release pass catches it up.

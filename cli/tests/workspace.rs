@@ -302,6 +302,100 @@ fn no_source_reads_or_writes_a_note() {
     assert!(found.is_empty(), "the note plumbing is spelled: {found:#?}");
 }
 
+/// The one agent that ever lived in this repository is a pack now, and the
+/// product's own paths — core, the binary, the controller and the docs —
+/// name it only as the claude-code pack. The search is the flight's own
+/// command, run exactly: every line of those four trees naming the agent,
+/// case aside, less the four kinds of line allowed to.
+///
+/// 1. `lessons claude-code D4` and its like, a letter and a number: a comment
+///    citing an entry that stayed in brain's file when the pack's own moved.
+/// 2. `.claude/skills/`: this repository's own development harness, which
+///    `docs/README.md` names, and not the agent a fleet runs.
+/// 3. `DEFAULT_AGENT_ADAPTER`: the one constant spelling the claude-code
+///    pack's adapter name, which the create menu, the file it writes and the
+///    suites all read rather than spell.
+/// 4. prose naming the claude-code pack, which is every other line allowed.
+///
+/// Any other line is refused, by file and line. README.md and CONTRIBUTING.md
+/// are this repository's, not the product's, and stand outside the search.
+///
+/// The arm's own name leaves the agent's out: a name spelling it would be a
+/// line of `cli/` this very search refuses.
+#[test]
+fn no_source_names_the_agent_except_as_its_pack() {
+    const NEEDLE: &str = "claude"; // the claude-code pack's agent, by the word
+    const ALLOWED: &str =
+        "lessons claude-code [A-D][0-9]+|.claude/skills/|DEFAULT_AGENT_ADAPTER|claude-code pack";
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the cli crate sits inside the workspace");
+    // `grep -v` over `input`, as the pipe's second half runs: 1 is every line
+    // filtered out, and anything past it is grep failing, which would read as
+    // a clean tree.
+    let unallowed = |input: &str| -> Vec<String> {
+        let mut filter = Command::new("grep")
+            .args(["-v", "-i", "-E", ALLOWED])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("grep runs");
+        std::io::Write::write_all(
+            &mut filter.stdin.take().expect("grep's stdin is piped"),
+            input.as_bytes(),
+        )
+        .expect("grep takes the lines");
+        let out = filter.wait_with_output().expect("grep answers");
+        assert!(
+            matches!(out.status.code(), Some(0 | 1)),
+            "grep answers: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect()
+    };
+
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["grep", "-n", "-i", NEEDLE, "--"])
+        .args(["core", "cli", "controller", "docs"])
+        .output()
+        .expect("git grep runs");
+    // 0 is found and 1 is found nothing; anything else is git failing.
+    assert!(
+        matches!(out.status.code(), Some(0 | 1)),
+        "git grep answers: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let found = String::from_utf8_lossy(&out.stdout).into_owned();
+
+    // THE CONTROLS: the search finds the one allowed constant, so an empty
+    // answer below is the filter's and not the search's; and a line naming
+    // the agent in prose alone gets through the filter, so the filter is not
+    // one that lets nothing through.
+    assert!(
+        found
+            .lines()
+            .any(|line| line.contains("pub const DEFAULT_AGENT_ADAPTER")),
+        "the search finds the default adapter's one spelling"
+    );
+    let planted = format!("docs/planted.md:1:{NEEDLE} in prose\n");
+    assert_eq!(
+        unallowed(&planted),
+        vec![planted.trim_end().to_string()],
+        "the filter keeps a line it does not allow"
+    );
+
+    let named = unallowed(&found);
+    assert!(
+        named.is_empty(),
+        "named outside the claude-code pack: {named:#?}"
+    );
+}
+
 /// And the run's crash cap has one default, for the same reason: the controller
 /// reads `[core.run] max_crashes` off the policy in force and core's own reader
 /// answers the same key.

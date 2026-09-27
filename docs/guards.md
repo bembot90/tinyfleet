@@ -2,10 +2,13 @@
 
 A guard is a hook that refuses a class of mistake in a Bash command before
 the command runs. fleet has four guard classes: shell-trap, record,
-release-ref and production-write. You meet them in a Claude Code session with
-the fleet plugin loaded, where every class judges every Bash command, and a
-refusal says what is wrong, what to write instead, and how to run it anyway.
-You switch classes off, and name what the last two refuse on, in
+release-ref and production-write. You meet them in a seat's session, where
+the agent's pack wires its agent's pre-tool hook to `fleet guard`, which
+reads the hook's payload through the agent adapter's hook mapping and runs
+the declared classes against the command. A refusal says what is wrong, what
+to write instead, and how to run it anyway.
+The claude-code pack's plugin runs it before every Bash command Claude Code
+runs. You switch classes off, and name what the last two refuse on, in
 `fleet.toml`.
 
 ## Terms
@@ -21,8 +24,9 @@ You switch classes off, and name what the last two refuse on, in
 - **Escape**: an assignment such as `FLEET_TRAP_OK=1` written at the front of
   the command, which lets that one command through the checks it names.
 - **Hook mapping**: where an agent's pre-tool payload keeps the tool and the
-  command, and the shape of the refusal it reads. fleet carries Claude
-  Code's, and an agent adapter in a pack declares its own.
+  command, and the shape of the refusal it reads. An agent adapter in a pack
+  declares its own, in the `[hook]` table of its `adapter.toml` (see
+  [Packs](packs.md#the-format)); fleet carries none of its own.
 - **Declared classes**: the classes `fleet guard` runs when you name none.
   Shell-trap and record are always among them. Release-ref and
   production-write are among them when an installed pack names them in its
@@ -30,17 +34,26 @@ You switch classes off, and name what the last two refuse on, in
 
 ## How a guard judges a command
 
-The fleet plugin wires four pre-tool hooks on Claude Code's Bash tool, one
-per class, in this order: `fleet guard shell-trap`, `fleet guard record`,
-`fleet guard release-ref`, `fleet guard production-write`. Each one reads
-the payload Claude Code hands a pre-tool hook on standard input.
+A guard reads the payload an agent's pre-tool hook hands it on standard
+input, through the hook mapping of the agent adapter `--adapter` names:
+`--adapter <name>` is the one the installed packs carry under that name, and
+`--adapter <path>` the one in the adapter directory at that absolute path.
+`fleet guard <class> --adapter <name>` runs that class alone, and
+`fleet guard --adapter <name>` runs the declared classes (see
+[Running the declared classes](#running-the-declared-classes)). Without
+`--adapter` it judges nothing: it prints one line on standard error and
+exits 2 (see [When it refuses](#when-it-refuses)).
 
-When a class refuses, it prints one JSON object on standard output: a
-`PreToolUse` decision of `deny`, with the reason as its text. When it lets
-the command through, it prints nothing. You can hand it a payload yourself:
+The examples on this page judge through the mapping of the agent adapter the
+claude-code pack carries, whose name is written `<agent>`. In the payload
+Claude Code hands the claude-code pack's hook, the shell tool is `Bash` and
+the command is at `tool_input.command`, and a refusal is a `PreToolUse`
+decision of `deny`, with the reason as its text. When a class refuses, it
+prints that one JSON object on standard output. When it lets the command
+through, it prints nothing. You can hand it a payload yourself:
 
 ```sh
-$ echo '{"tool_name":"Bash","tool_input":{"command":"for b in $BRANCHES; do echo $b; done"},"cwd":"."}' | fleet guard shell-trap
+$ echo '{"tool_name":"Bash","tool_input":{"command":"for b in $BRANCHES; do echo $b; done"},"cwd":"."}' | fleet guard shell-trap --adapter <agent>
 {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"fleet guard shell-trap: UNSPLIT VARIABLE — $BRANCHES → pass the items as explicit arguments, or read them one line at a time: printf '%s\\n' \"${BRANCHES}\" | while read -r item; do ...; done — and where ONE argument really is intended, quote it: \"${BRANCHES}\"; FLEET_TRAP_OK=1 <the same command> runs it anyway. The reason: the shell passes an unquoted variable as ONE argument, so this iterates or matches once over the whole newline-joined string and reads exactly like absence."}}
 ```
 
@@ -57,19 +70,11 @@ missing, not a string or blank prints nothing and exits 0.
 
 ### Reading another agent's payload
 
-Where a payload keeps the tool and the command, and what a refusal looks
-like, is the hook mapping. With no flag, `fleet guard` uses Claude Code's:
-the shell tool is `Bash`, and a refusal is the `PreToolUse` object above.
-`--adapter <name>` uses the `[hook]` table of the agent adapter the installed
-packs carry under that name (see [Packs](packs.md#the-format)), and
-`--adapter <path>` the one in the adapter directory at that absolute path.
-`--adapter claude-code` where no installed pack carries `claude-code` is the
-same as no flag.
-
-A refusal through another mapping is its `deny` template with the reason
-filled in. For an installed agent adapter `other` carrying the `[hook]` table
-shown in [Packs](packs.md#the-format), a trapped command in its payload is
-refused in its shape, and a Claude Code payload is nothing it judges:
+A refusal through any mapping is its `deny` template with the reason filled
+in. For an installed agent adapter `other` carrying the `[hook]` table shown
+in [Packs](packs.md#the-format), a trapped command in its payload is refused
+in its shape, and a payload in the claude-code pack's shape is nothing it
+judges:
 
 ```sh
 $ echo '{"tool":"shell","input":{"cmd":"for b in $BRANCHES; do echo $b; done"}}' | fleet guard shell-trap --adapter other
@@ -77,11 +82,11 @@ $ echo '{"tool":"shell","input":{"cmd":"for b in $BRANCHES; do echo $b; done"}}'
 $ echo '{"tool_name":"Bash","tool_input":{"command":"for b in $BRANCHES; do echo $b; done"},"cwd":"."}' | fleet guard shell-trap --adapter other
 ```
 
-Both exit 0. An `--adapter` fleet cannot read a mapping from is the one
-judging route that does not: it prints one line on standard error and exits
-2, before it reads the payload, and Claude Code reads a pre-tool hook's 2 as
-blocking the call. The lines are under
-[When it refuses](#when-it-refuses).
+Both exit 0. No `--adapter`, or one fleet cannot read a mapping from, is the
+one judging route that does not: it prints one line on standard error and
+exits 2, before it reads the payload.
+Through the claude-code pack's hook, Claude Code reads that 2 as a block.
+The lines are under [When it refuses](#when-it-refuses).
 
 ### Running the declared classes
 
@@ -94,20 +99,18 @@ is let through, because nothing declares release-ref; with a pack installed
 that names release-ref in its `guard_classes`, the same payload is refused:
 
 ```sh
-$ echo '{"tool_name":"Bash","tool_input":{"command":"git push origin release/1.2"},"cwd":"."}' | fleet guard --adapter claude-code
+$ echo '{"tool_name":"Bash","tool_input":{"command":"git push origin release/1.2"},"cwd":"."}' | fleet guard --adapter <agent>
 {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"fleet guard release-ref: A RELEASE REF — release/1.2 -> refs/heads/release/1.2 → push the same commit to a work branch — `git push <remote> <local>:refs/heads/<your-branch>` — and leave `refs/heads/release/*` to the person cutting the release; no escape at this layer — a release is cut by a person from their own shell. The reason: a release ref deploys, so this push is a deployment wearing the clothes of a branch update — and it is one act, with nothing between it and production."}}
 ```
 
 It exits 0. A refusal it prints is the one `fleet guard <class>` prints for
-that class, byte for byte. Naming a class runs that class alone, whether or
-not a pack declares it. `fleet guard` with neither a class nor `--adapter`
-exits 2.
+that class through the same mapping, byte for byte. Naming a class runs that
+class alone, whether or not a pack declares it.
 
 When fleet cannot tell which classes are declared — the installed packs do
 not resolve, or an installed pack's `guard_classes` is a defect — it prints
-one line on standard error and exits 2 before it reads the payload, so
-Claude Code blocks the call. The lines are under
-[When it refuses](#when-it-refuses).
+one line on standard error and exits 2 before it reads the payload. The
+lines are under [When it refuses](#when-it-refuses).
 
 An escape counts only when it is among the assignments that open the command
 text, and it covers every statement after them: `FLEET_TRAP_OK=1 ls; for b in $LIST;
@@ -121,21 +124,11 @@ to a plain text match for it, described under each class, and say so in the
 refusal: `(this command could not be read, so the conservative text match
 applied)`.
 
-The plugin runs the binary through its own `bin/fleet`, or through
-`FLEET_BIN` when that names an absolute path to an executable. When neither
-gives it a binary, a guard hook blocks the command: it prints three lines on
-standard error and exits 2.
-
-```text
-fleet: this Bash command is blocked: the `fleet guard <class>` hook has no fleet binary to judge it with, and a guard that cannot judge refuses rather than letting a command run unjudged.
-fleet: no built binary under <root>/target, and FLEET_BIN is not set.
-fleet: every Bash command in this session is blocked until one is found, so supply it from a terminal outside the session: run `cargo build --release` in <root>, or start the session with FLEET_BIN set to the absolute path of a fleet binary.
-```
-
-Every other command through `bin/fleet`, `fleet guard <class> --check`
-included, prints the second line and
-``fleet: to supply one, run `cargo build --release` in <root>, or set FLEET_BIN to the absolute path of a fleet binary.``
-and exits 127.
+Which fleet binary a hook runs is the agent pack's to say. fleet sets
+`FLEET_BIN`, the absolute path of its own binary, in every seat's session it
+starts. The claude-code pack's plugin runs the binary `FLEET_BIN` names and
+no other, and blocks a guarded command where it names none. The README of
+the claude-code pack says how, and what a session of your own needs.
 
 ## Where a guard reads its settings
 
@@ -446,29 +439,29 @@ non-zero status among them. `fleet doctor` runs it (see
 
 | Situation | Exit | What you see | What to do |
 | --- | --- | --- | --- |
-| A guard refuses a Bash command | 0 | one JSON object on standard output, `"permissionDecision":"deny"`, with the reason; through `--adapter`, that adapter's `deny` template with the reason | write what the reason says instead, or put the class's escape at the front of the command |
+| A guard refuses a Bash command | 0 | the adapter's `deny` template with the reason filled in, one JSON object on standard output | write what the reason says instead, or put the class's escape at the front of the command |
 | `--adapter` names an adapter no installed pack carries | 2 | ``fleet guard: no installed pack carries the agent adapter `<name>` — `adapters/agent/<name>/adapter.toml` resolves nowhere`` | install the pack that carries it, or wire the hook to a name that is installed |
 | `--adapter` names an adapter whose `adapter.toml` has no `[hook]` | 2 | ``fleet guard: the agent adapter at <dir> declares no [hook] — a guard has no mapping to read its payload through`` | add the `[hook]` table to the adapter (see [Packs](packs.md#the-format)) |
 | `--adapter` is neither a bare name nor an absolute path | 2 | ``fleet guard: --adapter `<value>` is neither an agent adapter's name nor an absolute path to its directory`` | give the adapter's name, or its directory's absolute path |
 | `--adapter <name>` and the installed packs do not resolve | 2 | ``fleet guard: the agent adapter `<name>` is looked up in the installed packs:`` and the layering's refusal | fix what the refusal names; `fleet pack check` names a pack's defects |
-| `fleet guard` with neither a class nor `--adapter` | 2 | `fleet guard: name a class, or an --adapter to run the classes the layers declare` | name one of the four classes, or give `--adapter` |
+| `fleet guard` judging a payload with no `--adapter`, with a class or without | 2 | `fleet guard: name the --adapter whose [hook] mapping the payload is read through` | give `--adapter` the agent adapter whose hook hands the payload |
 | With no class, an installed pack's `guard_classes` is a defect | 2 | ``fleet guard: layer `<pack>` cannot say which guard classes it turns on:`` and the defect | fix the pack; `fleet pack check` names the defect |
 | With no class and an `--adapter` path, the installed packs do not resolve | 2 | `fleet guard: the declared guard classes: the pack layers do not resolve:` and the layering's refusal | fix what the refusal names |
 | `--check` with no class, and fleet cannot tell which classes are declared | 3 | `fleet: ` and the reason | fix what the reason names |
 | `fleet guard` with a class it does not know | 2 | ``error: invalid value 'shell' for '[CLASS]': unknown class `shell` — one of shell-trap, record, release-ref, production-write`` | use one of the names it lists |
 | `--check` finds a target not set | 1 | `<class> <check>: not configured — <key>` | set the key the line names, or leave it unset if the check does not apply to you |
-| A guard hook finds no fleet binary | 2 | ``fleet: this Bash command is blocked: the `fleet guard <class>` hook has no fleet binary to judge it with, …`` and the two lines under it | build fleet, or start the session with `FLEET_BIN` set to the binary's absolute path |
-| Any other command through `bin/fleet` finds no fleet binary | 127 | `fleet: no built binary under <root>/target, and FLEET_BIN is not set.` | build fleet, or set `FLEET_BIN` to the binary's absolute path |
 
 ## See also
 
-- [Getting started](getting-started.md): installing fleet and loading the
-  plugin that wires the guards into a session.
+- [Getting started](getting-started.md): installing fleet, and the plugin a
+  seat's session loads from its agent's pack.
 - [Packs](packs.md): the defaults and the tiny pack, which carry the
   `guards-installed` doctor entry, and how one pack's file shadows another's.
 - [Items and the record](items.md): the items whose fields the record class
   guards, and the timeline fleet's own verbs write on them.
 - [The controller and seats](seats.md): the sessions the controller starts,
-  and the plugin they load.
+  and the `FLEET_BIN` each one carries.
+- [The agent contract](agent.md): the agent adapter whose `[hook]` table a
+  guard reads through.
 - [Exit codes and conventions](conventions.md): the exit table, and why items
   are named by their full id.

@@ -15,10 +15,10 @@ It answers those six questions, and it never starts, types into or ends a
 session itself: it answers the command a session starts with.
 
 **Status:** fleet speaks this contract to the adapter executable
-`[agent] adapter` names. Where the key names none and no installed pack
-carries `claude-code`, the agent its seats run is Claude Code, through the
-adapter fleet has built in. The JSON on this page is fleet's own, and every
-example here reads and writes back through it.
+`[agent] adapter` names, and has no agent adapter of its own. The one
+`fleet create` installs is the claude-code pack's, which runs Claude Code.
+The JSON on this page is fleet's own, and every example here reads and
+writes back through it.
 
 ## Choosing an adapter
 
@@ -38,13 +38,11 @@ that file names, the file of that name beside it. An adapter whose
 `adapter.toml` fails the pack format is not run. How a pack carries an
 adapter is on [Packs](packs.md).
 
-A fleet whose file has no `adapter` key opens `claude-code` the same way.
-Where no installed pack carries `claude-code`, that name is the Claude Code
-adapter fleet has built in, and so it is on a machine where `fleet start`
-has not yet written the defaults. Any other name no installed pack carries
-is refused before anything runs, naming the `fleet pack add` line that
-installs the one fleet-packs carries. Where the installed packs do not
-resolve, every name is refused, `claude-code` among them, naming why.
+A fleet whose file has no `adapter` key opens the agent adapter named
+`claude-code`, the claude-code pack's, the same way. A name no installed
+pack carries, that one among them, is refused before anything runs, naming
+the `fleet pack add` line that installs the one fleet-packs carries. Where
+the installed packs do not resolve, every name is refused, naming why.
 
 fleet runs a pack's adapter with `PATH` set to the search path it builds for
 the processes it starts, not the one fleet itself was started with. Where
@@ -221,9 +219,11 @@ Which agent the adapter drives, and at which version of itself:
 What a seat runs without asking, in fleet's words, which the adapter renders
 into its agent's own permission format. It rides on `launch`:
 
-- `commands` are the project's `[permissions] tool_commands`, each one
-  command word: a bare name or a path relative to the repository, with no
-  space, no `*`, `?`, `[` or `]`, and no leading `-`.
+- `commands` are command words: the store's own `cli`, where the project's
+  store declares one (see [Capabilities](store.md#capabilities)), then each
+  of the project's `[permissions] tool_commands` not already named. Each of
+  the project's is a bare name or a path relative to the repository, with
+  no space, no `*`, `?`, `[` or `]`, and no leading `-`.
 - `touched` is the builder's checks, the one command a dispatch was handed
   with `--touched` (see [Items and the record](items.md#--touched)). It is
   left out where none was handed.
@@ -403,6 +403,65 @@ adapter's to know, and is never in the request.
 A resume's `argv` carries the flags the launch's did, its model and posture
 among them, with the session's full id.
 
+## Writing an agent adapter
+
+An adapter is an executable that answers the verbs on this page. You carry it
+in a pack, so that `fleet pack add` installs it and a fleet names it by name,
+or you name it in `[agent] adapter` by its absolute path.
+
+In a pack, an agent adapter is the directory `adapters/agent/<name>/`,
+beside any store adapter's `adapters/store/<name>/`, holding `adapter.toml`
+and the entry that file names. `<name>` is the directory's name, the `name`
+in `adapter.toml`, and the name a fleet writes in `[agent] adapter`. An
+agent adapter's `adapter.toml` may also hold `[hook]`, the mapping of its
+agent's pre-tool hook that the guards read a payload and write a refusal
+through (see [Guards](guards.md)). What `adapter.toml` holds is on
+[Packs](packs.md#the-format). Its recorded cases go in `fixtures/` beside it
+(see [Recorded cases](#recorded-cases)).
+
+fleet runs the entry itself, as `<entry> <verb>`, with nothing in front of
+it, so the entry is an executable file: a compiled program, or a script
+whose first line, `#!`, names what runs it. `fleet pack check` refuses an
+entry that is not executable, and fleet does not run one. A pack whose
+adapter needs a runtime declares it, or imports a pack that does, and fleet
+puts the runtime on the `PATH` the entry runs on (see
+[Choosing an adapter](#choosing-an-adapter)).
+
+[The schema](#the-schema) is the contract as a document your adapter's
+types can be generated from and its requests and answers checked against.
+[Checking an adapter](#checking-an-adapter) runs every check of the contract
+against your adapter, by its absolute path before you install it and by its
+name after, and `fleet pack check` checks the pack that carries it.
+
+The agent adapters fleet installs live in the fleet-packs repository,
+`https://github.com/bembot90/fleet-packs`, one pack per agent under
+`adapters/agent/<name>/`. The line that installs one at the tag this binary
+supports is
+`fleet pack add https://github.com/bembot90/fleet-packs//adapters/agent/<name> --version v0.2.0`,
+and fleet names it whenever no installed pack carries the name a fleet asks
+for (see [When it refuses](#when-it-refuses)).
+
+The claude-code pack is the worked example. It sits at
+`adapters/agent/<agent>` in fleet-packs, where `<agent>` is its name, and
+imports the ts pack, which declares Deno. Its adapter directory holds
+`adapter.toml`, whose `[hook]` maps the claude-code pack's pre-tool hook;
+the entry `main.ts`, a script whose first line is `#!/bin/sh`; its recorded
+cases under `fixtures/`; and the plugin the claude-code pack's `launch` and
+`resume` name for every seat. The pack also carries two doctor checks.
+Installed, and checked over the ts pack it imports, with `<machine>` the
+machine directory:
+
+```sh
+$ fleet pack check <machine>/packs/<agent> --over <machine>/packs/ts
+pack <agent> 0.1.0 — schema 3
+slot adapters: 1 entry
+slot doctor: 2 entries
+resolved 190 paths and 0 agents across 2 layers, 0 shadowed
+```
+
+It exits 0. The README beside its `main.ts` says what each verb of
+the claude-code pack answers for Claude Code, and how the pack is checked.
+
 ## The schema
 
 `fleet agent schema` prints this contract as one JSON Schema document, draft
@@ -462,9 +521,10 @@ Every object accepts keys it does not name, a request among them, except
 prints what each one answered.
 
 Without `--adapter` it checks the adapter the fleet you are in selects: the
-one `[agent] adapter` names in the fleet's own `fleet.toml`, else
-`claude-code`, opened as [Choosing an adapter](#choosing-an-adapter) says.
-Outside a fleet it checks `claude-code`, through this machine's installed
+one `[agent] adapter` names in the fleet's own `fleet.toml`, else the
+claude-code pack's `claude-code`, opened as
+[Choosing an adapter](#choosing-an-adapter) says. Outside a fleet it checks
+the claude-code pack's `claude-code`, through this machine's installed
 packs. `--adapter` takes what `[agent] adapter` takes, an absolute path to an
 adapter executable or the name of one an installed pack carries, and checks
 that one instead.
@@ -502,9 +562,6 @@ Every answer a check reads is also held to the document `fleet agent schema`
 prints, at its verb's response, and a check whose answer does not pass it
 fails.
 
-The recorded cases and the two exit checks are asked of an adapter
-executable. For the adapter fleet has built in they are skipped, saying so.
-
 Each check prints one line on standard output, in the same order every
 run: `PASS` and the check's name, `SKIP` with why the check does not apply,
 or `FAIL` with what the adapter answered instead. A line is printed as soon
@@ -513,7 +570,31 @@ answered. The last line names the agent, by the name `version` answers,
 else by the adapter's name or path, and counts the checks that passed,
 failed and were skipped.
 
-It exits 0 when no check failed, and 1 when one did.
+It exits 0 when no check failed, and 1 when one did. In a fleet whose agent
+is the claude-code pack's, without `--live`, where `<name>` is the agent its
+`version` names:
+
+```sh
+$ fleet agent check
+PASS  version
+PASS  capabilities
+PASS  each declared posture launches
+SKIP  an undeclared posture is refused unsupported: every posture is declared, so there is none to refuse
+PASS  resume of a session nobody has
+PASS  read of no seats
+PASS  read answers each fixture
+PASS  context answers each fixture
+PASS  an unknown verb exits 2
+PASS  a later schema_version exits 2
+SKIP  live: a launched session comes up idle: --live was not given: the live steps start the agent and cost a model turn
+SKIP  live: a typed turn reads busy, then idle: --live was not given: the live steps start the agent and cost a model turn
+SKIP  live: context counts the turn: --live was not given: the live steps start the agent and cost a model turn
+SKIP  live: the ended session leaves its pane dead: --live was not given: the live steps start the agent and cost a model turn
+SKIP  live: a resume comes back idle as the same session: --live was not given: the live steps start the agent and cost a model turn
+agent check: <name> — 9 passed, 0 failed, 6 skipped
+```
+
+It exits 0.
 
 ### Recorded cases
 
@@ -596,31 +677,6 @@ When the run ends, however it ends, fleet ends the `fleet-check-<pid>` server
 with everything on it, removes its socket, and removes the temporary
 directory. Under `--live`, the summary also names the version of the agent
 `version` answered, since the live steps are a reading of that version.
-
-With the Claude Code adapter fleet has built in, on a machine whose Claude
-Code is logged in:
-
-```sh
-$ fleet agent check --live --model haiku
-PASS  version
-PASS  capabilities
-PASS  each declared posture launches
-SKIP  an undeclared posture is refused unsupported: every posture is declared, so there is none to refuse
-PASS  resume of a session nobody has
-PASS  read of no seats
-SKIP  read answers each fixture: no fixtures: the adapter ships no fixtures/ beside an adapter.toml, and --fixtures names none
-SKIP  context answers each fixture: no fixtures: the adapter ships no fixtures/ beside an adapter.toml, and --fixtures names none
-SKIP  an unknown verb exits 2: the adapter is the one built into fleet, and this is asked of an adapter executable
-SKIP  a later schema_version exits 2: the adapter is the one built into fleet, and this is asked of an adapter executable
-PASS  live: a launched session comes up idle
-PASS  live: a typed turn reads busy, then idle
-PASS  live: context counts the turn
-PASS  live: the ended session leaves its pane dead
-PASS  live: a resume comes back idle as the same session
-agent check: claude 2.1.280 — 10 passed, 0 failed, 5 skipped
-```
-
-It exits 0.
 
 ### When it refuses
 

@@ -532,7 +532,16 @@ second test of the seams, not as a goal.
 | the manager | the cockpit, already ruled |
 | the departure board, the report page | tiny views |
 | the store trait in core | the store contract and an executable adapter |
-| the agent adapter trait in the controller | unchanged |
+| the agent adapter trait in the controller | the agent contract and an executable adapter |
+
+**Dated note (2026-09-27, fleet-x93d.3).** When this map was drawn the agent
+row read *unchanged*: the agent adapter stayed a trait in the controller, with
+Claude Code behind it in-process. Flights 11–14 (fleet-rge6, fleet-14p8,
+fleet-jymr and fleet-x93d, ruled 2026-09-25 in the second adapters sitting,
+fleet-notes/adapters-and-sessions.md) moved it the way the store row moved:
+the agent contract is `docs/agent.md`, an adapter is an executable a pack
+carries under `adapters/agent/<name>/`, Claude Code's is the claude-code pack
+in fleet-packs, and the in-process adapter was deleted by fleet-x93d.2.
 
 ---
 

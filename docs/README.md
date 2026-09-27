@@ -32,7 +32,7 @@ skill, `.claude/skills/docs/SKILL.md`.
 
 | File | Area | Covers | Status |
 | --- | --- | --- | --- |
-| `getting-started.md` | Getting started | building and installing fleet, what fleet runs on, `fleet create`, `fleet start`, the plugin in a Claude Code session | drafted |
+| `getting-started.md` | Getting started | building and installing fleet, what fleet runs on, `fleet create` and the agent's and store's packs it installs, `fleet start`, the plugin a seat's session loads from its agent's pack | drafted |
 | `packs.md` | Packs | installing and removing a pack, how packs layer and shadow, the defaults every fleet gets, pack settings in `fleet.toml` | drafted |
 | `items.md` | Items and the record | `dispatch`, `brief`, `deliver`, `hold`, `clear`, `review`, `land`, the entry each one appends to the item's timeline, and `fleet item show` | drafted |
 | `runs.md` | Runs and workflows | `fleet run`, `fleet cancel`, the workflow SDK, the takeoff workflow and the preboard skill, a run's holds and what licenses its landings, the runs section of `fleet status` | drafted |

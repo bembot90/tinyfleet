@@ -248,11 +248,12 @@ Two things under `--json` print no envelope:
 
 ## Verbs whose exit means something narrower
 
-- **`fleet guard <class>`**, judging a payload on standard input, exits 0
-  every time it reads its hook mapping. A refusal is JSON on standard
-  output, one object for Claude Code; letting a command through prints
-  nothing. A hook reads the output, not the exit. An `--adapter` it cannot read a hook mapping
-  from exits 2, which Claude Code reads as blocking the call.
+- **`fleet guard <class> --adapter <name>`**, judging a payload on standard
+  input, exits 0 every time it reads its hook mapping. A refusal is one JSON
+  object on standard output, in the shape the adapter's mapping declares;
+  letting a command through prints nothing. A hook reads the output, not the
+  exit. No `--adapter`, or one it cannot read a hook mapping from, exits 2:
+  through the claude-code pack's hook, Claude Code reads that as a block.
   `fleet guard <class> --check` is the one guard form with a verdict in its
   exit: 0 when every check is configured, 1 when one is not.
 - **`fleet doctor`** exits with what its checks said: 0 when every check

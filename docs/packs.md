@@ -68,10 +68,10 @@ stands there with no line in `packs.lock` behind it, fleet names it:
 a defaults directory edited since the line that pinned it was written is at <machine-dir>/defaults; this binary will not write over it — remove it, or keep it
 ```
 
-`fleet create` stops on this and exits 1. With `--store none` it stops after
-it has written `fleet.toml`, or `.fleet/project.toml` for `--standalone`;
-installing a store's pack writes the defaults first, so there it stops before
-any fleet file is written.
+`fleet create` stops on this and exits 1. Installing a store's pack or the
+agent's pack writes the defaults first, so there it stops before any fleet
+file is written; `--standalone --store none` installs no pack, and stops
+after it has written `.fleet/project.toml`.
 `fleet start` prints it on a `defaults: left as it stands — ` line and carries
 on. Remove the `defaults/` directory and the next `fleet create` or
 `fleet start` writes the binary's set again.
@@ -82,11 +82,8 @@ The defaults carry these files, and a pack can shadow every one of them:
 - `assets/delivery.schema.json`, `assets/question.schema.json` and
   `assets/findings.schema.json`: the JSON shapes of a seat's delivery, a
   seat's question and a reviewer's findings
-- `overlay/per-provider/claude/hooks.json`,
-  `overlay/per-provider/claude/permissions.json`
-- `doctor/guards-installed/`, `doctor/isolation-pair/`,
-  `doctor/runtime-version/`, `doctor/claude-code-version/`,
-  `doctor/fleet-packs-version/` and
+- `doctor/guards-installed/`, `doctor/runtime-version/`,
+  `doctor/tmux-version/`, `doctor/fleet-packs-version/` and
   `doctor/adopt-board/`, each a `doctor.toml` and a `run.sh`
 
 `<machine-dir>/defaults/assets/shadow-registry.toml` lists the same files with
@@ -118,9 +115,9 @@ pinned in <machine-dir>/packs.lock
 `<fleet-packs>` is the fleet-packs repository,
 `https://github.com/bembot90/fleet-packs`, which holds the tiny pack at `tiny`
 and the ts pack it imports at `runtimes/ts`. It also holds one pack per store
-adapter, under `adapters/store/<name>`, and the claude-code pack at
-`adapters/agent/claude-code`: `fleet create` installs the bd pack and the
-claude-code pack from there (see
+adapter, under `adapters/store/<name>`, and one per agent adapter, under
+`adapters/agent/<name>`. `fleet create` installs two of them from there: the
+bd pack and the claude-code pack, whose agent adapter is `claude-code` (see
 [Getting started](getting-started.md#the-stores-pack)). Both import ts too,
 and tiny, the bd pack and the claude-code pack install side by side over the
 one ts (see [Imports are one level deep](#imports-are-one-level-deep)).
@@ -289,11 +286,11 @@ layer, whether `packs.lock` names it or not.
 
 Any number of installed packs can declare imports, and several can import the
 same pack. tiny, the bd pack and the claude-code pack each import ts, and
-with the four installed:
+with the four installed, `<agent>` being the claude-code pack's name:
 
 ```sh
 $ fleet prime
-fleet 0.1.0 — packs: bd, claude-code, tiny, ts; guards: shell-trap on, record on
+fleet 0.1.0 — packs: bd, <agent>, tiny, ts; guards: shell-trap on, record on
 ...
 ```
 
@@ -502,21 +499,35 @@ A doctor check is a `doctor/<name>/` entry in a pack or in the defaults: a
 script that looks at one thing on this machine and says whether it holds.
 `fleet doctor` runs them, from inside a project, and writes nothing itself.
 
+In a fleet `fleet create` made, whose project has no board yet:
+
 ```sh
 $ fleet doctor
-pass adopt-board (defaults) — adopt-board: nothing to adopt — no items read
-pass claude-code-version (defaults) — claude-code-version: holds
+could not tell adopt-board (defaults) — adopt-board: could not read the board — `fleet item list --ready --json` exited 3, so nothing was scanned
+...
+pass bd-version (bd) — bd-version: holds
+...
+pass deno-version (ts) — deno-version: holds
 pass fleet-packs-version (defaults) — fleet-packs-version: nothing installed from fleet-packs — no line of the lock names https://github.com/bembot90/fleet-packs
-pass guards-installed (defaults) — record bare-id: configured — [project] item_prefix
-pass isolation-pair (defaults) — isolation-pair: holds
-pass runtime-version (defaults) — nothing pinned: no installed pack declares a [runtime] table
-doctor 6 checks — 6 pass, 0 finding, 0 could not tell
+finding guards-installed (defaults) — record bare-id: not configured — [project] item_prefix
+...
+pass runtime-version for ts (defaults) — runtime-version: holds
+pass tmux-version (defaults) — tmux-version: holds — no server is running on socket fleet
+pass store-adapter (built-in) — bd 1.3.0 via bd — schema 1, capabilities valid
+...
+doctor 11 checks — 8 pass, 2 finding, 1 could not tell
 ```
 
-It exits 0. Each row is the verdict, the check's name, the layer that
-carries it in parentheses, and the last line the check printed. The rows come
-in name order, each as soon as its check finishes, and the summary line comes
-last. Name checks to run only those:
+It exits 3, because one check could not tell. Each row is the verdict, the
+check's name, the layer that carries it in parentheses, and the last line
+the check printed. The rows the layers carry come in name order, each as
+soon as its check finishes, then the two rows fleet runs itself, marked
+`built-in` (see
+[Running a doctor check](getting-started.md#running-a-doctor-check)), and
+the summary line comes last. The lines cut here are what follows each row
+that did not pass (below), the built-in `agent-adapter` row, and the rows of
+the claude-code pack's two checks, `claude-code-version` and `isolation-pair`,
+which its README describes. Name checks to run only those:
 
 ```sh
 $ fleet doctor guards-installed
@@ -609,11 +620,12 @@ fleet doctor: no `fleet.toml` and no `.fleet/project.toml` above <dir> — `flee
 ```
 
 It exits 3. A name no layer carries is refused before any check runs, with
-the names the layers do carry:
+the names the layers do carry, then the two built-in rows. With the defaults
+alone:
 
 ```sh
 $ fleet doctor nosuch
-fleet doctor: no doctor check named nosuch — the layers carry: adopt-board, claude-code-version, fleet-packs-version, guards-installed, isolation-pair, runtime-version
+fleet doctor: no doctor check named nosuch — the layers carry: adopt-board, fleet-packs-version, guards-installed, runtime-version, tmux-version, store-adapter, agent-adapter
 ```
 
 It exits 2.
@@ -753,6 +765,9 @@ A `fleet.toml` that does not parse stops `fleet run` with exit 3.
   the layers and what a workflow does with its settings.
 - [Items and the record](items.md): the verbs that render the brief and read
   the files the schemas describe.
-- [Guards](guards.md): what the guard wiring in the defaults' overlay turns on.
+- [Guards](guards.md): the guard classes a pack's `guard_classes` turns on,
+  and the hook mapping an agent adapter's `[hook]` table declares.
+- [The agent contract](agent.md): what an agent adapter a pack carries
+  answers, and how to write one.
 - [Exit codes and conventions](conventions.md): the exit table every command
   shares.
