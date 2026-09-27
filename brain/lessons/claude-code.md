@@ -43,6 +43,20 @@ the requirement owed it.
   entries on a checksum-verified scratch binary and answered every one.
 - **Version:** Claude Code 2.1.233 (the first pin) through 2.1.261, with
   re-measures at 2.1.240, 2.1.247, 2.1.251, 2.1.257 and 2.1.261.
+- **Version 2.1.280:** the pin since fleet-a7h, and re-measured on it by
+  fleet-031 (2026-09-26): every entry the claude-code pack keeps — A5, A9,
+  A11, A12, A15, B1–B5, B7, B8, B10, C1–C4, D3, D5, D6 and D8 — re-read on
+  the binary at `~/.local/share/claude/versions/2.1.280` (sha256
+  `387a5c5dcdbb815085edf0baf79591f9d8894efe922bceaf3d75b1b08055229d`) under
+  scratch configuration directories and a scratch tmux socket, each entry's
+  own 2.1.280 line saying held or moved and on what evidence. The daemon-era
+  entries flight 11 retired were not re-measured (reviewer call E15). Held
+  here: `--version` answers `2.1.280 (Claude Code)`, the version its first
+  token. The auto-updater proviso above was measured the hard way: an
+  interactive 2.1.280 session started without `DISABLE_AUTOUPDATER=1`
+  installed 2.1.283 and re-pointed the operator's own `claude` to it
+  (fleet-rge6.2's INCIDENT), which is why every child fleet starts carries
+  the updater off.
 - **Date:** 2026-08-06 through 2026-09-04.
 - **Implies:** R29 — `[substrate.<agent>]` pins, and a live version that
   differs is a flag in the projection and a `substrate.moved` event, never a
@@ -153,6 +167,17 @@ the requirement owed it.
   its first breath is read against that behaviour first.
 - **Version:** the default-model measurement carries no release in the source
   that states it; the credit stall was fixed in Claude Code 2.1.251.
+- **Version 2.1.280:** the rule HELD and the fact MOVED (fleet-031,
+  2026-09-26; zero-turn interactive starts under a seeded scratch
+  directory, each read off its own header). A start with no `--model` came
+  up on `Opus 5.5 (1M context)` — the account's top model, not the
+  cheapest — and, with no `--permission-mode` either, in `auto` mode, the
+  screen saying "Auto mode is now Claude Code's default permission mode".
+  The default is still the agent's and not the fleet's, which is all the
+  rule needs. `ANTHROPIC_MODEL=claude-sonnet-5` alone came up on `Sonnet 5`;
+  beside `--model haiku` it came up on `Haiku 4.5`, so the flag still keeps
+  an inherited default out. The credit stall was a background start's and
+  was not re-measured.
 - **Date:** not recorded with the default-model measurement; 2026-08-31 for the
   credit stall's fix.
 - **Implies:** R18 — `start` passes model, name and the fleet's permission
@@ -267,6 +292,10 @@ the requirement owed it.
   still refuses a resumed row under any other id.
 - **Version:** Claude Code 2.1.280 and tmux 3.7b for the interactive reading;
   2.1.257 and 2.1.261, identical on both, for the background one.
+- **Version 2.1.280:** held as measured above (fleet-rge6.4). Beside it on
+  the same release: one C-c never ends an interactive session, idle or busy
+  (fleet-rge6.4), and two C-c 300 ms apart do, the pane reading dead within
+  5 s (fleet-14p8.8's `--live` run).
 - **Date:** 2026-09-26 (fleet-rge6.4); 2026-09-04 for the background reading.
 - **Implies:** a revive is a new session on the host whose command is the
   full-id resume carrying the start's flags (reviewer call 2026-09-25, E2,
@@ -345,6 +374,22 @@ the requirement owed it.
   `isApiErrorMessage` true and a window of zero.
 - **Version:** Claude Code 2.1.251 (the scoping), 2.1.261 (re-measured, the
   credential knob read out of the binary, and the per-daemon roster).
+- **Version 2.1.280:** HELD for the credential and the per-directory
+  listing; the daemon half was not re-measured (fleet-031, 2026-09-26, and
+  the beads cited). Three zero-turn starts under one seeded scratch
+  directory: `CLAUDE_SECURESTORAGE_CONFIG_DIR` defined-but-empty came up
+  logged in under the subscription; set to that scratch directory, and
+  unset, each came up `API Usage Billing` with `Not logged in · Run /login`
+  on screen — and all three were listed `idle` with a pid, so the listing
+  still cannot say so. A logged-out turn writes one synthetic assistant
+  entry, `error` `authentication_failed`, `isApiErrorMessage` true, zero
+  usage (fleet-jymr.3, fleet-jymr.4). A session under one scratch directory
+  is listed by that directory's listing only, and an empty directory lists
+  `[]` (fleet-jymr.3). About 400 listings across five scratch directories
+  started no daemon; the listing reads `<config dir>/sessions/<pid>.json`
+  (fleet-jymr.3). Not re-measured: the config directory set explicitly to
+  the home default, which would take the operator's own directory as a
+  scratch one.
 - **Date:** 2026-09-01, 2026-09-04 and 2026-09-12.
 - **Implies:** R29 — a pin move needs a way to probe a new binary without
   moving the running fleet, and this is the only isolation route there is; a
@@ -368,6 +413,17 @@ the requirement owed it.
   returns, with the constants and the three exemptions read out of the
   installed binary rather than inferred from the arms.
 - **Version:** Claude Code 2.1.247.
+- **Version 2.1.280:** held, read out of the installed binary (fleet-031,
+  2026-09-26; the three arms were not re-run). The constant is still
+  `120000`; the timer still restarts while an elicitation is pending; an
+  `sse-ide` or `ws-ide` server still gets no timer; and
+  `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` still sets the interval, `0` turning
+  it off. Three further switches in the same function return no timer:
+  background tasks disabled (the setting or
+  `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`), a non-interactive session without
+  `CLAUDE_AUTO_BACKGROUND_TASKS`, and the `tengu_mcp_auto_background` flag,
+  on by default. A seat's session is interactive, so none of the three
+  reaches it unless someone sets one.
 - **Date:** 2026-08-31.
 - **Implies:** R26 — the projection's per-seat roster state is only *complete*
   for stalls this rule does not end; a release that removes the timeout widens
@@ -439,6 +495,16 @@ the requirement owed it.
   directory on every spawn**, so the question is asked mid-spawn unless install
   has already answered it.
 - **Version:** Claude Code 2.1.261, met under gc 1.4.1.
+- **Version 2.1.280:** MOVED for an interactive start (fleet-rge6.2, and
+  fleet-031, 2026-09-26). The question WAITS rather than exiting: `No, exit`
+  first and selected, `Yes, I trust this folder` second, and the listing
+  `[]` for as long as it is up. Down, then C-m 300 ms later, accepted it:
+  the row was listed `idle` 0.15 s on, and the directory's `.claude.json`
+  gained `projects["<resolved worktree>"].hasTrustDialogAccepted: true`
+  (fleet-031). An entry seeded that way before the start met no question,
+  and keyed on the RESOLVED path it held for a start given the `/tmp`
+  symlink (fleet-rge6.2). The exit above was met under gc and is not an
+  interactive start's answer.
 - **Date:** 2026-09-05.
 - **Implies:** R1 — a first-run gate belongs in install, answered in the minute
   the service loads, beside the file-access grant of D4; a start is not where a
@@ -466,6 +532,11 @@ the requirement owed it.
   requires a field on every row fails on the first mixed listing.
 - **Version:** schema measured against Claude Code 2.1.233; an extra field
   observed on 2.1.247.
+- **Version 2.1.280:** held (fleet-rge6.3, fleet-jymr.3, and fleet-031's
+  rows, 2026-09-26). Still one command, `agents --json --all`, read once per
+  configuration directory. An interactive row carries `pid`, `cwd`, `kind`,
+  `startedAt`, `sessionId`, `name`, `status`, and `waitingFor` only while
+  blocked — never `id` or `state` (B10) — so the kind-dependence stands.
 - **Date:** 2026-08-14 and 2026-08-27.
 - **Implies:** R5 — rows are matched to seats by cwd and the short id is never
   compared. R6 — an unreadable roster is Unknown for every seat.
@@ -478,6 +549,9 @@ the requirement owed it.
   on disk. A release that added token figures to the listing would be an
   **adoption opportunity**, not a break, and should be routed as one.
 - **Version:** no release recorded with the measurement.
+- **Version 2.1.280:** held: no token or context figure on any recorded
+  row (fleet-rge6.3's four recordings, fleet-jymr.3's fixtures, and
+  fleet-031's rows, 2026-09-26).
 - **Date:** not recorded with the measurement.
 - **Implies:** R7 — context tokens come from the transcript's main chain, and
   the requirement says so explicitly because the cheaper-looking source does
@@ -500,6 +574,13 @@ the requirement owed it.
   is vindicated by the forks instead.
 - **Version:** Claude Code 2.1.246 (numbering), 2.1.247 (the rename warning and
   the name-survives-revive reading), 2.1.261 (the forks).
+- **Version 2.1.280:** the rule held; the background shapes it was written
+  from — the numbering, the rename warning, the forks — are daemon-era and
+  were not re-measured. A session started with `--name` kept that name on
+  every read, with no rename (fleet-jymr.3; fleet-031's rows, 2026-09-26),
+  and a resume passing no `--name` came back under the name its start gave
+  it (fleet-rge6.4). A seat is matched by its session id, else by its pane's
+  pid, and never by the name.
 - **Date:** 2026-08-27 and 2026-09-04.
 - **Implies:** R5 — the short id is never compared and rows are matched by cwd;
   a name-keyed reader meets a collision the moment a fork exists.
@@ -517,6 +598,10 @@ the requirement owed it.
   an empty listing as "no sessions" turns this into every seat reading absent
   at once.
 - **Version:** no release recorded with the measurement.
+- **Version 2.1.280:** not reproduced, and the class stays open: no
+  zero-byte answer in about 400 listings across five scratch directories
+  (fleet-jymr.3), nor in fleet-031's (2026-09-26). An empty directory
+  answers `[]`, which is a listing that answered and not this.
 - **Date:** 2026-08-18.
 - **Implies:** R6 — an unreadable roster is Unknown for every seat, and Unknown
   is always leave-alone. The requirement's force is that **empty is
@@ -534,6 +619,10 @@ the requirement owed it.
   against a session the controller did not start, and never for acts that are
   not.
 - **Version:** no release recorded with the measurement.
+- **Version 2.1.280:** held: two sessions in one worktree were two rows,
+  each found by its own session id or its own pid (fleet-jymr.3). The
+  adapter and the pack match a seat by session id, else by the pane's pid,
+  and never by `cwd`.
 - **Date:** 2026-08-14.
 - **Implies:** R5 — two live rows in one worktree is Unknown, not a contest.
   R30 and R32 — a spawn's load belt and a retire's resource check both read
@@ -569,6 +658,11 @@ the requirement owed it.
   that large. No truncation line has been observed in a real read (32 rows).
 - **Version:** Claude Code 2.1.234 for the behaviour, strings confirmed in the
   2.1.240 bundle.
+- **Version 2.1.280:** held by the same kind of read (fleet-031,
+  2026-09-26): the installed binary carries "your session list was too long
+  to check completely", alone and with each of its two same-named-session
+  tails, six occurrences in all, while a one-letter-off control string
+  occurs zero times. No truncation line was observed in a real read.
 - **Date:** 2026-08-22.
 - **Implies:** R6 — Unknown for every seat, and Unknown is always leave-alone.
   R32 — `--dead` is licensed by a **completed** roster read that names no live
@@ -599,6 +693,17 @@ the requirement owed it.
   long tool call on every stable field. The second gap is the lesser one,
   because A12 ends that class at 120 s.
 - **Version:** Claude Code 2.1.247.
+- **Version 2.1.280:** held, read out of the installed binary and measured
+  live (fleet-031, 2026-09-26; fleet-rge6.3, fleet-rge6.5, fleet-jymr.3).
+  The cause function answers, in order: `input needed` (a queued
+  elicitation), the top dialog's own label, `worker request`,
+  `sandbox request` and `dialog open`; a dialog kind with no label of its
+  own still falls back to `permission prompt`. One label in the table is new
+  to this file, `goal proposal`. On an interactive row `status` is
+  `waiting` exactly when a cause is present, and `busy` or `idle` otherwise,
+  so keying on presence still holds. Live, the Bash approval dialog read
+  `waiting` with `permission prompt` within 1.3–1.7 s, steady while it was
+  up, and gone on the next read after it was answered.
 - **Date:** 2026-08-28.
 - **Implies:** R26 — the projection's per-seat rows carry the roster state, and
   this field is the only thing on any surface that distinguishes *stopped
@@ -672,6 +777,13 @@ the requirement owed it.
   scoped session's transcript lands under the scoped directory's own
   `projects/`, its mtime the second the session was killed. The recording is
   the fixture in `controller/tests/observe.rs`.
+- **Version 2.1.280, further:** measured by fleet-jymr.3, fleet-jymr.4 and
+  fleet-031 (2026-09-26). A row is listed 0.53–0.74 s after `new-session`,
+  before it carries a status; a session started with `--name` kept that name
+  on every read, so the rename above was not seen on the pin; `/clear` gives
+  the SAME pid a NEW `sessionId`; and the scoped transcript lands at
+  `<config dir>/projects/<encoded RESOLVED cwd>/<session id>.jsonl`, which
+  the session rewrites as it exits.
 - **Date:** 2026-09-24; re-measured 2026-09-26.
 - **Implies:** the adapters-and-sessions design (fleet-notes, 2026-09-24):
   fleet owning the session under tmux keeps the listing as a read — presence,
@@ -716,6 +828,20 @@ the requirement owed it.
 - **Version:** Claude Code 2.1.261 for the census; the directory-renaming
   variable arrived in 2.1.234, and no release was recorded with the
   separator-only claim this entry replaces.
+- **Version 2.1.280:** held, and the two unmeasured parts measured
+  (fleet-jymr.4; fleet-031, 2026-09-26). A dot, an underscore and a space
+  each encode to `-`, and the directory is keyed on the RESOLVED cwd: a
+  start given `/tmp/…` wrote under `-private-tmp-…` (fleet-jymr.4). A
+  non-ASCII character is one dash: a worktree `…/wt-é` wrote under
+  `…-wt--`. A path past 200 characters is truncated and suffixed: a
+  235-character worktree wrote under the encoding's first 200 characters, a
+  dash, and `yidia0` — the base-36 absolute value of a 32-bit string hash
+  (`h = h*31 + unit`, over the resolved path's UTF-16 units). That rule was
+  read out of the binary (`[^a-zA-Z0-9]` to `-`, limit 200) and reproduces
+  the directory exactly. The replacement is per UTF-16 unit, so a character
+  outside the Basic Multilingual Plane would be two dashes (reasoned, not
+  measured). Both transcripts were written by a logged-out first turn, which
+  makes no model call.
 - **Date:** 2026-09-06, re-taken 2026-09-08 with every figure unchanged.
 - **Implies:** R7 — context tokens come from the transcript, so the path is a
   hard dependency of the observe layer. R34 — the transcript location is one of
@@ -730,6 +856,17 @@ the requirement owed it.
   figures. Context for a session is the arithmetic over those fields on the
   main chain; there is no single "context" number to read.
 - **Version:** no release recorded with the measurement.
+- **Version 2.1.280:** held (fleet-jymr.4's recordings, read by fleet-031,
+  2026-09-26). `user` and `assistant` entries carry `type` and
+  `isSidechain`, and an assistant entry `message.usage` with
+  `input_tokens`, `cache_read_input_tokens` and
+  `cache_creation_input_tokens`; `isMeta` appeared only on `system` entries
+  there. ONE MODEL RESPONSE IS ONE ENTRY PER CONTENT BLOCK, each carrying the
+  response's whole usage under one `message.id` — and that did not move: a
+  read-only census of the operator's recent transcripts shows the same split
+  on every release from 2.1.260 on (2.1.261: 28,388 responses in 61,907
+  entries). So a reader counting turns counts distinct `message.id`s, not
+  entries.
 - **Date:** not recorded with the measurement.
 - **Implies:** R7 — the requirement names the main chain and the sidechain skip
   because the shape forces both.
@@ -742,6 +879,15 @@ the requirement owed it.
   context and feeds it to whatever decides when a seat should rest. The flag is
   present on every entry, so the skip is a filter and not an inference.
 - **Version:** no release recorded with the measurement.
+- **Version 2.1.280:** the rule held; where the entries live is new to this
+  file (fleet-jymr.4, read by fleet-031, 2026-09-26). A subagent writes its
+  own file, `<session id>/subagents/agent-<id>.jsonl` beside a
+  `.meta.json`, every entry `isSidechain: true`, and the session's own file
+  carries no sidechain entry at all; the subagent's window (21,862) was not
+  the session's (38,458). The flag is on every `user`, `assistant`,
+  `attachment` and `system` entry, and not on the bookkeeping entries beside
+  them (`mode`, `permission-mode`, `ai-title`, `last-prompt` and others), so
+  the skip is still a filter over the entries a reader counts.
 - **Date:** 2026-08-14.
 - **Implies:** R7 — sidechains skipped, stated in the requirement rather than
   left to the implementation.
@@ -756,6 +902,10 @@ the requirement owed it.
   and the only safe verdict on a pid-less row would be to leave it alone
   forever.
 - **Version:** Claude Code 2.1.234, confirmed running at the measurement.
+- **Version 2.1.280:** held (fleet-rge6.3, fleet-rge6.4, fleet-jymr.4): an
+  interactive session's transcript stays after its pane is killed, its
+  mtime the second of the kill, and a resume by the full id writes on into
+  the same file.
 - **Date:** 2026-08-18.
 - **Implies:** R10 — the discriminator for a pid-less non-newborn row is the
   deliberate-end event **plus context**, and the context half is only available
@@ -844,6 +994,15 @@ the requirement owed it.
   because live model ids carry suffixes that name the same model: one is dated
   and another is windowed.
 - **Version:** Claude Code 2.1.257.
+- **Version 2.1.280:** held (fleet-031, 2026-09-26; zero-turn interactive
+  starts, each read off its own screen and row). `--permission-mode auto`
+  came up `auto mode on` on `claude-sonnet-5`, `claude-opus-5` and
+  `claude-fable-5`, and A5's unflagged start came up in `auto` by default on
+  Opus 5.5, which the prefix `claude-opus-5` covers. On `claude-haiku-4-5`
+  it came up `manual mode on` with "auto mode unavailable for this model" on
+  screen, and its row read `idle` and nothing else, so the downgrade still
+  reaches no instrument. `dontAsk` on `claude-haiku-4-5` came up
+  `don't ask on`, and `default` `manual mode on`.
 - **Date:** 2026-09-01.
 - **Implies:** R18 — `start` passes the fleet's permission posture on every
   call, and the fleet checks that the model can honour it rather than assuming
@@ -890,6 +1049,15 @@ the requirement owed it.
   that is the pack's own wiring for a session that already resolves the binary;
   the plugin's hook file is that same command list with the root prefixed.
 - **Version:** Claude Code 2.1.261.
+- **Version 2.1.280:** held (fleet-031, 2026-09-26; one haiku turn). A
+  plugin root loaded with `--plugin-dir`: its `SessionStart` hook ran with
+  `CLAUDE_PLUGIN_ROOT` set to the root and a `PATH` without the root's
+  `bin/`, where `command -v fleet` found nothing; the Bash tool's
+  `fleet probe-d5` ran the root's `bin/fleet` stub, whose `PATH` was the
+  session's with the root's `bin` APPENDED LAST; and outside the session
+  `command -v fleet` exited 1. Appended last, a `fleet` earlier on the
+  session's `PATH` would win over the plugin's copy — reasoned, not
+  measured: this probe's `PATH` held none.
 - **Date:** 2026-09-08.
 - **Implies:** The plan's § 4.4 — the plugin shape is how the per-provider
   overlay reaches a session at all, and the address a hook uses is the only
@@ -912,6 +1080,12 @@ the requirement owed it.
   root, which is what a loader that did not follow links would have forced, is
   not needed.
 - **Version:** Claude Code 2.1.261.
+- **Version 2.1.280:** held (fleet-031, 2026-09-26; two haiku turns). With
+  `skills/linked` a symbolic link to a directory outside the plugin root,
+  `/probe:linked` answered the token only the linked file carried;
+  `/probe:real`, a real directory beside it, answered its own; and with the
+  link removed and its target left in place, a new session answered
+  `Unknown command: /probe:linked` without a model call.
 - **Date:** 2026-09-13.
 - **Implies:** The plan's § 4.4 — the plugin shape is how a pack's opinion
   reaches a session, and a link is what puts a pack's skills into that shape
@@ -987,6 +1161,17 @@ the requirement owed it.
   gone within a second.
 - **Version:** Claude Code 2.1.282, the submit re-measured on 2.1.280; tmux
   3.7b.
+- **Version 2.1.280, the rest:** held (fleet-031 and fleet-rge6.2,
+  2026-09-26). Under an EMPTY scoped directory an interactive start stopped
+  at the theme picker, and after one Enter at the login-method menu, the
+  listing `[]` throughout (fleet-031). A `.claude.json` seeded with
+  `hasCompletedOnboarding`, `lastOnboardingVersion` and `oauthAccount`
+  alone — no `theme` — met neither, and with the credential knob
+  defined-but-empty came up logged in (fleet-rge6.2; whether each of the
+  three is needed on its own was not separated). The trust question waited
+  with `No, exit` selected, and Down then C-m accepted it (fleet-031; A15).
+  A typed `/exit` and a killed tmux session each left the listing by the
+  next read (fleet-rge6.3).
 - **Date:** 2026-09-24; the submit 2026-09-26.
 - **Implies:** the adapters-and-sessions design: a spawn that starts a seat
   interactively owes the configuration directory an onboarding stamp it does

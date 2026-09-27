@@ -19,9 +19,10 @@
 /// The Claude Code release fleet supports: the one the defaults'
 /// `claude-code-version` doctor check compares `claude --version` with, and
 /// the one fleet is developed on and its suites run beside. The adapter's
-/// version-scoped behaviours were last re-read on an earlier release (lessons
-/// claude-code A1 names it), so the spread between the two is a re-measure
-/// owed.
+/// version-scoped behaviours were MEASURED ON THIS RELEASE: every lessons
+/// claude-code entry the claude-code pack keeps was re-read on 2.1.280 and
+/// restated there, held or moved, beside the evidence (fleet-031,
+/// 2026-09-26; lessons claude-code A1 names the release).
 ///
 /// It is also the controller's DEFAULT EXPECTATION. A fleet whose policy pins
 /// nothing under `[substrate]` expects this release, so a `substrate.moved`
