@@ -2,7 +2,7 @@
 //!
 //! Every exit here is read from the CHILD's own status, and every effect from
 //! the machine the child left behind — the worktree on disk, the two rows in
-//! their files, the stub's own record of what it was called with. Nothing is
+//! their files, the agent stub's own record of what it was asked. Nothing is
 //! read from what the verb printed about itself.
 //!
 //! The project is a real git repository with a local `refs/remotes/origin/main`,
@@ -18,7 +18,7 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fleet_controller::platform;
-use fleet_controller::test_support::FakeServer;
+use fleet_controller::test_support::{agent_stub, FakeServer, StubAgent};
 use fleet_core::entry::{Body, CheckRow, Classification, Landed, NotTested, SuiteRun, WorkBranch};
 use fleet_core::item::land::{SAFE, UNTESTED};
 use fleet_core::seat::actor::Actor;
@@ -77,48 +77,11 @@ fn defaults_into(machine: &Path) -> PathBuf {
     root
 }
 
-/// One of the binary's own defaults, written for ONE ARM and removed with it.
-///
-/// Owned and dropped rather than held in a `OnceLock`: a static holding a
-/// `PathBuf` never runs a destructor, so a shared tree is one 19-file directory
-/// left under the temp directory per test process, for ever.
-struct ShippedDefaults(PathBuf);
-
-impl ShippedDefaults {
-    fn new(label: &str) -> ShippedDefaults {
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let root = std::env::temp_dir().join(format!(
-            "fleet-cli-defaults-{label}-{}-{n}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        ShippedDefaults(defaults_into(&root))
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for ShippedDefaults {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(
-            self.0
-                .parent()
-                .expect("the set sits under a directory of its own"),
-        );
-    }
-}
-
 struct Rig {
     root: PathBuf,
     project: PathBuf,
     worktrees: PathBuf,
     machine: PathBuf,
-    stub: PathBuf,
-    roster: PathBuf,
-    calls: PathBuf,
     turn: PathBuf,
     /// The link `FLEET_TMUX_BIN` names: this rig's own `fleet-tmux-stub`, whose
     /// fake server keeps the sessions a spawn starts.
@@ -143,9 +106,6 @@ impl Rig {
             // nothing and the arm that declares this path land in one place.
             worktrees: root.join("a-project-worktrees"),
             machine: root.join("machine"),
-            stub: root.join("agent.sh"),
-            roster: root.join("roster.json"),
-            calls: root.join("calls"),
             turn: root.join("a-turn.md"),
             tmux: common::stub_tmux(&root.join("tmux")),
             pid: Cell::new(None),
@@ -155,9 +115,6 @@ impl Rig {
             std::fs::create_dir_all(dir).expect("the fixture directory is created");
         }
         common::panes_die_on_interrupt(&rig.tmux.with_file_name("tmux-stub.json"));
-        // What a spawn's seed copies into the seat's own configuration
-        // directory, from where the adapter reads the operator's own.
-        fleet_controller::test_support::plant_operator_state(&rig.root.join("home"));
         defaults_into(&rig.machine);
         std::fs::write(
             rig.project.join("fleet.toml"),
@@ -180,6 +137,9 @@ impl Rig {
         .expect("the policy is written");
         std::fs::write(&rig.turn, "the turn this seat comes up on\n")
             .expect("the first turn is written");
+        // The agent is the stub, named in the policy and committed on the
+        // trunk with it; its state is kept under the project, the fleet's root.
+        common::stub_agent(&rig.project);
         rig.init_repo();
         std::fs::write(
             rig.machine.join("config.json"),
@@ -189,7 +149,12 @@ impl Rig {
             ),
         )
         .expect("the seat list is written");
-        rig.write_stub();
+        // A feed typed into a seat is taken: a row under a pane that has
+        // taken a submit reads busy.
+        agent_stub::follow_host(
+            &rig.project,
+            Some(&rig.tmux.with_file_name("tmux-stub.json")),
+        );
         rig.roster("[]");
         rig
     }
@@ -228,6 +193,7 @@ impl Rig {
         self.git(&["add", "--", "a-file.txt", "fleet.toml"]);
         self.git(&["commit", "--quiet", "--no-gpg-sign", "-m", "the trunk"]);
         self.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        agent_stub_outside_git(&self.project);
     }
 
     /// The store, for the arms whose verbs reach one — a dispatch, and a
@@ -302,52 +268,20 @@ impl Rig {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// The drive suite's stub shape: the roster branch serves a file the arm
-    /// writes — its busy twin once a pane has taken a submit, so a feed typed
-    /// into a seat is taken ([`common::listing_branch`]) — and every other call
-    /// is recorded and refused. A start and a stop are no branch of the
-    /// stub's: the session comes up and goes on the rig's tmux stub
-    /// ([`Rig::host`]).
-    fn write_stub(&self) {
-        std::fs::write(
-            &self.stub,
-            format!(
-                "#!/bin/sh\n\
-                 case \"$1\" in\n\
-                 {agents}\
-                 \x20 *) echo \"$@\" >> '{calls}'; exit 64 ;;\n\
-                 esac\n",
-                agents = common::listing_branch(
-                    &self.roster,
-                    &self.roster.with_file_name("roster-taken.json"),
-                    &self.tmux.with_file_name("tmux-stub.json"),
-                ),
-                calls = self.calls.display(),
-            ),
-        )
-        .expect("the stub is written");
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&self.stub, std::fs::Permissions::from_mode(0o755))
-            .expect("the stub is executable");
-    }
-
-    /// The listing the stub serves: the arm's rows, then the rows a start's
-    /// watch believes a fresh tmux stub's panes by
-    /// (`test_support::with_arrivals`), which stand in no seat's worktree.
-    ///
-    /// Its busy twin is written beside it — every row reading `busy` — which
-    /// the stub serves once a pane has taken a submit.
+    /// The listing the agent stub serves: the arm's rows, then the rows a
+    /// start's watch believes a fresh tmux stub's panes by
+    /// (`test_support::with_arrivals`), which stand in no seat's worktree. A
+    /// start and a stop are no act of the stub's: the session comes up and
+    /// goes on the rig's tmux stub ([`Rig::host`]).
     fn roster(&self, body: &str) -> &Rig {
         let listed = fleet_controller::test_support::with_arrivals(body);
-        std::fs::write(&self.roster, &listed).expect("the roster is written");
-        std::fs::write(
-            self.roster.with_file_name("roster-taken.json"),
-            listed
-                .replace("\"status\":\"idle\"", "\"status\":\"busy\"")
-                .replace("\"status\": \"idle\"", "\"status\": \"busy\""),
-        )
-        .expect("the taken roster is written");
+        agent_stub::script(&self.project, |answers| answers.listing = Ok(listed));
         self
+    }
+
+    /// Every launch the agent stub was asked for, its whole request.
+    fn launches(&self) -> Vec<fleet_controller::adapter::Launch> {
+        agent_stub::starts(&self.project)
     }
 
     /// The tmux stub's fake server as the verbs left it: every session a
@@ -357,39 +291,15 @@ impl Rig {
             .expect("the tmux stub's state reads")
     }
 
-    /// A pack installed ABOVE the binary's own defaults, carrying a manifest
-    /// and whatever files the arm hands it.
-    ///
-    /// EVERY installed pack layers on top: the bottom is the defaults directory
-    /// the resolver appends, and no installed name is special — so the
-    /// directory and the name here are only what a refusal would call the pack
-    /// by (any name but `defaults`, which `resolve` refuses).
-    fn pack(&self, name: &str, files: &[(&str, &str)]) {
-        let root = self.machine.join("packs").join(name);
-        std::fs::create_dir_all(&root).expect("the pack root is created");
-        std::fs::write(
-            root.join("pack.toml"),
-            format!(
-                "[pack]\nname = \"{name}\"\nversion = \"0.1.0\"\nschema = 3\n\
-                 description = \"a pack this arm layers over the defaults\"\n"
-            ),
-        )
-        .expect("the manifest is written");
-        for (relative, contents) in files {
-            let path = root.join(relative);
-            std::fs::create_dir_all(path.parent().expect("a file has a parent"))
-                .expect("the parent is created");
-            std::fs::write(&path, contents).expect("the pack's file is written");
-        }
-    }
-
     /// Rewrite the project's `[project]` block to whatever the arm wants to
-    /// declare, for the arms about how a declaration is read.
+    /// declare, for the arms about how a declaration is read. The `[agent]`
+    /// table after it — the stub the rig runs on — is kept where it stood.
     fn declare_project(&self, block: &str) {
         let path = self.project.join("fleet.toml");
         let body = std::fs::read_to_string(&path).expect("the policy is readable");
         let head = body.split("[project]").next().unwrap_or_default();
-        std::fs::write(&path, format!("{head}[project]\n{block}"))
+        let agent = body.find("\n[agent]").map_or("", |at| &body[at..]);
+        std::fs::write(&path, format!("{head}[project]\n{block}{agent}"))
             .expect("the policy is rewritten");
     }
 
@@ -450,11 +360,8 @@ impl Rig {
             .current_dir(&self.project)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
-            .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub))
-            .env(common::hermetic::TMUX_BIN, &self.tmux)
-            // The operator's state file a spawn seeds from is read beside the
-            // rig's home only when no configuration directory is configured.
-            .env_remove(common::hermetic::CONFIG_DIR);
+            .hermetic(&self.root.join("home"), &self.machine)
+            .env(common::hermetic::TMUX_BIN, &self.tmux);
         for (key, value) in readings {
             command.env(key, value);
         }
@@ -463,10 +370,6 @@ impl Rig {
         // the seat is back at its prompt.
         common::turns_end(&self.tmux.with_file_name("tmux-stub.json"));
         out
-    }
-
-    fn calls(&self) -> String {
-        std::fs::read_to_string(&self.calls).unwrap_or_default()
     }
 
     /// Every entry in the worktrees directory, sorted: a spawn's name is
@@ -487,6 +390,18 @@ impl Drop for Rig {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+/// The agent stub's state kept out of the status of the repository at `repo`,
+/// as [`common::store_outside_git`] keeps the store's: it is the rig's, and no
+/// file of the project's.
+fn agent_stub_outside_git(repo: &Path) {
+    let exclude = repo.join(".git/info/exclude");
+    let mut lines = std::fs::read_to_string(&exclude).unwrap_or_default();
+    lines.push_str("\n.agent-stub\n");
+    std::fs::create_dir_all(exclude.parent().expect("info/ sits in the git dir"))
+        .expect("the git dir's info/ is made");
+    std::fs::write(&exclude, lines).expect("the exclude file is written");
 }
 
 fn json_string(value: &str) -> String {
@@ -633,10 +548,14 @@ fn the_three_verbs_run_end_to_end_through_the_shipped_binary() {
         "the session was killed there: {:?}",
         host.invocations
     );
+    assert_eq!(
+        agent_stub::calls_of(&rig.project, StubAgent::LAUNCH).len(),
+        1,
+        "the one launch was the spawn's"
+    );
     assert!(
-        rig.calls().is_empty(),
-        "and nothing but the listing was asked of the agent: {}",
-        rig.calls()
+        agent_stub::calls_of(&rig.project, StubAgent::RESUME).is_empty(),
+        "and the feed and the retire asked the agent to start nothing"
     );
     assert!(!rig.worktrees.join(&seat).exists());
     assert_eq!(
@@ -664,7 +583,9 @@ fn a_spawn_whose_session_never_lists_leaves_no_session_on_the_host() {
         body.replace("start_watch_seconds = 10", "start_watch_seconds = 1"),
     )
     .expect("the policy is rewritten");
-    std::fs::write(&rig.roster, "[]").expect("the roster lists nothing");
+    agent_stub::script(&rig.project, |answers| {
+        answers.listing = Ok("[]".to_string())
+    });
 
     let out = rig.run(&[
         "seat",
@@ -815,77 +736,128 @@ fn feed_and_retire_take_the_full_id_the_short_id_and_the_machine_name() {
     );
 }
 
-/// The slot the pack layers carry a transient seat's permission rules in, named
-/// once here because three arms read it and the defaults' registry lists it by
-/// this exact string: a rename of the slot that missed one of them reds these
-/// rather than shipping a seat with no rules.
-const PERMISSIONS: &str = "overlay/per-provider/claude/permissions.json";
-
-/// The rules a transient seat comes up under, through the shipped binary and
-/// against the BUNDLED pack: a session started under this fleet's posture
-/// refuses every writing call it holds no rule for, so the spawn renders the
-/// overlay's document into the seat's own worktree before the first turn.
+/// What a transient seat may run without asking reaches its agent's launch in
+/// fleet's own words, and the agent's adapter renders it (reviewer call
+/// 2026-09-25, E8): the project's declared `[permissions] tool_commands`, in
+/// the order declared and each once, after the store's own command word where
+/// the store declares one. The stub store declares none, so none comes first.
 ///
-/// The overlay is read off the tree rather than retyped, because the whole
-/// claim is that the file in the worktree is that file with two values in it —
-/// and the two placeholder assertions under it are the control that makes the
-/// comparison a reading rather than a template agreeing with itself.
+/// The seat's own configuration directory reaches the launch EMPTY: what goes
+/// in it is the adapter's, and no overlay of core's puts anything there.
+///
+/// RED-PROOF: with the project's words left off the request the list is empty;
+/// with the duplicate kept it reads `make` twice.
 #[test]
-fn a_spawn_renders_the_packs_permission_rules_into_the_seats_worktree() {
-    let rig = Rig::new("permissions", true);
+fn a_spawns_launch_carries_the_projects_tool_commands_in_order_and_once() {
+    let rig = Rig::new("tool-commands", true);
+    rig.init_store();
+    rig.declaring(&["make", "cargo", "sh", "make"]);
     let spawned = rig.run(&[
         "seat",
         "spawn",
         "--first-turn",
         &rig.turn.display().to_string(),
-        "--touched",
-        "make check",
     ]);
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
 
-    let worktree = rig.worktrees.join(the_seat(&spawned));
-    let path = worktree.join(".claude/settings.local.json");
-    let written = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
-    let defaults = ShippedDefaults::new("overlay");
-    let overlay = defaults.path().join(PERMISSIONS);
-    let template = std::fs::read_to_string(&overlay)
-        .unwrap_or_else(|e| panic!("{} is readable: {e}", overlay.display()));
+    let launches = rig.launches();
+    assert_eq!(launches.len(), 1, "one launch: {launches:?}");
+    let launch = &launches[0];
     assert_eq!(
-        written,
-        template
-            .replace("{touched}", "make check")
-            .replace("{worktree}", &worktree.display().to_string()),
-        "the seat's settings are the pack's document with the builder's checks and the worktree \
-         rendered in"
+        launch.permissions.commands,
+        ["make", "cargo", "sh"],
+        "the declared words, in order, each once: {launch:?}"
     );
-
-    assert!(
-        !written.contains("{touched}") && !written.contains("{worktree}"),
-        "no placeholder survives into the seat's own settings: {written}"
+    assert_eq!(
+        Path::new(&launch.worktree),
+        rig.worktrees.join(the_seat(&spawned)),
+        "for the seat's own worktree"
     );
-    assert!(
-        written.contains("Bash(make check:*)")
-            && written.contains(&format!("Edit(/{}/**)", worktree.display())),
-        "the builder's checks the spawn was handed and the seat's own checkout are both in a rule: \
-         {written}"
-    );
-
-    let doc: serde_json::Value =
-        serde_json::from_str(&written).expect("the seat's settings parse as JSON");
-    assert!(
-        doc["permissions"]["allow"]
-            .as_array()
-            .is_some_and(|rules| !rules.is_empty()),
-        "and the document the provider reads carries an allow list: {written}"
+    let config_dir = launch
+        .config_dir
+        .as_deref()
+        .expect("a transient seat's launch names its own configuration directory");
+    assert_eq!(
+        entries_of(Path::new(config_dir)),
+        Vec::<String>::new(),
+        "the directory is made empty, and nothing of core's is put in it"
     );
 }
 
-/// A spawn handed NO builder's checks writes no rule for one — the entry that
-/// would carry it is taken out, and nothing else is — and a gate that carries a
-/// quote is written into its rule as JSON, so the document still parses.
+/// THE STORE'S OWN WORD COMES FIRST. A project whose store declares the
+/// command a seat types to reach it, `tk`, hands that word to the launch
+/// ahead of its `[permissions] tool_commands`, and a declared word that is the
+/// store's too is not named twice — so no store's name is written in fleet,
+/// and a seat reaches its own fleet's store from its shell whichever store
+/// that is.
+///
+/// The store is an executable that answers `capabilities` alone, run once
+/// before the spawn so its first exec is not the one the spawn waits on.
+///
+/// RED-PROOF: with the store's word left off the request the list reads
+/// `make, tk`; with it put after the project's, `make, tk` too.
 #[test]
-fn a_spawn_handed_no_touched_command_writes_no_rule_for_one() {
+fn a_spawns_launch_names_the_stores_own_command_word_first() {
+    let rig = Rig::new("store-word", true);
+    let store = rig.root.join("store-declaring-tk");
+    std::fs::write(
+        &store,
+        "#!/bin/sh
+cat > /dev/null
+case \"$1\" in
+\
+         capabilities) echo '{\"schema_version\":1,\"cli\":\"tk\"}' ;;
+\
+         *) exit 2 ;;
+esac
+",
+    )
+    .expect("the store adapter is written");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o755))
+        .expect("the store adapter is executable");
+    let warmed = Command::new(&store)
+        .arg("capabilities")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("the store adapter runs");
+    assert!(warmed.status.success(), "the store adapter answers");
+    let path = rig.project.join("fleet.toml");
+    let policy = std::fs::read_to_string(&path).expect("the policy is readable");
+    std::fs::write(
+        &path,
+        format!(
+            "{policy}
+[store]
+adapter = {}
+",
+            toml_string(&store.display().to_string())
+        ),
+    )
+    .expect("the policy names the store");
+    rig.declaring(&["make", "tk"]);
+
+    let spawned = rig.run(&[
+        "seat",
+        "spawn",
+        "--first-turn",
+        &rig.turn.display().to_string(),
+    ]);
+    assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
+    let launches = rig.launches();
+    assert_eq!(launches.len(), 1, "one launch: {launches:?}");
+    assert_eq!(
+        launches[0].permissions.commands,
+        ["tk", "make"],
+        "the store's word, then the project's, each once: {launches:?}"
+    );
+}
+
+/// A spawn handed NO builder's checks names none, so its seat's rules name no
+/// command nobody gave; a gate carrying a quote reaches the launch whole, as
+/// the one command it is.
+#[test]
+fn a_spawn_handed_no_touched_command_names_none_and_a_quoted_one_is_carried_whole() {
     let rig = Rig::new("permissions-untouched", true);
     let spawned = rig.run(&[
         "seat",
@@ -894,139 +866,42 @@ fn a_spawn_handed_no_touched_command_writes_no_rule_for_one() {
         &rig.turn.display().to_string(),
     ]);
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
-
-    let worktree = rig.worktrees.join(the_seat(&spawned));
-    let written = std::fs::read_to_string(worktree.join(".claude/settings.local.json"))
-        .expect("the seat's settings are written");
-    let doc: serde_json::Value =
-        serde_json::from_str(&written).expect("the seat's settings parse as JSON");
-    let allow = |doc: &serde_json::Value| -> Vec<String> {
-        doc["permissions"]["allow"]
-            .as_array()
-            .expect("the document carries an allow list")
-            .iter()
-            .map(|rule| rule.as_str().unwrap_or_default().to_string())
-            .collect()
-    };
-    let defaults = ShippedDefaults::new("overlay-untouched");
-    let template: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(defaults.path().join(PERMISSIONS))
-            .expect("the overlay is readable"),
-    )
-    .expect("the template is JSON");
-    let wanted: Vec<String> = allow(&template)
-        .into_iter()
-        .filter(|rule| !rule.contains("{touched}"))
-        .map(|rule| rule.replace("{worktree}", &worktree.display().to_string()))
-        .collect();
-    assert_eq!(
-        allow(&doc),
-        wanted,
-        "the pack's list, less the one rule nobody handed a command for: {written}"
+    let launches = rig.launches();
+    assert_eq!(launches.len(), 1, "one launch: {launches:?}");
+    assert_eq!(launches[0].permissions.touched, None, "{launches:?}");
+    assert!(
+        launches[0].permissions.commands.is_empty(),
+        "a project that declares nothing names nothing: {launches:?}"
     );
-    assert_eq!(doc["permissions"]["deny"], template["permissions"]["deny"]);
 
-    // A gate carrying a quote is escaped into its rule, not spliced into the
-    // document's syntax.
     let rig = Rig::new("permissions-quoted", true);
+    let gate = "make check ARGS=\"-p core\"";
     let spawned = rig.run(&[
         "seat",
         "spawn",
         "--first-turn",
         &rig.turn.display().to_string(),
         "--touched",
-        "make check ARGS=\"-p core\"",
+        gate,
     ]);
     assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
-    let written = std::fs::read_to_string(
-        rig.worktrees
-            .join(the_seat(&spawned))
-            .join(".claude/settings.local.json"),
-    )
-    .expect("the seat's settings are written");
-    let doc: serde_json::Value =
-        serde_json::from_str(&written).expect("the seat's settings still parse as JSON");
-    assert!(
-        allow(&doc).contains(&"Bash(make check ARGS=\"-p core\":*)".to_string()),
-        "the gate is one rule, quote and all: {written}"
-    );
-}
-
-/// The words a project declares its seats need become rules AFTER the pack's
-/// own list, and the pack's own list carries the plain read verbs.
-///
-/// Both halves matter and neither implies the other: the read verbs belong to
-/// every seat on any project, so a project that forgets to declare them still
-/// gets them; the toolchain is the project's, so a pack never hardcodes one.
-/// The list stays a list — the assertion that no rule is a wildcard over Bash
-/// is what the mutant rendering the whole toolchain as one `Bash(*)` reds.
-#[test]
-fn a_projects_declared_tool_commands_are_rules_after_the_packs_own() {
-    let rig = Rig::new("tool-commands", true);
-    rig.declaring(&["make", "cargo", "sh"]);
-    let spawned = rig.run(&[
-        "seat",
-        "spawn",
-        "--first-turn",
-        &rig.turn.display().to_string(),
-    ]);
-    assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
-
-    let worktree = rig.worktrees.join(the_seat(&spawned));
-    let path = worktree.join(".claude/settings.local.json");
-    let written = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
-    let doc: serde_json::Value =
-        serde_json::from_str(&written).expect("the seat's settings parse as JSON");
-    let allow: Vec<String> = doc["permissions"]["allow"]
-        .as_array()
-        .expect("the document carries an allow list")
-        .iter()
-        .map(|rule| rule.as_str().unwrap_or_default().to_string())
-        .collect();
-
-    // The defaults, which no project declared.
-    for verb in ["ls", "grep", "sed", "mkdir", "cd", "which", "command"] {
-        assert!(
-            allow.iter().any(|rule| rule == &format!("Bash({verb}:*)")),
-            "the pack's own list carries the read verb `{verb}`: {written}"
-        );
-    }
-
-    // The project's, in the order declared, after the pack's own.
-    let at = |rule: &str| allow.iter().position(|held| held == rule);
-    let default = at("Bash(fleet:*)").expect("the pack's own rule is still in the list");
-    let make = at("Bash(make:*)").expect("the declared `make` is a rule");
-    let cargo = at("Bash(cargo:*)").expect("the declared `cargo` is a rule");
-    assert!(
-        default < make && make < cargo,
-        "the project's words come after the pack's own list, in the order declared: {written}"
-    );
-
-    // A word the defaults already carry is not added twice.
+    let launches = rig.launches();
     assert_eq!(
-        allow.iter().filter(|rule| *rule == "Bash(sh:*)").count(),
-        1,
-        "`sh` is deduplicated against the list it is already in: {written}"
-    );
-
-    // The list stays a list.
-    assert!(
-        !allow
-            .iter()
-            .any(|rule| rule == "Bash(*)" || rule == "Bash(*:*)"),
-        "no rule is a wildcard over Bash: {written}"
+        launches[0].permissions.touched.as_deref(),
+        Some(gate),
+        "the gate is one command, quote and all: {launches:?}"
     );
 }
 
-/// An entry that is not one command word is refused AT THE RENDER, naming the
-/// entry — and no seat comes up.
+/// An entry that is not one command word is refused BEFORE ANYTHING IS MADE,
+/// naming the entry — no worktree, and no launch.
 ///
-/// The three shapes are one rule each: a space would make the rule match a
-/// command line rather than a command, a glob would widen it past anything the
-/// project wrote down, and a leading dash is an option wearing a word's place.
+/// The three shapes are one rule each: a space would make the rule an
+/// adapter renders match a command line rather than a command, a glob would
+/// widen it past anything the project wrote down, and a leading dash is an
+/// option wearing a word's place.
 #[test]
-fn a_tool_command_that_is_not_one_word_is_refused_at_the_render() {
+fn a_tool_command_that_is_not_one_word_is_refused_before_anything_is_made() {
     for entry in ["make check", "make*", "-rf"] {
         let rig = Rig::new("tool-commands-refused", true);
         rig.declaring(&[entry]);
@@ -1046,270 +921,23 @@ fn a_tool_command_that_is_not_one_word_is_refused_at_the_render() {
             said.contains(entry) && said.contains("is not one command word"),
             "the refusal names the entry `{entry}`: {said}"
         );
-        assert!(
-            rig.worktree_entries().iter().all(|tree| !rig
-                .worktrees
-                .join(tree)
-                .join(".claude/settings.local.json")
-                .exists()),
-            "and no seat came up under a document this refusal never wrote ({entry})"
+        assert_eq!(
+            rig.worktree_entries(),
+            Vec::<String>::new(),
+            "no worktree was made ({entry})"
         );
-    }
-}
-
-/// The document a pack ABOVE the defaults carries at the permission slot is the
-/// one a transient seat comes up under, and it replaces the default WHOLE list
-/// rather than adding to it: a file in a higher layer shadows the same path
-/// below, and the shadow registry lists the slot.
-///
-/// The fixture differs from [`a_pack_above_the_defaults_carrying_no_permission_rules_leaves_the_default_document_in_place`]
-/// in exactly one file, so the pair is a comparison and not two assertions: this
-/// one's pack carries the slot, that one's carries nothing, and both spawn the
-/// same way.
-#[test]
-fn a_pack_above_the_defaults_shadowing_the_permission_slot_is_what_the_seat_comes_up_under() {
-    // The registry lists this path, or the layering refuses the shadow instead of
-    // resolving it — read here so a rename of the slot reds this arm at the
-    // registry rather than at an unexplained refusal from the spawn.
-    let defaults = ShippedDefaults::new("registry");
-    let registry = fleet_core::registry::read(defaults.path())
-        .expect("the defaults publish a shadow registry")
-        .expect("the shadow registry parses");
-    assert!(
-        registry.lists(PERMISSIONS),
-        "the registry lists `{PERMISSIONS}` as shadowable: {:?}",
-        registry.shadows
-    );
-
-    let rig = Rig::new("shadowed-permissions", true);
-    rig.pack("zeta", &[(PERMISSIONS, SHADOW_RULES)]);
-
-    let spawned = rig.run(&[
-        "seat",
-        "spawn",
-        "--first-turn",
-        &rig.turn.display().to_string(),
-        "--touched",
-        "make check",
-    ]);
-    assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
-
-    let worktree = rig.worktrees.join(the_seat(&spawned));
-    let path = worktree.join(".claude/settings.local.json");
-    let written = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
-
-    assert_eq!(
-        written,
-        SHADOW_RULES
-            .replace("{touched}", "make check")
-            .replace("{worktree}", &worktree.display().to_string()),
-        "the seat's settings are the SHADOWING pack's document with the builder's checks and the \
-         worktree rendered in"
-    );
-    assert!(
-        written.contains(SHADOW_MARK),
-        "the shadowing pack's own rule is in the document: {written}"
-    );
-    assert!(
-        !written.contains(DEFAULT_MARK),
-        "and the default list is replaced whole rather than merged into: {written}"
-    );
-    assert!(
-        !written.contains("{touched}") && !written.contains("{worktree}"),
-        "no placeholder survives into the seat's own settings: {written}"
-    );
-
-    let doc: serde_json::Value =
-        serde_json::from_str(&written).expect("the seat's settings parse as JSON");
-    assert_eq!(
-        doc["permissions"]["allow"].as_array().map(Vec::len),
-        Some(3),
-        "and the allow list the provider reads is the shadow's three rules: {written}"
-    );
-}
-
-/// THE CONTROL for the arm above: the same fixture, the same second pack, and
-/// the one file removed from it.
-///
-/// Without this, an arm asserting the shadow's content proves only that some
-/// file was read — a spawn that always read the highest layer, or that read the
-/// shadow by luck of a directory walk, would pass it. Here the second pack
-/// carries nothing at the slot and the default document is what the seat comes
-/// up under.
-#[test]
-fn a_pack_above_the_defaults_carrying_no_permission_rules_leaves_the_default_document_in_place() {
-    let rig = Rig::new("unshadowed-permissions", true);
-    rig.pack("zeta", &[]);
-
-    let spawned = rig.run(&[
-        "seat",
-        "spawn",
-        "--first-turn",
-        &rig.turn.display().to_string(),
-        "--touched",
-        "make check",
-    ]);
-    assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
-
-    let worktree = rig.worktrees.join(the_seat(&spawned));
-    let path = worktree.join(".claude/settings.local.json");
-    let written = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
-
-    let defaults = ShippedDefaults::new("overlay");
-    let overlay = defaults.path().join(PERMISSIONS);
-    let template = std::fs::read_to_string(&overlay)
-        .unwrap_or_else(|e| panic!("{} is readable: {e}", overlay.display()));
-    assert_eq!(
-        written,
-        template
-            .replace("{touched}", "make check")
-            .replace("{worktree}", &worktree.display().to_string()),
-        "a pack above the defaults that carries no permission rules leaves theirs in place"
-    );
-    assert!(
-        written.contains(DEFAULT_MARK),
-        "the defaults' own rule is in the document: {written}"
-    );
-    assert!(
-        !written.contains(SHADOW_MARK),
-        "and nothing of the shadow fixture is: {written}"
-    );
-}
-
-/// The shadowing pack's document: the default shape, none of the default rules, and both
-/// placeholders, so the arm reading it is reading a rendering and not a copy.
-const SHADOW_RULES: &str = r#"{
-  "permissions": {
-    "allow": [
-      "Bash(the-shadowing-packs-own-verb:*)",
-      "Bash({touched}:*)",
-      "Edit(/{worktree}/**)"
-    ],
-    "deny": [
-      "AskUserQuestion"
-    ]
-  }
-}
-"#;
-
-/// One rule out of each document, so an arm can say which one was read rather
-/// than only that the documents differ.
-const SHADOW_MARK: &str = "Bash(the-shadowing-packs-own-verb:*)";
-const DEFAULT_MARK: &str = "Bash(fleet:*)";
-
-/// The five trunk-push shapes the default permissions document denies, spelled
-/// exactly as `tools/spawn-builder`'s `SPAWN_DENY` spells them — the
-/// product-of-the-fleet half of that list; its launchctl and porter shapes
-/// stay this repository's own and are not the defaults' to deny.
-const TRUNK_PUSH_DENY: [&str; 5] = [
-    "Bash(git push origin HEAD:main*)",
-    "Bash(git push origin main*)",
-    "Bash(git push --force*)",
-    "Bash(git push -f *)",
-    "Bash(git push * --delete*)",
-];
-
-/// A transient seat comes up denied the five trunk-push shapes, read from the
-/// FILE THE SPAWN WROTE and never from the pack — so a merge or a render step
-/// that silently dropped one of the five reds here even though the pack's own
-/// document on disk is untouched.
-#[test]
-fn a_spawn_denies_the_five_trunk_push_shapes_to_a_transient_seat() {
-    let rig = Rig::new("trunk-push-deny", true);
-    let spawned = rig.run(&[
-        "seat",
-        "spawn",
-        "--first-turn",
-        &rig.turn.display().to_string(),
-    ]);
-    assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
-
-    let worktree = rig.worktrees.join(the_seat(&spawned));
-    let path = worktree.join(".claude/settings.local.json");
-    let written = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
-    let doc: serde_json::Value =
-        serde_json::from_str(&written).expect("the seat's settings parse as JSON");
-    let deny: Vec<&str> = doc["permissions"]["deny"]
-        .as_array()
-        .expect("a deny list")
-        .iter()
-        .filter_map(serde_json::Value::as_str)
-        .collect();
-    for shape in TRUNK_PUSH_DENY {
         assert!(
-            deny.contains(&shape),
-            "the seat's own written settings deny `{shape}`: {written}"
-        );
-    }
-}
-
-/// A project that already tracks its own `.claude/settings.local.json` on the
-/// trunk — carrying a deny rule of its own — keeps that rule beside the five
-/// once the spawn's merge folds the pack's rules in
-/// (`transient.rs`'s `merged_settings`).
-#[test]
-fn a_project_settings_file_that_already_denies_a_shape_keeps_it_beside_the_five() {
-    let rig = Rig::new("trunk-push-deny-merge", true);
-    let settings_dir = rig.project.join(".claude");
-    std::fs::create_dir_all(&settings_dir).expect("the .claude directory is created");
-    std::fs::write(
-        settings_dir.join("settings.local.json"),
-        "{\n  \"permissions\": {\n    \"allow\": [],\n    \"deny\": [\n      \
-         \"Bash(rm -rf /*)\"\n    ]\n  }\n}\n",
-    )
-    .expect("the project's own settings are written");
-    // `-f`: this box's own `~/.config/git/ignore` excludes
-    // `**/.claude/settings.local.json` by default, which is a fact about the
-    // machine running the suite and not about the fixture's repository.
-    rig.git(&["add", "-f", "--", ".claude/settings.local.json"]);
-    rig.git(&[
-        "commit",
-        "--quiet",
-        "--no-gpg-sign",
-        "-m",
-        "track the project's own deny rule",
-    ]);
-    rig.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
-
-    let spawned = rig.run(&[
-        "seat",
-        "spawn",
-        "--first-turn",
-        &rig.turn.display().to_string(),
-    ]);
-    assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
-
-    let worktree = rig.worktrees.join(the_seat(&spawned));
-    let path = worktree.join(".claude/settings.local.json");
-    let written = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
-    let doc: serde_json::Value =
-        serde_json::from_str(&written).expect("the seat's settings parse as JSON");
-    let deny: Vec<&str> = doc["permissions"]["deny"]
-        .as_array()
-        .expect("a deny list")
-        .iter()
-        .filter_map(serde_json::Value::as_str)
-        .collect();
-    assert!(
-        deny.contains(&"Bash(rm -rf /*)"),
-        "the project's own pre-existing deny rule survives the merge: {written}"
-    );
-    for shape in TRUNK_PUSH_DENY {
-        assert!(
-            deny.contains(&shape),
-            "the pack's `{shape}` is folded in beside the project's own rule: {written}"
+            rig.launches().is_empty(),
+            "and no launch was asked for ({entry})"
         );
     }
 }
 
 mod lessons {
-    //! The contract named in `fleet/brain/lessons/claude-code.md` § Test
-    //! inventory: a fact the code in this file exercises owes a test under the
-    //! exact name the inventory carries.
+    //! The contract named in brain's lessons inventory, whose core entries
+    //! stay there (lessons claude-code A13 among them): a fact the code in
+    //! this file exercises owes a test under the exact name the inventory
+    //! carries.
 
     use super::*;
 
@@ -1337,14 +965,14 @@ mod lessons {
             .any(|line| line == "locked" || line.starts_with("locked "))
     }
 
-    /// claude-code A13 — a session locks only a worktree the agent created for
-    /// it, and every worktree fleet makes for a seat is the other shape: fleet
-    /// cuts it with its own `git worktree add` and locks nothing, so a removal
-    /// that reached it would take the checkout out from under a live session,
-    /// and nothing but fleet's own care — a retire that verifies from outside —
-    /// stands in the way. The control locks the same tree by hand and reads the
-    /// lock back, so the unlocked reading is the tree's own and not a listing
-    /// this arm cannot see a lock in.
+    /// lessons claude-code A13 — a session locks only a worktree the agent
+    /// created for it, and every worktree fleet makes for a seat is the other
+    /// shape: fleet cuts it with its own `git worktree add` and locks nothing,
+    /// so a removal that reached it would take the checkout out from under a
+    /// live session, and nothing but fleet's own care — a retire that verifies
+    /// from outside — stands in the way. The control locks the same tree by
+    /// hand and reads the lock back, so the unlocked reading is the tree's own
+    /// and not a listing this arm cannot see a lock in.
     #[test]
     fn a_session_locks_only_a_worktree_it_created() {
         let rig = Rig::new("a13-unlocked", false);
@@ -1909,7 +1537,7 @@ fn dispatch_under_the_load_override_refuses_and_withdraws_the_order() {
             &rig.machine.join("packs").display().to_string(),
         ])
         .current_dir(&rig.project)
-        .hermetic(&rig.root.join("home"), &rig.machine, Some(&rig.stub))
+        .hermetic(&rig.root.join("home"), &rig.machine)
         .env("FLEET_LOAD_AVERAGE", "99.0")
         .env("FLEET_CPUS", "8")
         .output()
@@ -1926,7 +1554,10 @@ fn dispatch_under_the_load_override_refuses_and_withdraws_the_order() {
         "{}",
         stderr(&out)
     );
-    assert!(rig.calls().is_empty(), "the agent was never called");
+    assert!(
+        agent_stub::calls_of(&rig.project, StubAgent::LAUNCH).is_empty(),
+        "the agent was never asked to launch"
+    );
     assert_eq!(
         rig.worktree_entries(),
         Vec::<String>::new(),
@@ -2092,7 +1723,11 @@ fn the_roster_fixtures_pid_names_no_live_process() {
         Some(false),
         "the pid this rig wrote into its roster is a live process on this box"
     );
-    let written = std::fs::read_to_string(&rig.roster).expect("the roster is readable");
+    let written = agent_stub::load(&rig.project)
+        .expect("the agent stub's state reads")
+        .answers
+        .listing
+        .expect("the listing is one that reads");
     assert!(
         written.contains(&format!("\"pid\": {pid}")),
         "and the row carries that pid and no other: {written}"
@@ -2453,11 +2088,6 @@ fn the_json_retire_says_kept_where_the_landing_did_not_read_safe() {
     );
 }
 
-/// A permission slot whose document names a placeholder a spawn has no value
-/// for: the one could-not-tell leg `seat spawn` reaches before it creates
-/// anything.
-const UNFILLABLE_RULES: &str = "{\"permissions\": {\"allow\": [\"Bash({nowhere})\"]}}\n";
-
 /// A could-not-tell and a usage error are DIFFERENT refusal codes, so a caller
 /// branching on the document never reads a question as a verdict.
 ///
@@ -2469,7 +2099,14 @@ const UNFILLABLE_RULES: &str = "{\"permissions\": {\"allow\": [\"Bash({nowhere})
 #[test]
 fn a_could_not_tell_and_a_usage_error_are_different_refusal_codes() {
     let rig = Rig::new("json-could-not-tell", true);
-    rig.pack("zeta", &[(PERMISSIONS, UNFILLABLE_RULES)]);
+    // An agent whose version does not answer is one no effect is issued
+    // through: the could-not-tell leg `seat spawn` reaches before it creates
+    // anything.
+    agent_stub::untold(
+        &rig.project,
+        StubAgent::VERSION_CALL,
+        Some("nowhere to be read"),
+    );
 
     let unreadable = rig.run(&[
         "seat",
@@ -2487,8 +2124,8 @@ fn a_could_not_tell_and_a_usage_error_are_different_refusal_codes() {
         question["refusal"]["why"]
             .as_str()
             .expect("the why is a string")
-            .contains("nowhere"),
-        "the why names the placeholder: {question}"
+            .contains("nowhere to be read"),
+        "the why names the agent's own cause: {question}"
     );
     // The person's line is the words it always was, under the flag too: the
     // document names the verb as `seat spawn` and this is the only thing

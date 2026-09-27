@@ -13,8 +13,8 @@ mod common;
 
 /// A DEAD PANE is a stopped seat (ruling 3): the host keeps the pane with the
 /// status its agent exited with, the listing names nothing — the row went with
-/// the process (lessons claude-code B10) — and the session the table recorded
-/// still answers for context, because its transcript outlives it (C4).
+/// the process (the claude-code pack's lessons B10) — and the session the table
+/// recorded still answers for context, because its transcript outlives it (C4).
 ///
 /// Each `observe --once` is a controller's FIRST poll, which did not see the
 /// pane die, so the one `session.ended` it writes is dated by the transcript;
@@ -215,46 +215,13 @@ fn a_seat_at_a_permission_dialog_publishes_prompt_blocked_and_no_reading() {
     assert!(row.get("waiting_for").is_none());
 }
 
-/// The transcript lives under the agent's configuration directory, which a
-/// scoped daemon moves (lessons claude-code A11), at an encoding that touches
-/// every non-alphanumeric character in the project path — here a worktree whose
-/// last component carries a dot.
-#[test]
-fn a_scoped_config_directory_and_a_dotted_worktree_still_read_a_context() {
-    let mut rig = Rig::claude_code_with_leaf("scoped", "builder-1.wt");
-    let scoped = rig.root.join("elsewhere").join("agent-state");
-    rig.scoped_config_dir = Some(scoped.clone());
-    rig.write_roster(&live_row(&rig.worktree(), "a-session"));
-    rig.write_transcript_under(
-        &scoped,
-        "a-session",
-        "{\"type\":\"assistant\",\"message\":{\"usage\":{\"input_tokens\":77}}}\n",
-    );
-
-    assert_eq!(rig.observe().status.code(), Some(0));
-    assert_eq!(
-        rig.projection()["seats"][0]["context_tokens"],
-        77,
-        "the transcript is read from the scoped directory, at the full encoding"
-    );
-
-    // The control: with no scoped directory the same transcript is not found,
-    // so the reading above came from the scope and not from a default that
-    // happened to hold it.
-    rig.scoped_config_dir = None;
-    assert_eq!(rig.observe().status.code(), Some(0));
-    assert!(rig.projection()["seats"][0]["context_tokens"].is_null());
-}
-
 #[test]
 fn an_unreadable_seat_list_refuses_at_startup_and_names_the_path() {
     let rig = Rig::new("no-seats");
     rig.write_config("{\"fleet_toml\": \"/somewhere\", \"children\": [");
 
-    // The bare path: this poll refuses at startup and never reaches the
-    // agent call, so no stub is spawned and the marker's absence is this
-    // arm's premise.
-    let out = rig.observe_unwitnessed();
+    // This poll refuses at startup and never reaches the agent.
+    let out = rig.observe();
     assert_eq!(
         out.status.code(),
         Some(3),
@@ -274,10 +241,8 @@ fn an_absent_policy_file_refuses_at_startup_and_names_the_path() {
     let rig = Rig::new("no-policy");
     std::fs::remove_file(rig.policy_path()).unwrap();
 
-    // The bare path: this poll refuses at startup and never reaches the
-    // agent call, so no stub is spawned and the marker's absence is this
-    // arm's premise.
-    let out = rig.observe_unwitnessed();
+    // This poll refuses at startup and never reaches the agent.
+    let out = rig.observe();
     assert_eq!(out.status.code(), Some(3), "startup refuses without policy");
     assert!(
         stderr(&out).contains(&rig.policy_path().display().to_string()),
@@ -305,19 +270,16 @@ fn a_policy_that_stops_parsing_keeps_last_good_and_says_so_in_the_projection() {
     // The loop is re-entered rather than continued, which is the harder case:
     // last-good has to come from the file, and a broken file has none.
     rig.write_policy("[controller\npoll_seconds = 1\n");
-    // The bare path for THIS call only: it refuses at startup and never reaches
-    // the agent, so no stub is spawned. The two polls either side of it run
-    // normally and stay witnessed.
-    let out = rig.observe_unwitnessed();
+    // THIS call refuses at startup and never reaches the agent; the two polls
+    // either side of it run normally.
+    let out = rig.observe();
     assert_eq!(
         out.status.code(),
         Some(3),
         "a startup that cannot parse policy has no last-good and refuses"
     );
 
-    rig.write_policy(
-        "[controller]\npoll_seconds = 1\n\n[substrate.claude_code]\nversion = \"9.9.9\"\n",
-    );
+    rig.write_policy("[controller]\npoll_seconds = 1\n");
     assert_eq!(rig.observe().status.code(), Some(0));
     let restored = rig.projection();
     assert!(restored.get("fleet_parse_error").is_none());
@@ -325,10 +287,10 @@ fn a_policy_that_stops_parsing_keeps_last_good_and_says_so_in_the_projection() {
 }
 
 /// A seat whose pane the host holds alive, beside a listing that answered
-/// zero bytes (lessons claude-code B4): unknown, with the cause, and never
-/// present or absent. The pane is what makes the listing the question — a
-/// seat the host holds nothing for is absent on the host's own reading, and
-/// its agent is not asked about it.
+/// zero bytes (the claude-code pack's lessons B4): unknown, with the cause,
+/// and never present or absent. The pane is what makes the listing the
+/// question — a seat the host holds nothing for is absent on the host's own
+/// reading, and its agent is not asked about it.
 #[test]
 fn an_unreadable_listing_is_unknown_for_every_seat_and_never_absent() {
     let rig = Rig::new("silent");

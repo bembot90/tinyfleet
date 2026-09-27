@@ -28,6 +28,7 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::hermetic::Hermetic;
+use fleet_controller::test_support::agent_stub;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -129,10 +130,6 @@ struct Rig {
     /// A second target's checkout: a seat holds one item, so a rig that
     /// dispatches twice names two seats.
     other_worktree: PathBuf,
-    stub: PathBuf,
-    roster: PathBuf,
-    /// What the listing reads once a pane has taken a submit.
-    roster_taken: PathBuf,
     /// The link `FLEET_TMUX_BIN` names, and the fake server's state beside it.
     tmux: PathBuf,
     state: PathBuf,
@@ -172,9 +169,6 @@ impl Rig {
         defaults_into(&machine);
 
         let rig = Rig {
-            stub: root.join("agent.sh"),
-            roster: root.join("roster.json"),
-            roster_taken: root.join("roster-taken.json"),
             tmux: common::stub_tmux(&root.join("tmux")),
             state: root.join("tmux").join("tmux-stub.json"),
             delivery: root.join("delivery.json"),
@@ -201,6 +195,8 @@ impl Rig {
             ),
         )
         .expect("the policy is written");
+        // The agent the fleet runs is the stub, its state under the project.
+        common::stub_agent(&rig.project);
         common::take_a_store(&rig.project);
         // The repository with a first commit on the trunk, so a verb run
         // before `init_repo` reads a branch and not an unborn HEAD.
@@ -214,6 +210,7 @@ impl Rig {
             "the repository",
         ]);
         common::store_outside_git(&rig.project);
+        agent_stub_outside_git(&rig.project);
         std::fs::write(&rig.delivery, DELIVERY).expect("the delivery is written");
         std::fs::write(&rig.question, QUESTION).expect("the question is written");
         std::fs::write(
@@ -236,7 +233,6 @@ impl Rig {
             ),
         )
         .expect("the machine config is written");
-        rig.write_stub();
         rig.roster("[]");
         rig
     }
@@ -313,29 +309,17 @@ impl Rig {
         common::shown(&self.project, item)
     }
 
-    /// The stub: `agents` is the listing, which turns once a pane has taken a
-    /// submit ([`common::listing_branch`]).
-    fn write_stub(&self) {
-        std::fs::write(
-            &self.stub,
-            format!(
-                "#!/bin/sh\ncase \"$1\" in\n{agents}\x20 *) exit 64 ;;\nesac\n",
-                agents = common::listing_branch(&self.roster, &self.roster_taken, &self.state),
-            ),
-        )
-        .expect("the stub is written");
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&self.stub, std::fs::Permissions::from_mode(0o755))
-            .expect("the stub is executable");
-    }
-
+    /// The listing the agent stub reads.
     fn roster(&self, body: &str) -> &Rig {
-        std::fs::write(&self.roster, body).expect("the roster is written");
+        agent_stub::script(&self.project, |answers| {
+            answers.listing = Ok(body.to_string())
+        });
         self
     }
 
     /// A live pane for each of the three seats, and a listing carrying a row
-    /// for each pane's pid that reads busy once a pane has taken a submit — so
+    /// for each pane's pid that reads busy once a pane has taken a submit, the
+    /// stub following the tmux stub's panes — so
     /// a ring at any seat is delivered. Every verb's turns end with it
     /// ([`Rig::run`]), so the next verb meets the seats idle again.
     fn live(&self) -> &Rig {
@@ -353,7 +337,7 @@ impl Rig {
                 .collect();
             format!("[{}]", rows.join(", "))
         };
-        std::fs::write(&self.roster_taken, rows("busy")).expect("the roster is written");
+        agent_stub::follow_host(&self.project, Some(&self.state));
         self.roster(&rows("idle"))
     }
 
@@ -374,7 +358,7 @@ impl Rig {
             .arg("--packs-dir")
             .arg(self.machine.join("packs"))
             .current_dir(&self.project)
-            .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub))
+            .hermetic(&self.root.join("home"), &self.machine)
             .env(common::hermetic::TMUX_BIN, &self.tmux)
             // The identity the delivery's and the hold's own commits are made
             // under. Named here because `HOME` is the rig's.
@@ -384,6 +368,18 @@ impl Rig {
             .env("GIT_COMMITTER_EMAIL", "fleet@example.invalid");
         command
     }
+}
+
+/// The agent stub's state kept out of the status of the repository at `repo`,
+/// as [`common::store_outside_git`] keeps the store's: it is the rig's, and no
+/// file a delivery or a hold could leave unstaged.
+fn agent_stub_outside_git(repo: &Path) {
+    let exclude = repo.join(".git/info/exclude");
+    let mut lines = std::fs::read_to_string(&exclude).unwrap_or_default();
+    lines.push_str("\n.agent-stub\n");
+    std::fs::create_dir_all(exclude.parent().expect("info/ sits in the git dir"))
+        .expect("the git dir's info/ is made");
+    std::fs::write(&exclude, lines).expect("the exclude file is written");
 }
 
 impl Drop for Rig {
@@ -837,7 +833,7 @@ impl Rig {
             .args(["item", "show"])
             .args(args)
             .current_dir(&self.project)
-            .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub))
+            .hermetic(&self.root.join("home"), &self.machine)
             .output()
             .expect("the built binary runs")
     }
@@ -991,7 +987,7 @@ impl Named {
             .args(["item", "show"])
             .args(args)
             .current_dir(&self.project)
-            .hermetic(&self.root.join("home"), &self.machine, None)
+            .hermetic(&self.root.join("home"), &self.machine)
             .output()
             .expect("the built binary runs")
     }

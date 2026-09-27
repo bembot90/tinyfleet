@@ -1,8 +1,9 @@
 //! The agent seam. Everything the controller learns about a seat's agent goes
 //! through one trait, and the trait is the agent contract's six verbs
-//! (`docs/agent.md`) over the contract's own types (`fleet_core::agent`): the
-//! in-process Claude Code adapter answers them today, and an adapter that is an
-//! executable answers the same six.
+//! (`docs/agent.md`) over the contract's own types (`fleet_core::agent`),
+//! answered by an adapter that is an executable ([`AgentExec`]): the one an
+//! installed pack carries under the name `[agent] adapter` writes, or the one
+//! at the path it names.
 //!
 //! What the agent IS — [`Agent::capabilities`] and [`Agent::version`]; what a
 //! session starts or comes back under — [`Agent::launch`] and
@@ -40,7 +41,6 @@ use fleet_core::item::brief::Packs;
 use fleet_core::pack;
 pub use fleet_core::store::{AdapterSource, PackDirs};
 
-pub mod claude_code;
 pub mod conformance;
 pub mod exec;
 
@@ -130,28 +130,13 @@ pub trait Agent {
     /// adapter whose [`Agent::capabilities`] declare it. A reading the adapter
     /// cannot give is absent from its row, never a zero.
     fn context(&self, seats: &[SeatRef]) -> Result<Vec<SeatContext>, AgentError>;
-
-    /// The keys that answer the question a starting session's screen is
-    /// stopped at, where this agent knows the question and a start may answer
-    /// it; `None` for a screen it does not recognise.
-    ///
-    /// NOT ONE OF THE CONTRACT'S VERBS: the in-process adapter's alone, kept
-    /// from flight 11 as the fallback ruling 13 allows should a seeded trust
-    /// acceptance not skip the agent's workspace-trust question. An adapter
-    /// that is an executable answers `None`, and its launch's seed is the
-    /// path. The rule is the adapter's because the words on the screen are the
-    /// agent's (ruling 2); core only captures and types.
-    fn trust_keys(&self, _screen: &str) -> Option<Vec<String>> {
-        None
-    }
 }
 
 // ---- opening the agent ------------------------------------------------------
 
 /// What a caller knows when it opens the agent: the fleet's own file, which
-/// names the adapter, where a name is resolved, where this machine keeps its
-/// state, and what the in-process adapter is handed rather than reading for
-/// itself.
+/// names the adapter, where a name is resolved, and where this machine keeps
+/// its state.
 pub struct Opening<'a> {
     /// The fleet's OWN file, which `[agent] adapter` is read out of: the key is
     /// the fleet's and fleet-wide, never a project's (ruling 11).
@@ -163,26 +148,14 @@ pub struct Opening<'a> {
     /// the fleet's own file is in.
     pub root: &'a Path,
     /// Where an adapter's bare name is resolved, or `None` for a caller with no
-    /// machine's packs behind it, where a name resolves nowhere — and
-    /// [`DEFAULT_AGENT_ADAPTER`] opens the in-process adapter.
+    /// machine's packs behind it, where a name resolves nowhere —
+    /// [`DEFAULT_AGENT_ADAPTER`] among them.
     pub packs: Option<PackDirs<'a>>,
     /// The bound on each call of an adapter executable opened: what
     /// [`TIMEOUT_VAR`] sets, else [`fleet_core::agent::types::AGENT_TIMEOUT`].
     pub timeout: std::time::Duration,
-    /// The home the adapter's own configuration is found under when nothing
-    /// configures one, and the constructed `PATH` a pack's adapter runs on is
-    /// built off.
+    /// The home the constructed `PATH` a pack's adapter runs on is built off.
     pub home: &'a Path,
-    /// The plugin root the in-process adapter loads into every session it
-    /// launches or resumes: `[controller] plugin_dir` today, the adapter's own
-    /// pack path once fleet-x93d.2 deletes the key (reviewer call 2026-09-25,
-    /// E8). Never a field of a request.
-    pub plugin_dir: Option<PathBuf>,
-    /// The template a launch renders the request's permissions into, the pack
-    /// layers' `overlay/per-provider/claude/permissions.json` until fleet-jymr.5
-    /// moves it into the claude-code pack. `None` is an adapter whose launches
-    /// write no permission document at all.
-    pub permissions: Option<String>,
 }
 
 /// The agent a caller opened, and why it may issue no effect where it may
@@ -195,15 +168,10 @@ pub struct Opened {
     /// resolved — or `None` for an agent that can. Reads are answered either
     /// way: a loop that cannot start a session still observes and publishes.
     pub effects_off: Option<String>,
-    /// What reads for sessions Claude Code's background daemon still hosts —
-    /// the upgrade refusal (ruling 10) — where this adapter's agent has such a
-    /// daemon, and `None` where it has none. Beside the agent and never one of
-    /// its verbs: it goes with the in-process adapter in flight 14.
-    pub daemon: Option<Box<dyn claude_code::DaemonListing>>,
-    /// The same agent as the executable it is, where it is one, and `None`
-    /// for the in-process adapter: what `fleet agent check` speaks to past the
-    /// verbs' own types, for a check about an exit or a recorded case.
-    pub exec: Option<AgentExec>,
+    /// The same agent as the executable it is: what `fleet agent check` speaks
+    /// to past the verbs' own types, for a check about an exit or a recorded
+    /// case.
+    pub exec: AgentExec,
     /// The directory holding the adapter's own `adapter.toml`, where it has
     /// one: a pack's adapter, or an executable named by path that sits beside
     /// one. What the adapter ships beside it — its `fixtures/` — is read from
@@ -229,17 +197,15 @@ pub const DEFAULT_AGENT_ADAPTER: &str = "claude-code";
 /// naming what was written where it was ([`AdapterSource`]), and nothing is
 /// run.
 ///
-/// WHILE THE IN-PROCESS ADAPTER STANDS, [`DEFAULT_AGENT_ADAPTER`] where no
-/// installed pack carries it is that adapter, built from this process's
-/// environment, with the binary its effects exec resolved ONCE — the same
-/// resolution the gate in [`Opened::effects_off`] is read from, so a caller
-/// that gated on one file cannot act through another. Every other name no pack carries is
-/// refused, `claude_code` among them: there is one spelling (ruling 17).
+/// THE DEFAULT'S NAME IS A NAME LIKE ANY OTHER: where no installed pack
+/// carries it, it is refused as every name no pack carries is, naming the line
+/// that installs the one fleet-packs carries — and so is that name with an
+/// underscore for its dash, since there is one spelling (ruling 17). No
+/// adapter answers inside this process.
 ///
 /// AN ADAPTER EXECUTABLE'S GATE IS ITS OWN ANSWERS: [`Opened::effects_off`]
 /// carries why where its capabilities or its version do not answer, or its
-/// version says no agent is installed — the twin of an in-process binary that
-/// does not resolve. A loop still observes through it.
+/// version says no agent is installed. A loop still observes through it.
 pub fn open(opening: &Opening) -> Result<Opened, String> {
     let named = fleet_core::policy::read("agent", "adapter", opening.policy)
         .map_err(|unlisted| unlisted.to_string())?;
@@ -282,34 +248,14 @@ pub fn open(opening: &Opening) -> Result<Opened, String> {
 /// the directory of each runtime that layer runs under put in front where the
 /// path misses it, as a store adapter's does.
 fn by_name(opening: &Opening, name: &str) -> Result<Opened, String> {
-    // UNDER FLEET_TEST_HERMETIC the default's name is refused where no agent
-    // binary is named either, BEFORE the packs are read: a pack carrying it
-    // would otherwise run an agent adapter that finds the account's own agent.
-    // Written or left out alike, because `fleet create` writes the key.
-    if name == DEFAULT_AGENT_ADAPTER {
-        claude_code::refuse_an_unnamed_binary_under_test();
-    }
-    let in_process = name == claude_code::NAME;
     let Some(installed) = opening.packs else {
-        if in_process {
-            return Ok(claude_code::open(opening));
-        }
         return Err(unopened(opening.source, Unopened::NoPacks(name)));
     };
-    // A machine whose defaults `fleet start` never wrote has no layering to
-    // read at all, and so no pack carrying the default name: the in-process
-    // adapter, as before any pack could carry one. A layering that is there
-    // and REFUSES is refused, the default's name included — which adapter the
-    // fleet runs is then exactly what cannot be told.
-    if in_process && !installed.defaults_dir.is_dir() {
-        return Ok(claude_code::open(opening));
-    }
+    // A layering that REFUSES is refused, the default's name included — which
+    // adapter the fleet runs is then exactly what cannot be told.
     let packs = Packs::under(installed.packs_dir, installed.defaults_dir)
         .map_err(|stop| unopened(opening.source, Unopened::Layers(name, stop.message)))?;
     let Some((carrier, dir)) = pack::adapter_dir(&packs, pack::AdapterKind::Agent, name) else {
-        if in_process {
-            return Ok(claude_code::open(opening));
-        }
         return Err(unopened(opening.source, Unopened::Nowhere(name)));
     };
     // The manifest is held to the format here, its entry's executable bit
@@ -351,11 +297,64 @@ fn gated(name: String, agent: AgentExec, dir: Option<PathBuf>) -> Opened {
     };
     Opened {
         name,
-        exec: Some(agent.clone()),
+        exec: agent.clone(),
         agent: Box::new(agent),
         effects_off,
-        daemon: None,
         dir,
+    }
+}
+
+/// The name `[agent] adapter` in `policy` calls the fleet's agent by, as
+/// written where it is a string, and [`DEFAULT_AGENT_ADAPTER`] where the file
+/// writes none: what a caller whose [`open`] refused still publishes.
+pub fn named(policy: &toml::Table) -> String {
+    match fleet_core::policy::read("agent", "adapter", policy) {
+        Ok(Some(toml::Value::String(name))) => name.clone(),
+        _ => DEFAULT_AGENT_ADAPTER.to_string(),
+    }
+}
+
+/// An agent nothing opened: every verb answers could not tell, carrying why
+/// [`open`] refused it. What a loop holds where the fleet's agent does not
+/// open, so the loop's own start refuses in its own order — the files it
+/// reads first, then the agent — rather than the process exiting at the open.
+pub struct Unanswered {
+    cause: String,
+}
+
+impl Unanswered {
+    pub fn new(cause: String) -> Unanswered {
+        Unanswered { cause }
+    }
+
+    fn refused<T>(&self) -> Result<T, AgentError> {
+        Err(AgentError::Unreadable(self.cause.clone()))
+    }
+}
+
+impl Agent for Unanswered {
+    fn capabilities(&self) -> Result<Capabilities, AgentError> {
+        self.refused()
+    }
+
+    fn version(&self) -> Result<Version, AgentError> {
+        self.refused()
+    }
+
+    fn launch(&self, _launch: &Launch) -> Result<Argv, AgentError> {
+        self.refused()
+    }
+
+    fn resume(&self, _resume: &Resume) -> Result<Argv, AgentError> {
+        self.refused()
+    }
+
+    fn read(&self, _seats: &[SeatRef]) -> Result<Vec<SeatActivity>, AgentError> {
+        self.refused()
+    }
+
+    fn context(&self, _seats: &[SeatRef]) -> Result<Vec<SeatContext>, AgentError> {
+        self.refused()
     }
 }
 
@@ -480,12 +479,7 @@ impl Setting {
 
     /// The opening over this fleet, as `[agent] adapter` in its own file
     /// names the adapter.
-    pub fn opening<'a>(
-        &'a self,
-        home: &'a Path,
-        plugin_dir: Option<PathBuf>,
-        permissions: Option<String>,
-    ) -> Opening<'a> {
+    pub fn opening<'a>(&'a self, home: &'a Path) -> Opening<'a> {
         Opening {
             policy: &self.policy,
             source: AdapterSource::Setting,
@@ -498,28 +492,11 @@ impl Setting {
                 std::env::var(TIMEOUT_VAR).ok().as_deref(),
             ),
             home,
-            plugin_dir,
-            permissions,
         }
     }
 }
 
 // ---- what fleet sets for a seat's session -----------------------------------
-
-/// The environment a seat's session keeps from this process, beside the
-/// constructed `PATH`: four values a shell needs to be one, and nothing else.
-/// A variable this list does not name cannot reach a session through this
-/// controller.
-///
-/// `FLEET_BIN` is not here, and passing it through would be wrong twice over: a
-/// controller started by a service manager has none to pass, and one started
-/// from inside a seat would hand on that seat's binary rather than its own. It
-/// is set from this process's own executable instead.
-///
-/// `FLEET_ACTOR` is not here for the second of those reasons: a controller
-/// started from inside a seat would make every session it starts that seat.
-/// A start and a resume set it from the seat they are for.
-pub const PASSED_THROUGH: [&str; 4] = ["HOME", "USER", "TMPDIR", "LANG"];
 
 /// The variable the plugin's shim runs its binary from, which every seat's
 /// session is handed. Spelled here and not taken from the item layer's own
@@ -541,7 +518,8 @@ pub fn own_executable() -> Option<PathBuf> {
 }
 
 /// The variables fleet sets for a seat's session, whatever agent runs in it
-/// (D1, D7): the constructed `PATH`, the four a shell needs, this process's own
+/// (D1, D7): the constructed `PATH`, the four a shell needs
+/// ([`crate::platform::PASSED_THROUGH`]), this process's own
 /// executable as `FLEET_BIN`, and WHO THE SESSION ACTS AS — `actor`, so its own
 /// bare verbs are the seat's.
 ///
@@ -557,7 +535,7 @@ pub fn seat_environment(actor: &str) -> BTreeMap<String, String> {
         "PATH".to_string(),
         crate::platform::child_path(&crate::platform::home_dir()),
     );
-    for pass in PASSED_THROUGH {
+    for pass in crate::platform::PASSED_THROUGH {
         if let Ok(value) = std::env::var(pass) {
             env.insert(pass.to_string(), value);
         }
@@ -656,7 +634,7 @@ pub fn blocked_word(on: BlockedOn) -> &'static str {
 /// What a BLOCKED reading waits on, as a person reads it: the adapter's own
 /// sentence where it gave one, else the reason's word, else the bare word
 /// `blocked` — read for the activity's PRESENCE and never by matching what it
-/// names (lessons claude-code B8), so a wait nobody can name still stops the
+/// names (the claude-code pack's lessons B8), so a wait nobody can name still stops the
 /// seat. `None` for a reading that is not blocked.
 pub fn waiting_on(reading: &SeatActivity) -> Option<String> {
     (reading.activity == Activity::Blocked).then(|| {
@@ -793,8 +771,6 @@ mod tests {
             packs,
             timeout: Duration::from_secs(60),
             home: root,
-            plugin_dir: None,
-            permissions: None,
         })
     }
 
@@ -806,12 +782,14 @@ mod tests {
     }
 
     /// A name no installed pack carries is refused before anything runs,
-    /// naming the line that installs the one fleet-packs carries — and
-    /// `claude_code` is such a name: the one spelling is `claude-code`.
+    /// naming the line that installs the one fleet-packs carries — and the
+    /// default's name with an underscore for its dash is such a name: there
+    /// is one spelling (ruling 17).
     #[test]
     fn a_name_no_pack_carries_refuses_with_the_pack_add_line() {
         let machine = Machine::new("open-nowhere");
-        for name in ["nowhere", "claude_code"] {
+        let underscored = DEFAULT_AGENT_ADAPTER.replace('-', "_");
+        for name in ["nowhere", underscored.as_str()] {
             let why = refused(opened(
                 &named(name),
                 AdapterSource::Setting,
@@ -846,10 +824,6 @@ mod tests {
         .expect("the pack's adapter opens");
         assert_eq!(opened.name, "x");
         assert_eq!(opened.effects_off, None);
-        assert!(
-            opened.daemon.is_none(),
-            "an adapter executable has no daemon"
-        );
         assert_eq!(verbs_in(&dir), ["capabilities", "version"]);
         assert_eq!(
             recorded(&dir, "version")["root"],
@@ -881,33 +855,52 @@ mod tests {
         assert!(verbs_in(&dir).is_empty(), "nothing ran");
     }
 
-    /// A fleet whose file names no adapter, and one naming `claude-code`, open
-    /// the in-process adapter where no installed pack carries the name — and
-    /// the pack's adapter where one does.
+    /// A fleet whose file names no adapter, and one naming the default's
+    /// name, open the pack's adapter where an installed pack carries it — and
+    /// where none does, are refused as any name no pack carries is, naming
+    /// the line that installs it. With no packs behind the caller at all, the
+    /// default's name resolves nowhere either.
     ///
-    /// RED-PROOF: with the default resolved in-process before the packs are
-    /// read, the second half opens the in-process adapter and the pack's
-    /// entry never runs.
+    /// RED-PROOF: with the default's name opening an adapter of its own where
+    /// no pack carries it, the first half opens and nothing is refused.
     #[test]
-    fn the_default_and_claude_code_open_in_process_unless_a_pack_carries_it() {
+    fn the_default_opens_the_pack_carrying_it_and_is_refused_where_none_does() {
         let machine = Machine::new("open-default");
-        for policy in [policy_of(""), named("claude-code")] {
-            let opened = opened(
+        for policy in [policy_of(""), named(DEFAULT_AGENT_ADAPTER)] {
+            let why = refused(opened(
                 &policy,
                 AdapterSource::Setting,
                 &machine.dir,
                 Some(machine.packs()),
-            )
-            .expect("the in-process adapter opens");
-            assert_eq!(opened.name, DEFAULT_AGENT_ADAPTER);
-            assert!(opened.daemon.is_some(), "the in-process adapter's daemon");
+            ));
+            assert_eq!(
+                why,
+                format!(
+                    "no agent adapter named `{DEFAULT_AGENT_ADAPTER}` in the installed packs — \
+                     `{}` installs the one fleet-packs carries",
+                    pack_line(
+                        fleet_core::supported::PINNED_PACKS_SOURCE,
+                        DEFAULT_AGENT_ADAPTER,
+                        fleet_core::supported::PINNED_PACKS
+                    )
+                )
+            );
         }
-        let opened_packless = opened(&policy_of(""), AdapterSource::Setting, &machine.dir, None)
-            .expect("the in-process adapter opens with no packs");
-        assert!(opened_packless.daemon.is_some());
+        assert_eq!(
+            refused(opened(
+                &policy_of(""),
+                AdapterSource::Setting,
+                &machine.dir,
+                None
+            )),
+            format!(
+                "no agent adapter named `{DEFAULT_AGENT_ADAPTER}` resolves: no packs are \
+                 installed here to carry one"
+            )
+        );
 
         let dir = machine.adapter(DEFAULT_AGENT_ADAPTER, &a_good_agent(), true);
-        for policy in [policy_of(""), named("claude-code")] {
+        for policy in [policy_of(""), named(DEFAULT_AGENT_ADAPTER)] {
             let _ = std::fs::remove_file(dir.join("argv"));
             let opened = opened(
                 &policy,
@@ -917,24 +910,19 @@ mod tests {
             )
             .expect("the pack's adapter opens");
             assert_eq!(opened.name, DEFAULT_AGENT_ADAPTER);
-            assert!(
-                opened.daemon.is_none(),
-                "the pack's adapter, not in-process"
-            );
+            assert_eq!(opened.exec.entry(), dir.join("main"));
             assert_eq!(verbs_in(&dir), ["capabilities", "version"]);
         }
     }
 
-    /// A machine whose defaults were never written has no layering to read:
-    /// the default's name there is the in-process adapter, and any other name
-    /// is refused, naming why. A layering that is there and refuses refuses
-    /// the default's name too.
+    /// A machine whose defaults were never written has no layering to read,
+    /// and a layering that is there and refuses reads no better: either way
+    /// every name is refused, the default's among them, naming why.
     ///
-    /// RED-PROOF: with the missing defaults read as a refusal like any other,
-    /// the first opening is refused; with every refusing layering read as the
-    /// in-process adapter, the last one opens.
+    /// RED-PROOF: with a refusing layering read as the default's name
+    /// resolving nowhere, the refusal names the pack add line and not why.
     #[test]
-    fn with_no_defaults_the_default_is_in_process_and_a_refusing_layering_refuses_it() {
+    fn with_no_layering_every_name_is_refused_naming_why() {
         let dir = scratch("open-no-defaults");
         let packs_dir = dir.join("packs");
         std::fs::create_dir_all(&packs_dir).expect("the packs dir is made");
@@ -943,24 +931,18 @@ mod tests {
             packs_dir: &packs_dir,
             defaults_dir: &defaults_dir,
         };
-        let opened_default = opened(
-            &policy_of(""),
-            AdapterSource::Setting,
-            &dir,
-            Some(unwritten),
-        )
-        .expect("the in-process adapter opens");
-        assert!(opened_default.daemon.is_some(), "the in-process adapter");
-        let why = refused(opened(
-            &named("x"),
-            AdapterSource::Setting,
-            &dir,
-            Some(unwritten),
-        ));
-        assert!(
-            why.starts_with("no agent adapter named `x` resolves: "),
-            "{why}"
-        );
+        for (policy, name) in [(policy_of(""), DEFAULT_AGENT_ADAPTER), (named("x"), "x")] {
+            let why = refused(opened(
+                &policy,
+                AdapterSource::Setting,
+                &dir,
+                Some(unwritten),
+            ));
+            assert!(
+                why.starts_with(&format!("no agent adapter named `{name}` resolves: ")),
+                "{why}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
 
         let machine = Machine::new("open-refusing");
@@ -984,7 +966,9 @@ mod tests {
             Some(machine.packs()),
         ));
         assert!(
-            why.starts_with("no agent adapter named `claude-code` resolves: "),
+            why.starts_with(&format!(
+                "no agent adapter named `{DEFAULT_AGENT_ADAPTER}` resolves: "
+            )),
             "{why}"
         );
     }

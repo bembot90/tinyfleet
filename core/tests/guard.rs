@@ -1675,8 +1675,8 @@ fn a_listed_build_goal_is_refused_and_a_dry_run_and_an_unlisted_goal_are_not() {
             // A conditional spelling IS an assignment, so it becomes the last
             // one — but only the exact escape is the escape, because `dry?=1`
             // sets the variable just when it is unset and the goal may still
-            // run for real. The reference reads it the same way, at
-            // .claude/hooks/prod-write-guard.py MAKE_DRY_ASSIGNMENT.
+            // run for real. The reference reads it the same way, at its
+            // prod-write guard's MAKE_DRY_ASSIGNMENT.
             (
                 "a conditional dry assignment is not the escape",
                 "make ship-it dry?=1",

@@ -332,31 +332,11 @@ pub fn pasted_into(state: &Path, seat_id: &str) -> Vec<String> {
         .collect()
 }
 
-/// One listed row as the agent's listing shapes an interactive one: the
-/// session `session`, its pid the pane's, reading `status`.
+/// One listed row as the agent stub's listing shapes one: the session
+/// `session`, its pid the pane's, reading `status`.
 pub fn listed_row(session: &str, pid: u32, status: &str) -> String {
     format!(
         r#"{{"sessionId": "{session}", "cwd": "/anywhere", "kind": "interactive", "pid": {pid}, "status": "{status}"}}"#
-    )
-}
-
-/// A stub agent script's `agents` branch: the listing at `taken` once the tmux
-/// stub's state at `state` carries a submit and the arm wrote `taken`, and the
-/// one at `roster` before — a session that takes a typed turn reads busy on
-/// its next listing. Tools by absolute path: the adapter's child inherits no
-/// `PATH` to find them on.
-pub fn listing_branch(roster: &Path, taken: &Path, state: &Path) -> String {
-    format!(
-        "\x20 agents)\n\
-         \x20   if [ -f '{taken}' ] && /usr/bin/grep -q '\"submit\"' '{state}' 2>/dev/null; then\n\
-         \x20     /bin/cat '{taken}'\n\
-         \x20   else\n\
-         \x20     /bin/cat '{roster}'\n\
-         \x20   fi\n\
-         \x20   ;;\n",
-        roster = roster.display(),
-        taken = taken.display(),
-        state = state.display(),
     )
 }
 

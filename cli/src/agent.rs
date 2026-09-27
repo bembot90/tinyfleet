@@ -235,7 +235,7 @@ fn check(
         source = AdapterSource::Flag;
     }
     let home = platform::home_dir();
-    let mut opening = setting.opening(&home, None, None);
+    let mut opening = setting.opening(&home);
     opening.source = source;
     let opened = match adapter::open(&opening) {
         Ok(opened) => opened,
@@ -272,7 +272,7 @@ fn check(
 
     let ctx = Ctx {
         agent: opened.agent.as_ref(),
-        exec: opened.exec.as_ref(),
+        exec: Some(&opened.exec),
         fixtures: fixtures.as_deref(),
         scratch: &scratch.dir,
         model: model.as_deref(),

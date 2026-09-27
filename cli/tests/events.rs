@@ -86,7 +86,7 @@ impl Rig {
         let mut command = Command::new(env!("CARGO_BIN_EXE_fleet"));
         command
             .args(args)
-            .hermetic(&self.root.join("home"), &self.machine(), None);
+            .hermetic(&self.root.join("home"), &self.machine());
         command
     }
 

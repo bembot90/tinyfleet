@@ -200,7 +200,6 @@ struct Rig {
     manager: PathBuf,
     argv: PathBuf,
     pid: PathBuf,
-    agent: PathBuf,
     /// The rig's own fleet-packs checkout, which every embedded `create` here
     /// installs the agent's pack from.
     packs: String,
@@ -227,7 +226,6 @@ impl Rig {
             manager: root.join("manager.sh"),
             argv: root.join("manager-argv"),
             pid: root.join("manager-pid"),
-            agent: root.join("agent.sh"),
             packs: common::packs_checkout(&root),
             root,
         };
@@ -242,7 +240,6 @@ impl Rig {
             "# the project's own store config\nissue-prefix: ap\n",
         );
         rig.a_manager();
-        rig.an_agent();
         rig
     }
 
@@ -338,9 +335,7 @@ impl Rig {
     }
 
     /// The agent's pack `create` installed, taken back out: the fleet's file
-    /// still names it, and until fleet-x93d.2 deletes the in-process adapter
-    /// the default's name no pack carries opens that one — the subject of an
-    /// arm about the agent binary it resolves or the daemon it lists.
+    /// still names it, and no pack carries the name.
     fn without_the_agent_pack(&self) -> &Rig {
         std::fs::remove_dir_all(self.machine.join("packs").join(AGENT))
             .expect("the agent's pack was installed by create");
@@ -362,12 +357,6 @@ impl Rig {
         self
     }
 
-    /// The agent binary, which `start` resolves and never runs here.
-    fn an_agent(&self) {
-        write(&self.agent, "#!/bin/sh\nexit 0\n");
-        executable(&self.agent);
-    }
-
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_fleet"));
         command.args(args);
@@ -378,7 +367,7 @@ impl Rig {
     fn envs(&self, command: &mut Command) {
         command
             .current_dir(&self.project)
-            .hermetic(&self.home, &self.machine, Some(&self.agent))
+            .hermetic(&self.home, &self.machine)
             .env("FLEET_SERVICE_BIN", &self.manager)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
@@ -594,11 +583,13 @@ fn create_refuses_a_fleet_that_is_already_here_and_a_dot_fleet_that_is_not_a_pro
 
 /// A name `create` installs no agent pack for is a usage refusal naming the
 /// ones it does, before any question and before anything is written — and
-/// `claude_code` is such a name: the one spelling is [`AGENT`] (ruling 17).
+/// [`AGENT`] with an underscore for its dash is such a name: there is one
+/// spelling (ruling 17).
 #[test]
 fn create_refuses_an_agent_no_adapter_answers_to() {
     let rig = Rig::new("agent");
-    for named in ["not-an-agent", "claude_code"] {
+    let underscored = AGENT.replace('-', "_");
+    for named in ["not-an-agent", underscored.as_str()] {
         let out = rig.run(&[
             "create",
             "--embedded",
@@ -618,9 +609,9 @@ fn create_refuses_an_agent_no_adapter_answers_to() {
     }
     // Before any question: a pipe with no mode answered meets the agent's
     // refusal, not the mode's.
-    let out = rig.run(&["create", "--agent", "claude_code"]);
+    let out = rig.run(&["create", "--agent", &underscored]);
     assert_eq!(code(&out), 2, "{}", stderr(&out));
-    assert!(stderr(&out).contains("claude_code"), "{}", stderr(&out));
+    assert!(stderr(&out).contains(&underscored), "{}", stderr(&out));
     assert!(
         !rig.project.join("fleet.toml").exists(),
         "nothing was written"
@@ -2532,34 +2523,43 @@ fn start_refuses_a_controller_that_is_already_running_with_its_pid_and_its_last_
     assert_eq!(rig.of_class("load").len(), 1, "{:?}", rig.calls());
 }
 
-/// An agent binary that does not resolve is could-not-tell, and NOTHING IS
-/// LOADED — the refusal comes before the first-run work. The in-process
-/// adapter's, so the pack `create` installed is taken back out.
+/// A fleet whose agent's pack was taken out is could-not-tell, naming the line
+/// that installs it, and NOTHING IS LOADED — the refusal comes before the
+/// first-run work. The default's name is a name like any other: no pack
+/// carrying it is no adapter at all, whether the fleet's file writes the key
+/// as `create` does or leaves it out.
+///
+/// RED-PROOF: with the default's name opening an adapter of its own where no
+/// pack carries it, the start goes past the opener and the line is never said.
 #[test]
-fn start_refuses_an_unresolvable_agent_binary_and_loads_nothing() {
-    let rig = Rig::new("no-agent");
-    rig.created().without_the_agent_pack();
-    let out = rig
-        .command(&["start"])
-        .env(common::hermetic::CLAUDE_BIN, rig.root.join("not-a-binary"))
-        .output()
-        .expect("the built binary runs");
-    assert_eq!(code(&out), 3, "{}", stderr(&out));
-    assert!(
-        stderr(&out).contains("nothing was loaded"),
-        "{}",
-        stderr(&out)
-    );
-    assert!(
-        stderr(&out).contains(&rig.root.join("not-a-binary").display().to_string()),
-        "{}",
-        stderr(&out)
-    );
-    assert!(rig.of_class("load").is_empty(), "{:?}", rig.calls());
-    assert!(
-        !rig.machine.join("config.json").exists(),
-        "no first-run work ran"
-    );
+fn start_refuses_a_fleet_whose_agent_pack_is_removed_naming_the_pack_add_line() {
+    for (label, written) in [("agent-gone-named", true), ("agent-gone", false)] {
+        let rig = Rig::new(label);
+        rig.created().without_the_agent_pack();
+        if !written {
+            rig.agent_is(None);
+        }
+        let out = rig.run(&["start"]);
+        let said = stderr(&out);
+        assert_eq!(code(&out), 3, "{label}: {said}");
+        assert!(
+            said.contains(&format!(
+                "no agent adapter named `{AGENT}` in the installed packs — `{}` installs the one \
+                 fleet-packs carries — nothing was loaded",
+                fleet_controller::adapter::pack_line(
+                    fleet_core::supported::PINNED_PACKS_SOURCE,
+                    AGENT,
+                    fleet_core::supported::PINNED_PACKS
+                )
+            )),
+            "{label}: {said}"
+        );
+        assert!(rig.of_class("load").is_empty(), "{:?}", rig.calls());
+        assert!(
+            !rig.machine.join("config.json").exists(),
+            "{label}: no first-run work ran"
+        );
+    }
 }
 
 /// An agent adapter named by path whose capabilities do not answer is a
@@ -2598,59 +2598,6 @@ fn start_refuses_an_agent_adapter_whose_capabilities_exit_3_and_loads_nothing() 
         !rig.machine.join("config.json").exists(),
         "no first-run work ran"
     );
-}
-
-/// UNDER FLEET_TEST_HERMETIC a fleet that names the default agent adapter —
-/// as `create` writes it, or by leaving the key out — and no agent binary is
-/// refused BEFORE the packs are read: an installed pack carrying the default
-/// name is never run, so a suite cannot fall through to a live agent.
-///
-/// RED-PROOF: with the stop left to the in-process adapter alone, the pack's
-/// entry opens and writes its mark; with it taken only where the key is left
-/// out, the fleet `create` wrote does.
-#[test]
-fn a_hermetic_start_naming_no_agent_never_runs_a_pack_carrying_the_default() {
-    for (label, written) in [("agent-hermetic-named", true), ("agent-hermetic", false)] {
-        let rig = Rig::new(label);
-        // The pack `create` installed is a link to the agent stub, so it is
-        // taken out before one that marks its run is written in its place.
-        rig.created().without_the_agent_pack();
-        if !written {
-            rig.agent_is(None);
-        }
-        let mark = rig.root.join("the-pack-ran");
-        let pack = rig.machine.join("packs").join(AGENT);
-        let dir = pack.join(format!("adapters/agent/{AGENT}"));
-        write(
-            &pack.join("pack.toml"),
-            &format!("[pack]\nname = \"{AGENT}\"\nversion = \"0.1.0\"\nschema = 3\n"),
-        );
-        write(
-            &dir.join("adapter.toml"),
-            &format!(
-                "[adapter]\nname = \"{AGENT}\"\nkind = \"agent\"\nversion = \"0.1.0\"\n\
-                 entry = \"main\"\n"
-            ),
-        );
-        write(
-            &dir.join("main"),
-            &format!("#!/bin/sh\ntouch '{}'\nexit 3\n", mark.display()),
-        );
-        executable(&dir.join("main"));
-        let out = rig
-            .command(&["start"])
-            .env_remove(common::hermetic::CLAUDE_BIN)
-            .output()
-            .expect("the built binary runs");
-        assert_eq!(code(&out), 2, "{label}: {}", stderr(&out));
-        assert!(
-            stderr(&out).contains("FLEET_TEST_HERMETIC is set and FLEET_CLAUDE_BIN names no agent"),
-            "{label}: {}",
-            stderr(&out)
-        );
-        assert!(!mark.exists(), "{label}: the pack's adapter never ran");
-        assert!(rig.of_class("load").is_empty(), "{:?}", rig.calls());
-    }
 }
 
 /// A fleet whose file names no agent adapter, with the default's pack
@@ -2709,73 +2656,6 @@ fn start_refuses_an_unresolvable_tmux_and_loads_nothing() {
     assert!(rig.of_class("load").is_empty(), "{:?}", rig.calls());
     assert!(
         !rig.machine.join("config.json").exists(),
-        "no first-run work ran"
-    );
-}
-
-/// THE UPGRADE ADOPTS NOTHING: a seat whose worktree still holds a session the
-/// Claude Code daemon runs is refused at the terminal, with the lines the
-/// controller would refuse with, and NOTHING IS LOADED.
-///
-/// The agent stub's listing carries a background row — a short id and a pid —
-/// in the one seat's worktree. Its deadline is lifted for this arm: the stub is
-/// a script written a moment ago, whose first exec this platform can hold far
-/// past the listing's own deadline, and a listing that timed out is read as
-/// unreadable and lets the start go on.
-#[test]
-fn start_refuses_a_seat_the_claude_code_daemon_still_hosts_and_loads_nothing() {
-    const SEAT: &str = "01a0d1f1-0aec-765f-9abe-5c21e8a04b17";
-    let rig = Rig::new("daemon-hosted");
-    // The daemon is the in-process adapter's to list.
-    rig.created().without_the_agent_pack();
-    let worktree = rig.root.join("worktrees").join("agent-e8a04b17");
-    write(
-        &rig.machine.join("config.json"),
-        &format!(
-            "{{\"fleet_toml\": \"{}\", \"children\": [\
-             {{\"id\": \"{SEAT}\", \"worktrees\": {{\"a-project\": \"{}\"}}}}]}}\n",
-            rig.project.join("fleet.toml").display(),
-            worktree.display()
-        ),
-    );
-    write(
-        &rig.agent,
-        &format!(
-            "#!/bin/sh\n\
-             if [ \"$1\" = agents ]; then\n\
-             echo '[{{\"id\":\"ab12\",\"sessionId\":\"s-hosted\",\"cwd\":\"{}\",\
-             \"kind\":\"background\",\"pid\":4242,\"state\":\"done\",\"status\":\"idle\"}}]'\n\
-             fi\n\
-             exit 0\n",
-            worktree.display()
-        ),
-    );
-    executable(&rig.agent);
-    let seats_before = std::fs::read_to_string(rig.machine.join("config.json")).unwrap();
-
-    let out = rig
-        .command(&["start"])
-        .env("FLEET_AGENT_TIMEOUT_MS", "300000")
-        .output()
-        .expect("the built binary runs");
-    let said = stderr(&out);
-    assert_eq!(code(&out), 1, "{said}");
-    assert!(
-        said.contains(&format!(
-            "fleet start: agent-e8a04b17 is hosted by the Claude Code daemon: session s-hosted, \
-             short id ab12, in {}",
-            worktree.display()
-        )),
-        "{said}"
-    );
-    assert!(
-        said.contains(fleet_controller::run::DAEMON_REMEDY) && said.contains("  claude stop ab12"),
-        "{said}"
-    );
-    assert!(rig.of_class("load").is_empty(), "{:?}", rig.calls());
-    assert_eq!(
-        std::fs::read_to_string(rig.machine.join("config.json")).unwrap(),
-        seats_before,
         "no first-run work ran"
     );
 }
@@ -2924,8 +2804,8 @@ fn the_seats_table_is_rendered_into_rows_and_a_transient_row_survives_it() {
     assert_eq!(row(SEAT_B)["kind"], "agent");
     assert_eq!(
         row(SEAT_B)["model"],
-        "claude-opus-5",
-        "a row naming no model takes the policy's default"
+        model(),
+        "a row naming no model takes the default the fleet's agent declares"
     );
     assert_eq!(
         row(SEAT_B)["worktrees"]["a-project"],
@@ -3175,9 +3055,9 @@ fn the_first_run_sequence_leaves_the_grant_ok_with_no_worktree_made_yet() {
     let rig = Rig::new("sequence");
     // NO MODEL on the row, so it takes the fleet's default — which is one the
     // posture gate was measured on. A row naming an unmeasured model is dropped
-    // from the seat list before the loop reads it (lessons claude-code D3), and
-    // a dropped row has no worktree to probe, which would leave this arm
-    // measuring nothing.
+    // from the seat list before the loop reads it (the claude-code pack's
+    // lessons D3), and a dropped row has no worktree to probe, which would
+    // leave this arm measuring nothing.
     rig.created()
         .policy_says(&format!("\n[seats.{SEAT_A}]\nkind = \"agent\"\n"));
 
@@ -3524,6 +3404,9 @@ mod lessons {
             &bare.project.join("fleet.toml"),
             "[controller]\npoll_seconds = 5\n",
         );
+        // Written by hand, so no pack carries its agent: the agent stub, by
+        // path.
+        common::stub_agent(&bare.project);
         let out = bare.run(&["start"]);
         assert_eq!(code(&out), 0, "{}", stderr(&out));
         let body = std::fs::read_to_string(bare.project.join("fleet.toml")).unwrap();

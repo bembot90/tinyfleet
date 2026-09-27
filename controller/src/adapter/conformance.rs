@@ -23,8 +23,8 @@
 //! SOME CHECKS SPEAK PAST THE TRAIT. An exit, a request exactly as recorded and
 //! a variable set for one call are not things a verb of [`Agent`] can carry,
 //! so those checks run on the adapter as the executable it is
-//! ([`AgentExec::ran`]), and are skipped for the in-process adapter, which has
-//! no process to exit and reads its environment once, when it is opened.
+//! ([`AgentExec::ran`]), and are skipped for an agent answered inside this
+//! process — a suite's stub — which has no process to exit.
 //!
 //! EVERYTHING A CHECK MAKES IS UNDER [`Ctx::scratch`], which the caller owns
 //! and removes: each launch's configuration directory and worktree, the live
@@ -62,7 +62,8 @@ pub enum Passed {
 /// What the checks are run against.
 ///
 /// `exec` is the same adapter as `agent` where it is an executable, for the
-/// checks that speak past the trait, and `None` for the in-process one.
+/// checks that speak past the trait, and `None` for one answered inside this
+/// process.
 /// `fixtures` is the directory of recorded cases, `<verb>/<case>/`, where
 /// there is one. `scratch` is a directory the caller made and removes, which
 /// every launch writes under — and which the adapter's requests should carry
@@ -200,9 +201,10 @@ const TURN: &str = "hello";
 /// The fixtures' placeholder for the case's own directory.
 const FIXTURE: &str = "{fixture}";
 
-/// Why the checks that speak past the trait skip the in-process adapter.
+/// Why the checks that speak past the trait skip an agent answered inside this
+/// process.
 const IN_PROCESS: &str =
-    "the adapter is the one built into fleet, and this is asked of an adapter executable";
+    "the agent answers inside this process, and this is asked of an adapter executable";
 
 /// Why a live step skips a run without `--live`.
 const NOT_LIVE: &str = "--live was not given: the live steps start the agent and cost a model turn";
@@ -1385,7 +1387,7 @@ mod tests {
                     name.starts_with("live: ")
                         || name == "an undeclared posture is refused unsupported"
                         || why.starts_with("no fixtures")
-                        || why.contains("built into fleet"),
+                        || why.contains("inside this process"),
                     "`{name}` is skipped only where it cannot be asked: {why}"
                 ),
                 Err(why) => panic!("`{name}` failed: {why}"),

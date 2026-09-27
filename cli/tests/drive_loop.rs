@@ -89,15 +89,15 @@ fn a_loop_whose_arm_panics_is_stopped_by_the_unwind_that_leaves_its_scope() {
     );
 }
 
-/// A live version that differs from the pin is a flag to re-measure, never a
-/// failure: the poll publishes both, appends exactly one `substrate.moved`, and
-/// exits 0.
+/// A live version outside the releases the agent's adapter was measured against
+/// (ruling 8) is a flag to re-measure, never a failure: the poll publishes both,
+/// appends exactly one `substrate.moved` naming the adapter, and exits 0.
 #[test]
 fn a_moved_substrate_is_one_event_and_not_a_failure() {
     let rig = Rig::new("moved");
     rig.set_version("9.9.10");
     let out = rig.observe();
-    assert_eq!(out.status.code(), Some(0), "a moved pin is not a failure");
+    assert_eq!(out.status.code(), Some(0), "a moved agent is not a failure");
 
     let published = rig.projection();
     assert_eq!(published["agent_version"], "9.9.10");
@@ -111,6 +111,11 @@ fn a_moved_substrate_is_one_event_and_not_a_failure() {
         .unwrap();
     assert_eq!(moved["payload"]["observed"], "9.9.10");
     assert_eq!(moved["payload"]["expected"], "9.9.9");
+    assert_eq!(
+        moved["payload"]["agent"],
+        serde_json::json!(common::agent_stub_path().display().to_string()),
+        "the adapter `[agent] adapter` names, and no vendor's word"
+    );
     assert_eq!(
         moved["actor"],
         rig.controller_actor(),
@@ -160,10 +165,10 @@ fn a_spread_announces_once_across_polls_and_a_failed_read_does_not_reopen_it() {
         assert_eq!(
             rig.events_of("substrate.moved"),
             1,
-            "a failed read is not a version that agrees with the pin"
+            "a failed read is not a version among the releases measured"
         );
 
-        // The control: a version that IS read and DOES agree closes it, so a
+        // The control: a version that IS read and IS measured closes it, so a
         // later move announces again — otherwise the arm above would pass on a
         // controller that never announces twice for any reason.
         rig.set_version("9.9.9");
@@ -194,7 +199,10 @@ fn a_seat_list_that_moves_the_policy_path_moves_the_policy_the_loop_reads() {
 
         write(
             &rig.second_policy_path(),
-            "[controller]\npoll_seconds = 1\n\n[substrate.claude_code]\nversion = \"7.7.7\"\n",
+            &format!(
+                "[controller]\npoll_seconds = 2\n\n[agent]\nadapter = {}\n",
+                serde_json::json!(common::agent_stub_path().display().to_string())
+            ),
         );
         rig.write_config(&format!(
             r#"{{"fleet_toml": "{}", "children": [
@@ -214,7 +222,7 @@ fn a_seat_list_that_moves_the_policy_path_moves_the_policy_the_loop_reads() {
             "a seat list re-read by a loop that has already polled lands the new seat"
         );
         assert_eq!(
-            published["agent_version_expected"], "7.7.7",
+            published["fleet"]["poll_seconds"], 2,
             "and the policy the loop reads follows the path the seat list now names"
         );
         assert_eq!(
@@ -234,9 +242,7 @@ fn a_seat_list_that_moves_the_policy_path_moves_the_policy_the_loop_reads() {
 #[test]
 fn the_poll_interval_is_the_policys_and_not_zero() {
     let rig = Rig::new("interval");
-    rig.write_policy(
-        "[controller]\npoll_seconds = 3\n\n[substrate.claude_code]\nversion = \"9.9.9\"\n",
-    );
+    rig.write_policy("[controller]\npoll_seconds = 3\n");
     let _controller = rig.spawn_loop();
     assert!(rig.wait_until(|p| p["generated_at"].is_string()));
 
@@ -256,25 +262,31 @@ fn the_poll_interval_is_the_policys_and_not_zero() {
     );
 }
 
-/// The pin is read from the file every time its mtime moves, so editing it is
-/// what makes the two agree again — not a restart.
+/// The expectation is a LIST (ruling 8): a live version among the releases the
+/// adapter declares — any of them, not only the first — is where it is expected
+/// and announces nothing, and publishes itself as the version expected; one
+/// outside them announces a move whose expectation is the first declared.
+///
+/// RED-PROOF: with the live version held to the first release alone, the first
+/// poll announces a move and publishes 9.9.9 as the expectation.
 #[test]
-fn the_pin_is_reread_when_the_policy_file_moves() {
-    let rig = Rig::new("pin");
+fn a_version_among_the_releases_measured_is_expected_and_moves_nothing() {
+    let rig = Rig::new("measured");
+    rig.set_measured(&["9.9.9", "9.9.10"]);
     rig.set_version("9.9.10");
     assert_eq!(rig.observe().status.code(), Some(0));
-    assert_eq!(rig.projection()["agent_version_expected"], "9.9.9");
+    let published = rig.projection();
+    assert_eq!(published["agent_version"], "9.9.10");
+    assert_eq!(published["agent_version_expected"], "9.9.10");
+    assert_eq!(published["agent"]["expected"], "9.9.10");
+    assert_eq!(rig.events_of("substrate.moved"), 0, "{:?}", rig.events());
 
-    rig.write_policy(
-        "[controller]\npoll_seconds = 1\n\n[substrate.claude_code]\nversion = \"9.9.10\"\n",
-    );
+    // The control: a release outside both is a move, expected at the first.
+    rig.set_version("9.9.11");
     assert_eq!(rig.observe().status.code(), Some(0));
     let published = rig.projection();
-    assert_eq!(
-        published["agent_version_expected"], "9.9.10",
-        "the pin is re-read from the file, not cached from startup"
-    );
-    assert_eq!(published["agent_version"], "9.9.10");
+    assert_eq!(published["agent_version_expected"], "9.9.9");
+    assert_eq!(rig.events_of("substrate.moved"), 1, "{:?}", rig.events());
 }
 
 /// The running loop's own arms, which `--once` cannot reach: policy that stops
@@ -328,9 +340,7 @@ fn a_running_loop_keeps_last_good_policy_and_stops_on_a_signal() {
     );
     assert_eq!(on_last_good["seats"][0]["context_tokens"], 18);
 
-    rig.write_policy(
-        "[controller]\npoll_seconds = 1\n\n[substrate.claude_code]\nversion = \"9.9.9\"\n",
-    );
+    rig.write_policy("[controller]\npoll_seconds = 1\n");
     assert!(
         rig.wait_until(|p| p.get("fleet_parse_error").is_none()),
         "restoring the file clears the flag on the following poll"

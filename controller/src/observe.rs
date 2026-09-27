@@ -19,8 +19,8 @@ use std::collections::BTreeMap;
 /// starting.
 ///
 /// An interactive row was listed 0.5–0.75 s after its session was made
-/// (measured on Claude Code 2.1.280, 2026-09-26), against a five-second poll,
-/// so this is deliberately far larger than the phenomenon: being generous
+/// (measured through the claude-code pack on 2.1.280, 2026-09-26), against a
+/// five-second poll, so this is deliberately far larger than the phenomenon: being generous
 /// costs a few polls before a session that never lists is noticed, and being
 /// tight reads a newborn as a disagreement between the host and the agent.
 pub const STARTING_GRACE_MS: u64 = 30_000;
@@ -57,11 +57,11 @@ impl RosterState {
         }
     }
 
-    /// Whether a seat in this state has a session whose context answers for
-    /// it. A live one does and an ended one does — its transcript outlives the
-    /// process (lessons claude-code C4) — and the reference reads no context for
-    /// the other four, so neither does this: the row-for-row parity between the
-    /// two projections is what the acceptance is.
+    /// Whether a seat in this state has a session whose context answers for it.
+    /// A live one does and an ended one does — its transcript outlives the
+    /// process (the claude-code pack's lessons C4) — and the reference reads no
+    /// context for the other four, so neither does this: the row-for-row parity
+    /// between the two projections is what the acceptance is.
     pub fn has_context_reading(&self) -> bool {
         matches!(self, RosterState::Present | RosterState::Stopped)
     }
@@ -167,8 +167,8 @@ fn live_pane<'h>(host: &'h HostRead, seat: &Seat) -> Option<&'h Pane> {
 /// the host does not hold for the seat is not the seat's, wherever it stands,
 /// and a seat the host holds nothing for is Absent whatever the agent has
 /// running elsewhere — no seat is found by its working directory (CORRECTIONS
-/// AT REVIEW, 2026-09-25; lessons claude-code B5). A dead pane is an END and
-/// reads `Stopped` with the status it exited with.
+/// AT REVIEW, 2026-09-25; the claude-code pack's lessons B5). A dead pane is an
+/// END and reads `Stopped` with the status it exited with.
 ///
 /// ACTIVITY IS THE AGENT'S, and `reading` is its answer about the live pane:
 /// found by the session's id, else by the pane's pid, since the pane's process
@@ -195,7 +195,8 @@ pub fn observe_seat(
     match pane.state {
         // An end, and the reading does not need the agent: an interactive
         // session is gone from its listing by the next read after its process
-        // is (lessons claude-code B10), so there is nothing left to ask.
+        // is (the claude-code pack's lessons B10), so there is nothing left to
+        // ask.
         PaneState::Dead { status } => {
             let mut stopped = unmatched(seat);
             stopped.state = RosterState::Stopped;
@@ -236,9 +237,10 @@ fn hosted(
     let live = match reading.activity {
         // Keyed on the activity being BLOCKED and never on what it names: an
         // unrecognised wait is still a seat that cannot act, and reading it as
-        // healthy is the whole defect (lessons claude-code B8). The seat the
-        // projection calls blocked and the one a typed turn refuses are the
-        // same seat, because both read this one answer (`effect::type_turn`).
+        // healthy is the whole defect (the claude-code pack's lessons B8). The
+        // seat the projection calls blocked and the one a typed turn refuses
+        // are the same seat, because both read this one answer
+        // (`effect::type_turn`).
         Activity::Blocked => Some(RosterState::PromptBlocked),
         Activity::Idle | Activity::Busy => Some(RosterState::Present),
         // A session the agent FOUND whose activity it cannot say is still a
@@ -335,10 +337,10 @@ fn unmatched(seat: &Seat) -> SeatObservation {
 // ------------------------------------------------------- the logged-out dispatch
 
 /// The cause a logged-out dispatch's `dispatch.failed` line carries: the
-/// provider's own word for the answer it gave in place of a first turn (lessons
-/// claude-code A11), as the stream has always spelled it. The reading itself
-/// is the adapter's — `blocked_on: logged_out` — and this is only the line's
-/// word for it.
+/// provider's own word for the answer it gave in place of a first turn
+/// (the claude-code pack's lessons A11), as the stream has always spelled it.
+/// The reading itself is the adapter's — `blocked_on: logged_out` — and this is
+/// only the line's word for it.
 pub const AUTHENTICATION_FAILED: &str = "authentication_failed";
 
 /// Whether this poll's reading of one seat is a LOGGED-OUT DISPATCH, which is

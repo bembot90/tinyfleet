@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""rig-env-check — no rig reaches the running fleet or the real agent binary.
+"""rig-env-check — no rig reaches the running fleet or the operator's tmux.
 
 A suite run inside a flight this fleet's own controller is flying inherits that
 controller's environment. An arm that spawns the built binary without naming
-the roots reads the RUNNING machine directory; one that names no agent binary
-execs whatever `claude` the process PATH finds, under the account the operator
-is logged in as. Neither is a test failure — the damage lands outside the suite
+the roots reads the RUNNING machine directory, and the agent adapter its packs
+carry; one that names no tmux starts sessions on the operator's own server. Neither is a test failure — the damage lands outside the suite
 entirely — so nothing in the suite can catch it and this reads the source.
 
 Three checks.
@@ -46,7 +45,7 @@ HELPER = "fleet/controller/tests/common/hermetic.rs"
 
 # What the helper owes, each exactly once: a green from a scan that read a
 # helper missing one of these would be a green over a block with a hole in it.
-NAMES = ("FLEET_DIR", "FLEET_HOME", "HOME", "FLEET_CLAUDE_BIN", "FLEET_TEST_HERMETIC")
+NAMES = ("FLEET_DIR", "FLEET_HOME", "HOME", "FLEET_TMUX_BIN", "FLEET_TEST_HERMETIC")
 
 # The built binary handed to a process constructor. TWO forms, and the arm's
 # reach is exactly these two: `Command::new`, and the rig helper that wraps the
@@ -59,15 +58,13 @@ BINARY = 'env!("CARGO_BIN_EXE_fleet")'
 # The loop driven in this process, which reads the process's own environment.
 IN_PROCESS_ANCHORS = ("run::observe_seamed", "run::Observer::start", "run::observe_with")
 
-# The block applied. Four shapes and no more: on a command with the rig's own
+# The block applied. Three shapes and no more: on a command with the rig's own
 # roots, on a command with the empty root an arm that owns no scratch takes, and
-# as the pairs a rig holding the environment itself sets — either list, since
-# the in-process one is the same block plus the agent's config directory.
+# as the pairs a rig holding the environment itself sets.
 APPLIED = (
     ".hermetic(",
     ".hermetic_nowhere(",
     "hermetic::vars(",
-    "hermetic::in_process_vars(",
 )
 
 # A name put into an environment, as against a name merely written about.

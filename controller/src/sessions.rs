@@ -78,7 +78,8 @@ pub struct SessionRow {
     /// string; this file is not published.
     pub dispatched_at: u64,
     /// The agent's own session id: the KEY, because the display name is
-    /// unstable (lessons claude-code B3), and the one value a revive resumes.
+    /// unstable (the claude-code pack's lessons B3), and the one value a revive
+    /// resumes.
     ///
     /// A row written when the table also kept the session's short address
     /// still reads: that key is ignored (fleet-rge6.4).

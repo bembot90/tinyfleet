@@ -82,7 +82,7 @@ pub const WRITE: &str = "FLEET_AGENT_STUB_WRITE";
 
 /// The entry a [`SESSION`] appends to the state's transcript for each line
 /// typed into it: one turn that used a thousand tokens of the window, in the
-/// shape the one real adapter reads a transcript in.
+/// shape [`super::reading::context_of`] reads a session log in.
 pub const TURN_ENTRY: &str =
     "{\"type\":\"assistant\",\"message\":{\"usage\":{\"input_tokens\":1000}}}\n";
 

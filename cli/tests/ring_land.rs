@@ -664,7 +664,7 @@ impl Rig {
         let out = Command::new(env!("CARGO_BIN_EXE_fleet"))
             .args(["item", "show", item, "--json"])
             .current_dir(&self.reviewer)
-            .hermetic(&self.root.join("home"), &self.machine, None)
+            .hermetic(&self.root.join("home"), &self.machine)
             .env(SEAM, &self.root)
             .output()
             .expect("the built binary runs");
@@ -703,7 +703,7 @@ impl Rig {
         Command::new(env!("CARGO_BIN_EXE_fleet"))
             .args(self.args(args, &packs))
             .current_dir(&self.reviewer)
-            .hermetic(&self.root.join("home"), &self.machine, None)
+            .hermetic(&self.root.join("home"), &self.machine)
             .env(SEAM, &self.root)
             .env("FLEET_ACTOR", REVIEWER)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -727,7 +727,7 @@ impl Rig {
         let mut command = pty_command(env!("CARGO_BIN_EXE_fleet"), &all);
         let out = command
             .current_dir(&self.reviewer)
-            .hermetic(&self.root.join("home"), &self.machine, None)
+            .hermetic(&self.root.join("home"), &self.machine)
             .env(SEAM, &self.root)
             .env("FLEET_ACTOR", REVIEWER)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -761,7 +761,7 @@ impl Rig {
             .current_dir(&self.reviewer)
             .stdout(std::process::Stdio::from(page))
             .stderr(std::process::Stdio::from(both))
-            .hermetic(&self.root.join("home"), &self.machine, None)
+            .hermetic(&self.root.join("home"), &self.machine)
             .env(SEAM, &self.root)
             .env("FLEET_ACTOR", REVIEWER)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")

@@ -20,34 +20,28 @@ or the user's home (on Linux, `$XDG_STATE_HOME/fleet` when that is set).
 name, its chosen name, its model, and a `worktrees` map from project to path —
 and its `fleet_toml` key names the policy file, which the loop follows if a
 later read of the seat list moves it. `fleet.toml` is policy: the poll
-interval, and `[substrate.claude_code]`, the agent release this fleet's
-measurements are pinned to. Both files are re-read whenever their mtime moves;
+interval, and `[agent] adapter`, the agent adapter this fleet's seats run,
+resolved by name through the installed packs. Both files are re-read whenever
+their mtime moves;
 a row that names no seat or no worktree is skipped loudly rather than
 defaulted, and a policy file that stops parsing leaves the last good one in
 force. Startup is the exception that cannot fall back: with neither file
-readable, `observe` exits 3 and names the path. So is a seat whose worktree
-still holds a live session the agent's own background daemon hosts — a row
-carrying the daemon's short id and a pid: the upgrade adopts nothing, so
-`observe` names each one with the `claude stop` that ends it and exits 1 before
-its first poll, and `fleet start` refuses the same way at the terminal.
+readable, `observe` exits 3 and names the path.
 
 Presence and activity are two reads, split by question. **Presence** is the
 host's: every seat's session is a tmux session on fleet's own server, `tmux -L
 fleet -f /dev/null`, named by the seat's id, with the agent as the pane's own
 process and `remain-on-exit` on, and one read of that server per poll says
 whether each seat's session is there and whether its pane is alive or dead
-with the status the agent exited with. **Activity** is the agent's: through the
-adapter it lists every session once per distinct configuration directory,
-attributes a row to a seat by the pane's pid and never by working directory,
-and reads the matched session's context from its transcript's last main-chain
-assistant entry — under `$CLAUDE_CONFIG_DIR` when the agent is scoped to one,
-and under `$HOME/.claude` otherwise, at the per-project directory the agent
-names by replacing every non-alphanumeric character of the path with a dash. A
+with the status the agent exited with. **Activity** is the agent's: its
+adapter answers what every seat's session is doing in one call, finding a seat's
+session by its id or by the pane's pid and never by working directory, and how
+full each one's context is. A
 live pane the listing has not named past a 30-second starting grace, a live row
 in a seat's worktree with no session behind it on the host, and a read of
 either that failed are all Unknown, carrying both readings — never absence.
-Every call to the agent
-binary — `$FLEET_CLAUDE_BIN`, else `claude` — runs under a deadline of 20
+Every call to the agent's
+adapter runs under a deadline of 20
 seconds, or of `$FLEET_AGENT_TIMEOUT_MS` when that names a positive whole number
 of milliseconds; a call that outruns it is killed and read as Unknown naming the
 deadline, because a listing that hangs must not hang the poll.
@@ -56,8 +50,8 @@ deadline, because a listing that hangs must not hang the poll.
 `projection.json` is rewritten every
 poll through a temp file and a rename, so a reader sees a whole document or the
 previous one: it carries the format version, the moment it was generated, the
-controller's version, the agent version read this poll beside the release the
-policy pins, the policy in force with its mtime and `fleet_parse_error` when
+controller's version, the agent version read this poll beside the release its
+adapter was measured against, the policy in force with its mtime and `fleet_parse_error` when
 the loop is running on last-good, and one row per seat with its roster state —
 `present`, `prompt-blocked`, `starting`, `stopped`, `absent` or `unknown`, with
 both readings on an `unknown` row and the exit status and end on a `stopped`
@@ -74,7 +68,8 @@ pid, no handle and no claim about what is running now — freshness is the only
 liveness signal a reader gets. `events.jsonl` is appended to, one JSON object
 per line, each with an id, a sequence, a timestamp, a type, an actor and a
 payload: `controller.started` once per process, `controller.stopped` when a
-signal ends it, `substrate.moved` when the agent version stops matching the pin,
+signal ends it, `substrate.moved` when the agent version leaves the releases its adapter was
+measured against,
 `session.spawned`, `session.revived`, `session.rested`, `session.nudged` and
 `session.crashed` as the effects below take them, and one `session.ended` the
 first poll that reads a seat's pane dead, carrying its status and when it
@@ -136,11 +131,10 @@ Four of the six verdicts are carried out here, each writing its own event once.
 The adapter answers WHAT to run and core runs it, as a new tmux session named by
 the seat's id whose command is the agent itself, under an environment set
 exactly. `spawn-woken` starts an INTERACTIVE session in the seat's worktree
-with the seat's name, its model, the fleet's permission posture, the plugin
-root and the rendered first turn as the prompt — the model and the posture on
-every call, never the agent's own defaults — and, for a spawned seat, a
-configuration directory seeded with the operator's onboarding answers and
-trust for that one worktree. The start is watched for
+with the seat's name, its model, the fleet's permission posture and the
+rendered first turn as the prompt — the model and the posture on every call,
+never the agent's own defaults — and, for a spawned seat, a configuration
+directory of its own, made empty, which the adapter's launch fills. The start is watched for
 `controller.start_watch_seconds`: a pane that dies inside it, or a session the
 listing has not shown with the pane's own pid and a status by its close, is a
 `session.crashed` carrying the status and the pane's last screen, kept under the
@@ -155,7 +149,7 @@ next poll, and is the alarm the contract names — a `seat.resting` with no
 `session.rested` after it. `suggest-rest` types one nudge, once per session,
 and never a second. `revive` clears the dead pane and starts a new session
 whose command resumes the session's FULL id from the table with the start's
-own model, posture and plugin root, so the session continues with its id and
+own model and posture, so the session continues with its id and
 its context intact; it is believed only when the new pane's pid is listed under
 that same id — any other id is a fork, failed and killed — and it emits
 `session.revived` and re-opens the row as this dispatch's. A seat whose table
@@ -168,13 +162,11 @@ when the row turns busy; a seat already busy is `queued`.
 its outcome, and its line and its event were written once at the transition.
 Every process the controller starts carries
 a **constructed** `PATH` from the platform layer and an environment built rather
-than inherited, and the binary an effect execs is resolved once at startup —
-`$FLEET_CLAUDE_BIN` when it names an absolute path, else the first `claude` on
-that constructed `PATH`. tmux is resolved the same way, `$FLEET_TMUX_BIN` else
-the first `tmux` on it. Unresolvable is not fatal: the loop observes and
-publishes with the projection's `effects` field reading `off` and the cause
-beside it. Every child carries `DISABLE_AUTOUPDATER=1`, so no seat's session
-moves the operator's installed Claude Code.
+than inherited, and the agent's adapter is opened once at startup and asked
+its capabilities and its version. tmux is resolved on that constructed `PATH`,
+`$FLEET_TMUX_BIN` else the first `tmux` on it. An adapter that does not answer,
+or a tmux that does not resolve, is not fatal: the loop observes and publishes
+with the projection's `effects` field reading `off` and the cause beside it.
 
 `sessions.json` in the machine directory is the controller's own memory of what
 it started: the stream cursor, the map of sessions already nudged, the blind

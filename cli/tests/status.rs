@@ -118,7 +118,7 @@ impl Rig {
         command
             .args(args)
             .current_dir(&self.project)
-            .hermetic(&self.root.join("home"), &self.machine, None)
+            .hermetic(&self.root.join("home"), &self.machine)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_SYSTEM", "/dev/null");
         command
@@ -220,8 +220,6 @@ fn document(policy_file: &Path, generated_at: &str, seats: Vec<SeatRow>) -> Proj
             path: policy_file.display().to_string(),
             mtime: None,
             poll_seconds: 5,
-            claude_code: None,
-            plugin_dir: None,
         },
         fleet_parse_error: None,
         in_flight: None,
@@ -1052,7 +1050,7 @@ fn a_run_that_exits_one_is_on_the_page() {
         .args(["run", "status-fails", "--by", "run:lead-1", "--packs-dir"])
         .arg(rig.machine.join("packs"))
         .current_dir(&rig.project)
-        .hermetic(&rig.root.join("home"), &rig.machine, None)
+        .hermetic(&rig.root.join("home"), &rig.machine)
         .env("PATH", &path)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")

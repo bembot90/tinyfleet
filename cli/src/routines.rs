@@ -204,11 +204,7 @@ fn seat_views(fleet: &Fleet, needs_roster: bool) -> Vec<SeatView> {
         // seat whose pane is alive, each under its own directory — the same
         // read the loop makes, so a spawned seat is not rung as nobody.
         let host = crate::transient::verb_host(&home).list();
-        match adapter::open(
-            &fleet
-                .setting
-                .opening(&home, fleet.policy.plugin_dir.clone(), None),
-        ) {
+        match adapter::open(&fleet.setting.opening(&home)) {
             Ok(opened) => observe::observe_fleet(
                 opened.agent.as_ref(),
                 &host,
@@ -419,11 +415,7 @@ fn run(name: &str, force: bool, dry_run: bool) -> Exit {
     let needs_roster = routine.action.nudge.is_some();
     let seats = seat_views(&fleet, needs_roster);
     let home = platform::home_dir();
-    let opened = adapter::open(&fleet.setting.opening(
-        &home,
-        fleet.policy.plugin_dir.clone(),
-        None,
-    ));
+    let opened = adapter::open(&fleet.setting.opening(&home));
     let effects_off = match &opened {
         Ok(opened) => opened.effects_off.clone(),
         Err(why) => Some(why.clone()),

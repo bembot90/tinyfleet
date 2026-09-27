@@ -17,10 +17,10 @@ path = "src/main.rs"
 fleet-controller = { path = "../controller" }
 fleet-core = { path = "../core" }
 
-# serde_json is the claude adapter's: the payload a pre-tool hook is handed and
-# the document it reads a refusal out of are JSON and are one provider's
-# contract, which is why they sit in this crate rather than in fleet-core
-# (Alberto's provider-neutral ruling, 2026-09-08). It is the workspace's own
+# serde_json is the guard's: the payload a pre-tool hook is handed and the
+# document it writes a refusal into are JSON, read and written through the
+# agent adapter's [hook] mapping, which is why they sit in this crate rather
+# than in fleet-core (Alberto's provider-neutral ruling, 2026-09-08). It is the workspace's own
 # version and no new crate enters the tree. tests/workspace.rs reads
 # `cargo metadata` through the same dependency.
 serde_json.workspace = true

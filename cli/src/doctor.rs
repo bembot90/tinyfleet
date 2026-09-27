@@ -227,7 +227,7 @@ fn agent_adapter(here: &Here) -> Checked {
         Err(why) => return answered(Verdict::CouldNotTell, why),
     };
     let home = platform::home_dir();
-    let opened = adapter::open(&setting.opening(&home, None, None));
+    let opened = adapter::open(&setting.opening(&home));
     let answers = opened.and_then(|opened| {
         let version = opened.agent.version().map_err(|why| why.to_string())?;
         let declared = opened.agent.declared().map_err(|why| why.to_string())?;

@@ -10,6 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 
 mod common;
 use common::hermetic::Hermetic;
@@ -53,19 +54,63 @@ impl Drop for Scratch {
     }
 }
 
+/// The `[hook]` table of the agent adapter every judging run here reads its
+/// payload through: its shell tool is `shell`, the command sits at
+/// `/input/command` and the directory at `/cwd`, and a refusal is written as
+/// `{"decision":"deny","reason":…}`. A mapping of this suite's own: the
+/// payload is the agent's, and a guard reads no agent's shape but through the
+/// mapping its adapter declares.
+const HOOK: &str = "\n[hook]\nshell_tool = \"shell\"\ntool = \"/tool\"\n\
+                    command = \"/input/command\"\ncwd = \"/cwd\"\n\
+                    deny = '{\"decision\":\"deny\",\"reason\":{reason}}'\n";
+
+/// The adapter carrying [`HOOK`], written once per process under the temp
+/// directory as a pack lays one out, and named to `--adapter` by its absolute
+/// path: `adapters/agent/quill/`, its `adapter.toml` and an entry nothing here
+/// runs.
+fn the_adapter() -> &'static str {
+    static DIR: OnceLock<String> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir()
+            .join(format!("fleet-guard-adapter-{}", std::process::id()))
+            .join("adapters/agent/quill");
+        write_adapter(&dir, "quill", HOOK);
+        dir.to_str().expect("the temp path is utf-8").to_string()
+    })
+}
+
+/// An agent adapter named `name` at `dir`: its `adapter.toml` ending in
+/// `hook` — a `[hook]` table, or nothing — and an entry that exits 3.
+fn write_adapter(dir: &Path, name: &str, hook: &str) {
+    std::fs::create_dir_all(dir).expect("the adapter's directory is created");
+    std::fs::write(
+        dir.join("adapter.toml"),
+        format!(
+            "[adapter]\nname = \"{name}\"\nkind = \"agent\"\nversion = \"0.1.0\"\n\
+             entry = \"main.sh\"\n{hook}"
+        ),
+    )
+    .expect("the adapter's manifest is written");
+    std::fs::write(dir.join("main.sh"), "#!/bin/sh\nexit 3\n").expect("the entry is written");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir.join("main.sh"), std::fs::Permissions::from_mode(0o755))
+        .expect("the entry is executable");
+}
+
 fn payload(command: &str, cwd: &str) -> String {
     let body = serde_json::json!({
-        "tool_name": "Bash",
-        "tool_input": { "command": command },
+        "tool": "shell",
+        "input": { "command": command },
         "cwd": cwd,
     });
     body.to_string()
 }
 
-/// One judging run: the payload on stdin, the class as the argument.
+/// One judging run: the payload on stdin, the class as the argument, read
+/// through [`the_adapter`].
 fn judge(class: &str, body: &str) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_fleet"))
-        .args(["guard", class])
+        .args(["guard", class, "--adapter", the_adapter()])
         .hermetic_nowhere()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -116,12 +161,10 @@ fn bare() -> &'static str {
     word("note x-1 \"see a1b2\"")
 }
 
-/// The refusal as the hook contract carries it, checked as a document rather
+/// The refusal as [`HOOK`]'s template writes it, checked as a document rather
 /// than as a substring: a decision the agent cannot parse refuses nothing.
 fn decision_of(text: &str) -> serde_json::Value {
-    let parsed: serde_json::Value =
-        serde_json::from_str(text.trim()).expect("a refusal is one JSON object");
-    parsed["hookSpecificOutput"].clone()
+    serde_json::from_str(text.trim()).expect("a refusal is one JSON object")
 }
 
 #[test]
@@ -131,11 +174,8 @@ fn a_refusal_is_one_json_object_on_stdout_and_the_exit_is_zero() {
 
     let text = refused("shell-trap", TRAP, &scratch).expect("the trap is refused");
     let decision = decision_of(&text);
-    assert_eq!(decision["hookEventName"], "PreToolUse");
-    assert_eq!(decision["permissionDecision"], "deny");
-    let reason = decision["permissionDecisionReason"]
-        .as_str()
-        .expect("the reason is a string");
+    assert_eq!(decision["decision"], "deny");
+    let reason = decision["reason"].as_str().expect("the reason is a string");
     assert!(
         reason.contains("MODIFIER"),
         "the reason names the class — {reason}"
@@ -237,7 +277,7 @@ fn the_bare_id_check_is_silent_without_its_target_and_loud_with_it() {
     );
     let text =
         refused("record", bare(), &scratch).expect("with the target set, the suffix is named");
-    let reason = decision_of(&text)["permissionDecisionReason"]
+    let reason = decision_of(&text)["reason"]
         .as_str()
         .expect("the reason is a string")
         .to_string();
@@ -265,8 +305,8 @@ fn a_project_with_no_fleet_toml_above_it_reads_the_machine_directory_and_its_own
 
     let judge_with_machine = |class: &str, command: &str| -> Option<String> {
         let mut child = Command::new(env!("CARGO_BIN_EXE_fleet"))
-            .args(["guard", class])
-            .hermetic(&machine.root.join("home"), &machine.root, None)
+            .args(["guard", class, "--adapter", the_adapter()])
+            .hermetic(&machine.root.join("home"), &machine.root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -333,8 +373,8 @@ fn a_declaration_beside_a_fleet_toml_reads_the_machines_switches_and_its_own_tar
 
     let judge_with_machine = |class: &str, command: &str| -> Option<String> {
         let mut child = Command::new(env!("CARGO_BIN_EXE_fleet"))
-            .args(["guard", class])
-            .hermetic(&machine.root.join("home"), &machine.root, None)
+            .args(["guard", class, "--adapter", the_adapter()])
+            .hermetic(&machine.root.join("home"), &machine.root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -360,7 +400,7 @@ fn a_declaration_beside_a_fleet_toml_reads_the_machines_switches_and_its_own_tar
         "the switch is the machine's, which has this class off — the neighbour leaves it on"
     );
     let text = judge_with_machine("record", bare()).expect("the target is the declaration's");
-    let reason = decision_of(&text)["permissionDecisionReason"]
+    let reason = decision_of(&text)["reason"]
         .as_str()
         .expect("the reason is a string")
         .to_string();
@@ -376,19 +416,19 @@ fn a_payload_with_nothing_to_judge_prints_nothing_and_exits_zero() {
         ("not json at all", "this is not json".to_string()),
         (
             "another tool",
-            serde_json::json!({"tool_name": "Read", "tool_input": {"command": TRAP}}).to_string(),
+            serde_json::json!({"tool": "read", "input": {"command": TRAP}}).to_string(),
         ),
         (
             "no tool name",
-            serde_json::json!({"tool_input": {"command": TRAP}}).to_string(),
+            serde_json::json!({"input": {"command": TRAP}}).to_string(),
         ),
         (
             "a blank command",
-            serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "   "}}).to_string(),
+            serde_json::json!({"tool": "shell", "input": {"command": "   "}}).to_string(),
         ),
         (
             "a command that is not a string",
-            serde_json::json!({"tool_name": "Bash", "tool_input": {"command": 17}}).to_string(),
+            serde_json::json!({"tool": "shell", "input": {"command": 17}}).to_string(),
         ),
         ("an empty body", String::new()),
     ] {
@@ -425,25 +465,13 @@ fn a_machine(scratch: &Scratch) -> PathBuf {
 /// whose `adapter.toml` ends in `hook` — a `[hook]` table, or nothing.
 fn an_agent_pack(machine: &Path, name: &str, hook: &str) {
     let root = machine.join("packs").join(name);
-    let dir = root.join(format!("adapters/agent/{name}"));
-    std::fs::create_dir_all(&dir).expect("the adapter's directory is created");
+    std::fs::create_dir_all(&root).expect("the pack's directory is created");
     std::fs::write(
         root.join("pack.toml"),
         format!("[pack]\nname = \"{name}\"\nversion = \"0.1.0\"\nschema = 3\n"),
     )
     .expect("the manifest is written");
-    std::fs::write(
-        dir.join("adapter.toml"),
-        format!(
-            "[adapter]\nname = \"{name}\"\nkind = \"agent\"\nversion = \"0.1.0\"\n\
-             entry = \"main.sh\"\n{hook}"
-        ),
-    )
-    .expect("the adapter's manifest is written");
-    std::fs::write(dir.join("main.sh"), "#!/bin/sh\nexit 3\n").expect("the entry is written");
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(dir.join("main.sh"), std::fs::Permissions::from_mode(0o755))
-        .expect("the entry is executable");
+    write_adapter(&root.join(format!("adapters/agent/{name}")), name, hook);
 }
 
 /// One judging run under `machine`, from inside `scratch`, the class and
@@ -452,7 +480,7 @@ fn judge_on(machine: &Path, scratch: &Scratch, args: &[&str], body: &str) -> Out
     let mut child = Command::new(env!("CARGO_BIN_EXE_fleet"))
         .arg("guard")
         .args(args)
-        .hermetic(&scratch.root.join("home"), machine, None)
+        .hermetic(&scratch.root.join("home"), machine)
         .current_dir(&scratch.root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -468,54 +496,12 @@ fn judge_on(machine: &Path, scratch: &Scratch, args: &[&str], body: &str) -> Out
     child.wait_with_output().expect("the binary exits")
 }
 
-/// THE BUILT-IN IS CLAUDE CODE'S MAPPING, BYTE FOR BYTE. The payload and the
-/// refusal docs/guards.md prints, read off the page: with no `--adapter`, and
-/// with `--adapter claude-code` where no pack carries that name, the binary
-/// prints exactly the page's line.
-///
-/// RED-PROOF: on the base `--adapter` is an unknown flag, a usage error.
-#[test]
-fn the_guards_page_example_prints_the_same_bytes_with_and_without_the_built_in_adapter() {
-    let page =
-        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/guards.md"))
-            .expect("the guards page is readable");
-    let lines: Vec<&str> = page.lines().collect();
-    let at = lines
-        .iter()
-        .position(|line| line.starts_with("$ echo '") && line.ends_with("| fleet guard shell-trap"))
-        .expect("the page hands a payload to fleet guard shell-trap");
-    let body = lines[at]
-        .strip_prefix("$ echo '")
-        .and_then(|rest| rest.strip_suffix("' | fleet guard shell-trap"))
-        .expect("the payload sits between the quotes");
-    let printed = format!("{}\n", lines[at + 1]);
-
-    let scratch = Scratch::new("page");
-    let machine = a_machine(&scratch);
-    for args in [
-        vec!["shell-trap"],
-        vec!["shell-trap", "--adapter", "claude-code"],
-    ] {
-        let out = judge_on(&machine, &scratch, &args, body);
-        assert_eq!(
-            out.status.code(),
-            Some(0),
-            "{args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        assert_eq!(
-            String::from_utf8_lossy(&out.stdout),
-            printed,
-            "{args:?} prints the page's line"
-        );
-    }
-}
-
-/// ANOTHER AGENT'S MAPPING IS DATA IN ITS PACK. An agent adapter whose `[hook]`
+/// AN AGENT'S MAPPING IS DATA IN ITS PACK. An agent adapter whose `[hook]`
 /// names its shell tool `shell`, keeps the command at `/input/cmd` and writes
-/// a refusal as the bare reason: a trapped command in its payload is refused
-/// in its template, and a Claude Code payload is nothing it can judge. The
-/// same payload through the built-in is silent the other way round.
+/// a refusal as the bare reason, named by the name its pack carries it under:
+/// a trapped command in its payload is refused in its template, and another
+/// agent's payload is nothing it can judge. The same payload through that
+/// other agent's mapping is silent the other way round.
 ///
 /// RED-PROOF: on the base `--adapter` is an unknown flag, a usage error.
 #[test]
@@ -568,31 +554,48 @@ fn a_packs_hook_mapping_reads_its_own_payload_and_writes_its_own_refusal() {
     assert_eq!(out.status.code(), Some(0));
     assert!(
         out.stdout.is_empty(),
-        "a Claude Code payload is nothing this mapping judges: {}",
+        "another agent's payload is nothing this mapping judges: {}",
         String::from_utf8_lossy(&out.stdout)
     );
 
-    let out = judge_on(&machine, &scratch, &["shell-trap"], &theirs);
+    let out = judge_on(
+        &machine,
+        &scratch,
+        &["shell-trap", "--adapter", the_adapter()],
+        &theirs,
+    );
     assert_eq!(out.status.code(), Some(0));
     assert!(
         out.stdout.is_empty(),
-        "the built-in judges no other agent's payload: {}",
+        "and that agent's mapping judges none of this one's: {}",
         String::from_utf8_lossy(&out.stdout)
     );
 }
 
-/// A MIS-WIRED GUARD FAILS CLOSED. An `--adapter` that resolves nowhere, one
-/// whose manifest has no `[hook]`, and one that is neither form each exit 2
-/// with one line on standard error naming what was missing, and print nothing
-/// on standard output — the agent reads a hook's exit 2 as blocking.
+/// A MIS-WIRED GUARD FAILS CLOSED. No `--adapter` at all, an `--adapter` that
+/// resolves nowhere, one whose manifest has no `[hook]`, and one that is
+/// neither form each exit 2 with one line on standard error naming what was
+/// missing, and print nothing on standard output — the agent reads a hook's
+/// exit 2 as blocking.
+///
+/// RED-PROOF: with a mapping compiled into the binary for a guard that names
+/// no adapter, the first run judges the payload and exits 0.
 #[test]
-fn an_adapter_that_resolves_nowhere_or_declares_no_hook_exits_two_with_one_line() {
+fn no_adapter_or_one_that_resolves_nowhere_or_declares_no_hook_exits_two_with_one_line() {
     let scratch = Scratch::new("miswired");
     scratch.write("fleet.toml", "[project]\nitem_prefix = \"acme\"\n");
     let machine = a_machine(&scratch);
     an_agent_pack(&machine, "bare", "");
     let bare = machine.join("packs/bare/adapters/agent/bare");
     let body = payload(TRAP, scratch.path());
+    let out = judge_on(&machine, &scratch, &["shell-trap"], &body);
+    let said = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(2), "no adapter: {said}");
+    assert!(out.stdout.is_empty(), "no adapter: nothing on stdout");
+    assert_eq!(
+        said,
+        "fleet guard: name the --adapter whose [hook] mapping the payload is read through\n"
+    );
     for (adapter, names) in [
         ("nobody", "`nobody`"),
         ("bare", "[hook]"),
@@ -629,13 +632,13 @@ fn tiny_on(machine: &Path) {
     }
 }
 
-/// The refusal's class, off the reason the built-in's template carries.
+/// The refusal's class, off the reason [`HOOK`]'s template carries.
 fn class_of(out: &Output) -> Option<String> {
     let text = String::from_utf8_lossy(&out.stdout);
     if text.trim().is_empty() {
         return None;
     }
-    let reason = decision_of(&text)["permissionDecisionReason"]
+    let reason = decision_of(&text)["reason"]
         .as_str()
         .expect("the reason is a string")
         .to_string();
@@ -646,7 +649,7 @@ fn class_of(out: &Output) -> Option<String> {
     Some(class.expect("the reason opens on its class"))
 }
 
-/// RULING 6'S ONE LINE. `fleet guard --adapter claude-code` with no class runs
+/// RULING 6'S ONE LINE. `fleet guard --adapter <adapter>` with no class runs
 /// core's two classes over the defaults alone, and every class an installed
 /// pack declares on top of them: a trap and a bare-id write are refused with
 /// nothing installed and a push to a release ref is not, and with the
@@ -669,14 +672,14 @@ fn with_no_class_the_guard_runs_core_s_two_and_every_class_a_pack_declares() {
         );
         out
     };
-    let declared = ["--adapter", "claude-code"];
+    let declared = ["--adapter", the_adapter()];
 
     for (command, named) in [(TRAP, "shell-trap"), (bare(), "record")] {
         let out = run(&declared, command);
         assert_eq!(class_of(&out).as_deref(), Some(named), "{command}");
         assert_eq!(
             out.stdout,
-            run(&[named], command).stdout,
+            run(&[named, "--adapter", the_adapter()], command).stdout,
             "{command}: the same bytes as the named class"
         );
     }
@@ -689,7 +692,10 @@ fn with_no_class_the_guard_runs_core_s_two_and_every_class_a_pack_declares() {
     tiny_on(&machine);
     let out = run(&declared, PUSH);
     assert_eq!(class_of(&out).as_deref(), Some("release-ref"));
-    assert_eq!(out.stdout, run(&["release-ref"], PUSH).stdout);
+    assert_eq!(
+        out.stdout,
+        run(&["release-ref", "--adapter", the_adapter()], PUSH).stdout
+    );
     assert_eq!(
         class_of(&run(&declared, BUCKET_WRITE)).as_deref(),
         Some("production-write")
@@ -712,7 +718,7 @@ fn a_declared_class_the_fleet_switches_off_refuses_nothing() {
     );
     let machine = a_machine(&scratch);
     tiny_on(&machine);
-    let declared = ["--adapter", "claude-code"];
+    let declared = ["--adapter", the_adapter()];
 
     let out = judge_on(
         &machine,
@@ -750,7 +756,7 @@ fn a_declaration_the_guard_cannot_read_exits_two_and_a_named_class_still_runs() 
     .expect("the manifest is written");
     let body = payload(TRAP, scratch.path());
 
-    let out = judge_on(&machine, &scratch, &["--adapter", "claude-code"], &body);
+    let out = judge_on(&machine, &scratch, &["--adapter", the_adapter()], &body);
     let said = String::from_utf8_lossy(&out.stderr).into_owned();
     assert_eq!(out.status.code(), Some(2), "{said}");
     assert!(out.stdout.is_empty());
@@ -760,7 +766,12 @@ fn a_declaration_the_guard_cannot_read_exits_two_and_a_named_class_still_runs() 
         "{said}"
     );
 
-    let out = judge_on(&machine, &scratch, &["shell-trap"], &body);
+    let out = judge_on(
+        &machine,
+        &scratch,
+        &["shell-trap", "--adapter", the_adapter()],
+        &body,
+    );
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(class_of(&out).as_deref(), Some("shell-trap"));
 }
@@ -776,7 +787,7 @@ fn check_with_no_class_reports_every_declared_class() {
         Command::new(env!("CARGO_BIN_EXE_fleet"))
             .args(["guard", "--check"])
             .current_dir(&scratch.root)
-            .hermetic(&scratch.root.join("home"), &machine, None)
+            .hermetic(&scratch.root.join("home"), &machine)
             .output()
             .expect("the built binary runs")
     };
@@ -861,7 +872,7 @@ fn the_command_the_projects_store_declares_is_the_one_the_guards_police() {
     let scratch = Scratch::new("store-cli-tk");
     a_store_declaring(&scratch, r#"echo '{"schema_version":1,"cli":"tk"}'"#);
     let text = refused("record", tk_notes, &scratch).expect("tk's notes flag is refused");
-    let reason = decision_of(&text)["permissionDecisionReason"]
+    let reason = decision_of(&text)["reason"]
         .as_str()
         .expect("the reason is text")
         .to_string();
@@ -925,11 +936,7 @@ fn check(class: &str, scratch: &Scratch) -> Output {
     Command::new(env!("CARGO_BIN_EXE_fleet"))
         .args(["guard", class, "--check"])
         .current_dir(&scratch.root)
-        .hermetic(
-            &scratch.root.join("home"),
-            &scratch.root.join("machine"),
-            None,
-        )
+        .hermetic(&scratch.root.join("home"), &scratch.root.join("machine"))
         .output()
         .expect("the built binary runs")
 }
@@ -998,11 +1005,7 @@ fn the_doctor_entry_runs_both_check_lines_and_exits_with_the_first_non_zero() {
         .arg(&run_sh)
         .current_dir(&scratch.root)
         .env("PATH", &path)
-        .hermetic(
-            &scratch.root.join("home"),
-            &scratch.root.join("machine"),
-            None,
-        )
+        .hermetic(&scratch.root.join("home"), &scratch.root.join("machine"))
         .output()
         .expect("the doctor entry runs");
     let text = String::from_utf8(out.stdout).expect("the output is utf-8");
@@ -1024,11 +1027,7 @@ fn the_doctor_entry_runs_both_check_lines_and_exits_with_the_first_non_zero() {
         .arg(&run_sh)
         .current_dir(&scratch.root)
         .env("PATH", &path)
-        .hermetic(
-            &scratch.root.join("home"),
-            &scratch.root.join("machine"),
-            None,
-        )
+        .hermetic(&scratch.root.join("home"), &scratch.root.join("machine"))
         .output()
         .expect("the doctor entry runs");
     assert_eq!(
@@ -1062,10 +1061,8 @@ fn the_targets_ride_on_the_project_file_and_an_absent_key_refuses_nothing() {
 
     let text = refused("release-ref", PUSH, &full).expect("the release ref is refused");
     let decision = decision_of(&text);
-    assert_eq!(decision["permissionDecision"], "deny");
-    let reason = decision["permissionDecisionReason"]
-        .as_str()
-        .expect("the reason is a string");
+    assert_eq!(decision["decision"], "deny");
+    let reason = decision["reason"].as_str().expect("the reason is a string");
     assert!(
         reason.starts_with("fleet guard release-ref:"),
         "the refusal names the class that made it — {reason}"
@@ -1089,7 +1086,7 @@ fn the_targets_ride_on_the_project_file_and_an_absent_key_refuses_nothing() {
     }
 
     let text = refused("production-write", BUCKET_WRITE, &full).expect("the write is refused");
-    let reason = decision_of(&text)["permissionDecisionReason"]
+    let reason = decision_of(&text)["reason"]
         .as_str()
         .expect("the reason is a string")
         .to_string();
@@ -1141,11 +1138,8 @@ fn a_text_the_binary_cannot_lex_falls_back_to_the_lists_the_project_declares() {
     let text = refused("production-write", UNREADABLE_BUCKET_WRITE, &full)
         .expect("the unreadable command carrying a declared bucket is refused");
     let decision = decision_of(&text);
-    assert_eq!(decision["hookEventName"], "PreToolUse");
-    assert_eq!(decision["permissionDecision"], "deny");
-    let reason = decision["permissionDecisionReason"]
-        .as_str()
-        .expect("the reason is a string");
+    assert_eq!(decision["decision"], "deny");
+    let reason = decision["reason"].as_str().expect("the reason is a string");
     assert!(
         reason.starts_with("fleet guard production-write:"),
         "the refusal names the class that made it — {reason}"
@@ -1207,10 +1201,8 @@ fn the_three_product_surfaces_ride_on_the_project_file_and_an_absent_key_refuses
         let text = refused("production-write", command, &full)
             .unwrap_or_else(|| panic!("the declared surface is refused — {command}"));
         let decision = decision_of(&text);
-        assert_eq!(decision["permissionDecision"], "deny");
-        let reason = decision["permissionDecisionReason"]
-            .as_str()
-            .expect("the reason is a string");
+        assert_eq!(decision["decision"], "deny");
+        let reason = decision["reason"].as_str().expect("the reason is a string");
         assert!(
             reason.starts_with("fleet guard production-write:"),
             "the refusal names the class — {reason}"
@@ -1359,39 +1351,18 @@ fn the_classes_are_callable_through_fleet_core_with_no_payload_at_all() {
 }
 
 /// A guard never emits an allowing decision: an explicit one from a pre-tool
-/// hook short-circuits the agent's whole permission system, so letting a
+/// hook short-circuits an agent's whole permission system, so letting a
 /// command through means printing nothing. Read off the sources rather than off
-/// a run, because the claim is about what the code CAN say — and read in two
-/// directions, because the decision value belongs to ONE provider: the
-/// adapter's hook mapping states the refusing one and nothing else, and core's
-/// guard module states none at all.
+/// a run, because the claim is about what the code CAN say: the decision value
+/// belongs to the agent, stated in its adapter's hook mapping, and the binary
+/// and core's guard module state none at all.
 #[test]
-fn the_adapter_states_the_refusing_decision_alone_and_core_states_none() {
+fn core_states_no_decision_value() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("the cli crate sits inside the workspace")
         .to_path_buf();
     let allowing = format!("\"{}\"", "allow");
-
-    let adapter = workspace.join("controller/src/adapter/claude_code.hook.toml");
-    let text = std::fs::read_to_string(&adapter).expect("the adapter's mapping is readable");
-    let mut stated = 0;
-    for (offset, _) in text.match_indices("permissionDecision") {
-        let after = &text[offset..];
-        if after.starts_with("permissionDecisionReason") {
-            continue;
-        }
-        assert!(
-            after.contains("\"deny\""),
-            "the adapter states a decision value that is not the refusing one"
-        );
-        stated += 1;
-    }
-    assert_eq!(stated, 1, "the adapter states the decision exactly once");
-    assert!(
-        !text.contains(&allowing),
-        "the adapter states an allowing decision value"
-    );
 
     let mut core_sources = vec![workspace.join("cli/src/main.rs")];
     let dir = workspace.join("core/src/guard");
@@ -1408,7 +1379,7 @@ fn the_adapter_states_the_refusing_decision_alone_and_core_states_none() {
     for path in &core_sources {
         let text = std::fs::read_to_string(path).expect("a source is readable");
         assert!(
-            !text.contains("permissionDecision"),
+            !text.contains("\"decision\""),
             "{}: states a decision value, which is the adapter's alone",
             path.display()
         );
@@ -1421,9 +1392,10 @@ fn the_adapter_states_the_refusing_decision_alone_and_core_states_none() {
 }
 
 #[test]
-fn a_caller_who_did_not_name_a_class_is_a_usage_error() {
+fn a_caller_who_named_no_adapter_or_no_class_it_knows_is_a_usage_error() {
     for args in [
         vec!["guard"],
+        vec!["guard", "shell-trap"],
         vec!["guard", "astrologer"],
         vec!["guard", "shell-trap", "record"],
         vec!["guard", "shell-trap", "--wat"],

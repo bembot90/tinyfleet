@@ -151,7 +151,7 @@ impl Rig {
             a.listing = Ok(roster);
             a.version = Some(String::from("2.1.261"));
         });
-        common::hermetic::export(common::hermetic::vars(&rig.root, &rig.machine, None));
+        common::hermetic::export(common::hermetic::vars(&rig.root, &rig.machine));
         common::hermetic::export(vec![(
             common::hermetic::TMUX_BIN,
             Some(tmux.into_os_string()),

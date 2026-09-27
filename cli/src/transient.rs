@@ -9,12 +9,12 @@
 
 use std::path::{Path, PathBuf};
 
-use fleet_controller::adapter::{self, claude_code, Agent, Permissions};
+use fleet_controller::adapter::{self, Agent, Permissions};
 use fleet_controller::host::{Host, TmuxHost};
 use fleet_controller::transient::{self, Machine, Refusal};
 use fleet_controller::{clock, config, platform, policy as controller, sessions};
 use fleet_core::entry::Entry;
-use fleet_core::item::brief::Packs;
+
 use fleet_core::item::land::{self, Release};
 use fleet_core::item::{Spawn, SpawnOutcome, Spawner, Stop, COULD_NOT_TELL};
 use fleet_core::seat;
@@ -99,7 +99,7 @@ pub fn spawn_command(args: &SpawnArgs) -> Exit {
         Err(stop) => return stopped(SPAWN, &stop, args.json),
     };
     let home = platform::home_dir();
-    let agent = match spawning_agent(&here, &home) {
+    let agent = match effect_agent(&here, &home) {
         Ok(agent) => agent,
         Err(stop) => return stopped(SPAWN, &stop, args.json),
     };
@@ -121,10 +121,6 @@ pub fn spawn_command(args: &SpawnArgs) -> Exit {
         Ok(permissions) => permissions,
         Err(stop) => return stopped(SPAWN, &stop, args.json),
     };
-    let config_files = match config_files_of(&here) {
-        Ok(files) => files,
-        Err(stop) => return stopped(SPAWN, &stop, args.json),
-    };
     let machine = machine_of(&here, &at, agent.as_ref(), &host, &policy);
 
     match transient::spawn(
@@ -135,7 +131,6 @@ pub fn spawn_command(args: &SpawnArgs) -> Exit {
             permissions,
             item: None,
             base: args.base.as_deref(),
-            config_files: &config_files,
         },
         clock::now_ms(),
     ) {
@@ -478,7 +473,7 @@ impl Spawner for TransientSpawner<'_> {
             Ok(text) => text,
             Err(stop) => return outcome_of(stop.code, stop.message),
         };
-        let agent = match spawning_agent(self.here, &self.home) {
+        let agent = match effect_agent(self.here, &self.home) {
             Ok(agent) => agent,
             Err(stop) => return outcome_of(stop.code, stop.message),
         };
@@ -498,10 +493,6 @@ impl Spawner for TransientSpawner<'_> {
             Ok(permissions) => permissions,
             Err(stop) => return outcome_of(stop.code, stop.message),
         };
-        let config_files = match config_files_of(self.here) {
-            Ok(files) => files,
-            Err(stop) => return outcome_of(stop.code, stop.message),
-        };
         let machine = machine_of(self.here, &at, agent.as_ref(), &host, &policy);
         match transient::spawn(
             &machine,
@@ -511,7 +502,6 @@ impl Spawner for TransientSpawner<'_> {
                 permissions,
                 item: Some(ask.item),
                 base: ask.base,
-                config_files: &config_files,
             },
             clock::now_ms(),
         ) {
@@ -622,58 +612,38 @@ pub(crate) fn seat_named(machine_dir: &Path, arg: &str) -> Result<config::Seat, 
     machine.resolve(arg).cloned().map_err(Stop::from)
 }
 
-/// The slot the pack layers carry a transient seat's permission rules in: the
-/// template the in-process adapter renders a launch's permissions into, until
-/// fleet-jymr.5 moves it into the claude-code pack.
-const PERMISSIONS: &str = "overlay/per-provider/claude/permissions.json";
-
-/// The overlay directory whose files belong in a spawned seat's own
-/// CONFIGURATION space, rather than in the worktree or on the plugin root. That
-/// directory holds only what the pack's overlay puts there, so nothing from the
-/// person's home directory — settings, memory, instructions, servers — reaches
-/// a spawned seat.
-///
-/// The defaults carry none today: the guards reach a session through the plugin root
-/// and the permissions through the worktree's own settings file, so a spawned
-/// seat's configuration directory is empty and its emptiness is the isolation.
-/// The read is here so a pack that starts carrying one needs no second edit.
-const CONFIG_OVERLAY: &str = "overlay/per-provider/claude/config";
-
-/// The permissions template out of the pack layers, which the agent is opened
-/// with and renders each launch's permissions into.
-///
-/// A layering that carries no such file REFUSES the spawn. A seat started
-/// without rules under this posture can neither edit nor commit, and it reports
-/// that as a wall of denials hours later rather than as a refusal here.
-///
-/// A template the launch could not render — a placeholder it has no value
-/// for — refuses here too, as could-not-tell and BEFORE anything is made,
-/// rather than inside the start's rollback window: it is rendered once, now,
-/// with every value a launch can give.
-fn permissions_template(here: &Here) -> Result<String, Stop> {
-    here.project.refuse_moved()?;
-    let template = Packs::under(&here.packs_dir, &here.defaults_dir)?.read(PERMISSIONS)?;
-    let every_value = Permissions {
-        commands: Vec::new(),
-        touched: Some("a command".to_string()),
-    };
-    claude_code::render_permissions(&template, &every_value, Path::new("/"))
-        .map_err(|why| Stop::could_not_tell(format!("`{PERMISSIONS}`: {why}")))?;
-    Ok(template)
-}
-
 /// What a spawned seat may run without asking, in fleet's own words: the
-/// project's `[permissions] tool_commands` and the builder's checks, the one
-/// command the caller handed in. A spawn handed none names none, and its
-/// seat's rules then name no command nobody gave.
+/// store's own command word, the project's `[permissions] tool_commands` after
+/// it, and the builder's checks, the one command the caller handed in. A spawn
+/// handed none names none, and its seat's rules then name no command nobody
+/// gave.
+///
+/// THE STORE'S WORD IS THE STORE'S TO DECLARE (`capabilities().cli`), rendered
+/// as a tool command is, so no store's name is written in core: a seat reaches
+/// its fleet's store from its shell whichever store that is. A store that
+/// does not open, or declares no word, adds none — no seat reaches it from a
+/// shell.
 fn permissions_of(here: &Here, touched: Option<&str>) -> Result<Permissions, Stop> {
+    here.project.refuse_moved()?;
+    let mut commands: Vec<String> = store_word_of(here).into_iter().collect();
+    for word in tool_commands_of(here)? {
+        if !commands.contains(&word) {
+            commands.push(word);
+        }
+    }
     Ok(Permissions {
-        commands: tool_commands_of(here)?,
+        commands,
         touched: touched
             .map(str::trim)
             .filter(|command| !command.is_empty())
             .map(str::to_string),
     })
+}
+
+/// The first word a seat types to reach this project's store, as the store
+/// declares it.
+fn store_word_of(here: &Here) -> Option<String> {
+    open_store(here).ok()?.capabilities().ok()?.cli
 }
 
 /// `[permissions] tool_commands`, checked entry by entry to be one command word.
@@ -718,11 +688,6 @@ fn is_command_word(word: &str) -> bool {
             .any(|c| c.is_whitespace() || matches!(c, '*' | '?' | '[' | ']'))
 }
 
-/// The overlay files a spawned seat's configuration directory is seeded with.
-fn config_files_of(here: &Here) -> Result<Vec<(String, String)>, Stop> {
-    Packs::under(&here.packs_dir, &here.defaults_dir)?.read_under(CONFIG_OVERLAY)
-}
-
 /// The policy the verbs read, from the file the machine's seat list names.
 pub(crate) fn policy_of(here: &Here) -> Result<controller::Policy, Stop> {
     controller::load(&fleet_toml_of(here)?).map_err(Stop::could_not_tell)
@@ -735,25 +700,12 @@ fn fleet_toml_of(here: &Here) -> Result<PathBuf, Stop> {
         .map_err(|cause| Stop::could_not_tell(format!("the seat list: {cause}")))
 }
 
-/// The agent, opened the one way every caller opens it, with the binary its
-/// effects exec resolved ONCE — a verb that let it fall back to a bare name
-/// would exec a file nothing checked, so an agent that cannot issue effects is
-/// a refusal here.
+/// The agent, opened the one way every caller opens it — an agent that
+/// cannot issue effects is a refusal here, naming why its own answers say so.
 pub(crate) fn effect_agent(here: &Here, home: &Path) -> Result<Box<dyn Agent>, Stop> {
-    opened(here, home, None)
-}
-
-/// The same agent opened with the pack layers' permissions template, which is
-/// what a spawn's launch renders its permissions into.
-fn spawning_agent(here: &Here, home: &Path) -> Result<Box<dyn Agent>, Stop> {
-    opened(here, home, Some(permissions_template(here)?))
-}
-
-fn opened(here: &Here, home: &Path, permissions: Option<String>) -> Result<Box<dyn Agent>, Stop> {
     let setting = adapter::Setting::read(&fleet_toml_of(here)?, &here.machine_dir)
         .map_err(Stop::could_not_tell)?;
-    let opened = adapter::open(&setting.opening(home, policy_of(here)?.plugin_dir, permissions))
-        .map_err(Stop::could_not_tell)?;
+    let opened = adapter::open(&setting.opening(home)).map_err(Stop::could_not_tell)?;
     match opened.effects_off {
         Some(why) => Err(Stop::could_not_tell(why)),
         None => Ok(opened.agent),

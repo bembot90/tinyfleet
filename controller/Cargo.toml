@@ -60,20 +60,17 @@ required-features = ["test-support"]
 # drains — is core's, because the store bounds its own calls with it and core
 # may depend on no other member. The controller takes it from there rather
 # than keep a second copy; the edge runs the one way the workspace allows
-# (cli/tests/workspace.rs refuses the other). The Claude Code release fleet
-# supports is core's too (`fleet_core::supported`), and it is the
-# expectation the loop compares the live agent with where a fleet pins none.
-# So is a seat's identity (`fleet_core::seat::identity`: the id, the fleet.toml
+# (cli/tests/workspace.rs refuses the other). The fleet-packs pin is core's
+# too (`fleet_core::supported`), and it is the line a refusal of an agent
+# adapter no installed pack carries names. So is a seat's identity (`fleet_core::seat::identity`: the id, the fleet.toml
 # roster and the resolver), which `fleet start` renders the seat list from. So
 # are the agent contract's types (`fleet_core::agent::types`), which the Agent
-# trait's six verbs take and answer, and the template render
-# (`fleet_core::item::render`) the in-process adapter renders a launch's
-# permissions with. So is what opens an agent adapter that is an executable:
+# trait's six verbs take and answer. So is what opens an agent adapter that is an executable:
 # the one adapter call (`fleet_core::adapter::exec`), the census `[agent]
 # adapter` is read through, and the pack resolution a name goes through, the
-# store opener's own. The controller takes the bounded runner, the supported
-# release, a seat's identity, the agent contract, the render and the adapter's
-# opening from core, and nothing else.
+# store opener's own. The controller takes the bounded runner, the packs pin, a
+# seat's identity, the agent contract and the adapter's opening from core, and
+# nothing else.
 [dependencies]
 fleet-core = { path = "../core" }
 jiff = { version = "=0.2.35", default-features = false, features = [

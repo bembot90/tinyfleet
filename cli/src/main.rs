@@ -31,7 +31,6 @@ mod ui;
 use anyhow::{Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use exit::Exit;
-use fleet_controller::adapter::claude_code;
 use fleet_controller::events;
 use fleet_controller::runs::Runs as RunsSeam;
 use fleet_controller::{clock, config, platform, run, seat};
@@ -282,10 +281,9 @@ stdin and FLEET_RUN_ID, FLEET_STREAM, FLEET_STREAM_SEQ, FLEET_RUN_DIR,
 FLEET_BIN, FLEET_PROJECT (the project root the run was started inside, which
 the SDK runs every verb from — the child's own cwd is the run directory) and
 FLEET_DIR in its environment, keeping stdout.log and stderr.log in the run
-directory. Six names pass through from fleet's own environment when set
-there and are not names of the run: PATH, HOME, FLEET_CLAUDE_BIN, USER,
-TMPDIR and LANG — the dispatch a workflow calls resolves the agent binary on
-a child PATH built from HOME, or from FLEET_CLAUDE_BIN as written, and the
+directory. Five names pass through from fleet's own environment when set
+there and are not names of the run: PATH, HOME, USER, TMPDIR and LANG — the
+dispatch a workflow calls builds its agent's child PATH from HOME, and the
 seat it starts reads its keychain login off USER. Nothing else is inherited.
 
 The exit table is the workflow's answer: 0 is run.closed, 1 is run.failed
@@ -355,20 +353,20 @@ carries every row, with the same exit.")]
 
     /// judge one pre-tool payload read from stdin
     #[command(long_about = "\
-judge one pre-tool payload read from stdin, read through an agent adapter's
-[hook] mapping: the built-in claude-code one, or the one --adapter names —
-a name the installed packs carry, or the absolute path to its directory. A
-refusal is the mapping's deny template with the reason filled in, on stdout,
-and the exit is 0 either way, because a non-zero exit from a pre-tool hook is
-read as non-blocking. An --adapter that resolves nowhere, or declares no
-[hook], exits 2 with one line on stderr. --check reports whether each check's
-target is configured.
+judge one pre-tool payload read from stdin, read through the [hook] mapping
+of the agent adapter --adapter names — a name the installed packs carry, or
+the absolute path to its directory. A refusal is the mapping's deny template
+with the reason filled in, on stdout, and the exit is 0 either way, because a
+non-zero exit from a pre-tool hook is read as non-blocking. No --adapter, an
+--adapter that resolves nowhere, or one that declares no [hook], exits 2 with
+one line on stderr. --check reports whether each check's target is
+configured, and names no adapter.
 
-With no CLASS, --adapter is required and the guard runs the classes the
-layers declare — shell-trap and record always, and every class an installed
-pack names in its [pack] guard_classes — in the order shell-trap, record,
-release-ref, production-write, and prints the first refusal alone. --check
-with no CLASS reports every class in that set.")]
+With no CLASS the guard runs the classes the layers declare — shell-trap and
+record always, and every class an installed pack names in its [pack]
+guard_classes — in the order shell-trap, record, release-ref,
+production-write, and prints the first refusal alone. --check with no CLASS
+reports every class in that set.")]
     Guard {
         /// the guard class: shell-trap, record, release-ref or production-write
         #[arg(value_name = "CLASS", value_parser = parse_class)]
@@ -1189,9 +1187,9 @@ fn lock_table(entries: &[lock::Entry]) -> String {
 
 // ---- the guards -------------------------------------------------------------
 //
-// 2 is a caller who named neither a class nor an adapter, the same usage code
-// the pack verbs use, a guard wired to an adapter whose mapping cannot be
-// read, and one whose layers cannot say which classes they declare. The
+// 2 is a caller who named no adapter, the same usage code the pack verbs use,
+// a guard wired to an adapter whose mapping cannot be read, and one whose
+// layers cannot say which classes they declare. The
 // JUDGING path has no other code: a refusal is data on stdout and the exit is 0
 // on every path, because a non-zero exit from a pre-tool hook is read as
 // non-blocking and a guard that signalled by status would fail open exactly
@@ -1216,15 +1214,15 @@ fn guard_command(
         return Ok(guard_check(ui, &classes));
     }
     // A named class runs alone, exactly as it always has. With none, the set is
-    // the layers', and it is ruling 6's one line — `--adapter` names whose
-    // payload the hook hands over — so a bare `fleet guard` is still a caller
-    // who said nothing.
-    if class.is_none() && adapter.is_none() {
+    // the layers', and it is ruling 6's one line. Either way `--adapter` names
+    // whose payload the hook hands over: the payload is the agent's, and no
+    // agent's shape is this binary's to assume.
+    let Some(adapter) = adapter else {
         eprintln!(
-            "fleet guard: name a class, or an --adapter to run the classes the layers declare"
+            "fleet guard: name the --adapter whose [hook] mapping the payload is read through"
         );
         return Ok(Exit::Usage);
-    }
+    };
     let map = match hook_map(adapter) {
         Ok(map) => map,
         Err(missing) => {
@@ -1259,21 +1257,18 @@ fn declared_classes() -> Result<Vec<Class>, String> {
     guard::declared(&packs.layers)
 }
 
-/// The mapping a payload is read and a refusal written through: the built-in
-/// claude-code manifest where no `--adapter` is given, and otherwise the
-/// `[hook]` table of the agent adapter it names — by an absolute path to the
+/// The mapping a payload is read and a refusal written through: the `[hook]`
+/// table of the agent adapter `--adapter` names — by an absolute path to the
 /// adapter's directory, or by a bare name the machine's packs carry over its
-/// defaults, as a store adapter's name is looked up. `claude-code` where no
-/// pack carries it is the built-in.
+/// defaults, as a store adapter's name is looked up.
 ///
 /// Each `Err` is one line naming what was missing. The manifest is read
 /// through the pack format's own reader, so a mapping `fleet pack check`
 /// refuses is never applied.
-fn hook_map(adapter: Option<&str>) -> Result<HookMap, String> {
+fn hook_map(adapter: &str) -> Result<HookMap, String> {
     let dir = match adapter {
-        None => return built_in_hook(),
-        Some(path) if path.starts_with('/') => PathBuf::from(path),
-        Some(name) if !name.is_empty() && !name.contains('/') => {
+        path if path.starts_with('/') => PathBuf::from(path),
+        name if !name.is_empty() && !name.contains('/') => {
             let machine_dir = platform::machine_dir();
             let packs = fleet_core::item::brief::Packs::under(
                 &machine_dir.join("packs"),
@@ -1287,7 +1282,6 @@ fn hook_map(adapter: Option<&str>) -> Result<HookMap, String> {
             })?;
             match pack::adapter_dir(&packs, pack::AdapterKind::Agent, name) {
                 Some((_, dir)) => dir,
-                None if name == claude_code::NAME => return built_in_hook(),
                 None => {
                     return Err(format!(
                         "no installed pack carries the agent adapter `{name}` — `{}/{}/{name}/{}` \
@@ -1299,7 +1293,7 @@ fn hook_map(adapter: Option<&str>) -> Result<HookMap, String> {
                 }
             }
         }
-        Some(other) => {
+        other => {
             return Err(format!(
                 "--adapter `{other}` is neither an agent adapter's name nor an absolute path to \
                  its directory"
@@ -1316,12 +1310,6 @@ fn hook_map(adapter: Option<&str>) -> Result<HookMap, String> {
         ));
     };
     HookMap::parse(&table)
-}
-
-/// Claude Code's mapping, compiled in: the built-in's `[hook]` table.
-fn built_in_hook() -> Result<HookMap, String> {
-    HookMap::from_manifest(claude_code::HOOK_MANIFEST)
-        .map_err(|why| format!("the built-in {} hook mapping: {why}", claude_code::NAME))
 }
 
 /// The payload read once and judged by each class in turn, in the order given:

@@ -13,10 +13,10 @@
 //! its session is there, and the agent's `read`, which says what the session is
 //! doing. The host's is a [`FakeHost`] here — its own panes, listed by its own
 //! `list` — and the agent's is the listing RECORDED on the supported release
-//! below, read by the one real adapter's own rules, so the arms decide real
-//! readings against a host that is not real.
+//! below, read by the stub's rules (`test_support::reading`, the in-process
+//! adapter's own, kept for the stub when fleet-x93d.2 deleted it), so the arms
+//! decide real readings against a host that is not real.
 
-use fleet_controller::adapter::claude_code::{self, readings_from};
 use fleet_controller::adapter::{
     dir_key, Activity, Agent, AgentError, Argv, BlockedOn, Capabilities, Evidence, Launch, Posture,
     Resume, SeatActivity, SeatContext, SeatRef, Version,
@@ -32,6 +32,7 @@ use fleet_controller::projection::{
     render, AgentView, EffectsView, PolicyView, Projection, SeatRow, SeatView, VERSION,
 };
 use fleet_controller::run::{self, Options, Seams, StopHandler};
+use fleet_controller::test_support::reading::readings_from;
 use fleet_controller::test_support::{
     self, Answers, FakeClock, FakeHost, StubAgent, FIRST_PANE_PID,
 };
@@ -80,7 +81,8 @@ fn transient_seat() -> Seat {
 // ------------------------------------------------------- the recorded listing
 
 /// THE LISTING RECORDED ON THE SUPPORTED RELEASE (fleet-rge6.3's first step,
-/// reviewer call E14): Claude Code 2.1.280, tmux 3.7b, 2026-09-26, a scratch
+/// reviewer call E14): the agent the claude-code pack drives, on 2.1.280, tmux
+/// 3.7b, 2026-09-26, a scratch
 /// configuration directory seeded with onboarding and the worktree's trust, a
 /// scratch socket, `DISABLE_AUTOUPDATER=1` in the pane. `agents --json --all`
 /// read every 0.25 s, the session started as the pane's own process with
@@ -132,8 +134,8 @@ fn recorded_pane(seat: &Seat, state: PaneState) -> HostRead {
     }])
 }
 
-/// The agent's reading of `seat`'s pane `pid`, off a listing body, by the one
-/// real adapter's own rules — the recording read the way `read` reads it.
+/// The agent's reading of `seat`'s pane `pid`, off a listing body, by the
+/// stub's rules — the recording read the way the stub's `read` reads it.
 fn read_off(body: &str, seat: &Seat, pid: u32) -> SeatActivity {
     let body = body.to_string();
     readings_from(
@@ -216,7 +218,7 @@ fn nothing_hosted() -> HostRead {
 }
 
 /// An interactive row, as the recording's rows read: a pid and a status, and
-/// no address and no state (lessons claude-code B10).
+/// no address and no state (the claude-code pack's lessons B10).
 fn live(cwd: &str, session: &str, pid: u32) -> String {
     format!(
         r#"{{"sessionId":"{session}","cwd":"{cwd}","kind":"interactive","name":"orla",
@@ -235,7 +237,7 @@ fn present(seat: &Seat, cwd: &str, session: &str) -> SeatObservation {
 // --------------------------------------------- an agent answering by directory
 
 /// An agent whose `read` answers every directory from its own listing — the
-/// one real adapter's rules over listings an arm hands in per directory — and
+/// stub's rules over listings an arm hands in per directory — and
 /// records which directories it was asked under. Nothing else it answers is
 /// asked of it here.
 struct ByDirectory<F: Fn(Option<&str>) -> Result<String, String>> {
@@ -254,7 +256,7 @@ impl<F: Fn(Option<&str>) -> Result<String, String>> ByDirectory<F> {
 
 impl<F: Fn(Option<&str>) -> Result<String, String>> Agent for ByDirectory<F> {
     fn capabilities(&self) -> Result<Capabilities, AgentError> {
-        Ok(claude_code::capabilities())
+        Ok(test_support::capabilities())
     }
 
     fn version(&self) -> Result<Version, AgentError> {
@@ -441,9 +443,9 @@ fn the_recording_decided_is_the_seats_live_session_and_its_end_the_hosts() {
 mod lessons {
     use super::*;
 
-    /// claude-code D4 — the host's file-access dialog does not refuse, it BLOCKS
-    /// until somebody answers, and whether a guarded read under it returns an
-    /// error or simply hangs was never measured. So the gate is built so the
+    /// lessons claude-code D4 — the host's file-access dialog does not refuse,
+    /// it BLOCKS until somebody answers, and whether a guarded read under it
+    /// returns an error or simply hangs was never measured. So the gate is built so the
     /// answer does not matter: a listing that outlasts the bound is PENDING
     /// exactly as a refusal is, the detail says which one was seen, and while
     /// any seat is pending no effect is issued.
@@ -578,13 +580,13 @@ fn no_session_and_no_live_row_is_absent() {
 
 /// No session on the host, and the agent running a LIVE session standing in
 /// the seat's worktree: still ABSENT. No seat is found by its working
-/// directory, anywhere (CORRECTIONS AT REVIEW, 2026-09-25; lessons claude-code
-/// B5) — the agent is only ever asked about a seat's own pane, so a session
-/// fleet does not host is invisible to the seat and never handed to it.
+/// directory, anywhere (CORRECTIONS AT REVIEW, 2026-09-25;
+/// the claude-code pack's lessons B5) — the agent is only ever asked about a
+/// seat's own pane, so a session fleet does not host is invisible to the seat
+/// and never handed to it.
 ///
 /// This replaces fleet-rge6.3's Unknown for the same shape, which read the
-/// listing's rows by directory; the upgrade refusal (ruling 10) is what stops a
-/// start beside a session Claude Code's daemon still hosts.
+/// listing's rows by directory.
 #[test]
 fn no_session_beside_a_live_row_in_the_worktree_is_absent_and_never_the_seats() {
     let unhosted = recorded_seat();
@@ -1081,8 +1083,8 @@ fn projection(agent_version: Option<&str>, expected: Option<&str>) -> Projection
         generated_at: "2026-09-06T00:00:00Z".to_string(),
         controller_version: "0.1.0".to_string(),
         agent: AgentView {
-            adapter: claude_code::NAME.to_string(),
-            name: Some(claude_code::AGENT.to_string()),
+            adapter: "an-adapter".to_string(),
+            name: Some(StubAgent::NAME.to_string()),
             version: agent_version.map(str::to_string),
             expected: expected.map(str::to_string),
             postures: vec![Posture::Ask, Posture::Auto, Posture::Unattended],
@@ -1093,8 +1095,6 @@ fn projection(agent_version: Option<&str>, expected: Option<&str>) -> Projection
             path: "/fleet/fleet.toml".to_string(),
             mtime: Some("2026-09-06T00:00:00Z".to_string()),
             poll_seconds: 5,
-            claude_code: expected.map(str::to_string),
-            plugin_dir: None,
         },
         fleet_parse_error: None,
         in_flight: None,
@@ -1110,9 +1110,9 @@ fn projection(agent_version: Option<&str>, expected: Option<&str>) -> Projection
 
 /// E13 — the projection names the agent in words that name no vendor: which
 /// adapter answers, which agent it drives at which version, the release it is
-/// expected at and the postures it takes — and the two fields it replaces stay
-/// as its mirrors until fleet-x93d.2, so `agent.version` IS `agent_version`
-/// and `agent.expected` IS `agent_version_expected`.
+/// expected at and the postures it takes — and the two fields it replaced stay
+/// as its mirrors, so `agent.version` IS `agent_version` and `agent.expected`
+/// IS `agent_version_expected`.
 ///
 /// Driven through the loop itself, one poll against a stub agent and a fake
 /// host, because the mirrors are the loop's to fill: a fixture document would
@@ -1137,7 +1137,7 @@ fn the_projections_agent_block_mirrors_the_version_fields_and_names_the_adapter(
         ),
     )
     .expect("the seat list is written");
-    common::hermetic::export(common::hermetic::in_process_vars(&root, &machine, None));
+    common::hermetic::export(common::hermetic::vars(&root, &machine));
     platform::clear_stop();
 
     let host = FakeHost::new();
@@ -1163,7 +1163,6 @@ fn the_projections_agent_block_mirrors_the_version_fields_and_names_the_adapter(
                 adapter: "an-adapter",
                 agent: &stub,
                 host: &host,
-                daemon: None,
                 child_path: "",
                 effects_off: Some("this arm issues no effect".to_string()),
                 stop_handler: StopHandler::Unarmed,
@@ -1188,8 +1187,8 @@ fn the_projections_agent_block_mirrors_the_version_fields_and_names_the_adapter(
     );
     assert_eq!(
         agent["expected"],
-        fleet_core::supported::PINNED_CLAUDE_CODE,
-        "a fleet that pins nothing expects what the adapter was measured against"
+        StubAgent::VERSION,
+        "the live release, among those the adapter was measured against, is the one expected"
     );
     assert_eq!(
         agent["expected"], body["agent_version_expected"],

@@ -310,7 +310,7 @@ impl Rig {
             .arg("--packs-dir")
             .arg(self.machine.join("packs"))
             .current_dir(&self.project)
-            .hermetic(&self.root.join("home"), &self.machine, None)
+            .hermetic(&self.root.join("home"), &self.machine)
             .env("PATH", path)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
@@ -1227,22 +1227,19 @@ fn the_project_root_reaches_the_workflow_as_fleet_project() {
     );
 }
 
-/// `HOME`, `FLEET_CLAUDE_BIN`, `USER`, `TMPDIR` and `LANG` pass through from
-/// the fleet process to the workflow, verbatim, while the clearing holds for
-/// everything else: the dispatch a workflow calls resolves the agent binary
-/// from the first two — a child under no `HOME` searches a relative
-/// `.local/bin` and finds nothing — and hands the last three to the seat it
-/// starts, which reads its keychain login off `USER` and comes up logged out
-/// without one.
+/// `HOME`, `USER`, `TMPDIR` and `LANG` pass through from the fleet process to
+/// the workflow, verbatim, while the clearing holds for everything else: the
+/// dispatch a workflow calls builds its agent's search path from `HOME` — a
+/// child under no `HOME` searches a relative `.local/bin` and finds nothing —
+/// and hands the last three to the seat it starts, which reads its keychain
+/// login off `USER` and comes up logged out without one.
 ///
-/// The binary named here is no file at all, which is what shows the value is
-/// copied and not resolved; the stray name set beside it is the control that
-/// the clearing still stands. `TMPDIR` names a real directory because the
-/// fleet process under test is handed this same value.
+/// The stray name set beside them is the control that the clearing still
+/// stands. `TMPDIR` names a real directory because the fleet process under test
+/// is handed this same value.
 #[test]
-fn the_agent_binary_seams_reach_the_workflow_from_the_environment() {
+fn the_four_pass_throughs_reach_the_workflow_from_the_environment() {
     let echoes = "echo \"home=$HOME\"\n\
-                  echo \"claude_bin=$FLEET_CLAUDE_BIN\"\n\
                   echo \"user=$USER\"\n\
                   echo \"tmpdir=$TMPDIR\"\n\
                   echo \"lang=$LANG\"\n\
@@ -1254,7 +1251,6 @@ fn the_agent_binary_seams_reach_the_workflow_from_the_environment() {
         &cap_that_is_not_the_subject(),
     );
     let workflow = rig.workflow(ONE);
-    let named = "/a/binary/nobody/resolves";
     let temp = rig.root.join("a-temp-of-its-own");
     std::fs::create_dir_all(&temp).expect("the arm's own temp directory is created");
     let temp = temp.display().to_string();
@@ -1263,7 +1259,6 @@ fn the_agent_binary_seams_reach_the_workflow_from_the_environment() {
     let out = rig.run_with(
         &["run", &workflow, "--by", BY],
         &[
-            ("FLEET_CLAUDE_BIN", named),
             ("USER", user),
             ("TMPDIR", &temp),
             ("LANG", lang),
@@ -1285,11 +1280,6 @@ fn the_agent_binary_seams_reach_the_workflow_from_the_environment() {
         echoed("home="),
         rig.root.join("home").display().to_string(),
         "HOME is the fleet process's own, as the rig set it: {said}"
-    );
-    assert_eq!(
-        echoed("claude_bin="),
-        named,
-        "FLEET_CLAUDE_BIN is forwarded as written, not resolved: {said}"
     );
     assert_eq!(
         echoed("user="),

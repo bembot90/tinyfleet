@@ -1,24 +1,22 @@
-//! The Claude Code release the loop expects, AS THE LOOP READS IT: the
-//! fleet's own `[substrate]` pin where its file writes one, and otherwise the
-//! release fleet supports (`fleet_core::supported::PINNED_CLAUDE_CODE`).
+//! The agent release the loop expects, AS THE LOOP READS IT: the releases the
+//! agent's adapter declares it was measured against (ruling 8), which its
+//! `capabilities` answer carries as `measured`. No fleet file pins one.
 //!
 //! A test binary of its own, for the reason `grant.rs` is one: these arms drive
 //! `run::observe_with`, which reads the PROCESS's environment for the machine
 //! directory, so the rigs are serialized on the lock below.
 //!
-//! What it measures is the thing the policy's own unit arms cannot: that the
-//! expectation a file that pins nothing falls to is the one the poll publishes
-//! AND the one it writes `substrate.moved` against.
+//! What it measures is the thing the projection's own unit arms cannot: that
+//! the expectation the adapter declares is the one the poll publishes AND the
+//! one it writes `substrate.moved` against.
 //!
 //! The agent is `fleet-agent-stub`, named by `[agent] adapter` and spoken to
-//! through the Exec as any adapter executable is: it declares the one real
-//! adapter's capabilities, so the release it was measured against is the
-//! supported one, and it answers the version the arm scripts.
+//! through the Exec as any adapter executable is: it declares the releases the
+//! arm scripts, and it answers the version the arm scripts.
 
 use fleet_controller::platform::{self, Grant};
 use fleet_controller::run::{self, Options};
 use fleet_controller::test_support::agent_stub;
-use fleet_core::supported::PINNED_CLAUDE_CODE;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
@@ -30,7 +28,12 @@ mod common;
 /// refusing it here would fail every other arm for it.
 static ENV: Mutex<()> = Mutex::new(());
 
-/// A release the supported one is not — the spread every arm below either
+/// The releases every rig's adapter declares it was measured against, first
+/// and second — so an arm can run the one a reader of `measured.first()` alone
+/// would call a spread.
+const MEASURED: [&str; 2] = ["9.9.9", "9.9.10"];
+
+/// A release outside [`MEASURED`] — the spread every arm below either
 /// announces or does not.
 const ANOTHER: &str = "0.0.1";
 
@@ -41,9 +44,9 @@ fn write(path: &Path, body: &str) {
     std::fs::write(path, body).expect("the fixture file is written");
 }
 
-/// The rig: a machine directory naming no seat, a policy file whose body the
-/// arm chooses with `[agent] adapter` naming the stub after it, and the stub
-/// answering `version` with the release the arm chooses.
+/// The rig: a machine directory naming no seat, a policy file with `[agent]
+/// adapter` naming the stub, and the stub declaring [`MEASURED`] and answering
+/// `version` with the release the arm chooses.
 struct Rig {
     root: PathBuf,
     machine: PathBuf,
@@ -51,7 +54,7 @@ struct Rig {
 }
 
 impl Rig {
-    fn new(label: &str, policy: &str, running: &str) -> Rig {
+    fn new(label: &str, running: &str) -> Rig {
         let held = ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let root =
             std::env::temp_dir().join(format!("fleet-substrate-{label}-{}", std::process::id()));
@@ -64,8 +67,8 @@ impl Rig {
         write(
             &rig.root.join("fleet.toml"),
             &format!(
-                "{policy}\n[agent]\nadapter = \"{}\"\n",
-                agent_stub::path().display()
+                "[controller]\npoll_seconds = 1\n\n[agent]\nadapter = \"{}\"\n",
+                Rig::adapter()
             ),
         );
         write(
@@ -75,13 +78,17 @@ impl Rig {
                 rig.root.join("fleet.toml").display()
             ),
         );
-        agent_stub::script(&rig.root, |a| a.version = Some(running.to_string()));
-        common::hermetic::export(common::hermetic::in_process_vars(
-            &rig.root,
-            &rig.machine,
-            None,
-        ));
+        agent_stub::script(&rig.root, |a| {
+            a.version = Some(running.to_string());
+            a.capabilities.measured = MEASURED.iter().map(|m| m.to_string()).collect();
+        });
+        common::hermetic::export(common::hermetic::vars(&rig.root, &rig.machine));
         rig
+    }
+
+    /// The name `[agent] adapter` calls the stub by: its path, as written.
+    fn adapter() -> String {
+        agent_stub::path().display().to_string()
     }
 
     /// One poll, the way `fleet observe --once` takes it.
@@ -112,65 +119,48 @@ impl Drop for Rig {
     }
 }
 
-/// fleet-2jt — A FLEET THAT PINS NOTHING EXPECTS THE RELEASE FLEET SUPPORTS: a
-/// different live release is one `substrate.moved` against that release, and
-/// the poll still exits 0. The file's own word stays null on the projection, so
-/// a reader tells the fleet's pin from the default it fell to.
+/// A LIVE RELEASE OUTSIDE WHAT THE ADAPTER WAS MEASURED AGAINST is one
+/// `substrate.moved`, naming the adapter by the name `[agent] adapter` calls it
+/// and the first release it declares as the one expected, and the poll still
+/// exits 0. The projection's agent block carries the same two.
 #[test]
-fn no_pin_and_another_release_running_writes_substrate_moved_against_the_supported_one() {
-    assert_ne!(PINNED_CLAUDE_CODE, ANOTHER);
-    let rig = Rig::new("unpinned", "[controller]\npoll_seconds = 1\n", ANOTHER);
+fn a_release_outside_the_measured_ones_writes_substrate_moved_naming_the_adapter() {
+    assert!(!MEASURED.contains(&ANOTHER));
+    let rig = Rig::new("outside", ANOTHER);
     rig.poll();
 
     let published = rig.projection();
     assert_eq!(published["agent_version"], ANOTHER, "{published}");
     assert_eq!(
-        published["agent_version_expected"], PINNED_CLAUDE_CODE,
+        published["agent_version_expected"], MEASURED[0],
         "{published}"
     );
-    assert!(published["fleet"]["claude_code"].is_null(), "{published}");
+    assert_eq!(published["agent"]["expected"], MEASURED[0], "{published}");
 
     let moves = rig.moves();
     assert_eq!(moves.len(), 1, "one move is one event: {moves:?}");
-    assert_eq!(moves[0]["payload"]["agent"], "claude_code");
+    assert_eq!(moves[0]["payload"]["agent"], Rig::adapter());
     assert_eq!(moves[0]["payload"]["observed"], ANOTHER);
-    assert_eq!(moves[0]["payload"]["expected"], PINNED_CLAUDE_CODE);
+    assert_eq!(moves[0]["payload"]["expected"], MEASURED[0]);
 }
 
-/// The control: the supported release running under the same file is no
-/// spread, so the event above is the release's and not the missing pin's.
+/// The control: a live release AMONG the measured ones is no spread — the
+/// second declared as much as the first — and the expectation published is
+/// the live one itself, so a reader comparing the two finds none.
+///
+/// RED-PROOF: with the live release held to the first declared alone, the
+/// second release running writes a move and publishes the first as expected.
 #[test]
-fn no_pin_and_the_supported_release_running_writes_nothing() {
-    let rig = Rig::new(
-        "unpinned-agrees",
-        "[controller]\npoll_seconds = 1\n",
-        PINNED_CLAUDE_CODE,
-    );
-    rig.poll();
-    assert_eq!(rig.projection()["agent_version"], PINNED_CLAUDE_CODE);
-    assert_eq!(rig.moves(), Vec::<serde_json::Value>::new());
-}
-
-/// A FLEET'S OWN PIN STILL WINS: the release it pins running is no spread even
-/// though it is not the supported one, and the supported one running is a
-/// spread against the pin.
-#[test]
-fn a_fleets_own_pin_wins_over_the_supported_release() {
-    let pinned =
-        format!("[controller]\npoll_seconds = 1\n\n[substrate]\nclaude_code = \"{ANOTHER}\"\n");
-
-    let rig = Rig::new("pinned-agrees", &pinned, ANOTHER);
-    rig.poll();
-    let published = rig.projection();
-    assert_eq!(published["agent_version_expected"], ANOTHER, "{published}");
-    assert_eq!(published["fleet"]["claude_code"], ANOTHER, "{published}");
-    assert_eq!(rig.moves(), Vec::<serde_json::Value>::new());
-    drop(rig);
-
-    let rig = Rig::new("pinned-moved", &pinned, PINNED_CLAUDE_CODE);
-    rig.poll();
-    let moves = rig.moves();
-    assert_eq!(moves.len(), 1, "{moves:?}");
-    assert_eq!(moves[0]["payload"]["observed"], PINNED_CLAUDE_CODE);
-    assert_eq!(moves[0]["payload"]["expected"], ANOTHER);
+fn a_release_among_the_measured_ones_writes_nothing() {
+    for (label, running) in [("first", MEASURED[0]), ("second", MEASURED[1])] {
+        let rig = Rig::new(&format!("among-{label}"), running);
+        rig.poll();
+        let published = rig.projection();
+        assert_eq!(published["agent_version"], running, "{label}: {published}");
+        assert_eq!(
+            published["agent_version_expected"], running,
+            "{label}: {published}"
+        );
+        assert_eq!(rig.moves(), Vec::<serde_json::Value>::new(), "{label}");
+    }
 }

@@ -636,6 +636,11 @@ fn the_doctrine_shaped_pack_over_the_defaults_alone_resolves() {
         "and the defaults still carry the brief template, which nothing shadows"
     );
     assert_eq!(
+        resolution.files.get("overlay/seat.md").map(String::as_str),
+        Some("tiny"),
+        "the pack's overlay is its own, and no defaults' file it shadows"
+    );
+    assert_eq!(
         resolve::slot_path(&resolution, &layers, "assets/rules.md"),
         Some(tiny.join("assets/rules.md"))
     );
@@ -656,11 +661,10 @@ fn the_doctrine_shaped_pack_over_the_defaults_alone_resolves() {
             "assets/rules.md",
             "doctor/guards-installed/doctor.toml",
             "doctor/guards-installed/run.sh",
-            "overlay/per-provider/claude/hooks.json",
         ],
         "every shadowed path is one the pack means to shadow, and no other: the \
-         rules file, and the three that wire and report on the two guard classes \
-         this pack adds"
+         rules file, and the two that report on the two guard classes this pack \
+         adds"
     );
 }
 
@@ -737,7 +741,6 @@ fn a_pack_and_its_import_order_tiny_over_ts_over_the_defaults_and_resolve() {
             "assets/rules.md",
             "doctor/guards-installed/doctor.toml",
             "doctor/guards-installed/run.sh",
-            "overlay/per-provider/claude/hooks.json",
         ],
         "the middle layer shadows nothing: the list is the doctrine-shaped pack's alone"
     );

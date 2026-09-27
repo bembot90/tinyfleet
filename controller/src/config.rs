@@ -316,8 +316,8 @@ pub struct RenderedSeat {
     /// there is one and taken off it where there is none.
     pub name: Option<String>,
     /// Always present: a start with no model flag comes up on the cheapest
-    /// available model (lessons claude-code A5), so the row carries the policy's
-    /// default where the table names none.
+    /// available model (the claude-code pack's lessons A5), so the row carries
+    /// the policy's default where the table names none.
     pub model: String,
     /// Project to worktree.
     pub worktrees: Vec<(String, String)>,

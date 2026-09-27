@@ -145,8 +145,8 @@ pub const SESSION_CRASHED: &str = "session.crashed";
 /// which reading dated it ([`ENDED_OBSERVED`] or [`ENDED_FROM_TRANSCRIPT`]).
 ///
 /// The listing carries no end stamp and an interactive row leaves it with its
-/// process (lessons claude-code B10), so this line is the one record a
-/// controller keeps of when a session stopped.
+/// process (the claude-code pack's lessons B10), so this line is the one record
+/// a controller keeps of when a session stopped.
 pub const SESSION_ENDED: &str = "session.ended";
 /// The four this slice adds. Each is written once by the layer that did
 /// the thing: the effect layer revives, adopt at startup claims, the halt
@@ -242,9 +242,10 @@ pub fn dispatch_failed_payload(
 /// controller read it alive, or had not started, one interval before.
 pub const ENDED_OBSERVED: &str = "observed";
 
-/// A [`SESSION_ENDED`] dated by the session's transcript, its last write (lessons
-/// claude-code C4): a dead pane met on a controller's first poll, which saw no
-/// earlier one and so cannot say the end fell inside its own interval.
+/// A [`SESSION_ENDED`] dated by the session's transcript, its last write
+/// (the claude-code pack's lessons C4): a dead pane met on a controller's first
+/// poll, which saw no earlier one and so cannot say the end fell inside its own
+/// interval.
 pub const ENDED_FROM_TRANSCRIPT: &str = "transcript";
 
 /// What a [`SESSION_ENDED`] line carries: the agent's session id where the

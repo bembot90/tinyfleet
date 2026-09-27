@@ -6,7 +6,7 @@
 
 use crate::adapter::{Capabilities, Posture};
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub const DEFAULT_POLL_SECONDS: u64 = 5;
 
@@ -21,17 +21,17 @@ pub const DEFAULT_REST_THRESHOLD_TOKENS: u64 = 700_000;
 pub const DEFAULT_ARRIVAL_WINDOW_SECONDS: u64 = 45;
 
 /// How long a start is watched before it is believed or given up on: until the
-/// agent's listing shows the pane's own process with a status. Measured on
-/// Claude Code 2.1.280 and tmux 3.7b (fleet-rge6.2, 2026-09-26), the row was
-/// listed 0.5–0.75 s after the session was made and carried its status at
-/// 1.0–1.3 s, so five seconds is four times the slowest reading; short enough
+/// agent's listing shows the pane's own process with a status. Measured
+/// through the claude-code pack on 2.1.280 and tmux 3.7b (fleet-rge6.2,
+/// 2026-09-26), the row was listed 0.5–0.75 s after the session was made and
+/// carried its status at 1.0–1.3 s, so five seconds is four times the slowest reading; short enough
 /// that one poll cannot be lost to a start that will never list.
 pub const DEFAULT_START_WATCH_SECONDS: u64 = 5;
 
 /// How long a turn typed into a seat's session is given to be taken: the row
-/// must read busy inside it (`crate::effect::type_turn`). On Claude Code
-/// 2.1.280 a typed turn read busy on the first read after its submit, 0.14 s
-/// on (fleet-rge6.5, 2026-09-26), so ten seconds is far past any turn that
+/// must read busy inside it (`crate::effect::type_turn`). Through the
+/// claude-code pack, on 2.1.280, a typed turn read busy on the first read
+/// after its submit, 0.14 s on (fleet-rge6.5, 2026-09-26), so ten seconds is far past any turn that
 /// will be taken, and short enough that a poll is not held long by one that
 /// will not.
 pub const DEFAULT_NUDGE_TIMEOUT_SECONDS: u64 = 10;
@@ -95,20 +95,6 @@ pub struct Policy {
     /// The load belt's two ceilings, read here and nowhere else.
     pub load_ceiling_per_cpu: f64,
     pub max_transient_busy: u32,
-    /// The release this fleet's own file pins under `[substrate]`, as written.
-    /// `None` when the file pins nothing, and the expectation is then the
-    /// release fleet supports — read through [`Policy::claude_code_expected`],
-    /// never off this field.
-    pub claude_code_pin: Option<String>,
-    /// The plugin root every start this fleet makes loads, or `None` for a fleet
-    /// that names none — a session loads the overlay's hooks and finds its bin
-    /// on the Bash tool's `PATH` only under a loaded plugin root (lessons
-    /// claude-code D5).
-    ///
-    /// ABSOLUTE as [`load`] answers it and only there: a relative path is
-    /// resolved against the policy FILE's own directory, which [`parse`] is
-    /// handed a body and not a location for.
-    pub plugin_dir: Option<PathBuf>,
     /// `[core.run] max_crashes` — the run lifecycle's cap, read here because the
     /// controller is what counts a run's crashes and parks at the cap.
     pub run_max_crashes: u64,
@@ -118,8 +104,6 @@ pub struct Policy {
 struct RawPolicy {
     #[serde(default)]
     controller: Option<RawController>,
-    #[serde(default)]
-    substrate: Option<toml::Value>,
     /// `[core]`, of which this reader takes ONE key. The rest of that table
     /// belongs to the verbs and is read through core's own census; what is here
     /// is the one cap the controller is the enforcer of.
@@ -165,11 +149,6 @@ struct RawController {
     load_ceiling_per_cpu: Option<f64>,
     #[serde(default)]
     max_transient_busy: Option<u32>,
-    /// Deliberately absent from [`CONTROLLER_KEYS`], so no machine-local answer
-    /// reaches it: a relative path here is resolved against the policy file's
-    /// own directory, and `config.json` is a different directory.
-    #[serde(default)]
-    plugin_dir: Option<String>,
 }
 
 /// A configured whole number, with zero refused the way a zero poll interval is:
@@ -223,24 +202,7 @@ fn models(configured: Option<Vec<String>>) -> Option<Vec<String>> {
 
 pub fn load(path: &Path) -> Result<Policy, String> {
     let body = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut policy = parse(&body).map_err(|e| format!("{}: {e}", path.display()))?;
-    policy.plugin_dir = policy
-        .plugin_dir
-        .take()
-        .map(|dir| resolved_beside(path, dir));
-    Ok(policy)
-}
-
-/// A configured path as the FILE means it: relative to the file's own directory,
-/// never to the working directory, which is a service's and nobody configured it.
-fn resolved_beside(policy_file: &Path, dir: PathBuf) -> PathBuf {
-    if dir.is_absolute() {
-        return dir;
-    }
-    match policy_file.parent() {
-        Some(beside) if !beside.as_os_str().is_empty() => beside.join(dir),
-        _ => dir,
-    }
+    parse(&body).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 pub fn parse(body: &str) -> Result<Policy, String> {
@@ -311,14 +273,6 @@ pub fn parse(body: &str) -> Result<Policy, String> {
         max_transient_busy: c
             .and_then(|c| c.max_transient_busy)
             .unwrap_or(DEFAULT_MAX_TRANSIENT_BUSY),
-        claude_code_pin: raw.substrate.as_ref().and_then(pin_for_claude_code),
-        // A blank is no path, the way a blank model is no model: `--plugin-dir`
-        // with an empty value makes the next flag its argument.
-        plugin_dir: c
-            .and_then(|c| c.plugin_dir.as_deref())
-            .map(str::trim)
-            .filter(|dir| !dir.is_empty())
-            .map(PathBuf::from),
         // ZERO IS KEPT, and it is the one cap here that means something at zero:
         // a fleet that parks a run the first time nothing can classify it has
         // said exactly that, where a zero poll interval or a zero window is a
@@ -391,18 +345,6 @@ impl Policy {
             && !gate
                 .iter()
                 .any(|capable| model.starts_with(capable.as_str()))
-    }
-
-    /// The agent release the live one is compared with: the fleet's own
-    /// `[substrate]` pin where the file writes one, and otherwise the release
-    /// the agent's adapter declares it was measured against. A fleet that pins
-    /// nothing is not a fleet that expects nothing, so a spread there is "not
-    /// the release fleet supports" and announced the same way.
-    pub fn claude_code_expected(&self, agent: &Capabilities) -> String {
-        named(
-            self.claude_code_pin.as_deref(),
-            agent.measured.first().map(String::as_str).unwrap_or(""),
-        )
     }
 }
 
@@ -559,37 +501,8 @@ impl Policy {
             // `[core.run]`'s and not `[controller]`'s, so no machine-local
             // answer reaches it: the fleet's policy is where a run's caps live.
             run_max_crashes: self.run_max_crashes,
-            // The pin is `[substrate]`'s and not `[controller]`'s, so no
-            // machine-local key reaches it. The plugin root is `[controller]`'s
-            // and still does not: its relative form is resolved against the
-            // policy file's directory, and this document sits in another one.
-            claude_code_pin: self.claude_code_pin.clone(),
-            plugin_dir: self.plugin_dir.clone(),
         }
     }
-}
-
-/// The in-process adapter's key under `[substrate]`, which the pin below reads
-/// off the file. Not an adapter's name: `fleet create` offers the agents it
-/// installs a pack for ([`crate::adapter::DEFAULT_AGENT_ADAPTER`]) and reads
-/// neither this nor [`AGENTS`]; fleet-x93d.2 deletes both with the pin.
-pub const AGENT_CLAUDE_CODE: &str = "claude_code";
-
-/// The `[substrate]` keys the pin is read under.
-pub const AGENTS: [&str; 1] = [AGENT_CLAUDE_CODE];
-
-/// The pin under `[substrate.claude_code]`, in either shape a person writes it:
-/// a table carrying `version`, and the flat `claude_code = "…"` string a
-/// one-agent fleet reaches for. A shape this does not recognise pins nothing,
-/// which publishes as no expectation rather than as a wrong one.
-fn pin_for_claude_code(substrate: &toml::Value) -> Option<String> {
-    let entry = substrate.get(AGENT_CLAUDE_CODE)?;
-    let pin = match entry {
-        toml::Value::String(s) => s.as_str(),
-        table => table.get("version")?.as_str()?,
-    };
-    let pin = pin.trim();
-    (!pin.is_empty()).then(|| pin.to_string())
 }
 
 pub fn mtime(path: &Path) -> Option<std::time::SystemTime> {
@@ -656,66 +569,6 @@ mod tests {
         assert_eq!(policy.first_turn, None);
         assert_eq!(policy.load_ceiling_per_cpu, DEFAULT_LOAD_CEILING_PER_CPU);
         assert_eq!(policy.max_transient_busy, DEFAULT_MAX_TRANSIENT_BUSY);
-    }
-
-    /// The plugin root, in the four states a file can leave it: absent, blank,
-    /// relative and absolute.
-    ///
-    /// The relative one is read through [`load`], because the base is the FILE's
-    /// own directory and `parse` is handed a body: the working directory is a
-    /// service's and nobody configured it, so the arm asserts against the file's
-    /// directory and states the other answer it must not be.
-    #[test]
-    fn the_plugin_root_is_resolved_against_the_policy_files_own_directory() {
-        assert_eq!(
-            parse("").expect("an empty file parses").plugin_dir,
-            None,
-            "a file that names none names none"
-        );
-        assert_eq!(
-            parse("[controller]\nplugin_dir = \"   \"\n")
-                .expect("the file parses")
-                .plugin_dir,
-            None,
-            "a blank is no path, the way a blank model is no model"
-        );
-
-        let dir = std::env::temp_dir().join(format!("fleet-policy-plugin-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("the fixture directory is made");
-        let file = dir.join("fleet.toml");
-
-        std::fs::write(&file, "[controller]\nplugin_dir = \"the-overlay\"\n")
-            .expect("the file is written");
-        let relative = load(&file).expect("the file parses");
-        assert_eq!(relative.plugin_dir, Some(dir.join("the-overlay")));
-        let here = std::env::current_dir().expect("this process has a working directory");
-        assert_ne!(
-            relative.plugin_dir,
-            Some(here.join("the-overlay")),
-            "and not the working directory's, which is the other answer available"
-        );
-
-        // The control on the base: an ABSOLUTE path is taken as written, so the
-        // join above is the relative case's and not applied to every reading.
-        let absolute = dir.join("elsewhere");
-        std::fs::write(
-            &file,
-            format!("[controller]\nplugin_dir = \"{}\"\n", absolute.display()),
-        )
-        .expect("the file is written");
-        assert_eq!(
-            load(&file).expect("the file parses").plugin_dir,
-            Some(absolute)
-        );
-
-        std::fs::write(&file, "[controller]\nplugin_dir = \"\"\n").expect("the file is written");
-        assert_eq!(
-            load(&file).expect("the file parses").plugin_dir,
-            None,
-            "a blank is no path through the loader too"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The belt's two ceilings part company on zero, which is why they are read
@@ -971,8 +824,7 @@ mod tests {
              auto_capable_models = [\"from-policy\"]\n\
              first_turn = \"from-policy {seat}\"\n\
              load_ceiling_per_cpu = 7.0\n\
-             max_transient_busy = 7\n\
-             \n[substrate.claude_code]\nversion = \"2.1.261\"\n",
+             max_transient_busy = 7\n",
         )
         .expect("the policy parses");
 
@@ -1008,11 +860,6 @@ mod tests {
         assert_eq!(effective.first_turn.as_deref(), Some("from-machine {seat}"));
         assert_eq!(effective.load_ceiling_per_cpu, 11.0);
         assert_eq!(effective.max_transient_busy, 11);
-        assert_eq!(
-            effective.claude_code_pin.as_deref(),
-            Some("2.1.261"),
-            "the pin is `[substrate]`'s, so no machine-local key reaches it"
-        );
 
         // THE CONTROL every assertion above needs: with no object, every one of
         // those keys is the policy's — so the fourteen readings are the
@@ -1165,29 +1012,6 @@ mod tests {
             assert_eq!(file.overlaid(&none), file, "{shape}");
         }
         assert_eq!(file.overlaid(&overrides_in(None)), file);
-    }
-
-    #[test]
-    fn the_pin_reads_from_a_table_or_from_a_flat_string() {
-        let table = parse("[substrate.claude_code]\nversion = \"2.1.261\"\n").unwrap();
-        assert_eq!(table.claude_code_pin.as_deref(), Some("2.1.261"));
-        let flat = parse("[substrate]\nclaude_code = \"2.1.261\"\n").unwrap();
-        assert_eq!(flat.claude_code_pin.as_deref(), Some("2.1.261"));
-    }
-
-    /// fleet-2jt: a file that pins nothing expects the release fleet supports,
-    /// and a pin of its own wins over it. The pin is a release the constant is
-    /// not, so the second half reads the file's and not a coincidence.
-    #[test]
-    fn a_file_that_pins_nothing_expects_the_release_its_agent_was_measured_against() {
-        let policy = parse("[controller]\npoll_seconds = 9\n").unwrap();
-        assert_eq!(policy.claude_code_pin, None);
-        assert_eq!(policy.claude_code_expected(&declared()), "9.9.9");
-        assert_eq!(policy.poll_seconds, 9);
-
-        let pinned = parse("[substrate]\nclaude_code = \"0.0.1\"\n").unwrap();
-        assert_ne!(declared().measured[0], "0.0.1");
-        assert_eq!(pinned.claude_code_expected(&declared()), "0.0.1");
     }
 
     #[test]

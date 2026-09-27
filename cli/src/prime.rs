@@ -272,8 +272,8 @@ fn store_version(root: &Path) -> Result<(Version, String), String> {
 ///
 /// The match is on the directory itself rather than on any parent of it: a row
 /// names a worktree root, and a session under some other checkout inside it is
-/// not that seat's (lessons claude-code B5 — a cwd names a seat and proves
-/// nothing, so the weakest reading is the one taken).
+/// not that seat's (the claude-code pack's lessons B5 — a cwd names a seat and
+/// proves nothing, so the weakest reading is the one taken).
 fn seat_here<'a>(
     machine: &'a config::MachineConfig,
     cwd: &Path,

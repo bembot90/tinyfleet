@@ -31,10 +31,9 @@ pub struct Projection {
     /// document written before it was carried.
     #[serde(default)]
     pub agent: AgentView,
-    /// What the agent binary reported THIS poll, and the release its behaviours
-    /// were measured against. A spread between them is a flag to re-measure,
-    /// never a failure. Mirrors of `agent.version` and `agent.expected`, kept
-    /// until fleet-x93d.2 retires them.
+    /// What the agent reported THIS poll, and the release its adapter was
+    /// measured against. A spread between them is a flag to re-measure, never
+    /// a failure. Mirrors of `agent.version` and `agent.expected`.
     pub agent_version: Option<String>,
     pub agent_version_expected: Option<String>,
     pub fleet: PolicyView,
@@ -68,8 +67,8 @@ pub struct Projection {
 
 /// The agent as the projection names it: which adapter answers for it, which
 /// agent that adapter drives and at which version THIS poll, the version it is
-/// expected at — the fleet's own pin, else the release the adapter was
-/// measured against — and the postures it takes.
+/// expected at — among the releases the adapter declares it was measured
+/// against ([`expected_version`]) — and the postures it takes.
 ///
 /// `name` and `version` are null where the adapter did not answer this poll;
 /// `version` alone is null where it answered and no binary of the agent is
@@ -168,6 +167,18 @@ pub struct EffectsDecision {
     pub acting: bool,
 }
 
+/// The release the live agent is expected at, off the releases its adapter
+/// declares it was measured against (ruling 8): the live one itself where it
+/// is among them, so a reader comparing the two finds no spread; else the
+/// first declared, which the live one is then a move away from. `None` for an
+/// adapter that declares no measurement, which expects nothing.
+pub fn expected_version(measured: &[String], live: Option<&str>) -> Option<String> {
+    match live {
+        Some(live) if measured.iter().any(|release| release == live) => Some(live.to_string()),
+        _ => measured.first().cloned(),
+    }
+}
+
 /// The two things that hold a poll's effects, read in one place.
 ///
 /// THE GRANT OUTRANKS THE BINARY in the cause: a pending grant is a question a
@@ -198,11 +209,6 @@ pub struct PolicyView {
     /// file on disk.
     pub mtime: Option<String>,
     pub poll_seconds: u64,
-    pub claude_code: Option<String>,
-    /// The plugin root every start this fleet makes loads, absolute, or null for
-    /// a fleet that names none. Null is a reading and not a gap, so it is
-    /// serialised either way.
-    pub plugin_dir: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -320,8 +326,6 @@ mod tests {
                 path: "/fleet/fleet.toml".to_string(),
                 mtime: Some("2026-09-06T00:00:00Z".to_string()),
                 poll_seconds: 5,
-                claude_code: Some("2.1.261".to_string()),
-                plugin_dir: Some("/fleet".to_string()),
             },
             fleet_parse_error: None,
             in_flight: None,

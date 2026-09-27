@@ -1,5 +1,5 @@
 //! `fleet deliver` through the shipped binary, against a scratch repository and
-//! a stub that stands in for the provider.
+//! `fleet-agent-stub` standing in for the agent.
 //!
 //! This is where the live git path is proven: the project is a real repository,
 //! the commit the verb makes is read back out of it with git, and the delivered
@@ -17,6 +17,7 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::hermetic::Hermetic;
+use fleet_controller::test_support::agent_stub;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -62,16 +63,13 @@ fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// One arm: its own repository, work graph, machine directory and stub.
+/// One arm: its own repository, work graph, machine directory and agent
+/// stub, whose state is kept under the project, the fleet's root.
 struct Rig {
     root: PathBuf,
     project: PathBuf,
     machine: PathBuf,
     worktree: PathBuf,
-    stub: PathBuf,
-    roster: PathBuf,
-    /// What the listing reads once the reviewer's pane has taken a submit.
-    roster_taken: PathBuf,
     /// The link `FLEET_TMUX_BIN` names, and the fake server's state beside it.
     tmux: PathBuf,
     state: PathBuf,
@@ -100,9 +98,6 @@ impl Rig {
         defaults_into(&machine);
 
         let rig = Rig {
-            stub: root.join("agent.sh"),
-            roster: root.join("roster.json"),
-            roster_taken: root.join("roster-taken.json"),
             tmux: common::stub_tmux(&root.join("tmux")),
             state: root.join("tmux").join("tmux-stub.json"),
             delivery: root.join("delivery.json"),
@@ -126,7 +121,6 @@ impl Rig {
             ),
         )
         .expect("the machine config is written");
-        rig.write_stub();
         rig.roster("[]");
         rig
     }
@@ -145,9 +139,11 @@ impl Rig {
             ),
         )
         .expect("the policy is written");
+        common::stub_agent(&self.project);
         common::take_a_store(&self.project);
         self.git(&["init", "--quiet", "--initial-branch", "main"]);
         common::store_outside_git(&self.project);
+        agent_stub_outside_git(&self.project);
     }
 
     /// The delivering seat's full id, which its items are assigned to.
@@ -289,7 +285,7 @@ impl Rig {
         let out = Command::new(env!("CARGO_BIN_EXE_fleet"))
             .args(["item", "show", item, "--json"])
             .current_dir(&self.project)
-            .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub))
+            .hermetic(&self.root.join("home"), &self.machine)
             .output()
             .expect("the built binary runs");
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -305,36 +301,20 @@ impl Rig {
             .unwrap_or_else(|| panic!("the timeline carries a {kind} entry: {document}"))
     }
 
-    /// The stub: `agents` is the listing, which turns once the reviewer's pane
-    /// has taken a submit ([`common::listing_branch`]).
-    fn write_stub(&self) {
-        std::fs::write(
-            &self.stub,
-            format!(
-                "#!/bin/sh\ncase \"$1\" in\n{agents}\x20 *) exit 64 ;;\nesac\n",
-                agents = common::listing_branch(&self.roster, &self.roster_taken, &self.state),
-            ),
-        )
-        .expect("the stub is written");
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&self.stub, std::fs::Permissions::from_mode(0o755))
-            .expect("the stub is executable");
-    }
-
+    /// The listing the agent stub reads.
     fn roster(&self, body: &str) -> &Rig {
-        std::fs::write(&self.roster, body).expect("the roster is written");
+        agent_stub::script(&self.project, |answers| {
+            answers.listing = Ok(body.to_string())
+        });
         self
     }
 
     /// The reviewer's live pane, and a listed row carrying its pid that reads
-    /// idle and busy once the pane has taken a submit.
+    /// idle, and busy once the pane has taken a submit: the stub follows the
+    /// tmux stub's panes.
     fn live(&self) -> &Rig {
         let pid = common::live_pane(&self.state, REVIEWER_ID, &self.worktree);
-        std::fs::write(
-            &self.roster_taken,
-            format!("[{}]", common::listed_row("abcdef", pid, "busy")),
-        )
-        .expect("the roster is written");
+        agent_stub::follow_host(&self.project, Some(&self.state));
         self.roster(&format!("[{}]", common::listed_row("abcdef", pid, "idle")))
     }
 
@@ -350,7 +330,7 @@ impl Rig {
             .arg("--packs-dir")
             .arg(self.machine.join("packs"))
             .current_dir(cwd)
-            .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub))
+            .hermetic(&self.root.join("home"), &self.machine)
             .env(common::hermetic::TMUX_BIN, &self.tmux)
             // The identity the delivery's own commit is made under. Named here
             // because `HOME` is the rig's: without it `git commit` reads the
@@ -380,6 +360,18 @@ impl Rig {
             .map(|line| serde_json::from_str(line).expect("an event is one JSON object"))
             .collect()
     }
+}
+
+/// The agent stub's state kept out of the status of the repository at `repo`,
+/// as [`common::store_outside_git`] keeps the store's: it is the rig's, and no
+/// file a delivery could leave unstaged.
+fn agent_stub_outside_git(repo: &Path) {
+    let exclude = repo.join(".git/info/exclude");
+    let mut lines = std::fs::read_to_string(&exclude).unwrap_or_default();
+    lines.push_str("\n.agent-stub\n");
+    std::fs::create_dir_all(exclude.parent().expect("info/ sits in the git dir"))
+        .expect("the git dir's info/ is made");
+    std::fs::write(&exclude, lines).expect("the exclude file is written");
 }
 
 impl Drop for Rig {

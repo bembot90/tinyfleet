@@ -14,10 +14,10 @@
 
 use std::path::{Path, PathBuf};
 
-use fleet_controller::adapter::{self, claude_code::DaemonListing};
+use fleet_controller::adapter;
 use fleet_controller::lifecycle::{self, FirstRun, Mode, ProjectAt};
-use fleet_controller::run::{self, DaemonCheck};
-use fleet_controller::{config, events, platform, policy as controller, sessions};
+
+use fleet_controller::{config, events, platform, policy as controller};
 use fleet_core::item::Stop;
 use fleet_core::seat::identity;
 use fleet_core::store::{self, AdapterSource, Opening, PackDirs, STORE_TIMEOUT};
@@ -639,7 +639,7 @@ fn install_agent(ui: &Ui, machine_dir: &Path, repo: &str, name: &str) -> Result<
 fn default_model(machine_dir: &Path, fleet_toml: &Path, name: &str) -> Option<String> {
     let setting = adapter::Setting::naming(name, fleet_toml, machine_dir);
     let home = platform::home_dir();
-    let opened = adapter::open(&setting.opening(&home, None, None)).ok()?;
+    let opened = adapter::open(&setting.opening(&home)).ok()?;
     let model = opened.agent.capabilities().ok()?.default_model;
     (!model.trim().is_empty()).then_some(model)
 }
@@ -956,7 +956,7 @@ fn start(ui: &Ui, args: &StartArgs) -> Result<Exit, Stop> {
     // refused here, before anything is loaded.
     let setting = adapter::Setting::read(&fleet.fleet_toml, &fleet.machine_dir)
         .map_err(|why| Stop::could_not_tell(format!("{why} — nothing was loaded")))?;
-    let opened = adapter::open(&setting.opening(&home, None, None))
+    let opened = adapter::open(&setting.opening(&home))
         .map_err(|why| Stop::could_not_tell(format!("{why} — nothing was loaded")))?;
     if let Some(why) = &opened.effects_off {
         return Err(Stop::could_not_tell(format!(
@@ -974,7 +974,6 @@ fn start(ui: &Ui, args: &StartArgs) -> Result<Exit, Stop> {
             "{why} — nothing was loaded; the search path is {child_path}"
         )));
     }
-    daemon_hosted(ui, &fleet.machine_dir, opened.daemon.as_deref())?;
 
     let policy = controller::load(&fleet.fleet_toml).map_err(Stop::could_not_tell)?;
     let report = lifecycle::first_run(&FirstRun {
@@ -1078,47 +1077,6 @@ fn start(ui: &Ui, args: &StartArgs) -> Result<Exit, Stop> {
             Ok(Exit::Done)
         }
         Err(not) => Err(Stop::could_not_tell(not.sentence())),
-    }
-}
-
-/// The upgrade refusal, at the terminal: the controller makes the same check
-/// before its first poll (ruling 10: the upgrade adopts nothing), and a person
-/// who meets it here reads it where they typed, not in the service's log.
-///
-/// It reads what the controller will: the seat list, the session table's
-/// recorded directories, and the listing under each. A seat list or a table
-/// that will not read names no seat and no directory here — the controller
-/// says why when it reads them — and a listing that cannot be read is one
-/// line, and the start goes on. An agent that has no daemon to host a seat's
-/// session reads nothing.
-fn daemon_hosted(
-    ui: &Ui,
-    machine_dir: &Path,
-    daemon: Option<&dyn DaemonListing>,
-) -> Result<(), Stop> {
-    let Some(daemon) = daemon else {
-        return Ok(());
-    };
-    let seats = config::read(&machine_dir.join("config.json"))
-        .map(|machine| machine.seats)
-        .unwrap_or_default();
-    let (table, _) = sessions::read(&sessions::path_in(machine_dir));
-    match run::daemon_check(&seats, &table.unwrap_or_default(), daemon) {
-        DaemonCheck::Clear => Ok(()),
-        DaemonCheck::Hosted(lines) => Err(Stop::refused(format!(
-            "{}\nnothing was loaded",
-            lines.join("\n")
-        ))),
-        DaemonCheck::Unreadable(cause) => {
-            ui.status(
-                Stream::Err,
-                Tone::Flat,
-                "agent:",
-                &run::daemon_unreadable_line(&cause),
-                None,
-            );
-            Ok(())
-        }
     }
 }
 

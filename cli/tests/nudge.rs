@@ -1,10 +1,10 @@
 //! `fleet seat nudge` through the shipped binary, with the ring TYPED into the
-//! seat's own session on `fleet-tmux-stub` and the agent's listing answered by
-//! a stub script.
+//! seat's own session on `fleet-tmux-stub` and the agent answered by
+//! `fleet-agent-stub`.
 //!
-//! The stub's `agents` serves a roster file until the seat's pane has taken a
-//! submit, and the "taken" roster after it, where the arm wrote one — a session
-//! that takes a typed turn reads busy on its next listing. What the projection
+//! The stub's listing is the arm's roster, and where the arm says the seat takes
+//! what is typed the stub follows the tmux stub's panes — a row under a pane
+//! that has taken a submit reads busy on its next read. What the projection
 //! says is a file each arm writes, because the two refusals in front of the
 //! delivery are readings of that document and of nothing else.
 //!
@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use fleet_controller::test_support::{FakeServer, Sent};
+use fleet_controller::test_support::{agent_stub, FakeServer, Sent};
 
 mod common;
 use common::hermetic::Hermetic;
@@ -25,18 +25,13 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 const POLL_SECONDS: u64 = 5;
 const POLICY: &str = "[controller]\nnudge_timeout_seconds = 20\n";
 
-/// One arm's project, machine directory, seat worktree, provider stub and tmux
-/// stub.
+/// One arm's project, machine directory, seat worktree and tmux stub. The
+/// agent stub keeps its state under the project, the fleet's root.
 struct Rig {
     root: PathBuf,
     project: PathBuf,
     machine: PathBuf,
     worktree: PathBuf,
-    stub: PathBuf,
-    roster: PathBuf,
-    /// What the listing reads once the seat's pane has taken a submit. Absent,
-    /// the listing never moves: a session that leaves a typed turn untaken.
-    roster_taken: PathBuf,
     /// The link `FLEET_TMUX_BIN` names, and the fake server's state beside it.
     tmux: PathBuf,
     state: PathBuf,
@@ -62,12 +57,10 @@ impl Rig {
             std::fs::create_dir_all(dir).expect("the directory is created");
         }
         std::fs::write(project.join("fleet.toml"), POLICY).expect("the policy file is written");
+        common::stub_agent(&project);
 
         let tmux = common::stub_tmux(&root.join("tmux"));
         let rig = Rig {
-            stub: root.join("agent.sh"),
-            roster: root.join("roster.json"),
-            roster_taken: root.join("roster-taken.json"),
             state: root.join("tmux").join("tmux-stub.json"),
             tmux,
             root,
@@ -76,7 +69,6 @@ impl Rig {
             worktree,
         };
         rig.named(NAME);
-        rig.write_stub();
         rig.roster("[]");
         rig
     }
@@ -118,25 +110,18 @@ impl Rig {
         self
     }
 
-    /// The stub: `agents` is the listing, which reads the "taken" roster once
-    /// the seat's pane has taken a submit and the arm wrote one
-    /// ([`common::listing_branch`]).
-    fn write_stub(&self) {
-        std::fs::write(
-            &self.stub,
-            format!(
-                "#!/bin/sh\ncase \"$1\" in\n{agents}\x20 *) exit 64 ;;\nesac\n",
-                agents = common::listing_branch(&self.roster, &self.roster_taken, &self.state),
-            ),
-        )
-        .expect("the stub is written");
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&self.stub, std::fs::Permissions::from_mode(0o755))
-            .expect("the stub is executable");
+    /// The listing the agent stub reads.
+    fn roster(&self, body: &str) -> &Rig {
+        agent_stub::script(&self.project, |answers| {
+            answers.listing = Ok(body.to_string())
+        });
+        self
     }
 
-    fn roster(&self, body: &str) -> &Rig {
-        std::fs::write(&self.roster, body).expect("the roster is written");
+    /// Whether a row under a pane that has taken a submit reads busy: a
+    /// session that takes what is typed, or one that leaves it untaken.
+    fn takes_typed_turns(&self, takes: bool) -> &Rig {
+        agent_stub::follow_host(&self.project, takes.then_some(self.state.as_path()));
         self
     }
 
@@ -150,9 +135,7 @@ impl Rig {
     /// `busy` once the pane has taken a submit.
     fn listed(&self, status: &str) -> &Rig {
         let pid = self.pane();
-        self.roster(&row(pid, status));
-        std::fs::write(&self.roster_taken, row(pid, "busy")).expect("the roster is written");
-        self
+        self.roster(&row(pid, status)).takes_typed_turns(true)
     }
 
     /// A live seat that takes what is typed: idle, then busy.
@@ -162,9 +145,7 @@ impl Rig {
 
     /// A live seat that leaves what is typed at its prompt: idle, and idle.
     fn never_takes(&self) -> &Rig {
-        self.live();
-        std::fs::remove_file(&self.roster_taken).expect("the taken roster is removed");
-        self
+        self.live().takes_typed_turns(false)
     }
 
     /// The projection, as the collector would have published it `age` seconds
@@ -198,7 +179,7 @@ impl Rig {
         Command::new(env!("CARGO_BIN_EXE_fleet"))
             .args(args)
             .current_dir(&self.project)
-            .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub))
+            .hermetic(&self.root.join("home"), &self.machine)
             .env(common::hermetic::TMUX_BIN, &self.tmux)
             .env("FLEET_ACTOR", "run:a-caller")
             .output()

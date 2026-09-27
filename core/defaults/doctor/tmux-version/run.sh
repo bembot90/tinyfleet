@@ -23,8 +23,8 @@
 # cannot read a Rust constant. The core suite reads this line and fails until
 # the two agree, so a floor move that forgets it is refused at the suite.
 #
-# BUILT ON SHELL BUILTINS ALONE, as the Claude Code check is: the absence
-# reading is taken with tmux off PATH, and a check that needs its own tools on
+# BUILT ON SHELL BUILTINS ALONE: the absence reading is taken with tmux off
+# PATH, and a check that needs its own tools on
 # that same PATH cannot tell an absent tmux from an absent grep.
 #
 # FLEET_TMUX_BIN names the binary where it is set — the seam the controller

@@ -70,7 +70,7 @@ impl Rig {
         Command::new(env!("CARGO_BIN_EXE_fleet"))
             .args(args)
             .current_dir(self.fleet_root())
-            .hermetic(&self.root.join("home"), &self.machine(), None)
+            .hermetic(&self.root.join("home"), &self.machine())
             .env_remove("FLEET_ORDERS_CLOCK")
             .output()
             .expect("the built binary runs")

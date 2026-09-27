@@ -1,10 +1,10 @@
 //! The four seat events, from the writing end.
 //!
 //! A seat's lifecycle is not a state this controller infers — the roster cannot
-//! tell a hibernated session from a deliberately stopped one (lessons
-//! claude-code A3) — so it is four events any workflow emits through the CLI,
-//! and the controller consumes them on its tick. There is no marker file and no
-//! write to the work graph anywhere in this path.
+//! tell a hibernated session from a deliberately stopped one
+//! (lessons claude-code A3) — so it is four events any workflow emits through
+//! the CLI, and the controller consumes them on its tick. There is no marker
+//! file and no write to the work graph anywhere in this path.
 
 use crate::clock;
 use crate::config;

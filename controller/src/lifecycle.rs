@@ -1345,7 +1345,7 @@ mod tests {
                 worktrees_dir: &worktrees,
             }),
             policy: &policy,
-            agent: &crate::adapter::claude_code::capabilities(),
+            agent: &crate::test_support::capabilities(),
             service: &service,
         };
 

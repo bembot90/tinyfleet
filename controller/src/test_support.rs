@@ -13,6 +13,29 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub mod agent_stub;
+pub mod reading;
+
+/// What the stub declares about its agent where an arm says nothing else:
+/// the three postures, its own model and first turn, `context` answered off
+/// its session log, measured against its own [`StubAgent::VERSION`] — so a
+/// stub fleet announces no move — and `auto` held to its own model's prefix.
+pub fn capabilities() -> Capabilities {
+    Capabilities {
+        postures: vec![
+            crate::adapter::Posture::Ask,
+            crate::adapter::Posture::Auto,
+            crate::adapter::Posture::Unattended,
+        ],
+        default_model: StubAgent::MODEL.to_string(),
+        first_turn: StubAgent::FIRST_TURN.to_string(),
+        context: true,
+        measured: vec![StubAgent::VERSION.to_string()],
+        posture_models: std::collections::BTreeMap::from([(
+            crate::adapter::Posture::Auto,
+            vec![StubAgent::AUTO_CAPABLE.to_string()],
+        )]),
+    }
+}
 
 /// Time a test owns. [`Clock::sleep`] advances it by exactly the duration asked
 /// for and returns, so a wait spent against this clock costs no wall clock and a
@@ -102,11 +125,9 @@ pub struct Call {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Answers {
-    /// The listing `read` is answered from, in the shape the one real adapter
-    /// reads (`claude agents --json --all`'s JSON rows), or why none could be
-    /// read. Every directory a read names is answered from it, and a seat is
-    /// found in it by the real adapter's own rules
-    /// ([`crate::adapter::claude_code::readings_from`]).
+    /// The listing `read` is answered from, as the stub's own JSON rows, or
+    /// why none could be read. Every directory a read names is answered from
+    /// it, and a seat is found in it by [`reading::readings_from`].
     pub listing: Result<String, String>,
     pub version: Option<String>,
     /// `Ok` is a launch built from the request ([`StubAgent::launched`]), and
@@ -114,14 +135,14 @@ pub struct Answers {
     pub launch: Result<(), Declined>,
     /// The same for a resume ([`StubAgent::resumed`]).
     pub resume: Result<(), Declined>,
-    /// The log every session reads as, in the shape the one real adapter reads
-    /// a transcript in — its first turn for `read`'s
-    /// logged-out answer, and its window and turns for `context`.
+    /// The log every session reads as, one JSON entry a line — its first turn
+    /// for `read`'s logged-out answer, and its window and turns for `context`
+    /// ([`reading::context_of`]).
     pub session_log: Option<String>,
     /// When every session last wrote, in epoch milliseconds, for `context`.
     pub last_write: Option<u64>,
-    /// What `capabilities` declares: the one real adapter's, unless an arm
-    /// says otherwise.
+    /// What `capabilities` declares: [`capabilities`], unless an arm says
+    /// otherwise.
     pub capabilities: Capabilities,
 }
 
@@ -136,7 +157,7 @@ impl Default for Answers {
             resume: Ok(()),
             session_log: None,
             last_write: None,
-            capabilities: crate::adapter::claude_code::capabilities(),
+            capabilities: capabilities(),
         }
     }
 }
@@ -188,6 +209,19 @@ impl StubAgent {
 
     /// The agent the stub's `version` names.
     pub const NAME: &'static str = "stub";
+
+    /// The model a seat that names none starts on, as [`capabilities`]
+    /// declares it.
+    pub const MODEL: &'static str = "stub-model-5";
+
+    /// The first turn [`capabilities`] declares, with `{seat}` the session's
+    /// name.
+    pub const FIRST_TURN: &'static str = "/wake {seat}";
+
+    /// The one prefix [`capabilities`] holds `auto` to: the stub's own
+    /// model's family, so [`StubAgent::MODEL`] takes it and a model outside
+    /// the family is started under no posture it was not measured to honour.
+    pub const AUTO_CAPABLE: &'static str = "stub-model-";
 
     pub fn new() -> StubAgent {
         StubAgent::answering(Answers::default())
@@ -331,28 +365,6 @@ impl StubAgent {
     }
 }
 
-/// An operator's own agent state file, as a spawn's seed copies from it: the
-/// three onboarding keys and nothing of the operator's that a seat must not
-/// get. A rig whose spawns start under a configuration directory of their own
-/// plants it with [`plant_operator_state`], or every such spawn is refused
-/// for a key it cannot copy.
-pub const OPERATOR_STATE: &str = r#"{
-  "hasCompletedOnboarding": true,
-  "lastOnboardingVersion": "0.0.0-test",
-  "oauthAccount": {"emailAddress": "nobody@example.invalid"}
-}"#;
-
-/// [`OPERATOR_STATE`] at `<home>/.claude.json`, which is where the adapter
-/// reads it when no configuration directory is configured.
-pub fn plant_operator_state(home: &Path) {
-    std::fs::create_dir_all(home).expect("the home is made");
-    std::fs::write(
-        home.join(crate::adapter::claude_code::STATE_FILE),
-        OPERATOR_STATE,
-    )
-    .expect("the operator's state file is planted");
-}
-
 /// The working directory an [`arrived`] row stands in: a directory no seat
 /// has, so the row is the start's to find by its pid and no seat's to match by
 /// its directory.
@@ -360,8 +372,8 @@ pub const ARRIVED_CWD: &str = "/nowhere/arrived";
 
 /// The row the listing shows for a session a start brought up on a
 /// [`FakeHost`], found by the pane's pid and carrying a status, which is what
-/// a start's watch believes (lessons claude-code B10) — as the JSON the one
-/// real adapter reads.
+/// a start's watch believes (the claude-code pack's lessons B10) — as the
+/// stub's own JSON ([`reading::readings_from`]).
 ///
 /// It stands in [`ARRIVED_CWD`] and not in the seat's worktree. A session is a
 /// seat's by the pane's pid and never by where it stands (fleet-rge6.3), so
@@ -458,8 +470,8 @@ impl Agent for StubAgent {
             .map_err(AgentError::from)
     }
 
-    /// The one real adapter's own rules, over the stub's listing and its one
-    /// transcript.
+    /// [`reading::readings_from`], over the stub's listing and its one session
+    /// log.
     fn read(&self, seats: &[SeatRef]) -> Result<Vec<SeatActivity>, AgentError> {
         self.record(StubAgent::READ, about(seats));
         let answers = self.answers();
@@ -469,15 +481,16 @@ impl Agent for StubAgent {
             .expect("the stub agent's own lock")
             .pop_front()
             .unwrap_or(answers.listing);
-        Ok(crate::adapter::claude_code::readings_from(
+        Ok(reading::readings_from(
             seats,
             &|_: Option<&str>| listing.clone(),
             &|_: &SeatRef, _: &str| answers.session_log.clone(),
         ))
     }
 
-    /// Every seat with a session reads the stub's one transcript, last written
-    /// when [`Answers::last_write`] says; a seat with none answers its id alone.
+    /// Every seat with a session reads the stub's one session log, last
+    /// written when [`Answers::last_write`] says; a seat with none answers its
+    /// id alone.
     fn context(&self, seats: &[SeatRef]) -> Result<Vec<SeatContext>, AgentError> {
         self.record(StubAgent::CONTEXT, about(seats));
         let answers = self.answers();
@@ -487,20 +500,10 @@ impl Agent for StubAgent {
         Ok(seats
             .iter()
             .map(|seat| match seat.session_id {
-                Some(_) => crate::adapter::claude_code::context_of(
-                    seat,
-                    answers.session_log.as_deref(),
-                    written,
-                ),
-                None => crate::adapter::claude_code::context_of(seat, None, None),
+                Some(_) => reading::context_of(seat, answers.session_log.as_deref(), written),
+                None => reading::context_of(seat, None, None),
             })
             .collect())
-    }
-
-    /// The one real screen rule, read as the adapter reads it: an arm drives
-    /// the fallback by putting the agent's own question on a fake pane.
-    fn trust_keys(&self, screen: &str) -> Option<Vec<String>> {
-        crate::adapter::claude_code::trust_keys(screen)
     }
 }
 // ---- the host fake ----------------------------------------------------------
@@ -599,10 +602,10 @@ pub struct FakeServer {
     /// dies on the interrupt does: dead with no status, since a process ended by
     /// a signal carries none.
     ///
-    /// Unset, the interrupt ends nothing, which is the agent measured: on Claude
-    /// Code 2.1.280 one `C-c` ended a busy session's turn and left an idle one
-    /// asking for a second press, and neither pane died (fleet-rge6.4,
-    /// 2026-09-26). So a stop against the default waits out its whole grace;
+    /// Unset, the interrupt ends nothing, which is the agent measured: through
+    /// the claude-code pack, on 2.1.280, one `C-c` ended a busy session's turn
+    /// and left an idle one asking for a second press, and neither pane died
+    /// (fleet-rge6.4, 2026-09-26). So a stop against the default waits out its whole grace;
     /// a suite whose arms stop sessions without being about that wait sets
     /// this, and the arm about the grace does not.
     #[serde(default)]

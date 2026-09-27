@@ -239,10 +239,11 @@ pub const WRITES: [&str; 9] = [
 pub const STARTS_DIR: &str = "starts";
 
 /// How often a start's watch reads the pane and the listing. The listing
-/// answered in 100–160 ms (lessons claude-code B10) and an interactive row
-/// was listed 0.5–0.75 s after the session was made, carrying its status half
-/// a second later (measured on 2.1.280, 2026-09-26), so a quarter second
-/// believes a start within one read of its row and costs a handful of reads.
+/// answered in 100–160 ms (the claude-code pack's lessons B10) and an
+/// interactive row was listed 0.5–0.75 s after the session was made, carrying
+/// its status half a second later (measured on 2.1.280, 2026-09-26), so a
+/// quarter second believes a start within one read of its row and costs a
+/// handful of reads.
 pub const WATCH_TICK: Duration = Duration::from_millis(250);
 
 /// Where one call's words go under the machine directory: named by the
@@ -269,12 +270,9 @@ pub fn start_capture_path(machine_dir: &Path, session_name: &str) -> PathBuf {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Watched {
     /// The agent's `read` found a session for the pane and says what it is
-    /// doing (lessons claude-code B10): the agent is up, and up as this pane's
-    /// process. `trust_answered` is a start whose screen stopped at the
-    /// workspace-trust question and was answered from it — the fallback the
-    /// seeded acceptance should leave unused, recorded so a reader of the
-    /// stream sees that it was not.
-    Started { trust_answered: bool },
+    /// doing (the claude-code pack's lessons B10): the agent is up, and up as
+    /// this pane's process.
+    Started,
     /// The pane died, the session went, or the window closed with no row. The
     /// session HAS BEEN KILLED — a failed start leaves nothing on the host — and
     /// `screen` is its last capture where one could be taken.
@@ -295,9 +293,6 @@ pub struct Watch<'a> {
     /// The configuration directory the session came up under, `None` for the
     /// adapter's own.
     pub config_dir: Option<&'a Path>,
-    /// A start into a worktree fleet created, and only such a start may answer
-    /// the agent's workspace-trust question from the screen (ruling 13).
-    pub answer_trust: bool,
     pub window: Duration,
     /// The session a REVIVE resumed, which the pane must come up as.
     pub resumes: Option<&'a str>,
@@ -317,9 +312,6 @@ pub struct Watch<'a> {
 /// (B10). Neither inside the window is a failure too: a session that runs and
 /// never lists is one no read will ever see.
 ///
-/// The screen is read only while no session is found, only for a start that
-/// may answer the trust question, and answered at most once.
-///
 /// A REVIVE is believed only where the agent names THE RESUMED SESSION for the
 /// pane: a session under any other id is a fork — a new session that holds
 /// none of the old one's context — and is failed and killed like any start
@@ -332,7 +324,6 @@ pub fn watch_start(agent: &dyn Agent, host: &dyn Host, watch: &Watch) -> Watched
     let session = host::session_for(watch.seat);
     let window = watch.window;
     let deadline = Instant::now() + window;
-    let mut trust_answered = false;
     let failed = |cause: String, status: Option<i32>| {
         let screen = host.capture(&session).ok();
         let _ = host.kill(&session);
@@ -387,18 +378,8 @@ pub fn watch_start(agent: &dyn Agent, host: &dyn Host, watch: &Watch) -> Watched
                                         ),
                                         None,
                                     ),
-                                    _ => Watched::Started { trust_answered },
+                                    _ => Watched::Started,
                                 };
-                            }
-                        }
-                        if watch.answer_trust && !trust_answered {
-                            if let Some(keys) = host
-                                .capture(&session)
-                                .ok()
-                                .and_then(|screen| agent.trust_keys(&screen))
-                            {
-                                let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
-                                trust_answered = host.keys(&session, &keys).is_ok();
                             }
                         }
                     }
@@ -429,7 +410,7 @@ pub fn start_once(
 ) -> Result<String, String> {
     let session = host::session_for(&target.seat);
     match bring_up(agent, host, policy, target, None) {
-        Watched::Started { trust_answered } => {
+        Watched::Started => {
             let payload = serde_json::json!({
                 "worktree": target.worktree,
                 "project": target.project,
@@ -445,7 +426,6 @@ pub fn start_once(
                 // The session's words are in its pane, so the output a reader
                 // is pointed at is the session itself, on fleet's own server.
                 "output": format!("-L {} -t {session}", host::SOCKET),
-                "trust_answered": trust_answered,
             });
             Ok(append(
                 events_log,
@@ -548,7 +528,6 @@ fn bring_up(
                 seat: &target.seat,
                 worktree: target.worktree,
                 config_dir: target.config_dir(),
-                answer_trust: target.config_dir.is_some(),
                 window: Duration::from_secs(policy.start_watch_seconds),
                 resumes,
             },
@@ -590,11 +569,12 @@ fn keep_capture(machine_dir: &Path, session_name: &str, screen: &str) -> Option<
 /// How long a stop waits, after its interrupt, for the session to end on its
 /// own before it is killed.
 ///
-/// On Claude Code 2.1.280 the interrupt ends a turn in hand and never the
-/// session — a busy one read idle half a second after it, an idle one only
-/// asked for a second press — so the wait runs out on every stop of that agent
-/// and the kill is what ends it (measured 2026-09-26, fleet-rge6.4). It stays,
-/// agent-neutral, for an agent whose interrupt does end it.
+/// Through the claude-code pack, on 2.1.280, the interrupt ends a turn in hand
+/// and never the session — a busy one read idle half a second after it, an
+/// idle one only asked for a second press — so the wait runs out on every stop
+/// of that agent and the kill is what ends it (measured 2026-09-26,
+/// fleet-rge6.4). It stays, agent-neutral, for an agent whose interrupt does
+/// end it.
 pub const STOP_GRACE: Duration = Duration::from_secs(5);
 
 /// End the seat's session `name` on the host, and answer `Ok` only when the
@@ -602,8 +582,9 @@ pub const STOP_GRACE: Duration = Duration::from_secs(5);
 ///
 /// In order: one interrupt (`C-c`), so a turn in hand is ended rather than cut
 /// off; up to [`STOP_GRACE`] for the pane to read dead or the session to be
-/// gone; then the session killed, which ends it whatever it is doing (lessons
-/// claude-code D8; the listing dropped its row by the next read, B10).
+/// gone; then the session killed, which ends it whatever it is doing
+/// (the claude-code pack's lessons D8; the listing dropped its row by the next
+/// read, B10).
 ///
 /// THE WITNESS IS THE HOST, NEVER THE ACT'S OWN RETURN — the rule the daemon's
 /// stop and attach taught (lessons claude-code A6, A7, retired). A listing read
@@ -694,12 +675,12 @@ pub fn rest(
 /// host whose command is the resume of the session's full id (reviewer call
 /// 2026-09-25, E2, E3).
 ///
-/// The session id is the one the table recorded: a dead pane's row is gone
-/// from the listing with its process (lessons claude-code B10), so the caller
-/// fills `target.session_id` from the seat's newest row. [`Agent::resume`]
-/// answers what to run, the dead session is cleared off the host, and the
-/// watch believes the new one only when the pane's own process is listed
-/// under THAT id — a row under any other is a fork, which is failed and
+/// The session id is the one the table recorded: a dead pane's row is gone from
+/// the listing with its process (the claude-code pack's lessons B10), so the
+/// caller fills `target.session_id` from the seat's newest row.
+/// [`Agent::resume`] answers what to run, the dead session is cleared off the
+/// host, and the watch believes the new one only when the pane's own process is
+/// listed under THAT id — a row under any other is a fork, which is failed and
 /// killed.
 ///
 /// A revive that came up writes `session.revived` and RE-OPENS the row as a
@@ -730,7 +711,7 @@ pub fn revive(
         return Outcome::None;
     };
     match bring_up(agent, host, policy, target, Some(session_id)) {
-        Watched::Started { trust_answered } => {
+        Watched::Started => {
             let dispatch_id = append(
                 events_log,
                 events::SESSION_REVIVED,
@@ -749,7 +730,6 @@ pub fn revive(
                     "first_turn": target.first_turn,
                     "transient": target.transient,
                     "output": format!("-L {} -t {}", host::SOCKET, host::session_for(&target.seat)),
-                    "trust_answered": trust_answered,
                 }),
             );
             // A row this controller did not open — a session it adopted, or
@@ -953,13 +933,15 @@ pub enum Typed {
     /// The row was already busy, so the turn was typed and WAITS behind the one
     /// in hand. Never called delivered (reviewer call 2026-09-25, E5): a busy
     /// row after the send cannot tell the queued turn from the one ahead of it.
-    /// On Claude Code 2.1.280 a turn typed into a busy session ran as its own
-    /// turn once the first had ended (measured 2026-09-26).
+    /// Through the claude-code pack, on 2.1.280, a turn typed into a busy
+    /// session ran as its own turn once the first had ended (measured
+    /// 2026-09-26).
     Queued,
     /// The row stood in front of a human, carrying what on, and NOTHING WAS
-    /// TYPED: keys sent at a dialog answer it (lessons claude-code B8, B10). On
-    /// 2.1.280 a paste and a submit at a permission prompt lost the text and
-    /// approved the tool call (measured 2026-09-26).
+    /// TYPED: keys sent at a dialog answer it
+    /// (the claude-code pack's lessons B8, B10). On 2.1.280 a paste and a
+    /// submit at a permission prompt lost the text and approved the tool call
+    /// (measured 2026-09-26).
     Blocked(String),
     /// No live pane under the seat's session, or no listed row carrying the
     /// pane's pid: there is no session to type into, and nothing was.
@@ -985,10 +967,11 @@ impl Typed {
     }
 }
 
-/// How often a typed turn's listing is read for the row turning busy. On Claude
-/// Code 2.1.280 the row read busy on the first read after the submit, 0.14 s
-/// on, and a one-word turn held busy for half a second and more (measured
-/// 2026-09-26), so a quarter second meets even the shortest turn.
+/// How often a typed turn's listing is read for the row turning busy. Through
+/// the claude-code pack, on 2.1.280, the row read busy on the first read after
+/// the submit, 0.14 s on, and a one-word turn held busy for half a second and
+/// more (measured 2026-09-26), so a quarter second meets even the shortest
+/// turn.
 pub const TURN_TICK: Duration = WATCH_TICK;
 
 /// The seat's live pane and the agent's reading of it, read FRESH: the host's
@@ -1060,7 +1043,7 @@ pub struct Live {
 /// ([`Host::send`]); and a seat that was idle is then read every [`TURN_TICK`]
 /// for `busy` on the same pane until `bound` closes. The host's `Ok` is a
 /// dispatch and never a witness: only the agent's reading says the turn was
-/// taken (lessons claude-code D8). A seat that was busy already is
+/// taken (the claude-code pack's lessons D8). A seat that was busy already is
 /// [`Typed::Queued`] at once.
 pub fn type_turn(
     agent: &dyn Agent,

@@ -118,18 +118,15 @@ pub const STDERR_LOG: &str = "stderr.log";
 /// workflow calls back into resolves its project from this name and not from
 /// where it was started.
 ///
-/// Beside them, five PASS-THROUGHS that are not names of the run: the five in
+/// Beside them, four PASS-THROUGHS that are not names of the run: the four in
 /// [`ENV_PASSED_THROUGH`], each copied from this process's own environment when
 /// set there. `PATH` is not one of them — it is CONSTRUCTED, and
 /// [`Wiring::child_path`] says out of what. The dispatch a workflow calls back
-/// into resolves the agent binary on a child `PATH` the controller constructs
-/// from `HOME` — under no `HOME` that path ends in a RELATIVE `.local/bin` and
-/// finds nothing — or from `FLEET_CLAUDE_BIN`, which the controller reads
-/// verbatim and refuses unless absolute, so it is forwarded as written and
-/// never resolved here. `USER`, `TMPDIR` and `LANG` are here for the seat that
-/// dispatch starts: the adapter's own pass-through list
-/// (`fleet_controller::adapter::claude_code::PASSED_THROUGH`) copies them off
-/// whatever process it runs in, and under a workflow that process is this
+/// into builds the agent's `PATH` from `HOME` — under no `HOME` that path ends
+/// in a RELATIVE `.local/bin` and finds nothing. `USER`, `TMPDIR` and `LANG`
+/// are here for the seat that dispatch starts: the controller's own
+/// pass-through list (`fleet_controller::platform::PASSED_THROUGH`) copies them
+/// off whatever process it runs in, and under a workflow that process is this
 /// child — a seat started with no `USER` finds no keychain entry and comes up
 /// logged out. Like `HOME`, they name the person's session and nothing of the
 /// run. Nothing else crosses the clearing.
@@ -140,7 +137,7 @@ pub const ENV_RUN_DIR: &str = "FLEET_RUN_DIR";
 pub const ENV_BIN: &str = "FLEET_BIN";
 pub const ENV_PROJECT: &str = "FLEET_PROJECT";
 pub const ENV_DIR: &str = "FLEET_DIR";
-pub const ENV_PASSED_THROUGH: [&str; 5] = ["HOME", "FLEET_CLAUDE_BIN", "USER", "TMPDIR", "LANG"];
+pub const ENV_PASSED_THROUGH: [&str; 4] = ["HOME", "USER", "TMPDIR", "LANG"];
 
 /// Where the stream is and how far it has got.
 ///

@@ -128,7 +128,7 @@ impl Rig {
         Command::new(&fleet)
             .args(args)
             .current_dir(&self.project)
-            .hermetic(&self.root.join("home"), &self.machine, None)
+            .hermetic(&self.root.join("home"), &self.machine)
             .env("NO_COLOR", "1")
             .env("PATH", path)
             .output()
@@ -217,7 +217,7 @@ fn a_list_naming_no_read_is_usage() {
     let out = Command::new(env!("CARGO_BIN_EXE_fleet"))
         .args(["item", "list", "--json"])
         .current_dir(&nowhere)
-        .hermetic(&rig.root.join("home"), &rig.machine, None)
+        .hermetic(&rig.root.join("home"), &rig.machine)
         .output()
         .expect("the built binary runs");
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));

@@ -27,8 +27,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
 
-/// The variable that names the tmux binary, in the shape `FLEET_CLAUDE_BIN`
-/// has: an ABSOLUTE path, never a name this module would search for.
+/// The variable that names the tmux binary, in the shape `FLEET_BIN` has: an
+/// ABSOLUTE path, never a name this module would search for.
 pub const TMUX_BIN_VAR: &str = "FLEET_TMUX_BIN";
 
 /// The binary when nothing names one, resolved on the constructed `PATH`.
@@ -68,19 +68,19 @@ impl TmuxHost {
     /// The host on [`super::SOCKET`], its binary resolved once.
     ///
     /// `FLEET_TMUX_BIN` when it names an absolute path to an executable file;
-    /// a relative one is refused rather than resolved, for the reason
-    /// the agent binary's own seam refuses one. Otherwise the first `tmux` on the
-    /// constructed `PATH`. Under `FLEET_TEST_HERMETIC` an unnamed binary is
-    /// refused, as `configured_bin` refuses one: a suite run inside a flight
-    /// inherits a live environment, and an arm that missed its stub would
-    /// otherwise start sessions on the operator's own tmux. The refusal is
-    /// RETURNED where `configured_bin` exits the process: that one's callers
-    /// fall back to a binary on failure, and a caller of this one is left with
-    /// no host at all, so no tmux runs either way.
+    /// a relative one is refused rather than resolved: a relative path is
+    /// read against whatever directory the service manager left this process
+    /// in, which is a different file per host. Otherwise the first `tmux` on
+    /// the constructed `PATH`. Under `FLEET_TEST_HERMETIC`
+    /// ([`platform::hermetic`]) an unnamed binary is refused: a suite run
+    /// inside a flight inherits a live environment, and an arm that missed its
+    /// stub would otherwise start sessions on the operator's own tmux. The
+    /// refusal is returned, and a caller of this is left with no host at all,
+    /// so no tmux runs.
     pub fn resolve(child_path: &str) -> Result<TmuxHost, String> {
         TmuxHost::resolve_from(
             std::env::var(TMUX_BIN_VAR).ok().as_deref(),
-            crate::adapter::claude_code::hermetic(),
+            platform::hermetic(),
             child_path,
         )
     }
@@ -107,7 +107,7 @@ impl TmuxHost {
                 return Err(format!(
                     "{} is set and {TMUX_BIN_VAR} names no tmux binary — refusing to fall back \
                      to a `{DEFAULT_BIN}` on PATH",
-                    crate::adapter::claude_code::HERMETIC_VAR
+                    platform::HERMETIC_VAR
                 ))
             }
             None => platform::resolve_on_path(child_path, DEFAULT_BIN).ok_or_else(|| {

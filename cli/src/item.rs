@@ -1306,7 +1306,7 @@ impl SeatRing {
             Ok(setting) => setting,
             Err(cause) => return rang_nobody(cause),
         };
-        let agent = match adapter::open(&setting.opening(&home, policy.plugin_dir.clone(), None)) {
+        let agent = match adapter::open(&setting.opening(&home)) {
             Ok(opened) => opened.agent,
             Err(cause) => return rang_nobody(cause),
         };

@@ -30,9 +30,7 @@ mod effects {
     const LOW_THRESHOLD: u64 = 100;
 
     fn policy_with(extra: &str) -> String {
-        format!(
-            "[controller]\npoll_seconds = 1\n{extra}\n[substrate.claude_code]\nversion = \"9.9.9\"\n"
-        )
+        format!("[controller]\npoll_seconds = 1\n{extra}\n")
     }
 
     /// A transcript carrying one main-chain reading.
@@ -469,7 +467,7 @@ mod effects {
         );
         assert!(!argv.iter().any(|word| word == "--bg"), "{argv:?}");
         assert_eq!(flag_value(&argv, "--name"), SEAT);
-        assert_eq!(flag_value(&argv, "--model"), "claude-opus-5");
+        assert_eq!(flag_value(&argv, "--model"), StubAgent::MODEL);
         assert_eq!(flag_value(&argv, "--posture"), "auto");
         assert_eq!(argv.last(), Some(&format!("/wake {SEAT}")));
         assert_eq!(
@@ -496,7 +494,7 @@ mod effects {
         let row = &table["sessions"][0];
         assert_eq!(row["seat"], SEAT_ID);
         assert_eq!(row["name"], SEAT);
-        assert_eq!(row["model"], "claude-opus-5");
+        assert_eq!(row["model"], StubAgent::MODEL);
         assert_eq!(row["posture"], "auto");
         assert_eq!(row["first_turn"], format!("/wake {SEAT}"));
         let spawned = rig
@@ -532,7 +530,8 @@ mod effects {
         );
 
         // And that sighting filled the row the dispatch opened — by the pane's
-        // pid, the row carrying no address of its own (lessons claude-code B10).
+        // pid, the row carrying no address of its own (the claude-code pack's
+        // lessons B10).
         assert_eq!(seat_row(&rig)["roster_state"], "present");
         let row = &rig.sessions()["sessions"][0];
         assert_eq!(
@@ -596,69 +595,10 @@ mod effects {
         );
     }
 
-    /// The plugin root end to end through the BUILT binary: the policy names a
-    /// relative directory, the start the loop issued carries it resolved against
-    /// the policy file's own directory, and the projection publishes the same
-    /// path for a reader of the document.
-    ///
-    /// The resolution is what only this suite can measure: the controller runs
-    /// with a working directory nobody configured, so a root resolved against
-    /// the process's cwd and one resolved against the file's differ here.
-    #[test]
-    fn a_start_carries_the_plugin_root_and_the_projection_reports_it() {
-        let rig = Rig::claude_code("effect-plugin-root");
-        rig.write_policy(&policy_with("plugin_dir = \"the-overlay\""));
-        rig.write_roster("[]");
-
-        let out = rig.observe();
-        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-        assert_eq!(seat_row(&rig)["outcome"], "spawned");
-
-        let beside = rig
-            .policy_path()
-            .parent()
-            .expect("the policy file sits in a directory")
-            .join("the-overlay")
-            .display()
-            .to_string();
-        let argv = rig.start_argv();
-        assert_eq!(flag_value(&argv, "--plugin-dir"), beside);
-        let at = argv
-            .iter()
-            .position(|word| word == "--plugin-dir")
-            .expect("the flag is in the argv");
-        assert_eq!(
-            argv.get(at + 2),
-            Some(&format!("/wake {SEAT}")),
-            "the element after the root's value is the first turn: {argv:?}"
-        );
-        assert_eq!(
-            rig.projection()["fleet"]["plugin_dir"],
-            serde_json::json!(beside),
-            "and the document names the root a reader would go looking for"
-        );
-
-        // The control: a fleet whose policy names none starts with no such
-        // element and publishes null, so the readings above are the key's.
-        let bare = Rig::claude_code("effect-plugin-root-control");
-        bare.write_roster("[]");
-        let out = bare.observe();
-        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-        let argv = bare.start_argv();
-        assert!(
-            !argv.iter().any(|word| word == "--plugin-dir"),
-            "no root is named, so no element is passed: {argv:?}"
-        );
-        assert_eq!(
-            bare.projection()["fleet"]["plugin_dir"],
-            serde_json::Value::Null
-        );
-    }
-
     /// A start the BUILT CONTROLLER issues hands the session the controller's own
-    /// binary as `FLEET_BIN`, so the plugin's hooks in that session run the
-    /// binary that spawned it — and not a build the plugin root may not hold,
-    /// which blocks every Bash command the session makes.
+    /// binary as `FLEET_BIN`, so the hooks in that session run the binary that
+    /// spawned it — and not some other build, which blocks every shell command
+    /// the session makes.
     ///
     /// Out of process, because the subject is WHICH EXECUTABLE IS RUNNING: in
     /// this process the running executable is the test binary, and a value read
@@ -702,35 +642,6 @@ mod effects {
         assert_eq!(seat_row(&rig)["outcome"], "spawned");
 
         assert_eq!(rig.start_actor(), format!("seat:{SEAT_ID}"));
-    }
-
-    /// A NAMED seat's start writes no settings into its worktree: that checkout
-    /// is a person's, and their own permission rules stay theirs. Only a
-    /// transient spawn renders the pack's document, and this loop makes none.
-    ///
-    /// Read off the worktree the loop actually started a session in, which the
-    /// arm above proves the start was issued for.
-    #[test]
-    fn a_named_seats_start_leaves_the_persons_own_settings_alone() {
-        let rig = Rig::claude_code("effect-named-settings");
-        rig.write_roster("[]");
-
-        let out = rig.observe();
-        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-        assert_eq!(seat_row(&rig)["outcome"], "spawned");
-
-        // The control on the absence below: the checkout the start named is
-        // there, so `.claude` is missing from a directory that exists rather
-        // than from one nothing made.
-        let worktree = rig.worktree();
-        assert!(worktree.is_dir(), "{} is there", worktree.display());
-
-        let claude = worktree.join(".claude");
-        assert!(
-            !claude.exists(),
-            "{} was written into a named seat's own checkout",
-            claude.display()
-        );
     }
 
     /// AC3(b), AC7 and AC8 — the rest collection, in its fixed order of stop
@@ -1030,7 +941,7 @@ mod effects {
         rig.write_config(&format!(
             r#"{{"fleet_toml": "{}", "children": [
                  {{"id":"{SEAT_ID}","name":"Orla",
-                   "model":"claude-sonnet-4-5-20250929",
+                   "model":"other-model-4",
                    "worktrees":{{"demo":"{}"}}}}
                ]}}"#,
             rig.policy_path().display(),
@@ -1041,7 +952,7 @@ mod effects {
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         let said = stderr(&out);
         assert!(
-            said.contains("claude-sonnet-4-5-20250929") && said.contains("claude-opus-5"),
+            said.contains("other-model-4") && said.contains(StubAgent::AUTO_CAPABLE),
             "the drop names the model and the list it is outside of: {said}"
         );
         assert!(
@@ -1094,23 +1005,6 @@ mod effects {
             cause.contains(&common::agent_stub_path().display().to_string())
                 && cause.contains("its version is null"),
             "the gate names the adapter and why it is off: {cause}"
-        );
-
-        // The in-process adapter's own shape of the same gate: its agent
-        // binary unresolvable.
-        let in_process = Rig::claude_code("effect-projection-unresolved");
-        in_process.write_roster(&live_row(&in_process.worktree(), "ab12"));
-        let out = in_process.observe_with_env(&[(
-            common::hermetic::CLAUDE_BIN,
-            Some(in_process.root.join("no-such-agent").as_os_str()),
-        )]);
-        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-        let unresolved = in_process.projection();
-        assert_eq!(unresolved["effects"]["state"], "off");
-        let cause = unresolved["effects"]["cause"].as_str().unwrap_or_default();
-        assert!(
-            cause.contains("no-such-agent"),
-            "the gate names what it could not resolve: {cause}"
         );
         assert_eq!(
             published["seats"][0]["outcome"], "none",
@@ -1636,99 +1530,6 @@ mod effects {
         }
     }
 
-    /// An effect execs the binary the GATE resolved, on the constructed path,
-    /// and not whatever `claude` this process's own search path finds first: a
-    /// child's PATH is constructed, never inherited.
-    ///
-    /// The two are separated by putting a DIFFERENT `claude` first on the
-    /// controller's `PATH` from the one the constructed path resolves, with the
-    /// seam unset so both questions fall to the bare default. Every other arm in
-    /// this file sets `FLEET_CLAUDE_BIN` to one absolute path, which makes the
-    /// two resolutions one value and hides the difference — this arm is the only
-    /// one that can see it.
-    ///
-    /// The reading is the child's own `$0`, not the argv: the argv says what the
-    /// call passed and is byte-identical either way.
-    ///
-    /// THE PRECONDITION IS ASSERTED BEFORE THE POLL, and that ordering is the
-    /// safety as much as the reading. If some box carries a `claude` earlier on
-    /// the constructed path than the home's `.local/bin` — a package manager's
-    /// prefix holds one on a fleet member — this arm would otherwise EXEC A REAL
-    /// AGENT. So it resolves the constructed path itself first and reds naming
-    /// the shadow instead.
-    #[test]
-    fn an_effect_execs_the_resolved_binary_and_not_the_first_claude_on_this_processs_path() {
-        let rig = Rig::claude_code("effect-binary");
-        rig.write_roster("[]");
-
-        let constructed = rig.plant_stub_on_the_constructed_path();
-        let resolved = fleet_controller::platform::resolve_on_path(
-            &child_path(&rig.home()),
-            fleet_controller::adapter::claude_code::DEFAULT_BIN,
-        );
-        assert_eq!(
-            resolved.as_deref(),
-            Some(constructed.as_path()),
-            "a `claude` earlier on the constructed path than this rig's own shadows it; \
-             this arm will not exec a binary it did not plant"
-        );
-
-        // The decoy: the same recording stub under the same name, in a directory
-        // that is FIRST on the controller's own `PATH` and on no constructed
-        // one. It answers the listing and the version, so the poll gets as far
-        // as deciding — which is the point: the reads may run here, the effect
-        // may not.
-        let decoy_dir = rig.root.join("decoy-bin");
-        std::fs::create_dir_all(&decoy_dir).unwrap();
-        let decoy = decoy_dir.join(fleet_controller::adapter::claude_code::DEFAULT_BIN);
-        std::fs::copy(rig.stub_path(), &decoy).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&decoy, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        let out = rig.observe_with_env(&[
-            (common::hermetic::CLAUDE_BIN, None),
-            ("PATH", Some(decoy_dir.as_os_str())),
-        ]);
-        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-
-        // The poll reached the effect at all, so the assertion below is about
-        // which binary ran and not about a start that never happened.
-        assert_eq!(seat_row(&rig)["decision"], "spawn-woken");
-        assert_eq!(seat_row(&rig)["outcome"], "spawned");
-        assert_eq!(rig.projection()["effects"]["state"], "on");
-
-        assert_eq!(
-            rig.start_bin(),
-            constructed,
-            "the effect exec'd the binary the gate resolved on the constructed path"
-        );
-        assert_ne!(
-            rig.start_bin(),
-            decoy,
-            "and not the first `claude` on this process's own search path"
-        );
-
-        // The control that makes the decoy a decoy: it IS what the reads run,
-        // because observe resolves its bare name on the process path. Without
-        // this, the arm would pass against a controller that could not see the
-        // decoy at all — and would then be measuring nothing.
-        assert_eq!(
-            fleet_controller::platform::resolve_on_path(
-                &decoy_dir.display().to_string(),
-                fleet_controller::adapter::claude_code::DEFAULT_BIN,
-            )
-            .as_deref(),
-            Some(decoy.as_path()),
-            "the decoy is on the path the reads resolve"
-        );
-        assert_eq!(
-            rig.projection()["agent_version"],
-            "9.9.9",
-            "and the version read answered through it: {}",
-            rig.projection()
-        );
-    }
-
     /// One line into the stream, written the way something other than the CLI
     /// would write it — which is the case the consumer's drops exist for.
     fn append_event(rig: &Rig, kind: &str, actor: serde_json::Value, payload: serde_json::Value) {
@@ -1749,14 +1550,15 @@ mod effects {
     }
 }
 
-/// The per-row configuration directory, driven through the BUILT controller:
-/// each spawned seat starts under a configuration directory of its own, and
-/// every read of its session has to go through that one.
+/// The per-row configuration directory, driven through the whole loop: each
+/// spawned seat starts under a configuration directory of its own, and every
+/// question the loop puts to the agent about its session carries that one.
 ///
 /// The unit arms in `controller/tests/observe.rs` pin the fold over values they
-/// build themselves; these drive the whole path — the listing the loop asks for,
-/// the transcript it resolves, and the line it writes — which is where a read
-/// threaded to the wrong directory shows up.
+/// build themselves; these drive the whole path — the requests the loop sends
+/// the agent, the reading it gets back, and the line it writes — which is where
+/// a read threaded to the wrong directory shows up. How an agent reads under a
+/// directory is its adapter's; what the loop owes is asking under it.
 mod isolation {
     use super::*;
 
@@ -1796,71 +1598,50 @@ mod isolation {
         rig.projection()["seats"][0].clone()
     }
 
-    /// The provider's logged-out first turn, as it was read off a real
-    /// transcript on this box on 2026-09-12 (2.1.261).
+    /// A session log whose first turn is the logged-out answer, in the stub's
+    /// own shape (`test_support::reading::logged_out_first_turn`): an entry
+    /// written in place of a model turn, its cause `authentication_failed`, its
+    /// window zero.
     const LOGGED_OUT: &str = concat!(
         r#"{"type":"user","isSidechain":false,"message":{"role":"user"}}"#,
         "\n",
         r#"{"type":"assistant","isSidechain":false,"isApiErrorMessage":true,"#,
-        r#""error":"authentication_failed","message":{"model":"<synthetic>","#,
-        r#""usage":{"input_tokens":0,"output_tokens":0,"#,
-        r#""cache_creation_input_tokens":0,"cache_read_input_tokens":0},"#,
-        r#""content":[{"type":"text","text":"Not logged in"}]}}"#,
+        r#""error":"authentication_failed","message":{"usage":{"input_tokens":0}}}"#,
         "\n",
     );
 
-    /// The transcript the adapter resolves for a session under one configuration
-    /// directory, written where the adapter will look for it.
-    fn write_transcript(config_dir: &Path, worktree: &Path, session: &str, body: &str) {
-        let path = config_dir
-            .join("projects")
-            .join(encoded(worktree))
-            .join(format!("{session}.jsonl"));
-        std::fs::create_dir_all(path.parent().expect("the transcript has a parent"))
-            .expect("the transcript directory is made");
-        write(&path, body);
-        assert!(
-            path.exists(),
-            "the fixture is on disk at {}",
-            path.display()
-        );
-    }
-
-    /// The agent's per-project directory name: every character that is not
-    /// alphanumeric becomes a dash (lessons claude-code C1).
-    fn encoded(worktree: &Path) -> String {
-        worktree
-            .display()
-            .to_string()
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+    /// The configuration directory every `read` and `context` request asked
+    /// about the seat under, one per request, in call order.
+    fn asked_under(rig: &Rig) -> Vec<Option<String>> {
+        agent_stub::logged(&rig.root)
+            .into_iter()
+            .filter(|call| call.verb == StubAgent::READ || call.verb == StubAgent::CONTEXT)
+            .flat_map(|call| {
+                call.request["seats"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|seat| seat["seat"] == SEAT_ID)
+                    .map(|seat| seat["config_dir"].as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
             .collect()
     }
 
-    /// AC2 — the controller asks for a transient row's listing UNDER THAT ROW'S
-    /// directory, and the row is seen there while the fleet's listing does not
-    /// name it.
-    ///
-    /// The two listings differ in content, so the arm cannot pass by reading
-    /// either one twice: the fleet's roster is empty and the per-row one carries
-    /// the session.
+    /// AC2 — the controller asks about a transient row's session UNDER THAT
+    /// ROW'S directory, and never under the fleet's own: every `read` and
+    /// `context` request naming the seat carries the directory the session
+    /// table recorded for it.
     #[test]
-    fn a_transient_rows_listing_is_read_under_its_own_configuration_directory() {
-        let rig = Rig::claude_code("isolation-per-row-listing");
+    fn a_transient_rows_session_is_asked_about_under_its_own_configuration_directory() {
+        let rig = Rig::new("isolation-per-row-listing");
         let config_dir = rig.machine().join("config").join(SEAT);
         std::fs::create_dir_all(&config_dir).expect("the per-row directory is made");
         rig.write_config(&one_transient_seat(&rig));
-        // The FLEET's listing names nothing, which is what a session under a
-        // directory of its own leaves it saying.
-        rig.write_roster("[]");
-        // The row's own listing names the session, served by the stub out of the
-        // directory it was asked under.
-        write(
-            &config_dir.join("roster.json"),
-            &live_row(&rig.worktree(), "a-session"),
-        );
-        // And the session it names on the host, by the row's pid (ruling 3).
-        rig.host_the_listed_seat(&live_row(&rig.worktree(), "a-session"));
+        // The listing names the session, and the host its pane, by the row's
+        // pid (ruling 3).
+        rig.write_roster(&live_row(&rig.worktree(), "a-session"));
         write(
             &rig.machine().join("sessions.json"),
             &table_naming(&config_dir, "an-item", &rig.worktree()),
@@ -1871,16 +1652,16 @@ mod isolation {
 
         // The row's own directory was asked, and ONLY it: this is what a fold
         // reading every row under the fleet's own leaves out, and a seat whose
-        // session came up under its own directory is asked about there alone —
-        // the fleet's listing is read only for a seat that runs under it.
-        let dirs = rig.listing_dirs();
+        // session came up under its own directory is asked about there alone.
+        let asked = asked_under(&rig);
+        let own = Some(config_dir.display().to_string());
         assert!(
-            dirs.iter().any(|d| Path::new(d) == config_dir),
-            "the row's own directory was read: {dirs:?}"
+            asked.contains(&own),
+            "the row's own directory was asked: {asked:?}"
         );
         assert!(
-            dirs.iter().all(|d| Path::new(d) == config_dir),
-            "and no other, the fleet's included: {dirs:?}"
+            asked.iter().all(|dir| dir == &own),
+            "and no other, the fleet's included: {asked:?}"
         );
 
         let row = seat_row(&rig);
@@ -1892,30 +1673,20 @@ mod isolation {
 
     /// AC1's second half and AC3 — a transient row whose first turn answered
     /// LOGGED OUT puts exactly one `dispatch.failed` on the stream, naming the
-    /// seat and the item, and a row that answered puts none.
-    ///
-    /// Measured live on this box on 2026-09-12: the same start one variable apart
-    /// — the credential knob unset rather than defined-and-empty — wrote exactly
-    /// this transcript shape, while the defined-empty arm answered with a real
-    /// turn carrying 36,072 tokens of window.
+    /// seat and the item, and a row that answered puts none. The reading is the
+    /// agent's — blocked on `logged_out` — and the line is the loop's.
     #[test]
     fn a_logged_out_first_turn_writes_one_dispatch_failed_naming_the_seat_and_the_item() {
-        let rig = Rig::claude_code("isolation-logged-out");
+        let rig = Rig::new("isolation-logged-out");
         let config_dir = rig.machine().join("config").join(SEAT);
         std::fs::create_dir_all(&config_dir).expect("the per-row directory is made");
         rig.write_config(&one_transient_seat(&rig));
-        rig.write_roster("[]");
-        write(
-            &config_dir.join("roster.json"),
-            &live_row(&rig.worktree(), "a-session"),
-        );
-        // And the session it names on the host, by the row's pid (ruling 3).
-        rig.host_the_listed_seat(&live_row(&rig.worktree(), "a-session"));
+        rig.write_roster(&live_row(&rig.worktree(), "a-session"));
         write(
             &rig.machine().join("sessions.json"),
             &table_naming(&config_dir, "an-item", &rig.worktree()),
         );
-        write_transcript(&config_dir, &rig.worktree(), "a-session", LOGGED_OUT);
+        rig.write_transcript("a-session", LOGGED_OUT);
 
         let out = rig.observe();
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -1961,24 +1732,16 @@ mod isolation {
     /// the line for every transient row it sighted.
     #[test]
     fn a_first_turn_that_answered_writes_no_dispatch_failed() {
-        let rig = Rig::claude_code("isolation-answered");
+        let rig = Rig::new("isolation-answered");
         let config_dir = rig.machine().join("config").join(SEAT);
         std::fs::create_dir_all(&config_dir).expect("the per-row directory is made");
         rig.write_config(&one_transient_seat(&rig));
-        rig.write_roster("[]");
-        write(
-            &config_dir.join("roster.json"),
-            &live_row(&rig.worktree(), "a-session"),
-        );
-        // And the session it names on the host, by the row's pid (ruling 3).
-        rig.host_the_listed_seat(&live_row(&rig.worktree(), "a-session"));
+        rig.write_roster(&live_row(&rig.worktree(), "a-session"));
         write(
             &rig.machine().join("sessions.json"),
             &table_naming(&config_dir, "an-item", &rig.worktree()),
         );
-        write_transcript(
-            &config_dir,
-            &rig.worktree(),
+        rig.write_transcript(
             "a-session",
             "{\"type\":\"assistant\",\"isSidechain\":false,\
              \"message\":{\"usage\":{\"input_tokens\":36072}}}\n",
@@ -1986,12 +1749,12 @@ mod isolation {
 
         let out = rig.observe();
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-        // The positive control that the transcript was READ at all: the context
-        // reading is the same file, resolved through the same directory.
+        // The positive control that the log was READ at all: the context
+        // reading is the same log, asked about under the same directory.
         let row = seat_row(&rig);
         assert_eq!(
             row["context_tokens"], 36072,
-            "the transcript was read under the row's directory: {row}"
+            "the session's context was read: {row}"
         );
         assert_eq!(
             rig.events_of("dispatch.failed"),

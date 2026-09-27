@@ -85,7 +85,7 @@ impl Rig {
                 rig.worktree.display()
             ),
         );
-        common::hermetic::export(common::hermetic::vars(&rig.root, &rig.machine, None));
+        common::hermetic::export(common::hermetic::vars(&rig.root, &rig.machine));
         // The stop flag is process-wide and the arm below raises it, so every
         // rig starts from a fleet nobody has asked to stop.
         platform::clear_stop();
@@ -252,7 +252,6 @@ fn a_run_of_ticks_spends_its_poll_interval_in_fake_time_and_costs_no_wall_clock(
             adapter: "stub",
             agent: &stub,
             host: &host,
-            daemon: None,
             child_path: "",
             effects_off: None,
             stop_handler: StopHandler::Unarmed,
@@ -286,9 +285,9 @@ fn a_run_of_ticks_spends_its_poll_interval_in_fake_time_and_costs_no_wall_clock(
 /// And the tick itself, with no process behind any of it.
 ///
 /// One poll, driven through the same entry: the arm reads what the agent was
-/// ASKED for — the roster, the version, the daemon, and the start the absent
-/// seat's verdict calls for — and what the start was given, so a loop that
-/// returned before reaching its effect fails here rather than passing quietly.
+/// ASKED for — the roster, the version, and the start the absent seat's
+/// verdict calls for — and what the start was given, so a loop that returned
+/// before reaching its effect fails here rather than passing quietly.
 #[test]
 fn one_tick_reaches_the_agent_for_every_call_the_poll_makes_and_publishes_its_outcome() {
     let rig = Rig::new("tick");
@@ -305,7 +304,6 @@ fn one_tick_reaches_the_agent_for_every_call_the_poll_makes_and_publishes_its_ou
             adapter: "stub",
             agent: &stub,
             host: &host,
-            daemon: None,
             child_path: "",
             effects_off: None,
             stop_handler: StopHandler::Unarmed,
@@ -371,7 +369,6 @@ fn a_start_the_agent_refuses_is_published_as_a_failed_outcome() {
             adapter: "stub",
             agent: &stub,
             host: &host,
-            daemon: None,
             child_path: "",
             effects_off: None,
             stop_handler: StopHandler::Unarmed,

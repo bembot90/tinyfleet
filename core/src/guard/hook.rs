@@ -105,22 +105,6 @@ impl HookMap {
         Ok(map)
     }
 
-    /// The `[hook]` table of a manifest's whole text, held to its shape — for
-    /// a mapping compiled into a caller rather than read off a pack's
-    /// directory, which [`crate::pack::adapter_manifest`] reads.
-    pub fn from_manifest(text: &str) -> Result<HookMap, String> {
-        let manifest: toml::Table = text
-            .parse()
-            .map_err(|e: toml::de::Error| format!("the manifest is not TOML: {}", e.message()))?;
-        match manifest.get(crate::pack::HOOK_TABLE) {
-            Some(toml::Value::Table(table)) => HookMap::parse(table),
-            _ => Err(format!(
-                "the manifest declares no [{}]",
-                crate::pack::HOOK_TABLE
-            )),
-        }
-    }
-
     /// What `body` says, or `None` where there is nothing to judge.
     ///
     /// Four shapes are nothing to judge and each is silence: a body that is not

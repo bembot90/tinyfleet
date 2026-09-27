@@ -1,12 +1,13 @@
 //! Fixture tests for the transient-seat primitives.
 //!
-//! No lessons arm is left here: the one this file held, claude-code A8's
+//! No lessons arm is left here: the one this file held, lessons claude-code A8's
 //! `remove_answers_three_ways`, was retired with its entry by fleet-rge6.4
-//! (`fleet/brain/lessons/claude-code.md` § Test inventory).
+//! (`fleet/brain/lessons/` § Test inventory).
 //!
-//! The three verbs are driven against a STUB AGENT — a shell script this file
-//! writes, which serves a roster the arm controls, records every call it was
-//! given, and exits at a code the arm sets — and against a SCRATCH GIT
+//! The three verbs are driven against a RIG AGENT — the stub's own reading
+//! rules over listings this file keeps, per configuration directory, in files
+//! the arm controls ([`RigAgent`]), recording every listing it was asked for
+//! and every launch — and against a SCRATCH GIT
 //! REPOSITORY carrying a local `refs/remotes/origin/main`, which is the shape a
 //! spawn cuts a worktree from. So what a verb did is a reading of the machine it
 //! left behind, and never of what it reported.
@@ -21,15 +22,17 @@
 //! states the two readings it is judged against. The overrides' own wiring is
 //! measured in `cli/tests/seat.rs`, which sets them on the CHILD it drives.
 
-use fleet_controller::adapter::claude_code::{self, ClaudeCode};
-use fleet_controller::adapter::{Activity, Agent, Permissions, Posture, SeatRef};
+use fleet_controller::adapter::{
+    Activity, Agent, AgentError, Argv, Capabilities, Launch, Permissions, Posture, Resume,
+    SeatActivity, SeatContext, SeatRef, Version,
+};
 use fleet_controller::config;
 use fleet_controller::events;
 use fleet_controller::host::{Host, HostRead};
 use fleet_controller::platform;
 use fleet_controller::policy::{self, Policy};
 use fleet_controller::sessions;
-use fleet_controller::test_support::{self, FakeHost};
+use fleet_controller::test_support::{self, reading, FakeHost, StubAgent};
 use fleet_controller::transient::{self, Machine, Readings, Refusal, Spawn};
 use fleet_core::seat::identity::SeatId;
 use std::path::{Path, PathBuf};
@@ -139,9 +142,8 @@ fn copy_tree(from: &Path, to: &Path) {
 /// were the agent's own `--bg` children — so the witnesses the arms read stay
 /// the same files.
 ///
-/// It records the argv after the program one per line, what the seat's local
-/// settings held as the session came up (the witness that they were written
-/// BEFORE the start), and a `start` line in the call log; it holds inside the
+/// It records the argv after the program one per line and a `start` line in
+/// the call log; it holds inside the
 /// start while the gate stands; it makes a
 /// branch in the worktree where the arm asked for one; and it ends the pane
 /// with the status the arm set, as a session that exits at once does.
@@ -154,9 +156,9 @@ fn copy_tree(from: &Path, to: &Path) {
 ///
 /// A KILL is a retire's stop: logged, held while the gate stands, and then the
 /// session gone with every listed row carrying its pane's pid, because an
-/// interactive row leaves the listing with its process (lessons claude-code
-/// B10) — unless the arm made the fake keep its kills, which is a host whose
-/// kill answered and did not take. Its panes die on the interrupt
+/// interactive row leaves the listing with its process
+/// (the claude-code pack's lessons B10) — unless the arm made the fake keep its
+/// kills, which is a host whose kill answered and did not take. Its panes die on the interrupt
 /// ([`FakeHost::exit_on_interrupt`]), so a stop here is not a whole grace long:
 /// the grace is the effects suite's arm.
 struct RigHost {
@@ -170,7 +172,6 @@ struct RigHost {
     calls: PathBuf,
     gate: PathBuf,
     start_argv: PathBuf,
-    settings_at_start: PathBuf,
     start_exit: PathBuf,
     start_makes_branch: PathBuf,
 }
@@ -233,13 +234,6 @@ impl Host for RigHost {
             recorded.push('\n');
         }
         std::fs::write(&self.start_argv, recorded).expect("the argv is recorded");
-        match std::fs::read_to_string(cwd.join(".claude/settings.local.json")) {
-            Ok(body) => std::fs::write(&self.settings_at_start, body)
-                .expect("the settings at start are recorded"),
-            Err(_) => {
-                let _ = std::fs::remove_file(&self.settings_at_start);
-            }
-        }
         self.log("start");
         self.wait_at_the_gate();
         if let Ok(branch) = std::fs::read_to_string(&self.start_makes_branch) {
@@ -306,16 +300,142 @@ impl Host for RigHost {
     }
 }
 
+/// The agent a rig's verbs run through: the stub's own reading rules
+/// ([`reading::readings_from`]) over listings this rig keeps in files — the
+/// fleet's own at `roster`, and a configuration directory's own at
+/// `<dir>/roster.json` where the arm planted one — and the stub's own launch
+/// and resume ([`StubAgent::launched`]).
+///
+/// Every listing it reads is recorded, one directory per line, in
+/// `listing_dirs` — the fleet's own recorded as `fleet_dir` — which is the
+/// seam that says WHICH directory a read was made through. While
+/// `roster_fails` stands every listing fails; while `fleet_roster_fails`
+/// stands the fleet's own does, and a seat's own still answers.
+///
+/// A seat's session log is kept under the directory its row names
+/// ([`RigAgent::log_path`]), which `context` and the logged-out reading read.
+struct RigAgent {
+    roster: PathBuf,
+    roster_fails: PathBuf,
+    fleet_roster_fails: PathBuf,
+    listing_dirs: PathBuf,
+    fleet_dir: PathBuf,
+    /// Every launch's whole request, in order.
+    launches: std::sync::Mutex<Vec<Launch>>,
+}
+
+impl RigAgent {
+    /// Where a session's log is kept under a configuration directory.
+    fn log_path(dir: &Path, session: &str) -> PathBuf {
+        dir.join("sessions").join(format!("{session}.jsonl"))
+    }
+
+    /// The directory a seat is read under: its own where the request names
+    /// one, and the fleet's otherwise.
+    fn dir_of(&self, seat: &SeatRef) -> PathBuf {
+        seat.config_dir
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.fleet_dir.clone())
+    }
+
+    /// One directory's listing, or why it gave none — recorded either way it
+    /// answers.
+    fn listing(&self, dir: Option<&str>) -> Result<String, String> {
+        if self.roster_fails.is_file() {
+            return Err("the listing exited 1".to_string());
+        }
+        if dir.is_none() && self.fleet_roster_fails.is_file() {
+            return Err("the fleet's listing exited 1".to_string());
+        }
+        let named = dir
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.fleet_dir.clone());
+        let mut asked = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.listing_dirs)
+            .expect("the listing log opens");
+        use std::io::Write as _;
+        writeln!(asked, "{}", named.display()).expect("the listing is logged");
+        let own = dir
+            .map(|dir| Path::new(dir).join("roster.json"))
+            .filter(|own| own.is_file());
+        std::fs::read_to_string(own.as_deref().unwrap_or(&self.roster)).map_err(|e| e.to_string())
+    }
+
+    fn launches(&self) -> Vec<Launch> {
+        self.launches
+            .lock()
+            .expect("the rig agent's own lock")
+            .clone()
+    }
+}
+
+impl Agent for RigAgent {
+    fn capabilities(&self) -> Result<Capabilities, AgentError> {
+        Ok(test_support::capabilities())
+    }
+
+    fn version(&self) -> Result<Version, AgentError> {
+        Ok(Version {
+            name: StubAgent::NAME.to_string(),
+            version: Some(StubAgent::VERSION.to_string()),
+        })
+    }
+
+    fn launch(&self, launch: &Launch) -> Result<Argv, AgentError> {
+        self.launches
+            .lock()
+            .expect("the rig agent's own lock")
+            .push(launch.clone());
+        Ok(StubAgent::launched(launch))
+    }
+
+    fn resume(&self, resume: &Resume) -> Result<Argv, AgentError> {
+        Ok(StubAgent::resumed(resume))
+    }
+
+    fn read(&self, seats: &[SeatRef]) -> Result<Vec<SeatActivity>, AgentError> {
+        Ok(reading::readings_from(
+            seats,
+            &|dir: Option<&str>| self.listing(dir),
+            &|seat: &SeatRef, session: &str| {
+                std::fs::read_to_string(RigAgent::log_path(&self.dir_of(seat), session)).ok()
+            },
+        ))
+    }
+
+    fn context(&self, seats: &[SeatRef]) -> Result<Vec<SeatContext>, AgentError> {
+        Ok(seats
+            .iter()
+            .map(|seat| {
+                let path = seat
+                    .session_id
+                    .as_deref()
+                    .map(|session| RigAgent::log_path(&self.dir_of(seat), session));
+                let body = path
+                    .as_ref()
+                    .and_then(|path| std::fs::read_to_string(path).ok());
+                let written = path
+                    .as_ref()
+                    .and_then(|path| std::fs::metadata(path).ok())
+                    .and_then(|meta| meta.modified().ok());
+                reading::context_of(seat, body.as_deref(), written)
+            })
+            .collect())
+    }
+}
+
 /// A whole machine in a temp directory: a scratch primary with a trunk ref, a
-/// worktrees directory, a machine directory, one stub agent and the host its
-/// spawns run on.
+/// worktrees directory, a machine directory, the files one rig agent reads and
+/// the host its spawns run on.
 struct Rig {
     root: PathBuf,
     primary: PathBuf,
     worktrees: PathBuf,
     machine: PathBuf,
     home: PathBuf,
-    stub: PathBuf,
     roster: PathBuf,
     roster_fails: PathBuf,
     /// While this file stands, the FLEET'S OWN listing fails — the one read under
@@ -323,14 +443,11 @@ struct Rig {
     /// answers, which is what a start's watch reads.
     fleet_roster_fails: PathBuf,
     /// Every configuration directory a listing was asked under, appended one per
-    /// line by the stub: the seam that says WHICH directory a read was made
+    /// line by the rig agent: the seam that says WHICH directory a read was made
     /// through.
     listing_dirs: PathBuf,
     calls: PathBuf,
     start_argv: PathBuf,
-    /// What the child could read of the seat's local settings when it came up,
-    /// which is the only witness that the write happened BEFORE the start.
-    settings_at_start: PathBuf,
     /// Planted, a turn typed into a seat's pane is never taken ([`RigHost`]).
     never_taken: PathBuf,
     start_exit: PathBuf,
@@ -356,14 +473,12 @@ impl Rig {
             worktrees: root.join("a-project-worktrees"),
             machine: root.join("machine"),
             home: root.join("home"),
-            stub: root.join("agent-stub"),
             roster: root.join("roster.json"),
             roster_fails: root.join("roster-fails"),
             fleet_roster_fails: root.join("fleet-roster-fails"),
             listing_dirs: root.join("listing-dirs"),
             calls: root.join("calls"),
             start_argv: root.join("start-argv"),
-            settings_at_start: root.join("settings-at-start"),
             never_taken: root.join("never-taken"),
             start_exit: root.join("start-exit"),
             start_makes_branch: root.join("start-makes-branch"),
@@ -377,7 +492,6 @@ impl Rig {
                 calls: root.join("calls"),
                 gate: root.join("gate"),
                 start_argv: root.join("start-argv"),
-                settings_at_start: root.join("settings-at-start"),
                 start_exit: root.join("start-exit"),
                 start_makes_branch: root.join("start-makes-branch"),
             },
@@ -388,8 +502,6 @@ impl Rig {
             std::fs::create_dir_all(dir).expect("the fixture directory is created");
         }
         copy_tree(&trunk_template(), &rig.primary);
-        test_support::plant_operator_state(&rig.home);
-        rig.write_stub();
         rig.roster("[]");
         rig.write_config("[]");
         rig
@@ -399,80 +511,16 @@ impl Rig {
         git_at(&self.primary, args)
     }
 
-    /// Commit a file onto the fixture's trunk and move `origin/main` onto it,
-    /// so a worktree cut from the trunk comes up carrying it — which is the
-    /// shape of a project that TRACKS its own local settings document.
-    fn tracked_on_trunk(&self, relative: &str, body: &str) -> &Rig {
-        let path = self.primary.join(relative);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("the tracked file's directory is created");
+    /// The agent every verb here runs through, over this rig's files.
+    fn agent(&self) -> RigAgent {
+        RigAgent {
+            roster: self.roster.clone(),
+            roster_fails: self.roster_fails.clone(),
+            fleet_roster_fails: self.fleet_roster_fails.clone(),
+            listing_dirs: self.listing_dirs.clone(),
+            fleet_dir: self.home.join("agent"),
+            launches: std::sync::Mutex::new(Vec::new()),
         }
-        std::fs::write(&path, body).expect("the tracked file is written");
-        // `--force`: this path is on the box's own global excludes file, which
-        // reaches a fixture repository because `GIT_CONFIG_GLOBAL=/dev/null`
-        // leaves `core.excludesFile` at its default rather than empty — and a
-        // project that tracks this file tracked it over that same ignore.
-        self.git(&["add", "--force", "--", relative]);
-        self.git(&[
-            "commit",
-            "--quiet",
-            "--no-gpg-sign",
-            "-m",
-            "the project's own rules",
-        ]);
-        self.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
-        self
-    }
-
-    /// The stub. Every branch records the call it was given, so what a verb
-    /// passed is read from what the child received.
-    ///
-    /// A start is no branch of the stub's, and neither is a stop: both are the
-    /// rig's host's ([`RigHost`]), which records what the stub's branches used
-    /// to. The listing is the one thing the stub answers.
-    fn write_stub(&self) {
-        let body = format!(
-            "#!/bin/sh\n\
-             case \"$1\" in\n\
-             \x20 agents)\n\
-             \x20   [ -f '{roster_fails}' ] && exit 1\n\
-             \x20   [ -f '{fleet_roster_fails}' ] && [ \"$CLAUDE_CONFIG_DIR\" = '{fleet_dir}' ] && exit 1\n\
-             \x20   printf '%s\\n' \"$CLAUDE_CONFIG_DIR\" >> '{listing_dirs}'\n\
-             \x20   if [ -f \"$CLAUDE_CONFIG_DIR/roster.json\" ]; then\n\
-             \x20     /bin/cat \"$CLAUDE_CONFIG_DIR/roster.json\"\n\
-             \x20   else\n\
-             \x20     /bin/cat '{roster}'\n\
-             \x20   fi\n\
-             \x20   ;;\n\
-             \x20 *) exit 64 ;;\n\
-             esac\n",
-            roster = self.roster.display(),
-            roster_fails = self.roster_fails.display(),
-            fleet_roster_fails = self.fleet_roster_fails.display(),
-            fleet_dir = self.home.join(".claude").display(),
-            listing_dirs = self.listing_dirs.display(),
-        );
-        std::fs::write(&self.stub, body).expect("the stub is written");
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&self.stub, std::fs::Permissions::from_mode(0o755))
-            .expect("the stub is executable");
-    }
-
-    /// The adapter as a verb opens it under `policy`: with the plugin root
-    /// that policy names, which is the adapter's own and handed at the open.
-    fn agent_for(&self, policy: &Policy) -> ClaudeCode {
-        self.agent().with_plugin_dir(policy.plugin_dir.clone())
-    }
-
-    fn agent(&self) -> ClaudeCode {
-        ClaudeCode::with_seams(
-            self.stub.display().to_string(),
-            self.home.join(".claude"),
-            Duration::from_secs(20),
-            platform::child_path(&self.home),
-            Some(self.stub.clone()),
-            String::new(),
-        )
     }
 
     /// The fleet's own listing: the arm's rows and the arrivals ([`test_support::with_arrivals`]).
@@ -620,15 +668,15 @@ impl Rig {
         std::fs::read_to_string(&self.calls).unwrap_or_default()
     }
 
-    /// How many starts the stub has been given, which is what says a SECOND
+    /// How many starts the host has been given, which is what says a SECOND
     /// spawn has reached its window while a first one's start already stands in
     /// the call log.
     fn starts(&self) -> usize {
         self.calls().lines().filter(|line| *line == "start").count()
     }
 
-    /// Hold the stub's next start or stop inside its window, until [`release`]
-    /// lifts it. The stub's own wait is bounded at ten seconds, so an arm that
+    /// Hold the host's next start or stop inside its window, until [`release`]
+    /// lifts it. The host's own wait is bounded at ten seconds, so an arm that
     /// panics before lifting it ends rather than hangs.
     fn hold(&self) {
         std::fs::write(&self.gate, "").expect("the gate is written");
@@ -659,11 +707,11 @@ impl Rig {
             .collect()
     }
 
-    /// The argv file as it was WRITTEN, unsplit. The stub prints one argument
+    /// The argv file as it was WRITTEN, unsplit. The host writes one argument
     /// per line and a first turn is several lines long, so the lines are not the
     /// arguments and an argument carrying newlines can only be read here.
     fn start_argv_text(&self) -> String {
-        std::fs::read_to_string(&self.start_argv).expect("the stub recorded an argv")
+        std::fs::read_to_string(&self.start_argv).expect("the host recorded an argv")
     }
 
     /// The id a seat's machine name resolves to on the seat list, which is
@@ -698,26 +746,20 @@ impl Rig {
             .dispatched_at
     }
 
-    /// A transcript where the adapter's own path rule puts one, UNDER THE
+    /// A session log where the rig agent's own path rule puts one, UNDER THE
     /// SEAT'S OWN configuration directory.
     ///
-    /// The row's directory and not the home default: a spawned seat comes up
-    /// under one of its own, so a transcript planted under the default is a
-    /// file no reader of that seat would ever open.
-    fn plant_transcript(
-        &self,
-        seat: &str,
-        worktree: &str,
-        session_id: &str,
-        body: &str,
-    ) -> PathBuf {
+    /// The row's directory and not the fleet's: a spawned seat comes up under
+    /// one of its own, so a log planted under the fleet's is a file no reader
+    /// of that seat would ever open.
+    fn plant_transcript(&self, seat: &str, session_id: &str, body: &str) -> PathBuf {
         let config_dir = self
             .table()
             .newest_for(&self.id_of(seat))
             .and_then(|row| row.config_dir.clone())
             .map(PathBuf::from)
             .expect("the spawn recorded the seat's own configuration directory");
-        let path = claude_code::transcript_path(&config_dir, worktree, session_id);
+        let path = RigAgent::log_path(&config_dir, session_id);
         std::fs::create_dir_all(path.parent().expect("the transcript has a parent"))
             .expect("the transcript's directory is made");
         std::fs::write(&path, body).expect("the transcript is written");
@@ -804,13 +846,13 @@ const CALM: Readings = Readings {
     cpus: Some(8),
 };
 
-fn machine_of<'a>(rig: &'a Rig, agent: &'a ClaudeCode, policy: &'a Policy) -> Machine<'a> {
+fn machine_of<'a>(rig: &'a Rig, agent: &'a RigAgent, policy: &'a Policy) -> Machine<'a> {
     machine_reading(rig, agent, policy, CALM)
 }
 
 fn machine_reading<'a>(
     rig: &'a Rig,
-    agent: &'a ClaudeCode,
+    agent: &'a RigAgent,
     policy: &'a Policy,
     readings: Readings,
 ) -> Machine<'a> {
@@ -841,57 +883,7 @@ fn spawned(
     cpus: u32,
     first_turn: &str,
 ) -> Result<transient::Spawned, Refusal> {
-    spawned_with(rig, policy, load, cpus, first_turn, None)
-}
-
-/// The same spawn cut from a NAMED BASE rather than from the trunk ref, which
-/// is what a reviewer's and a returned builder's worktree is, and carrying a
-/// model over the policy's default.
-fn spawned_at(
-    rig: &Rig,
-    policy: &Policy,
-    base: Option<&str>,
-    model: Option<&str>,
-) -> Result<transient::Spawned, Refusal> {
-    let agent = rig.agent_for(policy);
-    let machine = machine_reading(
-        rig,
-        &agent,
-        policy,
-        Readings {
-            load: Some(0.1),
-            cpus: Some(8),
-        },
-    );
-    transient::spawn(
-        &machine,
-        &Spawn {
-            first_turn: "the first turn",
-            model,
-            permissions: Permissions::default(),
-            item: None,
-            base,
-            config_files: &[],
-        },
-        1_000,
-    )
-}
-
-/// The same spawn with the agent opened with the permissions template a
-/// caller reads out of the pack layers, which its launch renders the spawn's
-/// permissions into. `None` is an agent opened with none, and it is what every
-/// arm above this one runs under.
-fn spawned_with(
-    rig: &Rig,
-    policy: &Policy,
-    load: f64,
-    cpus: u32,
-    first_turn: &str,
-    settings: Option<&str>,
-) -> Result<transient::Spawned, Refusal> {
-    let agent = rig
-        .agent_for(policy)
-        .with_permissions(settings.map(str::to_string));
+    let agent = rig.agent();
     let machine = machine_reading(
         rig,
         &agent,
@@ -909,7 +901,61 @@ fn spawned_with(
             permissions: Permissions::default(),
             item: None,
             base: None,
-            config_files: &[],
+        },
+        1_000,
+    )
+}
+
+/// The same spawn cut from a NAMED BASE rather than from the trunk ref, which
+/// is what a reviewer's and a returned builder's worktree is, and carrying a
+/// model over the policy's default.
+fn spawned_at(
+    rig: &Rig,
+    policy: &Policy,
+    base: Option<&str>,
+    model: Option<&str>,
+) -> Result<transient::Spawned, Refusal> {
+    let agent = rig.agent();
+    let machine = machine_reading(
+        rig,
+        &agent,
+        policy,
+        Readings {
+            load: Some(0.1),
+            cpus: Some(8),
+        },
+    );
+    transient::spawn(
+        &machine,
+        &Spawn {
+            first_turn: "the first turn",
+            model,
+            permissions: Permissions::default(),
+            item: None,
+            base,
+        },
+        1_000,
+    )
+}
+
+/// The same spawn handing `permissions` to its launch, through `agent` — so
+/// an arm reads the launch the agent was asked for.
+fn spawned_with(
+    rig: &Rig,
+    agent: &RigAgent,
+    policy: &Policy,
+    first_turn: &str,
+    permissions: Permissions,
+) -> Result<transient::Spawned, Refusal> {
+    let machine = machine_reading(rig, agent, policy, CALM);
+    transient::spawn(
+        &machine,
+        &Spawn {
+            first_turn,
+            model: None,
+            permissions,
+            item: None,
+            base: None,
         },
         1_000,
     )
@@ -1173,175 +1219,56 @@ fn an_unreadable_roster_makes_the_cap_leg_could_not_tell_and_the_spawn_proceeds(
 
 // ---- AC2: the spawn ---------------------------------------------------------
 
-/// A spawned seat comes up under the plugin root the policy names, on the same
-/// element and in the same position a named seat's start carries it: only a
-/// loaded plugin root gives a session the overlay's hooks (lessons claude-code
-/// D5), and a transient seat is the one that runs a dispatched item.
+/// A spawned seat's launch is handed the seat's permissions in fleet's own
+/// words — the command words and the builder's checks the spawn was given —
+/// with the seat's own worktree and its own configuration directory: the
+/// posture refuses every writing call the session holds no rule for, and
+/// rendering them into the agent's own format, inside what the request names,
+/// is the agent's adapter's (reviewer call 2026-09-25, E8).
 ///
-/// Read from the argv the CHILD received. The control is a second rig under a
-/// policy that names no root, which carries no such element at all.
+/// The control is a spawn handed none, whose launch carries none: a seat's
+/// rules never name a command nobody gave.
 #[test]
-fn a_spawn_starts_the_seat_under_the_plugin_root_the_policy_names() {
-    let rig = Rig::new("plugin-root");
-    let policy = policy::parse(
-        "[controller]\nstart_watch_seconds = 10\ndefault_model = \"a-model\"\n\
-         plugin_dir = \"/an/overlay\"\n",
-    )
-    .expect("the policy parses");
-
-    let spawn = spawned(&rig, &policy, 0.1, 8, "the first turn").expect("the spawn lands");
-    assert_agent_name(&spawn.seat);
-    let argv = rig.start_argv();
-    let at = argv
-        .iter()
-        .position(|word| word == "--plugin-dir")
-        .unwrap_or_else(|| panic!("the flag is in the argv: {argv:?}"));
-    assert_eq!(argv.get(at + 1).map(String::as_str), Some("/an/overlay"));
-    assert_eq!(
-        argv.get(at + 2).map(String::as_str),
-        Some("the first turn"),
-        "the element after the root's value is the first turn: {argv:?}"
-    );
-
-    // The control: the same spawn under a policy that names none.
-    let bare = Rig::new("plugin-root-control");
-    let spawn = spawned(&bare, &a_policy(), 0.1, 8, "the first turn").expect("the spawn lands");
-    assert_agent_name(&spawn.seat);
-    let argv = bare.start_argv();
-    assert!(
-        !argv.iter().any(|word| word == "--plugin-dir"),
-        "a fleet that names no plugin root passes no such element: {argv:?}"
-    );
-}
-
-/// A JSON settings document in the shape the pack's overlay carries one, with
-/// the worktree rule's path left for the caller to fill.
-fn a_settings_doc(worktree: &str) -> String {
-    format!("{{\"permissions\":{{\"allow\":[\"Bash(make check:*)\",\"Edit(/{worktree}/**)\"]}}}}")
-}
-
-/// A transient seat's session comes up under permission rules its launch
-/// rendered into its own worktree: the posture refuses every writing call the
-/// session holds no rule for, and a permission list cannot ride the plugin
-/// root the overlay is loaded through. The write is the agent's adapter's, so
-/// the stream no longer says whether it was written or merged.
-///
-/// Three claims, and the third is the one a later reading cannot make on its
-/// own: the document is at the path the adapter names, `{worktree}` reads as
-/// the seat's own checkout, and THE CHILD COULD READ IT — the stub copies the
-/// file out of its own working directory on the way past, so the write is
-/// proved to have landed before the start and not merely before the assertion.
-#[test]
-fn a_spawn_writes_the_seats_permission_rules_before_its_first_turn() {
-    let rig = Rig::new("settings");
-    let template = a_settings_doc(claude_code::WORKTREE);
-
-    let spawn = spawned_with(&rig, &a_policy(), 0.1, 8, "the first turn", Some(&template))
+fn a_spawn_hands_the_seats_permissions_to_its_launch() {
+    let rig = Rig::new("permissions");
+    let agent = rig.agent();
+    let given = Permissions {
+        commands: vec!["make".to_string(), "cargo".to_string()],
+        touched: Some("make check".to_string()),
+    };
+    let spawn = spawned_with(&rig, &agent, &a_policy(), "the first turn", given.clone())
         .expect("the spawn lands");
-    let worktree = rig.worktrees.join(&spawn.seat);
-    assert_eq!(spawn.worktree, worktree);
 
-    let want = a_settings_doc(&worktree.display().to_string());
-    let path = worktree.join(".claude/settings.local.json");
+    let launches = agent.launches();
+    assert_eq!(launches.len(), 1, "one launch: {launches:?}");
+    assert_eq!(launches[0].permissions, given, "the permissions, as given");
     assert_eq!(
-        std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display())),
-        want,
-        "the document is rendered with the seat's own worktree in the rule"
+        launches[0].worktree,
+        spawn.worktree.display().to_string(),
+        "for the seat's own worktree"
     );
     assert_eq!(
-        std::fs::read_to_string(&rig.settings_at_start).unwrap_or_default(),
-        want,
-        "and the child read those same bytes out of its working directory as it came up"
+        launches[0].config_dir.as_deref(),
+        Some(
+            rig.config_dir_of(&spawn.seat)
+                .display()
+                .to_string()
+                .as_str()
+        ),
+        "under the seat's own configuration directory"
     );
-}
 
-/// The control on the arm above, and the other half of the rule that only a
-/// spawned seat is given one: a spawn offered no document writes none, and a
-/// NAMED seat's start never reaches this verb at all — the loop starts it
-/// through `effect::spawn_woken`, whose worktree is a person's own.
-#[test]
-fn a_spawn_offered_no_settings_writes_none() {
-    let rig = Rig::new("settings-none");
-    let spawn = spawned(&rig, &a_policy(), 0.1, 8, "the first turn").expect("the spawn lands");
-    let claude = spawn.worktree.join(".claude");
-    assert!(
-        !claude.exists(),
-        "{} was created by a spawn that was offered nothing",
-        claude.display()
-    );
-    assert!(
-        std::fs::read_to_string(&rig.settings_at_start)
-            .unwrap_or_default()
-            .is_empty(),
-        "and the child found nothing to read when it came up"
-    );
-}
-
-/// The same document with a deny list, which is the other half a merge folds.
-fn a_settings_doc_with_deny(worktree: &str) -> String {
-    format!(
-        "{{\"permissions\":{{\"allow\":[\"Bash(make check:*)\",\"Edit(/{worktree}/**)\"],\
-         \"deny\":[\"Bash(git push:*)\"]}}}}"
+    // The control: a spawn handed none launches with none.
+    let bare = rig.agent();
+    spawned_with(
+        &rig,
+        &bare,
+        &a_policy(),
+        "the first turn",
+        Permissions::default(),
     )
-}
-
-/// A project may TRACK `.claude/settings.local.json` on its trunk, and every
-/// transient worktree is cut from that trunk — so the spawn folds the pack's
-/// lists into the document it finds instead of writing over it.
-///
-/// THE LOAD-BEARING ASSERTION IS THE PROJECT'S RULE, NOT THE PACK'S: an arm
-/// that asked only whether the pack's rules were present would read green with
-/// the overwrite still in place, which is what this file measured before.
-/// `Bash(make check:*)` is on both sides on purpose: a rule the project already
-/// carries is not appended a second time.
-#[test]
-fn a_spawn_merges_the_packs_rules_into_a_settings_document_the_project_tracks() {
-    let rig = Rig::new("settings-merge");
-    let project = "{\n  \"permissions\": {\n    \"allow\": [\"Bash(make lint:*)\", \
-                   \"Bash(make check:*)\"],\n    \"deny\": [\"Bash(rm:*)\"]\n  },\n  \
-                   \"model\": \"a-project-model\"\n}\n";
-    rig.tracked_on_trunk(".claude/settings.local.json", project);
-
-    let template = a_settings_doc_with_deny(claude_code::WORKTREE);
-    let spawn = spawned_with(&rig, &a_policy(), 0.1, 8, "the first turn", Some(&template))
-        .expect("the spawn lands");
-    let worktree = rig.worktrees.join(&spawn.seat);
-    assert_eq!(spawn.worktree, worktree);
-
-    let path = worktree.join(".claude/settings.local.json");
-    let read = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
-    let merged: serde_json::Value =
-        serde_json::from_str(&read).unwrap_or_else(|e| panic!("the merged document is JSON: {e}"));
-
-    assert_eq!(
-        merged["permissions"]["allow"],
-        serde_json::json!([
-            "Bash(make lint:*)",
-            "Bash(make check:*)",
-            format!("Edit(/{}/**)", worktree.display()),
-        ]),
-        "the project's own allow rule survives BESIDE the pack's, first and once"
-    );
-    assert_eq!(
-        merged["permissions"]["deny"],
-        serde_json::json!(["Bash(rm:*)", "Bash(git push:*)"]),
-        "and its deny rule survives beside the pack's"
-    );
-    assert_eq!(
-        merged["model"],
-        serde_json::json!("a-project-model"),
-        "and a key of the project's the pack knows nothing about is untouched"
-    );
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(
-            &std::fs::read_to_string(&rig.settings_at_start).unwrap_or_default()
-        )
-        .unwrap_or(serde_json::Value::Null),
-        merged,
-        "and the child read the merged document out of its working directory as it came up"
-    );
+    .expect("the spawn lands");
+    assert_eq!(bare.launches()[0].permissions, Permissions::default());
 }
 
 /// The whole of the spawn's happy path, read off the machine it left behind.
@@ -1414,7 +1341,7 @@ fn a_spawn_makes_a_detached_worktree_a_row_and_a_session_and_prints_its_name() {
     assert!(
         rig.start_argv_text()
             .ends_with("the first turn\nand its second line\n\n"),
-        "the first turn's text is the last argument, WHOLE — the stub prints one \
+        "the first turn's text is the last argument, WHOLE — the host writes one \
          argument per line, so a turn of two lines is the last two: {:?}",
         rig.start_argv_text()
     );
@@ -1424,10 +1351,10 @@ fn a_spawn_makes_a_detached_worktree_a_row_and_a_session_and_prints_its_name() {
             .and_then(|at| argv.get(at + 1))
             .map(String::as_str)
     };
-    // Fleet's `unattended`, which the in-process adapter asks of Claude Code as
-    // its `dontAsk` (ruling 14).
+    // Fleet's `unattended`, which the launch is asked for in fleet's own word
+    // and its adapter maps to its agent's (ruling 14).
     assert_eq!(policy.posture_for(true), Posture::Unattended);
-    assert_eq!(flag("--permission-mode"), Some("dontAsk"));
+    assert_eq!(flag("--posture"), Some("unattended"));
     assert_eq!(flag("--model"), Some("a-model"));
     assert_eq!(flag("--name"), Some(seat));
 
@@ -1499,7 +1426,6 @@ fn two_concurrent_spawns_take_two_different_names() {
                             permissions: Permissions::default(),
                             item: None,
                             base: None,
-                            config_files: &[],
                         },
                         1_000,
                     )
@@ -2507,7 +2433,7 @@ fn two_verbs_writing_the_session_table_lose_no_row() {
 /// A SPAWN'S critical section is its own write and not its start: a feed issued
 /// while a spawn sits in its start-watch window lands inside that window.
 ///
-/// The gate is what makes this a measurement rather than a race. The stub's
+/// The gate is what makes this a measurement rather than a race. The host's
 /// start blocks in the window until this arm lifts it, so the spawn is provably
 /// still inside it while the feed runs — the second assertion is that half, and
 /// without it a green would also be satisfied by a spawn that had already
@@ -2534,7 +2460,7 @@ fn a_spawn_in_its_watch_window_does_not_block_a_feed() {
         "the fixture's own spawn is the first start"
     );
 
-    // From here the stub's start blocks until the release below.
+    // From here the host's start blocks until the release below.
     rig.hold();
 
     let spawn_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2907,8 +2833,9 @@ fn a_journal_line_that_cannot_land_is_a_refusal_naming_the_event() {
 }
 
 /// The roster read every verb takes is the WHOLE-FLEET one, and an unreadable
-/// listing is a third answer rather than an empty fleet (lessons claude-code
-/// B4). The control is the same stub answering normally.
+/// listing is a third answer rather than an empty fleet
+/// (the claude-code pack's lessons B4). The control is the same agent
+/// answering normally.
 #[test]
 fn an_unreadable_listing_is_a_third_answer_on_every_verb_that_asks() {
     let rig = Rig::new("unreadable");
@@ -2921,7 +2848,7 @@ fn an_unreadable_listing_is_a_third_answer_on_every_verb_that_asks() {
         worktree: rig.primary.display().to_string(),
         screen: None,
     };
-    let read = |agent: &ClaudeCode| {
+    let read = |agent: &RigAgent| {
         agent
             .read(std::slice::from_ref(&asked))
             .expect("the in-process read answers")
@@ -2965,7 +2892,7 @@ fn a_priced_retire_reads_the_cost_the_branch_and_the_commit_before_it_reclaims()
     let (seat, pid) = a_spawned_seat(&rig, &policy, "idle");
     let worktree = rig.worktrees.join(&seat).display().to_string();
     rig.sight(&seat, "a-session");
-    rig.plant_transcript(&seat, &worktree, "a-session", A_TRANSCRIPT);
+    rig.plant_transcript(&seat, "a-session", A_TRANSCRIPT);
 
     // A branch on the seat's own worktree, which is what the park a flight
     // raises records and what only a reading before the removal can take.
@@ -3246,14 +3173,14 @@ fn a_base_that_does_not_resolve_refuses_naming_it_and_makes_nothing() {
         .expect("the refusal above is the base's and not this fixture's");
 }
 
-/// The Order's model reaches the adapter's start, read off the stub's own argv,
+/// The Order's model reaches the adapter's start, read off the start's own argv,
 /// and it is the value the caller passed rather than the policy's default.
 #[test]
 fn a_spawn_passes_the_callers_model_to_the_start_over_the_policys_default() {
     let rig = Rig::new("base-model");
     let policy = a_policy();
     assert_eq!(
-        policy.model_for(None, &claude_code::capabilities()),
+        policy.model_for(None, &test_support::capabilities()),
         "a-model",
         "the fixture's default is the value this arm must not read back"
     );

@@ -310,9 +310,9 @@ pub struct Opening<'a> {
     pub source: AdapterSource,
     /// The `PATH` a pack's store adapter runs on: the caller's constructed
     /// child `PATH`, and never this process's own, which under a service holds
-    /// neither a package manager's prefix nor the user's local bin (lessons
-    /// claude-code D1) — so an entry that execs its runtime, and the store's
-    /// own binary, would find neither. The directory of the runtime the
+    /// neither a package manager's prefix nor the user's local bin
+    /// (lessons claude-code D1) — so an entry that execs its runtime, and the
+    /// store's own binary, would find neither. The directory of the runtime the
     /// adapter's pack runs under goes in front where this misses it, as a run
     /// line's does ([`child_path_for`](crate::item::run::child_path_for)).
     ///

@@ -85,7 +85,7 @@ pub fn resolve_machine_dir(
     sys::machine_dir_under(fleet_home.or(home).unwrap_or(Path::new("")), xdg_state)
 }
 
-/// The user's home, as the adapter's transcript locations are keyed off it.
+/// The user's home, which the constructed `PATH` is built off.
 pub fn home_dir() -> PathBuf {
     env_dir("HOME").unwrap_or_default()
 }
@@ -119,6 +119,34 @@ pub fn child_path(home: &Path) -> String {
                 .collect::<Vec<_>>()
                 .join(":")
         })
+}
+
+/// The environment a seat's session keeps from this process, beside the
+/// constructed `PATH`: four values a shell needs to be one, and nothing else.
+/// A variable this list does not name cannot reach a session through this
+/// controller.
+///
+/// `FLEET_BIN` is not here, and passing it through would be wrong twice over: a
+/// controller started by a service manager has none to pass, and one started
+/// from inside a seat would hand on that seat's binary rather than its own. It
+/// is set from this process's own executable instead.
+///
+/// `FLEET_ACTOR` is not here for the second of those reasons: a controller
+/// started from inside a seat would make every session it starts that seat.
+/// A start and a resume set it from the seat they are for.
+pub const PASSED_THROUGH: [&str; 4] = ["HOME", "USER", "TMPDIR", "LANG"];
+
+/// Set, a seam naming no binary is a refusal rather than a fall back to one on
+/// `PATH`: what a suite puts on every process it drives, so an arm that missed
+/// its stub never reaches the operator's own programs.
+pub const HERMETIC_VAR: &str = "FLEET_TEST_HERMETIC";
+
+/// Whether [`HERMETIC_VAR`] is set to anything but blank or `0`.
+pub fn hermetic() -> bool {
+    match std::env::var(HERMETIC_VAR) {
+        Ok(value) => !matches!(value.trim(), "" | "0"),
+        Err(_) => false,
+    }
 }
 
 /// The first `name` on `path` that is there and executable, as an absolute
@@ -314,7 +342,7 @@ pub fn clear_stop() {
 pub const SERVICE_LABEL: &str = "dev.fleet.controller";
 
 /// The variable that puts a recording stub in place of the platform's service
-/// binary, in the shape `FLEET_CLAUDE_BIN` already has: an ABSOLUTE path, never
+/// binary, in the shape `FLEET_BIN` already has: an ABSOLUTE path, never
 /// a name this layer would then have to search for.
 pub const SERVICE_BIN_ENV: &str = "FLEET_SERVICE_BIN";
 

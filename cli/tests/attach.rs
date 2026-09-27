@@ -118,7 +118,7 @@ impl Rig {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_fleet"));
         cmd.args(args)
             .current_dir(&self.project)
-            .hermetic(&self.root.join("home"), &self.machine, None)
+            .hermetic(&self.root.join("home"), &self.machine)
             .env(common::hermetic::TMUX_BIN, &self.tmux);
         cmd
     }
@@ -400,7 +400,7 @@ fn an_unreadable_host_is_three_with_its_cause() {
     let out = Command::new(env!("CARGO_BIN_EXE_fleet"))
         .args(["seat", "attach", MACHINE_NAME])
         .current_dir(&rig.project)
-        .hermetic(&rig.root.join("home"), &rig.machine, None)
+        .hermetic(&rig.root.join("home"), &rig.machine)
         .output()
         .expect("the built binary runs");
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));

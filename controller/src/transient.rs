@@ -21,7 +21,7 @@
 //!
 //! `FLEET_LOAD_AVERAGE` and `FLEET_CPUS` are read by [`Readings::taken`] and by
 //! nothing else in this crate. They exist so a suite can force both readings —
-//! the way the drive suite forces the agent binary with `FLEET_CLAUDE_BIN` —
+//! the way the drive suite forces the tmux binary with `FLEET_TMUX_BIN` —
 //! because an arm that read the real load average is one whose answer changes
 //! with whatever else the machine is running. A BINARY is what calls `taken`:
 //! an in-process caller hands the two numbers in on [`Machine`] instead,
@@ -533,15 +533,6 @@ pub struct Spawn<'a> {
     /// `worktree add` would otherwise leave a name claimed and a rollback to
     /// take, for a fact that was readable one call earlier.
     pub base: Option<&'a str>,
-    /// The per-provider overlay files that belong in a configuration space,
-    /// as `(relative path, content)`.
-    ///
-    /// They are copied into the per-row directory before the start. The
-    /// resolved overlay carries none today — the guards reach a session through
-    /// the plugin root and the permissions through the worktree's own settings
-    /// file — so the directory's whole content is its emptiness, and this is the
-    /// seam that stops being true without a second edit here.
-    pub config_files: &'a [(String, String)],
 }
 
 /// Where the per-row configuration directories live, under the machine
@@ -669,13 +660,14 @@ pub fn spawn(machine: &Machine, ask: &Spawn, now_ms: u64) -> Result<Spawned, Ref
         }
     };
 
-    // (c3) The seat's OWN configuration directory, empty but for whatever the
-    // overlay puts in a configuration space. Made here, inside the rollback
-    // window and before the start, because the start is what the directory is
-    // for and a session that came up under the person's own directory is the
-    // isolation failure this whole slice is against.
+    // (c3) The seat's OWN configuration directory, made EMPTY: what goes in it
+    // is the agent's, written by its adapter's launch (reviewer call
+    // 2026-09-25, E8). Made here, inside the rollback window and before the
+    // start, because the start is what the directory is for and a session that
+    // came up under the person's own directory is the isolation failure this
+    // whole slice is against.
     let config_dir = machine.config_dir_for(&row);
-    if let Err(why) = make_config_dir(&config_dir, ask.config_files) {
+    if let Err(why) = make_config_dir(&config_dir) {
         return Err(rolled_back(
             machine,
             COULD_NOT_TELL,
@@ -848,30 +840,20 @@ fn base_of(worktree: &Path) -> Option<String> {
 /// The read-back is the same check every other step here takes, and it is the
 /// LISTING and not the existence: a directory the process could not write into
 /// is one the agent will populate from the person's own instead.
-fn make_config_dir(dir: &Path, files: &[(String, String)]) -> Result<(), String> {
+fn make_config_dir(dir: &Path) -> Result<(), String> {
     if dir.exists() {
         std::fs::remove_dir_all(dir)
             .map_err(|e| format!("{} could not be emptied: {e}", dir.display()))?;
     }
     std::fs::create_dir_all(dir)
         .map_err(|e| format!("{} could not be made: {e}", dir.display()))?;
-    for (relative, content) in files {
-        let path = dir.join(relative);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("{} could not be made: {e}", parent.display()))?;
-        }
-        std::fs::write(&path, content)
-            .map_err(|e| format!("{} was not written: {e}", path.display()))?;
-    }
     let back = std::fs::read_dir(dir)
         .map_err(|e| format!("{} does not read back: {e}", dir.display()))?
         .count();
-    if back != files.len() {
+    if back != 0 {
         return Err(format!(
-            "{} reads back {back} entries and {} were written",
-            dir.display(),
-            files.len()
+            "{} reads back {back} entries and was made empty",
+            dir.display()
         ));
     }
     Ok(())
@@ -1245,7 +1227,7 @@ pub fn retire_with(
     // pane's process under the seat's own directory — a reading nobody could
     // make is could-not-tell here rather than after the stop — for the session
     // it names: a session is the seat's by that pane and never by the directory
-    // it stands in (lessons claude-code B5).
+    // it stands in (the claude-code pack's lessons B5).
     let listed = match live.zip(pid) {
         None => None,
         Some((pane, pid)) => {

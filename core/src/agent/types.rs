@@ -11,9 +11,8 @@
 //! its verbs, and its refusal's reasons.
 //!
 //! THE CONTROLLER'S AGENT TRAIT SPEAKS THESE: its six verbs take and answer
-//! exactly these types, which the in-process Claude Code adapter answers, and
-//! which an adapter executable is sent and answers through the envelope and
-//! the answer's reader below.
+//! exactly these types, which an adapter executable is sent and answers
+//! through the envelope and the answer's reader below.
 //!
 //! IT GROWS ADDITIVELY. `schema_version` stays 1 while every field a later
 //! fleet adds to a request is optional and every field it adds to an answer is

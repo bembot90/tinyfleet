@@ -68,7 +68,7 @@ impl Rig {
         cmd.args(["agent", "check"])
             .args(args)
             .current_dir(self.work())
-            .hermetic(&self.root.join("home"), &self.root.join("machine"), None)
+            .hermetic(&self.root.join("home"), &self.root.join("machine"))
             .env("TMPDIR", self.tmp());
         for (key, value) in env {
             cmd.env(key, value);

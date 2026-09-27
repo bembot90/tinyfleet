@@ -139,9 +139,7 @@ fn a_policy_that_stops_parsing_is_logged_once_per_change_and_not_once_per_poll()
 
         // A second change is a second line — otherwise the count above would
         // pass on a controller that logs the failure once and never again.
-        rig.write_policy(
-            "[controller]\npoll_seconds = 1\n\n[substrate.claude_code]\nversion = \"9.9.9\"\n",
-        );
+        rig.write_policy("[controller]\npoll_seconds = 1\n");
         polls.tick();
         assert!(rig.projection().get("fleet_parse_error").is_none());
         rig.write_policy("[controller\npoll_seconds = 1\nbroken again\n");
@@ -252,8 +250,8 @@ fn an_agent_that_answers_no_version_publishes_a_null_and_announces_no_move() {
         "a poll that read no version knows nothing about the spread"
     );
 
-    // The control: the same stub answering normally reads a version and agrees
-    // with the pin, so the null above is the empty answer's.
+    // The control: the same stub answering normally reads a version among the
+    // releases measured, so the null above is the empty answer's.
     rig.set_version("9.9.9");
     assert_eq!(rig.observe().status.code(), Some(0));
     assert_eq!(rig.projection()["agent_version"], "9.9.9");
@@ -362,10 +360,10 @@ fn a_publish_that_cannot_land_is_named_and_is_not_a_failure() {
     assert_eq!(rig.projection()["seats"][0]["roster_state"], "present");
 }
 
-/// The deadline is on EVERY call to the agent binary and not on the listing
+/// The deadline is on EVERY call to the agent's adapter and not on `read`
 /// alone (`README.md`). The version call runs under the same seam, and a poll
 /// whose version read outruns it publishes a null instead of waiting the read
-/// out.
+/// out. The adapter here is slow on `version` alone, so the seat still reads.
 ///
 /// Three readings against ONE hang, on two axes. What each seam PUBLISHES says
 /// which figure the call runs on: a seam under the hang publishes no version; a
@@ -384,21 +382,26 @@ fn a_publish_that_cannot_land_is_named_and_is_not_a_failure() {
 /// unavailable HERE, because the seam is what this arm varies and no single
 /// figure separates a bounded call from an unbounded one across three of them.
 ///
-/// THE HANG IS 5 s AND THE ARM COSTS ABOUT THAT: the third reading has to sit
-/// through the whole hang, which is what makes it the patient one. The hang is
+/// THE HANG IS 5 s AND THE ARM COSTS ABOUT TWICE THAT: the third reading has to
+/// sit through the whole hang — once for the opener's gate and once for the
+/// poll's own read — which is what makes it the patient one. The hang is
 /// also the entire margin of the two assertions below, so shortening it is not
 /// free and is declined — a shorter one leaves the patient poll less room than
 /// a loaded box moves a poll by, and the arm then reds on load rather than on
 /// the deadline.
 #[test]
 fn a_version_call_that_outruns_the_deadline_publishes_no_version() {
-    let mut rig = Rig::claude_code("version-deadline");
+    let mut rig = Rig::new("version-deadline");
     rig.write_roster(&live_row(&rig.worktree(), "a-session"));
-    rig.version_hang_seconds = Some(5);
+    rig.name_the_agent(&rig.slow_adapter(&["version"], 5));
+    let timed = |rig: &Rig| {
+        let started = Instant::now();
+        let out = rig.observe();
+        (out, started.elapsed())
+    };
 
     rig.agent_timeout_ms = Some(300);
-    let out = rig.observe();
-    let tight = rig.last_call();
+    let (out, tight) = timed(&rig);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert!(
         rig.projection()["agent_version"].is_null(),
@@ -407,8 +410,7 @@ fn a_version_call_that_outruns_the_deadline_publishes_no_version() {
     );
 
     rig.agent_timeout_ms = Some(1000);
-    let out = rig.observe();
-    let wider = rig.last_call();
+    let (out, wider) = timed(&rig);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert!(
         rig.projection()["agent_version"].is_null(),
@@ -418,8 +420,7 @@ fn a_version_call_that_outruns_the_deadline_publishes_no_version() {
     );
 
     rig.agent_timeout_ms = Some(10_000);
-    let out = rig.observe();
-    let patient = rig.last_call();
+    let (out, patient) = timed(&rig);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(
         rig.projection()["agent_version"],
@@ -449,7 +450,7 @@ fn a_version_call_that_outruns_the_deadline_publishes_no_version() {
 /// The close the two standing-announcement arms rest on and neither reaches:
 /// their control moves to a NEW version, which announces whether or not the
 /// announcement was closed. The reading that separates the two is the SAME pair
-/// returning after a version that agreed with the pin cleared it.
+/// returning after a version among the releases measured cleared it.
 #[test]
 fn a_spread_that_returns_after_it_was_closed_is_announced_again() {
     let rig = Rig::new("reopened");
@@ -462,7 +463,7 @@ fn a_spread_that_returns_after_it_was_closed_is_announced_again() {
             "the loop publishes the moved version"
         );
 
-        // The close: a version that IS read and DOES agree with the pin.
+        // The close: a version that IS read and IS among the releases measured.
         rig.set_version("9.9.9");
         polls.tick();
         assert_eq!(rig.projection()["agent_version"], "9.9.9");
@@ -495,7 +496,7 @@ fn a_spread_that_returns_after_it_was_closed_is_announced_again() {
             assert_eq!(
                 event["payload"]["expected"],
                 "9.9.9",
-                "announcement {} carries the pinned half",
+                "announcement {} carries the expected half",
                 nth + 1
             );
             assert_eq!(
@@ -508,81 +509,13 @@ fn a_spread_that_returns_after_it_was_closed_is_announced_again() {
     });
 }
 
-/// The THIRD way to have no version, at the announcement clause. A read that
-/// FAILED and a read that was SILENT each have an arm holding this clause; a
-/// read the deadline ended had none, and it is the one that arrives on a healthy
-/// fleet whose agent binary is merely slow.
-///
-/// The clause: only a version that WAS READ and agrees with the pin closes a
-/// standing announcement. A poll whose version call was outrun knows nothing
-/// about the spread, so clearing on it would re-announce the same move on the
-/// next healthy poll — one event per hang, on a fleet that has not moved.
-///
-/// WHAT SEPARATES "NOT CLOSED" FROM "CLOSED AND NOT RE-ANNOUNCED" is the last
-/// reading and not the middle one: a count that stays at 1 through the hang is
-/// equally satisfied by an announcement that was closed and by one that stands,
-/// because neither announces during a poll with no version to compare. So the
-/// hang is lifted and the SAME pair returns: a closed announcement announces it
-/// again, which is what `a_spread_that_returns_after_it_was_closed_is_announced_again`
-/// measures, and a standing one does not.
+/// A configured worktree is a spelling of a directory. The matcher puts both
+/// sides in one form, so a trailing separator is the same directory: the seat
+/// reads Present, its context is asked about, and the spelling it publishes is
+/// the directory's — never the configured one's.
 #[test]
-fn an_outrun_version_call_does_not_close_a_standing_announcement() {
-    let mut rig = Rig::claude_code("outrun-close");
-    rig.write_roster(&live_row(&rig.worktree(), "a-session"));
-    rig.agent_timeout_ms = Some(300);
-    rig.set_version("9.9.10");
-
-    let rig = rig;
-    rig.driving(|polls| {
-        // The one place this arm waits: its deadline is 300 ms by design, so the
-        // healthy poll the hang runs against is polled for rather than assumed.
-        polls.until(20, |p| p["agent_version"] == "9.9.10");
-        assert_eq!(
-            rig.events_of("substrate.moved"),
-            1,
-            "the move is announced once, which is what the hang below runs against"
-        );
-
-        // The version call now outruns its deadline on every poll: no version at
-        // all, by the third path. The hang is a file the stub re-reads per call,
-        // so it is armed between two polls of one loop.
-        rig.set_version_hang(5);
-        polls.tick();
-        assert!(
-            rig.projection()["agent_version"].is_null(),
-            "a version call that outran its deadline publishes no version"
-        );
-        // A second poll of it, so a per-poll announcement would show as more
-        // than one.
-        polls.tick();
-        assert_eq!(
-            rig.events_of("substrate.moved"),
-            1,
-            "a poll that read no version neither announces nor re-announces"
-        );
-
-        rig.clear_version_hang();
-        // The same wait, for the same reason. Every poll it spends is one more
-        // with no version, which leaves a standing announcement exactly where
-        // the two above left it.
-        polls.until(20, |p| p["agent_version"] == "9.9.10");
-        polls.tick();
-        assert_eq!(
-            rig.events_of("substrate.moved"),
-            1,
-            "the same pair returning is not a second event, so the polls with no \
-             version never closed the announcement — a closed one announces again"
-        );
-    });
-}
-
-/// A configured worktree is a spelling of a directory. The matcher already puts
-/// both sides in one form; the transcript lookup consumes the configured path,
-/// and a trailing separator there encodes to a project directory the agent never
-/// wrote — a seat that reads Present and carries no context, forever.
-#[test]
-fn a_configured_worktree_with_a_trailing_separator_still_reads_a_context() {
-    let rig = Rig::claude_code("slashed");
+fn a_configured_worktree_with_a_trailing_separator_is_the_same_directory() {
+    let rig = Rig::new("slashed");
     rig.write_config(&format!(
         r#"{{"fleet_toml": "{}", "children": [
              {{"id":"{SEAT_ID}","name":"Orla","worktrees":{{"demo":"{}/"}}}}
@@ -604,8 +537,7 @@ fn a_configured_worktree_with_a_trailing_separator_still_reads_a_context() {
     );
     assert_eq!(
         row["context_tokens"], 18,
-        "and the transcript is found at the directory's encoding, not at the \
-         configured spelling's"
+        "and its context is read like any present seat's"
     );
     assert_eq!(
         row["worktree"],
@@ -613,12 +545,6 @@ fn a_configured_worktree_with_a_trailing_separator_still_reads_a_context() {
         "and the published spelling is the directory's too, so a reader matching \
          it against an agent's cwd needs no normalisation of its own"
     );
-
-    // The control: the same rig with the transcript gone reads no figure, so the
-    // 18 above came from the file the agent wrote.
-    std::fs::remove_dir_all(rig.home().join(".claude")).unwrap();
-    assert_eq!(rig.observe().status.code(), Some(0));
-    assert!(rig.projection()["seats"][0]["context_tokens"].is_null());
 }
 
 /// The same field's OTHER case, end to end. The arm above pins the spelling a
@@ -748,7 +674,7 @@ fn every_change_the_loop_states_is_one_line_and_not_one_line_per_poll() {
         // (1) The seat list re-points the policy path.
         write(
             &rig.second_policy_path(),
-            "[controller]\npoll_seconds = 1\n\n[substrate.claude_code]\nversion = \"7.7.7\"\n",
+            &format!("[controller]\npoll_seconds = 2\n{}", stub_agent_table()),
         );
         rig.write_config(&format!(
             r#"{{"fleet_toml": "{}", "children": [
@@ -805,12 +731,12 @@ fn every_change_the_loop_states_is_one_line_and_not_one_line_per_poll() {
         assert_eq!(rig.projection()["seats"].as_array().map(Vec::len), Some(1));
         write(
             &rig.second_policy_path(),
-            "[controller]\npoll_seconds = 1\n\n[substrate.claude_code]\nversion = \"7.7.8\"\n",
+            &format!("[controller]\npoll_seconds = 3\n{}", stub_agent_table()),
         );
         polls.tick();
         assert_eq!(
-            rig.projection()["agent_version_expected"],
-            "7.7.8",
+            rig.projection()["fleet"]["poll_seconds"],
+            3,
             "the moved file is re-read"
         );
         polls.tick();
@@ -936,10 +862,10 @@ fn a_poll_that_reads_no_version_leaves_a_standing_announcement_standing() {
         assert_eq!(
             rig.events_of("substrate.moved"),
             1,
-            "a poll that read no version is not a version that agrees with the pin"
+            "a poll that read no version is not a version among the releases measured"
         );
 
-        // The control: a version that IS read and DOES agree closes the
+        // The control: a version that IS read and IS measured closes the
         // announcement, so a later move announces again — otherwise the count
         // above would pass on a controller that never announces twice for any
         // reason.
@@ -956,4 +882,13 @@ fn a_poll_that_reads_no_version_leaves_a_standing_announcement_standing() {
             "a second move is a second event"
         );
     });
+}
+
+/// The `[agent]` table naming the agent stub, for an arm that writes a second
+/// policy file whole and not through `Rig::write_policy`.
+fn stub_agent_table() -> String {
+    format!(
+        "\n[agent]\nadapter = {}\n",
+        serde_json::json!(common::agent_stub_path().display().to_string())
+    )
 }

@@ -36,7 +36,7 @@ impl Machine {
     fn run(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_fleet"))
             .args(args)
-            .hermetic(&self.root.join("home"), &self.root, None)
+            .hermetic(&self.root.join("home"), &self.root)
             .output()
             .expect("the built binary runs")
     }
@@ -124,12 +124,14 @@ fn an_unreadable_instrument_is_three_and_prints_the_chain() {
 
     // The control the arm needs: the same verb over a machine directory that
     // HAS a seat list reaches the loop, so the 3 above is the missing
-    // instrument and not `observe` refusing everything it is handed.
+    // instrument and not `observe` refusing everything it is handed. Its
+    // fleet runs on the agent stub, which answers from no state at all.
     std::fs::write(
         machine.root.join("fleet.toml"),
         "[fleet]\npoll_seconds = 1\n",
     )
     .expect("the policy is written");
+    common::stub_agent(&machine.root);
     std::fs::write(
         machine.root.join("config.json"),
         format!(

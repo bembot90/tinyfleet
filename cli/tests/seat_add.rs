@@ -29,7 +29,6 @@ struct Rig {
     machine: PathBuf,
     home: PathBuf,
     manager: PathBuf,
-    agent: PathBuf,
 }
 
 impl Rig {
@@ -49,15 +48,12 @@ impl Rig {
             machine: root.join("machine"),
             home: root.join("home"),
             manager: root.join("manager.sh"),
-            agent: root.join("agent.sh"),
             root,
         };
         for dir in [&rig.project, &rig.home] {
             std::fs::create_dir_all(dir).expect("the fixture directory is made");
         }
         rig.a_manager();
-        write(&rig.agent, "#!/bin/sh\nexit 0\n");
-        executable(&rig.agent);
 
         let packs = common::packs_checkout(&rig.root);
         let out = rig.run(&[
@@ -117,7 +113,7 @@ impl Rig {
         Command::new(env!("CARGO_BIN_EXE_fleet"))
             .args(args)
             .current_dir(&self.project)
-            .hermetic(&self.home, &self.machine, Some(&self.agent))
+            .hermetic(&self.home, &self.machine)
             .env("FLEET_SERVICE_BIN", &self.manager)
             .output()
             .expect("the built binary runs")

@@ -1,16 +1,20 @@
 //! `fleet dispatch` through the shipped binary, with the ring TYPED into the
-//! seat's own session on `fleet-tmux-stub` and the agent's listing answered by
-//! a stub script.
+//! seat's own session on `fleet-tmux-stub` and the agent answered by
+//! `fleet-agent-stub`.
 //!
 //! The listing reads the seat's row idle until its pane has taken a submit and
-//! busy after it, so what the ring passed is read from what the fake server
-//! recorded as typed rather than from the code that typed it.
+//! busy after it — the stub follows the tmux stub's panes — so what the ring
+//! passed is read from what the fake server recorded as typed rather than from
+//! the code that typed it.
 //!
 //! One project and one store per test process, on the store stub. Nothing here
 //! reads the store as a whole: each arm names its own item and its own seat, so
 //! a neighbour's rows move no answer this file asserts on where one process
-//! runs every arm. The machine directory, the roster and the stub's seams are
-//! per arm, because they are what each arm varies. The shared project outlives
+//! runs every arm. The machine directory and the tmux stub are per arm, because
+//! they are what each arm varies. THE AGENT STUB'S STATE IS THE PROJECT'S — a
+//! request carries the fleet's root, which is the shared project — so each rig
+//! scripts it afresh, and the arms rely on nextest's one process per arm to
+//! keep two rigs off one listing. The shared project outlives
 //! the process — a shared handle has no owner to drop it — so it is left under
 //! the system temp directory, named by this process's id.
 
@@ -22,6 +26,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 use common::hermetic::Hermetic;
+use fleet_controller::test_support::agent_stub;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -116,6 +121,7 @@ impl Project {
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).expect("the project directory is created");
             std::fs::write(root.join("fleet.toml"), POLICY).expect("the policy file is written");
+            common::stub_agent(&root);
             common::take_a_store(&root);
             Project { root }
         })
@@ -157,15 +163,11 @@ impl Project {
     }
 }
 
-/// One arm's machine directory, seat worktree and provider stub.
+/// One arm's machine directory, seat worktree and tmux stub.
 struct Rig {
     root: PathBuf,
     machine: PathBuf,
     worktree: PathBuf,
-    stub: PathBuf,
-    roster: PathBuf,
-    /// What the listing reads once the seat's pane has taken a submit.
-    roster_taken: PathBuf,
     /// The link `FLEET_TMUX_BIN` names, and the fake server's state beside it.
     tmux: PathBuf,
     state: PathBuf,
@@ -188,9 +190,6 @@ impl Rig {
         defaults_into(&machine);
 
         let rig = Rig {
-            stub: root.join("agent.sh"),
-            roster: root.join("roster.json"),
-            roster_taken: root.join("roster-taken.json"),
             tmux: common::stub_tmux(&root.join("tmux")),
             state: root.join("tmux").join("tmux-stub.json"),
             seat: format!("s-cli-{label}"),
@@ -217,29 +216,32 @@ impl Rig {
             ),
         )
         .expect("the machine config is written");
-        rig.write_stub();
+        // The agent stub answers as its defaults do, on an empty listing,
+        // whatever an earlier arm in this process scripted.
+        agent_stub::script(&Project::shared().root, |answers| {
+            *answers = fleet_controller::test_support::Answers::default();
+        });
+        agent_stub::untold(&Project::shared().root, "version", None);
+        rig.takes_rings(false);
         rig.roster("[]");
         rig
     }
 
-    /// The stub: `agents` is the listing, which turns once the seat's pane has
-    /// taken a submit ([`common::listing_branch`]).
-    fn write_stub(&self) {
-        std::fs::write(
-            &self.stub,
-            format!(
-                "#!/bin/sh\ncase \"$1\" in\n{agents}\x20 *) exit 64 ;;\nesac\n",
-                agents = common::listing_branch(&self.roster, &self.roster_taken, &self.state),
-            ),
-        )
-        .expect("the stub is written");
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&self.stub, std::fs::Permissions::from_mode(0o755))
-            .expect("the stub is executable");
+    /// The listing the agent stub reads.
+    fn roster(&self, body: &str) -> &Rig {
+        agent_stub::script(&Project::shared().root, |answers| {
+            answers.listing = Ok(body.to_string())
+        });
+        self
     }
 
-    fn roster(&self, body: &str) -> &Rig {
-        std::fs::write(&self.roster, body).expect("the roster is written");
+    /// Whether a row under a pane that has taken a submit reads busy: the stub
+    /// following this rig's tmux stub, or reading the listing as written.
+    fn takes_rings(&self, takes: bool) -> &Rig {
+        agent_stub::follow_host(
+            &Project::shared().root,
+            takes.then_some(self.state.as_path()),
+        );
         self
     }
 
@@ -247,19 +249,13 @@ impl Rig {
     /// and busy once the pane has taken a submit: a session that takes a ring.
     fn live(&self) -> &Rig {
         let pid = common::live_pane(&self.state, SEAT_ID, &self.worktree);
-        std::fs::write(
-            &self.roster_taken,
-            format!("[{}]", common::listed_row("abcdef", pid, "busy")),
-        )
-        .expect("the roster is written");
-        self.roster(&format!("[{}]", common::listed_row("abcdef", pid, "idle")))
+        self.takes_rings(true)
+            .roster(&format!("[{}]", common::listed_row("abcdef", pid, "idle")))
     }
 
     /// A live seat that leaves a ring at its prompt: idle, and idle.
     fn never_takes(&self) -> &Rig {
-        self.live();
-        std::fs::remove_file(&self.roster_taken).expect("the taken roster is removed");
-        self
+        self.live().takes_rings(false)
     }
 
     /// The shipped binary, with the belt's two readings forced.
@@ -270,18 +266,12 @@ impl Rig {
     /// not written for. Forcing a calm pair makes it the arm its own comment
     /// describes.
     fn run(&self, args: &[&str]) -> Output {
-        self.run_with_agent(args, self.stub.clone())
-    }
-
-    /// The same, with the agent binary seam named by the caller: the leg that
-    /// resolves it is the one an arm makes answer could-not-tell.
-    fn run_with_agent(&self, args: &[&str], bin: PathBuf) -> Output {
         Command::new(env!("CARGO_BIN_EXE_fleet"))
             .args(args)
             .arg("--packs-dir")
             .arg(self.machine.join("packs"))
             .current_dir(&Project::shared().root)
-            .hermetic(&self.root.join("home"), &self.machine, Some(&bin))
+            .hermetic(&self.root.join("home"), &self.machine)
             .env(common::hermetic::TMUX_BIN, &self.tmux)
             .env("FLEET_LOAD_AVERAGE", "0.1")
             .env("FLEET_CPUS", "8")
@@ -302,7 +292,7 @@ impl Rig {
         let out = Command::new(env!("CARGO_BIN_EXE_fleet"))
             .args(["item", "show", item, "--json"])
             .current_dir(&Project::shared().root)
-            .hermetic(&self.root.join("home"), &self.machine, Some(&self.stub))
+            .hermetic(&self.root.join("home"), &self.machine)
             .output()
             .expect("the built binary runs");
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -609,9 +599,9 @@ fn a_spawn_the_controller_refuses_withdraws_the_order() {
 }
 
 /// AC2 of the could-not-tell spec — the spawner's could-not-tell leg, end to end: an agent
-/// binary that does not resolve is a question about the environment and not a
-/// verdict on the spawn, so the verb exits 3 and the order it wrote is still
-/// there for the retry.
+/// whose version does not answer is one no effect may be issued through, a
+/// question about the environment and not a verdict on the spawn, so the verb
+/// exits 3 and the order it wrote is still there for the retry.
 ///
 /// READ BESIDE `a_spawn_the_controller_refuses_withdraws_the_order` above,
 /// which takes the other leg through the same seam: that one exits 1 and the
@@ -623,13 +613,11 @@ fn an_unresolvable_agent_binary_exits_three_and_the_order_stands() {
     let rig = Rig::new("untold");
     let item = project.item("a ready item whose spawn nobody could observe");
 
-    let out = rig.run_with_agent(
-        &["dispatch", &item, "--by", "lead-1"],
-        rig.root.join("no-such-agent"),
-    );
+    agent_stub::untold(&project.root, "version", Some("the agent is not here"));
+    let out = rig.run(&["dispatch", &item, "--by", "lead-1"]);
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     assert!(
-        stderr(&out).contains("is not an executable file"),
+        stderr(&out).contains("version could not tell: the agent is not here"),
         "the cause is named: {}",
         stderr(&out)
     );
@@ -678,7 +666,7 @@ fn nameless_under(rig: &Rig, args: &[&str], inherited: Option<&str>) -> Command 
         .arg("--packs-dir")
         .arg(rig.machine.join("packs"))
         .current_dir(&Project::shared().root)
-        .hermetic(&rig.root.join("home"), &rig.machine, Some(&rig.stub))
+        .hermetic(&rig.root.join("home"), &rig.machine)
         .env(common::hermetic::TMUX_BIN, &rig.tmux)
         .env("FLEET_LOAD_AVERAGE", "0.1")
         .env("FLEET_CPUS", "8");

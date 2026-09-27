@@ -91,10 +91,8 @@ fn the_defaults_alone_resolve_every_check_they_ship() {
         names(&entries),
         [
             "adopt-board",
-            "claude-code-version",
             "fleet-packs-version",
             "guards-installed",
-            "isolation-pair",
             "runtime-version",
             "tmux-version",
         ],
@@ -135,7 +133,7 @@ fn a_pack_on_top_shadows_a_check_per_file_and_adds_its_own() {
     // per file, so the script still comes off the defaults.
     pack(&machine, "scratch2");
     machine.file(
-        "packs/scratch2/doctor/isolation-pair/doctor.toml",
+        "packs/scratch2/doctor/tmux-version/doctor.toml",
         "description = \"the scratch2 copy\"\nrun = \"run.sh\"\n",
     );
     let packs = packs(&machine);
@@ -159,14 +157,14 @@ fn a_pack_on_top_shadows_a_check_per_file_and_adds_its_own() {
         "a pack's own check is among the entries"
     );
 
-    let pair = found(&packs, "isolation-pair");
+    let tmux = found(&packs, "tmux-version");
     assert_eq!(
-        pair.layer, "scratch2",
+        tmux.layer, "scratch2",
         "the layer is the doctor.toml's carrier"
     );
     assert_eq!(
-        pair.script,
-        Ok(defaults.join("doctor/isolation-pair/run.sh")),
+        tmux.script,
+        Ok(defaults.join("doctor/tmux-version/run.sh")),
         "the script resolves on its own, to the defaults' copy"
     );
 

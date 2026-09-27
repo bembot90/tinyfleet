@@ -48,16 +48,17 @@
 //! A spawned seat comes up under ITS OWN configuration directory — one per seat
 //! under the machine directory, made empty at the spawn and taken back at the
 //! retire — so nothing from the person's home directory reaches a flight, and
-//! the pack's overlay is all it holds. The provider's credential knob is set
-//! beside it at the value the operator configured, which is what keeps such a
-//! seat logged in.
+//! what the agent's adapter writes into it at the launch is all it holds
+//! (reviewer call 2026-09-25, E8): how such a seat stays logged in is the
+//! adapter's.
 //!
-//! THAT DIRECTORY SCOPES WHAT THE AGENT KNOWS (lessons claude-code A11): a
-//! session started under one is known to its agent under that directory and no
-//! other. So the directory is on the session-table row and every question put
-//! to the agent about that session carries it — its reading, its context, the
-//! launch and the resume. How the agent reads under it is the adapter's; a
-//! seat it could not read is left Unknown and the rest decided.
+//! THAT DIRECTORY SCOPES WHAT THE AGENT KNOWS
+//! (the claude-code pack's lessons A11): a session started under one is known
+//! to its agent under that directory and no other. So the directory is on the
+//! session-table row and every question put to the agent about that session
+//! carries it — its reading, its context, the launch and the resume. How the
+//! agent reads under it is the adapter's; a seat it could not read is left
+//! Unknown and the rest decided.
 //!
 //! A logged-out session is LIVE, so the host cannot report the failure: the
 //! agent's reading carries it, blocked on `logged_out`, and the first sighting

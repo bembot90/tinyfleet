@@ -54,7 +54,7 @@ impl Temp {
     fn run(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_fleet"))
             .args(args)
-            .hermetic(&self.root.join("home"), &self.root, None)
+            .hermetic(&self.root.join("home"), &self.root)
             .output()
             .expect("the built binary runs")
     }

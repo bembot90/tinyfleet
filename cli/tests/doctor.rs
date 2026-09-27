@@ -5,18 +5,18 @@
 //! THE DEFAULTS ARE THE BINARY'S OWN, written by the function `fleet start`
 //! writes them with, so the rows an arm reads are the ones a person's first
 //! `fleet doctor` prints. Every tool those checks ask is a stub this rig puts
-//! first on `PATH`: the agent binary answers its version at the supported pin
-//! and the isolation pair by whether the credential knob is set, and the
-//! pinned runtime prints one line; tmux is the fleet-tmux-stub, which answers
-//! the release fleet measured and holds no server. The project keeps its store on the stub
+//! first on `PATH`: the pinned runtime prints one line; tmux is the
+//! fleet-tmux-stub, which answers the release fleet measured and holds no
+//! server. The project keeps its store on the stub
 //! adapter, empty, which the adopt-board check's `fleet item list` reads.
 //! Nothing here starts a session or asks a real tool anything; the
 //! adopt-board check over a board with foreign keys is `adopt.rs`'s.
 //!
 //! THE TWO BUILT-IN ROWS ask the adapters the rig configures: the store stub,
-//! and the in-process Claude Code over the stub `claude` — or, for an arm
-//! about an adapter executable, the one script this suite writes
+//! and an agent adapter executable — the one script this suite writes
 //! ([`adapter`]), which answers each verb from a file the arm leaves for it.
+//! No check the defaults carry is an agent's: an agent's own checks are its
+//! pack's.
 //!
 //! THE PINS ARE READ FROM CORE and not spelled here, so a supported-version
 //! move leaves this suite green and the doctor's own copies are core's suite
@@ -42,12 +42,10 @@ const CONFIGURED: &str = "[project]\nitem_prefix = \"fx\"\n";
 const UNCONFIGURED: &str = "[project]\n";
 
 /// Every check the binary's defaults carry, in the order the verb runs them.
-const DEFAULTS: [&str; 7] = [
+const DEFAULTS: [&str; 5] = [
     "adopt-board",
-    "claude-code-version",
     "fleet-packs-version",
     "guards-installed",
-    "isolation-pair",
     "runtime-version",
     "tmux-version",
 ];
@@ -98,7 +96,8 @@ struct Rig {
 
 impl Rig {
     /// A project holding `policy` as its `fleet.toml`, the defaults and no
-    /// pack installed, and the stubs every default check asks.
+    /// pack installed, the stubs every default check asks, and [`adapter`]'s
+    /// script as its agent, answering `quill` at 2.4.0, measured against it.
     fn new(label: &str, policy: &str) -> Rig {
         let n = NEXT.fetch_add(1, Ordering::SeqCst);
         let root = std::env::temp_dir().join(format!(
@@ -119,25 +118,7 @@ impl Rig {
         defaults_into(&rig.machine);
         write(&rig.project.join("fleet.toml"), policy);
         common::take_a_store(&rig.project);
-
-        // The agent binary: its version at the supported pin, and the
-        // isolation pair's two arms told apart by whether the credential knob
-        // is SET, which is the whole of what the pair measures.
-        rig.stub(
-            "claude",
-            &format!(
-                "case \"${{1:-}}\" in\n\
-                 --version) echo \"{} (Claude Code)\"; exit 0 ;;\n\
-                 esac\n\
-                 if [ \"${{CLAUDE_SECURESTORAGE_CONFIG_DIR+set}}\" = set ]; then\n\
-                 echo '{{\"loggedIn\": true}}'\n\
-                 exit 0\n\
-                 fi\n\
-                 echo '{{\"loggedIn\": false}}'\n\
-                 exit 1",
-                fleet_core::supported::PINNED_CLAUDE_CODE
-            ),
-        );
+        rig.agent(&quill(Some("2.4.0")), &declared("2.4.0"));
         rig.stub(RUNTIME, &format!("echo \"{RUNTIME} {VERSION}\""));
         rig
     }
@@ -257,16 +238,11 @@ impl Rig {
             .arg("--packs-dir")
             .arg(self.machine.join("packs"))
             .current_dir(cwd)
-            .hermetic(
-                &self.root.join("home"),
-                &self.machine,
-                Some(&self.stubs.join("claude")),
-            )
+            .hermetic(&self.root.join("home"), &self.machine)
             .env(common::hermetic::TMUX_BIN, &self.tmux)
             .env(ANSWERS, &self.answers)
             .env(AGENT_BOUND, self.agent_bound_ms.to_string())
             .env("NO_COLOR", "1")
-            .env_remove("CLAUDE_SECURESTORAGE_CONFIG_DIR")
             .env("PATH", path)
             .output()
             .expect("the built binary runs")
@@ -439,7 +415,6 @@ fn the_defaults_pass_on_a_configured_project() {
              them: {said}"
         );
     }
-    let pin = fleet_core::supported::PINNED_CLAUDE_CODE;
     assert_eq!(
         row(&said, "store-adapter (built-in)"),
         "pass store-adapter (built-in) — stub 0 via fleet-store-stub — schema 1, capabilities \
@@ -447,15 +422,14 @@ fn the_defaults_pass_on_a_configured_project() {
     );
     assert_eq!(
         row(&said, "agent-adapter (built-in)"),
-        format!("pass agent-adapter (built-in) — claude {pin} via claude-code — measured {pin}")
+        format!(
+            "pass agent-adapter (built-in) — quill 2.4.0 via {} — measured 2.4.0",
+            adapter("agent").display()
+        )
     );
     assert_eq!(
         row(&said, "guards-installed (defaults)"),
         "pass guards-installed (defaults) — record bare-id: configured — [project] item_prefix"
-    );
-    assert_eq!(
-        row(&said, "isolation-pair (defaults)"),
-        "pass isolation-pair (defaults) — isolation-pair: holds"
     );
     assert_eq!(row(&said, "runtime-version (defaults)"), NOTHING_PINNED);
     assert_eq!(
@@ -476,7 +450,7 @@ fn the_defaults_pass_on_a_configured_project() {
     );
     assert_eq!(
         last_line(&said),
-        "doctor 9 checks — 9 pass, 0 finding, 0 could not tell"
+        "doctor 7 checks — 7 pass, 0 finding, 0 could not tell"
     );
     assert!(
         !said.lines().any(|line| line.starts_with("  ")),
@@ -514,7 +488,7 @@ fn an_unconfigured_guard_is_a_finding_with_its_lines_below_the_row() {
     }
     assert_eq!(
         last_line(&said),
-        "doctor 9 checks — 8 pass, 1 finding, 0 could not tell"
+        "doctor 7 checks — 6 pass, 1 finding, 0 could not tell"
     );
 }
 
@@ -600,7 +574,7 @@ fn a_check_that_could_not_tell_wins_over_a_finding() {
     );
     assert_eq!(
         last_line(&said),
-        "doctor 12 checks — 9 pass, 1 finding, 2 could not tell"
+        "doctor 10 checks — 7 pass, 1 finding, 2 could not tell"
     );
 
     rig.uncheck("scratch", "fx-unread");
@@ -715,13 +689,14 @@ fn runtime_version_runs_on_the_path_a_run_gives_the_pack() {
 #[test]
 fn a_named_check_runs_alone() {
     let rig = Rig::new("one", CONFIGURED);
-    let out = rig.doctor(&["isolation-pair"]);
+    let out = rig.doctor(&["tmux-version"]);
     let said = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{said}{}", stderr(&out));
     assert_eq!(
         rows(&said),
         [
-            "pass isolation-pair (defaults) — isolation-pair: holds",
+            "pass tmux-version (defaults) — tmux-version: holds — no server is running on socket \
+             fleet",
             "doctor 1 check — 1 pass, 0 finding, 0 could not tell",
         ]
     );
@@ -795,7 +770,7 @@ fn json_carries_every_row_and_the_exit_carries_the_aggregate() {
     assert_eq!(document["data"]["verdict"], "finding");
     assert_eq!(
         document["data"]["counts"],
-        serde_json::json!({ "pass": 8, "finding": 1, "could_not_tell": 0 })
+        serde_json::json!({ "pass": 6, "finding": 1, "could_not_tell": 0 })
     );
     let checks = document["data"]["checks"]
         .as_array()
@@ -974,7 +949,7 @@ fn the_configured_adapters_answer_and_nothing_is_written() {
     );
     assert_eq!(
         last_line(&said),
-        "doctor 9 checks — 9 pass, 0 finding, 0 could not tell"
+        "doctor 7 checks — 7 pass, 0 finding, 0 could not tell"
     );
 
     assert_eq!(
@@ -1043,6 +1018,40 @@ fn a_store_adapter_no_pack_carries_could_not_tell_and_the_scripted_checks_still_
         row(&said, "agent-adapter (built-in)").starts_with("pass "),
         "{said}"
     );
+}
+
+/// A fleet naming the default agent adapter — as `fleet create` writes it —
+/// with no pack installed that carries it: the agent row could not tell,
+/// saying the opener's own refusal, the `fleet pack add` line included, and
+/// every scripted check still runs. The default's name resolves through the
+/// packs and nowhere else.
+#[test]
+fn an_agent_adapter_no_pack_carries_could_not_tell_and_the_scripted_checks_still_run() {
+    let rig = Rig::new("agent-nowhere", CONFIGURED);
+    let name = fleet_controller::adapter::DEFAULT_AGENT_ADAPTER;
+    rig.set_adapter("agent", &format!("{name:?}"));
+
+    let out = rig.doctor(&[]);
+    let said = stdout(&out);
+    assert_eq!(out.status.code(), Some(3), "{said}{}", stderr(&out));
+    let line = fleet_controller::adapter::pack_line(
+        fleet_core::supported::PINNED_PACKS_SOURCE,
+        name,
+        fleet_core::supported::PINNED_PACKS,
+    );
+    assert_eq!(
+        row(&said, "agent-adapter (built-in)"),
+        format!(
+            "could not tell agent-adapter (built-in) — no agent adapter named `{name}` in the \
+             installed packs — `{line}` installs the one fleet-packs carries"
+        )
+    );
+    for name in DEFAULTS {
+        assert!(
+            row(&said, &format!("{name} (defaults)")).starts_with("pass "),
+            "{name}: {said}"
+        );
+    }
 }
 
 /// A store adapter that answers, declaring what the contract's rules refuse:

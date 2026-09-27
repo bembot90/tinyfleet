@@ -2,38 +2,20 @@
 //! place: what each was measured against, and so what the defaults' doctor
 //! checks and the controller compare the installed one with.
 //!
-//! TWO ARE DECLARED HERE: Claude Code's, and the fleet-packs repository's —
-//! the source and the tag `fleet create` installs the agent's pack and a store
-//! pack from — beside
-//! tmux's MINIMUM, a floor rather than a pin. A store's
-//! own pin is its pack's and not this binary's: the pack at that tag pins the
-//! store it drives and carries the doctor check that measures it. The workflow
-//! runtime is NOT the binary's either: a pack pins it in its own `[runtime]`
-//! table (the ts pack pins Deno), and the defaults' `runtime-version` check
-//! measures whichever pack declares one. git carries no pin.
+//! ONE IS DECLARED HERE: the fleet-packs repository's — the source and the
+//! tag `fleet create` installs the agent's pack and a store pack from —
+//! beside tmux's MINIMUM, a floor rather than a pin. An agent's pin is its
+//! pack's and not this binary's, as a store's is: the pack at that tag pins
+//! the program it drives, declares the releases its adapter was measured
+//! against, and carries the doctor check that measures it (ruling 8). The
+//! workflow runtime is NOT the binary's either: a pack pins it in its own
+//! `[runtime]` table (the ts pack pins Deno), and the defaults'
+//! `runtime-version` check measures whichever pack declares one. git carries
+//! no pin.
 //!
-//! Another version is NAMED AND NOT REFUSED, for every pin: the verbs and the
-//! controller still run on it, and the doctor check that reports the spread
-//! says so beside how to install the supported release: Claude Code's own
-//! install command, and for fleet-packs the `fleet pack add` line at the tag.
-
-/// The Claude Code release fleet supports: the one the defaults'
-/// `claude-code-version` doctor check compares `claude --version` with, and
-/// the one fleet is developed on and its suites run beside. The adapter's
-/// version-scoped behaviours were MEASURED ON THIS RELEASE: every lessons
-/// claude-code entry the claude-code pack keeps was re-read on 2.1.280 and
-/// restated there, held or moved, beside the evidence (fleet-031,
-/// 2026-09-26; lessons claude-code A1 names the release).
-///
-/// It is also the controller's DEFAULT EXPECTATION. A fleet whose policy pins
-/// nothing under `[substrate]` expects this release, so a `substrate.moved`
-/// there means "not the release fleet supports"; a fleet's own pin still wins.
-///
-/// A move is THIS LINE PLUS THE RE-MEASURE: every version-scoped behaviour the
-/// adapter reads re-run on the new release and restated, or its code changed
-/// where the behaviour moved. The doctor check carries its own copy, because a
-/// shell script cannot read this, and a suite arm fails until the two agree.
-pub const PINNED_CLAUDE_CODE: &str = "2.1.280";
+//! Another version is NAMED AND NOT REFUSED: the verbs and the controller
+//! still run on it, and the doctor check that reports the spread says so
+//! beside the `fleet pack add` line at the tag.
 
 /// The oldest tmux fleet runs on: every seat's session is a tmux session on
 /// fleet's own socket, and the controller's host reads each pane's liveness,
