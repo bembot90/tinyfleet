@@ -138,6 +138,35 @@ impl TmuxHost {
         &self.socket
     }
 
+    /// End this host's whole server, and remove the socket it listened on:
+    /// what a caller does with a scratch server of its own when it is done,
+    /// and refused for [`super::SOCKET`], which is fleet's.
+    ///
+    /// THE SOCKET IS REMOVED BY PATH because tmux leaves it behind however its
+    /// server ends — killed, its last session killed, or its last process
+    /// exited (measured on 3.7b). It is `tmux-<uid>/<socket>` under `/tmp`,
+    /// `uid` being the user the server runs as: every client here is run with
+    /// no `TMUX_TMPDIR` ([`TmuxHost::client`] clears the environment), so it is
+    /// never elsewhere. A server already gone, and a socket already removed,
+    /// are `Ok`.
+    pub fn end_server(&self, uid: u32) -> Result<(), String> {
+        if self.socket == super::SOCKET {
+            return Err(format!(
+                "the server on `{}` is fleet's, and is never ended from here",
+                super::SOCKET
+            ));
+        }
+        let _ = self.run(&["kill-server"]);
+        let socket = Path::new("/tmp")
+            .join(format!("tmux-{uid}"))
+            .join(&self.socket);
+        match std::fs::remove_file(&socket) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("{} could not be removed: {e}", socket.display())),
+        }
+    }
+
     /// A client command on this host's server, with the constructed
     /// environment and nothing else of the controller's.
     fn client(&self, args: &[&str]) -> Command {
@@ -510,6 +539,16 @@ mod tests {
     use super::*;
 
     const LIVE: &str = "abc\t4242\t0\t\t1790406337\t/private/tmp/work";
+
+    /// A scratch server's teardown refuses fleet's own socket before it runs
+    /// anything: the binary here would end whatever it was pointed at.
+    #[test]
+    fn ending_a_server_refuses_fleets_own() {
+        let host = TmuxHost::resolve_from(Some("/usr/bin/false"), false, "/usr/bin:/bin")
+            .expect("an absolute binary resolves");
+        let refused = host.end_server(0).expect_err("fleet's server is refused");
+        assert!(refused.contains("is fleet's"), "{refused}");
+    }
 
     /// A live pane: its pid, Alive, its path, and the session's creation in
     /// milliseconds from tmux's seconds.

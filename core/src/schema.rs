@@ -10,9 +10,9 @@
 //! the answers of exits 1 and 3, every `$ref` into the document's own `$defs`,
 //! and no prose carried over from the types.
 //!
-//! THE CHECK IS HERE TOO, under `test-support`: the one validator every suite
-//! holds an instance to either document with ([`check`]), and the walk that
-//! makes it a whole one for a document ([`unknown_keywords`]).
+//! THE CHECK IS HERE TOO: the one validator every suite, and `fleet agent
+//! check`, holds an instance to either document with ([`check`]), and the walk
+//! that makes it a whole one for a document ([`unknown_keywords`]).
 
 use schemars::{JsonSchema, SchemaGenerator};
 use serde_json::{Map, Value};
@@ -101,7 +101,6 @@ pub(crate) fn strip(schema: &mut Value) {
 /// Every keyword [`check`] knows. The first thirteen constrain, and it applies
 /// each as JSON Schema 2020-12 says; the rest are annotations and places,
 /// which constrain nothing.
-#[cfg(any(test, feature = "test-support"))]
 pub const KEYWORDS: [&str; 20] = [
     "type",
     "properties",
@@ -135,7 +134,6 @@ pub const KEYWORDS: [&str; 20] = [
 /// is not a general validator; the arm that walks a document for a keyword
 /// outside [`KEYWORDS`] ([`unknown_keywords`]) is what makes it a whole one
 /// for that document.
-#[cfg(any(test, feature = "test-support"))]
 pub fn check(document: &Value, pointer: &str, instance: &Value) -> Result<(), String> {
     let schema = document
         .pointer(pointer)
@@ -150,7 +148,6 @@ pub fn check(document: &Value, pointer: &str, instance: &Value) -> Result<(), St
 /// [`check`] refuses a keyword it does not know, but only where an instance
 /// leads it; this walks all of a document, so a keyword the generator starts
 /// writing is named before any check passes over it.
-#[cfg(any(test, feature = "test-support"))]
 pub fn unknown_keywords(document: &Value) -> Vec<String> {
     fn walk(schema: &Value, at: String, unknown: &mut Vec<String>) {
         let Value::Object(object) = schema else {
@@ -192,7 +189,6 @@ pub fn unknown_keywords(document: &Value) -> Vec<String> {
     unknown
 }
 
-#[cfg(any(test, feature = "test-support"))]
 fn passes(document: &Value, schema: &Value, instance: &Value, at: &str) -> Result<(), String> {
     let object = match schema {
         Value::Bool(true) => return Ok(()),
@@ -320,7 +316,6 @@ fn passes(document: &Value, schema: &Value, instance: &Value, at: &str) -> Resul
 }
 
 /// Whether `instance` is of the JSON Schema type `name`.
-#[cfg(any(test, feature = "test-support"))]
 fn is_a(instance: &Value, name: &str) -> bool {
     match (name, instance) {
         ("null", Value::Null)

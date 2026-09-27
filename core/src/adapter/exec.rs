@@ -94,11 +94,27 @@ pub fn run(
     timeout: Duration,
     path: Option<&str>,
 ) -> Result<Ran, Unrun> {
+    run_with(adapter, verb, request, timeout, path, &[])
+}
+
+/// [`run`] with `env` set on this one call, over what the process inherits and
+/// after `path`: what `fleet agent check` replays a recorded case under, where
+/// a case names the variables its adapter reads its recording through. No
+/// caller that speaks to an adapter for a fleet sets any.
+pub fn run_with(
+    adapter: &Path,
+    verb: &str,
+    request: &Value,
+    timeout: Duration,
+    path: Option<&str>,
+    env: &[(String, String)],
+) -> Result<Ran, Unrun> {
     let mut cmd = Command::new(adapter);
     cmd.arg(verb);
     if let Some(path) = path {
         cmd.env("PATH", path);
     }
+    cmd.envs(env.iter().map(|(key, value)| (key, value)));
     let out = run_bounded_fed(cmd, request.to_string().into_bytes(), timeout).map_err(|why| {
         if why == deadline_cause(timeout) {
             Unrun::Deadline(why)

@@ -38,6 +38,7 @@ use super::{
 };
 
 /// The agent as an adapter executable, its requests carrying one root.
+#[derive(Clone, Debug)]
 pub struct AgentExec {
     adapter: PathBuf,
     root: PathBuf,
@@ -78,6 +79,32 @@ impl AgentExec {
             path: Some(path),
             ..self
         }
+    }
+
+    /// The executable every call runs.
+    pub fn entry(&self) -> &Path {
+        &self.adapter
+    }
+
+    /// The root every request carries.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// One call as the adapter answers it, past the verbs' own types: the
+    /// request sent exactly as given, `env` set on this call alone, and the
+    /// row of the exit table it exited on, unread — what `fleet agent check`
+    /// asks where a check is about the exit itself or replays a recorded
+    /// case. Every call a fleet makes goes through [`Agent`]'s verbs instead.
+    pub fn ran(&self, verb: &str, request: &Value, env: &[(String, String)]) -> Result<Ran, Unrun> {
+        exec::run_with(
+            &self.adapter,
+            verb,
+            request,
+            self.timeout,
+            self.path.as_deref(),
+            env,
+        )
     }
 
     /// One call: the verb's response body.

@@ -43,8 +43,8 @@ serde = { version = "1", features = ["derive"] }
 # test with no change to the contract. `derive` and `std` are its defaults,
 # named with default-features off like every pin here.
 schemars = { version = "=1.2.2", default-features = false, features = ["derive", "std"] }
-# regex-lite is the test-support validator's, for a schema's `pattern`: one
-# crate with no dependencies of its own.
+# regex-lite is the schema validator's, for a schema's `pattern`: one crate
+# with no dependencies of its own.
 regex-lite = "0.1"
 # float_roundtrip: the step writer parses a workflow's `--result` and stores the
 # value re-serialized, and the default parser can land a decimal literal on the

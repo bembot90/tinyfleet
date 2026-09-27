@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "root": "{fixture}",
+  "seats": [
+    {
+      "seat": "0199a3c4-0000-7000-8000-00000000a001",
+      "pid": 4242,
+      "worktree": "{fixture}"
+    },
+    {
+      "seat": "0199a3c4-0000-7000-8000-00000000a002",
+      "pid": 4343,
+      "worktree": "{fixture}"
+    }
+  ]
+}

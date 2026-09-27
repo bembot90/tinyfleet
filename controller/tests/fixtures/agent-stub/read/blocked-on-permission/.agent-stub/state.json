@@ -1,0 +1,7 @@
+{
+  "answers": {
+    "listing": {
+      "Ok": "[{\"sessionId\":\"stub-session-4545\",\"cwd\":\"/nowhere\",\"kind\":\"interactive\",\"pid\":4545,\"status\":\"waiting\",\"waitingFor\":\"permission prompt\",\"startedAt\":1790406337000}]"
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "answers": {
+    "session_log": "{\"type\":\"assistant\",\"message\":{\"usage\":{\"input_tokens\":1000}}}\n{\"type\":\"assistant\",\"message\":{\"usage\":{\"input_tokens\":1000}}}\n",
+    "last_write": 1790406337000
+  }
+}

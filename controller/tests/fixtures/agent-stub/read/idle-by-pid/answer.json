@@ -1,0 +1,16 @@
+{
+  "seats": [
+    {
+      "seat": "0199a3c4-0000-7000-8000-00000000a001",
+      "activity": "idle",
+      "evidence": "typed",
+      "session_id": "stub-session-4242"
+    },
+    {
+      "seat": "0199a3c4-0000-7000-8000-00000000a002",
+      "activity": "starting",
+      "evidence": "typed",
+      "cause": "the listing names no row with pid 4343"
+    }
+  ]
+}

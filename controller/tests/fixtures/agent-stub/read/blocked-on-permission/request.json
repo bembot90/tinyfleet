@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "root": "{fixture}",
+  "seats": [
+    {
+      "seat": "0199a3c4-0000-7000-8000-00000000a001",
+      "session_id": "stub-session-4545",
+      "pid": 4545,
+      "worktree": "{fixture}"
+    }
+  ]
+}

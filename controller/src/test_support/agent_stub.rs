@@ -31,9 +31,15 @@
 //! runs anything, and the rig scripts the listing instead — or, over
 //! `fleet-tmux-stub`, has the read follow its panes ([`follow_host`]).
 //!
-//! Two knobs, read off the environment for the one call that carries them:
-//! [`DEAF`] answers the call and writes nothing back, and [`SLOW`] sleeps
-//! before the call is answered, outside the lock.
+//! Three knobs, read off the environment for the one call that carries them:
+//! [`DEAF`] answers the call and writes nothing back, [`SLOW`] sleeps before
+//! the call is answered, outside the lock, and [`WRITE`] has a launch write a
+//! file where it is told — inside what the contract lets a launch write, or
+//! outside it, for `fleet agent check` to catch.
+//!
+//! A SESSION KEEPS A TRANSCRIPT: each line typed into one appends a turn to
+//! the state's [`Answers::session_log`] and stamps [`Answers::last_write`], so
+//! `context` after a typed turn counts it, as a live agent's would.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{File, OpenOptions, TryLockError};
@@ -67,6 +73,18 @@ pub const DEAF: &str = "FLEET_AGENT_STUB_DEAF";
 /// Seconds, in the environment: how long this call sleeps before it is
 /// answered, for an arm about an agent call's bound.
 pub const SLOW: &str = "FLEET_AGENT_STUB_SLOW";
+
+/// A path, in the environment: a launch writes an empty file there before it
+/// answers, the path read against the request's `config_dir` — its
+/// `worktree` where it names none — so `../elsewhere` lands outside both.
+/// For an arm about where a launch may write (reviewer call 2026-09-25, E8).
+pub const WRITE: &str = "FLEET_AGENT_STUB_WRITE";
+
+/// The entry a [`SESSION`] appends to the state's transcript for each line
+/// typed into it: one turn that used a thousand tokens of the window, in the
+/// shape the one real adapter reads a transcript in.
+pub const TURN_ENTRY: &str =
+    "{\"type\":\"assistant\",\"message\":{\"usage\":{\"input_tokens\":1000}}}\n";
 
 /// The root whose state a [`SESSION`] writes its moves into: set by the stub's
 /// own launch and resume in the environment they answer, since a pane's
@@ -211,6 +229,11 @@ fn answered(verb: &str, request: &str, deaf: bool) -> Answer {
         Ok(asked) => asked,
         Err(why) => return Answer::Usage(why),
     };
+    if let Asked::Launch(launch) = &asked {
+        if let Err(why) = written(launch) {
+            return Answer::Untold(why);
+        }
+    }
     let logged = Logged {
         verb: verb.to_string(),
         request: Value::Object(fields),
@@ -227,6 +250,16 @@ fn answered(verb: &str, request: &str, deaf: bool) -> Answer {
         })
     };
     answer.unwrap_or_else(Answer::Untold)
+}
+
+/// The file [`WRITE`] names written for `launch`, where it names one.
+fn written(launch: &Launch) -> Result<(), String> {
+    let Ok(path) = std::env::var(WRITE) else {
+        return Ok(());
+    };
+    let base = launch.config_dir.as_deref().unwrap_or(&launch.worktree);
+    let file = Path::new(base).join(path);
+    std::fs::write(&file, "").map_err(|e| format!("{} could not be written: {e}", file.display()))
 }
 
 /// A request decoded as its verb's fields.
@@ -399,8 +432,8 @@ fn whole<T: DeserializeOwned>(fields: &Map<String, Value>, verb: &str) -> Result
 // ---- the session ------------------------------------------------------------------
 
 /// The fake agent's process: listed idle under its own pid, busy for a
-/// [`TURN`] on each line typed into it, and gone on [`EXIT`] or at the end of
-/// its input. A launch's session is listed under an id of its own; a resume's
+/// [`TURN`] on each line typed into it — a [`TURN_ENTRY`] in the transcript —
+/// and gone on [`EXIT`] or at the end of its input. A launch's session is listed under an id of its own; a resume's
 /// under the id its `--resume` names.
 fn session(args: &[String]) -> ExitCode {
     let Some(root) = std::env::var_os(ROOT_VAR).map(PathBuf::from) else {
@@ -425,6 +458,16 @@ fn session(args: &[String]) -> ExitCode {
                     pid,
                     status.map(|status| (&session_id, &cwd, status)),
                 );
+            }
+            // A turn begun is a turn in the transcript, written as it starts,
+            // as a live agent writes the prompt it took.
+            if status == Some("busy") {
+                state
+                    .answers
+                    .session_log
+                    .get_or_insert_with(String::new)
+                    .push_str(TURN_ENTRY);
+                state.answers.last_write = Some(crate::clock::now_ms());
             }
         });
         if let Err(why) = moved {

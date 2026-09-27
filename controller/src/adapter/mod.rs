@@ -41,6 +41,7 @@ use fleet_core::pack;
 pub use fleet_core::store::{AdapterSource, PackDirs};
 
 pub mod claude_code;
+pub mod conformance;
 pub mod exec;
 
 pub use exec::AgentExec;
@@ -199,6 +200,15 @@ pub struct Opened {
     /// daemon, and `None` where it has none. Beside the agent and never one of
     /// its verbs: it goes with the in-process adapter in flight 14.
     pub daemon: Option<Box<dyn claude_code::DaemonListing>>,
+    /// The same agent as the executable it is, where it is one, and `None`
+    /// for the in-process adapter: what `fleet agent check` speaks to past the
+    /// verbs' own types, for a check about an exit or a recorded case.
+    pub exec: Option<AgentExec>,
+    /// The directory holding the adapter's own `adapter.toml`, where it has
+    /// one: a pack's adapter, or an executable named by path that sits beside
+    /// one. What the adapter ships beside it — its `fixtures/` — is read from
+    /// here.
+    pub dir: Option<PathBuf>,
 }
 
 /// The adapter a fleet whose file names none opens, by name through the
@@ -241,9 +251,14 @@ pub fn open(opening: &Opening) -> Result<Opened, String> {
             if !fleet_core::store::executable_file(adapter) {
                 return Err(unopened(opening.source, Unopened::NotExecutable(path)));
             }
+            let dir = adapter
+                .parent()
+                .filter(|dir| dir.join(pack::ADAPTER_MANIFEST).is_file())
+                .map(Path::to_path_buf);
             Ok(gated(
                 path.clone(),
                 AgentExec::at(adapter, opening.root).with_timeout(opening.timeout),
+                dir,
             ))
         }
         Some(toml::Value::String(name)) if !name.is_empty() && !name.contains('/') => {
@@ -307,13 +322,14 @@ fn by_name(opening: &Opening, name: &str) -> Result<Opened, String> {
         AgentExec::at(&entry, opening.root)
             .with_timeout(opening.timeout)
             .on_path(path),
+        Some(dir),
     ))
 }
 
 /// An adapter executable opened, and its effects gate read off its own
 /// answers: its capabilities, held to the contract, and its version, which
 /// names an installed agent.
-fn gated(name: String, agent: AgentExec) -> Opened {
+fn gated(name: String, agent: AgentExec, dir: Option<PathBuf>) -> Opened {
     let effects_off = match agent.capabilities().and_then(|_| agent.version()) {
         Ok(Version {
             version: Some(_), ..
@@ -329,9 +345,11 @@ fn gated(name: String, agent: AgentExec) -> Opened {
     };
     Opened {
         name,
+        exec: Some(agent.clone()),
         agent: Box::new(agent),
         effects_off,
         daemon: None,
+        dir,
     }
 }
 

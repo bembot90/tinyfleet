@@ -9,12 +9,11 @@ name = "fleet_core"
 path = "src/lib.rs"
 
 # What a dependent's DEV-dependency turns on to reach `test_support` — the
-# applying fake store and the board over it — and the store schema's validator.
-# Off by default and never a normal dependency's: under resolver 2 a
-# dev-dependency's features do not reach a non-dev build, so a shipped binary
-# carries none of it, regex-lite included.
+# applying fake store and the board over it. Off by default and never a normal
+# dependency's: under resolver 2 a dev-dependency's features do not reach a
+# non-dev build, so a shipped binary carries none of it.
 [features]
-test-support = ["dep:regex-lite"]
+test-support = []
 
 # The store contract answered from the fake, as an adapter executable, for the
 # suites that run every Exec path with no store installed on the box. Under the feature
@@ -51,8 +50,10 @@ required-features = ["test-support"]
 # and std. The serde feature is not taken: a SeatId serializes through its own
 # string form.
 #
-# regex-lite, under `test-support` only: the validator the suites hold the
-# schema's instances to checks a `pattern` with it.
+# regex-lite: the validator the suites and `fleet agent check` hold a
+# contract's instances to (schema::check) checks a `pattern` with it — in the
+# shipped binary too, which holds every answer an adapter gives the check to
+# the agent contract's document.
 [dependencies]
 schemars.workspace = true
 serde.workspace = true
@@ -60,16 +61,12 @@ serde_json.workspace = true
 serde_path_to_error.workspace = true
 toml.workspace = true
 uuid = { version = "=1.23.3", default-features = false, features = ["std", "v7"] }
-regex-lite = { workspace = true, optional = true }
+regex-lite.workspace = true
 
 # THIS CRATE, ON ITSELF, WITH THE FEATURE ON. The module above is reached by
 # `tests/*.rs`, and an integration test links the library as an ordinary
 # dependent does — so `cfg(test)` alone would leave it invisible to the suites
 # that use it. The controller needs no such row because only its own unit tests
 # read its `test_support`.
-#
-# regex-lite again, for this crate's own unit tests, which compile the
-# validator under `cfg(test)` whatever the feature says.
 [dev-dependencies]
 fleet-core = { path = ".", features = ["test-support"] }
-regex-lite.workspace = true

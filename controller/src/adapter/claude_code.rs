@@ -372,6 +372,8 @@ pub(super) fn open(opening: &Opening) -> Opened {
         daemon: Some(Box::new(agent.clone())),
         agent: Box::new(agent),
         effects_off,
+        exec: None,
+        dir: None,
     }
 }
 

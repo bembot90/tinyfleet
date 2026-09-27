@@ -1,0 +1,7 @@
+{
+  "answers": {
+    "listing": {
+      "Ok": "[{\"sessionId\":\"stub-session-4242\",\"cwd\":\"/nowhere\",\"kind\":\"interactive\",\"pid\":4242,\"status\":\"idle\",\"startedAt\":1790406337000}]"
+    }
+  }
+}

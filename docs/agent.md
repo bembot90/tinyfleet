@@ -455,6 +455,189 @@ $ jq '."$defs".Posture.enum' contract.json
 Every object accepts keys it does not name, a request among them, except
 `posture_models`, whose keys are the three postures and no other.
 
+## Checking an adapter
+
+`fleet agent check [--adapter <path|name>] [--fixtures <dir>] [--live]
+[--model <model>]` runs the checks of this contract against an adapter and
+prints what each one answered.
+
+Without `--adapter` it checks the adapter the fleet you are in selects: the
+one `[agent] adapter` names in the fleet's own `fleet.toml`, else
+`claude-code`, opened as [Choosing an adapter](#choosing-an-adapter) says.
+Outside a fleet it checks `claude-code`, through this machine's installed
+packs. `--adapter` takes what `[agent] adapter` takes, an absolute path to an
+adapter executable or the name of one an installed pack carries, and checks
+that one instead.
+
+To ask only whether the adapter your fleet names answers at all, run
+`fleet doctor agent-adapter`, which asks it `version` and `capabilities` and
+starts nothing.
+
+Everything the checks make is under a temporary directory fleet makes and
+removes when it finishes, whatever the checks answered: every request's
+`root`, and the `config_dir` and `worktree` each `launch` is asked for.
+
+The checks, in the order they print:
+
+- `version` answers a name that is not blank.
+- `capabilities` keeps the contract's rules for a declaration, its
+  `default_model` is not blank, and `posture_models` keys only postures
+  `postures` names.
+- Each posture the capabilities name launches: `launch` answers an `argv`
+  whose first word is not blank, and writes nothing outside the `config_dir`
+  and `worktree` it was asked for. A failure names each path it made,
+  changed or removed outside them.
+- A posture the capabilities do not name is refused `unsupported`. Where
+  they name all three, this check is skipped.
+- A `resume` of a session id no agent has answers an `argv` or is refused
+  `missing`.
+- A `read` of no seats answers no rows.
+- `read`, then `context`, answers each of the adapter's recorded cases (see
+  [Recorded cases](#recorded-cases)). The `context` cases are skipped for an
+  adapter whose capabilities do not declare `context`.
+- A verb the contract does not name exits 2, and so does a request at a
+  `schema_version` of 2.
+
+Every answer a check reads is also held to the document `fleet agent schema`
+prints, at its verb's response, and a check whose answer does not pass it
+fails.
+
+The recorded cases and the two exit checks are asked of an adapter
+executable. For the adapter fleet has built in they are skipped, saying so.
+
+Each check prints one line on standard output, in the same order every
+run: `PASS` and the check's name, `SKIP` with why the check does not apply,
+or `FAIL` with what the adapter answered instead. A line is printed as soon
+as its check answers, and every check runs whatever the one before it
+answered. The last line names the agent, by the name `version` answers,
+else by the adapter's name or path, and counts the checks that passed,
+failed and were skipped.
+
+It exits 0 when no check failed, and 1 when one did.
+
+### Recorded cases
+
+An adapter carried by a pack ships its recorded cases in a `fixtures/`
+directory beside its `adapter.toml`, and so does an adapter executable named
+by path that sits beside one. `--fixtures <dir>` names another directory
+instead. An adapter with neither has the two case checks skipped.
+
+Each case is a directory of its own under the verb it replays:
+
+```text
+fixtures/
+  read/
+    <case>/
+      request.json
+      answer.json
+      env.json
+  context/
+    <case>/
+      ...
+```
+
+- `request.json` is the whole request the case sends, envelope included.
+- `answer.json` is the answer the adapter owes, without its
+  `schema_version`.
+- `env.json`, where there is one, is a JSON object of variables, each a
+  string, set for this case's call alone, on top of the environment fleet
+  runs the adapter with. An adapter replays a recording through it, such as
+  a variable naming a program that prints what its agent printed once.
+
+`{fixture}` in any string of `request.json` or `env.json` is replaced by the
+case's own absolute directory before the call, so a recording can sit
+beside the case that reads it.
+
+A case passes when the adapter exits 0 and its answer, `schema_version` taken
+out, equals `answer.json`. A `last_write` is compared by whether it is there,
+not by its value: it is the time a recorded file was last written, which a
+checkout does not keep. A case that fails is named with the first field
+where the two part, such as `idle: seats[0].activity: answered "busy", and
+answer.json holds "idle"`. Every case runs, and the check's line names each
+one that failed.
+
+### Checking against the agent itself
+
+`--live` also starts the agent, which costs a model turn, so it is never the
+default. Without it, the five live steps print `SKIP`.
+
+The session runs in a git repository fleet makes inside the temporary
+directory, under a `config_dir` beside it, on a tmux server of its own on
+the socket `fleet-check-<pid>`, with `<pid>` the process id of the
+`fleet agent check` you ran. It is never the server your fleet's seats run
+on. The session starts the way a seat's does: the pane's command is
+`launch`'s `argv`, and its environment is exactly the variables fleet sets
+for a seat with `launch`'s `env` over them.
+
+The session launches under the first posture the capabilities name, on
+`default_model`, or on the model `--model` names; `--model` names the model
+of every `launch` and `resume` the checks ask for, the offline ones too.
+The steps, each one line:
+
+1. The launched session reads `idle` within 60 seconds, and `read` names
+   its `session_id`.
+2. One word, typed into the session as a bracketed paste and then a
+   separate submit, reads `busy` within 10 seconds, and then `idle` within
+   60.
+3. `context`, asked while the session still runs, answers `turns` of at
+   least 1 and a `last_write` no earlier than the second the word was typed.
+   It is skipped for an adapter that does not declare `context`.
+4. Two interrupts, typed a moment apart, end the session, and the pane reads
+   dead within 5 seconds.
+5. A `resume` of the `session_id` from step 1 reads `idle` within 60
+   seconds, as that same session: a `read` naming any other `session_id`
+   fails.
+
+A step that reads `blocked` fails at once, naming what it waits on where
+`read` names it. Where
+the session never comes up, the steps after the first are skipped.
+
+When the run ends, however it ends, fleet ends the `fleet-check-<pid>` server
+with everything on it, removes its socket, and removes the temporary
+directory. Under `--live`, the summary also names the version of the agent
+`version` answered, since the live steps are a reading of that version.
+
+With the Claude Code adapter fleet has built in, on a machine whose Claude
+Code is logged in:
+
+```sh
+$ fleet agent check --live --model haiku
+PASS  version
+PASS  capabilities
+PASS  each declared posture launches
+SKIP  an undeclared posture is refused unsupported: every posture is declared, so there is none to refuse
+PASS  resume of a session nobody has
+PASS  read of no seats
+SKIP  read answers each fixture: no fixtures: the adapter ships no fixtures/ beside an adapter.toml, and --fixtures names none
+SKIP  context answers each fixture: no fixtures: the adapter ships no fixtures/ beside an adapter.toml, and --fixtures names none
+SKIP  an unknown verb exits 2: the adapter is the one built into fleet, and this is asked of an adapter executable
+SKIP  a later schema_version exits 2: the adapter is the one built into fleet, and this is asked of an adapter executable
+PASS  live: a launched session comes up idle
+PASS  live: a typed turn reads busy, then idle
+PASS  live: context counts the turn
+PASS  live: the ended session leaves its pane dead
+PASS  live: a resume comes back idle as the same session
+agent check: claude 2.1.280 — 10 passed, 0 failed, 5 skipped
+```
+
+It exits 0.
+
+### When it refuses
+
+| Situation | Exit | What you see |
+| --- | --- | --- |
+| a check failed | 1 | its `FAIL` line, and the summary's count of failures |
+| `--adapter` names a relative path, or nothing | 2 | ``fleet agent check: --adapter takes an absolute path to an executable or the name of an agent adapter an installed pack carries, and `<value>` is neither`` |
+| `--fixtures` names no directory | 2 | ``fleet agent check: --fixtures names `<dir>`, which is not a directory`` |
+| nothing executable is at the path `--adapter` names | 3 | ``fleet agent check: --adapter names `<path>`, which is not an executable file`` |
+| no installed pack carries the name | 3 | ``fleet agent check: no agent adapter named `<name>` in the installed packs — `fleet pack add https://github.com/bembot90/fleet-packs//adapters/agent/<name> --version v0.1.0` installs the one fleet-packs carries`` |
+| the installed packs do not resolve | 3 | ``fleet agent check: no agent adapter named `<name>` resolves:`` and the reason |
+| the fleet's own `fleet.toml` does not read, or names an adapter that cannot be opened | 3 | `fleet agent check:` and the reason |
+| `--live` finds no tmux | 3 | `fleet agent check: --live starts the agent on tmux, and there is none:` and the reason |
+
+Only a failed check prints check lines; every other refusal comes before
+any check runs, and prints none.
+
 ## See also
 
 - [The store contract](store.md): the store adapter's contract, whose call,
