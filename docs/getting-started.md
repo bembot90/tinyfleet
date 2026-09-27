@@ -179,6 +179,58 @@ deno-version: holds
 
 It exits 0.
 
+Two rows of `fleet doctor` are built in rather than carried by a pack, and
+run after every check the layers carry. `store-adapter` opens the store
+adapter the project's `[store] adapter` names, and `agent-adapter` opens the
+agent adapter the fleet's `[agent] adapter` names, each the way every other
+command opens it. Each adapter is asked its `version` and its
+`capabilities` and nothing else, so neither row writes to the store, makes
+a store of its own or starts a session. A pack's `doctor/store-adapter/` or
+`doctor/agent-adapter/` entry is not run, and the row stays the built-in
+one.
+
+```sh
+$ fleet doctor store-adapter agent-adapter
+pass store-adapter (built-in) — <store> <version> via <adapter> — schema 1, capabilities valid
+pass agent-adapter (built-in) — claude 2.1.280 via claude-code — measured 2.1.280
+doctor 2 checks — 2 pass, 0 finding, 0 could not tell
+```
+
+It exits 0. The agent row names the version the adapter answered and the
+versions it was measured against. An installed version that is not among
+them still passes, and the row says to re-measure:
+
+```sh
+$ fleet doctor agent-adapter
+pass agent-adapter (built-in) — claude 2.1.999 via claude-code — installed 2.1.999 is not among the measured 2.1.280: re-measure
+doctor 1 check — 1 pass, 0 finding, 0 could not tell
+```
+
+It exits 0. Where an adapter cannot be opened, does not answer in time, or
+answers something fleet cannot read, its row says could not tell and
+carries the reason fleet gives. A name no installed pack carries names the
+`fleet pack add` line that installs it:
+
+```sh
+$ fleet doctor store-adapter
+could not tell store-adapter (built-in) — no store adapter named `nowhere` in the installed packs — `fleet pack add https://github.com/bembot90/fleet-packs//adapters/store/nowhere --version v0.1.0` installs the one fleet-packs carries
+doctor 1 check — 0 pass, 0 finding, 1 could not tell
+```
+
+It exits 3. Capabilities that break the contract are a finding naming the
+field, and so is an agent adapter whose `version` answers `null`, which
+means no agent is installed for it to drive:
+
+```sh
+$ fleet doctor agent-adapter
+finding agent-adapter (built-in) — claude-code answers that no claude is installed (its version is null)
+doctor 1 check — 0 pass, 1 finding, 0 could not tell
+```
+
+It exits 1. Whether an adapter keeps the rest of its contract is
+`fleet store check`'s question; see
+[Checking an adapter](store.md#checking-an-adapter).
+
 ## Creating a fleet
 
 `fleet create` writes a project's fleet from inside the project's directory.

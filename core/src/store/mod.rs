@@ -73,7 +73,7 @@ impl std::fmt::Display for StoreError {
 /// | Verb | Method |
 /// | --- | --- |
 /// | `version` | [`version`](Store::version) |
-/// | `capabilities` | [`capabilities`](Store::capabilities) |
+/// | `capabilities` | [`capabilities`](Store::capabilities), and [`declared`](Store::declared) unvalidated |
 /// | `resolve` | [`resolve`](Store::resolve) |
 /// | `show` | [`show`](Store::show) |
 /// | `list` | [`list`](Store::list) |
@@ -240,6 +240,16 @@ pub trait Store {
     /// a seat types against it, which the guards police, and the types and
     /// priorities its items take, which a routine's item is held to.
     fn capabilities(&self) -> Result<Capabilities, StoreError>;
+
+    /// The same `capabilities` verb, answered as the store gave it and NOT yet
+    /// held to [`Capabilities::validate`]: what `fleet doctor` reads, because
+    /// a store that answered what the contract's rules refuse is a finding,
+    /// and one that did not answer is could not tell. Every other caller asks
+    /// [`capabilities`](Store::capabilities), which an adapter executable
+    /// holds to those rules first; the default is that answer.
+    fn declared(&self) -> Result<Capabilities, StoreError> {
+        self.capabilities()
+    }
 
     /// Which store answered, and at which version of itself.
     fn version(&self) -> Result<Version, StoreError>;

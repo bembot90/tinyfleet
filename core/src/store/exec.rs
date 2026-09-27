@@ -372,7 +372,7 @@ impl Store for Exec {
     /// because a landing commits the export it names, the guards police the
     /// command it names, and a routine's item is held to its items.
     fn capabilities(&self) -> Result<Capabilities, StoreError> {
-        let (declared, _) = self.call::<Capabilities>("capabilities", Map::new())?;
+        let declared = self.declared()?;
         declared.validate().map_err(|why| {
             StoreError::Unreadable(format!(
                 "{} capabilities answered no readable response: {why}",
@@ -380,6 +380,11 @@ impl Store for Exec {
             ))
         })?;
         Ok(declared)
+    }
+
+    fn declared(&self) -> Result<Capabilities, StoreError> {
+        self.call("capabilities", Map::new())
+            .map(|(declared, _)| declared)
     }
 
     fn version(&self) -> Result<Version, StoreError> {
@@ -1099,6 +1104,12 @@ esac"#,
             ),
             "{why}"
         );
+        // The same answer as the adapter gave it, for the doctor to judge.
+        let declared = stub
+            .exec()
+            .declared()
+            .expect("the declaration reads before it is judged");
+        assert_eq!(declared.items.priority.min, 3);
     }
 
     /// A listing is one `list` process, and its rows read the holder and the

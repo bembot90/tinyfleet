@@ -78,6 +78,16 @@ pub trait Agent {
     /// the models a posture is held to (the D3 gate).
     fn capabilities(&self) -> Result<Capabilities, AgentError>;
 
+    /// The same `capabilities` verb, answered as the adapter gave it and NOT
+    /// yet held to [`Capabilities::validate`]: what `fleet doctor` reads,
+    /// because an adapter that answered what the contract's rules refuse is a
+    /// finding, and one that did not answer is could not tell. Every other
+    /// caller asks [`Agent::capabilities`], which an adapter executable holds
+    /// to those rules first; the default is that answer.
+    fn declared(&self) -> Result<Capabilities, AgentError> {
+        self.capabilities()
+    }
+
     /// Which agent this adapter drives, and at which version of itself **this
     /// call**: a version read once at startup and republished advertises the
     /// boot version for as long as the controller lives.

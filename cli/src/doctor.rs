@@ -12,9 +12,20 @@
 //! finds no manifest and says broken; run per pin, it measures what a run
 //! would.
 //!
+//! TWO ROWS ARE THE VERB'S OWN, after the scripted ones: `store-adapter` and
+//! `agent-adapter` ask the adapters this project and its fleet name whether
+//! they answer. Each is opened as every verb opens it — a shell script cannot
+//! reach the opener — and asked `version` and `capabilities` and nothing else.
+//! No pack replaces them: an entry of either name is not run, because the
+//! check that a pack's own adapter answers is not that pack's to write. What
+//! the conformance suites prove, `fleet store check` and `fleet agent check`
+//! prove; they write a scratch store or spend a turn, and a doctor does
+//! neither.
+//!
 //! THE VERB WRITES NOTHING. What a check's own script does is that check's
-//! business, and one runs at a time: there is no lock to hold and no store to
-//! open, and nothing here starts a session.
+//! business, and one runs at a time: there is no lock to hold, the two
+//! adapters are asked only verbs that read, and nothing here starts a
+//! session.
 //!
 //! THE REPORT IS THE OUTCOME. Under `--json` the document is a success
 //! whatever the checks said, carrying every row and the aggregate; the exit is
@@ -25,11 +36,12 @@ use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use fleet_controller::platform;
+use fleet_controller::{adapter, platform};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::doctor::{self, Checked, Entry, Invocation, Verdict, RUNTIME_VERSION};
 use fleet_core::item::run::{child_path_for, ENV_BIN, ENV_PROJECT};
 use fleet_core::item::Stop;
+use fleet_core::store::{self, types::CONTRACT_VERSION};
 
 use crate::envelope;
 use crate::exit::Exit;
@@ -37,6 +49,31 @@ use crate::item::{self, Here, Human};
 use crate::ui::{Tone, Ui};
 
 const VERB: &str = "doctor";
+
+/// A row the verb computes itself rather than a script it runs.
+struct BuiltIn {
+    name: &'static str,
+    description: &'static str,
+    check: fn(&Here) -> Checked,
+}
+
+/// The built-in rows, in the order they run, after every scripted one.
+const BUILT_IN: [BuiltIn; 2] = [
+    BuiltIn {
+        name: "store-adapter",
+        description: "the store adapter this project names answers version and capabilities",
+        check: store_adapter,
+    },
+    BuiltIn {
+        name: "agent-adapter",
+        description: "the agent adapter this fleet names answers version and capabilities",
+        check: agent_adapter,
+    },
+];
+
+/// The layer a built-in row names: none of the packs', and so none a pack
+/// can shadow.
+const BUILT_IN_LAYER: &str = "built-in";
 
 /// What `doctor` takes: the checks to run, or none for every one.
 #[derive(clap::Args)]
@@ -63,6 +100,7 @@ pub fn command(ui: &Ui, args: &DoctorArgs) -> Exit {
         here,
         packs,
         chosen,
+        built_in,
         fleet_bin,
     } = ready;
 
@@ -124,7 +162,120 @@ pub fn command(ui: &Ui, args: &DoctorArgs) -> Exit {
             report.said(Row::of(entry, Some(layer.name), checked));
         }
     }
+    for row in built_in {
+        report.said(Row::built_in(row, (row.check)(&here)));
+    }
     report.close(args.json)
+}
+
+// ---- the built-in rows --------------------------------------------------------
+
+/// The store `[store] adapter` in the project's own file names, opened as
+/// every verb opens it and asked `version` and `capabilities` under the
+/// store's own bound.
+///
+/// A store that is not opened, or a call that does not answer — past its
+/// bound, or at a schema this fleet does not speak — could not tell, saying
+/// the opener's or the call's own line. A store that answers a declaration
+/// the contract's rules refuse is a finding.
+fn store_adapter(here: &Here) -> Checked {
+    let opened = item::open_store(here).map_err(|stop| stop.message);
+    let answers = opened.and_then(|store| {
+        let version = store.version().map_err(|why| why.to_string())?;
+        let declared = store.declared().map_err(|why| why.to_string())?;
+        Ok((version, declared))
+    });
+    let (version, declared) = match answers {
+        Ok(answers) => answers,
+        Err(why) => return answered(Verdict::CouldNotTell, why),
+    };
+    let named = format!(
+        "{} {} via {}",
+        version.name,
+        version.version,
+        store::adapter_name(&here.project.policy)
+    );
+    match declared.validate() {
+        Ok(()) => answered(
+            Verdict::Pass,
+            format!("{named} — schema {CONTRACT_VERSION}, capabilities valid"),
+        ),
+        Err(why) => answered(
+            Verdict::Finding,
+            format!("{named} — its capabilities do not validate: {why}"),
+        ),
+    }
+}
+
+/// The agent `[agent] adapter` in the fleet's own file names, opened as every
+/// caller opens it, over the packs this verb resolved, and asked `version`
+/// and `capabilities` under the agent's own bound.
+///
+/// Not opened, or a call that does not answer, could not tell; a declaration
+/// the contract's rules refuse, or a version answered null — no agent
+/// installed for the adapter to drive — is a finding. An installed version the
+/// adapter was not measured against passes, and says so: ruling 8 makes that
+/// a flag to re-measure, and a finding would gate whatever consults the
+/// doctor.
+fn agent_adapter(here: &Here) -> Checked {
+    let setting = match adapter::Setting::read(&here.policy_file, &here.machine_dir) {
+        Ok(setting) => adapter::Setting {
+            packs_dir: here.packs_dir.clone(),
+            defaults_dir: here.defaults_dir.clone(),
+            ..setting
+        },
+        Err(why) => return answered(Verdict::CouldNotTell, why),
+    };
+    let home = platform::home_dir();
+    let opened = adapter::open(&setting.opening(&home, None, None));
+    let answers = opened.and_then(|opened| {
+        let version = opened.agent.version().map_err(|why| why.to_string())?;
+        let declared = opened.agent.declared().map_err(|why| why.to_string())?;
+        Ok((opened.name, version, declared))
+    });
+    let (adapter, version, declared) = match answers {
+        Ok(answers) => answers,
+        Err(why) => return answered(Verdict::CouldNotTell, why),
+    };
+    let Some(installed) = version.version else {
+        return answered(
+            Verdict::Finding,
+            format!(
+                "{adapter} answers that no {} is installed (its version is null)",
+                version.name
+            ),
+        );
+    };
+    let named = format!("{} {installed} via {adapter}", version.name);
+    if let Err(why) = declared.validate() {
+        return answered(
+            Verdict::Finding,
+            format!("{named} — its capabilities do not validate: {why}"),
+        );
+    }
+    let measured = declared.measured.join(", ");
+    if declared.measured.contains(&installed) {
+        answered(Verdict::Pass, format!("{named} — measured {measured}"))
+    } else {
+        answered(
+            Verdict::Pass,
+            format!(
+                "{named} — installed {installed} is not among the measured {measured}: re-measure"
+            ),
+        )
+    }
+}
+
+/// A built-in row's verdict and its one line: it runs no script, so it has
+/// no exit and printed nothing else.
+fn answered(verdict: Verdict, line: String) -> Checked {
+    Checked {
+        verdict,
+        exit: None,
+        stdout: String::new(),
+        stderr: String::new(),
+        line,
+    }
 }
 
 /// How every check runs: from the project root, with the project and this
@@ -150,6 +301,8 @@ struct Ready {
     packs: Packs,
     /// The entries to run, in name order.
     chosen: Vec<Entry>,
+    /// The built-in rows to compute after them.
+    built_in: Vec<&'static BuiltIn>,
     fleet_bin: PathBuf,
 }
 
@@ -159,7 +312,17 @@ struct Ready {
 fn prepare(args: &DoctorArgs) -> Result<Ready, Stop> {
     let here = item::resolve_at(args.packs_dir.clone())?;
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
-    let all = doctor::entries(&packs);
+    // A BUILT-IN ROW IS NOT SHADOWED: an entry of its name, on any layer, is
+    // not run, and the row stays the verb's.
+    let all: Vec<Entry> = doctor::entries(&packs)
+        .into_iter()
+        .filter(|entry| !BUILT_IN.iter().any(|row| row.name == entry.name))
+        .collect();
+    let carried: Vec<&str> = all
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .chain(BUILT_IN.iter().map(|row| row.name))
+        .collect();
 
     let mut named: Vec<&str> = Vec::new();
     for name in &args.checks {
@@ -167,16 +330,16 @@ fn prepare(args: &DoctorArgs) -> Result<Ready, Stop> {
             named.push(name);
         }
     }
-    if let Some(unknown) = named
-        .iter()
-        .find(|name| !all.iter().any(|entry| entry.name == **name))
-    {
-        let carried: Vec<&str> = all.iter().map(|entry| entry.name.as_str()).collect();
+    if let Some(unknown) = named.iter().find(|name| !carried.contains(name)) {
         return Err(Stop::usage(format!(
             "no doctor check named {unknown} — the layers carry: {}",
             carried.join(", ")
         )));
     }
+    let built_in = BUILT_IN
+        .iter()
+        .filter(|row| named.is_empty() || named.contains(&row.name))
+        .collect();
     let chosen = all
         .into_iter()
         .filter(|entry| named.is_empty() || named.contains(&entry.name.as_str()))
@@ -191,6 +354,7 @@ fn prepare(args: &DoctorArgs) -> Result<Ready, Stop> {
         here,
         packs,
         chosen,
+        built_in,
         fleet_bin,
     })
 }
@@ -212,6 +376,16 @@ impl Row {
             layer: entry.layer.clone(),
             description: entry.description.clone(),
             measures,
+            checked,
+        }
+    }
+
+    fn built_in(row: &BuiltIn, checked: Checked) -> Row {
+        Row {
+            name: row.name.to_string(),
+            layer: BUILT_IN_LAYER.to_string(),
+            description: Some(row.description.to_string()),
+            measures: None,
             checked,
         }
     }

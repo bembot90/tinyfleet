@@ -66,6 +66,9 @@ When fleet opens an adapter, it asks it `capabilities` and `version`. Where
 either does not answer, the capabilities break the contract, or `version`
 answers `null`, fleet starts no session through that adapter: `fleet start`
 refuses, names the adapter and why, exits 3, and loads nothing.
+`fleet doctor agent-adapter` opens the adapter the same way and prints what
+it answered, without starting anything (see
+[Running a doctor check](getting-started.md#running-a-doctor-check)).
 
 ## The call
 

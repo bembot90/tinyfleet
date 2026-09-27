@@ -338,6 +338,11 @@ root, bounded at 60 seconds, with FLEET_PACK_DIR naming the pack that
 carries it. runtime-version runs once for each pack that declares a
 [runtime] table, on the PATH `fleet run` gives that pack's workflows.
 
+Two rows are built in and run after the rest: store-adapter opens the store
+the project's [store] adapter names, and agent-adapter the agent the fleet's
+[agent] adapter names, and asks each its version and capabilities. No pack
+replaces them.
+
 One row per check: pass, finding or could not tell, its name, its layer
 and its last line; a row that did not pass is followed by all it printed.
 It writes nothing.

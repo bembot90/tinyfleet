@@ -167,7 +167,7 @@ impl Agent for AgentExec {
     /// model and first turn, and a posture it names is one a seat is started
     /// under.
     fn capabilities(&self) -> Result<Capabilities, AgentError> {
-        let declared = self.call::<Capabilities>("capabilities", Map::new())?;
+        let declared = self.declared()?;
         declared.validate().map_err(|why| {
             AgentError::Unreadable(format!(
                 "{} capabilities answered no readable response: {why}",
@@ -175,6 +175,10 @@ impl Agent for AgentExec {
             ))
         })?;
         Ok(declared)
+    }
+
+    fn declared(&self) -> Result<Capabilities, AgentError> {
+        self.call("capabilities", Map::new())
     }
 
     fn version(&self) -> Result<Version, AgentError> {
@@ -668,6 +672,12 @@ pub(crate) mod tests {
             why.contains("capabilities answered no readable response: postures is empty"),
             "{why}"
         );
+        // The same answer as the adapter gave it, for the doctor to judge.
+        let declared = stub
+            .agent()
+            .declared()
+            .expect("the declaration reads before it is judged");
+        assert!(declared.postures.is_empty(), "{declared:?}");
         let why = unreadable(stub.agent().read(&[seat_ref(SEATS[0], "/w")]));
         assert!(why.contains("seats[0].activity"), "{why}");
     }

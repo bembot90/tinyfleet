@@ -599,6 +599,11 @@ machine's installed packs. `--adapter` takes what `[store] adapter` takes, an ab
 an adapter executable or the name of one an installed pack carries, and
 checks that one instead.
 
+To ask only whether the adapter your project names answers at all, run
+`fleet doctor store-adapter`, which asks it `version` and `capabilities`
+and writes nothing (see
+[Running a doctor check](getting-started.md#running-a-doctor-check)).
+
 The checks write, so they never run on your project's store. fleet makes a
 temporary directory, asks the adapter's `scratch` verb for a new store
 inside it, runs every check on that store, and removes the directory when it

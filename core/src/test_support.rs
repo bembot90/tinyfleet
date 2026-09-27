@@ -1215,6 +1215,9 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     fn capabilities(&self) -> Result<Capabilities, StoreError> {
         (**self).capabilities()
     }
+    fn declared(&self) -> Result<Capabilities, StoreError> {
+        (**self).declared()
+    }
     fn version(&self) -> Result<Version, StoreError> {
         (**self).version()
     }
