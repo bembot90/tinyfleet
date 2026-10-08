@@ -18,8 +18,8 @@
 
 use crate::envelope;
 use crate::exit::Exit;
-use crate::item;
 use fleet_controller::events::{self, ActorRef, RawLine};
+use fleet_controller::project::stream::stream_actor;
 use fleet_controller::routines::load;
 use fleet_controller::{config, platform};
 use fleet_core::item::table_at;
@@ -212,7 +212,7 @@ impl<'a> Filters<'a> {
         let actor = match args.actor.as_deref() {
             None => None,
             Some(text) => match Actor::typed(text) {
-                Some(Ok(actor)) => Some(item::stream_actor(&actor)),
+                Some(Ok(actor)) => Some(stream_actor(&actor)),
                 Some(Err(why)) => return Err((Exit::Usage, format!("--actor {why}"))),
                 None => {
                     return Err((Exit::Usage, format!("--actor {text} is not kind:id")));

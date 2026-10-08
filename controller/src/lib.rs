@@ -86,6 +86,7 @@ pub mod lifecycle;
 pub mod observe;
 pub mod platform;
 pub mod policy;
+pub mod project;
 pub mod projection;
 pub mod routines;
 pub mod run;

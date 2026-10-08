@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use fleet_controller::events;
 use fleet_controller::policy::{self as controller_policy, Policy};
+use fleet_controller::project::{open_store, resolve_from};
 use fleet_controller::projection::{self, Projection, SeatRow};
 use fleet_controller::routines::RoutineRow;
 use fleet_controller::runs::{self, CapHold, Reading, Runs, Standing};
@@ -27,7 +28,6 @@ use fleet_core::item::{rules, Stop};
 use fleet_core::policy as core_policy;
 
 use crate::exit::Exit;
-use crate::item::{open_store, resolve_from};
 use crate::runs::{registered_roots, Engine};
 
 /// The published document, under the machine directory.

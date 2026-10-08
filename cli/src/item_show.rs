@@ -15,13 +15,14 @@
 //! naming none, or naming a seat by anything but its full id, is usage, 2,
 //! said before the store is opened.
 
+use fleet_controller::project::{open_store, resolve_at};
 use fleet_core::item::list::{self, Filter};
 use fleet_core::item::{show, Stop};
 use fleet_core::store::ItemSummary;
 
 use crate::envelope;
 use crate::exit::Exit;
-use crate::item::{open_store, resolve_at, stop_exit};
+use crate::item::stop_exit;
 
 /// The names the envelope and the refusal line carry.
 const VERB: &str = "item show";

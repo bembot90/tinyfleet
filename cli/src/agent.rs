@@ -33,13 +33,13 @@ use std::path::{Path, PathBuf};
 use fleet_controller::adapter::conformance::{self, Ctx, Live};
 use fleet_controller::host::TmuxHost;
 use fleet_controller::platform;
+use fleet_controller::project;
 use fleet_core::agent::{self, schema, AdapterSource, Agent, Version};
 use fleet_core::pack::AdapterKind;
 use fleet_core::policy::Value;
 
 use crate::adapter_check;
 use crate::exit::Exit;
-use crate::item;
 
 /// The family's verbs.
 #[derive(clap::Subcommand)]
@@ -192,7 +192,7 @@ fn check(
     // the packs that project's machine installs; else this machine's, and no
     // setting, which is the default name.
     let machine_dir = platform::machine_dir();
-    let mut setting = match item::resolve_at(None) {
+    let mut setting = match project::resolve_at(None) {
         Ok(here) => match agent::Setting::read(&here.policy_file, &here.machine_dir) {
             Ok(setting) => agent::Setting {
                 packs_dir: here.packs_dir.clone(),

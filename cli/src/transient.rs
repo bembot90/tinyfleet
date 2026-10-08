@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use fleet_controller::host::{Host, TmuxHost};
+use fleet_controller::project::{open_store, resolve_at, Here};
 use fleet_controller::transient::{self, Machine, Refusal};
 use fleet_controller::{clock, config, platform, policy as controller, sessions};
 use fleet_core::agent::{self, Agent, Permissions};
@@ -23,7 +24,7 @@ use fleet_core::store::ItemId;
 
 use crate::envelope;
 use crate::exit::Exit;
-use crate::item::{acting, open_store, resolve_at, Here};
+use crate::item::acting;
 
 /// The three verb names the envelope's documents carry, which are also the
 /// words each verb's own stderr line names itself by.

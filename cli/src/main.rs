@@ -1291,7 +1291,7 @@ fn class_check(ui: &Ui, class: Class) -> bool {
 }
 
 // A DECLARED PROJECT FIRST, then the embedded file, then neither. The walk is
-// the item verbs' (`crate::item::resolve_at`), and the two answers differ in
+// the item verbs' (`fleet_controller::project::resolve_at`), and the two answers differ in
 // where the guards come from: an embedded fleet keeps its policy beside the
 // work, so its own fleet.toml carries both the switches and the target; a
 // standalone project declares only itself, so the switches are the FLEET's —

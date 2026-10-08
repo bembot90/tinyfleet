@@ -5,10 +5,11 @@
 //!
 //! WHY THE ACTS ARE HERE AND NOT IN CORE OR THE CONTROLLER. core depends on no
 //! other member, so it cannot reach the transient-seat primitives. The
-//! controller reaches everything else the acts need through core, but the
-//! project resolution every act starts from (`crate::item::resolve_from`,
-//! [`Here`]) is this crate's, so this module is the one that can wire them,
-//! which is also why the tick's run pass is a seam rather than a call.
+//! controller reaches everything else the acts need through core and its own
+//! project resolution (`fleet_controller::project::resolve_from`, [`Here`]),
+//! but the transient wiring the acts take (`crate::transient`) is this
+//! crate's, so this module is the one that can wire them, which is also why
+//! the tick's run pass is a seam rather than a call.
 //!
 //! NOTHING IS HELD BETWEEN PASSES. Every act resolves the run's project afresh
 //! off the machine directory, so a run opened between two passes is picked up
@@ -16,6 +17,8 @@
 
 use std::path::{Path, PathBuf};
 
+use fleet_controller::project::stream::StreamEvents;
+use fleet_controller::project::{open_store, resolve_from, Here};
 use fleet_controller::runs::{CapHold, Runs};
 use fleet_controller::transient::Refusal;
 use fleet_controller::{clock, config, platform, transient};
@@ -28,7 +31,7 @@ use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::{identity_or_mint, SeatId};
 use fleet_core::store::{ItemId, Store};
 
-use crate::item::{open_store, resolve_from, Here, StreamEvents, EVENTS};
+use crate::item::EVENTS;
 use crate::transient::{effect_agent, machine_of, policy_of, verb_host, Where};
 
 /// The run seam's acts, over one machine directory.

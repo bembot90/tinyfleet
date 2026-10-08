@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use fleet_controller::lifecycle::{self, FirstRun, Mode, ProjectAt};
+use fleet_controller::project::{derived_worktrees_dir, resolve_at, resolve_from};
 use fleet_core::agent::{self, Agent};
 
 use fleet_controller::{clock, config, events, platform, policy as controller};
@@ -25,7 +26,6 @@ use fleet_core::store::{self, AdapterSource, Opening, PackDirs, STORE_TIMEOUT};
 use fleet_core::{add, defaults, lock, supported};
 
 use crate::exit::Exit;
-use crate::item::{derived_worktrees_dir, resolve_at, resolve_from};
 use crate::seat_add::{self, Listed};
 use crate::ui::{Prompt, Stream, Tone, Ui};
 

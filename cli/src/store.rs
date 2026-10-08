@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use fleet_controller::platform;
+use fleet_controller::project;
 use fleet_core::defaults;
 use fleet_core::pack::AdapterKind;
 use fleet_core::policy::{self, Value};
@@ -32,7 +33,6 @@ use fleet_core::store::{self, AdapterSource, Opening, PackDirs, STORE_TIMEOUT};
 
 use crate::adapter_check;
 use crate::exit::Exit;
-use crate::item;
 
 /// The family's verbs.
 #[derive(clap::Subcommand)]
@@ -99,7 +99,7 @@ fn check(adapter: Option<&str>) -> Exit {
     // The policy the store is opened with: `[store] adapter` naming what was
     // handed in; else the project's own file, where one resolves; else
     // nothing, which is the default name.
-    let here = item::resolve_at(None).ok();
+    let here = project::resolve_at(None).ok();
     let mut policy = match (adapter, &here) {
         (None, Some(here)) => here.project.policy.clone(),
         _ => Default::default(),

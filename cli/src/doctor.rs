@@ -37,6 +37,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use fleet_controller::platform;
+use fleet_controller::project::{self, Here};
 use fleet_core::agent::{self, Agent};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::doctor::{self, Checked, Entry, Invocation, Verdict, RUNTIME_VERSION};
@@ -47,7 +48,7 @@ use fleet_core::store::{self, types::CONTRACT_VERSION};
 
 use crate::envelope;
 use crate::exit::Exit;
-use crate::item::{self, Here, Human};
+use crate::item::{self, Human};
 use crate::ui::{Tone, Ui};
 
 const VERB: &str = "doctor";
@@ -181,7 +182,7 @@ pub fn command(ui: &Ui, args: &DoctorArgs) -> Exit {
 /// the opener's or the call's own line. A store that answers a declaration
 /// the contract's rules refuse is a finding.
 fn store_adapter(here: &Here) -> Checked {
-    let opened = item::open_store(here).map_err(|stop| stop.message);
+    let opened = project::open_store(here).map_err(|stop| stop.message);
     let answers = opened.and_then(|store| {
         let version = store.version().map_err(|why| why.to_string())?;
         let declared = store.declared().map_err(|why| why.to_string())?;
@@ -313,7 +314,7 @@ struct Ready {
 /// said before any check runs: a name no layer carries is a typo, and running
 /// the rest would answer a question nobody asked.
 fn prepare(args: &DoctorArgs) -> Result<Ready, Stop> {
-    let here = item::resolve_at(args.packs_dir.clone())?;
+    let here = project::resolve_at(args.packs_dir.clone())?;
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
     // A BUILT-IN ROW IS NOT SHADOWED: an entry of its name, on any layer, is
     // not run, and the row stays the verb's.

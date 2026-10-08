@@ -19,11 +19,12 @@ use std::time::Duration;
 use fleet_controller::effect::Typed;
 use fleet_controller::events::{self, ActorRef, EventLog};
 use fleet_controller::observe::RosterState;
+use fleet_controller::project::stream::stream_actor;
 use fleet_controller::seat::COLLECTOR_STALE_POLLS;
 use fleet_controller::{clock, policy as controller};
 
 use crate::exit::Exit;
-use crate::item::{acting, stream_actor, SeatRing};
+use crate::item::{acting, SeatRing};
 use crate::ui::{Stream, Tone, Ui};
 
 /// The published document this verb refuses without.
