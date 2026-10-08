@@ -5,16 +5,15 @@
 //! written, so a third concern that differs is added here rather than branched
 //! at the call site.
 //!
-//! Nine concerns live here: the machine directory, the atomic write, the
-//! process read, the load average, the process group a bounded child runs in,
-//! the bounded runner itself, the constructed child PATH with the resolver that
-//! reads it, the SERVICE MANAGER that writes, loads, unloads and queries this
-//! machine's user service, and the PERMISSION GATE that probes the worktrees
-//! before the loop acts.
+//! Seven concerns live here: the machine directory, the atomic write, the
+//! process read, the load average, the constructed child PATH with the resolver
+//! that reads it, the SERVICE MANAGER that writes, loads, unloads and queries
+//! this machine's user service, and the PERMISSION GATE that probes the
+//! worktrees before the loop acts.
 //!
-//! The process group and the runner are written in `fleet_core::process`,
-//! because the store bounds its own calls with them, and re-exported below
-//! under the names they have always had here.
+//! The process group and the bounded runner are not here: they are written in
+//! `fleet_core::process`, because the store bounds its own calls with them, and
+//! every caller imports them from there.
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -25,10 +24,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use fleet_core::process::{
-    deadline_cause, is_killable_group, kill_process_group, own_process_group, run_bounded,
-    run_bounded_fed, run_bounded_to_file, Exit, DRAIN_GRACE,
-};
+use fleet_core::process::run_bounded;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -740,11 +736,13 @@ mod tests {
 
     /// The agent contract's own deadline, named whole by the cause the runner
     /// gives it — the one reading of `deadline_cause` that needs that
-    /// constant, so it stays beside the re-export.
+    /// constant.
     #[test]
     fn the_deadline_cause_names_the_adapters_deadline() {
-        assert!(deadline_cause(fleet_core::agent::types::AGENT_TIMEOUT)
-            .contains("did not answer within 20s"));
+        assert!(
+            fleet_core::process::deadline_cause(fleet_core::agent::types::AGENT_TIMEOUT)
+                .contains("did not answer within 20s")
+        );
     }
 
     /// The one cell of the platform table that differs between the two.

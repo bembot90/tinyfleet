@@ -9,9 +9,10 @@
 //!
 //! Each call is one short-lived client, run with the constructed environment
 //! (the constructed `PATH`, lessons claude-code D1) and bounded by
-//! [`platform::run_bounded`] at [`CALL_TIMEOUT`]. The server the first call
-//! starts daemonizes out of the client's process group and closes the pipes it
-//! was handed, so the bound reaches the client and never the server.
+//! [`fleet_core::process::run_bounded`] at [`CALL_TIMEOUT`]. The server the
+//! first call starts daemonizes out of the client's process group and closes
+//! the pipes it was handed, so the bound reaches the client and never the
+//! server.
 //!
 //! TWO QUIRKS OF THE ARGUMENT PARSER are answered here and nowhere else, both
 //! measured on 3.7b. tmux reads ANY argument ending in `;` as a command
@@ -23,6 +24,7 @@
 
 use super::{Host, HostRead, Pane, PaneState, SUBMIT_GAP};
 use crate::platform;
+use fleet_core::process::{run_bounded, run_bounded_fed};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
@@ -178,7 +180,7 @@ impl TmuxHost {
 
     /// Run a client call and answer its stdout, or the cause it failed with.
     fn run(&self, args: &[&str]) -> Result<Output, String> {
-        platform::run_bounded(self.client(args), CALL_TIMEOUT)
+        run_bounded(self.client(args), CALL_TIMEOUT)
     }
 
     fn ran(&self, args: &[&str]) -> Result<String, String> {
@@ -213,7 +215,7 @@ impl TmuxHost {
             "-t",
             &target,
         ]);
-        answered(platform::run_bounded_fed(
+        answered(run_bounded_fed(
             cmd,
             text.as_bytes().to_vec(),
             CALL_TIMEOUT,

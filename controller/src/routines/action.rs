@@ -15,6 +15,7 @@ use crate::host::{self, Host};
 use crate::observe::RosterState;
 use crate::platform;
 use crate::policy::Policy;
+use fleet_core::process::{run_bounded, run_bounded_to_file};
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::store::{self, AdapterSource, Filter, NewItem, Opening, PackDirs, Update};
 use std::path::{Path, PathBuf};
@@ -462,7 +463,7 @@ fn run_exec(routine: &Routine, command: &str, machine: &Machine) -> Done {
     cmd.arg("-c")
         .arg(command)
         .current_dir(&routine.project_root);
-    match platform::run_bounded_to_file(cmd, &log, Duration::from_secs(routine.timeout)) {
+    match run_bounded_to_file(cmd, &log, Duration::from_secs(routine.timeout)) {
         Ok(exit) if exit.ok => Done {
             outcome: Outcome::Ran,
             detail: format!("the command exited 0; its output is at {}", log.display()),
@@ -549,7 +550,7 @@ fn run_workflow(routine: &Routine, workflow: &Run, machine: &Machine) -> Done {
     let argv = run_argv(&binary, routine, workflow);
     let mut cmd = child_command(&argv[0], machine);
     cmd.args(&argv[1..]).current_dir(&routine.project_root);
-    let ran = match platform::run_bounded(cmd, Duration::from_secs(routine.timeout)) {
+    let ran = match run_bounded(cmd, Duration::from_secs(routine.timeout)) {
         Ok(ran) => ran,
         Err(why) => {
             return Done::plain(
@@ -615,7 +616,7 @@ pub fn run_check(routine: &Routine, machine: &Machine) -> super::trigger::CheckO
     cmd.arg("-c")
         .arg(command)
         .current_dir(&routine.project_root);
-    match platform::run_bounded_to_file(cmd, &log, Duration::from_secs(routine.check_timeout)) {
+    match run_bounded_to_file(cmd, &log, Duration::from_secs(routine.check_timeout)) {
         Ok(exit) => match exit.code {
             Some(status) => CheckOutcome::Exited(status),
             // A child that ended on a signal carries no status the routine's own

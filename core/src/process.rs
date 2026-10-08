@@ -3,9 +3,8 @@
 //! own.
 //!
 //! IT IS CORE'S so an adapter's call (`adapter::exec`) can be bounded here, and
-//! core depends on no other member of the workspace. The controller's platform layer re-exports
-//! every public name here, so its callers reach them by the paths they always
-//! had.
+//! core depends on no other member of the workspace. No other module passes
+//! them on: the controller's callers import these names from here.
 
 use std::io::{self, Read, Write};
 use std::os::unix::process::CommandExt;
