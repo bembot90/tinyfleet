@@ -20,9 +20,8 @@ use fleet_controller::effect::Typed;
 use fleet_controller::events::{self, ActorRef, EventLog};
 use fleet_controller::observe::RosterState;
 use fleet_controller::project::stream::stream_actor;
-use fleet_controller::projection;
+use fleet_controller::projection::{self, Stale};
 use fleet_controller::seat::COLLECTOR_STALE_POLLS;
-use fleet_controller::{clock, policy as controller};
 
 use crate::exit::Exit;
 use crate::item::{acting, SeatRing};
@@ -145,49 +144,40 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
 /// have different answers.
 fn fresh_projection(machine_dir: &Path) -> Result<serde_json::Value, String> {
     let path = projection::path_in(machine_dir);
-    let Ok(body) = std::fs::read_to_string(&path) else {
-        return Err(format!(
+    // A stamp that does not parse, and one in the future, are both
+    // [`Stale::Undated`], and neither is rounded into "fresh": a document nobody
+    // can date is not one anybody can call current.
+    projection::read_fresh(machine_dir).map_err(|stale| match stale {
+        Stale::Unread => format!(
             "no collector is consuming — there is no projection at {}; run `fleet start`",
             path.display()
-        ));
-    };
-    let Ok(document) = serde_json::from_str::<serde_json::Value>(&body) else {
-        return Err(format!(
+        ),
+        Stale::Unparsable => format!(
             "no collector is consuming — the projection at {} does not parse; run `fleet start`",
             path.display()
-        ));
-    };
-    let poll_seconds = document["fleet"]["poll_seconds"]
-        .as_u64()
-        .unwrap_or(controller::DEFAULT_POLL_SECONDS);
-    let generated_at = document["generated_at"].as_str().unwrap_or_default();
-    // A stamp that does not parse, and one in the future, are both `None`, and
-    // neither is rounded into "fresh": a document nobody can date is not one
-    // anybody can call current.
-    match clock::seconds_since_stamp(generated_at) {
-        Some(age) if age <= poll_seconds * COLLECTOR_STALE_POLLS => Ok(document),
-        Some(age) => Err(format!(
+        ),
+        Stale::Old {
+            age,
+            at: generated_at,
+            poll: poll_seconds,
+        } => format!(
             "no collector is consuming — the projection at {} was generated at {generated_at}, \
              {age}s ago, outside {COLLECTOR_STALE_POLLS} poll intervals of {poll_seconds}s; run \
              `fleet start`",
             path.display()
-        )),
-        None => Err(format!(
+        ),
+        Stale::Undated { .. } => format!(
             "no collector is consuming — the projection at {} carries no readable \
              `generated_at`; run `fleet start`",
             path.display()
-        )),
-    }
+        ),
+    })
 }
 
 /// The seat's published row, found by its id, and whether the collector saw a
 /// live session on it. `seat` is the machine name the sentences say.
 fn published_live(document: &serde_json::Value, key: &str, seat: &str) -> Result<(), String> {
-    let seats = document["seats"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-    let Some(row) = seats.iter().find(|row| row["seat"]["id"] == key) else {
+    let Some(row) = projection::published_row(document, key) else {
         return Err(format!(
             "the projection carries no row for `{seat}` — the collector is what makes a seat one \
              of this fleet's, so a session it has not published is not one this verb rings"

@@ -291,7 +291,7 @@ pub fn watch_start(agent: &dyn Agent, host: &dyn Host, watch: &Watch) -> Watched
         // An unreadable host listing concludes nothing: the pane may be fine
         // and the read not, and the window is what bounds the wait.
         if let HostRead::Readable(panes) = host.list() {
-            match panes.into_iter().find(|pane| pane.session == session) {
+            match host::pane(&panes, &session) {
                 None => {
                     return failed(format!("the session {session} is gone from the host"), None)
                 }
@@ -560,7 +560,7 @@ fn cleared(host: &dyn Host, session: &str) -> Result<(), String> {
     let HostRead::Readable(panes) = host.list() else {
         return Ok(());
     };
-    match panes.iter().find(|pane| pane.session == session) {
+    match host::pane(&panes, session) {
         None => Ok(()),
         Some(pane) if pane.state == PaneState::Alive => Err(format!(
             "the session {session} is already running on the host, and this start did not \
@@ -633,7 +633,7 @@ pub fn stop_session(host: &dyn Host, name: &str) -> Result<(), String> {
         // An unreadable listing concludes nothing: the grace bounds the wait,
         // and the kill below is taken either way.
         if let HostRead::Readable(panes) = host.list() {
-            match panes.iter().find(|pane| pane.session == name) {
+            match host::pane(&panes, name) {
                 None => break,
                 Some(pane) if matches!(pane.state, PaneState::Dead { .. }) => break,
                 Some(_) => {}
@@ -648,7 +648,7 @@ pub fn stop_session(host: &dyn Host, name: &str) -> Result<(), String> {
     host.kill(name)
         .map_err(|cause| format!("the session {name} could not be killed: {cause}"))?;
     match host.list() {
-        HostRead::Readable(panes) if panes.iter().any(|pane| pane.session == name) => Err(format!(
+        HostRead::Readable(panes) if host::pane(&panes, name).is_some() => Err(format!(
             "the host still holds the session {name} after it was killed"
         )),
         HostRead::Readable(_) => Ok(()),
@@ -1023,10 +1023,8 @@ pub fn seat_row(agent: &dyn Agent, host: &dyn Host, target: &TurnTarget) -> Resu
             )))
         }
     };
-    let Some((pid, path)) = panes
-        .into_iter()
-        .find(|pane| pane.session == session && pane.state == PaneState::Alive)
-        .and_then(|pane| Some((pane.pid?, pane.path)))
+    let Some((pid, path)) =
+        host::live_pane(&panes, &session).and_then(|pane| Some((pane.pid?, pane.path.clone())))
     else {
         return Err(Typed::Absent);
     };
@@ -1141,11 +1139,7 @@ fn append(
     actor: &ActorRef,
     payload: serde_json::Value,
 ) -> String {
-    match events_log.append_id(kind, actor, payload) {
-        Ok(id) => id,
-        Err(e) => {
-            eprintln!("fleet observe: could not append {kind} for {actor}: {e}");
-            String::new()
-        }
-    }
+    events_log.append_or_say(kind, actor, payload, |e| {
+        format!("fleet observe: could not append {kind} for {actor}: {e}")
+    })
 }

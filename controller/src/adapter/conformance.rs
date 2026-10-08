@@ -820,7 +820,7 @@ fn look(ctx: &Ctx, live: &Live, launched: &Launched, session_id: Option<&str>) -
         HostRead::Readable(panes) => panes,
         HostRead::Unreadable { cause } => return Looked::Nothing(cause),
     };
-    let Some(pane) = panes.into_iter().find(|pane| pane.session == name) else {
+    let Some(pane) = host::pane(&panes, &name) else {
         return Looked::Nothing(format!("the session {name} is gone from the host"));
     };
     if let PaneState::Dead { status } = pane.state {
@@ -1123,7 +1123,7 @@ fn live_ended(ctx: &Ctx) -> Answer {
     let deadline = Instant::now() + END_WITHIN;
     let ended = loop {
         if let HostRead::Readable(panes) = live.host.list() {
-            match panes.into_iter().find(|pane| pane.session == name) {
+            match host::pane(&panes, &name) {
                 None => {
                     break Err(String::from(
                         "the session is gone from the host, and a pane that ends is kept dead",

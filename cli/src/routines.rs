@@ -135,31 +135,20 @@ fn resolve() -> Result<Fleet, String> {
     let seats = config::read(&config::path_in(&machine_dir))
         .map(|machine| machine.seats)
         .unwrap_or_default();
+    let fleet_toml = fleet_root.join("fleet.toml");
+    let table = fleet_core::item::table_at(&fleet_toml);
     // A nudge names a row this machine runs; an item's assignee names any seat
     // the fleet lists besides.
-    let directory = config::directory(
-        &seats,
-        &fleet_core::item::table_at(&fleet_root.join("fleet.toml")),
-        &machine_dir,
-    );
-    let registry = load::load(
-        &load::roots(&fleet_root, &machine_dir, &projects_of(&fleet_root)),
-        &directory,
-    );
+    let registry = load::registry_for(&fleet_root, &machine_dir, &seats, &table);
     // A policy that will not read is the defaults: the four verbs below need
     // the bound a ring is typed under, and refusing to LIST routines over a
     // policy file is a refusal nobody asked for.
-    let policy = policy::load(&fleet_root.join("fleet.toml"))
+    let policy = policy::load(&fleet_toml)
         .or_else(|_| policy::parse(""))
         .map_err(|why| format!("the policy could not be read: {why}"))?;
     // A file that will not read names no adapter, as it names no policy
     // above: the agent's default opens.
-    let fleet_toml = fleet_root.join("fleet.toml");
-    let setting = agent::Setting::of(
-        fleet_core::item::table_at(&fleet_toml),
-        &fleet_toml,
-        &machine_dir,
-    );
+    let setting = agent::Setting::of(table, &fleet_toml, &machine_dir);
     let child_path = platform::child_path(&platform::home_dir());
     Ok(Fleet {
         host: fleet_controller::host::resolve(&child_path),
@@ -170,16 +159,6 @@ fn resolve() -> Result<Fleet, String> {
         seats,
         registry,
     })
-}
-
-/// The projects routines are read from: in this slice the one embedded project,
-/// which is the fleet root itself.
-fn projects_of(fleet_root: &std::path::Path) -> Vec<(String, PathBuf)> {
-    let name = fleet_root
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "project".to_string());
-    vec![(name, fleet_root.to_path_buf())]
 }
 
 /// The seat rows a ring reads. The roster is asked for ONLY when a routine's

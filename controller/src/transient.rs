@@ -366,9 +366,7 @@ impl Belt {
                     .filter(|seat| seat.transient)
                     .filter_map(|seat| {
                         let session = host::session_for(&seat.id);
-                        let pane = panes.iter().find(|pane| {
-                            pane.session == session && pane.state == PaneState::Alive
-                        })?;
+                        let pane = host::live_pane(&panes, &session)?;
                         let row = recorded
                             .as_ref()
                             .and_then(|table| table.newest_for(&seat.id.to_string()));
@@ -1174,7 +1172,7 @@ pub fn retire_with(
     // absence.
     let session = host::session_for(&row.id);
     let pane = match machine.host.list() {
-        HostRead::Readable(panes) => panes.into_iter().find(|pane| pane.session == session),
+        HostRead::Readable(panes) => host::pane(&panes, &session).cloned(),
         HostRead::Unreadable { cause } => {
             return Err(Refusal::could_not_tell(format!(
                 "the host could not be read, so whether `{seat}`'s session {session} is still \
@@ -1605,7 +1603,7 @@ fn verify_from_outside(
     // whether it still does (ruling 3).
     match machine.host.list() {
         HostRead::Readable(panes) => {
-            if panes.iter().any(|pane| pane.session == session) {
+            if host::pane(&panes, session).is_some() {
                 return Err(Refusal::refused(format!(
                     "the host still holds `{seat}`'s session {session} after the retire"
                 )));

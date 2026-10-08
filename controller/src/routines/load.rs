@@ -5,9 +5,9 @@
 //! a directory listing and a parse each — so a file dropped into a routines
 //! directory is live on the next evaluation with no restart.
 //!
-//! The project list arrives as an argument rather than being read here. In this
-//! slice it is a list of one, the embedded project, and a registry is one more
-//! element and not a second reader.
+//! The project list arrives at [`roots`] as an argument rather than being read
+//! by it. In this slice it is a list of one, the embedded project, and a
+//! registry is one more element and not a second reader.
 
 use super::file::{self, Defect, Loaded, Routine, Source};
 use fleet_core::seat::identity::Directory;
@@ -176,6 +176,34 @@ pub fn load(roots: &[Root], seats: &Directory) -> Registry {
     registry.routines.sort_by(|a, b| a.name.cmp(&b.name));
     registry.defects.sort_by(|a, b| a.name.cmp(&b.name));
     registry
+}
+
+/// The registry this machine reads: every routine under the roots of
+/// `root`, its packs and its projects, with the seats a routine may name off
+/// the seat list and the fleet's `policy` table.
+pub fn registry_for(
+    root: &Path,
+    machine_dir: &Path,
+    seats: &[crate::config::Seat],
+    policy: &toml::Table,
+) -> Registry {
+    load(
+        &roots(root, machine_dir, &projects_of(root)),
+        &crate::config::directory(seats, policy, machine_dir),
+    )
+}
+
+/// The projects routines are read from.
+///
+/// This slice has one, the embedded project, and it is the fleet root itself —
+/// handed to the loader as a list of one so a registry of many is one more
+/// element and not a second reader.
+fn projects_of(fleet_root: &Path) -> Vec<(String, PathBuf)> {
+    let name = fleet_root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "project".to_string());
+    vec![(name, fleet_root.to_path_buf())]
 }
 
 /// The directory holding the fleet's `fleet.toml`, resolved the way every

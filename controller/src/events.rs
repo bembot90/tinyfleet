@@ -292,15 +292,8 @@ pub struct Record {
 /// build wrote — is skipped too: every reader here decides by the actor's kind,
 /// and a line that has none names nobody.
 pub fn read_after(path: &Path, after: u64) -> Vec<Record> {
-    let Ok(file) = std::fs::File::open(path) else {
-        return Vec::new();
-    };
-    std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .filter_map(|line| {
-            let value: serde_json::Value = serde_json::from_str(&line).ok()?;
-            let seq = value.get("seq")?.as_u64()?;
+    lines(path)
+        .filter_map(|(seq, value, _)| {
             if seq <= after {
                 return None;
             }
@@ -397,8 +390,7 @@ pub fn read_lines_from(path: &Path, offset: u64, after: u64) -> (Vec<RawLine>, u
 }
 
 fn raw_line(line: &str, after: u64) -> Option<RawLine> {
-    let value: serde_json::Value = serde_json::from_str(line).ok()?;
-    let seq = value.get("seq")?.as_u64()?;
+    let (seq, value) = sequenced(line)?;
     if seq <= after {
         return None;
     }
@@ -425,21 +417,35 @@ fn actor_of(value: &serde_json::Value) -> Option<ActorRef> {
     })
 }
 
+/// A line of the stream parsed, with its `seq`, or `None` where it does not
+/// parse or carries no `seq`.
+fn sequenced(line: &str) -> Option<(u64, serde_json::Value)> {
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let seq = value.get("seq")?.as_u64()?;
+    Some((seq, value))
+}
+
+/// Every line of the file that [`sequenced`] reads, in file order, with its
+/// text; nothing where the file does not open.
+fn lines(path: &Path) -> impl Iterator<Item = (u64, serde_json::Value, String)> {
+    std::fs::File::open(path)
+        .ok()
+        .into_iter()
+        .flat_map(|file| std::io::BufReader::new(file).lines().map_while(Result::ok))
+        .filter_map(|line| {
+            let (seq, value) = sequenced(&line)?;
+            Some((seq, value, line))
+        })
+}
+
 /// Every line whose `id` is `id`, as the file holds them.
 ///
 /// Ids are unique by construction — [`event_id`] writes the wall clock's
 /// nanoseconds and then the sequence — so a second match is a corrupted stream,
 /// which the caller says rather than picking one of the two.
 pub fn find_by_id(path: &Path, id: &str) -> Vec<IdMatch> {
-    let Ok(file) = std::fs::File::open(path) else {
-        return Vec::new();
-    };
-    std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .filter_map(|line| {
-            let value: serde_json::Value = serde_json::from_str(&line).ok()?;
-            let seq = value.get("seq")?.as_u64()?;
+    lines(path)
+        .filter_map(|(seq, value, _)| {
             (value.get("id")?.as_str()? == id).then_some(IdMatch { seq, value })
         })
         .collect()
@@ -540,6 +546,25 @@ impl EventLog {
         writeln!(file, "{line}")?;
         Ok(id)
     }
+
+    /// The same append, answering with its id, where a stream that cannot be
+    /// written is stated in the caller's own sentence and does not stop the
+    /// caller: the id is then empty.
+    pub fn append_or_say(
+        &mut self,
+        kind: &str,
+        actor: &ActorRef,
+        payload: serde_json::Value,
+        said: impl FnOnce(&std::io::Error) -> String,
+    ) -> String {
+        match self.append_id(kind, actor, payload) {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("{}", said(&e));
+                String::new()
+            }
+        }
+    }
 }
 
 /// Unique without a dependency: the sequence this stream is at, under the wall
@@ -555,17 +580,7 @@ fn event_id(seq: u64) -> String {
 /// The highest `seq` in the file. A line that does not parse is skipped: a torn
 /// last line must not renumber the stream from zero.
 fn last_seq(path: &Path) -> Option<u64> {
-    let file = std::fs::File::open(path).ok()?;
-    std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .filter_map(|line| {
-            serde_json::from_str::<serde_json::Value>(&line)
-                .ok()?
-                .get("seq")?
-                .as_u64()
-        })
-        .max()
+    lines(path).map(|(seq, ..)| seq).max()
 }
 
 #[cfg(test)]

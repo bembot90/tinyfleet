@@ -22,7 +22,6 @@ use fleet_controller::project::{open_store, resolve_from};
 use fleet_controller::projection::{self, Projection, SeatRow};
 use fleet_controller::routines::RoutineRow;
 use fleet_controller::runs::{self, registered_roots, CapHold, Engine, Reading, Runs, Standing};
-use fleet_controller::seat::COLLECTOR_STALE_POLLS;
 use fleet_controller::{clock, config, platform};
 use fleet_core::item::{rules, Stop};
 use fleet_core::policy as core_policy;
@@ -147,10 +146,9 @@ struct Read {
 impl Read {
     fn taken(machine_dir: &Path, document: &Projection) -> Read {
         let age = clock::seconds_since_stamp(&document.generated_at);
-        let window = document.fleet.poll_seconds * COLLECTOR_STALE_POLLS;
         // A stamp nobody can date is NOT fresh: the collector's own rule, so a
         // page and a refused `rest` cannot disagree about the same document.
-        let stale = age.map(|age| age > window).unwrap_or(true);
+        let stale = !projection::is_fresh(age, document.fleet.poll_seconds);
         let policy_file = PathBuf::from(&document.fleet.path);
         Read {
             age,

@@ -6,9 +6,9 @@
 //! the CLI, and the controller consumes them on its tick. There is no marker
 //! file and no write to the work graph anywhere in this path.
 
-use crate::clock;
 use crate::config;
 use crate::events::{self, ActorRef, EventLog};
+use crate::projection::Stale;
 use fleet_core::seat::identity::SeatId;
 use std::path::Path;
 
@@ -125,11 +125,7 @@ fn rest_is_answerable(machine_dir: &Path, named: &Named) -> Result<(), (u8, Stri
     let document = fresh_projection(machine_dir)?;
     let seat = named.name.as_str();
 
-    let seats = document["seats"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-    let row = seats.iter().find(|row| row["seat"]["id"] == named.key);
+    let row = crate::projection::published_row(&document, named.key);
     let state = match row {
         None => None,
         Some(row) => row["roster_state"].as_str(),
@@ -177,11 +173,7 @@ fn rest_is_answerable(machine_dir: &Path, named: &Named) -> Result<(), (u8, Stri
 fn clear_halt_is_answerable(machine_dir: &Path, named: &Named) -> Result<(), (u8, String)> {
     let document = fresh_projection(machine_dir)?;
     let seat = named.name.as_str();
-    let seats = document["seats"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-    let row = seats.iter().find(|row| row["seat"]["id"] == named.key);
+    let row = crate::projection::published_row(&document, named.key);
     match row {
         Some(row) if row["halted"].as_bool() == Some(true) => Ok(()),
         Some(row) => Err((
@@ -203,37 +195,32 @@ fn clear_halt_is_answerable(machine_dir: &Path, named: &Named) -> Result<(), (u8
 /// The published document, refused unless a collector is plainly consuming.
 fn fresh_projection(machine_dir: &Path) -> Result<serde_json::Value, (u8, String)> {
     let path = crate::projection::path_in(machine_dir);
-    let refuse = |why: String| Err((EXIT_NO_COLLECTOR, why));
-    let Ok(body) = std::fs::read_to_string(&path) else {
-        return refuse(format!(
-            "no collector is consuming — there is no projection at {}, so nothing would read \
-             this rest",
-            path.display()
-        ));
-    };
-    let Ok(document) = serde_json::from_str::<serde_json::Value>(&body) else {
-        return refuse(format!(
-            "no collector is consuming — the projection at {} does not parse",
-            path.display()
-        ));
-    };
-    let poll_seconds = document["fleet"]["poll_seconds"]
-        .as_u64()
-        .unwrap_or(crate::policy::DEFAULT_POLL_SECONDS);
-    let generated_at = document["generated_at"].as_str().unwrap_or_default();
-    // A stamp that does not parse, and one in the future, are both `None` — and
-    // neither may be rounded into "fresh": a document nobody can date is not one
-    // anybody can call current.
-    match clock::seconds_since_stamp(generated_at) {
-        Some(age) if age <= poll_seconds * COLLECTOR_STALE_POLLS => {}
-        _ => {
-            return refuse(format!(
+    crate::projection::read_fresh(machine_dir).map_err(|stale| {
+        let why = match stale {
+            Stale::Unread => format!(
+                "no collector is consuming — there is no projection at {}, so nothing would read \
+                 this rest",
+                path.display()
+            ),
+            Stale::Unparsable => format!(
+                "no collector is consuming — the projection at {} does not parse",
+                path.display()
+            ),
+            Stale::Old {
+                at: generated_at,
+                poll: poll_seconds,
+                ..
+            }
+            | Stale::Undated {
+                at: generated_at,
+                poll: poll_seconds,
+            } => format!(
                 "no collector is consuming — the projection at {} was generated at \
                  {generated_at}, which is not inside {COLLECTOR_STALE_POLLS} poll intervals \
                  of {poll_seconds}s",
                 path.display()
-            ))
-        }
-    }
-    Ok(document)
+            ),
+        };
+        (EXIT_NO_COLLECTOR, why)
+    })
 }

@@ -96,6 +96,19 @@ pub enum HostRead {
     Unreadable { cause: String },
 }
 
+/// The pane the host listed under `session`, where it listed one.
+pub fn pane<'p>(panes: &'p [Pane], session: &str) -> Option<&'p Pane> {
+    panes.iter().find(|pane| pane.session == session)
+}
+
+/// The pane the host listed under `session`, where it listed one and its
+/// process is still running.
+pub fn live_pane<'p>(panes: &'p [Pane], session: &str) -> Option<&'p Pane> {
+    panes
+        .iter()
+        .find(|pane| pane.session == session && pane.state == PaneState::Alive)
+}
+
 /// Everything the controller asks of the host, each verb about one session by
 /// name.
 pub trait Host {

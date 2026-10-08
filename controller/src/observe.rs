@@ -156,9 +156,7 @@ fn live_pane<'h>(host: &'h HostRead, seat: &Seat) -> Option<&'h Pane> {
         return None;
     };
     let session = host::session_for(&seat.id);
-    panes
-        .iter()
-        .find(|pane| pane.session == session && pane.state == PaneState::Alive)
+    host::live_pane(panes, &session)
 }
 
 /// One seat's reading, from the host's listing and the agent's answer about it.
@@ -190,7 +188,7 @@ pub fn observe_seat(
         HostRead::Unreadable { cause } => return unknown(seat, None, cause.clone()),
         HostRead::Readable(panes) => panes,
     };
-    let Some(pane) = panes.iter().find(|pane| pane.session == session) else {
+    let Some(pane) = host::pane(panes, &session) else {
         return unmatched(seat);
     };
     match pane.state {

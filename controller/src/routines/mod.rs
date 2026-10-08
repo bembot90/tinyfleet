@@ -183,12 +183,10 @@ impl Pass<'_> {
 
     /// One line of the routine's ledger, by the routine: `{routine, <name>}`.
     fn append(&mut self, kind: &str, routine: &str, payload: serde_json::Value) {
-        if let Err(e) = self
-            .events
-            .append(kind, &ActorRef::routine(routine), payload)
-        {
-            eprintln!("fleet observe: could not append {kind} for {routine}: {e}");
-        }
+        self.events
+            .append_or_say(kind, &ActorRef::routine(routine), payload, |e| {
+                format!("fleet observe: could not append {kind} for {routine}: {e}")
+            });
     }
 }
 

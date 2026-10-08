@@ -206,72 +206,33 @@ pub fn load(path: &Path) -> Result<Policy, String> {
 
 pub fn parse(body: &str) -> Result<Policy, String> {
     let raw: RawPolicy = toml::from_str(body).map_err(|e| e.to_string())?;
-    let controller = raw.controller;
-    let poll_seconds = controller
-        .as_ref()
-        .and_then(|c| c.poll_seconds)
-        .filter(|&s| s > 0)
-        .unwrap_or(DEFAULT_POLL_SECONDS);
-    let c = controller.as_ref();
-    // A list that is present and empty is refused too: it would gate every
-    // model out and leave a fleet that can start nothing under posture `auto`,
-    // which is a configuration nobody writes on purpose.
-    let auto_capable_models = models(c.and_then(|c| c.auto_capable_models.clone()));
+    let c = raw.controller.as_ref();
     // A posture that is no posture is REFUSED, not defaulted: a fleet that
     // asked its seats to run unattended and was started asking would stop at
     // the first dialog with nobody there, and one that asked to be asked and
     // ran unattended would act unasked.
-    let posture_key = |key: &str, configured: Option<&String>, default: Posture| {
+    let posture_key = |key: &str, configured: Option<&String>| {
         posture(configured.map(String::as_str))
-            .map(|read| read.unwrap_or(default))
             .map_err(|why| format!("[controller] `{key}`: {why}"))
     };
-    let named_posture = posture_key(
-        "posture",
-        c.and_then(|c| c.posture.as_ref()),
-        DEFAULT_POSTURE,
-    )?;
-    let transient_posture = posture_key(
+    posture_key("posture", c.and_then(|c| c.posture.as_ref()))?;
+    posture_key(
         "transient_posture",
         c.and_then(|c| c.transient_posture.as_ref()),
-        DEFAULT_TRANSIENT_POSTURE,
     )?;
-    Ok(Policy {
-        poll_seconds,
-        rest_threshold_tokens: positive(
-            c.and_then(|c| c.rest_threshold_tokens),
-            DEFAULT_REST_THRESHOLD_TOKENS,
-        ),
-        arrival_window_seconds: positive(
-            c.and_then(|c| c.arrival_window_seconds),
-            DEFAULT_ARRIVAL_WINDOW_SECONDS,
-        ),
-        start_watch_seconds: positive(
-            c.and_then(|c| c.start_watch_seconds),
-            DEFAULT_START_WATCH_SECONDS,
-        ),
-        nudge_timeout_seconds: positive(
-            c.and_then(|c| c.nudge_timeout_seconds),
-            DEFAULT_NUDGE_TIMEOUT_SECONDS,
-        ),
-        default_model: stated(c.and_then(|c| c.default_model.as_deref())),
-        posture: named_posture,
-        transient_posture,
-        auto_capable_models,
-        first_turn: stated(c.and_then(|c| c.first_turn.as_deref())),
-        // A ceiling of zero or less refuses every spawn, and one that is not a
-        // number at all is no reading: both fall to the default, the way a zero
-        // interval does.
-        load_ceiling_per_cpu: c
-            .and_then(|c| c.load_ceiling_per_cpu)
-            .filter(|n| n.is_finite() && *n > 0.0)
-            .unwrap_or(DEFAULT_LOAD_CEILING_PER_CPU),
-        // Zero is kept here and is NOT the default: a fleet that wants no
-        // transient seat mid-turn beside a new one can say so, and the cap is a
-        // count rather than an interval.
-        max_transient_busy: c
-            .and_then(|c| c.max_transient_busy)
-            .unwrap_or(DEFAULT_MAX_TRANSIENT_BUSY),
+    let defaults = Policy {
+        poll_seconds: DEFAULT_POLL_SECONDS,
+        rest_threshold_tokens: DEFAULT_REST_THRESHOLD_TOKENS,
+        arrival_window_seconds: DEFAULT_ARRIVAL_WINDOW_SECONDS,
+        start_watch_seconds: DEFAULT_START_WATCH_SECONDS,
+        nudge_timeout_seconds: DEFAULT_NUDGE_TIMEOUT_SECONDS,
+        default_model: None,
+        posture: DEFAULT_POSTURE,
+        transient_posture: DEFAULT_TRANSIENT_POSTURE,
+        auto_capable_models: None,
+        first_turn: None,
+        load_ceiling_per_cpu: DEFAULT_LOAD_CEILING_PER_CPU,
+        max_transient_busy: DEFAULT_MAX_TRANSIENT_BUSY,
         // ZERO IS KEPT, and it is the one cap here that means something at zero:
         // a fleet that parks a run the first time nothing can classify it has
         // said exactly that, where a zero poll interval or a zero window is a
@@ -282,7 +243,61 @@ pub fn parse(body: &str) -> Result<Policy, String> {
             .and_then(|core| core.run.as_ref())
             .and_then(|run| run.max_crashes)
             .unwrap_or(DEFAULT_RUN_MAX_CRASHES),
+    };
+    Ok(match c {
+        Some(c) => apply(&defaults, c),
+        None => defaults,
     })
+}
+
+/// The `[controller]` keys read over a base, key by key, through the one set
+/// of readers: `base` is the defaults for the file, and the policy for an
+/// overlay.
+fn apply(base: &Policy, c: &RawController) -> Policy {
+    Policy {
+        poll_seconds: positive(c.poll_seconds, base.poll_seconds),
+        rest_threshold_tokens: positive(c.rest_threshold_tokens, base.rest_threshold_tokens),
+        arrival_window_seconds: positive(c.arrival_window_seconds, base.arrival_window_seconds),
+        start_watch_seconds: positive(c.start_watch_seconds, base.start_watch_seconds),
+        nudge_timeout_seconds: positive(c.nudge_timeout_seconds, base.nudge_timeout_seconds),
+        default_model: stated(c.default_model.as_deref()).or(base.default_model.clone()),
+        // A refused word never reaches here ([`overrides_in`] keeps only
+        // the keys that read, and [`parse`] refuses one before it calls
+        // this), so a posture left is one of the three or blank, and a
+        // blank falls to the base's.
+        posture: posture(c.posture.as_deref())
+            .ok()
+            .flatten()
+            .unwrap_or(base.posture),
+        transient_posture: posture(c.transient_posture.as_deref())
+            .ok()
+            .flatten()
+            .unwrap_or(base.transient_posture),
+        // A list that is present and empty is refused too: it would gate every
+        // model out and leave a fleet that can start nothing under posture `auto`,
+        // which is a configuration nobody writes on purpose.
+        auto_capable_models: models(c.auto_capable_models.clone())
+            .or(base.auto_capable_models.clone()),
+        first_turn: stated(c.first_turn.as_deref()).or(base.first_turn.clone()),
+        // A ceiling of zero or less refuses every spawn, and one that is not a
+        // number at all is no reading: both fall to the base's, the way a zero
+        // interval does.
+        load_ceiling_per_cpu: c
+            .load_ceiling_per_cpu
+            .filter(|n| n.is_finite() && *n > 0.0)
+            .unwrap_or(base.load_ceiling_per_cpu),
+        // Zero is kept here and is NOT the default: a fleet that wants no
+        // transient seat mid-turn beside a new one can say so, and the cap is a
+        // count rather than an interval.
+        //
+        // The one key whose zero is a reading rather than a gap, here as in
+        // the file: a fleet may want no transient seat mid-turn beside a new
+        // one, and the cap is a count.
+        max_transient_busy: c.max_transient_busy.unwrap_or(base.max_transient_busy),
+        // `[core.run]`'s and not `[controller]`'s, so no machine-local
+        // answer reaches it: the fleet's policy is where a run's caps live.
+        run_max_crashes: base.run_max_crashes,
+    }
 }
 
 impl Policy {
@@ -465,47 +480,10 @@ impl Policy {
     /// to the default: an override is a second source for the same key and not a
     /// second grammar for it.
     pub fn overlaid(&self, over: &Overrides) -> Policy {
-        let Some(c) = over.controller.as_ref() else {
-            return self.clone();
-        };
-        Policy {
-            poll_seconds: positive(c.poll_seconds, self.poll_seconds),
-            rest_threshold_tokens: positive(c.rest_threshold_tokens, self.rest_threshold_tokens),
-            arrival_window_seconds: positive(c.arrival_window_seconds, self.arrival_window_seconds),
-            start_watch_seconds: positive(c.start_watch_seconds, self.start_watch_seconds),
-            nudge_timeout_seconds: positive(c.nudge_timeout_seconds, self.nudge_timeout_seconds),
-            default_model: stated(c.default_model.as_deref()).or(self.default_model.clone()),
-            // A refused word never reaches here ([`overrides_in`] keeps only
-            // the keys that read), so a posture left is one of the three or
-            // blank, and a blank falls to the policy's.
-            posture: posture(c.posture.as_deref())
-                .ok()
-                .flatten()
-                .unwrap_or(self.posture),
-            transient_posture: posture(c.transient_posture.as_deref())
-                .ok()
-                .flatten()
-                .unwrap_or(self.transient_posture),
-            auto_capable_models: models(c.auto_capable_models.clone())
-                .or(self.auto_capable_models.clone()),
-            first_turn: stated(c.first_turn.as_deref()).or(self.first_turn.clone()),
-            load_ceiling_per_cpu: c
-                .load_ceiling_per_cpu
-                .filter(|n| n.is_finite() && *n > 0.0)
-                .unwrap_or(self.load_ceiling_per_cpu),
-            // The one key whose zero is a reading rather than a gap, here as in
-            // the file: a fleet may want no transient seat mid-turn beside a new
-            // one, and the cap is a count.
-            max_transient_busy: c.max_transient_busy.unwrap_or(self.max_transient_busy),
-            // `[core.run]`'s and not `[controller]`'s, so no machine-local
-            // answer reaches it: the fleet's policy is where a run's caps live.
-            run_max_crashes: self.run_max_crashes,
-        }
+        over.controller
+            .as_ref()
+            .map_or_else(|| self.clone(), |c| apply(self, c))
     }
-}
-
-pub fn mtime(path: &Path) -> Option<std::time::SystemTime> {
-    std::fs::metadata(path).ok()?.modified().ok()
 }
 
 #[cfg(test)]
@@ -1022,6 +1000,48 @@ mod tests {
                 .poll_seconds,
             DEFAULT_POLL_SECONDS
         );
+    }
+
+    /// ONE GRAMMAR FOR BOTH SOURCES: a file that sets every `[controller]` key
+    /// reads to the same policy as the defaults with the same twelve answers
+    /// laid over them from `config.json` — so the file's reading and the
+    /// overlay's cannot drift apart key by key.
+    #[test]
+    fn every_controller_key_reads_the_same_from_the_file_and_from_an_overlay() {
+        let file = parse(
+            "[controller]\n\
+             poll_seconds = 9\n\
+             rest_threshold_tokens = 111\n\
+             arrival_window_seconds = 222\n\
+             start_watch_seconds = 333\n\
+             nudge_timeout_seconds = 444\n\
+             default_model = \" a-model \"\n\
+             posture = \"ask\"\n\
+             transient_posture = \"auto\"\n\
+             auto_capable_models = [\" a-model \", \"\", \"b-model\"]\n\
+             first_turn = \"/hello {seat}\"\n\
+             load_ceiling_per_cpu = 2.5\n\
+             max_transient_busy = 0\n",
+        )
+        .expect("the file parses");
+        let over = overrides_in(Some(&serde_json::json!({
+            "poll_seconds": 9,
+            "rest_threshold_tokens": 111,
+            "arrival_window_seconds": 222,
+            "start_watch_seconds": 333,
+            "nudge_timeout_seconds": 444,
+            "default_model": " a-model ",
+            "posture": "ask",
+            "transient_posture": "auto",
+            "auto_capable_models": [" a-model ", "", "b-model"],
+            "first_turn": "/hello {seat}",
+            "load_ceiling_per_cpu": 2.5,
+            "max_transient_busy": 0,
+        })));
+        assert!(over.ignored().is_empty(), "{:?}", over.ignored());
+        let defaults = parse("").expect("an empty file parses");
+        assert_ne!(file, defaults, "the file moves off the defaults");
+        assert_eq!(defaults.overlaid(&over), file);
     }
 
     #[test]

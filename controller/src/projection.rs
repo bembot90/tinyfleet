@@ -12,6 +12,7 @@
 
 use crate::config;
 use crate::observe::SeatObservation;
+use crate::seat::COLLECTOR_STALE_POLLS;
 use fleet_core::seat::identity::{Kind, SeatId, SeatRef};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -21,6 +22,74 @@ pub const FILE: &str = "projection.json";
 
 pub fn path_in(machine_dir: &Path) -> PathBuf {
     machine_dir.join(FILE)
+}
+
+/// Why the published document is not one a collector is plainly consuming.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Stale {
+    /// There is no document, or it could not be read.
+    Unread,
+    /// The document is not JSON.
+    Unparsable,
+    /// The document was generated `age` seconds ago, at `at`, outside
+    /// [`COLLECTOR_STALE_POLLS`] intervals of `poll` seconds.
+    Old { age: u64, at: String, poll: u64 },
+    /// The document carries no `generated_at`, one that does not parse, or one
+    /// in the future; `at` is what it carries, empty where nothing.
+    Undated { at: String, poll: u64 },
+}
+
+/// Whether a document `age` seconds old, published every `poll_seconds`, is
+/// one a collector is plainly consuming. An age nobody could read is not.
+pub fn is_fresh(age: Option<u64>, poll_seconds: u64) -> bool {
+    matches!(age, Some(age) if age <= poll_seconds * COLLECTOR_STALE_POLLS)
+}
+
+/// The published document under `machine_dir`, where a collector is plainly
+/// consuming it, and otherwise why not. The sentence is the caller's.
+pub fn read_fresh(machine_dir: &Path) -> Result<serde_json::Value, Stale> {
+    let Ok(body) = std::fs::read_to_string(path_in(machine_dir)) else {
+        return Err(Stale::Unread);
+    };
+    let Ok(document) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return Err(Stale::Unparsable);
+    };
+    let poll_seconds = document["fleet"]["poll_seconds"]
+        .as_u64()
+        .unwrap_or(crate::policy::DEFAULT_POLL_SECONDS);
+    let generated_at = document["generated_at"].as_str().unwrap_or_default();
+    // A stamp that does not parse, and one in the future, are both `None` — and
+    // neither may be rounded into "fresh": a document nobody can date is not one
+    // anybody can call current.
+    let age = crate::clock::seconds_since_stamp(generated_at);
+    if is_fresh(age, poll_seconds) {
+        return Ok(document);
+    }
+    let at = generated_at.to_string();
+    Err(match age {
+        Some(age) => Stale::Old {
+            age,
+            at,
+            poll: poll_seconds,
+        },
+        None => Stale::Undated {
+            at,
+            poll: poll_seconds,
+        },
+    })
+}
+
+/// The published row for the seat keyed `key`, where the document carries one.
+pub fn published_row<'d>(
+    document: &'d serde_json::Value,
+    key: &str,
+) -> Option<&'d serde_json::Value> {
+    document["seats"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .find(|row| row["seat"]["id"] == key)
 }
 
 /// Bumped by any breaking change to the shape below. A reader that meets a
@@ -512,5 +581,90 @@ mod tests {
             kind: "agent".to_string(),
         };
         assert_eq!(unread.machine_name(), "builder-1");
+    }
+
+    /// A fixture machine directory holding `body` as its projection, or none.
+    fn machine_with(name: &str, body: Option<&str>) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-projection-fresh-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the fixture directory is made");
+        if let Some(body) = body {
+            std::fs::write(path_in(&dir), body).expect("the fixture projection is written");
+        }
+        dir
+    }
+
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("the clock is past the epoch")
+            .as_secs()
+    }
+
+    fn dated(generated_at: &str) -> String {
+        serde_json::json!({ "generated_at": generated_at, "fleet": { "poll_seconds": 5 } })
+            .to_string()
+    }
+
+    /// The one freshness reader answers each way a document can fail to be
+    /// current as its own reading, and the sentences stay the callers'.
+    #[test]
+    fn the_freshness_reader_names_each_way_a_document_is_not_current() {
+        let none = machine_with("none", None);
+        assert_eq!(read_fresh(&none), Err(Stale::Unread));
+
+        let torn = machine_with("torn", Some("{"));
+        assert_eq!(read_fresh(&torn), Err(Stale::Unparsable));
+
+        let at = crate::clock::stamp_secs(now_secs() - 4 * 5);
+        let old = machine_with("old", Some(&dated(&at)));
+        match read_fresh(&old) {
+            Err(Stale::Old {
+                age,
+                at: read,
+                poll,
+            }) => {
+                assert!(age >= 20, "{age}");
+                assert_eq!((read, poll), (at, 5));
+            }
+            other => panic!("a document four polls old is old, not {other:?}"),
+        }
+
+        let undated = machine_with(
+            "undated",
+            Some(&serde_json::json!({ "fleet": { "poll_seconds": 5 } }).to_string()),
+        );
+        assert_eq!(
+            read_fresh(&undated),
+            Err(Stale::Undated {
+                at: String::new(),
+                poll: 5
+            })
+        );
+
+        let ahead = crate::clock::stamp_secs(now_secs() + 3600);
+        let future = machine_with("future", Some(&dated(&ahead)));
+        assert_eq!(
+            read_fresh(&future),
+            Err(Stale::Undated { at: ahead, poll: 5 })
+        );
+
+        let fresh = machine_with("fresh", Some(&dated(&crate::clock::now_stamp())));
+        assert!(read_fresh(&fresh).is_ok());
+
+        for dir in [none, torn, old, undated, future, fresh] {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    /// Fresh is inside three polls, inclusive, and an age nobody read is not.
+    #[test]
+    fn fresh_is_inside_three_polls_and_never_an_unread_age() {
+        assert!(!is_fresh(None, 5));
+        assert!(is_fresh(Some(15), 5));
+        assert!(!is_fresh(Some(16), 5));
     }
 }

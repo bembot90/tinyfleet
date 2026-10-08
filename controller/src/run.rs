@@ -319,7 +319,7 @@ impl<'a> Observer<'a> {
             }
         };
         let policy_path = raw_config.fleet_toml.clone();
-        let policy_mtime = policy::mtime(&policy_path);
+        let policy_mtime = config::mtime(&policy_path);
         // The FILE's policy and the EFFECTIVE one are two values: `config.json` is
         // local and beats policy per key, so the overlay is recomputed
         // wherever either document is re-read, and the file's own value is what the
@@ -500,7 +500,7 @@ impl<'a> Observer<'a> {
             }
         }
 
-        let file_mtime = policy::mtime(&self.policy_path);
+        let file_mtime = config::mtime(&self.policy_path);
         if policy_repointed || file_mtime != self.policy_seen {
             self.policy_seen = file_mtime;
             match policy::load(&self.policy_path) {
@@ -764,7 +764,7 @@ impl<'a> Observer<'a> {
         // controller that acted here would be deciding a run's business from
         // inside the poll.
         for (seat, machine_name, item) in &logged_out {
-            if let Err(e) = self.events_log.append(
+            self.events_log.append_or_say(
                 events::DISPATCH_FAILED,
                 &ActorRef::seat(&seat.id),
                 events::dispatch_failed_payload(
@@ -772,12 +772,13 @@ impl<'a> Observer<'a> {
                     item.as_deref(),
                     observe::AUTHENTICATION_FAILED,
                 ),
-            ) {
-                eprintln!(
-                    "fleet observe: {machine_name} came up logged out and the line could not be \
-                     appended: {e}"
-                );
-            }
+                |e| {
+                    format!(
+                        "fleet observe: {machine_name} came up logged out and the line could not be \
+                         appended: {e}"
+                    )
+                },
+            );
         }
 
         // One verdict per seat, from terms this poll reads for itself — nothing
@@ -905,7 +906,7 @@ impl<'a> Observer<'a> {
                 postures: self.capabilities.postures.clone(),
             },
             agent_version: agent_version.clone(),
-            agent_version_expected: expected,
+            agent_version_expected: expected.clone(),
             fleet: PolicyView {
                 path: self.policy_path.display().to_string(),
                 mtime: self.policy_mtime.and_then(clock::stamp_of),
@@ -924,23 +925,20 @@ impl<'a> Observer<'a> {
         // so a file dropped into a routines directory is live on the next
         // evaluation with no restart.
         let routines_now = routines::now_secs();
-        // The seats a routine may name: the rows this machine runs for a
-        // nudge, and every seat the policy lists besides for an item's
-        // assignee — read off the policy file as it stands this tick.
-        let seat_directory = config::directory(
-            &self.config.seats,
-            &fleet_core::item::table_at(&self.policy_path),
-            &self.machine_dir,
-        );
         // The directory holding the policy file in force, which is this
         // machine's fleet root. A service's own working directory is the
         // service manager's and names nothing, so the walk-up the CLI does is
         // not a reading here.
         let routines_root = self.policy_path.parent().map(Path::to_path_buf);
+        // The seats a routine may name: the rows this machine runs for a
+        // nudge, and every seat the policy lists besides for an item's
+        // assignee — read off the policy file as it stands this tick.
         let registry = match &routines_root {
-            Some(root) => routines::load::load(
-                &routines::load::roots(root, &self.machine_dir, &projects_of(root)),
-                &seat_directory,
+            Some(root) => routines::load::registry_for(
+                root,
+                &self.machine_dir,
+                &self.config.seats,
+                &fleet_core::item::table_at(&self.policy_path),
             ),
             None => routines::load::Registry::default(),
         };
@@ -1102,10 +1100,7 @@ impl<'a> Observer<'a> {
         // announcement. A poll whose version read failed knows nothing about the
         // spread, and clearing on it re-announces the same move on the next
         // healthy poll.
-        let pair = (
-            agent_version.clone(),
-            projection::expected_version(&self.capabilities.measured, agent_version.as_deref()),
-        );
+        let pair = (agent_version.clone(), expected);
         match (&pair.0, &pair.1) {
             (Some(live), Some(pinned)) if live != pinned => {
                 if self.announced_move.as_ref() != Some(&pair) {
@@ -1342,14 +1337,15 @@ fn act(
                     effect::revive(agent, host, policy, &target, events_log, table, now_ms)
                 }
                 Verdict::Rest => {
+                    let said_key = format!(
+                        "{}:{}",
+                        machine_name,
+                        observation.session_id.as_deref().unwrap_or("-")
+                    );
                     match effect::rest(agent, host, policy, &target, events_log, table, now_ms) {
                         effect::Rested::Collected => Outcome::Rested,
                         effect::Rested::StopFailed(cause) => {
-                            if rest_failed_said.insert(format!(
-                                "{}:{}",
-                                machine_name,
-                                observation.session_id.as_deref().unwrap_or("-")
-                            )) {
+                            if rest_failed_said.insert(said_key) {
                                 eprintln!(
                                     "fleet observe: {}'s rest is not collected and stays pending; \
                                  its session was not stopped and nothing was started — {cause}",
@@ -1359,11 +1355,7 @@ fn act(
                             Outcome::Failed
                         }
                         effect::Rested::StartFailed(cause) => {
-                            if rest_failed_said.insert(format!(
-                                "{}:{}",
-                                machine_name,
-                                observation.session_id.as_deref().unwrap_or("-")
-                            )) {
+                            if rest_failed_said.insert(said_key) {
                                 eprintln!(
                                     "fleet observe: {}'s predecessor was stopped and its successor \
                                  did not start, so the rest is not collected and stays pending \
@@ -1381,19 +1373,6 @@ fn act(
             outcome
         }
     }
-}
-
-/// The projects routines are read from.
-///
-/// This slice has one, the embedded project, and it is the fleet root itself —
-/// handed to the loader as a list of one so a registry of many is one more
-/// element and not a second reader.
-fn projects_of(fleet_root: &Path) -> Vec<(String, PathBuf)> {
-    let name = fleet_root
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "project".to_string());
-    vec![(name, fleet_root.to_path_buf())]
 }
 
 /// The seat rows a routine's ring reads: where each seat works, the name its
@@ -1662,9 +1641,9 @@ fn write_projection(machine_dir: &Path, document: &Projection) {
 }
 
 fn log_event(events_log: &mut EventLog, kind: &str, actor: &ActorRef, payload: serde_json::Value) {
-    if let Err(e) = events_log.append(kind, actor, payload) {
-        eprintln!("fleet observe: could not append {kind} to the event stream: {e}");
-    }
+    events_log.append_or_say(kind, actor, payload, |e| {
+        format!("fleet observe: could not append {kind} to the event stream: {e}")
+    });
 }
 
 /// A skipped row is reported every time the file is read: a seat that silently
