@@ -46,7 +46,7 @@ use std::process::{Command, Stdio};
 use crate::entry::{self, Body, CheckRow, Clearance, Entry, SuiteRun, Timeline, Verdict};
 use crate::item::deliver::reviewer_of;
 use crate::item::lane;
-use crate::item::run;
+use crate::item::show;
 use crate::item::{
     recorded, signal, Events, Git, Project, Stop, Unrecorded, CHECK_READ, ITEM_ENTRY, TRUNK,
     TRUNK_BRANCH,
@@ -348,14 +348,9 @@ pub fn land(
         err,
         landing,
         &Wiring {
-            store: wiring.store,
             git: git.as_ref(),
             project: &project,
-            progress: wiring.progress,
-            events: wiring.events,
-            load: wiring.load,
-            child_path: wiring.child_path,
-            seats: wiring.seats,
+            ..*wiring
         },
         linked,
     )
@@ -473,11 +468,10 @@ fn commit_shape(given: &str) -> Result<(), Stop> {
 }
 
 /// `<commit>` as a full sha. Seven to forty hex characters resolving to a
-/// commit, and nothing else: a branch name is refused HERE, by shape, before
-/// any instrument is asked what it points at.
+/// commit, and nothing else: a branch name is refused by shape in [land],
+/// before any instrument is asked what it points at.
 fn resolve_commit(landing: &Landing, wiring: &Wiring) -> Result<String, Stop> {
     let given = landing.commit;
-    commit_shape(given)?;
     match wiring.git.rev(given).map_err(Stop::could_not_tell)? {
         Some(sha) => Ok(sha),
         None => Err(Stop::usage(format!(
@@ -535,7 +529,7 @@ fn run(
     // answered from this line on: the landed entry, the events, the land
     // branch and the close all carry the full id, whatever part of it was
     // typed.
-    let item = read(wiring.store, landing.item)?;
+    let item = wiring.store.show(landing.item)?;
     let resolved = item.id.clone();
     let landing = &Landing {
         item: &resolved,
@@ -1072,7 +1066,7 @@ fn run(
         .store
         .close(&item.id, &reason, &acting)
         .map_err(|e| unclosed(&item.id, &sha, &e.to_string()))?;
-    let closed = read(wiring.store, &item.id)?;
+    let closed = wiring.store.show(&item.id)?;
     if closed.status != Status::Closed {
         return Err(unclosed(
             &item.id,
@@ -1655,7 +1649,7 @@ pub fn release(timeline: &[Entry], held: Option<&str>) -> Release {
     if classified.classification != entry::Classification::Safe {
         return Release::Keep(format!(
             "`{held}` — the landing reads `{}`",
-            word(&classified.classification)
+            show::word(&classified.classification)
         ));
     }
     let named = classified.branch.as_deref().unwrap_or_default();
@@ -1672,15 +1666,6 @@ pub fn release(timeline: &[Entry], held: Option<&str>) -> Release {
         return Release::Keep(format!("`{held}` — {why}"));
     }
     Release::Delete(named.to_string())
-}
-
-/// A classification as the entry's own text spells it, so the retire's line
-/// and `fleet item show` say one word for one thing.
-fn word(classification: &entry::Classification) -> String {
-    match serde_json::to_value(classification) {
-        Ok(serde_json::Value::String(word)) => word,
-        other => format!("{other:?}"),
-    }
 }
 
 /// SAFE is two readings and not one: the tip has not moved past what was
@@ -1791,7 +1776,7 @@ fn accepted(
 pub(crate) fn run_record(store: &dyn Store, by: &Actor) -> Result<Item, Stop> {
     let named_no_run = || Stop::refused(format!("{by} names no run record"));
     match store.show(&by.id) {
-        Ok(record) if record.labels.iter().any(|label| label == run::LABEL) => Ok(record),
+        Ok(record) if record.is_run() => Ok(record),
         Ok(_) | Err(StoreError::Refused(_)) => Err(named_no_run()),
         // A read never answers `Moved` or `Usage`, which only a write does.
         Err(StoreError::Unreadable(why) | StoreError::Moved(why) | StoreError::Usage(why)) => {
@@ -2204,8 +2189,4 @@ fn rc_word(code: Option<i32>) -> String {
         Some(code) => code.to_string(),
         None => "on a signal".to_string(),
     }
-}
-
-fn read(store: &dyn Store, item: &str) -> Result<Item, Stop> {
-    store.show(item).map_err(Stop::from)
 }

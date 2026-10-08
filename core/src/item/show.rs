@@ -432,7 +432,7 @@ fn list(lines: &mut Vec<String>, field: &str, rows: impl Iterator<Item = String>
     }
 }
 
-fn yes_no(held: bool) -> &'static str {
+pub(super) fn yes_no(held: bool) -> &'static str {
     if held {
         "yes"
     } else {
@@ -442,7 +442,7 @@ fn yes_no(held: bool) -> &'static str {
 
 /// An enum's value as the entry's text spells it, so the rendering and the
 /// JSON say one word for one thing.
-fn word(value: &impl Serialize) -> String {
+pub(super) fn word(value: &impl Serialize) -> String {
     match serde_json::to_value(value) {
         Ok(Value::String(word)) => word,
         other => format!("{other:?}"),

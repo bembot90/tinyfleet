@@ -34,7 +34,7 @@ use crate::input::{self, DeliveryInput, DELIVERY_SCHEMA};
 use crate::item::brief::Packs;
 use crate::item::dispatch::EPIC;
 use crate::item::{
-    control_token, recorded, run, signal, Events, Git, Project, Ring, RingOutcome, Stop,
+    assignee_reads_back, recorded, signal, Events, Git, Project, Ring, RingOutcome, Stop,
     Unrecorded, ITEM_ENTRY, TRUNK, TRUNK_BRANCH,
 };
 use crate::policy;
@@ -107,15 +107,15 @@ pub fn deliver(
     // one would report this verb's own bookkeeping as the seat's unstaged work.
     //
     // (a) the trunk, (b) a file left outside the delivery, (c) an empty one.
-    let branch = wiring.git.current_branch().map_err(step)?;
+    let branch = wiring.git.current_branch().map_err(Stop::could_not_tell)?;
     if branch == TRUNK_BRANCH {
         return Err(Stop::refused(format!(
             "the worktree is on `{branch}` — a delivery is a handoff of a work branch and the \
              reviewer takes a commit, never the trunk"
         )));
     }
-    let staged = wiring.git.staged().map_err(step)?;
-    if let Some(loose) = outside(&wiring.git.status().map_err(step)?, &staged) {
+    let staged = wiring.git.staged().map_err(Stop::could_not_tell)?;
+    if let Some(loose) = outside(&wiring.git.status().map_err(Stop::could_not_tell)?, &staged) {
         return Err(Stop::refused(format!(
             "`{loose}` is changed in the working tree and not staged — the delivery is the staged \
              set, and a file outside it is the seat's to stage or to put back"
@@ -125,9 +125,9 @@ pub fn deliver(
     // against the trunk ref is what separates a seat resuming after `fleet hold`
     // — held commit, complete work, nothing left to stage — from a seat that
     // built nothing; only the second is refused.
-    let base = wiring.git.trunk_tip().map_err(step)?;
+    let base = wiring.git.trunk_tip().map_err(Stop::could_not_tell)?;
     let standing = if staged.is_empty() {
-        let head = wiring.git.head().map_err(step)?;
+        let head = wiring.git.head().map_err(Stop::could_not_tell)?;
         if head == base {
             return Err(Stop::refused(format!(
                 "nothing is staged in {} and HEAD is {TRUNK} at {head} — there is no commit to \
@@ -158,7 +158,7 @@ pub fn deliver(
         None => wiring
             .git
             .commit(&format!("{item}: delivered by {}", delivery.by))
-            .map_err(step)?,
+            .map_err(Stop::could_not_tell)?,
     };
 
     let delivered =
@@ -284,7 +284,7 @@ pub fn held_item(store: &dyn Store, by: &Actor, named: Option<&str>) -> Result<S
     if let Some(named) = named {
         // Resolved once, here: the caller acts on the store's full id and
         // never on the part of it that was typed.
-        let item = read(store, named)?;
+        let item = store.show(named)?;
         holds_named(&item, by)?;
         return Ok(item.id.to_string());
     }
@@ -330,7 +330,7 @@ pub fn held_item(store: &dyn Store, by: &Actor, named: Option<&str>) -> Result<S
 /// work the listing would not have found.
 fn holds_named(item: &Item, by: &Actor) -> Result<(), Stop> {
     let id = &item.id;
-    if item.labels.iter().any(|label| label == run::LABEL) {
+    if item.is_run() {
         let its_run = Actor {
             kind: ActorKind::Run,
             id: id.to_string(),
@@ -503,33 +503,7 @@ fn porcelain_path(line: &str) -> String {
 /// nothing wrote. The delivered entry is not asked again here: [`recorded`]
 /// read it back off the timeline before this runs.
 fn read_back(item: &str, reviewer: SeatId, wiring: &Wiring) -> Result<(), Stop> {
-    let read = read(wiring.store, item)?;
-    if read.assignee != Some(reviewer) {
-        return Err(disagrees(
-            item,
-            "assignee",
-            &reviewer.to_string(),
-            read.assignee.map(|held| held.to_string()).as_deref(),
-        ));
-    }
-    let control = control_token();
-    if read.proof.carries(control) {
-        return Err(Stop::could_not_tell(format!(
-            "the read-back on {item} carries {control}, which nothing wrote — the read is not \
-             reading this item"
-        )));
-    }
-    Ok(())
-}
-
-fn read(store: &dyn Store, item: &str) -> Result<Item, Stop> {
-    store.show(item).map_err(Stop::from)
-}
-
-/// A git operation that would not answer. The step names itself in the message
-/// git handed back, and nothing is rounded to a default.
-fn step(cause: String) -> Stop {
-    Stop::could_not_tell(cause)
+    assignee_reads_back(wiring.store, item, reviewer)
 }
 
 /// A failure after the commit. The commit is real and the message says so,
@@ -537,12 +511,5 @@ fn step(cause: String) -> Stop {
 fn committed(item: &str, commit: &str, why: &str) -> Stop {
     Stop::could_not_tell(format!(
         "{why}\n  the commit {commit} STANDS on the work branch and {item} carries no delivery"
-    ))
-}
-
-fn disagrees(item: &str, field: &str, wanted: &str, got: Option<&str>) -> Stop {
-    Stop::could_not_tell(format!(
-        "{item} read back with {field} ==\n{}\n  wanted:\n{wanted}\n  READ: fleet item show {item}",
-        got.unwrap_or("(absent)")
     ))
 }

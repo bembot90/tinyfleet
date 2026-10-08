@@ -300,10 +300,8 @@ fn imports_of_name<'m>(
     imports: &'m BTreeMap<String, BTreeSet<String>>,
     name: &str,
 ) -> &'m BTreeSet<String> {
-    static NONE: std::sync::OnceLock<BTreeSet<String>> = std::sync::OnceLock::new();
-    imports
-        .get(name)
-        .unwrap_or_else(|| NONE.get_or_init(BTreeSet::new))
+    static NONE: BTreeSet<String> = BTreeSet::new();
+    imports.get(name).unwrap_or(&NONE)
 }
 
 pub fn resolve(layers: &[Layer]) -> Result<Resolution, Vec<Refusal>> {

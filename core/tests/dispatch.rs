@@ -1270,6 +1270,15 @@ fn the_negative_control_catches_a_read_that_is_not_this_items() {
         "{}",
         answer.why
     );
+    assert_eq!(
+        answer.why,
+        format!(
+            "the read-back on {item} carries {}, which nothing wrote — the read is not reading \
+             this item",
+            control_token()
+        ),
+        "the whole sentence"
+    );
 }
 
 #[test]

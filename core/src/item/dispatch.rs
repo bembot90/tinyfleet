@@ -23,7 +23,7 @@ use crate::entry::{Body, OrderWithdrawn, Ordered, Withdrawal};
 use crate::item::brief::{self, Packs, Subject, TRANSIENT};
 use crate::item::deliver::holds;
 use crate::item::{
-    control_token, recorded, render, show, signal, Events, Project, Ring, RingOutcome, Spawn,
+    recorded, refuse_planted, render, show, signal, Events, Project, Ring, RingOutcome, Spawn,
     SpawnOutcome, Spawner, Stop, Unrecorded, ITEM_ENTRY, NO_SESSION, REFUSED,
 };
 use crate::seat::actor::Actor;
@@ -174,7 +174,11 @@ pub fn dispatch(
     // answered from this line on. The store resolves a partial id itself, so
     // the ready list compared against the typed text refused a ready item,
     // and every write under it would be a second spelling of the item.
-    let item = read(wiring.store, order.item).map_err(Refused::stopped)?;
+    let item = wiring
+        .store
+        .show(order.item)
+        .map_err(Stop::from)
+        .map_err(Refused::stopped)?;
     let order = &Order {
         item: &item.id,
         ..*order
@@ -322,7 +326,7 @@ fn to_named_seat(
         )
         .map_err(|e| wrote_nothing(order.item, "the assignee", &e))?;
     let entry = write_order(order, wiring, Some(&named.id), true)?;
-    read_back(order, wiring, Some(&named.id), Some(&named.id))?;
+    read_back(order, wiring, Some(&named.id))?;
     announce(order, wiring, &entry)?;
 
     let brief_path = match order.brief {
@@ -387,7 +391,7 @@ fn to_a_transient_seat(
     wiring: &Wiring,
 ) -> Result<Given, Refused> {
     write_order(order, wiring, None, true).map_err(Refused::stopped)?;
-    read_back(order, wiring, None, None).map_err(Refused::stopped)?;
+    read_back(order, wiring, None).map_err(Refused::stopped)?;
 
     let pinned = order.brief.map(Path::to_path_buf);
     let brief_path = match &pinned {
@@ -437,8 +441,7 @@ fn to_a_transient_seat(
                 })?;
             let entry =
                 write_order(order, wiring, Some(&spawned.id), false).map_err(Refused::stopped)?;
-            read_back(order, wiring, Some(&spawned.id), Some(&spawned.id))
-                .map_err(Refused::stopped)?;
+            read_back(order, wiring, Some(&spawned.id)).map_err(Refused::stopped)?;
             announce(order, wiring, &entry).map_err(Refused::stopped)?;
             // The item's own rendering moved under the brief: the assignment
             // and the seat in the index are both in it. Rendered again over the
@@ -539,7 +542,7 @@ fn withdraw(err: &mut dyn Write, order: &Order, wiring: &Wiring, cause: &str) ->
             Unrecorded::Unconfirmed(why) => stands(order.item, &why),
         },
     )?;
-    let item = read(wiring.store, order.item)?;
+    let item = wiring.store.show(order.item)?;
     if !matches!(item.order, OrderState::None) {
         return Err(stands(
             order.item,
@@ -557,7 +560,7 @@ fn withdraw(err: &mut dyn Write, order: &Order, wiring: &Wiring, cause: &str) ->
 /// key has to STILL be there. An order this path quietly took away would be the
 /// rounding the third outcome exists to stop, arriving by the other side.
 fn not_told(err: &mut dyn Write, order: &Order, wiring: &Wiring, cause: &str) -> Result<(), Stop> {
-    let item = read(wiring.store, order.item)?;
+    let item = wiring.store.show(order.item)?;
     if matches!(item.order, OrderState::None) {
         return Err(stands(
             order.item,
@@ -646,15 +649,10 @@ fn stamp(order: &Order) -> Result<Stamp, Stop> {
 /// its kind, the seat as a seat id and when as a stamp. A wanted `at` that is
 /// no stamp is a question and not a disagreement: the index it was written
 /// into cannot read as an order, and the read-back would blame the store.
-fn read_back(
-    order: &Order,
-    wiring: &Wiring,
-    assignee: Option<&SeatId>,
-    seat: Option<&SeatId>,
-) -> Result<(), Stop> {
-    let item = read(wiring.store, order.item)?;
-    let seat_text = seat.map(SeatId::to_string);
-    let given = the_order(order, seat.copied())?;
+fn read_back(order: &Order, wiring: &Wiring, assignee: Option<&SeatId>) -> Result<(), Stop> {
+    let item = wiring.store.show(order.item)?;
+    let seat_text = assignee.map(SeatId::to_string);
+    let given = the_order(order, assignee.copied())?;
 
     if let Some(wanted) = assignee {
         if item.assignee.as_ref() != Some(wanted) {
@@ -709,7 +707,7 @@ fn read_back(
             Some(index.kind.as_str().to_string()),
         ));
     }
-    if index.seat.as_ref() != seat {
+    if index.seat.as_ref() != assignee {
         return Err(field(
             "seat",
             seat_text.clone(),
@@ -724,15 +722,7 @@ fn read_back(
         ));
     }
 
-    let control = control_token();
-    if item.proof.carries(control) {
-        return Err(Stop::could_not_tell(format!(
-            "the read-back on {} carries {control}, which nothing wrote — the read is not \
-             reading this item",
-            order.item
-        )));
-    }
-    Ok(())
+    refuse_planted(&item, order.item)
 }
 
 /// The brief, rendered from the item as it now reads and written to the briefs
@@ -784,10 +774,6 @@ fn write_brief(wiring: &Wiring, order: &Order, seat: &str) -> Result<PathBuf, St
         )
     })?;
     Ok(path)
-}
-
-fn read(store: &dyn Store, item: &str) -> Result<Item, Stop> {
-    store.show(item).map_err(Stop::from)
 }
 
 fn why_not_ready(item: &Item) -> String {

@@ -30,10 +30,10 @@ use crate::input::{self, FindingsInput, FINDINGS_SCHEMA};
 use crate::item::brief::Packs;
 use crate::item::deliver::reviewer_of;
 use crate::item::land::run_record;
-use crate::item::show::entry_lines;
+use crate::item::show::{entry_lines, yes_no};
 use crate::item::{
-    control_token, recorded, render, signal, Change, Events, Git, Project, Ring, RingOutcome, Stop,
-    Unrecorded, ITEM_ENTRY,
+    assignee_reads_back, recorded, render, signal, Change, Events, Git, Project, Ring, RingOutcome,
+    Stop, Unrecorded, ITEM_ENTRY,
 };
 use crate::seat::actor::{Actor, ActorKind};
 use crate::seat::identity::{Directory, SeatId};
@@ -99,7 +99,7 @@ pub fn review(
 ) -> Result<Read, Stop> {
     // Resolved once: everything below names `item.id`, the store's full id,
     // and never `verdict.item`, the part of it that was typed.
-    let item = read(wiring.store, verdict.item)?;
+    let item = wiring.store.show(verdict.item)?;
     // THE HOLDER BEFORE ANYTHING IS READ OR MEASURED: an actor that may not
     // write a verdict is refused with the record and the stream as they were.
     if !matches!(verdict.mode, Mode::Show) {
@@ -208,8 +208,8 @@ pub fn rendered_size(changes: &[Change], root: &Path) -> String {
         } else {
             format!(" ({} binary)", size.binary)
         },
-        yes(size.tests),
-        yes(size.executable),
+        yes_no(size.tests),
+        yes_no(size.executable),
     )
 }
 
@@ -230,14 +230,6 @@ pub fn sized(changes: &[Change], root: &Path, base: &str) -> Size {
         tests: changes.iter().any(|c| is_test(&c.path)),
         executable: changes.iter().any(|c| is_executable(root, &c.path)),
         base: base.to_string(),
-    }
-}
-
-fn yes(answer: bool) -> &'static str {
-    if answer {
-        "yes"
-    } else {
-        "no"
     }
 }
 
@@ -447,26 +439,7 @@ fn write_verdict(
             },
         )?;
     if let Some(wanted) = assignee {
-        let read = read(wiring.store, item)?;
-        if read.assignee != Some(wanted) {
-            return Err(Stop::could_not_tell(format!(
-                "{item} read back with assignee ==\n{}\n  wanted:\n{wanted}\n  READ: fleet item \
-                 show {item}",
-                read.assignee
-                    .map_or_else(|| String::from("(absent)"), |held| held.to_string())
-            )));
-        }
-        let control = control_token();
-        if read.proof.carries(control) {
-            return Err(Stop::could_not_tell(format!(
-                "the read-back on {item} carries {control}, which nothing wrote — the read is not \
-                 reading this item"
-            )));
-        }
+        assignee_reads_back(wiring.store, item, wanted)?;
     }
     Ok(id)
-}
-
-fn read(store: &dyn Store, item: &str) -> Result<Item, Stop> {
-    store.show(item).map_err(Stop::from)
 }

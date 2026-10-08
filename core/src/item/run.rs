@@ -44,7 +44,7 @@ use crate::item::brief::Packs;
 use crate::item::doctor::{self, Invocation, Verdict, DOCTOR_TOML, RUNTIME_VERSION, SLOT};
 use crate::item::pins;
 use crate::item::{
-    control_token, read_table, recorded, signal, Events, Project, Stop, Unrecorded, RUN_CANCELLED,
+    read_table, recorded, refuse_planted, signal, Events, Project, Stop, Unrecorded, RUN_CANCELLED,
     RUN_CLOSED, RUN_COULD_NOT_TELL, RUN_FAILED, RUN_STARTED, RUN_WAITING,
 };
 use crate::pack;
@@ -80,6 +80,13 @@ pub const WORKFLOWS: &str = "workflows";
 /// to may already label its own items `run`, and a bare `run` means nothing to
 /// fleet.
 pub const LABEL: &str = "fleet:run";
+
+impl Item {
+    /// Whether this item is a run's record: it carries [`LABEL`].
+    pub fn is_run(&self) -> bool {
+        self.labels.iter().any(|label| label == LABEL)
+    }
+}
 
 /// The store's own word for the record item's type.
 pub const RECORD_TYPE: &str = "task";
@@ -546,7 +553,7 @@ pub fn cancel(
     // Resolved once: the close, the events and the line name the record's own
     // id from here on, whatever part of it was typed.
     let run = record.id.as_str();
-    if !record.labels.iter().any(|label| label == LABEL) {
+    if !record.is_run() {
         return Err(Stop::refused(format!(
             "{run} is not a run's record — it carries no `{LABEL}` label, and `fleet cancel` ends \
              runs and nothing else"
@@ -1028,14 +1035,7 @@ fn write_the_pins(
     if held_workflow != resolved.name {
         return Err(disagrees(id, "workflow", &resolved.name, &held_workflow));
     }
-    let control = control_token();
-    if read_back.proof.carries(control) {
-        return Err(Stop::could_not_tell(format!(
-            "the read-back on {id} carries {control}, which nothing wrote — the read is not \
-             reading this item"
-        )));
-    }
-    Ok(())
+    refuse_planted(&read_back, id)
 }
 
 /// What the pins, the bundle and the hash are made of, for the one run whose

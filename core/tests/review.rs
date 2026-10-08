@@ -1059,6 +1059,15 @@ fn a_return_whose_assignee_reads_back_as_somebody_else_could_not_tell_and_rings_
         "the value read and the value wanted: {}",
         said.stop
     );
+    assert_eq!(
+        said.stop,
+        format!(
+            "{item} read back with assignee ==\n{}\n  wanted:\n{}\n  READ: fleet item show {item}",
+            full("somebody-else"),
+            full(builder)
+        ),
+        "the whole sentence"
+    );
     assert!(
         said.stop
             .contains(&format!("\n  READ: fleet item show {item}")),
@@ -1106,6 +1115,15 @@ fn the_negative_control_catches_a_planted_token_on_a_return() {
         said.stop.contains(control_token()) && said.stop.contains("not reading this item"),
         "{}",
         said.stop
+    );
+    assert_eq!(
+        said.stop,
+        format!(
+            "the read-back on {item} carries {}, which nothing wrote — the read is not reading \
+             this item",
+            control_token()
+        ),
+        "the whole sentence"
     );
     assert_eq!(
         events.count(),

@@ -1317,6 +1317,15 @@ fn a_read_back_that_disagrees_exits_three_and_prints_both_values() {
     .expect_err("the read-back disagrees");
 
     assert_eq!(stop.code, 3, "{}", stop.message);
+    assert_eq!(
+        stop.message,
+        format!(
+            "{item} read back with assignee ==\n{}\n  wanted:\n{}\n  READ: fleet item show {item}",
+            full("somebody-else"),
+            full(REVIEWER)
+        ),
+        "the whole sentence"
+    );
     assert!(
         stop.message.contains(&full("somebody-else")) && stop.message.contains(&full(REVIEWER)),
         "both values: {}",
@@ -1371,6 +1380,15 @@ fn the_negative_control_catches_a_planted_token() {
 
     assert_eq!(stop.code, 3, "{}", stop.message);
     assert!(stop.message.contains(control_token()), "{}", stop.message);
+    assert_eq!(
+        stop.message,
+        format!(
+            "the read-back on {item} carries {}, which nothing wrote — the read is not reading \
+             this item",
+            control_token()
+        ),
+        "the whole sentence"
+    );
 }
 
 #[test]

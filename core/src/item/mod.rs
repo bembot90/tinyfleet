@@ -27,7 +27,8 @@ use std::path::{Path, PathBuf};
 
 use crate::entry::{to_json, Body, Entry, Timeline};
 use crate::seat::actor::Actor;
-use crate::store::{ItemId, Store, StoreError};
+use crate::seat::identity::SeatId;
+use crate::store::{Item, ItemId, Store, StoreError};
 
 /// The exits, one vocabulary shared by every verb. A verb answers with one of
 /// these and the cli does nothing but return it.
@@ -539,6 +540,38 @@ pub fn control_token() -> &'static str {
             .unwrap_or(0);
         format!("fleet-control-{}-{nanos}", std::process::id())
     })
+}
+
+/// The negative control every read-back ends on: a read whose proof carries
+/// [`control_token`] is not reading the item `id` names.
+pub(crate) fn refuse_planted(read: &Item, id: &str) -> Result<(), Stop> {
+    let control = control_token();
+    if read.proof.carries(control) {
+        return Err(Stop::could_not_tell(format!(
+            "the read-back on {id} carries {control}, which nothing wrote — the read is not \
+             reading this item"
+        )));
+    }
+    Ok(())
+}
+
+/// One read of `item`, asserting its assignee against the ARGUMENT, then the
+/// negative control.
+pub(crate) fn assignee_reads_back(
+    store: &dyn Store,
+    item: &str,
+    wanted: SeatId,
+) -> Result<(), Stop> {
+    let read = store.show(item)?;
+    if read.assignee != Some(wanted) {
+        return Err(Stop::could_not_tell(format!(
+            "{item} read back with assignee ==\n{}\n  wanted:\n{wanted}\n  READ: fleet item \
+             show {item}",
+            read.assignee
+                .map_or_else(|| String::from("(absent)"), |held| held.to_string())
+        )));
+    }
+    refuse_planted(&read, item)
 }
 
 /// Why an entry a verb wrote is not on the record: the store refused the write,

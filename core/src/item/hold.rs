@@ -38,7 +38,6 @@ use crate::entry::{self, Body, Choice, HoldReason, Timeline};
 use crate::input::{self, QuestionInput, Standing, QUESTION_SCHEMA};
 use crate::item::deliver::held_item;
 use crate::item::dispatch::refuse_an_epic;
-use crate::item::run;
 use crate::item::{
     recorded, signal, Events, Git, Project, Stop, Unrecorded, ITEM_ENTRY, TRUNK_BRANCH,
 };
@@ -92,7 +91,7 @@ pub fn hold(out: &mut dyn Write, question: &Question, wiring: &Wiring) -> Result
     // item, and a run's park touches no git at all.
     let record = wiring.store.show(&item)?;
     refuse_an_epic(&record)?;
-    let of_a_run = record.labels.iter().any(|label| label == run::LABEL);
+    let of_a_run = record.is_run();
 
     let branch = if of_a_run {
         RUN_BRANCH.to_string()
