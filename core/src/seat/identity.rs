@@ -354,13 +354,13 @@ pub fn seat_table(seat: &SeatRef, model: Option<&str>) -> String {
     table
 }
 
-/// One value inside a TOML basic string — a private copy of the controller's
-/// `lifecycle::basic`, because this crate may not depend on the controller.
+/// One value inside a TOML basic string, the one escaper every declaration
+/// fleet writes goes through.
 ///
 /// A name is whatever a person typed, and a quote or a backslash in one writes
 /// a file that does not parse. The set is the format's own: the two delimiters
 /// and the control characters, each as the short escape where it has one.
-fn basic(value: &str) -> String {
+pub fn basic(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {
         match c {

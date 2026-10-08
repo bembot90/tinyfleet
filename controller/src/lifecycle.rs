@@ -14,7 +14,7 @@
 use crate::events::{self, EventLog};
 use crate::policy::Policy;
 use crate::{config, platform};
-use fleet_core::seat::identity::{roster_in, Kind, SeatRef};
+use fleet_core::seat::identity::{basic, roster_in, Kind, SeatRef};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -201,33 +201,6 @@ pub fn project_text(
         worktrees = basic(&worktrees.display().to_string()),
         store = store_table(store),
     )
-}
-
-/// One value inside a TOML basic string.
-///
-/// A directory basename is whatever a person named it, and a quote or a
-/// backslash in one writes a file that does not parse — which is a declaration
-/// every later verb refuses, from a name nobody thought was special. The set is
-/// the format's own: the two delimiters and the control characters, each as the
-/// short escape where it has one.
-pub fn basic(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for c in value.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
-                out.push_str(&format!("\\u{:04X}", c as u32))
-            }
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 /// A declaration somebody already wrote, read for the keys a registration needs.

@@ -300,7 +300,7 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
                 );
                 Vec::new()
             }
-            Err(stop) => return Err(as_refusal(stop)),
+            Err(stop) => return Err(stop),
         };
         if held.is_empty() {
             return Ok(Vec::new());
@@ -311,8 +311,7 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
             &row.id,
             &here.seats.label(&row.id),
             &by,
-        )
-        .map_err(as_refusal)?;
+        )?;
         Ok(held.into_iter().map(|row| row.id.to_string()).collect())
     };
 
@@ -421,16 +420,6 @@ fn release_the_branch(
 /// on no branch has `null` for the name and the same two words for the rest.
 fn disposition(branch: Option<&str>, what: &str, why: &str) -> serde_json::Value {
     serde_json::json!({ "name": branch, "disposition": what, "why": why })
-}
-
-/// A core stop as the controller's refusal, which is what the retire's seam
-/// answers in. The exit is carried across unchanged: a store that would not
-/// answer stays a question and is never rounded into a verdict.
-pub(crate) fn as_refusal(stop: Stop) -> Refusal {
-    Refusal {
-        code: stop.code,
-        message: stop.message,
-    }
 }
 
 /// The item this seat's newest session row was dispatched, where one names it.

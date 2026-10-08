@@ -4,11 +4,11 @@
 //! a run's record already carries that hold.
 //!
 //! WHY THE ACTS ARE HERE AND NOT IN CORE OR THE CONTROLLER. core depends on no
-//! other member, and the controller takes nothing from core but its bounded
-//! runner (`fleet_core::process`), so neither of them can wire a store, a
-//! project's packs and the transient-seat primitives at once.
-//! This module is the one that can, which is also why the tick's run pass is a
-//! seam rather than a call.
+//! other member, so it cannot reach the transient-seat primitives. The
+//! controller reaches everything else the acts need through core, but the
+//! project resolution every act starts from (`crate::item::resolve_from`,
+//! [`Here`]) is this crate's, so this module is the one that can wire them,
+//! which is also why the tick's run pass is a seam rather than a call.
 //!
 //! NOTHING IS HELD BETWEEN PASSES. Every act resolves the run's project afresh
 //! off the machine directory, so a run opened between two passes is picked up
@@ -26,59 +26,10 @@ use fleet_core::item::run as workflow_run;
 use fleet_core::seat;
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::{identity_or_mint, SeatId};
-use fleet_core::store::{
-    self, AdapterSource, ItemId, Opening, PackDirs, Store, StoreError, STORE_TIMEOUT,
-};
+use fleet_core::store::{ItemId, Store};
 
-use crate::item::{resolve_from, Here, StreamEvents, EVENTS};
-use crate::transient::{as_refusal, effect_agent, machine_of, policy_of, verb_host, Where};
-
-/// How the pass gets a store for one project.
-///
-/// AN OPENER AND NOT A STORE, because [`Engine`] holds no project and resolves
-/// one per run: a machine whose runs belong to two projects needs a store per
-/// project, and a single handle could not serve both.
-pub trait Stores {
-    fn open(&self, here: &Here) -> Result<Box<dyn Store>, StoreError>;
-}
-
-/// The opener the binary runs on: the store `[store] adapter` names in each
-/// project's own file, through the one opener every verb takes.
-///
-/// THE SEARCH PATH IS CONSTRUCTED ONCE, HERE, and every pack's adapter this
-/// opener hands back runs on it. The pass's own process is a launchd
-/// service whose `PATH` holds neither a package manager's prefix nor the
-/// user's local bin, so a store that searched that `PATH` would find nothing
-/// and refuse every tick (lessons claude-code D1). It is the verbs' own search
-/// path, bare-name fallback and all, so a run's re-run and a person's verb
-/// write through the same file.
-pub struct ProjectStores {
-    search_path: String,
-}
-
-impl ProjectStores {
-    pub fn resolved() -> ProjectStores {
-        ProjectStores {
-            search_path: platform::child_path(&platform::home_dir()),
-        }
-    }
-}
-
-impl Stores for ProjectStores {
-    fn open(&self, here: &Here) -> Result<Box<dyn Store>, StoreError> {
-        store::open(&Opening {
-            root: &here.project.root,
-            policy: &here.project.policy,
-            source: AdapterSource::Setting,
-            search_path: &self.search_path,
-            timeout: STORE_TIMEOUT,
-            packs: Some(PackDirs {
-                packs_dir: &here.packs_dir,
-                defaults_dir: &here.defaults_dir,
-            }),
-        })
-    }
-}
+use crate::item::{open_store, resolve_from, Here, StreamEvents, EVENTS};
+use crate::transient::{effect_agent, machine_of, policy_of, verb_host, Where};
 
 /// The run seam's acts, over one machine directory.
 ///
@@ -90,7 +41,6 @@ impl Stores for ProjectStores {
 pub struct Engine {
     pub machine_dir: PathBuf,
     pub home: PathBuf,
-    stores: Box<dyn Stores>,
 }
 
 impl Engine {
@@ -98,7 +48,6 @@ impl Engine {
         Engine {
             machine_dir,
             home: platform::home_dir(),
-            stores: Box::new(ProjectStores::resolved()),
         }
     }
 
@@ -126,8 +75,8 @@ impl Engine {
             let Ok(here) = resolve_from(&root, self.machine_dir.clone(), None) else {
                 continue;
             };
-            let holding = self.stores.open(&here).and_then(|store| store.show(run));
-            if holding.is_ok() {
+            let holding = open_store(&here).is_ok_and(|store| store.show(run).is_ok());
+            if holding {
                 return Ok(here);
             }
         }
@@ -168,7 +117,7 @@ impl Runs for Engine {
     fn rerun(&self, run: &str) -> Result<(), String> {
         let here = self.project_holding(run)?;
         let by = self.controller()?;
-        let store = self.stores.open(&here).map_err(|e| e.to_string())?;
+        let store = open_store(&here).map_err(|stop| stop.message)?;
         let packs =
             Packs::under(&here.packs_dir, &here.defaults_dir).map_err(|stop| stop.message)?;
         let events = StreamEvents::at(self.machine_dir.join(EVENTS));
@@ -208,7 +157,7 @@ impl Runs for Engine {
     fn hold(&self, run: &str, reason: &str) -> Result<(String, String), String> {
         let here = self.project_holding(run)?;
         let by = self.controller()?;
-        let store = self.stores.open(&here).map_err(|e| e.to_string())?;
+        let store = open_store(&here).map_err(|stop| stop.message)?;
         let directory = self.machine_dir.join(workflow_run::RUNS).join(run);
         hold::park_at_the_cap(
             &hold::Capped {
@@ -227,10 +176,8 @@ impl Runs for Engine {
     /// held entries too, and none of them is the park.
     fn capped(&self, run: &str) -> Result<Option<CapHold>, String> {
         let here = self.project_holding(run)?;
-        let store = self
-            .stores
-            .open(&here)
-            .map_err(|e| format!("{run}'s store could not be opened: {e}"))?;
+        let store = open_store(&here)
+            .map_err(|stop| format!("{run}'s store could not be opened: {stop}"))?;
         let entries = store
             .timeline(&ItemId::from(run))
             .map_err(|e| format!("{run}'s timeline could not be read: {e}"))?;
@@ -261,7 +208,7 @@ impl Runs for Engine {
         // for itself. A cleanup retires seats whose items were delivered and
         // seats whose items are still open — a park leaves the order standing —
         // and the name this frees is the one the next spawn takes.
-        let store = self.stores.open(&here).map_err(|e| e.to_string())?;
+        let store = open_store(&here).map_err(|stop| stop.message)?;
         // The retire hands its withdrawal the machine name of the row it
         // resolved; the order was assigned to that row's ID, so the name is
         // resolved back to it here, exactly, through the short id it carries.
@@ -302,11 +249,11 @@ fn withdrawn_from(
     label: &str,
     by: &Actor,
 ) -> Result<Vec<String>, Refusal> {
-    let held = seat::retire::held(store, seat).map_err(as_refusal)?;
+    let held = seat::retire::held(store, seat)?;
     if held.is_empty() {
         return Ok(Vec::new());
     }
-    seat::retire::withdraw(store, &held, seat, label, by).map_err(as_refusal)?;
+    seat::retire::withdraw(store, &held, seat, label, by)?;
     Ok(held.into_iter().map(|row| row.id.to_string()).collect())
 }
 
@@ -478,18 +425,5 @@ mod tests {
             "every act after the first is the same controller"
         );
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The opener the binary runs on resolves every store's binary on the
-    /// constructed child PATH — the search path the verbs hand the same opener
-    /// — and never on the pass's own, which under a launchd service holds
-    /// neither a package manager's prefix nor the user's local bin. That the
-    /// opener runs what it resolved by absolute path is the store's own arm.
-    #[test]
-    fn the_engines_stores_hand_the_constructed_child_path() {
-        assert_eq!(
-            ProjectStores::resolved().search_path,
-            platform::child_path(&platform::home_dir())
-        );
     }
 }

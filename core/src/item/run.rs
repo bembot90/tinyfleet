@@ -1396,3 +1396,15 @@ fn disagrees(id: &str, key: &str, wrote: &str, read_back: &str) -> Stop {
          hold what it was told"
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_fleet_naming_no_cap_executes_a_crashing_run_twice() {
+        assert_eq!(
+            super::MAX_CRASHES,
+            2,
+            "docs/runs.md: two when [core.run] max_crashes is not set"
+        );
+    }
+}

@@ -146,54 +146,6 @@ fn the_dependency_list_core_was_read_from_is_populated() {
     );
 }
 
-/// The run lifecycle's vocabulary is spelled in two crates and is one fact.
-///
-/// The controller crate takes nothing from core but its bounded runner
-/// (`fleet_core::process`), the release it supports (`fleet_core::supported`),
-/// a seat's identity (`fleet_core::seat::identity`: the id, the fleet.toml
-/// roster and the resolver), the agent contract's types
-/// (`fleet_core::agent::types`) and the template render
-/// (`fleet_core::item::render`), so the kinds its run pass folds and writes, and the
-/// environment variable a run's children carry, are spelled there as well as in
-/// core. This is the one member that can see both, which makes it the place
-/// the two spellings are held to one string — a kind spelled twice is two
-/// kinds, and a fold that met the second would report a stream with no runs in
-/// it.
-#[test]
-fn the_run_vocabulary_is_one_string_in_both_crates() {
-    use fleet_controller::runs;
-    use fleet_core::item;
-
-    for (controller, core) in [
-        (runs::RUN_STARTED, item::RUN_STARTED),
-        (runs::RUN_CLOSED, item::RUN_CLOSED),
-        (runs::RUN_FAILED, item::RUN_FAILED),
-        (runs::RUN_WAITING, item::RUN_WAITING),
-        (runs::RUN_COULD_NOT_TELL, item::RUN_COULD_NOT_TELL),
-        (runs::RUN_CANCELLED, item::RUN_CANCELLED),
-        (runs::RUN_CLEANED, item::RUN_CLEANED),
-        (runs::ITEM_ENTRY, item::ITEM_ENTRY),
-        (runs::ENV_RUN_ID, item::run::ENV_RUN_ID),
-    ] {
-        assert_eq!(
-            controller, core,
-            "the controller's spelling and core's are one string"
-        );
-    }
-}
-
-/// The kinds a wake may name are core's entry kinds, in core's order: a wake
-/// the SDK throws naming a kind is readable, and none waits on a kind no
-/// signal carries.
-#[test]
-fn the_kinds_a_wake_names_are_core_s_entry_kinds() {
-    assert_eq!(
-        fleet_controller::runs::ENTRY_KINDS,
-        fleet_core::entry::KINDS,
-        "the controller's spelling and core's are one list"
-    );
-}
-
 /// The stream kinds the verbs wrote before every entry was one signal —
 /// retired, and spelled nowhere a writer or a reader of the stream lives: no
 /// string literal in core, the binary or the controller. A line of one of them
@@ -394,19 +346,6 @@ fn no_source_names_the_agent_except_as_its_pack() {
         named.is_empty(),
         "named outside the claude-code pack: {named:#?}"
     );
-}
-
-/// And the run's crash cap has one default, for the same reason: the controller
-/// reads `[core.run] max_crashes` off the policy in force and core's own reader
-/// answers the same key.
-#[test]
-fn the_run_crash_cap_has_one_default_in_both_crates() {
-    assert_eq!(
-        fleet_controller::policy::DEFAULT_RUN_MAX_CRASHES,
-        fleet_core::item::run::MAX_CRASHES,
-        "a fleet naming no cap gets the same number whichever crate answers"
-    );
-    assert_eq!(fleet_core::item::run::MAX_CRASHES, 2);
 }
 
 /// `run.cleaned` declares the keys it carries, where the four rows of the exit

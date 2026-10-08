@@ -3,18 +3,14 @@
 //! re-run to a cap and then held, and the seats a run spawned let go when it
 //! ends.
 //!
-//! WHY THE ACTS ARE A SEAM AND THE DECISION IS NOT. This crate takes nothing
-//! from core but its bounded runner (`fleet_core::process`), the release it
-//! supports (`fleet_core::supported`) and a seat's identity
-//! (`fleet_core::seat::identity`: the id, the fleet.toml roster and the
-//! resolver), and every one of the three acts needs a resolution this crate
-//! cannot make: a re-run needs the project's store, its packs and its policy
-//! file; a park needs the store's hold; a retire needs the
-//! project's primary checkout and its worktrees directory. All of those are
-//! wired in the binary, so the acts are a seam the binary fills. The
-//! DECISION is different: it is a fold of the machine's own stream against one
-//! cap, and the stream is this crate's own file — so it lives here, where a poll
-//! can be driven against a file and a stub.
+//! WHY THE ACTS ARE A SEAM AND THE DECISION IS NOT. Every one of the three
+//! acts needs a project resolved: a re-run needs the project's store, its
+//! packs and its policy file; a park needs the store's hold; a retire needs
+//! the project's primary checkout and its worktrees directory. That
+//! resolution is wired in the binary, so the acts are a seam the binary
+//! fills. The DECISION is different: it is a fold of the machine's own stream
+//! against one cap, and the stream is this crate's own file — so it lives
+//! here, where a poll can be driven against a file and a stub.
 //!
 //! THE STREAM IS THE STATE, BUT FOR THE PARK. Nothing is held between passes:
 //! which runs are waiting, how many times each has been executed, which seats a
@@ -36,45 +32,29 @@ use std::path::Path;
 /// child: `fleet seat spawn` under a workflow reads its own process's copy and
 /// the seat it starts is tagged with it.
 ///
-/// THE RUN LIFECYCLE'S NAME, spelled here because this crate names no other
-/// member of the workspace. The binary's suite holds this spelling and
-/// `fleet_core::item::run::ENV_RUN_ID` to one string.
-pub const ENV_RUN_ID: &str = "FLEET_RUN_ID";
+/// THE RUN LIFECYCLE'S NAME: core's own, re-exported here.
+pub use fleet_core::item::run::ENV_RUN_ID;
 
-/// The six kinds of the run lifecycle this pass folds, and the one it writes.
-/// Spelled here for the same reason [`ENV_RUN_ID`] is, and pinned to core's in
-/// the same place.
-pub const RUN_STARTED: &str = "run.started";
-pub const RUN_CLOSED: &str = "run.closed";
-pub const RUN_FAILED: &str = "run.failed";
-pub const RUN_WAITING: &str = "run.waiting";
-pub const RUN_COULD_NOT_TELL: &str = "run.could_not_tell";
-pub const RUN_CANCELLED: &str = "run.cancelled";
-pub const RUN_CLEANED: &str = "run.cleaned";
+/// The six kinds of the run lifecycle this pass folds, and the one it writes:
+/// core's, re-exported here.
+pub use fleet_core::item::{
+    RUN_CANCELLED, RUN_CLEANED, RUN_CLOSED, RUN_COULD_NOT_TELL, RUN_FAILED, RUN_STARTED,
+    RUN_WAITING,
+};
 
 /// The one line every entry on an item's timeline is signalled on,
 /// `{item, entry, kind}`: what a `run.waiting` whose wake names entry kinds is
-/// woken by, and what the park writes for the `held` entry it raised. Spelled
-/// here for the same reason the six above are, and pinned to core's in the
-/// same place.
+/// woken by, and what the park writes for the `held` entry it raised. Core's,
+/// re-exported here.
 ///
 /// A SIGNAL AND NOT THE RECORD. The SDK's `until` and `hold` read the store
 /// and name the entries that could satisfy them; the line says only that one
 /// was written, and the re-run reads the record for itself.
-pub const ITEM_ENTRY: &str = "item.entry";
+pub use fleet_core::item::ITEM_ENTRY;
 
-/// Every kind an entry is, as `fleet_core::entry::KINDS` spells them and in
-/// its order: the kinds a wake may name. Spelled here for the same reason, and
-/// pinned to core's in the same place.
-pub const ENTRY_KINDS: [&str; 7] = [
-    "ordered",
-    "order_withdrawn",
-    "delivered",
-    "reviewed",
-    "held",
-    "cleared",
-    "landed",
-];
+/// Every kind an entry is — `fleet_core::entry::KINDS`, re-exported under this
+/// name: the kinds a wake may name.
+pub use fleet_core::entry::KINDS as ENTRY_KINDS;
 
 /// The entry kind the park signals.
 const HELD: &str = "held";

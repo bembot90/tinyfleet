@@ -9,13 +9,9 @@
 //! Everything a verb cannot work out for itself is gathered by the caller into
 //! [`Machine`], the way `effect.rs` gathers a seat into its `Target`: the
 //! project and its two directories come from the project's own policy file,
-//! which this crate cannot read because it takes nothing from core but its
-//! bounded runner (`fleet_core::process`), the release it supports
-//! (`fleet_core::supported`) and a seat's identity
-//! (`fleet_core::seat::identity`: the id, the fleet.toml roster and the
-//! resolver). The stream and the session table are opened here from the
-//! machine directory the caller named, because a verb is one process and there
-//! is no loop holding them across a poll.
+//! which the caller resolves and hands in. The stream and the session table
+//! are opened here from the machine directory the caller named, because a
+//! verb is one process and there is no loop holding them across a poll.
 //!
 //! ## The belt's two environment overrides
 //!
@@ -42,48 +38,19 @@ use fleet_core::seat::identity::{resolve, SeatId, SeatRef};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// The rows of the exit table a REFUSAL can carry.
+/// The rows of the exit table a REFUSAL can carry: core's own.
 /// Done is not among them: a verb that answers `Ok` carries a value and not a
 /// status, and the cli turns it into 0.
-pub const REFUSED: u8 = 1;
-pub const COULD_NOT_TELL: u8 = 3;
-pub const NO_SESSION: u8 = 4;
+pub use fleet_core::item::{COULD_NOT_TELL, NO_SESSION, REFUSED};
 /// The row is a named seat where a transient one was required. Named seats are
 /// rung and rested; transient ones are fed and retired.
 pub const NOT_TRANSIENT: u8 = 6;
 
 /// A verb that stopped, with the status a script reads and the sentence a
-/// person does.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Refusal {
-    pub code: u8,
-    pub message: String,
-}
-
-impl Refusal {
-    fn at(code: u8, message: impl Into<String>) -> Refusal {
-        Refusal {
-            code,
-            message: message.into(),
-        }
-    }
-
-    fn refused(message: impl Into<String>) -> Refusal {
-        Refusal::at(REFUSED, message)
-    }
-
-    /// An instrument the answer needed would not answer. Never rounded into a
-    /// clean verdict: a session nobody could ask is a question, not an absence.
-    fn could_not_tell(message: impl Into<String>) -> Refusal {
-        Refusal::at(COULD_NOT_TELL, message)
-    }
-}
-
-impl std::fmt::Display for Refusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
-    }
-}
+/// person does: core's [`Stop`](fleet_core::item::Stop), under the name these
+/// verbs have always answered in. A could-not-tell is never rounded into a
+/// clean verdict: a session nobody could ask is a question, not an absence.
+pub use fleet_core::item::Stop as Refusal;
 
 /// Everything the three verbs are told rather than read for themselves.
 pub struct Machine<'a> {
@@ -261,17 +228,22 @@ impl Machine<'_> {
         let refs: Vec<SeatRef> = seats.iter().map(Seat::as_ref).collect();
         let row = match resolve(&refs, arg) {
             Ok(index) => &seats[index],
-            Err(unresolved) => return Err(Refusal::at(unresolved.code(), unresolved.to_string())),
+            Err(unresolved) => {
+                return Err(Refusal {
+                    code: unresolved.code(),
+                    message: unresolved.to_string(),
+                })
+            }
         };
         if !row.transient {
-            return Err(Refusal::at(
-                NOT_TRANSIENT,
-                format!(
+            return Err(Refusal {
+                code: NOT_TRANSIENT,
+                message: format!(
                     "{} is a named seat — named seats are rung and rested, and only a \
                      transient row is fed and retired",
                     row.machine_name()
                 ),
-            ));
+            });
         }
         Ok(row.clone())
     }
@@ -919,12 +891,12 @@ fn rolled_back(
             }
         }
     };
-    Refusal::at(
+    Refusal {
         code,
-        format!(
+        message: format!(
             "{why}\n  rolled back: {removed}; {dropped}; {unconfigured}; no branch was deleted"
         ),
-    )
+    }
 }
 
 /// The cause and the output file the `session.crashed` line this start wrote
@@ -994,10 +966,12 @@ pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refu
     let live = match effect::seat_row(machine.agent, machine.host, &target) {
         Ok(live) => live,
         Err(Typed::Absent) => {
-            return Err(Refusal::at(
-                NO_SESSION,
-                format!("`{seat}` has no live session in {worktree}, so there is nothing to feed"),
-            ))
+            return Err(Refusal {
+                code: NO_SESSION,
+                message: format!(
+                    "`{seat}` has no live session in {worktree}, so there is nothing to feed"
+                ),
+            })
         }
         Err(other) => {
             return Err(Refusal::could_not_tell(format!(

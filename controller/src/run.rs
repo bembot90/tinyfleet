@@ -44,11 +44,9 @@ struct Pending {
 
 /// The loop with the RUN seam handed in beside the gate.
 ///
-/// The seam exists because this crate takes nothing from core but its bounded
-/// runner and the release it supports — no store, no packs, no policy reader —
-/// and the three acts a run's advance needs are wired in the binary. `None` is
-/// a loop that knows nothing of runs and polls exactly as it did before they
-/// existed.
+/// The seam exists because the three acts a run's advance needs are wired in
+/// the binary, where a run's project is resolved. `None` is a loop that knows
+/// nothing of runs and polls exactly as it did before they existed.
 ///
 /// It resolves [`Wiring`] — one resolution, taken before the first tick — and
 /// hands its seams to [`observe_seamed`].

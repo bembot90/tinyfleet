@@ -58,10 +58,9 @@ pub const DEFAULT_LOAD_CEILING_PER_CPU: f64 = 1.0;
 /// THE RUN LIFECYCLE'S KEY AND NOT THIS CONTROLLER'S, which is why it sits under
 /// `[core.run]` and is deliberately outside [`CONTROLLER_KEYS`]: a machine-local
 /// answer in `config.json` would let one box run a crashing workflow a different
-/// number of times from the fleet the policy describes. The figure is pinned
-/// against the run lifecycle's own default in the binary's suite, which is the
-/// one member that can see both crates.
-pub const DEFAULT_RUN_MAX_CRASHES: u64 = 2;
+/// number of times from the fleet the policy describes. It is the run
+/// lifecycle's own default, re-exported, so the two cannot differ.
+pub use fleet_core::item::run::MAX_CRASHES as DEFAULT_RUN_MAX_CRASHES;
 
 /// The belt's second leg: how many transient seats may be mid-turn at once.
 /// Every one of them runs its own checks, so this bounds the work the machine has
