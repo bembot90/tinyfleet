@@ -88,6 +88,33 @@ impl Item {
     }
 }
 
+/// The record of the run that called this landing.
+///
+/// A workflow calls every verb as `run:<id>`, and the `fleet:run` label on the
+/// item the store answers for that id is the only mark that tells a run's
+/// record from every other item — the same discriminator `hold` reads to tell
+/// a run's park from a seat's. An id the store holds no item for, or one whose
+/// item carries no label, is refused: the actor said it was a run, and it is
+/// not one. A store that could not answer is a could-not-tell.
+///
+/// `review` asks it too: a run reviews as the `[core] reviewer` on the same
+/// record a run's landing closes as that seat on.
+pub(crate) fn run_record(store: &dyn Store, by: &Actor) -> Result<Item, Stop> {
+    let named_no_run = || Stop::refused(format!("{by} names no run record"));
+    match store.show(&by.id) {
+        Ok(record) if record.is_run() => Ok(record),
+        Ok(_) | Err(StoreError::Refused(_)) => Err(named_no_run()),
+        // A read never answers `Moved` or `Usage`, which only a write does.
+        Err(StoreError::Unreadable(why) | StoreError::Moved(why) | StoreError::Usage(why)) => {
+            Err(Stop::could_not_tell(format!(
+                "the store could not say whether `{}` is a run's record: {why} — a run's landing \
+                 acts as the reviewer, and this is where its record is read",
+                by.id
+            )))
+        }
+    }
+}
+
 /// The store's own word for the record item's type.
 pub const RECORD_TYPE: &str = "task";
 

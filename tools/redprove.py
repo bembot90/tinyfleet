@@ -424,7 +424,7 @@ MUTATIONS = [
 
     # ------------------------------------------------------- the landing lane
     ("R15  land takes the lane before it touches the trunk",
-     "core/src/item/land.rs",
+     "core/src/item/land/mod.rs",
      "    let _lane = lane::take(\n        out,\n        wiring.progress,\n"
      "        &lane::directory(\n            landing.machine_dir,\n"
      "            &wiring.project.guards,\n            &wiring.project.name,\n"
@@ -434,7 +434,7 @@ MUTATIONS = [
      "a_landing_waits_on_a_held_lane_and_lands_after_it_is_released"),
 
     ("R18  a red gate is rerun once before it refuses",
-     "core/src/item/land.rs",
+     "core/src/item/land/suite.rs",
      "    if first.green() {\n        return Ok(vec![first]);\n    }",
      "    if !first.green() {\n        return Ok(vec![first]);\n    }",
      ["-p", "fleet-core", "--test", "land"],
