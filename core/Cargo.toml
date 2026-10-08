@@ -25,9 +25,9 @@ name = "fleet-store-stub"
 path = "src/bin/store_stub.rs"
 required-features = ["test-support"]
 
-# Eight crates: the same three the controller carries, serde_path_to_error,
-# schemars, regex-lite and sha2, all at the workspace's versions, and uuid,
-# pinned here. This crate depends on no other member of the workspace, and on
+# Nine crates: the same three the controller carries, serde_path_to_error,
+# schemars, regex-lite and sha2, all at the workspace's versions, and uuid and
+# libc, pinned here. This crate depends on no other member of the workspace, and on
 # the controller least of all: the boundary between pack-and-project work and
 # the process table is kept in the type system rather than in discipline, and a
 # test in the cli crate refuses the edge.
@@ -50,6 +50,13 @@ required-features = ["test-support"]
 # and std. The serde feature is not taken: a SeatId serializes through its own
 # string form.
 #
+# libc: the bounded runner observes a child's exit without reaping it (waitid
+# with WNOWAIT), so the group can be killed while the exited leader still holds
+# its pid. Its flag values and siginfo_t differ between the two targets, which
+# is why it is the crate's declaration and not one written here; the crate is
+# already in this crate's build through uuid. Default features off;
+# exact-pinned to the release Cargo.lock carried when it was named.
+#
 # regex-lite: the validator the suites and `fleet agent check` hold a
 # contract's instances to (schema::check) checks a `pattern` with it — in the
 # shipped binary too, which holds every answer an adapter gives the check to
@@ -65,6 +72,7 @@ serde_json.workspace = true
 serde_path_to_error.workspace = true
 toml.workspace = true
 uuid = { version = "=1.23.3", default-features = false, features = ["std", "v7"] }
+libc = { version = "=0.2.189", default-features = false }
 regex-lite.workspace = true
 sha2.workspace = true
 

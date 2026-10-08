@@ -6,10 +6,10 @@
 //! core depends on no other member of the workspace. No other module passes
 //! them on: the controller's callers import these names from here.
 
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 // `killpg` is POSIX and identical on both targets, so it is declared once here
@@ -118,8 +118,12 @@ fn spawn_in_group(cmd: &mut Command, stdin: Stdio) -> Result<Child, String> {
     })
 }
 
-/// Wait for the child, or kill its whole group at the deadline. `None` is the
-/// deadline's answer, with the child already reaped.
+/// Wait for the child to exit, or kill its whole group at the deadline.
+/// `Ok(true)` is an exit that is OBSERVED AND NOT REAPED: the child is a zombie
+/// holding its pid, so a kill of its group still names that group, and the
+/// caller reaps it with `Child::wait` when nothing more is sent to the group.
+/// `Ok(false)` is the deadline's answer, with the group killed and the child
+/// already reaped.
 ///
 /// The reap belongs to the deadline branch: a killed child that is never waited
 /// on is a zombie per outrun call. It costs this branch nothing it would have to
@@ -133,15 +137,11 @@ fn spawn_in_group(cmd: &mut Command, stdin: Stdio) -> Result<Child, String> {
 /// the group, so a group left alive there would be one no deadline reaches,
 /// and its drains parked on its pipes with it. Neither the deadline nor an
 /// error leaves a live group behind it.
-fn wait_or_kill(
-    child: &mut Child,
-    group: u32,
-    deadline: Instant,
-) -> Result<Option<ExitStatus>, String> {
+fn wait_or_kill(child: &mut Child, group: u32, deadline: Instant) -> Result<bool, String> {
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(Some(status)),
-            Ok(None) => {}
+        match exited(child) {
+            Ok(true) => return Ok(true),
+            Ok(false) => {}
             Err(e) => {
                 kill_process_group(group);
                 let _ = child.wait();
@@ -151,10 +151,40 @@ fn wait_or_kill(
         if Instant::now() >= deadline {
             kill_process_group(group);
             let _ = child.wait();
-            return Ok(None);
+            return Ok(false);
         }
         std::thread::sleep(WAIT_SLICE);
     }
+}
+
+/// Whether the child has exited, read WITHOUT reaping it: an exited child
+/// stays a zombie holding its pid — and so its group id — until `Child::wait`
+/// collects it. `WNOHANG` makes this a poll.
+fn exited(child: &Child) -> io::Result<bool> {
+    // Zeroed, because with WNOHANG a child that has not changed state leaves
+    // the structure unwritten on some systems; a zero si_pid is "not yet".
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is a valid siginfo_t the call writes into, and the pid
+    // is this process's own unreaped child.
+    let answered = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            child.id(),
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if answered == -1 {
+        let error = io::Error::last_os_error();
+        return if error.kind() == io::ErrorKind::Interrupted {
+            Ok(false)
+        } else {
+            Err(error)
+        };
+    }
+    // SAFETY: the call succeeded, so si_pid is the field it wrote (or the zero
+    // above).
+    Ok(unsafe { info.si_pid() } != 0)
 }
 
 /// Run a command with a deadline, draining both pipes from their own threads so
@@ -245,33 +275,34 @@ fn collected(mut cmd: Command, feed: Option<Vec<u8>>, timeout: Duration) -> Resu
         let _ = tx.send((Stream::Err, buf));
     });
     let deadline = Instant::now() + timeout;
-    let Some(status) = wait_or_kill(&mut child, group, deadline)? else {
+    let exited = wait_or_kill(&mut child, group, deadline)?;
+    if !exited {
         // The grace collects the drains the kill just released, so their
         // threads and pipe ends go back on the ordinary path. A drain still
         // held by something outside the group is left parked: that pair is
         // the price, and waiting for it is the deadline not being one.
         let _ = drained_by(&rx, Instant::now() + DRAIN_GRACE);
         return Err(deadline_cause(timeout));
-    };
+    }
     // The child has exited, so nothing here is waiting for an answer any more:
     // the bytes are written and what is outstanding is the handover. A deadline
     // already spent — the wait sleeps between reads, so an exit inside the
     // deadline is seen after it — would hand the drains a zero window and
     // publish a listing that answered as Unknown naming that deadline.
     let handover = deadline.max(Instant::now() + DRAIN_GRACE);
-    // The kill below names the group by a pid the reap above has already given
-    // back, so the OS is free to hand it to an unrelated process from that
-    // instant. Two outcomes and only one is benign: an empty group has nothing
-    // to signal, and a group that took the pid inside that window is SIGKILLed
-    // instead. It is kept at that price because the alternative is a drain
-    // thread and its pipe end parked for the life of every in-group descendant
-    // that outlives its listing, and closing the window needs a wait that
-    // observes without reaping, which `try_wait` is not.
+    // The child has exited but is not reaped, so its pid — the group's id — is
+    // still its own: the kill below can reach only the group the child led, and
+    // never one that took the pid after a reap. The reap waits until nothing
+    // more is sent to the group.
     let Some((stdout, stderr)) = drained_by(&rx, handover) else {
         kill_process_group(group);
+        let _ = child.wait();
         let _ = drained_by(&rx, Instant::now() + DRAIN_GRACE);
         return Err(deadline_cause(timeout));
     };
+    let status = child
+        .wait()
+        .map_err(|e| format!("could not wait on the child: {e}"))?;
     Ok(Output {
         status,
         stdout,
@@ -302,13 +333,16 @@ pub fn run_bounded_to_file(
     let mut child = spawn_in_group(&mut cmd, Stdio::null())?;
     let group = child.id();
     let deadline = Instant::now() + timeout;
-    match wait_or_kill(&mut child, group, deadline)? {
-        Some(status) => Ok(Exit {
-            ok: status.success(),
-            code: status.code(),
-        }),
-        None => Err(deadline_cause(timeout)),
+    if !wait_or_kill(&mut child, group, deadline)? {
+        return Err(deadline_cause(timeout));
     }
+    let status = child
+        .wait()
+        .map_err(|e| format!("could not wait on the child: {e}"))?;
+    Ok(Exit {
+        ok: status.success(),
+        code: status.code(),
+    })
 }
 
 /// Both drained buffers, or `None` when the deadline passed with one still
@@ -438,6 +472,94 @@ mod tests {
         assert!(run.status.success(), "cat exited 0");
         assert_eq!(run.stdout.len(), input.len(), "every byte fed came back");
         assert!(run.stdout == input, "and in the order it was fed");
+    }
+
+    /// An exit is OBSERVED and not reaped: after `exited` answers yes the child
+    /// is still a zombie holding its pid, a second look answers the same, and
+    /// only `Child::wait` collects it — with the code the child exited with.
+    /// This is what lets the group kill after an exit name the child's group
+    /// and no other: a poll that reaped would give the pid back first.
+    #[test]
+    fn an_exit_is_observed_without_being_reaped() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "exit 7"])
+            .spawn()
+            .expect("a child spawns");
+        let given_up = Instant::now() + Duration::from_secs(5);
+        loop {
+            if exited(&child).expect("the poll answers") {
+                break;
+            }
+            assert!(
+                Instant::now() < given_up,
+                "the child exits within five seconds"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let stat = Command::new("/bin/ps")
+            .args(["-o", "stat=", "-p", &child.id().to_string()])
+            .output()
+            .expect("ps runs");
+        let stat = String::from_utf8_lossy(&stat.stdout);
+        assert!(
+            stat.trim_start().starts_with('Z'),
+            "the exited child is a zombie still holding its pid: {stat:?}"
+        );
+        assert!(
+            exited(&child).expect("the second poll answers"),
+            "a second look still answers exited: the first one reaped nothing"
+        );
+        let status = child.wait().expect("the zombie is reaped");
+        assert_eq!(status.code(), Some(7), "the reap carries the child's code");
+    }
+
+    /// The kill after an exit is kept: a descendant that holds the inherited
+    /// pipe past the handover dies with the group, and the call answers the
+    /// deadline. No other arm reaches that path —
+    /// `a_listing_that_answered_is_read_when_a_descendant_outlives_its_deadline`
+    /// holds the pipe for 100 ms, inside the grace. This one passed before the
+    /// exit was observed without a reap too; it pins that the reordering (kill,
+    /// then reap) kept the kill.
+    #[test]
+    fn a_descendant_holding_the_pipe_past_the_handover_dies_with_the_group() {
+        let dir = std::env::temp_dir().join(format!("fleet-post-exit-kill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the temp dir is made");
+        let pid_file = dir.join("pid");
+
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args([
+            "-c",
+            &format!(
+                r#"sh -c "echo \$\$ > {}; exec sleep 5" & echo answered"#,
+                pid_file.display()
+            ),
+        ]);
+        let started = Instant::now();
+        let answer = run_bounded(cmd, Duration::from_millis(60));
+        let took = started.elapsed();
+        let cause = answer.expect_err("a pipe held past the handover is no answer");
+        assert!(cause.contains("did not answer within 60ms"), "{cause}");
+        assert!(took < Duration::from_secs(2), "answered in {took:?}");
+
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .expect("the descendant wrote its pid")
+            .trim()
+            .parse()
+            .expect("the pid is a number");
+        let lives = || unsafe { libc::kill(pid, 0) } == 0;
+        // SIGKILL lands asynchronously and the orphan is reaped by init, so its
+        // end is polled for rather than read at once.
+        let gone_by = Instant::now() + Duration::from_secs(1);
+        while lives() && Instant::now() < gone_by {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let gone = !lives();
+        if !gone {
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(gone, "the descendant died with the group");
     }
 
     /// The cause names the deadline it ran on. Under a sub-second one a whole-
