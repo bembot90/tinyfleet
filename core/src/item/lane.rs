@@ -60,10 +60,6 @@ const TICK: Duration = Duration::from_millis(200);
 /// A relative value is read against the MACHINE directory and not the caller's
 /// cwd, because the fleet's own policy file is what writes it and a landing is
 /// run from wherever a reviewer stands.
-///
-/// RESOLVING THE LANE IS WHAT ADOPTS ONE CUT UNDER THE PROJECT'S BARE NAME, so
-/// that a caller cannot reach the path without taking the older directory with
-/// it and leaving a machine's build cache stranded beside a freshly cut lane.
 pub fn directory(machine_dir: &Path, guards: &toml::Table, project: &str) -> Result<PathBuf, Stop> {
     let named = policy::read("core.flight", "lanes", guards)
         .map_err(|unlisted| Stop::could_not_tell(unlisted.to_string()))?;
@@ -90,81 +86,7 @@ pub fn directory(machine_dir: &Path, guards: &toml::Table, project: &str) -> Res
             }
         }
     };
-    let lane = lanes.join(format!("{LANE_PREFIX}{project}"));
-    adopt(&lane, &lanes.join(project))?;
-    Ok(lane)
-}
-
-/// A lane cut under the project's bare name, taken over under the prefixed one.
-/// A machine that already has one keeps it, with its build cache and its
-/// registration, rather than cutting a second beside it.
-///
-/// IT RUNS ONLY WHERE THE PREFIXED NAME IS ABSENT, which makes it a migration
-/// that happens once per machine and a pair of stats on every landing after it.
-///
-/// THE LOCK MOVES FIRST, and only onto a name no lock file holds yet: a landing
-/// already queued under the old name holds that file's inode, and carrying the
-/// name onto it is what keeps the two landings serialised across the migration
-/// instead of letting them run at once on one worktree.
-///
-/// A WORKTREE MOVES THROUGH GIT AND NOT BY RENAME. The primary records the
-/// lane's path, and a directory moved behind git's back is one the next
-/// `git worktree prune` unregisters. A move that will not run leaves the lane
-/// where it is and refuses the landing, because the two recoveries a person has
-/// from here both start with the lane still being there.
-fn adopt(lane: &Path, old: &Path) -> Result<(), Stop> {
-    if lane.exists() || !old.is_dir() {
-        return Ok(());
-    }
-    let (from, to) = (lock_path(old), lock_path(lane));
-    if from.exists() && !to.exists() {
-        std::fs::rename(&from, &to).map_err(|e| {
-            Stop::could_not_tell(format!(
-                "the lane's lock {} could not be carried to {}: {e} — the lane at {} is \
-                 where it was",
-                from.display(),
-                to.display(),
-                old.display()
-            ))
-        })?;
-    }
-    if !old.join(".git").exists() {
-        return std::fs::rename(old, lane).map_err(|e| {
-            Stop::could_not_tell(format!(
-                "the lane at {} could not be taken over as {}: {e}",
-                old.display(),
-                lane.display()
-            ))
-        });
-    }
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(old)
-        .args(["worktree", "move"])
-        .arg(old)
-        .arg(lane)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .map_err(|e| {
-            Stop::could_not_tell(format!(
-                "`git worktree move` could not be run to take over the lane at {}: {e}",
-                old.display()
-            ))
-        })?;
-    if !out.status.success() {
-        return Err(Stop::could_not_tell(format!(
-            "the lane at {} could not be taken over as {} {}: {} — it is left where it is, and a \
-             landing does not cut a second lane beside it",
-            old.display(),
-            lane.display(),
-            match out.status.code() {
-                Some(code) => format!("(`git worktree move` exited {code})"),
-                None => String::from("(`git worktree move` was killed by a signal)"),
-            },
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    Ok(())
+    Ok(lanes.join(format!("{LANE_PREFIX}{project}")))
 }
 
 /// The lock file that guards a lane, derived from the lane's own path by

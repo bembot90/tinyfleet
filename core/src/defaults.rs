@@ -41,18 +41,6 @@ pub const DIR: &str = "defaults";
 /// The name the resolver's bottom layer carries, which a refusal calls it by.
 pub const LAYER: &str = "defaults";
 
-/// The source a PREVIOUS binary pinned the bundled core pack under, and the
-/// name it installed it as.
-///
-/// They are here because this module is what retires them: a machine that ran
-/// that binary carries `packs/core` and a line keyed on this source. The
-/// resolver holds no special place for any installed name, so such a copy
-/// layers as an ordinary pack ABOVE the defaults and answers every template out
-/// of its own tree, and `fleet pack remove core` cannot take it out because the
-/// lock is keyed by source.
-pub const RETIRED_SOURCE: &str = "bundled:core";
-pub const RETIRED_NAME: &str = "core";
-
 /// What the install did to the copy on disk. The caller says which in one line:
 /// a no-op, a first install and a replacement read the same otherwise, and a
 /// replacement nobody could see happen is the one worth naming.
@@ -68,28 +56,12 @@ pub enum Landed {
     Already,
 }
 
-/// What became of the bundled core pack a previous binary installed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Retired {
-    /// The copy hashed to the line that pinned it, so it was this binary's
-    /// predecessor's own: the directory and the line are both gone.
-    Removed(PathBuf),
-    /// A copy no hash accounts for — one a person edited, or one pinned before
-    /// the tree key existed. BOTH the directory and the line are left where
-    /// they stand: dropping the line alone would leave a pack nothing accounts
-    /// for, still layering above the defaults, with no record naming it.
-    LeftStanding { root: PathBuf, why: String },
-}
-
 /// What an install left behind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Installed {
     pub root: PathBuf,
     pub entry: lock::Entry,
     pub landed: Landed,
-    /// `None` where no line named the bundled core pack, which is every machine
-    /// that has only ever run a binary carrying these defaults.
-    pub retired: Option<Retired>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,7 +120,6 @@ impl fmt::Display for Refusal {
 /// that is the tree hash beside it.
 pub fn install(
     root: &Path,
-    packs_dir: &Path,
     lock_path: &Path,
     version: &str,
     fetched: &str,
@@ -158,15 +129,6 @@ pub fn install(
     // whatever this binary carries.
     let lines = lock::read(lock_path).map_err(|e| Refusal::Lock(e.to_string()))?;
     let pinned = lines.iter().find(|e| e.source == SOURCE).cloned();
-
-    // THE PREDECESSOR'S PACK GOES FIRST, before this binary's own set is
-    // written: left standing it layers ABOVE the defaults, as any installed pack
-    // does, and answers every template out of its own tree.
-    let retired = retire_bundled_core(
-        packs_dir,
-        lock_path,
-        lines.iter().find(|e| e.source == RETIRED_SOURCE),
-    )?;
 
     let standing = root.exists();
     if standing && pinned.is_none() {
@@ -211,7 +173,6 @@ pub fn install(
                 root: root.to_path_buf(),
                 entry,
                 landed: Landed::Already,
-                retired,
             });
         }
     }
@@ -235,60 +196,7 @@ pub fn install(
         } else {
             Landed::Fresh
         },
-        retired,
     })
-}
-
-/// The bundled core pack a previous binary installed, taken out with its line.
-///
-/// ONLY THIS BINARY'S PREDECESSOR'S OWN COPY IS REMOVED — one whose files still
-/// hash to the line that pinned them — which is the same reading the defaults'
-/// own refresh takes of the directory it would replace. A copy a person edited,
-/// or one pinned before the tree key existed, is named and left where it stands
-/// WITH its line, because a line dropped without its directory leaves a pack no
-/// record accounts for.
-///
-/// The directory goes before the line, as `remove` does: what a failure between
-/// them leaves is a line with no directory, which the next run clears.
-fn retire_bundled_core(
-    packs_dir: &Path,
-    lock_path: &Path,
-    line: Option<&lock::Entry>,
-) -> Result<Option<Retired>, Refusal> {
-    let Some(line) = line else {
-        return Ok(None);
-    };
-    let name = line.name.as_deref().unwrap_or(RETIRED_NAME);
-    let root = packs_dir.join(name);
-
-    if root.is_dir() {
-        let Some(pinned) = line.tree.as_deref() else {
-            return Ok(Some(Retired::LeftStanding {
-                root,
-                why: "its line carries no tree hash, so it cannot be told from a copy \
-                      somebody edited"
-                    .to_string(),
-            }));
-        };
-        let standing = tree_hash(&root).map_err(Refusal::Unreadable)?;
-        if standing != pinned {
-            return Ok(Some(Retired::LeftStanding {
-                root,
-                why: "it was edited since the line that pinned it was written".to_string(),
-            }));
-        }
-        std::fs::remove_dir_all(&root)
-            .map_err(|e| Refusal::Write(format!("{}: {e}", root.display())))?;
-    }
-
-    lock::remove(lock_path, RETIRED_SOURCE).map_err(|e| Refusal::Lock(e.to_string()))?;
-    match lock::read(lock_path) {
-        Ok(lines) if lines.iter().any(|e| e.source == RETIRED_SOURCE) => {
-            Err(Refusal::NotPinned(lock_path.display().to_string()))
-        }
-        Ok(_) => Ok(Some(Retired::Removed(root))),
-        Err(e) => Err(Refusal::Lock(e.to_string())),
-    }
 }
 
 /// The embedded set into place, as a whole or not at all: a scratch directory
@@ -494,9 +402,8 @@ mod tests {
     fn the_embedded_set_lands_whole_and_is_pinned_with_the_binarys_own_version() {
         let dir = scratch("lands");
         let root = dir.join(DIR);
-        let packs = dir.join("packs");
         let lock_path = dir.join(lock::LOCK);
-        let done = install(&root, &packs, &lock_path, VERSION, "2026-09-12").expect("it lands");
+        let done = install(&root, &lock_path, VERSION, "2026-09-12").expect("it lands");
         assert_eq!(done.landed, Landed::Fresh);
         assert_eq!(done.root, root);
         assert_eq!(done.entry.source, SOURCE);
@@ -525,8 +432,7 @@ mod tests {
 
         // A second install of the SAME SET leaves it standing and writes
         // nothing.
-        let again =
-            install(&root, &packs, &lock_path, VERSION, "2026-09-13").expect("the same set stands");
+        let again = install(&root, &lock_path, VERSION, "2026-09-13").expect("the same set stands");
         assert_eq!(again.landed, Landed::Already);
         assert_eq!(
             again.entry.fetched, "2026-09-12",
@@ -545,7 +451,6 @@ mod tests {
     fn a_set_that_moved_replaces_the_copy_and_restamps_its_line() {
         let dir = scratch("refresh");
         let root = dir.join(DIR);
-        let packs = dir.join("packs");
         let lock_path = dir.join(lock::LOCK);
 
         // The older set: the embedded one with its last file withheld, pinned by
@@ -572,8 +477,7 @@ mod tests {
         )
         .expect("the older line is pinned");
 
-        let again =
-            install(&root, &packs, &lock_path, VERSION, "2026-09-19").expect("the moved set lands");
+        let again = install(&root, &lock_path, VERSION, "2026-09-19").expect("the moved set lands");
         assert_eq!(
             again.landed,
             Landed::Refreshed,
@@ -605,8 +509,8 @@ mod tests {
         assert_eq!(leftovers(&dir, DIR), Vec::<String>::new());
 
         // And the next call, with nothing moved, writes nothing.
-        let third = install(&root, &packs, &lock_path, VERSION, "2026-09-20")
-            .expect("the standing set stands");
+        let third =
+            install(&root, &lock_path, VERSION, "2026-09-20").expect("the standing set stands");
         assert_eq!(third.landed, Landed::Already);
         assert_eq!(line(&lock_path).fetched, "2026-09-19");
 
@@ -619,13 +523,12 @@ mod tests {
     fn a_defaults_directory_with_no_line_behind_it_is_refused_as_somebody_elses() {
         let dir = scratch("unrecorded");
         let root = dir.join(DIR);
-        let packs = dir.join("packs");
         std::fs::create_dir_all(&root).unwrap();
         let theirs = root.join("assets/rules.md");
         std::fs::create_dir_all(theirs.parent().unwrap()).unwrap();
         std::fs::write(&theirs, "# somebody's own\n").unwrap();
 
-        let refusal = install(&root, &packs, &dir.join(lock::LOCK), VERSION, "x")
+        let refusal = install(&root, &dir.join(lock::LOCK), VERSION, "x")
             .expect_err("an unrecorded directory refuses");
         assert!(refusal.to_string().contains("an unrecorded"), "{refusal}");
         assert!(
@@ -651,9 +554,8 @@ mod tests {
     fn a_copy_edited_since_it_was_pinned_is_refused_rather_than_refreshed() {
         let dir = scratch("edited");
         let root = dir.join(DIR);
-        let packs = dir.join("packs");
         let lock_path = dir.join(lock::LOCK);
-        install(&root, &packs, &lock_path, VERSION, "2026-09-12").expect("it lands");
+        install(&root, &lock_path, VERSION, "2026-09-12").expect("it lands");
 
         let theirs = root.join("assets/rules.md");
         let edited = format!(
@@ -662,8 +564,8 @@ mod tests {
         );
         std::fs::write(&theirs, &edited).unwrap();
 
-        let refusal = install(&root, &packs, &lock_path, VERSION, "2026-09-19")
-            .expect_err("an edited copy refuses");
+        let refusal =
+            install(&root, &lock_path, VERSION, "2026-09-19").expect_err("an edited copy refuses");
         assert!(
             refusal.to_string().contains("edited since"),
             "the refusal does not say what it read: {refusal}"
@@ -684,12 +586,10 @@ mod tests {
     fn the_same_set_under_another_version_is_already_installed() {
         let dir = scratch("versions");
         let root = dir.join(DIR);
-        let packs = dir.join("packs");
         let lock_path = dir.join(lock::LOCK);
-        install(&root, &packs, &lock_path, "1.0.0", "2026-09-12").expect("it lands");
+        install(&root, &lock_path, "1.0.0", "2026-09-12").expect("it lands");
 
-        let again =
-            install(&root, &packs, &lock_path, "2.0.0", "2026-09-19").expect("the same set stands");
+        let again = install(&root, &lock_path, "2.0.0", "2026-09-19").expect("the same set stands");
         assert_eq!(again.landed, Landed::Already);
         assert_eq!(again.entry.version, "1.0.0");
         assert_eq!(line(&lock_path).version, "1.0.0");
@@ -705,9 +605,8 @@ mod tests {
     fn a_line_written_before_the_tree_key_gains_the_hash_and_keeps_its_stamp() {
         let dir = scratch("migrate");
         let root = dir.join(DIR);
-        let packs = dir.join("packs");
         let lock_path = dir.join(lock::LOCK);
-        install(&root, &packs, &lock_path, "1.0.0", "2026-09-12").expect("it lands");
+        install(&root, &lock_path, "1.0.0", "2026-09-12").expect("it lands");
 
         // The lock as it was written before the key existed.
         let before = lock::Entry {
@@ -718,8 +617,8 @@ mod tests {
             .expect("the pre-key lock is written");
         assert_eq!(line(&lock_path).tree, None);
 
-        let again = install(&root, &packs, &lock_path, VERSION, "2026-09-19")
-            .expect("the standing set stands");
+        let again =
+            install(&root, &lock_path, VERSION, "2026-09-19").expect("the standing set stands");
         assert_eq!(again.landed, Landed::Already);
         let pinned = line(&lock_path);
         assert_eq!(
@@ -785,9 +684,8 @@ mod tests {
     fn os_litter_in_the_installed_set_leaves_its_hash_and_its_pin_standing() {
         let dir = scratch("litter");
         let root = dir.join(DIR);
-        let packs = dir.join("packs");
         let lock_path = dir.join(lock::LOCK);
-        install(&root, &packs, &lock_path, VERSION, "2026-09-12").expect("it lands");
+        install(&root, &lock_path, VERSION, "2026-09-12").expect("it lands");
 
         for sub in ["", "assets/", "doctor/"] {
             for name in crate::os_litter::OS_LITTER {
@@ -805,7 +703,7 @@ mod tests {
             embedded_hash(),
             "the litter is not part of the set, so it moves no hash"
         );
-        let again = install(&root, &packs, &lock_path, VERSION, "2026-09-13")
+        let again = install(&root, &lock_path, VERSION, "2026-09-13")
             .expect("a littered copy is not an edited one");
         assert_eq!(again.landed, Landed::Already);
         assert_eq!(again.entry, line(&lock_path), "the pin stands as written");
@@ -815,7 +713,7 @@ mod tests {
         std::fs::write(root.join("assets/.DS_Store.bak"), "x\n").unwrap();
         assert!(
             matches!(
-                install(&root, &packs, &lock_path, VERSION, "2026-09-14"),
+                install(&root, &lock_path, VERSION, "2026-09-14"),
                 Err(Refusal::Shadowed { .. })
             ),
             "a file somebody added is still refused"
@@ -882,120 +780,5 @@ mod tests {
             Vec::<&str>::new(),
             "this binary carries a default no row lets a pack replace"
         );
-    }
-
-    /// A machine the PREVIOUS binary left behind: `packs/core` beside a
-    /// `bundled:core` line pinned at that tree's own hash. The install takes it
-    /// out with its line, because the resolver holds no place for it any more
-    /// and a copy left standing layers above the defaults and answers every
-    /// template out of the stale tree.
-    fn a_bundled_core_pack(packs: &Path, lock_path: &Path, body: &str) -> PathBuf {
-        let root = packs.join(RETIRED_NAME);
-        std::fs::create_dir_all(root.join("assets")).unwrap();
-        std::fs::write(root.join("pack.toml"), "[pack]\nname = \"core\"\n").unwrap();
-        std::fs::write(root.join("assets/rules.md"), body).unwrap();
-        pin(
-            lock_path,
-            &lock::Entry {
-                source: RETIRED_SOURCE.to_string(),
-                name: Some(RETIRED_NAME.to_string()),
-                version: "0.1.0".to_string(),
-                commit: "bundled".to_string(),
-                fetched: "2026-09-01".to_string(),
-                tree: Some(tree_hash(&root).expect("the seeded pack hashes")),
-            },
-        )
-        .expect("the bundled line is pinned");
-        root
-    }
-
-    #[test]
-    fn the_bundled_core_pack_a_previous_binary_left_is_retired_with_its_line() {
-        let dir = scratch("retire");
-        let root = dir.join(DIR);
-        let packs = dir.join("packs");
-        let lock_path = dir.join(lock::LOCK);
-        let theirs = a_bundled_core_pack(&packs, &lock_path, "the stale rules\n");
-
-        let done = install(&root, &packs, &lock_path, VERSION, "2026-09-22").expect("it lands");
-
-        assert_eq!(done.retired, Some(Retired::Removed(theirs.clone())));
-        assert!(!theirs.exists(), "the pack is still on disk");
-        let lines = lock::read(&lock_path).expect("the lock reads");
-        assert!(
-            !lines.iter().any(|e| e.source == RETIRED_SOURCE),
-            "the line is still on the lock: {lines:?}"
-        );
-        assert!(
-            lines.iter().any(|e| e.source == SOURCE),
-            "and the defaults' own line is there: {lines:?}"
-        );
-
-        // The control on "it was the retirement and not the fixture": a second
-        // install over the same machine finds no line and retires nothing.
-        let again = install(&root, &packs, &lock_path, VERSION, "2026-09-23")
-            .expect("the standing set stands");
-        assert_eq!(again.retired, None);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The other half: a copy nothing accounts for is NAMED and left where it
-    /// stands, directory and line both, because a line dropped without its
-    /// directory leaves a pack no record accounts for.
-    #[test]
-    fn a_bundled_core_pack_edited_since_it_was_pinned_is_named_and_left_standing() {
-        let dir = scratch("retire-edited");
-        let root = dir.join(DIR);
-        let packs = dir.join("packs");
-        let lock_path = dir.join(lock::LOCK);
-        let theirs = a_bundled_core_pack(&packs, &lock_path, "the rules as pinned\n");
-        std::fs::write(theirs.join("assets/rules.md"), "a line a person put here\n").unwrap();
-
-        let done = install(&root, &packs, &lock_path, VERSION, "2026-09-22").expect("it lands");
-
-        match done.retired {
-            Some(Retired::LeftStanding { root: named, why }) => {
-                assert_eq!(named, theirs);
-                assert!(why.contains("edited since"), "{why}");
-            }
-            other => panic!("an edited copy was not left standing: {other:?}"),
-        }
-        assert_eq!(
-            std::fs::read_to_string(theirs.join("assets/rules.md")).unwrap(),
-            "a line a person put here\n",
-            "their copy was removed"
-        );
-        assert!(
-            lock::read(&lock_path)
-                .expect("the lock reads")
-                .iter()
-                .any(|e| e.source == RETIRED_SOURCE),
-            "the line went without the directory"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A line whose directory a person already deleted: the line goes, and
-    /// nothing is removed that is not there.
-    #[test]
-    fn a_bundled_core_line_whose_directory_is_gone_loses_the_line_alone() {
-        let dir = scratch("retire-gone");
-        let root = dir.join(DIR);
-        let packs = dir.join("packs");
-        let lock_path = dir.join(lock::LOCK);
-        let theirs = a_bundled_core_pack(&packs, &lock_path, "the stale rules\n");
-        std::fs::remove_dir_all(&theirs).unwrap();
-
-        let done = install(&root, &packs, &lock_path, VERSION, "2026-09-22").expect("it lands");
-
-        assert_eq!(done.retired, Some(Retired::Removed(theirs)));
-        assert!(!lock::read(&lock_path)
-            .expect("the lock reads")
-            .iter()
-            .any(|e| e.source == RETIRED_SOURCE));
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

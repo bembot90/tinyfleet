@@ -448,7 +448,6 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
         &defaults_line(&defaults),
         Some(&defaults.root.display().to_string()),
     );
-    say_retired(ui, &defaults);
     say_creator(ui, &creator, &machine_dir);
     ui.status(
         Stream::Err,
@@ -860,41 +859,11 @@ fn registered_fleet(machine_dir: &Path, named: Option<&Path>) -> Result<MachineF
 fn defaults_into(machine_dir: &Path) -> Result<defaults::Installed, Stop> {
     defaults::install(
         &machine_dir.join(defaults::DIR),
-        &machine_dir.join("packs"),
         &machine_dir.join(fleet_core::lock::LOCK),
         env!("CARGO_PKG_VERSION"),
         &clock::now_stamp(),
     )
     .map_err(|refusal| Stop::refused(refusal.to_string()))
-}
-
-/// What became of the bundled core pack a previous binary installed, where one
-/// stood. A second line rather than a clause on the first, because it is a
-/// REMOVAL a person would want to have been told about, and the machine it
-/// happens on is every machine that ran that binary.
-fn retired_line(defaults: &defaults::Installed) -> Option<(Tone, String, String)> {
-    match defaults.retired.as_ref()? {
-        defaults::Retired::Removed(root) => Some((
-            Tone::Flat,
-            "retired the bundled core pack — its templates are the defaults now".to_string(),
-            root.display().to_string(),
-        )),
-        defaults::Retired::LeftStanding { root, why } => Some((
-            Tone::Bad,
-            format!(
-                "the bundled core pack is not this binary's to remove — {why}; it layers \
-                 ABOVE the defaults until you take it out"
-            ),
-            root.display().to_string(),
-        )),
-    }
-}
-
-/// The retirement line beside the defaults line, on the one stream both use.
-fn say_retired(ui: &Ui, defaults: &defaults::Installed) {
-    if let Some((tone, said, root)) = retired_line(defaults) {
-        ui.status(Stream::Err, tone, "defaults:", &said, Some(&root));
-    }
 }
 
 /// The one line that says which of the three happened, because a replacement a
@@ -1021,7 +990,6 @@ fn start(ui: &Ui, args: &StartArgs) -> Result<Exit, Stop> {
                 &defaults_line(&defaults),
                 Some(&defaults.root.display().to_string()),
             );
-            say_retired(ui, &defaults);
         }
         Err(stop) => ui.status(
             Stream::Err,
