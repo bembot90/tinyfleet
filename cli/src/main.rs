@@ -32,6 +32,7 @@ use anyhow::{Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use exit::Exit;
 use fleet_controller::events;
+use fleet_controller::project::{walk_up_config, Found};
 use fleet_controller::runs::Runs as RunsSeam;
 use fleet_controller::{clock, config, platform, run, seat};
 use fleet_core::guard::hook::HookMap;
@@ -1290,7 +1291,7 @@ fn class_check(ui: &Ui, class: Class) -> bool {
 }
 
 // A DECLARED PROJECT FIRST, then the embedded file, then neither. The walk is
-// the item verbs' (`fleet_controller::project::resolve_at`), and the two answers differ in
+// the item verbs' (`fleet_controller::project::walk_up_config`), and the two answers differ in
 // where the guards come from: an embedded fleet keeps its policy beside the
 // work, so its own fleet.toml carries both the switches and the target; a
 // standalone project declares only itself, so the switches are the FLEET's —
@@ -1445,10 +1446,7 @@ fn store_cli(cwd: Option<&Path>) -> Option<Option<String>> {
     let start = cwd
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())?;
-    let root = match walk_up_config(&start)? {
-        Found::Embedded(file) => file.parent()?.to_path_buf(),
-        Found::Declared(file) => file.parent()?.parent()?.to_path_buf(),
-    };
+    let root = walk_up_config(&start)?.root()?.to_path_buf();
     let policy = fleet_core::store::project_policy(&root).ok()?;
     let machine_dir = platform::machine_dir();
     let store = fleet_core::store::open(&fleet_core::store::Opening {
@@ -1464,35 +1462,6 @@ fn store_cli(cwd: Option<&Path>) -> Option<Option<String>> {
     })
     .ok()?;
     Some(store.capabilities().ok()?.cli)
-}
-
-/// What the nearest directory above the caller that says anything says it is.
-pub enum Found {
-    /// A project declaring itself to the fleet this machine runs.
-    Declared(PathBuf),
-    /// A fleet keeping its own policy beside the work.
-    Embedded(PathBuf),
-}
-
-/// The one resolution order, level by level: A DECLARED PROJECT WINS AT ITS OWN
-/// LEVEL. A directory carrying `.fleet/project.toml` is a standalone project
-/// even where a `fleet.toml` sits beside it, because the declaration is that
-/// directory's own statement about itself and the neighbour may be some other
-/// tool's file.
-pub fn walk_up_config(start: &Path) -> Option<Found> {
-    let mut here = Some(start);
-    while let Some(dir) = here {
-        let declared = dir.join(".fleet/project.toml");
-        if declared.is_file() {
-            return Some(Found::Declared(declared));
-        }
-        let embedded = dir.join("fleet.toml");
-        if embedded.is_file() {
-            return Some(Found::Embedded(embedded));
-        }
-        here = dir.parent();
-    }
-    None
 }
 
 fn read_text(path: &Path) -> String {

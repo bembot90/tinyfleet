@@ -67,9 +67,14 @@ impl Rig {
     /// The built binary, with the fleet root as its working directory — which
     /// is what the walk-up for `fleet.toml` reads.
     fn fleet(&self, args: &[&str]) -> Output {
+        self.fleet_in(&self.fleet_root(), args)
+    }
+
+    /// The built binary, as [`Rig::fleet`] runs it, from `dir` instead.
+    fn fleet_in(&self, dir: &Path, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_fleet"))
             .args(args)
-            .current_dir(self.fleet_root())
+            .current_dir(dir)
             .hermetic(&self.root.join("home"), &self.machine())
             .env_remove("FLEET_ORDERS_CLOCK")
             .output()
@@ -145,6 +150,37 @@ fn list_prints_one_row_per_routine_with_its_source_and_a_defect_row_for_a_broken
     assert!(
         !rig.fleet_root().join("beat.txt").exists(),
         "listing a routine does not fire it"
+    );
+}
+
+/// I5: a declared project's fleet is the one the machine's seat list names.
+/// Run from inside a checkout that declares itself, the walk stops at the
+/// declaration and never at a `fleet.toml` some other tool wrote beside it, so
+/// the routines listed are the machine's fleet's and not that neighbour's.
+#[test]
+fn a_routine_run_from_a_declared_project_reads_the_fleet_the_machine_names() {
+    let rig = Rig::new("declared");
+    rig.routine("beat", &ticking("beat.txt"));
+    let project = rig.root.join("project");
+    write(
+        &project.join(".fleet").join("project.toml"),
+        "[project]\nname = \"demo\"\n",
+    );
+    write(&project.join("fleet.toml"), "[tool]\nname = \"other\"\n");
+    write(
+        &project.join(ROUTINES).join("stray.toml"),
+        &ticking("stray.txt"),
+    );
+
+    let listed = rig.fleet_in(&project.join(ROUTINES), &["routine", "list"]);
+    assert_eq!(listed.status.code(), Some(0), "{}", err(&listed));
+    let body = out(&listed);
+    let rows: Vec<&str> = body.lines().collect();
+    assert_eq!(rows.len(), 1, "the machine's fleet's one routine: {body}");
+    assert!(rows[0].starts_with("beat  fleet "), "{body}");
+    assert!(
+        !rows.iter().any(|row| row.contains("stray")),
+        "the neighbour's routine is never read: {body}"
     );
 }
 

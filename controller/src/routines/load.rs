@@ -181,22 +181,22 @@ pub fn load(roots: &[Root], seats: &Directory) -> Registry {
     registry
 }
 
-/// The directory holding `fleet.toml`, resolved the way every other verb
-/// resolves it: walk up from `start` for the file, else read the machine
-/// directory's seat list for the path it names. `None` is a machine with no
-/// fleet root at all, which is exit 3 rather than a guess.
+/// The directory holding the fleet's `fleet.toml`, resolved the way every
+/// other verb resolves it: walk up from `start`
+/// ([`crate::project::walk_up_config`]), where an embedded `fleet.toml` is its
+/// own directory's fleet; a declared project's fleet, and the answer where the
+/// walk finds nothing, is the directory of the `fleet.toml` the machine
+/// directory's seat list names.
+/// `None` is a machine with no fleet root at all, which is exit 3 rather than
+/// a guess.
 pub fn fleet_root(start: Option<&Path>, machine_dir: &Path) -> Option<PathBuf> {
     let from = start
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok());
-    if let Some(from) = &from {
-        let mut here = Some(from.as_path());
-        while let Some(dir) = here {
-            if dir.join("fleet.toml").is_file() {
-                return Some(dir.to_path_buf());
-            }
-            here = dir.parent();
-        }
+    if let Some(crate::project::Found::Embedded(file)) =
+        from.as_deref().and_then(crate::project::walk_up_config)
+    {
+        return file.parent().map(Path::to_path_buf);
     }
     let config = crate::config::read(&machine_dir.join("config.json")).ok()?;
     config.fleet_toml.parent().map(Path::to_path_buf)

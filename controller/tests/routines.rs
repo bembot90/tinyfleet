@@ -1137,6 +1137,78 @@ fn every_routine_carries_the_root_it_was_loaded_from() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A scratch machine whose seat list names `<dir>/fleet/fleet.toml`: the
+/// machine directory, and the fleet root that file sits in.
+fn a_machine_naming_a_fleet(dir: &Path) -> (PathBuf, PathBuf) {
+    let machine = dir.join("machine");
+    let fleet = dir.join("fleet");
+    write(
+        &fleet.join("fleet.toml"),
+        "[controller]\npoll_seconds = 1\n",
+    );
+    write(
+        &machine.join("config.json"),
+        &serde_json::json!({
+            "fleet_toml": fleet.join("fleet.toml"),
+            "children": [],
+        })
+        .to_string(),
+    );
+    (machine, fleet)
+}
+
+/// A walk that finds an embedded `fleet.toml` answers that file's directory.
+#[test]
+fn a_fleet_root_inside_an_embedded_fleet_is_that_directory() {
+    let dir = scratch("root-embedded");
+    let (machine, _) = a_machine_naming_a_fleet(&dir);
+    let embedded = dir.join("embedded");
+    write(
+        &embedded.join("fleet.toml"),
+        "[controller]\npoll_seconds = 1\n",
+    );
+    std::fs::create_dir_all(embedded.join("orders")).unwrap();
+
+    assert_eq!(
+        load::fleet_root(Some(&embedded.join("orders")), &machine),
+        Some(embedded)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// I5: a directory declaring itself a project is the machine's fleet's, even
+/// where a `fleet.toml` some other tool wrote sits beside the declaration.
+#[test]
+fn a_fleet_root_inside_a_declared_project_is_the_fleet_the_machine_names() {
+    let dir = scratch("root-declared");
+    let (machine, fleet) = a_machine_naming_a_fleet(&dir);
+    let project = dir.join("project");
+    write(
+        &project.join(".fleet").join("project.toml"),
+        "[project]\nname = \"demo\"\n",
+    );
+    write(&project.join("fleet.toml"), "[tool]\nname = \"other\"\n");
+    std::fs::create_dir_all(project.join("orders")).unwrap();
+
+    assert_eq!(
+        load::fleet_root(Some(&project.join("orders")), &machine),
+        Some(fleet)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A walk that finds nothing falls back to the fleet the machine names.
+#[test]
+fn a_fleet_root_with_nothing_above_it_is_the_fleet_the_machine_names() {
+    let dir = scratch("root-nowhere");
+    let (machine, fleet) = a_machine_naming_a_fleet(&dir);
+    let nowhere = dir.join("nowhere");
+    std::fs::create_dir_all(&nowhere).unwrap();
+
+    assert_eq!(load::fleet_root(Some(&nowhere), &machine), Some(fleet));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Two files with one name refuse BOTH, and the defect names both paths.
 /// Picking one silently is how a duty runs from a file nobody is looking at.
 #[test]

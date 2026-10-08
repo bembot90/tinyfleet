@@ -137,6 +137,46 @@ pub fn open_store(here: &Here) -> Result<Box<dyn Store>, Stop> {
     })?)
 }
 
+/// What the nearest directory above the caller that says anything says it is.
+pub enum Found {
+    /// A project declaring itself to the fleet this machine runs.
+    Declared(PathBuf),
+    /// A fleet keeping its own policy beside the work.
+    Embedded(PathBuf),
+}
+
+impl Found {
+    /// The directory the walk stopped at: an embedded fleet's own
+    /// directory, or the directory that declares the project.
+    pub fn root(&self) -> Option<&Path> {
+        match self {
+            Found::Embedded(file) => file.parent(),
+            Found::Declared(file) => file.parent().and_then(Path::parent),
+        }
+    }
+}
+
+/// The one resolution order, level by level: A DECLARED PROJECT WINS AT ITS OWN
+/// LEVEL. A directory carrying `.fleet/project.toml` is a standalone project
+/// even where a `fleet.toml` sits beside it, because the declaration is that
+/// directory's own statement about itself and the neighbour may be some other
+/// tool's file.
+pub fn walk_up_config(start: &Path) -> Option<Found> {
+    let mut here = Some(start);
+    while let Some(dir) = here {
+        let declared = dir.join(PROJECT_TOML);
+        if declared.is_file() {
+            return Some(Found::Declared(declared));
+        }
+        let embedded = dir.join(FLEET_TOML);
+        if embedded.is_file() {
+            return Some(Found::Embedded(embedded));
+        }
+        here = dir.parent();
+    }
+    None
+}
+
 /// A DECLARED PROJECT FIRST at each level, then the embedded file: a directory
 /// carrying its own `.fleet/project.toml` is a standalone project even where a
 /// `fleet.toml` sits beside it, because the declaration is that directory's own
@@ -171,21 +211,15 @@ pub fn resolve_from(
     let cwd = cwd.to_path_buf();
     let machine = config::read(&machine_dir.join("config.json"));
 
-    let mut here = Some(cwd.as_path());
-    while let Some(dir) = here {
-        if dir.join(PROJECT_TOML).is_file() {
-            return Ok(declared_at(dir, &machine, &machine_dir, &chosen_packs_dir));
+    if let Some(found) = walk_up_config(&cwd) {
+        if let Some(dir) = found.root() {
+            return Ok(match &found {
+                Found::Declared(_) => declared_at(dir, &machine, &machine_dir, &chosen_packs_dir),
+                Found::Embedded(file) => {
+                    embedded_at(dir, file, &machine, &machine_dir, &chosen_packs_dir)
+                }
+            });
         }
-        if dir.join(FLEET_TOML).is_file() {
-            return Ok(embedded_at(
-                dir,
-                &dir.join(FLEET_TOML),
-                &machine,
-                &machine_dir,
-                &chosen_packs_dir,
-            ));
-        }
-        here = dir.parent();
     }
 
     // THE WALK IS NOT THE ONLY ANSWER, and a directory it fails on is not a

@@ -47,10 +47,12 @@ pub fn command() -> Exit {
     // about one file: an embedded fleet's own, and — for a declared project,
     // which wins at its own level — the FLEET's, named by the machine
     // directory.
-    let found = crate::walk_up_config(&cwd);
+    let found = fleet_controller::project::walk_up_config(&cwd);
     let fleet_toml = match &found {
-        Some(crate::Found::Embedded(path)) => Some(path.clone()),
-        Some(crate::Found::Declared(_)) | None => machine.as_ref().map(|m| m.fleet_toml.clone()),
+        Some(fleet_controller::project::Found::Embedded(path)) => Some(path.clone()),
+        Some(fleet_controller::project::Found::Declared(_)) | None => {
+            machine.as_ref().map(|m| m.fleet_toml.clone())
+        }
     };
 
     let Some(fleet_toml) = fleet_toml else {
@@ -219,15 +221,14 @@ fn first_refusal(refusals: &[resolve::Refusal]) -> String {
 /// names this directory, which is the root the item line reads, so the two
 /// lines name one store; else the directory the walk found the project's own
 /// file in.
-fn project_root(seat_root: Option<&Path>, found: Option<&crate::Found>) -> Option<PathBuf> {
+fn project_root(
+    seat_root: Option<&Path>,
+    found: Option<&fleet_controller::project::Found>,
+) -> Option<PathBuf> {
     if let Some(root) = seat_root {
         return Some(root.to_path_buf());
     }
-    match found? {
-        crate::Found::Embedded(file) => file.parent(),
-        crate::Found::Declared(file) => file.parent().and_then(Path::parent),
-    }
-    .map(Path::to_path_buf)
+    found?.root().map(Path::to_path_buf)
 }
 
 /// Line 2: the store's name and version and the adapter that answered them, or
