@@ -23,7 +23,7 @@ use fleet_controller::project::stream::stream_actor;
 use fleet_controller::projection::{self, Stale};
 use fleet_controller::seat::COLLECTOR_STALE_POLLS;
 
-use crate::exit::Exit;
+use crate::exit::{say, Exit};
 use crate::item::{acting, SeatRing};
 use crate::ui::{Stream, Tone, Ui};
 
@@ -50,14 +50,14 @@ pub struct NudgeArgs {
 pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
     let here = match crate::transient::resolved(args.project.as_deref()) {
         Ok(here) => here,
-        Err(stop) => return stopped(&stop.message, stop.code),
+        Err(stop) => return say("seat nudge", Exit::of(stop.code), &stop.message),
     };
     // The argument through the seat list's resolver, and its id from here on:
     // the projection, the ring and the stream are keyed on it. Every sentence
     // names the seat by its machine name.
     let row = match fleet_controller::project::wiring::seat_named(&here.machine_dir, &args.seat) {
         Ok(row) => row,
-        Err(stop) => return stopped(&stop.message, stop.code),
+        Err(stop) => return say("seat nudge", Exit::of(stop.code), &stop.message),
     };
     let key = row.id.to_string();
     let seat = row.machine_name();
@@ -66,15 +66,15 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
     // carries it typed, as the stream's `{kind, id}`.
     let by = match acting("seat nudge", None, &here) {
         Ok(by) => stream_actor(&by),
-        Err(stop) => return stopped(&stop.message, stop.code),
+        Err(stop) => return say("seat nudge", Exit::of(stop.code), &stop.message),
     };
 
     let document = match fresh_projection(&here.machine_dir) {
         Ok(document) => document,
-        Err(why) => return stopped(&why, Exit::NoCollector.code()),
+        Err(why) => return say("seat nudge", Exit::NoCollector, &why),
     };
     if let Err(why) = published_live(&document, &key, &seat) {
-        return stopped(&why, Exit::NoSession.code());
+        return say("seat nudge", Exit::NoSession, &why);
     }
 
     let ring = SeatRing {
@@ -90,12 +90,13 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
         // the seat's session, or no listed row carrying its pid. Nothing was
         // typed, so nothing is written to the stream either.
         Typed::Absent => {
-            return stopped(
-                &format!(
+            return say(
+                "seat nudge",
+                Exit::NoSession,
+                format!(
                     "`{seat}` has no live session — no live pane under its session, or no \
                      listed row carrying the pane's pid, whatever the projection published"
                 ),
-                Exit::NoSession.code(),
             )
         }
     };
@@ -115,9 +116,10 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
             "outcome": outcome,
         }),
     ) {
-        return stopped(
-            &format!("could not append to {}: {e}", stream.display()),
-            Exit::CouldNotTell.code(),
+        return say(
+            "seat nudge",
+            Exit::CouldNotTell,
+            format!("could not append to {}: {e}", stream.display()),
         );
     }
 
@@ -196,9 +198,4 @@ fn published_live(document: &serde_json::Value, key: &str, seat: &str) -> Result
             "`{seat}`'s row carries no `roster_state`, so it cannot be read as {live}"
         )),
     }
-}
-
-fn stopped(message: &str, code: u8) -> Exit {
-    eprintln!("fleet seat nudge: {message}");
-    Exit::from_status(code).unwrap_or(Exit::CouldNotTell)
 }

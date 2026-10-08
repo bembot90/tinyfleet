@@ -32,7 +32,7 @@ use fleet_core::store::schema;
 use fleet_core::store::{self, AdapterSource, Opening, PackDirs, STORE_TIMEOUT};
 
 use crate::adapter_check;
-use crate::exit::Exit;
+use crate::exit::{say, Exit};
 
 /// The family's verbs.
 #[derive(clap::Subcommand)]
@@ -86,15 +86,9 @@ impl Drop for Scratch {
     }
 }
 
-/// A line on stderr under the verb's name, and the row it answers.
-fn said(exit: Exit, why: impl std::fmt::Display) -> Exit {
-    eprintln!("fleet store check: {why}");
-    exit
-}
-
 fn check(adapter: Option<&str>) -> Exit {
     if let Some(why) = adapter_check::neither_form(adapter, AdapterKind::Store) {
-        return said(Exit::Usage, why);
+        return say("store check", Exit::Usage, why);
     }
     // The policy the store is opened with: `[store] adapter` naming what was
     // handed in; else the project's own file, where one resolves; else
@@ -135,7 +129,8 @@ fn check(adapter: Option<&str>) -> Exit {
     let into = scratch.0.join("store");
     for made in [&scratch.0, &absent_dir, &into] {
         if let Err(e) = std::fs::create_dir_all(made) {
-            return said(
+            return say(
+                "store check",
                 Exit::CouldNotTell,
                 format!("{} could not be made: {e}", made.display()),
             );
@@ -155,12 +150,13 @@ fn check(adapter: Option<&str>) -> Exit {
     };
     let adapter = match open(&scratch.0) {
         Ok(adapter) => adapter,
-        Err(e) => return said(Exit::CouldNotTell, e),
+        Err(e) => return say("store check", Exit::CouldNotTell, e),
     };
     match adapter.capabilities() {
         Ok(declared) if declared.scratch => {}
         Ok(_) => {
-            return said(
+            return say(
+                "store check",
                 Exit::Refused,
                 format!(
                     "{named} declares no scratch capability, and the check runs only on a \
@@ -168,15 +164,15 @@ fn check(adapter: Option<&str>) -> Exit {
                 ),
             )
         }
-        Err(e) => return said(Exit::CouldNotTell, e),
+        Err(e) => return say("store check", Exit::CouldNotTell, e),
     }
     let root = match adapter.scratch(&into) {
         Ok(root) => root,
-        Err(e) => return said(Exit::CouldNotTell, e),
+        Err(e) => return say("store check", Exit::CouldNotTell, e),
     };
     let (made, absent) = match (open(&root), open(&absent_dir)) {
         (Ok(made), Ok(absent)) => (made, absent),
-        (Err(e), _) | (_, Err(e)) => return said(Exit::CouldNotTell, e),
+        (Err(e), _) | (_, Err(e)) => return say("store check", Exit::CouldNotTell, e),
     };
 
     let ctx = Ctx {

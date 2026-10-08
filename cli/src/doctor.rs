@@ -47,8 +47,8 @@ use fleet_core::runtime::child_path_for;
 use fleet_core::store::{self, types::CONTRACT_VERSION};
 
 use crate::envelope;
-use crate::exit::Exit;
-use crate::item::{self, Human};
+use crate::exit::{self, Exit};
+use crate::item::Human;
 use crate::ui::{Tone, Ui};
 
 const VERB: &str = "doctor";
@@ -95,9 +95,7 @@ pub struct DoctorArgs {
 pub fn command(ui: &Ui, args: &DoctorArgs) -> Exit {
     let ready = match prepare(args) {
         Ok(ready) => ready,
-        Err(stop) => {
-            return item::refused(VERB, item::stop_exit(stop.code), &stop.message, args.json)
-        }
+        Err(stop) => return exit::refuse_stop(VERB, &stop, args.json),
     };
     let Ready {
         here,
@@ -489,7 +487,7 @@ impl Report<'_> {
             });
             println!("{}", envelope::ok(VERB, &data));
         }
-        item::stop_exit(verdict.exit())
+        Exit::of(verdict.exit())
     }
 }
 

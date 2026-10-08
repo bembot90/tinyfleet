@@ -21,8 +21,7 @@ use fleet_core::item::{show, Stop};
 use fleet_core::store::ItemSummary;
 
 use crate::envelope;
-use crate::exit::Exit;
-use crate::item::stop_exit;
+use crate::exit::{self, Exit};
 
 /// The names the envelope and the refusal line carry.
 const VERB: &str = "item show";
@@ -83,7 +82,7 @@ pub fn command(verb: &Verb) -> Exit {
                 }
                 Exit::Done
             }
-            Err(stop) => refused(VERB, &stop, *json),
+            Err(stop) => exit::refuse_stop(VERB, &stop, *json),
         },
         Verb::List {
             ready,
@@ -105,19 +104,10 @@ pub fn command(verb: &Verb) -> Exit {
                     }
                     Exit::Done
                 }
-                Err(stop) => refused(LIST, &stop, *json),
+                Err(stop) => exit::refuse_stop(LIST, &stop, *json),
             }
         }
     }
-}
-
-fn refused(verb: &str, stop: &Stop, json: bool) -> Exit {
-    let exit = stop_exit(stop.code);
-    eprintln!("fleet {verb}: {}", stop.message);
-    if json {
-        println!("{}", envelope::refusal(verb, exit, &stop.message));
-    }
-    exit
 }
 
 /// The filter checked before anything is resolved — a list naming no read is

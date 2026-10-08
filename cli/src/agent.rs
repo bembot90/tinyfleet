@@ -39,7 +39,7 @@ use fleet_core::pack::AdapterKind;
 use fleet_core::policy::Value;
 
 use crate::adapter_check;
-use crate::exit::Exit;
+use crate::exit::{say, Exit};
 
 /// The family's verbs.
 #[derive(clap::Subcommand)]
@@ -136,12 +136,6 @@ impl Drop for Scratch {
     }
 }
 
-/// A line on stderr under the verb's name, and the row it answers.
-fn said(exit: Exit, why: impl std::fmt::Display) -> Exit {
-    eprintln!("fleet agent check: {why}");
-    exit
-}
-
 fn check(
     adapter: Option<&str>,
     fixtures: Option<&Path>,
@@ -149,7 +143,7 @@ fn check(
     model: Option<String>,
 ) -> Exit {
     if let Some(why) = adapter_check::neither_form(adapter, AdapterKind::Agent) {
-        return said(Exit::Usage, why);
+        return say("agent check", Exit::Usage, why);
     }
     // A relative --fixtures is the caller's directory's, and made absolute
     // here: `{fixture}` is filled with a case's absolute path.
@@ -160,7 +154,8 @@ fn check(
                 .map(|cwd| cwd.join(given))
                 .unwrap_or_else(|_| given.to_path_buf());
             if !absolute.is_dir() {
-                return said(
+                return say(
+                    "agent check",
                     Exit::Usage,
                     format!(
                         "--fixtures names `{}`, which is not a directory",
@@ -175,7 +170,8 @@ fn check(
     let dir = adapter_check::scratch_dir("agent");
     let mut scratch = Scratch { dir, host: None };
     if let Err(e) = std::fs::create_dir_all(&scratch.dir) {
-        return said(
+        return say(
+            "agent check",
             Exit::CouldNotTell,
             format!("{} could not be made: {e}", scratch.dir.display()),
         );
@@ -199,7 +195,7 @@ fn check(
                 defaults_dir: here.defaults_dir.clone(),
                 ..setting
             },
-            Err(why) => return said(Exit::CouldNotTell, why),
+            Err(why) => return say("agent check", Exit::CouldNotTell, why),
         },
         Err(_) => agent::Setting::of(
             Default::default(),
@@ -224,7 +220,7 @@ fn check(
     opening.source = source;
     let opened = match agent::open(&opening) {
         Ok(opened) => opened,
-        Err(why) => return said(Exit::CouldNotTell, why),
+        Err(why) => return say("agent check", Exit::CouldNotTell, why),
     };
     // The cases the adapter ships beside its adapter.toml, where --fixtures
     // names none.
@@ -244,7 +240,8 @@ fn check(
                 Some(host)
             }
             Err(cause) => {
-                return said(
+                return say(
+                    "agent check",
                     Exit::CouldNotTell,
                     format!("--live starts the agent on tmux, and there is none: {cause}"),
                 )

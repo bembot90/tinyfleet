@@ -17,7 +17,7 @@
 //! Both verbs are read-only: the controller reads and this module routes.
 
 use crate::envelope;
-use crate::exit::Exit;
+use crate::exit::{refuse, Exit};
 use fleet_controller::events::{self, ActorRef, RawLine};
 use fleet_controller::project::stream::stream_actor;
 use fleet_controller::routines::load;
@@ -72,7 +72,7 @@ pub fn tail(args: &TailArgs) -> Exit {
     // argument through the resolver, and a typed actor as given.
     let filters = match Filters::of(args) {
         Ok(filters) => filters,
-        Err((exit, why)) => return refused("event tail", exit, &why, args.json),
+        Err((exit, why)) => return refuse("event tail", exit, &why, args.json),
     };
 
     // The cursor is EXCLUSIVE — `--since 150` is every line above 150 — and a
@@ -88,7 +88,7 @@ pub fn tail(args: &TailArgs) -> Exit {
                         "--since {value} is neither a sequence nor a stamp of the shape {}",
                         events::STAMP_SHAPE
                     );
-                    return refused("event tail", Exit::Usage, &why, args.json);
+                    return refuse("event tail", Exit::Usage, &why, args.json);
                 }
                 Ok(Some(seq)) => {
                     eprintln!("--since {value} resolved to {seq}");
@@ -271,7 +271,7 @@ pub fn show(id: &str, json: bool) -> Exit {
     }
 
     match events::find_by_id(&path, id).as_slice() {
-        [] => refused("event show", Exit::Refused, &format!("no event {id}"), json),
+        [] => refuse("event show", Exit::Refused, &format!("no event {id}"), json),
         // The one place a re-serialization is the contract: a person reading one
         // event wants it laid out, where a tail wants the bytes as stored.
         [one] if !json => match serde_json::to_string_pretty(&one.value) {
@@ -301,7 +301,7 @@ pub fn show(id: &str, json: bool) -> Exit {
                 "{id} is on more than one line — sequences {}",
                 seqs.join(", ")
             );
-            refused("event show", Exit::Usage, &why, json)
+            refuse("event show", Exit::Usage, &why, json)
         }
     }
 }
@@ -315,16 +315,5 @@ fn machine_stream() -> PathBuf {
 /// absence, which is a stderr line and exit 0; that verb keeps its own answer.
 fn no_stream(verb: &str, path: &Path, json: bool) -> Exit {
     let why = format!("no event stream at {}", path.display());
-    refused(&format!("event {verb}"), Exit::NoCollector, &why, json)
-}
-
-/// A refusal said once: the human's line on stderr always, the envelope on
-/// stdout when the caller asked for the document, and the exit table's own row
-/// either way.
-fn refused(verb: &str, exit: Exit, why: &str, json: bool) -> Exit {
-    eprintln!("fleet {verb}: {why}");
-    if json {
-        println!("{}", envelope::refusal(verb, exit, why));
-    }
-    exit
+    refuse(&format!("event {verb}"), Exit::NoCollector, &why, json)
 }

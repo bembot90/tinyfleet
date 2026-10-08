@@ -32,7 +32,7 @@ use fleet_controller::host::tmux::TmuxHost;
 use fleet_controller::host::{session_for, Host, HostRead, PaneState, SOCKET};
 use fleet_controller::{clock, platform};
 
-use crate::exit::Exit;
+use crate::exit::{say, Exit};
 
 /// What `seat attach` takes.
 #[derive(clap::Args)]
@@ -53,24 +53,24 @@ pub fn attach_command(args: &AttachArgs) -> Exit {
     // machine's, and nothing below is the project's.
     let here = match crate::transient::resolved(args.project.as_deref()) {
         Ok(here) => here,
-        Err(stop) => return stopped(&stop.message, code(stop.code)),
+        Err(stop) => return say("seat attach", Exit::of(stop.code), &stop.message),
     };
     // The argument through the seat list's resolver, exactly as `seat nudge`
     // takes it: its full id, eight or more of its hex digits, its name or its
     // machine name. Its id names the session; its machine name, every sentence.
     let row = match fleet_controller::project::wiring::seat_named(&here.machine_dir, &args.seat) {
         Ok(row) => row,
-        Err(stop) => return stopped(&stop.message, code(stop.code)),
+        Err(stop) => return say("seat attach", Exit::of(stop.code), &stop.message),
     };
     let seat = row.machine_name();
     let host = match TmuxHost::resolve(&platform::child_path(&platform::home_dir())) {
         Ok(host) => host,
-        Err(why) => return stopped(&why, Exit::CouldNotTell),
+        Err(why) => return say("seat attach", Exit::CouldNotTell, &why),
     };
     let session = session_for(&row.id);
     let state = match pane_of(&host, &session, &seat) {
         Ok(state) => state,
-        Err((why, exit)) => return stopped(&why, exit),
+        Err((why, exit)) => return say("seat attach", exit, &why),
     };
     if let Some(ended) = ended(state) {
         eprintln!("fleet seat attach: {ended}");
@@ -80,16 +80,17 @@ pub fn attach_command(args: &AttachArgs) -> Exit {
         // the keyboard untaken, since a --write nobody can find afterwards is
         // the one thing this line exists to rule out.
         if let Err(why) = record_write(&here.machine_dir, &row) {
-            return stopped(&why, Exit::CouldNotTell);
+            return say("seat attach", Exit::CouldNotTell, &why);
         }
         eprintln!("fleet seat attach: typing into {seat}'s session acts as that seat");
     }
     // `exec` returns only when the program could not be run at all; past it,
     // the process is the host's client, and its exit is this verb's.
     let why = host.attach(&session, args.write).exec();
-    stopped(
-        &format!("could not run {}: {why}", host.bin().display()),
+    say(
+        "seat attach",
         Exit::CouldNotTell,
+        format!("could not run {}: {why}", host.bin().display()),
     )
 }
 
@@ -162,17 +163,6 @@ fn record_write(machine_dir: &Path, row: &config::Seat) -> Result<(), String> {
                 stream.display()
             )
         })
-}
-
-/// A resolver's status as a row of the table; a status outside it is
-/// could-not-tell, never a guessed row.
-fn code(status: u8) -> Exit {
-    Exit::from_status(status).unwrap_or(Exit::CouldNotTell)
-}
-
-fn stopped(message: &str, exit: Exit) -> Exit {
-    eprintln!("fleet seat attach: {message}");
-    exit
 }
 
 #[cfg(test)]

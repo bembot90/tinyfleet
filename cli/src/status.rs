@@ -26,7 +26,7 @@ use fleet_controller::{clock, config, platform};
 use fleet_core::item::{rules, Stop};
 use fleet_core::policy as core_policy;
 
-use crate::exit::Exit;
+use crate::exit::{refuse_stop, Exit};
 
 /// How far back the runs section lists a failed run, in hours.
 ///
@@ -54,10 +54,7 @@ pub fn status_command(args: &StatusArgs) -> Exit {
     let mut out = std::io::stdout();
     match run(args, &mut out) {
         Ok(exit) => exit,
-        Err(stop) => {
-            eprintln!("fleet status: {}", stop.message);
-            Exit::from_status(stop.code).unwrap_or(Exit::CouldNotTell)
-        }
+        Err(stop) => refuse_stop("status", &stop, false),
     }
 }
 

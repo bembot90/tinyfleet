@@ -100,13 +100,6 @@ fn usage(why: &str) -> Exit {
     Exit::Usage
 }
 
-/// A status the trigger and the action layers state as a number, read back
-/// into the table. A number outside it is those layers' own defect and reads as
-/// could-not-tell rather than as a status this module invented.
-fn exit_of(code: u8) -> Exit {
-    Exit::from_status(code).unwrap_or(Exit::CouldNotTell)
-}
-
 /// Everything the four verbs read off the machine, resolved once.
 struct Fleet {
     machine_dir: PathBuf,
@@ -452,7 +445,7 @@ fn run(name: &str, force: bool, dry_run: bool) -> Exit {
                     let outcome =
                         routines::record_could_not_tell(routine, &mut pass, now, &why, Some("run"));
                     print_last_row(&fleet.machine_dir, name);
-                    exit_of(outcome.exit_code())
+                    Exit::of(outcome.exit_code())
                 }
                 Due::Due(reason) => {
                     let mut events = events::EventLog::open(&events::path_in(&fleet.machine_dir));
@@ -465,7 +458,7 @@ fn run(name: &str, force: bool, dry_run: bool) -> Exit {
                     print_last_row(&fleet.machine_dir, name);
                     // An absent ring that a fallback item answered is that
                     // item's outcome, so only a bare absent carries exit 4.
-                    exit_of(outcome_exit(outcome))
+                    Exit::of(outcome_exit(outcome))
                 }
             }
         }

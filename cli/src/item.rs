@@ -35,7 +35,7 @@ use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::{identity_or_mint, roster, IDENTITY};
 
 use crate::envelope;
-use crate::exit::Exit;
+use crate::exit::{refuse_stop, Exit};
 use crate::ui::{Ui, Wait};
 
 /// Where a rendered brief is written, under the machine directory.
@@ -256,10 +256,7 @@ pub fn cancel_command(args: &CancelArgs) -> Exit {
     });
     match cancelled {
         Ok(_) => Exit::Done,
-        Err(stop) => {
-            eprintln!("fleet cancel: {}", stop.message);
-            stop_exit(stop.code)
-        }
+        Err(stop) => refuse_stop("cancel", &stop, false),
     }
 }
 
@@ -285,7 +282,7 @@ pub fn run_command(args: &RunArgs) -> Exit {
         },
         Err(stop) => {
             let _ = writeln!(err, "fleet run: {}", stop.message);
-            stop_exit(stop.code)
+            Exit::of(stop.code)
         }
     }
 }
@@ -353,7 +350,7 @@ pub fn land_command(ui: &Ui, args: &LandArgs) -> Exit {
             }),
             args.json,
         ),
-        Err(stop) => refused("land", stop_exit(stop.code), &stop.message, args.json),
+        Err(stop) => refuse_stop("land", &stop, args.json),
     }
 }
 
@@ -420,7 +417,7 @@ pub fn deliver_command(args: &DeliverArgs) -> Exit {
             }),
             args.json,
         ),
-        Err(stop) => refused("deliver", stop_exit(stop.code), &stop.message, args.json),
+        Err(stop) => refuse_stop("deliver", &stop, args.json),
     }
 }
 
@@ -437,7 +434,7 @@ pub fn hold_command(args: &HoldArgs) -> Exit {
             }),
             args.json,
         ),
-        Err(stop) => refused("hold", stop_exit(stop.code), &stop.message, args.json),
+        Err(stop) => refuse_stop("hold", &stop, args.json),
     }
 }
 
@@ -454,7 +451,7 @@ pub fn clear_command(args: &ClearArgs) -> Exit {
             }),
             args.json,
         ),
-        Err(stop) => refused("clear", stop_exit(stop.code), &stop.message, args.json),
+        Err(stop) => refuse_stop("clear", &stop, args.json),
     }
 }
 
@@ -536,7 +533,7 @@ pub fn review_command(args: &ReviewArgs) -> Exit {
                 args.json,
             )
         }
-        Err(stop) => refused("review", stop_exit(stop.code), &stop.message, args.json),
+        Err(stop) => refuse_stop("review", &stop, args.json),
     }
 }
 
@@ -639,7 +636,7 @@ pub fn dispatch_command(args: &DispatchArgs) -> Exit {
             }),
             args.json,
         ),
-        Err(stop) => refused("dispatch", stop_exit(stop.code), &stop.message, args.json),
+        Err(stop) => refuse_stop("dispatch", &stop, args.json),
     }
 }
 
@@ -649,16 +646,9 @@ pub fn brief_command(args: &BriefArgs) -> Exit {
         Ok(()) => Exit::Done,
         Err(stop) => {
             let _ = writeln!(err, "fleet brief: {}", stop.message);
-            stop_exit(stop.code)
+            Exit::of(stop.code)
         }
     }
-}
-
-/// core states a stop's exit as a number from the same table this enum holds.
-/// A number outside it is core's own defect and reads as could-not-tell here
-/// rather than as a status this binary invented.
-pub(crate) fn stop_exit(code: u8) -> Exit {
-    Exit::from_status(code).unwrap_or(Exit::CouldNotTell)
 }
 
 // ---- the JSON envelope, for the six verbs the SDK drives ---------------------
@@ -703,17 +693,6 @@ fn answered(verb: &str, data: serde_json::Value, json: bool) -> Exit {
         println!("{}", envelope::ok(verb, &data));
     }
     Exit::Done
-}
-
-/// A refusal said once: the human's line on stderr always, the envelope on
-/// stdout when the caller asked for the document, and the exit table's own row
-/// either way. `stream.rs` says the same for the event verbs.
-pub(crate) fn refused(verb: &str, exit: Exit, why: &str, json: bool) -> Exit {
-    eprintln!("fleet {verb}: {why}");
-    if json {
-        println!("{}", envelope::refusal(verb, exit, why));
-    }
-    exit
 }
 
 fn run_dispatch(

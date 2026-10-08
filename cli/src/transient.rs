@@ -25,7 +25,7 @@ use fleet_core::seat::identity::{Kind, SeatId, SeatRef};
 use fleet_core::store::ItemId;
 
 use crate::envelope;
-use crate::exit::Exit;
+use crate::exit::{refuse_stop, Exit};
 use crate::item::acting;
 
 /// The three verb names the envelope's documents carry, which are also the
@@ -95,34 +95,34 @@ pub struct RetireArgs {
 pub fn spawn_command(args: &SpawnArgs) -> Exit {
     let here = match resolved(args.project.as_deref()) {
         Ok(here) => here,
-        Err(stop) => return stopped(SPAWN, &stop, args.json),
+        Err(stop) => return refuse_stop(SPAWN, &stop, args.json),
     };
     let first_turn = match turn_text(&args.first_turn) {
         Ok(text) => text,
-        Err(stop) => return stopped(SPAWN, &stop, args.json),
+        Err(stop) => return refuse_stop(SPAWN, &stop, args.json),
     };
     let home = platform::home_dir();
     let agent = match effect_agent(&here, &home) {
         Ok(agent) => agent,
-        Err(stop) => return stopped(SPAWN, &stop, args.json),
+        Err(stop) => return refuse_stop(SPAWN, &stop, args.json),
     };
     // A spawn IS a session started on the host, so a host that does not
     // resolve refuses here, before a name is claimed or a worktree made.
     let host = match spawn_host(&home) {
         Ok(host) => host,
-        Err(stop) => return stopped(SPAWN, &stop, args.json),
+        Err(stop) => return refuse_stop(SPAWN, &stop, args.json),
     };
     let policy = match policy_of(&here) {
         Ok(policy) => policy,
-        Err(stop) => return stopped(SPAWN, &stop, args.json),
+        Err(stop) => return refuse_stop(SPAWN, &stop, args.json),
     };
     let at = match Where::of(&here) {
         Ok(at) => at,
-        Err(stop) => return stopped(SPAWN, &stop, args.json),
+        Err(stop) => return refuse_stop(SPAWN, &stop, args.json),
     };
     let permissions = match permissions_of(&here, args.touched.as_deref()) {
         Ok(permissions) => permissions,
-        Err(stop) => return stopped(SPAWN, &stop, args.json),
+        Err(stop) => return refuse_stop(SPAWN, &stop, args.json),
     };
     let machine = machine_of(&here, &at, agent.as_ref(), &host, &policy);
 
@@ -173,36 +173,36 @@ pub fn spawn_command(args: &SpawnArgs) -> Exit {
             }
             Exit::Done
         }
-        Err(refusal) => refused(SPAWN, &refusal, args.json),
+        Err(refusal) => refuse_stop(SPAWN, &refusal, args.json),
     }
 }
 
 pub fn feed_command(args: &FeedArgs) -> Exit {
     let here = match resolved(args.project.as_deref()) {
         Ok(here) => here,
-        Err(stop) => return stopped(FEED, &stop, args.json),
+        Err(stop) => return refuse_stop(FEED, &stop, args.json),
     };
     let row = match seat_named(&here.machine_dir, &args.seat) {
         Ok(row) => row,
-        Err(stop) => return stopped(FEED, &stop, args.json),
+        Err(stop) => return refuse_stop(FEED, &stop, args.json),
     };
     let seat = row.machine_name();
     let first_turn = match turn_text(&args.first_turn) {
         Ok(text) => text,
-        Err(stop) => return stopped(FEED, &stop, args.json),
+        Err(stop) => return refuse_stop(FEED, &stop, args.json),
     };
     let home = platform::home_dir();
     let agent = match effect_agent(&here, &home) {
         Ok(agent) => agent,
-        Err(stop) => return stopped(FEED, &stop, args.json),
+        Err(stop) => return refuse_stop(FEED, &stop, args.json),
     };
     let policy = match policy_of(&here) {
         Ok(policy) => policy,
-        Err(stop) => return stopped(FEED, &stop, args.json),
+        Err(stop) => return refuse_stop(FEED, &stop, args.json),
     };
     let at = match Where::of(&here) {
         Ok(at) => at,
-        Err(stop) => return stopped(FEED, &stop, args.json),
+        Err(stop) => return refuse_stop(FEED, &stop, args.json),
     };
     let host = verb_host(&home);
     let machine = machine_of(&here, &at, agent.as_ref(), host.as_ref(), &policy);
@@ -230,38 +230,38 @@ pub fn feed_command(args: &FeedArgs) -> Exit {
             }
             Exit::Done
         }
-        Err(refusal) => refused(FEED, &refusal, args.json),
+        Err(refusal) => refuse_stop(FEED, &refusal, args.json),
     }
 }
 
 pub fn retire_command(args: &RetireArgs) -> Exit {
     let here = match resolved(args.project.as_deref()) {
         Ok(here) => here,
-        Err(stop) => return stopped(RETIRE, &stop, args.json),
+        Err(stop) => return refuse_stop(RETIRE, &stop, args.json),
     };
     // Who the withdrawal is written by, resolved before anything moves: the
     // retire is somebody's act, and a verb always has an actor.
     let by = match acting(RETIRE, args.by.as_deref(), &here) {
         Ok(by) => by,
-        Err(stop) => return stopped(RETIRE, &stop, args.json),
+        Err(stop) => return refuse_stop(RETIRE, &stop, args.json),
     };
     let row = match seat_named(&here.machine_dir, &args.seat) {
         Ok(row) => row,
-        Err(stop) => return stopped(RETIRE, &stop, args.json),
+        Err(stop) => return refuse_stop(RETIRE, &stop, args.json),
     };
     let seat = row.machine_name();
     let home = platform::home_dir();
     let agent = match effect_agent(&here, &home) {
         Ok(agent) => agent,
-        Err(stop) => return stopped(RETIRE, &stop, args.json),
+        Err(stop) => return refuse_stop(RETIRE, &stop, args.json),
     };
     let policy = match policy_of(&here) {
         Ok(policy) => policy,
-        Err(stop) => return stopped(RETIRE, &stop, args.json),
+        Err(stop) => return refuse_stop(RETIRE, &stop, args.json),
     };
     let at = match Where::of(&here) {
         Ok(at) => at,
-        Err(stop) => return stopped(RETIRE, &stop, args.json),
+        Err(stop) => return refuse_stop(RETIRE, &stop, args.json),
     };
     let host = verb_host(&home);
     let machine = machine_of(&here, &at, agent.as_ref(), host.as_ref(), &policy);
@@ -282,7 +282,7 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
     // and an order left standing against it is one that seat would inherit.
     let store = match open_store(&here) {
         Ok(store) => store,
-        Err(stop) => return stopped(RETIRE, &stop, args.json),
+        Err(stop) => return refuse_stop(RETIRE, &stop, args.json),
     };
     // THE ROW'S ID, which is what the order was assigned to; the note and the
     // sentences name the seat by its machine name. The retire hands its
@@ -368,7 +368,7 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
             }
             Exit::Done
         }
-        Err(refusal) => refused(RETIRE, &refusal, args.json),
+        Err(refusal) => refuse_stop(RETIRE, &refusal, args.json),
     }
 }
 
@@ -557,29 +557,6 @@ fn turn_text(path: &Path) -> Result<String, Stop> {
             path.display()
         ))
     })
-}
-
-pub(crate) fn stopped(verb: &str, stop: &Stop, json: bool) -> Exit {
-    refusing(verb, stop.code, &stop.message, json)
-}
-
-fn refused(verb: &str, refusal: &Refusal, json: bool) -> Exit {
-    refusing(verb, refusal.code, &refusal.message, json)
-}
-
-/// The one refusal path: the person's line on stderr, the document on stdout
-/// where one was asked for, and the row on `$?`.
-///
-/// THE ROW IS READ ONCE AND USED FOR BOTH, so the `code` a caller branches on
-/// and the number it reads from `$?` cannot come apart — including on a status
-/// outside the exit table, which lands on could-not-tell in both places.
-fn refusing(verb: &str, code: u8, message: &str, json: bool) -> Exit {
-    let exit = Exit::from_status(code).unwrap_or(Exit::CouldNotTell);
-    eprintln!("fleet {verb}: {message}");
-    if json {
-        println!("{}", envelope::refusal(verb, exit, message));
-    }
-    exit
 }
 
 /// A turn's first line, which is what the envelope carries of it.

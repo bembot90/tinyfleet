@@ -40,6 +40,20 @@ impl Machine {
             .output()
             .expect("the built binary runs")
     }
+
+    /// The same run from a directory under the machine's root that no project
+    /// walk can resolve: nothing above it names a `fleet.toml` or a
+    /// `.fleet/project.toml`, so a verb that needs the project refuses.
+    fn run_nowhere(&self, args: &[&str]) -> Output {
+        let cwd = self.root.join("no-project");
+        std::fs::create_dir_all(&cwd).expect("the project-less directory is created");
+        Command::new(env!("CARGO_BIN_EXE_fleet"))
+            .args(args)
+            .current_dir(&cwd)
+            .hermetic(&self.root.join("home"), &self.root)
+            .output()
+            .expect("the built binary runs")
+    }
 }
 
 impl Drop for Machine {
@@ -50,6 +64,41 @@ impl Drop for Machine {
 
 fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+/// The exit table's row names, by number: the `code` a refusal envelope
+/// carries for the status the process exited with.
+fn class_of(status: i32) -> &'static str {
+    match status {
+        0 => "done",
+        1 => "refused",
+        2 => "usage",
+        3 => "could_not_tell",
+        4 => "no_session",
+        5 => "no_collector",
+        6 => "transient",
+        other => panic!("exit {other} is not a row of the exit table"),
+    }
+}
+
+/// Stdout under `--json` as the one refusal document it must be: a single
+/// line, `ok` false, naming `verb`, its refusal's `code` the class of the
+/// status the process exited with. Answers the parsed document.
+fn one_refusal(out: &Output, verb: &str) -> serde_json::Value {
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "stdout is one document: {stdout}");
+    let document: serde_json::Value = serde_json::from_str(lines[0])
+        .unwrap_or_else(|e| panic!("the document parses: {e}: {stdout}"));
+    assert_eq!(document["ok"], false, "{stdout}");
+    assert_eq!(document["verb"], verb, "{stdout}");
+    let status = out.status.code().expect("the process exited with a status");
+    assert_eq!(
+        document["refusal"]["code"],
+        class_of(status),
+        "the envelope's code is the exit's row: {stdout}"
+    );
+    document
 }
 
 /// Row 0. The one verb that answers without reading anything.
@@ -174,4 +223,83 @@ fn no_collector_is_five() {
         "{}",
         stderr(&out)
     );
+}
+
+// The refusal paths, one arm per verb family, pinned before their helpers
+// were given one home in `exit.rs`: each arm holds the exact exit and the
+// exact head of the stderr line, and under `--json` the one envelope.
+
+/// The event verbs' refusal: a machine directory with no stream is row 5.
+#[test]
+fn an_event_read_with_no_stream_refuses_as_no_collector() {
+    let machine = Machine::new("event-show");
+
+    let out = machine.run(&["event", "show", "01X"]);
+    assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
+    assert!(
+        stderr(&out).starts_with("fleet event show: no event stream at "),
+        "{}",
+        stderr(&out)
+    );
+    assert!(out.stdout.is_empty(), "no document was asked for");
+
+    let out = machine.run(&["event", "show", "01X", "--json"]);
+    assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
+    assert!(
+        stderr(&out).starts_with("fleet event show: no event stream at "),
+        "{}",
+        stderr(&out)
+    );
+    let document = one_refusal(&out, "event show");
+    assert_eq!(document["refusal"]["code"], "no_collector");
+}
+
+/// The nudge's line, under its own verb.
+#[test]
+fn a_nudge_with_no_project_says_so_under_its_verb() {
+    let machine = Machine::new("nudge");
+    let out = machine.run_nowhere(&["seat", "nudge", "Orla", "--text", "x"]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert!(
+        stderr(&out).starts_with("fleet seat nudge: "),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// The attach's line, under its own verb.
+#[test]
+fn an_attach_with_no_project_says_so_under_its_verb() {
+    let machine = Machine::new("attach");
+    let out = machine.run_nowhere(&["seat", "attach", "Orla"]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert!(
+        stderr(&out).starts_with("fleet seat attach: "),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// An enveloped item verb's refusal: the line, then the one document.
+#[test]
+fn a_land_with_no_project_refuses_in_one_envelope() {
+    let machine = Machine::new("land");
+    let out = machine.run_nowhere(&["land", "fx-1", "abc1234", "--json"]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert!(stderr(&out).starts_with("fleet land: "), "{}", stderr(&out));
+    one_refusal(&out, "land");
+}
+
+/// A transient verb's refusal: the line, then the one document.
+#[test]
+fn a_spawn_with_no_project_refuses_in_one_envelope() {
+    let machine = Machine::new("spawn");
+    let out = machine.run_nowhere(&["seat", "spawn", "--first-turn", "/nonexistent", "--json"]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert!(
+        stderr(&out).starts_with("fleet seat spawn: "),
+        "{}",
+        stderr(&out)
+    );
+    one_refusal(&out, "seat spawn");
 }

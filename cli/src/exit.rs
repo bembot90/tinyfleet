@@ -65,6 +65,40 @@ impl Exit {
             other => bail!("exit {other} is not a row of the exit table"),
         })
     }
+
+    /// A library states a stop's exit as a number from the same table this
+    /// enum holds. A number outside it is that library's own defect and reads
+    /// as could-not-tell here rather than as a status this binary invented.
+    pub fn of(status: u8) -> Exit {
+        Exit::from_status(status).unwrap_or(Exit::CouldNotTell)
+    }
+}
+
+/// A refusal said once: the human's line on stderr always, the envelope on
+/// stdout when the caller asked for the document, and the exit table's own row
+/// either way.
+pub fn refuse(verb: &str, exit: Exit, why: &str, json: bool) -> Exit {
+    eprintln!("fleet {verb}: {why}");
+    if json {
+        println!("{}", crate::envelope::refusal(verb, exit, why));
+    }
+    exit
+}
+
+/// A stop's refusal: the person's line on stderr, the document on stdout
+/// where one was asked for, and the row on `$?`.
+///
+/// THE ROW IS READ ONCE AND USED FOR BOTH, so the `code` a caller branches on
+/// and the number it reads from `$?` cannot come apart — including on a status
+/// outside the exit table, which lands on could-not-tell in both places.
+pub fn refuse_stop(verb: &str, stop: &fleet_core::item::Stop, json: bool) -> Exit {
+    refuse(verb, Exit::of(stop.code), &stop.message, json)
+}
+
+/// A line on stderr under the verb's name, and the row it answers.
+pub fn say(verb: &str, exit: Exit, why: impl std::fmt::Display) -> Exit {
+    eprintln!("fleet {verb}: {why}");
+    exit
 }
 
 #[cfg(test)]
@@ -99,6 +133,22 @@ mod tests {
         for status in [7u8, 42, 255] {
             let read = Exit::from_status(status);
             assert!(read.is_err(), "status {status} is not a row: {read:?}");
+        }
+    }
+
+    /// A library's status read into the table: a row reads as itself, and a
+    /// number outside the table reads as could-not-tell rather than an error.
+    #[test]
+    fn a_librarys_status_reads_as_its_row_or_could_not_tell() {
+        for status in 0u8..=6 {
+            assert_eq!(
+                Exit::of(status),
+                Exit::from_status(status).expect("the status is a row"),
+                "status {status} reads as its own row"
+            );
+        }
+        for status in [7u8, 42, 255] {
+            assert_eq!(Exit::of(status), Exit::CouldNotTell, "status {status}");
         }
     }
 

@@ -24,8 +24,8 @@ use fleet_core::item::Stop;
 use fleet_core::seat::identity::{self, Kind, Seat, SeatId, SeatRef};
 
 use crate::envelope;
-use crate::exit::Exit;
-use crate::transient::{resolved, stopped};
+use crate::exit::{refuse_stop, Exit};
+use crate::transient::resolved;
 
 /// The verb name the envelope's documents carry, which is also the word the
 /// refusal's stderr line names itself by.
@@ -76,7 +76,7 @@ struct Added {
 pub fn command(args: &AddArgs) -> Exit {
     let added = match add(args) {
         Ok(added) => added,
-        Err(stop) => return stopped(ADD, &stop, args.json),
+        Err(stop) => return refuse_stop(ADD, &stop, args.json),
     };
     let seat = &added.seat;
     eprintln!(

@@ -25,7 +25,7 @@ use fleet_core::seat::identity;
 use fleet_core::store::{self, PackDirs, STORE_TIMEOUT};
 use fleet_core::{add, defaults, lock, supported};
 
-use crate::exit::Exit;
+use crate::exit::{refuse_stop, Exit};
 use crate::seat_add::{self, Listed};
 use crate::ui::{Prompt, Stream, Tone, Ui};
 
@@ -95,7 +95,7 @@ pub struct StartArgs {
 pub fn create_command(ui: &Ui, args: &CreateArgs) -> Exit {
     match create(ui, args) {
         Ok(exit) => exit,
-        Err(stop) => stopped("create", &stop),
+        Err(stop) => refuse_stop("create", &stop, false),
     }
 }
 
@@ -914,7 +914,7 @@ fn write_new(path: &Path, text: &str) -> Result<(), Stop> {
 pub fn start_command(ui: &Ui, args: &StartArgs) -> Exit {
     match start(ui, args) {
         Ok(exit) => exit,
-        Err(stop) => stopped("start", &stop),
+        Err(stop) => refuse_stop("start", &stop, false),
     }
 }
 
@@ -1066,7 +1066,7 @@ fn start(ui: &Ui, args: &StartArgs) -> Result<Exit, Stop> {
 pub fn stop_command(ui: &Ui) -> Exit {
     match stop(ui) {
         Ok(exit) => exit,
-        Err(stop) => stopped("stop", &stop),
+        Err(stop) => refuse_stop("stop", &stop, false),
     }
 }
 
@@ -1266,9 +1266,4 @@ fn asked(prompt: &Prompt) -> Stop {
         code: prompt.exit().code(),
         message: prompt.sentence(),
     }
-}
-
-fn stopped(verb: &str, stop: &Stop) -> Exit {
-    eprintln!("fleet {verb}: {}", stop.message);
-    Exit::from_status(stop.code).unwrap_or(Exit::CouldNotTell)
 }
