@@ -19,8 +19,10 @@
 //! nothing else in this crate. They exist so a suite can force both readings —
 //! the way the drive suite forces the tmux binary with `FLEET_TMUX_BIN` —
 //! because an arm that read the real load average is one whose answer changes
-//! with whatever else the machine is running. A BINARY is what calls `taken`:
-//! an in-process caller hands the two numbers in on [`Machine`] instead,
+//! with whatever else the machine is running.
+//! [`crate::project::wiring::machine_of`] is what calls `taken`, for a binary's
+//! verbs and for the run seam's [`crate::runs::Engine`]: a suite that calls the
+//! primitives in process hands the two numbers in on [`Machine`] instead,
 //! because setting a variable in a process that is forking children races the
 //! fork.
 
@@ -69,8 +71,9 @@ pub struct Machine<'a> {
     /// Where a transient seat's worktree is made.
     pub worktrees_dir: &'a Path,
     /// The belt's two machine readings, TAKEN BY THE CALLER like everything
-    /// else here. [`Readings::taken`] is what a binary passes; an in-process
-    /// caller hands the numbers in, which is what keeps the two overrides —
+    /// else here. [`Readings::taken`] is what
+    /// [`crate::project::wiring::machine_of`] passes; an in-process caller
+    /// hands the numbers in, which is what keeps the two overrides —
     /// the process's own environment, shared by every thread — out of a suite
     /// that runs arms in parallel and forks children while they run.
     pub readings: Readings,
@@ -287,9 +290,10 @@ pub struct Readings {
 
 impl Readings {
     /// The two overrides first, then the platform. This is the ONE function in
-    /// this crate that reads them, and a binary is its only caller: an
-    /// in-process caller builds a `Readings` instead, because setting a
-    /// variable in a process that is forking children races the fork.
+    /// this crate that reads them, and [`crate::project::wiring::machine_of`]
+    /// is its only caller: an in-process caller of the primitives builds a
+    /// `Readings` instead, because setting a variable in a process that is
+    /// forking children races the fork.
     pub fn taken() -> Readings {
         Readings {
             load: override_f64(LOAD_OVERRIDE).or_else(platform::load_average_5m),

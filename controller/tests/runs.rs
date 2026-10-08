@@ -10,9 +10,9 @@
 //!
 //! WHY A STUB AND NOT A SCRATCH WORKFLOW. The three acts each resolve a project:
 //! its store, its packs, its policy file, its primary checkout. That resolution
-//! is the binary's and the controller crate cannot make it — which is why the
-//! acts are a seam at all — so an arm here that shelled a real script would be
-//! measuring the binary's wiring through a crate that does not have it.
+//! is `Engine`'s, and an arm here measures the decision and not the wiring —
+//! so one that shelled a real script would be measuring `Engine`'s resolution
+//! through a pass that only decides.
 
 use fleet_controller::events::{self, ActorRef, EventLog};
 use fleet_controller::runs::{self, CapHold, Pass, Runs, Standing};

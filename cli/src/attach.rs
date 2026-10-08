@@ -61,7 +61,7 @@ pub fn attach_command(args: &AttachArgs) -> Exit {
     // The argument through the seat list's resolver, exactly as `seat nudge`
     // takes it: its full id, eight or more of its hex digits, its name or its
     // machine name. Its id names the session; its machine name, every sentence.
-    let row = match crate::transient::seat_named(&here.machine_dir, &args.seat) {
+    let row = match fleet_controller::project::wiring::seat_named(&here.machine_dir, &args.seat) {
         Ok(row) => row,
         Err(stop) => return stopped(&stop.message, code(stop.code)),
     };

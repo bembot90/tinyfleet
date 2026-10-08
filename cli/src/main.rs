@@ -20,7 +20,6 @@ mod lifecycle;
 mod nudge;
 mod prime;
 mod routines;
-mod runs;
 mod seat_add;
 mod status;
 mod step;
@@ -664,7 +663,7 @@ fn dispatch() -> Result<Exit> {
 /// machine registers. `None` here is a loop that never re-runs, holds or cleans
 /// a run.
 pub fn observe_loop(once: bool) -> u8 {
-    let engine = runs::Engine::on(platform::machine_dir());
+    let engine = fleet_controller::runs::Engine::on(platform::machine_dir());
     run::observe_runs(
         &run::Options { once },
         platform::Grant::new(platform::directory_listing(), platform::GRANT_PROBE_TIMEOUT),
@@ -714,7 +713,7 @@ fn event_command(verb: &EventVerb) -> Result<Exit> {
     // The seat argument through the seat list's resolver first, and its id
     // from here on: the stream and the projection are keyed on it.
     let machine_dir = platform::machine_dir();
-    let seat = match transient::seat_named(&machine_dir, seat) {
+    let seat = match fleet_controller::project::wiring::seat_named(&machine_dir, seat) {
         Ok(row) => row.id,
         Err(stop) => {
             eprintln!("fleet event {name}: {}", stop.message);

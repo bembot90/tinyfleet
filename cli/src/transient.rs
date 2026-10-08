@@ -2,18 +2,20 @@
 //! the controller's transient-seat primitives.
 //!
 //! Everything here is what only a process knows: the project the cwd resolves
-//! to, its two directories, the clock, the agent binary and the file a turn is
-//! read from. The refusals, the exits and the writes are
-//! `fleet_controller::transient`'s, so the belt that would refuse a spawn lives
-//! beside the loop that starts the session.
+//! to, the clock and the file a turn is read from; the two directories, the
+//! agent and the host it is wired with are
+//! `fleet_controller::project::wiring`'s. The refusals, the exits and the
+//! writes are `fleet_controller::transient`'s, so the belt that would refuse a
+//! spawn lives beside the loop that starts the session.
 
 use std::path::{Path, PathBuf};
 
-use fleet_controller::host::{Host, TmuxHost};
+use fleet_controller::project::wiring::{
+    effect_agent, machine_of, permissions_of, policy_of, seat_named, spawn_host, verb_host, Where,
+};
 use fleet_controller::project::{open_store, resolve_at, Here};
 use fleet_controller::transient::{self, Machine, Refusal};
-use fleet_controller::{clock, config, platform, policy as controller, sessions};
-use fleet_core::agent::{self, Agent, Permissions};
+use fleet_controller::{clock, platform, sessions};
 use fleet_core::entry::Entry;
 
 use fleet_core::item::land::{self, Release};
@@ -524,44 +526,6 @@ fn outcome_of(code: u8, message: String) -> SpawnOutcome {
 
 // ---- what only a process knows ----------------------------------------------
 
-/// The two directories a verb acts in, resolved once so the borrow they are
-/// handed down as has an owner in the caller's frame.
-pub(crate) struct Where {
-    primary: PathBuf,
-    worktrees: PathBuf,
-}
-
-impl Where {
-    pub(crate) fn of(here: &Here) -> Result<Where, Stop> {
-        Ok(Where {
-            primary: here.primary()?,
-            worktrees: here.worktrees_dir()?,
-        })
-    }
-}
-
-pub(crate) fn machine_of<'a>(
-    here: &'a Here,
-    at: &'a Where,
-    agent: &'a dyn Agent,
-    host: &'a dyn Host,
-    policy: &'a controller::Policy,
-) -> Machine<'a> {
-    Machine {
-        machine_dir: &here.machine_dir,
-        agent,
-        host,
-        policy,
-        project: &here.project.name,
-        primary: &at.primary,
-        worktrees_dir: &at.worktrees,
-        // The binary is where the two overrides and the platform are read,
-        // which is what keeps a variable out of a process that forks children
-        // while its own threads are running.
-        readings: transient::Readings::taken(),
-    }
-}
-
 /// The project this directory resolves to, with `--project` checked against it.
 ///
 /// `--project` SELECTS NOTHING here: choosing among registered projects is the
@@ -581,141 +545,6 @@ pub(crate) fn resolved(project: Option<&str>) -> Result<Here, Stop> {
         }
     }
     Ok(here)
-}
-
-/// The one row a seat argument names — its full id, eight or more of its hex
-/// digits, its name or its machine name — resolved through the seat list
-/// before anything is asked of the controller.
-///
-/// THE ROW IS WHAT IS HANDED ON: its id is what the session table, the stream
-/// and the projection key the seat on, and its machine name is what a sentence
-/// and the work graph name it by. A refusal is the resolver's own, with the
-/// exit it carries; a seat list nobody could read is could-not-tell, never a
-/// fleet with no seats.
-pub(crate) fn seat_named(machine_dir: &Path, arg: &str) -> Result<config::Seat, Stop> {
-    let path = machine_dir.join("config.json");
-    let machine = config::read(&path).map_err(|why| {
-        Stop::could_not_tell(format!(
-            "the seat list could not be read, so no seat can be named: {why}"
-        ))
-    })?;
-    machine.resolve(arg).cloned().map_err(Stop::from)
-}
-
-/// What a spawned seat may run without asking, in fleet's own words: the
-/// store's own command word, the project's `[permissions] tool_commands` after
-/// it, and the builder's checks, the one command the caller handed in. A spawn
-/// handed none names none, and its seat's rules then name no command nobody
-/// gave.
-///
-/// THE STORE'S WORD IS THE STORE'S TO DECLARE (`capabilities().cli`), rendered
-/// as a tool command is, so no store's name is written in core: a seat reaches
-/// its fleet's store from its shell whichever store that is. A store that
-/// does not open, or declares no word, adds none — no seat reaches it from a
-/// shell.
-fn permissions_of(here: &Here, touched: Option<&str>) -> Result<Permissions, Stop> {
-    here.project.refuse_moved()?;
-    let mut commands: Vec<String> = store_word_of(here).into_iter().collect();
-    for word in tool_commands_of(here)? {
-        if !commands.contains(&word) {
-            commands.push(word);
-        }
-    }
-    Ok(Permissions {
-        commands,
-        touched: touched
-            .map(str::trim)
-            .filter(|command| !command.is_empty())
-            .map(str::to_string),
-    })
-}
-
-/// The first word a seat types to reach this project's store, as the store
-/// declares it.
-fn store_word_of(here: &Here) -> Option<String> {
-    open_store(here).ok()?.capabilities().ok()?.cli
-}
-
-/// `[permissions] tool_commands`, checked entry by entry to be one command word.
-///
-/// The check is AT THE CALL and names the entry, because the rule it is
-/// rendered into is matched by its opening token: a word carrying a space, a
-/// glob character or a leading dash would widen a seat's posture past the list
-/// the project meant to write, and the widening would not be visible anywhere
-/// but in the seat's own settings file hours later.
-fn tool_commands_of(here: &Here) -> Result<Vec<String>, Stop> {
-    let declared =
-        match fleet_core::policy::read("permissions", "tool_commands", &here.project.policy) {
-            Ok(Some(value)) => value,
-            _ => return Ok(Vec::new()),
-        };
-    let entries = declared.as_array().ok_or_else(|| {
-        Stop::usage("[permissions] tool_commands is not a list of command words".to_string())
-    })?;
-    let mut words = Vec::with_capacity(entries.len());
-    for entry in entries {
-        match entry.as_str().filter(|word| is_command_word(word)) {
-            Some(word) => words.push(word.to_string()),
-            None => {
-                return Err(Stop::usage(format!(
-                    "[permissions] tool_commands entry `{entry}` is not one command word"
-                )))
-            }
-        }
-    }
-    Ok(words)
-}
-
-/// One command word: a bare name, or a path relative to the repository.
-///
-/// Everything refused here is refused for the same reason — it would put
-/// something other than a command word inside the rule it is rendered into.
-fn is_command_word(word: &str) -> bool {
-    !word.is_empty()
-        && !word.starts_with('-')
-        && !word
-            .chars()
-            .any(|c| c.is_whitespace() || matches!(c, '*' | '?' | '[' | ']'))
-}
-
-/// The policy the verbs read, from the file the machine's seat list names.
-pub(crate) fn policy_of(here: &Here) -> Result<controller::Policy, Stop> {
-    controller::load(&fleet_toml_of(here)?).map_err(Stop::could_not_tell)
-}
-
-/// The file the machine's seat list names: the fleet's own.
-fn fleet_toml_of(here: &Here) -> Result<PathBuf, Stop> {
-    config::read(&here.machine_dir.join("config.json"))
-        .map(|machine| machine.fleet_toml)
-        .map_err(|cause| Stop::could_not_tell(format!("the seat list: {cause}")))
-}
-
-/// The agent, opened the one way every caller opens it — an agent that
-/// cannot issue effects is a refusal here, naming why its own answers say so.
-pub(crate) fn effect_agent(here: &Here, home: &Path) -> Result<Box<dyn Agent>, Stop> {
-    let setting = agent::Setting::read(&fleet_toml_of(here)?, &here.machine_dir)
-        .map_err(Stop::could_not_tell)?;
-    let search_path = platform::child_path(home);
-    let opened = agent::open(&setting.opening(&search_path)).map_err(Stop::could_not_tell)?;
-    match opened.effects_off {
-        Some(why) => Err(Stop::could_not_tell(why)),
-        None => Ok(Box::new(opened.agent)),
-    }
-}
-/// The host a spawn starts its session on, resolved ONCE on the constructed
-/// `PATH` the adapter's children carry, or the refusal naming why there is
-/// none — for a verb whose whole act is a session started, and which must not
-/// claim a name or make a worktree for a start that cannot happen.
-pub(crate) fn spawn_host(home: &Path) -> Result<TmuxHost, Stop> {
-    TmuxHost::resolve(&platform::child_path(home)).map_err(Stop::could_not_tell)
-}
-
-/// The host for a verb that starts no session: resolved the same way, and
-/// where it does not resolve, a host that refuses every call with the cause —
-/// so a machine with no host can still feed and retire, and a call that did
-/// need one names why it failed.
-pub(crate) fn verb_host(home: &Path) -> Box<dyn Host> {
-    fleet_controller::host::resolve(&platform::child_path(home))
 }
 
 /// The first turn's TEXT. A file that is not there is a usage error and not a

@@ -15,6 +15,7 @@ use crate::lifecycle::{FLEET_TOML, PROJECT_TOML};
 use crate::{config, platform};
 
 pub mod stream;
+pub mod wiring;
 
 pub struct Here {
     pub project: Project,

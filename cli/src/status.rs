@@ -21,14 +21,13 @@ use fleet_controller::policy::{self as controller_policy, Policy};
 use fleet_controller::project::{open_store, resolve_from};
 use fleet_controller::projection::{self, Projection, SeatRow};
 use fleet_controller::routines::RoutineRow;
-use fleet_controller::runs::{self, CapHold, Reading, Runs, Standing};
+use fleet_controller::runs::{self, registered_roots, CapHold, Engine, Reading, Runs, Standing};
 use fleet_controller::seat::COLLECTOR_STALE_POLLS;
 use fleet_controller::{clock, config, platform};
 use fleet_core::item::{rules, Stop};
 use fleet_core::policy as core_policy;
 
 use crate::exit::Exit;
-use crate::runs::{registered_roots, Engine};
 
 /// The published document, under the machine directory.
 const PROJECTION: &str = "projection.json";

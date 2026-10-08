@@ -204,7 +204,7 @@ fn seat_views(fleet: &Fleet, needs_roster: bool) -> Vec<SeatView> {
         // opened the one way every caller opens it and asked ONCE about every
         // seat whose pane is alive, each under its own directory — the same
         // read the loop makes, so a spawned seat is not rung as nobody.
-        let host = crate::transient::verb_host(&home).list();
+        let host = fleet_controller::project::wiring::verb_host(&home).list();
         match agent::open(&fleet.setting.opening(&fleet.child_path)) {
             Ok(opened) => observe::observe_fleet(
                 &opened.agent,

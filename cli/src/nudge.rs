@@ -61,7 +61,7 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
     // The argument through the seat list's resolver, and its id from here on:
     // the projection, the ring and the stream are keyed on it. Every sentence
     // names the seat by its machine name.
-    let row = match crate::transient::seat_named(&here.machine_dir, &args.seat) {
+    let row = match fleet_controller::project::wiring::seat_named(&here.machine_dir, &args.seat) {
         Ok(row) => row,
         Err(stop) => return stopped(&stop.message, stop.code),
     };

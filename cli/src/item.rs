@@ -993,7 +993,7 @@ pub(crate) struct BoxLoad {
 impl BoxLoad {
     pub(crate) fn of(here: &Here) -> BoxLoad {
         BoxLoad {
-            ceiling_per_cpu: crate::transient::policy_of(here)
+            ceiling_per_cpu: fleet_controller::project::wiring::policy_of(here)
                 .ok()
                 .map(|policy| policy.load_ceiling_per_cpu),
         }

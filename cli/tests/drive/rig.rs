@@ -1050,13 +1050,10 @@ impl Rig {
     /// SIGINT and SIGTERM handlers. They belong to the whole binary, and a test
     /// process holding them answers the harness's SIGTERM by living on.
     ///
-    /// THREE THINGS THE ARM DOES NOT GET, and none is any arm's subject. The
-    /// run seam the binary fills is `None` here, because `fleet-cli` is one
-    /// binary and no library, so its `Engine` is unreachable from a test of it;
-    /// no fixture in this file opens a run, so the pass would ask no store
-    /// anything. The two lines `main` adds to a refused startup — its own
-    /// error chain — are absent, while the loop's own line naming the path it
-    /// could not read is what the two refusal arms assert on.
+    /// TWO THINGS THE ARM DOES NOT GET, and none is any arm's subject. The two
+    /// lines `main` adds to a refused startup — its own error chain — are
+    /// absent, while the loop's own line naming the path it could not read is
+    /// what the two refusal arms assert on.
     ///
     /// The status is the loop's own `u8` dressed as a wait status, which is the
     /// same number the binary's exit table maps it to for the two the loop can
@@ -1107,13 +1104,14 @@ impl Rig {
         let err = Redirected::to(2, self.root.join("in-process.err"));
         let clock = FakeClock::new();
         let wiring = run::Wiring::resolve();
+        let engine = fleet_controller::runs::Engine::on(self.machine());
         let status = run::observe_seamed(
             &run::Options { once: true },
             fleet_controller::platform::Grant::new(
                 fleet_controller::platform::directory_listing(),
                 fleet_controller::platform::GRANT_PROBE_TIMEOUT,
             ),
-            None,
+            Some(&engine as &dyn fleet_controller::runs::Runs),
             wiring.seams(&clock, run::StopHandler::Unarmed),
         );
         let stderr = err.taken();
@@ -1185,6 +1183,7 @@ impl Rig {
 
         let clock = FakeClock::new();
         let wiring = run::Wiring::resolve();
+        let engine = fleet_controller::runs::Engine::on(self.machine());
         let started = {
             let _out = Redirected::appending(1, self.root.join("in-process.out"));
             let _err = Redirected::appending(2, self.stderr_path());
@@ -1193,7 +1192,7 @@ impl Rig {
                     fleet_controller::platform::directory_listing(),
                     fleet_controller::platform::GRANT_PROBE_TIMEOUT,
                 ),
-                None,
+                Some(&engine as &dyn fleet_controller::runs::Runs),
                 wiring.seams(&clock, run::StopHandler::Unarmed),
             )
         };
