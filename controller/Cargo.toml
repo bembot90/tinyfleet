@@ -54,7 +54,8 @@ required-features = ["test-support"]
 # only. Default features off: the local-zone read wants `std`, `tz-system` (the
 # zone this machine is set to) and `tzdb-zoneinfo` (the system database the two
 # target platforms both ship); the bundled database, the fat transition tables
-# and the concatenated Android format are all left out.
+# and the concatenated Android format are all left out. The UTC stamps in
+# clock.rs are written and read through it as well.
 #
 # fleet-core: the bounded runner — the process group, the deadline and the
 # drains — is core's, because the store bounds its own calls with it and core

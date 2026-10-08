@@ -1,9 +1,8 @@
-//! UTC stamps and monotonic-ish milliseconds, by arithmetic, and the [`Clock`]
+//! UTC stamps, through jiff, and monotonic-ish milliseconds, by arithmetic, and the [`Clock`]
 //! a wait is spent against.
 //!
-//! No date crate here: every stamp is UTC, and the civil-from-days calendar
-//! below is all a UTC formatter needs. The slice that reads local wall-clock
-//! chooses its own crate.
+//! Every stamp is UTC and to the second, written and read in one shape through
+//! jiff, the crate the cron trigger reads local wall-clock with.
 //!
 //! [`Clock`] is the seam between a wait whose subject is a DURATION and real
 //! time. A wait whose subject is an OS fact — has this child exited, has this
@@ -11,6 +10,11 @@
 //! exit sooner.
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use jiff::{civil::DateTime, tz::Offset, Timestamp};
+
+/// The one stamp shape, as the writer renders it and the reader parses it.
+const FORM: &str = "%Y-%m-%dT%H:%M:%SZ";
 
 /// The passage of time, as a wait sees it.
 ///
@@ -86,16 +90,14 @@ pub fn now_stamp() -> String {
     )
 }
 
+/// A second past jiff's last timestamp (9999-12-30T22:00:00Z) renders as that
+/// timestamp; no clock reading reaches it.
 pub fn stamp_secs(secs: u64) -> String {
-    let days = (secs / 86_400) as i64;
-    let rem = secs % 86_400;
-    let (y, m, d) = civil_from_days(days);
-    format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
-        rem / 3600,
-        (rem % 3600) / 60,
-        rem % 60
-    )
+    let at = i64::try_from(secs)
+        .ok()
+        .and_then(|s| Timestamp::from_second(s).ok())
+        .unwrap_or(Timestamp::MAX);
+    at.strftime(FORM).to_string()
 }
 
 /// How long ago a stamp this module wrote was written, in seconds.
@@ -120,42 +122,9 @@ pub fn secs_of_stamp(stamp: &str) -> Option<u64> {
     if bytes[13] != b':' || bytes[16] != b':' || bytes[19] != b'Z' {
         return None;
     }
-    let field = |from: usize, to: usize| stamp[from..to].parse::<i64>().ok();
-    let (y, m, d) = (field(0, 4)?, field(5, 7)?, field(8, 10)?);
-    let (hh, mm, ss) = (field(11, 13)?, field(14, 16)?, field(17, 19)?);
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || hh > 23 || mm > 59 || ss > 60 {
-        return None;
-    }
-    let days = days_from_civil(y, m as u64, d as u64);
-    u64::try_from(days * 86_400 + hh * 3600 + mm * 60 + ss).ok()
-}
-
-/// A proleptic Gregorian date to days since 1970-01-01 (Howard Hinnant's
-/// `days_from_civil`), the exact inverse of the split below.
-fn days_from_civil(y: i64, m: u64, d: u64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = (y - era * 400) as u64;
-    let mp = if m > 2 { m - 3 } else { m + 9 };
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe as i64 - 719_468
-}
-
-/// Days since 1970-01-01 to a proleptic Gregorian date (Howard Hinnant's
-/// `civil_from_days`), with March as the first month of the internal year so
-/// the leap day falls at the end of the cycle.
-fn civil_from_days(z: i64) -> (i64, u64, u64) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (if m <= 2 { y + 1 } else { y }, m, d)
+    let at = DateTime::strptime(FORM, stamp).ok()?;
+    let secs = u64::try_from(Offset::UTC.to_timestamp(at).ok()?.as_second()).ok()?;
+    (stamp_secs(secs) == stamp).then_some(secs)
 }
 
 #[cfg(test)]
@@ -166,7 +135,7 @@ mod tests {
     fn the_epoch_and_two_later_days() {
         assert_eq!(stamp_secs(0), "1970-01-01T00:00:00Z");
         assert_eq!(stamp_secs(1_788_600_000), "2026-09-05T09:20:00Z");
-        // A leap day, which the month-shifted arithmetic exists to get right.
+        // A leap day, which the calendar must get right.
         assert_eq!(stamp_secs(1_709_164_800), "2024-02-29T00:00:00Z");
     }
 
@@ -230,5 +199,58 @@ mod tests {
     fn seconds_within_a_day_are_split_into_hours_minutes_seconds() {
         assert_eq!(stamp_secs(86_399), "1970-01-01T23:59:59Z");
         assert_eq!(stamp_secs(86_400), "1970-01-02T00:00:00Z");
+    }
+
+    #[test]
+    fn the_writer_renders_each_calendar_edge_as_it_always_has() {
+        for (secs, stamp) in [
+            (0, "1970-01-01T00:00:00Z"),
+            (86_399, "1970-01-01T23:59:59Z"),
+            (86_400, "1970-01-02T00:00:00Z"),
+            (68_169_599, "1972-02-28T23:59:59Z"),
+            (68_169_600, "1972-02-29T00:00:00Z"),
+            (951_782_400, "2000-02-29T00:00:00Z"),
+            (951_868_800, "2000-03-01T00:00:00Z"),
+            (978_307_199, "2000-12-31T23:59:59Z"),
+            (1_709_164_800, "2024-02-29T00:00:00Z"),
+            (1_740_787_200, "2025-03-01T00:00:00Z"),
+            (2_147_483_648, "2038-01-19T03:14:08Z"),
+            (4_107_542_400, "2100-03-01T00:00:00Z"),
+            (4_107_628_800, "2100-03-02T00:00:00Z"),
+            (253_402_207_199, "9999-12-30T21:59:59Z"),
+        ] {
+            assert_eq!(stamp_secs(secs), stamp, "{secs} renders as {stamp}");
+            assert_eq!(secs_of_stamp(stamp), Some(secs), "{stamp} reads as {secs}");
+        }
+    }
+
+    #[test]
+    fn every_stamp_the_writer_makes_reads_back_across_the_range() {
+        for secs in (0..=253_402_207_199).step_by(997_331) {
+            let stamp = stamp_secs(secs);
+            assert_eq!(stamp.len(), 20, "{stamp} is not 20 bytes");
+            assert_eq!(
+                secs_of_stamp(&stamp),
+                Some(secs),
+                "{secs} did not round-trip through {stamp}"
+            );
+        }
+    }
+
+    /// A date the calendar does not hold is refused rather than rolled into
+    /// the next month: a cursor at 02-31 is a moment nobody meant.
+    #[test]
+    fn an_impossible_date_is_no_reading_at_all() {
+        for bad in [
+            "2026-02-31T00:00:00Z",
+            "2026-02-29T00:00:00Z",
+            "2026-04-31T00:00:00Z",
+            "2026-10-07T12:00:60Z",
+            "2026-+9-08T00:00:00Z",
+            "2026-09-08T-1:00:00Z",
+            "2026-09-08T 1:00:00Z",
+        ] {
+            assert_eq!(secs_of_stamp(bad), None, "{bad:?} is not a date");
+        }
     }
 }
