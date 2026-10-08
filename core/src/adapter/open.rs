@@ -95,8 +95,12 @@ pub struct Resolved {
 /// imports declare — put in front where the path misses it.
 pub fn resolve(wanted: &Wanted) -> Result<Resolved, String> {
     let refused = |why: Unopened| unopened(wanted.kind, wanted.source, why);
-    let named = crate::policy::read(wanted.kind.as_str(), "adapter", wanted.policy)
-        .map_err(|unlisted| unlisted.to_string())?;
+    // Each table is written out, so the census test reads both pairs here.
+    let named = match wanted.kind {
+        AdapterKind::Store => crate::policy::read("store", "adapter", wanted.policy),
+        AdapterKind::Agent => crate::policy::read("agent", "adapter", wanted.policy),
+    }
+    .map_err(|unlisted| unlisted.to_string())?;
     let name = match named {
         None => wanted.default,
         Some(toml::Value::String(path)) if path.starts_with('/') => {
