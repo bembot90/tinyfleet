@@ -301,7 +301,7 @@ MUTATIONS = [
     ("wiring: the clear-halt request is consumed on the tick",
      "controller/src/run.rs",
      "                .map(|asked| asked.clear_halt)",
-     "                .map(|asked| asked.clear_halt && asked.rest)",
+     "                .map(|asked| asked.clear_halt && asked.rest_seq.is_some())",
      ["-p", "fleet-cli", "--test", "drive"],
      "effects::three_blind_dispatches_halt_the_seat_and_a_clear_halt_lifts_it"),
 

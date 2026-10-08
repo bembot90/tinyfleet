@@ -35,13 +35,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-# The trees read. This file lives under fleet/tools, which is none of them: the
+# The trees read. This file lives under tools, which is none of them: the
 # scan cannot reach its own source, so no admission for it is owed.
-TREES = ("fleet/cli/tests", "fleet/core/tests", "fleet/controller/tests")
+TREES = ("cli/tests", "core/tests", "controller/tests")
 
 # The one file allowed to name the variables, excluded from checks ONE and
 # THREE by this path and not by anything it contains.
-HELPER = "fleet/controller/tests/common/hermetic.rs"
+HELPER = "controller/tests/common/hermetic.rs"
 
 # What the helper owes, each exactly once: a green from a scan that read a
 # helper missing one of these would be a green over a block with a hole in it.
