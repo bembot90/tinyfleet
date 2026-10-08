@@ -140,6 +140,12 @@ fn spawn_in_group(cmd: &mut Command, stdin: Stdio) -> Result<Child, String> {
 /// wait collects a status the kill has already produced — while a child in
 /// uninterruptible sleep is outside that, the signal staying pending and this
 /// wait having no bound of its own.
+///
+/// A wait that errs is the third way out, and it takes the deadline's kill
+/// and reap with it before the error goes back: the error says nothing about
+/// the group, so a group left alive there would be one no deadline reaches,
+/// and its drains parked on its pipes with it. Neither the deadline nor an
+/// error leaves a live group behind it.
 fn wait_or_kill(
     child: &mut Child,
     group: u32,
@@ -149,7 +155,11 @@ fn wait_or_kill(
         match child.try_wait() {
             Ok(Some(status)) => return Ok(Some(status)),
             Ok(None) => {}
-            Err(e) => return Err(format!("could not wait on the child: {e}")),
+            Err(e) => {
+                kill_process_group(group);
+                let _ = child.wait();
+                return Err(format!("could not wait on the child: {e}"));
+            }
         }
         if Instant::now() >= deadline {
             kill_process_group(group);
@@ -456,6 +466,50 @@ mod tests {
             !cause.contains("0s"),
             "and never rounded to a deadline of zero: {cause}"
         );
+    }
+
+    /// A wait that errs is the third way out of `wait_or_kill`, and it leaves
+    /// no live group behind it any more than the deadline does.
+    ///
+    /// The error is made the way the OS makes it: the leader is reaped behind
+    /// `Child`'s back, so its own `waitpid` answers ECHILD. A `sleep` the leader
+    /// left in the group is what an unbounded error path would leave running;
+    /// the deadline is far off, so only the error path can have killed it.
+    #[test]
+    fn a_wait_that_errs_still_kills_the_group() {
+        extern "C" {
+            fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+        }
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "sleep 30 & exit 0"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = spawn_in_group(&mut cmd, Stdio::null()).expect("the child spawns");
+        let group = child.id();
+        let mut status = 0;
+        assert_eq!(
+            unsafe { waitpid(group as i32, &mut status, 0) },
+            group as i32,
+            "the leader is reaped behind Child's back"
+        );
+        let group_lives = || unsafe { killpg(group as i32, 0) } == 0;
+        assert!(group_lives(), "the leader's sleep still holds the group");
+
+        let answer = wait_or_kill(&mut child, group, Instant::now() + Duration::from_secs(30));
+        assert!(
+            answer.is_err(),
+            "a reaped child is a wait that errs: {answer:?}"
+        );
+
+        // SIGKILL lands asynchronously and the orphaned sleep is reaped by
+        // init, so the group's end is polled for rather than read at once.
+        let gone_by = Instant::now() + Duration::from_secs(5);
+        while group_lives() && Instant::now() < gone_by {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let gone = !group_lives();
+        kill_process_group(group);
+        assert!(gone, "the error path killed the group before it returned");
     }
 
     /// The second collection: the same deadline and the same group kill, with
