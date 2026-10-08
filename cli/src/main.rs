@@ -22,6 +22,7 @@ mod nudge;
 mod pack;
 mod prime;
 mod routines;
+mod seams;
 mod seat_add;
 mod status;
 mod step;

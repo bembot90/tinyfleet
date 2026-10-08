@@ -134,15 +134,10 @@ pub fn command(ui: &Ui, args: &DoctorArgs) -> Exit {
             report.said(Row::of(
                 entry,
                 None,
-                Checked {
-                    verdict: Verdict::Pass,
-                    exit: None,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    line: String::from(
-                        "nothing pinned: no installed pack declares a [runtime] table",
-                    ),
-                },
+                answered(
+                    Verdict::Pass,
+                    String::from("nothing pinned: no installed pack declares a [runtime] table"),
+                ),
             ));
             continue;
         }
@@ -152,13 +147,7 @@ pub fn command(ui: &Ui, args: &DoctorArgs) -> Exit {
                     let path = child_path_for(&runtime.name, &run_base);
                     doctor::run(entry, &how(&layer.root, &path, root, &env))
                 }
-                Err(why) => Checked {
-                    verdict: Verdict::CouldNotTell,
-                    exit: None,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    line: why,
-                },
+                Err(why) => answered(Verdict::CouldNotTell, why),
             };
             report.said(Row::of(entry, Some(layer.name), checked));
         }
@@ -219,12 +208,8 @@ fn store_adapter(here: &Here) -> Checked {
 /// a flag to re-measure, and a finding would gate whatever consults the
 /// doctor.
 fn agent_adapter(here: &Here) -> Checked {
-    let setting = match agent::Setting::read(&here.policy_file, &here.machine_dir) {
-        Ok(setting) => agent::Setting {
-            packs_dir: here.packs_dir.clone(),
-            defaults_dir: here.defaults_dir.clone(),
-            ..setting
-        },
+    let setting = match here.agent_setting() {
+        Ok(setting) => setting,
         Err(why) => return answered(Verdict::CouldNotTell, why),
     };
     let home = platform::home_dir();
@@ -268,8 +253,9 @@ fn agent_adapter(here: &Here) -> Checked {
     }
 }
 
-/// A built-in row's verdict and its one line: it runs no script, so it has
-/// no exit and printed nothing else.
+/// A row's verdict and its one line where no script ran — a built-in row's,
+/// or a runtime-version row with nothing pinned or a pin that would not read:
+/// it has no exit and printed nothing else.
 fn answered(verdict: Verdict, line: String) -> Checked {
     Checked {
         verdict,

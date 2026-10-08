@@ -189,12 +189,8 @@ fn check(
     // setting, which is the default name.
     let machine_dir = platform::machine_dir();
     let mut setting = match project::resolve_at(None) {
-        Ok(here) => match agent::Setting::read(&here.policy_file, &here.machine_dir) {
-            Ok(setting) => agent::Setting {
-                packs_dir: here.packs_dir.clone(),
-                defaults_dir: here.defaults_dir.clone(),
-                ..setting
-            },
+        Ok(here) => match here.agent_setting() {
+            Ok(setting) => setting,
             Err(why) => return say("agent check", Exit::CouldNotTell, why),
         },
         Err(_) => agent::Setting::of(

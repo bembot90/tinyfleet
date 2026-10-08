@@ -8,11 +8,13 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use fleet_core::agent;
 use fleet_core::item::{project_name, table_at, Project, Stop};
 use fleet_core::seat::identity::Directory;
 use fleet_core::store::{self, AdapterSource, Opening, PackDirs, Store, StoreError, STORE_TIMEOUT};
 
 use crate::lifecycle::{FLEET_TOML, PROJECT_TOML};
+use crate::project::stream::StreamEvents;
 use crate::{config, platform};
 
 pub mod stream;
@@ -59,6 +61,23 @@ impl Here {
         Ok(self
             .under_root("worktrees", named)?
             .unwrap_or_else(|| derived_worktrees_dir(&self.project.root)))
+    }
+
+    /// The machine's event stream, as every verb appends to it.
+    pub fn events(&self) -> StreamEvents {
+        StreamEvents::at(crate::events::path_in(&self.machine_dir))
+    }
+
+    /// The agent setting the fleet's policy file selects, read as every opener
+    /// reads it, over the packs and defaults this resolution names rather than
+    /// the machine's own.
+    pub fn agent_setting(&self) -> Result<agent::Setting, String> {
+        let setting = agent::Setting::read(&self.policy_file, &self.machine_dir)?;
+        Ok(agent::Setting {
+            packs_dir: self.packs_dir.clone(),
+            defaults_dir: self.defaults_dir.clone(),
+            ..setting
+        })
     }
 
     /// One census answer as a path, with each of the reader's three answers kept

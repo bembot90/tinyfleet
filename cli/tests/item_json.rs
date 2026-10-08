@@ -730,6 +730,46 @@ fn an_empty_by_is_the_usage_row_before_the_verb_writes_anything() {
     assert_eq!(lines(), before, "nothing reached the stream");
 }
 
+/// Each of the six enveloped verbs refuses through the one wrapper they share:
+/// stdout is the one refusal document under the verb's own name, and stderr is
+/// the one line `fleet <verb>: <why>`, the same sentence the document carries.
+/// `land` rides here beside the five above, refused at its actor as they are.
+#[test]
+fn every_enveloped_verb_says_its_refusal_once_on_each_stream() {
+    let rig = Rig::new("enveloped");
+    let item = rig.a_ready_item();
+    let question = rig.question.display().to_string();
+    let delivery = rig.delivery.display().to_string();
+    let calls: [(&str, Vec<&str>); 6] = [
+        ("dispatch", vec!["dispatch", &item, "--to", &rig.target]),
+        ("deliver", vec!["deliver", "--delivery", &delivery]),
+        ("review", vec!["review", &item]),
+        ("hold", vec!["hold", "--question", &question]),
+        ("clear", vec!["clear", &item, "A"]),
+        ("land", vec!["land", &item, "abc1234"]),
+    ];
+
+    for (verb, args) in calls {
+        let mut with_flag = args.clone();
+        with_flag.extend(["--by", "", "--json"]);
+        let out = rig.run(&with_flag);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{verb} is usage: {}",
+            stderr(&out)
+        );
+        let refusal = refusal_of(&out, verb);
+        assert_eq!(refusal["code"], serde_json::json!("usage"), "{verb}");
+        let why = refusal["why"].as_str().expect("a why");
+        assert_eq!(
+            stderr(&out),
+            format!("fleet {verb}: {why}\n"),
+            "{verb}: one line on stderr, under the verb's name"
+        );
+    }
+}
+
 // ---- `fleet item show`: the SDK's one read of the store ---------------------
 
 impl Rig {

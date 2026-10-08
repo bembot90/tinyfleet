@@ -24,7 +24,8 @@ use fleet_controller::projection::{self, Stale};
 use fleet_controller::seat::COLLECTOR_STALE_POLLS;
 
 use crate::exit::{say, Exit};
-use crate::item::{acting, SeatRing};
+use crate::item::acting;
+use crate::seams::SeatRing;
 use crate::ui::{Stream, Tone, Ui};
 
 /// What the verb writes into the event's `source`, which is what tells a reader
@@ -77,9 +78,7 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
         return say("seat nudge", Exit::NoSession, &why);
     }
 
-    let ring = SeatRing {
-        machine_dir: here.machine_dir.clone(),
-    };
+    let ring = SeatRing::of(&here);
     let rung = ring.ring_with(&key, &args.text, args.timeout.map(Duration::from_secs));
     // `sent` only where the listing witnessed the turn taken; a turn queued
     // behind the one in hand is typed and exits 0 too, and says it is queued.
