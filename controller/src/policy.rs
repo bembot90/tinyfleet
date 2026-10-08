@@ -200,13 +200,13 @@ fn models(configured: Option<Vec<String>>) -> Option<Vec<String>> {
 }
 
 pub fn load(path: &Path) -> Result<Policy, String> {
-    read(path).map(|(policy, _)| policy)
+    load_with_table(path).map(|(policy, _)| policy)
 }
 
 /// One read of the policy file: the policy it parses to and the whole file as
 /// a table, both from the same bytes, so a reader holding one never holds the
 /// other from a different moment.
-pub fn read(path: &Path) -> Result<(Policy, toml::Table), String> {
+pub fn load_with_table(path: &Path) -> Result<(Policy, toml::Table), String> {
     let body = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let policy = parse(&body).map_err(|e| format!("{}: {e}", path.display()))?;
     let table = body
@@ -753,7 +753,7 @@ mod tests {
         let body =
             "[controller]\npoll_seconds = 7\n\n[seats.pell]\nkind = \"agent\"\nname = \"Pell\"\n";
         std::fs::write(&file, body).expect("the file is written");
-        let (policy, table) = read(&file).expect("the file reads");
+        let (policy, table) = load_with_table(&file).expect("the file reads");
         assert_eq!(policy, parse(body).expect("the body parses"));
         assert_eq!(policy.poll_seconds, 7);
         let seats = table
@@ -763,7 +763,7 @@ mod tests {
         assert!(seats.contains_key("pell"), "{seats:?}");
 
         std::fs::write(&file, "[controller\n").expect("the file is written");
-        let refused = read(&file).expect_err("a broken file does not read");
+        let refused = load_with_table(&file).expect_err("a broken file does not read");
         assert_eq!(refused, load(&file).expect_err("nor does it load"));
 
         let _ = std::fs::remove_dir_all(&dir);

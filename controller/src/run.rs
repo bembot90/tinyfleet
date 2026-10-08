@@ -346,7 +346,7 @@ impl Inputs {
         // local and beats policy per key, so the overlay is recomputed
         // wherever either document is re-read, and the file's own value is what the
         // "did policy move?" test compares.
-        let (file_policy, file_table) = match policy::read(&policy_path) {
+        let (file_policy, file_table) = match policy::load_with_table(&policy_path) {
             Ok(read) => read,
             Err(why) => {
                 eprintln!("fleet observe: cannot read policy at {why}");
@@ -428,7 +428,7 @@ impl Inputs {
         let file_mtime = config::mtime(&self.policy_path);
         if policy_repointed || file_mtime != self.policy_seen {
             self.policy_seen = file_mtime;
-            match policy::read(&self.policy_path) {
+            match policy::load_with_table(&self.policy_path) {
                 Ok((fresh, table)) => {
                     if fresh != self.file_policy {
                         eprintln!(
