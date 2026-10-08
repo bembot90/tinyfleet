@@ -197,7 +197,8 @@ impl RigHost {
             // Renamed into place, so a listing read beside the rewrite meets
             // the old rows or the new ones and never half of either.
             let rows = serde_json::to_string(&rows).expect("the rows serialize");
-            platform::write_atomic(&listing, rows.as_bytes()).expect("the listing is rewritten");
+            fleet_core::fs::write_atomic(&listing, rows.as_bytes())
+                .expect("the listing is rewritten");
         }
     }
 

@@ -1654,7 +1654,7 @@ fn write_projection(machine_dir: &Path, document: &Projection) {
     let path: PathBuf = machine_dir.join("projection.json");
     match projection::render(document) {
         Ok(body) => {
-            if let Err(e) = platform::write_atomic(&path, body.as_bytes()) {
+            if let Err(e) = fleet_core::fs::write_atomic(&path, body.as_bytes()) {
                 eprintln!("fleet observe: could not publish {}: {e}", path.display());
             }
         }

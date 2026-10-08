@@ -37,9 +37,9 @@ use crate::platform;
 use crate::policy::Policy;
 use crate::projection::SeatView;
 use crate::sessions::{self, Table};
+use fleet_core::process::git;
 use fleet_core::seat::identity::{resolve, SeatId, SeatRef};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 /// The rows of the exit table a REFUSAL can carry.
@@ -1707,33 +1707,4 @@ fn bytes_under(dir: &Path) -> Option<u64> {
         }
     }
     Some(total)
-}
-
-// ---- git --------------------------------------------------------------------
-
-/// One git call in the primary, the binary through the standard library with
-/// the terminal prompt disabled.
-///
-/// A non-zero exit is a refusal naming the step and what git said, never a
-/// value rounded to a default: a verb that read a failed `worktree add` as a
-/// worktree would start a session in a directory that is not there.
-fn git(primary: &Path, step: &str, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(primary)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .map_err(|e| format!("`git {step}` could not be run: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "`git {step}` {}: {}",
-            match out.status.code() {
-                Some(code) => format!("exited {code}"),
-                None => String::from("was killed by a signal"),
-            },
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }

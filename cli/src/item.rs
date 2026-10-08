@@ -7,7 +7,11 @@
 //! core never depends on the controller — the workspace test refuses that edge
 //! — so the ring, which reaches the provider adapter, and the spawner, which
 //! will reach the controller's transient-seat primitives, meet here. git meets
-//! here too: core states the operations and this crate runs the binary.
+//! here too: core states the operations, and this crate answers them over
+//! `fleet_core::process::git`. Every git the shipped code runs by bare name
+//! is built by `fleet_core::process::git_command`; the one git it runs
+//! otherwise is the agent conformance's live `git init`, a resolved path on
+//! the constructed `PATH`.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -1360,38 +1364,13 @@ pub(crate) struct RealGit {
 
 impl RealGit {
     fn run(&self, step: &str, args: &[&str]) -> Result<String, String> {
-        // A repository whose remote wants credentials would otherwise sit at a
-        // prompt no verb can answer.
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&self.root)
-            .args(args)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .map_err(|e| format!("`git {step}` could not be run: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "`git {step}` {}: {}",
-                match out.status.code() {
-                    Some(code) => format!("exited {code}"),
-                    None => String::from("was killed by a signal"),
-                },
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        fleet_core::process::git(&self.root, step, args)
     }
 
     /// One call whose STATUS is part of the answer rather than a failure: the
     /// caller reads both halves. Only a git that could not be RUN is an error.
     fn attempt(&self, args: &[&str]) -> Result<std::process::Output, String> {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&self.root)
-            .args(args)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .map_err(|e| format!("`git {}` could not be run: {e}", args.join(" ")))
+        fleet_core::process::git_attempt(&self.root, args)
     }
 
     fn lines(&self, step: &str, args: &[&str]) -> Result<Vec<String>, String> {

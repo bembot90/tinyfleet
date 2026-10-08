@@ -13,9 +13,8 @@ use crate::adapter::Agent;
 use crate::effect::{self, TurnTarget, Typed};
 use crate::host::{self, Host};
 use crate::observe::RosterState;
-use crate::platform;
 use crate::policy::Policy;
-use fleet_core::process::{run_bounded, run_bounded_to_file};
+use fleet_core::process::{resolve_on_path, run_bounded, run_bounded_to_file};
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::store::{self, AdapterSource, Filter, NewItem, Opening, PackDirs, Update};
 use std::path::{Path, PathBuf};
@@ -99,7 +98,7 @@ pub fn child_command(program: &str, machine: &Machine) -> Command {
 /// the binary that ran and the search path the fleet constructed would be two
 /// different answers.
 pub fn shell(machine: &Machine) -> String {
-    platform::resolve_on_path(&path_for_children(machine.child_path), "sh")
+    resolve_on_path(&path_for_children(machine.child_path), "sh")
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "/bin/sh".to_string())
 }
@@ -494,7 +493,7 @@ fn run_exec(routine: &Routine, command: &str, machine: &Machine) -> Done {
 const FLEET: &str = "fleet";
 
 fn fleet_binary(machine: &Machine) -> Option<String> {
-    platform::resolve_on_path(&path_for_children(machine.child_path), FLEET)
+    resolve_on_path(&path_for_children(machine.child_path), FLEET)
         .map(|path| path.display().to_string())
 }
 

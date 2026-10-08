@@ -660,7 +660,7 @@ pub fn with_state<T>(root: &Path, act: impl FnOnce(&mut State) -> T) -> Result<T
     let answer = act(&mut state);
     let text = serde_json::to_vec_pretty(&state).expect("the state is JSON");
     let path = root.join(STATE_FILE);
-    crate::platform::write_atomic(&path, &text)
+    fleet_core::fs::write_atomic(&path, &text)
         .map_err(|e| format!("{} could not be written: {e}", path.display()))?;
     Ok(answer)
 }

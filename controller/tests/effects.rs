@@ -363,13 +363,13 @@ mod lessons {
             .to_string_lossy()
             .into_owned();
         assert_eq!(
-            platform::resolve_on_path(&shaped, "tt-shared"),
+            fleet_core::process::resolve_on_path(&shaped, "tt-shared"),
             Some(shared),
             "a name both halves hold resolves to the system's copy, not {}",
             shadowed.display()
         );
         assert_eq!(
-            platform::resolve_on_path(&shaped, "tt-prefix-only"),
+            fleet_core::process::resolve_on_path(&shaped, "tt-prefix-only"),
             Some(only),
             "and a name only the prefix holds still resolves there"
         );
@@ -383,7 +383,7 @@ mod lessons {
         let prefix_python = PathBuf::from("/opt/homebrew/bin/python3");
         if system_python.exists() && prefix_python.exists() {
             assert_eq!(
-                platform::resolve_on_path(&built, "python3"),
+                fleet_core::process::resolve_on_path(&built, "python3"),
                 Some(system_python),
                 "the interpreter a child of this controller runs is the platform's"
             );

@@ -11,7 +11,6 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::lock;
 use crate::pack;
@@ -686,9 +685,8 @@ fn fetch(source: &Source, version: &Version, into: &Path) -> Result<String, Refu
 fn git(step: &'static str, args: &[&str]) -> Result<String, Refusal> {
     // A private source with no credentials on this box would otherwise sit at a
     // prompt no verb can answer; refused is the only outcome a caller can act on.
-    let out = Command::new("git")
+    let out = crate::process::git_command()
         .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .map_err(|e| Refusal::Git {
             step,

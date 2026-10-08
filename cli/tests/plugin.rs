@@ -1120,7 +1120,7 @@ fn with_no_seam_the_tracker_comes_off_the_constructed_child_path() {
         "the decoy is on no entry of the constructed child PATH {child_path}"
     );
     assert_eq!(
-        fleet_controller::platform::resolve_on_path(&child_path, "fx-probe-tracker"),
+        fleet_core::process::resolve_on_path(&child_path, "fx-probe-tracker"),
         Some(stub.clone()),
         "the constructed child PATH names the stub"
     );

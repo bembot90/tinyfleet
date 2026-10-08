@@ -127,6 +127,7 @@ pub mod defaults;
 pub mod digest;
 pub mod embedded;
 pub mod entry;
+pub mod fs;
 pub mod guard;
 pub mod input;
 pub mod item;

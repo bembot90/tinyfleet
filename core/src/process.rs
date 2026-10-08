@@ -8,7 +8,7 @@
 
 use std::io::{self, Read, Write};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -345,6 +345,86 @@ pub fn run_bounded_to_file(
     })
 }
 
+/// The first directory of `path` that holds `name` as a program.
+pub fn holding(path: &str, name: &str) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .find(|dir| is_executable_file(&dir.join(name)))
+}
+
+/// The first `name` on `path` that is there and executable, as an absolute
+/// path — or `None`, which is a binary this controller cannot exec rather than
+/// one it will try by bare name and discover at the spawn.
+///
+/// A `name` that is already a path with a separator in it resolves to itself:
+/// searching for it would look for a directory chain under each entry, which is
+/// not what a caller naming a path meant.
+pub fn resolve_on_path(path: &str, name: &str) -> Option<PathBuf> {
+    if name.is_empty() {
+        return None;
+    }
+    if name.contains('/') {
+        let named = PathBuf::from(name);
+        return is_executable_file(&named).then_some(named);
+    }
+    holding(path, name).map(|dir| dir.join(name))
+}
+
+/// A file that is there and executable: the opener asks it of an adapter's
+/// path, and the agent's opener asks it too.
+pub fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+/// A repository whose remote wants credentials would otherwise sit at a
+/// prompt no verb can answer.
+pub fn git_command() -> Command {
+    let mut git = Command::new("git");
+    git.env("GIT_TERMINAL_PROMPT", "0");
+    git
+}
+
+/// One git call in `dir`, one call per operation.
+///
+/// A non-zero exit is a refusal naming the step and what git said, never a
+/// value rounded to a default: a verb that read "no branch" as the trunk would
+/// refuse a delivery for a reason that was never true, and one that read a
+/// failed `worktree add` as a worktree would start a session in a directory
+/// that is not there.
+pub fn git(dir: &Path, step: &str, args: &[&str]) -> Result<String, String> {
+    let out = git_command()
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|e| format!("`git {step}` could not be run: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "`git {step}` {}: {}",
+            match out.status.code() {
+                Some(code) => format!("exited {code}"),
+                None => String::from("was killed by a signal"),
+            },
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// One call whose STATUS is part of the answer rather than a failure: the
+/// caller reads both halves. Only a git that could not be RUN is an error.
+pub fn git_attempt(dir: &Path, args: &[&str]) -> Result<Output, String> {
+    git_command()
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|e| format!("`git {}` could not be run: {e}", args.join(" ")))
+}
+
 /// Both drained buffers, or `None` when the deadline passed with one still
 /// unread. A stream whose thread ended without sending answers empty rather than
 /// blocking the other one.
@@ -670,5 +750,58 @@ mod tests {
         assert!(missing.contains("could not start"), "{missing}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The resolver reads the path it is given, and answers `None` rather than a
+    /// bare name a caller would discover at the spawn.
+    #[test]
+    fn the_resolver_finds_an_executable_on_the_path_it_is_given_and_refuses_the_rest() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("fleet-resolve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let runnable = dir.join("a-tool");
+        std::fs::write(&runnable, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&runnable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let plain = dir.join("not-a-tool");
+        std::fs::write(&plain, "text").unwrap();
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let search = dir.display().to_string();
+        assert_eq!(resolve_on_path(&search, "a-tool"), Some(runnable.clone()));
+        assert_eq!(
+            resolve_on_path(&search, "not-a-tool"),
+            None,
+            "a file that is there and is not executable is not a binary to exec"
+        );
+        assert_eq!(resolve_on_path(&search, "nothing-here"), None);
+        assert_eq!(resolve_on_path("", "a-tool"), None);
+        assert_eq!(resolve_on_path(&search, ""), None);
+
+        // A name with a separator in it is a PATH, not a name to search for: the
+        // answer is itself when it is executable and `None` when it is not.
+        assert_eq!(
+            resolve_on_path("/nowhere", &runnable.display().to_string()),
+            Some(runnable.clone())
+        );
+        assert_eq!(
+            resolve_on_path("/nowhere", &plain.display().to_string()),
+            None
+        );
+
+        // The FIRST match wins, which is what makes the order of the platform's
+        // list a policy rather than a set.
+        let second = std::env::temp_dir().join(format!("fleet-resolve-2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&second);
+        std::fs::create_dir_all(&second).unwrap();
+        let shadowed = second.join("a-tool");
+        std::fs::write(&shadowed, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&shadowed, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let both = format!("{}:{}", second.display(), dir.display());
+        assert_eq!(resolve_on_path(&both, "a-tool"), Some(shadowed));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&second);
     }
 }

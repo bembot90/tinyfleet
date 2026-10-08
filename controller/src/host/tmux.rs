@@ -24,7 +24,7 @@
 
 use super::{Host, HostRead, Pane, PaneState, SUBMIT_GAP};
 use crate::platform;
-use fleet_core::process::{run_bounded, run_bounded_fed};
+use fleet_core::process::{resolve_on_path, run_bounded, run_bounded_fed};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
@@ -101,7 +101,7 @@ impl TmuxHost {
                         "{TMUX_BIN_VAR} names `{named}`, which is not an absolute path"
                     ));
                 }
-                platform::resolve_on_path(child_path, named).ok_or_else(|| {
+                resolve_on_path(child_path, named).ok_or_else(|| {
                     format!("{TMUX_BIN_VAR} names `{named}`, which is not an executable file")
                 })?
             }
@@ -112,7 +112,7 @@ impl TmuxHost {
                     platform::HERMETIC_VAR
                 ))
             }
-            None => platform::resolve_on_path(child_path, DEFAULT_BIN).ok_or_else(|| {
+            None => resolve_on_path(child_path, DEFAULT_BIN).ok_or_else(|| {
                 format!("no `{DEFAULT_BIN}` on the constructed child PATH ({child_path})")
             })?,
         };

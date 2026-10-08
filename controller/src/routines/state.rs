@@ -105,7 +105,7 @@ pub fn write(machine_dir: &Path, state: &State) -> std::io::Result<()> {
     let mut body = serde_json::to_string_pretty(state)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     body.push('\n');
-    crate::platform::write_atomic(&path_in(machine_dir), body.as_bytes())
+    fleet_core::fs::write_atomic(&path_in(machine_dir), body.as_bytes())
 }
 
 /// Whether a lock file holds a live process, and which. `Held` is a run this

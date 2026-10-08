@@ -263,7 +263,7 @@ fn append(path: &Path, body: String, seat: &SeatRef, model: Option<&str>) -> Res
     // a fleet that cannot start again.
     identity::roster_in(&whole)
         .map_err(|e| Stop::could_not_tell(format!("{file} would not parse after the edit: {e}")))?;
-    platform::write_atomic(path, whole.as_bytes())
+    fleet_core::fs::write_atomic(path, whole.as_bytes())
         .map_err(|e| Stop::could_not_tell(format!("{file}: {e}")))?;
 
     // The read-back this write owes its own record, from the file and not from

@@ -1493,9 +1493,9 @@ impl Drop for Controller {
 /// A temp file in the destination directory and then a rename, which is one
 /// syscall the reader sees whole. The temp name carries the pid and a counter
 /// because arms run in parallel threads of one process, so a pid alone is not
-/// unique among them. `platform::write_atomic` in `fleet-controller` is the same
-/// shape and is read for it and not reused: the suite does not reach into the
-/// crate's own helpers for a fixture write.
+/// unique among them. `fleet_core::fs::write_atomic` is the same shape and is
+/// read for it and not reused: the suite does not reach into the crate's own
+/// helpers for a fixture write.
 ///
 /// The temp file is unlinked when the rename fails, so a failure leaves the
 /// directory as it found it rather than seeding the next arm's listing with a

@@ -777,12 +777,7 @@ fn write_brief(wiring: &Wiring, order: &Order, seat: &str) -> Result<PathBuf, St
     // transient dispatch lands while a seat may already be reading the first,
     // and a reader must see one whole file or the other and never half of each.
     let path = wiring.briefs_dir.join(format!("{}.md", order.item));
-    let scratch = wiring
-        .briefs_dir
-        .join(format!(".{}.{}.md", order.item, std::process::id()));
-    let written = std::fs::write(&scratch, &body).and_then(|()| std::fs::rename(&scratch, &path));
-    written.map_err(|e| {
-        let _ = std::fs::remove_file(&scratch);
+    crate::fs::write_atomic(&path, body.as_bytes()).map_err(|e| {
         stands(
             order.item,
             &format!("the brief could not be written to {}: {e}", path.display()),

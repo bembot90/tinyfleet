@@ -369,7 +369,7 @@ pub fn register(machine_dir: &Path, root: &Path, name: &str) -> Result<bool, Str
         basic(&root.display().to_string()),
         basic(name)
     ));
-    platform::write_atomic(&path, body.as_bytes())
+    fleet_core::fs::write_atomic(&path, body.as_bytes())
         .map_err(|e| format!("{}: {e}", path.display()))?;
     // The read-back this write owes its own record: a file that was written and
     // does not parse is a register the next registration would refuse to read.
@@ -532,7 +532,7 @@ pub fn write_seat_list(config_path: &Path, fleet_toml: &Path) -> Result<bool, St
         }))
         .map_err(|e| e.to_string())?
     );
-    platform::write_atomic(config_path, body.as_bytes())
+    fleet_core::fs::write_atomic(config_path, body.as_bytes())
         .map_err(|e| format!("{}: {e}", config_path.display()))?;
     Ok(true)
 }
@@ -712,7 +712,7 @@ fn write_back(fleet_toml: &Path, whole: &str, how: &str) -> Result<(String, bool
             fleet_toml.display()
         )
     })?;
-    platform::write_atomic(fleet_toml, whole.as_bytes())
+    fleet_core::fs::write_atomic(fleet_toml, whole.as_bytes())
         .map_err(|e| format!("{}: {e}", fleet_toml.display()))?;
     Ok((
         format!(

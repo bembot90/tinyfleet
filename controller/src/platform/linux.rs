@@ -1,7 +1,7 @@
 //! The Linux half of the platform layer.
 
-use super::{resolve_on_path, ServiceFile};
-use fleet_core::process::run_bounded;
+use super::ServiceFile;
+use fleet_core::process::{resolve_on_path, run_bounded};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;

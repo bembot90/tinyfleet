@@ -213,7 +213,7 @@ pub fn open(opening: &Opening) -> Result<Opened, String> {
         None => by_name(opening, DEFAULT_AGENT_ADAPTER),
         Some(toml::Value::String(path)) if path.starts_with('/') => {
             let adapter = Path::new(path);
-            if !fleet_core::store::executable_file(adapter) {
+            if !fleet_core::process::is_executable_file(adapter) {
                 return Err(unopened(opening.source, Unopened::NotExecutable(path)));
             }
             let dir = adapter

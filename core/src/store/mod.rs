@@ -387,7 +387,7 @@ pub fn open(at: &Opening) -> Result<Box<dyn Store>, StoreError> {
         None => by_name(at, DEFAULT_ADAPTER),
         Some(toml::Value::String(path)) if path.starts_with('/') => {
             let adapter = Path::new(path);
-            if !executable_file(adapter) {
+            if !crate::process::is_executable_file(adapter) {
                 return Err(unopened(at.source, Unopened::NotExecutable(path)));
             }
             Ok(Box::new(
@@ -547,15 +547,6 @@ pub fn project_policy(root: &Path) -> Result<toml::Table, StoreError> {
     text.parse::<toml::Table>().map_err(|e| {
         StoreError::Unreadable(format!("{} does not parse as TOML: {e}", file.display()))
     })
-}
-
-/// A file that is there and executable: the opener asks it of an adapter's
-/// path, and the agent's opener asks it too.
-pub fn executable_file(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
 }
 
 /// The body an append is handed, held to its kind's rules before anything is

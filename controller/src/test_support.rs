@@ -633,7 +633,7 @@ impl FakeServer {
     /// meets half a state.
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let bytes = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
-        crate::platform::write_atomic(path, &bytes).map_err(|e| format!("{}: {e}", path.display()))
+        fleet_core::fs::write_atomic(path, &bytes).map_err(|e| format!("{}: {e}", path.display()))
     }
 
     pub fn start(

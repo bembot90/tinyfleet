@@ -986,7 +986,7 @@ fn live_dirs(ctx: &Ctx) -> Result<(PathBuf, PathBuf), String> {
             .map_err(|e| format!("{} could not be made: {e}", dir.display()))?;
     }
     let path = crate::platform::child_path(&crate::platform::home_dir());
-    let git = crate::platform::resolve_on_path(&path, "git")
+    let git = fleet_core::process::resolve_on_path(&path, "git")
         .ok_or_else(|| format!("no `git` on the constructed child PATH ({path})"))?;
     let mut init = std::process::Command::new(git);
     init.env_clear()

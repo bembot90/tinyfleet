@@ -272,7 +272,7 @@ pub fn read(path: &Path) -> (Option<Table>, Option<String>) {
 pub fn write(path: &Path, table: &Table) -> Result<(), String> {
     let mut body = serde_json::to_string_pretty(table).map_err(|e| e.to_string())?;
     body.push('\n');
-    platform::write_atomic(path, body.as_bytes()).map_err(|e| e.to_string())
+    fleet_core::fs::write_atomic(path, body.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// The table under the lock that guards a read-modify-write of it, with the

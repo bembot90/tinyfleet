@@ -993,7 +993,7 @@ pub fn adapter_manifest(dir: &Path) -> Result<AdapterManifest, Defect> {
     if !program.is_file() {
         return Err(Defect::AdapterEntryMissing { path, entry });
     }
-    if !crate::store::executable_file(&program) {
+    if !crate::process::is_executable_file(&program) {
         return Err(Defect::AdapterEntryNotExecutable(
             program.display().to_string(),
         ));

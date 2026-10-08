@@ -908,11 +908,13 @@ pub fn child_path_for(runtime: &str, base: &str) -> String {
         return std::env::var("PATH").unwrap_or_default();
     }
     let name = runtime;
-    if holding(base, name).is_some() {
+    if crate::process::holding(base, name).is_some() {
         return base.to_string();
     }
-    let found = holding(&std::env::var("PATH").unwrap_or_default(), name)
-        .or_else(|| installer_bin(name).filter(|bin| is_program(&bin.join(name))));
+    let found =
+        crate::process::holding(&std::env::var("PATH").unwrap_or_default(), name).or_else(|| {
+            installer_bin(name).filter(|bin| crate::process::is_executable_file(&bin.join(name)))
+        });
     match found {
         Some(dir) => format!("{}:{base}", dir.display()),
         None => base.to_string(),
@@ -1001,20 +1003,6 @@ fn installer_bin(name: &str) -> Option<PathBuf> {
         _ => PathBuf::from(std::env::var("HOME").ok()?).join(format!(".{name}")),
     };
     Some(root.join("bin"))
-}
-
-/// The first directory of `path` that holds `name` as a program.
-fn holding(path: &str, name: &str) -> Option<PathBuf> {
-    std::env::split_paths(path)
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .find(|dir| is_program(&dir.join(name)))
-}
-
-fn is_program(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|found| found.is_file() && found.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
 }
 
 /// The pinned runtime's own doctor check, run as a child against the pack that

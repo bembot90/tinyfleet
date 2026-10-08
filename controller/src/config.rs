@@ -476,7 +476,7 @@ fn read_document(path: &Path) -> Result<serde_json::Value, String> {
 fn write_document(path: &Path, document: &serde_json::Value) -> Result<(), String> {
     let mut body = serde_json::to_string_pretty(document).map_err(|e| e.to_string())?;
     body.push('\n');
-    crate::platform::write_atomic(path, body.as_bytes()).map_err(|e| e.to_string())
+    fleet_core::fs::write_atomic(path, body.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// The `children` array, made where the document carries none. A `children` key

@@ -12,7 +12,6 @@
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::io::Write;
 use std::path::Path;
 
 pub const LOCK: &str = "packs.lock";
@@ -170,23 +169,8 @@ pub fn render(entries: &[Entry]) -> String {
 /// The whole document or none of it: a synced temp file beside the lock, renamed
 /// over the path, so a symlink or read-only file standing there is replaced.
 pub fn write(path: &Path, entries: &[Entry]) -> Result<(), LockError> {
-    let dir = match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent,
-        _ => Path::new("."),
-    };
-    std::fs::create_dir_all(dir).map_err(|e| LockError::Unwritable(e.to_string()))?;
-    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or(LOCK);
-    let tmp = dir.join(format!(".{name}.tmp-{}", std::process::id()));
-    let landed = (|| -> std::io::Result<()> {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(render(entries).as_bytes())?;
-        f.sync_all()?;
-        std::fs::rename(&tmp, path)
-    })();
-    landed.map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        LockError::Unwritable(e.to_string())
-    })
+    crate::fs::write_atomic(path, render(entries).as_bytes())
+        .map_err(|e| LockError::Unwritable(e.to_string()))
 }
 
 /// Add or replace one entry, keyed by source, and write the whole document. A
