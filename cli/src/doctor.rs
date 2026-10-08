@@ -39,8 +39,9 @@ use std::path::{Path, PathBuf};
 use fleet_controller::{adapter, platform};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::doctor::{self, Checked, Entry, Invocation, Verdict, RUNTIME_VERSION};
-use fleet_core::item::run::{child_path_for, ENV_BIN, ENV_PROJECT};
+use fleet_core::item::run::{ENV_BIN, ENV_PROJECT};
 use fleet_core::item::Stop;
+use fleet_core::runtime::child_path_for;
 use fleet_core::store::{self, types::CONTRACT_VERSION};
 
 use crate::envelope;

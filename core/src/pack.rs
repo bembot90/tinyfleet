@@ -426,15 +426,13 @@ pub fn check(root: &Path) -> Report {
     }
 
     let manifest = if has_manifest {
-        match fs::read_to_string(root.join(MANIFEST)) {
-            Ok(text) => match parse_manifest(&text) {
-                Ok(m) => Some(m),
-                Err(mut found) => {
-                    defects.append(&mut found);
-                    None
-                }
-            },
-            Err(e) => {
+        match read_manifest(root) {
+            Ok(m) => Some(m),
+            Err(ManifestRead::Defects(mut found)) => {
+                defects.append(&mut found);
+                None
+            }
+            Err(ManifestRead::Unreadable(e)) => {
                 defects.push(Defect::Unreadable(e.to_string()));
                 None
             }
@@ -452,6 +450,20 @@ pub fn check(root: &Path) -> Report {
         slots,
         defects,
     }
+}
+
+/// Why a pack's manifest could not be had: the file would not read, or it
+/// read and the format refused it. Each caller words both its own way.
+#[derive(Debug)]
+pub enum ManifestRead {
+    Unreadable(std::io::Error),
+    Defects(Vec<Defect>),
+}
+
+/// The manifest at `root`, read and parsed in one call.
+pub fn read_manifest(root: &Path) -> Result<Manifest, ManifestRead> {
+    let text = fs::read_to_string(root.join(MANIFEST)).map_err(ManifestRead::Unreadable)?;
+    parse_manifest(&text).map_err(ManifestRead::Defects)
 }
 
 /// The manifest's own rules, over its text. Split from [`check`] so a manifest
@@ -1154,4 +1166,55 @@ pub(crate) fn dir_names(dir: &Path) -> Result<Vec<String>, String> {
     }
     names.sort();
     Ok(names)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The one reader's three answers: a directory with no manifest to read is
+    /// `Unreadable`, a manifest the format refuses is `Defects` holding what it
+    /// refused, and a valid one is the manifest it declares.
+    #[test]
+    fn read_manifest_answers_unreadable_defects_or_the_manifest() {
+        let dir = std::env::temp_dir().join(format!("fleet-read-manifest-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+
+        let missing = dir.join("missing");
+        assert!(
+            matches!(read_manifest(&missing), Err(ManifestRead::Unreadable(_))),
+            "a directory that is not there has no manifest to read"
+        );
+
+        let refused = dir.join("refused");
+        fs::create_dir_all(&refused).unwrap();
+        fs::write(
+            refused.join(MANIFEST),
+            "[pack]\nname = \"t\"\nversion = \"1\"\nschema = 3\n\n[exports]\nx = 1\n",
+        )
+        .unwrap();
+        match read_manifest(&refused) {
+            Err(ManifestRead::Defects(defects)) => assert_eq!(
+                defects,
+                vec![Defect::UnknownManifestTable("exports".into())]
+            ),
+            other => panic!("an unknown top table is a defect, got {other:?}"),
+        }
+
+        let valid = dir.join("valid");
+        fs::create_dir_all(&valid).unwrap();
+        let text = "[pack]\nname = \"t\"\nversion = \"1\"\nschema = 3\n";
+        fs::write(valid.join(MANIFEST), text).unwrap();
+        let manifest = read_manifest(&valid).expect("a valid manifest reads");
+        assert_eq!(
+            (
+                manifest.name.as_str(),
+                manifest.version.as_str(),
+                manifest.schema
+            ),
+            ("t", "1", 3)
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

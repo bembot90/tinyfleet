@@ -35,12 +35,10 @@
 //! which a fold reads as the record says; the reverse would announce an end no
 //! record holds.
 
-use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
-use crate::add;
 use crate::entry::{self, Body};
 use crate::item::brief::Packs;
 use crate::item::doctor::{self, Invocation, Verdict, DOCTOR_TOML, RUNTIME_VERSION, SLOT};
@@ -49,10 +47,10 @@ use crate::item::{
     control_token, read_table, recorded, signal, Events, Project, Stop, Unrecorded, RUN_CANCELLED,
     RUN_CLOSED, RUN_COULD_NOT_TELL, RUN_FAILED, RUN_STARTED, RUN_WAITING,
 };
-use crate::lock;
-use crate::pack::{self, Runtime};
+use crate::pack;
 use crate::policy;
 use crate::resolve::Layer;
+use crate::runtime::{child_path_for, read_the_runtime, Pinned};
 use crate::seat::actor::Actor;
 use crate::settings;
 use crate::store::{
@@ -182,7 +180,7 @@ pub struct Wiring<'a> {
     /// The `PATH` the pack's own children run under, constructed by the caller
     /// from `platform::child_path` and never read off this process. Empty means
     /// the caller has none and the children carry this process's `PATH`
-    /// instead. What the pinned runtime adds to it: [`child_path_for`].
+    /// instead. What the pinned runtime adds to it: [`child_path_for`](crate::runtime::child_path_for).
     pub child_path: &'a str,
 }
 
@@ -253,7 +251,7 @@ pub struct Ran {
 /// The PACK and not just the path, because the `[runtime]` table that says how
 /// to bundle the file is read from the layer the file came off, or from the
 /// packs that layer imports — never from whatever else is installed beneath
-/// it. Which of those it is: [`read_the_runtime`].
+/// it. Which of those it is: [`read_the_runtime`](crate::runtime::read_the_runtime).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
     pub name: String,
@@ -271,7 +269,12 @@ pub fn run(out: &mut dyn Write, order: &Order, wiring: &Wiring) -> Result<Ran, S
     let open = open_runs(wiring)?;
     refuse_at_the_cap(&open, wiring)?;
     let resolved = resolve_workflow(order.workflow, wiring)?;
-    let pinned = read_the_runtime(&resolved, wiring, order.machine_dir)?;
+    let pinned = read_the_runtime(
+        &resolved.pack,
+        &resolved.relative,
+        &wiring.packs.layers,
+        order.machine_dir,
+    )?;
     let path = child_path_for(&pinned.runtime.name, wiring.child_path);
     the_doctor_is_green(&resolved, &pinned, &path, wiring)?;
     let policy_bytes = std::fs::read(wiring.policy_file).map_err(|e| {
@@ -427,7 +430,12 @@ pub fn rerun(out: &mut dyn Write, again: &Again, wiring: &Wiring) -> Result<Ende
         relative,
         pack,
     };
-    let pinned = read_the_runtime(&resolved, wiring, again.machine_dir)?;
+    let pinned = read_the_runtime(
+        &resolved.pack,
+        &resolved.relative,
+        &wiring.packs.layers,
+        again.machine_dir,
+    )?;
     let path = child_path_for(&pinned.runtime.name, wiring.child_path);
 
     // The two `Order` fields a re-run does not carry. The workflow is the pinned
@@ -783,228 +791,6 @@ fn resolve_workflow(name: &str, wiring: &Wiring) -> Result<Resolved, Stop> {
     })
 }
 
-/// The `[runtime]` table a run bundles and executes under, and the layer that
-/// declares it — the carrier's own where it has one, else the one pack the
-/// carrier imports that has one.
-///
-/// The DECLARING LAYER and not just the table, because the doctor check
-/// measures a pack's manifest and the check's verdict is about that pack: a
-/// carrier that imports its runtime has nothing pinned in its own manifest, so
-/// a check run against it would read "nothing pinned" and answer green about
-/// a runtime it never measured.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Pinned {
-    runtime: Runtime,
-    pack: Layer,
-}
-
-pub(crate) fn manifest_of(layer: &Layer) -> Result<pack::Manifest, Stop> {
-    let manifest = layer.root.join(pack::MANIFEST);
-    let text = std::fs::read_to_string(&manifest).map_err(|e| {
-        Stop::could_not_tell(format!("{} could not be read: {e}", manifest.display()))
-    })?;
-    pack::parse_manifest(&text).map_err(|defects| {
-        Stop::refused(format!(
-            "the pack `{}` does not parse: {}",
-            layer.name,
-            defects
-                .iter()
-                .map(|d| d.to_string())
-                .collect::<Vec<_>>()
-                .join("; ")
-        ))
-    })
-}
-
-/// The runtime the carrier's workflow runs under: the carrier's own `[runtime]`
-/// table first, else the nearest layer beneath it, in the resolved order, among
-/// the packs the carrier imports — transitively, though the resolver holds
-/// imports to one level — that declares one.
-///
-/// THE CARRIER'S OWN PIN WINS OUTRIGHT and the imports are not read: a pack
-/// that pinned a runtime said what its workflows run under, and an import's
-/// pin beneath it is that import's business. Beneath a carrier with none, two
-/// declaring imports are a refusal naming both, never the higher one: core is
-/// not the one to choose between two languages a pack asked for at once.
-///
-/// NONE AT ALL, where an import the carrier declares is not installed, names
-/// that import and the line that adds it (fleet-4fw): the missing pack is the
-/// likeliest carrier of the table, and the person reading the refusal is the
-/// one who can add it. `machine_dir` is where the lock that line is read off
-/// lives.
-fn read_the_runtime(
-    resolved: &Resolved,
-    wiring: &Wiring,
-    machine_dir: &Path,
-) -> Result<Pinned, Stop> {
-    let (mut declaring, imported) = declaring(&resolved.pack, &wiring.packs.layers)?;
-    match declaring.len() {
-        0 => {
-            let unanswered: Vec<String> =
-                add::missing_imports(&wiring.packs.layers, &machine_dir.join(lock::LOCK))
-                    .into_iter()
-                    .filter(|missing| {
-                        missing.importer == resolved.pack.name
-                            || imported.contains(&missing.importer)
-                    })
-                    .map(|missing| missing.to_string())
-                    .collect();
-            if unanswered.is_empty() {
-                Err(Stop::refused(format!(
-                    "`{}` carries `{}` and declares no [runtime] table, and no pack it imports \
-                     declares one — that table is the one thing fleet reads about a workflow's \
-                     language, so there is no command to bundle this file with",
-                    resolved.pack.name, resolved.relative
-                )))
-            } else {
-                Err(Stop::refused(format!(
-                    "`{}` carries `{}` and declares no [runtime] table, and no installed pack it \
-                     imports declares one: {}",
-                    resolved.pack.name,
-                    resolved.relative,
-                    unanswered.join("; ")
-                )))
-            }
-        }
-        1 => Ok(declaring.remove(0)),
-        _ => Err(Stop::refused(format!(
-            "`{}` carries `{}` and declares no [runtime] table, and {} packs it imports each \
-             declare one — {} — so the file has two runtimes and fleet does not choose between them",
-            resolved.pack.name,
-            resolved.relative,
-            declaring.len(),
-            declaring
-                .iter()
-                .map(|pinned| format!("`{}`", pinned.pack.name))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))),
-    }
-}
-
-/// The `PATH` the doctor check, the bundle line and the run line all run
-/// under: the caller's constructed child path, with the directory the pinned
-/// runtime resolves from in front of it when that path does not already hold
-/// the binary.
-///
-/// CONSTRUCTED, NEVER COPIED. A controller re-running a run is a service, and
-/// a service's own `PATH` is the manager's — it holds neither a package
-/// manager's prefix nor the user's local bin — so a run line handed that
-/// `PATH` cannot exec the runtime its pack pins. The base comes from the
-/// caller because the platform's directories are the caller's knowledge; an
-/// empty base is a caller with no controller behind it, and the children then
-/// carry this process's own `PATH` as they always have.
-///
-/// THE PREPEND MIRRORS THE PINNED RUNTIME'S DOCTOR CHECK, which looks for the
-/// binary on `PATH` and then in the installer's bin — `<NAME>_INSTALL/bin`
-/// where that variable names a root, else `$HOME/.<name>/bin`, which no
-/// session `PATH` carries on its own. The check and the two lines it clears
-/// have to resolve the same file, so the directory the check would accept is
-/// put where the lines will look. Only when the base misses it: a runtime the
-/// base already resolves keeps the platform's order, where the system
-/// directories lead.
-pub fn child_path_for(runtime: &str, base: &str) -> String {
-    if base.is_empty() {
-        return std::env::var("PATH").unwrap_or_default();
-    }
-    let name = runtime;
-    if crate::process::holding(base, name).is_some() {
-        return base.to_string();
-    }
-    let found =
-        crate::process::holding(&std::env::var("PATH").unwrap_or_default(), name).or_else(|| {
-            installer_bin(name).filter(|bin| crate::process::is_executable_file(&bin.join(name)))
-        });
-    match found {
-        Some(dir) => format!("{}:{base}", dir.display()),
-        None => base.to_string(),
-    }
-}
-
-/// Every layer whose `[runtime]` the files `carrier` carries run under, by the
-/// rule [`read_the_runtime`] reads a workflow's by: the carrier's own table
-/// alone where it has one, else each pack it imports that declares one, in the
-/// resolved order — and the names the carrier imports, which a refusal of none
-/// reads the missing ones against.
-fn declaring(carrier: &Layer, layers: &[Layer]) -> Result<(Vec<Pinned>, BTreeSet<String>), Stop> {
-    let own = manifest_of(carrier)?;
-    if let Some(runtime) = own.runtime {
-        let pinned = Pinned {
-            runtime,
-            pack: carrier.clone(),
-        };
-        return Ok((vec![pinned], BTreeSet::new()));
-    }
-
-    let beneath = layers
-        .iter()
-        .position(|layer| layer.name == carrier.name)
-        .map(|at| at + 1)
-        .unwrap_or(layers.len());
-    let mut imported: BTreeSet<String> = own.imports.into_iter().map(|i| i.name).collect();
-    let mut frontier: Vec<String> = imported.iter().cloned().collect();
-    while let Some(name) = frontier.pop() {
-        let Some(layer) = layers.iter().find(|layer| layer.name == name) else {
-            continue;
-        };
-        for import in manifest_of(layer)?.imports {
-            if imported.insert(import.name.clone()) {
-                frontier.push(import.name);
-            }
-        }
-    }
-
-    let mut declaring: Vec<Pinned> = Vec::new();
-    for layer in layers.iter().skip(beneath) {
-        if !imported.contains(&layer.name) {
-            continue;
-        }
-        if let Some(runtime) = manifest_of(layer)?.runtime {
-            declaring.push(Pinned {
-                runtime,
-                pack: layer.clone(),
-            });
-        }
-    }
-    Ok((declaring, imported))
-}
-
-/// The names of the runtimes a file `carrier` carries runs under, as
-/// [`declaring`] finds them: none for a pack that declares none and imports
-/// none that does, which is a file that execs no runtime of a pack's.
-///
-/// What the store's opener and the agent's put in front of an adapter's search
-/// path, through [`child_path_for`], so a pack's adapter finds the runtime its
-/// entry execs where a run line would.
-pub fn runtimes_of(carrier: &Layer, layers: &[Layer]) -> Result<Vec<String>, Stop> {
-    let (declaring, _) = declaring(carrier, layers)?;
-    Ok(declaring
-        .into_iter()
-        .map(|pinned| pinned.runtime.name)
-        .collect())
-}
-
-/// The installer's bin for a runtime of this name, as its own doctor check
-/// spells it.
-fn installer_bin(name: &str) -> Option<PathBuf> {
-    let variable: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
-        .chain("_INSTALL".chars())
-        .collect();
-    let root = match std::env::var(&variable) {
-        Ok(named) if !named.trim().is_empty() => PathBuf::from(named),
-        _ => PathBuf::from(std::env::var("HOME").ok()?).join(format!(".{name}")),
-    };
-    Some(root.join("bin"))
-}
-
 /// The pinned runtime's own doctor check, run as a child against the pack that
 /// declares the pin.
 ///
@@ -1012,7 +798,7 @@ fn installer_bin(name: &str) -> Option<PathBuf> {
 /// back to the person, because what the check knows about a runtime is the
 /// check's and a parser here would be a second opinion about it.
 ///
-/// It runs on [`child_path_for`], the `PATH` the bundle and run lines will
+/// It runs on [`child_path_for`](crate::runtime::child_path_for), the `PATH` the bundle and run lines will
 /// run on: a check measuring some other search path is green about a binary
 /// those lines cannot exec, or red about one they can.
 ///
@@ -1379,7 +1165,7 @@ impl Placeholders {
 /// split one into words that is right for every language's tooling — so it is
 /// handed to `sh` whole, and the child's exit is all core reads of it.
 ///
-/// It runs on [`child_path_for`], as the run line does: both lines exec the
+/// It runs on [`child_path_for`](crate::runtime::child_path_for), as the run line does: both lines exec the
 /// binary the pack pins.
 fn bundle(
     directory: &Path,

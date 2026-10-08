@@ -216,9 +216,8 @@ pub fn installed(packs_dir: &Path) -> Vec<Layer> {
         if !root.join(pack::MANIFEST).is_file() {
             continue;
         }
-        let name = std::fs::read_to_string(root.join(pack::MANIFEST))
+        let name = pack::read_manifest(&root)
             .ok()
-            .and_then(|text| pack::parse_manifest(&text).ok())
             .map(|m| m.name)
             .unwrap_or(entry);
         layers.push(Layer::new(name, root));
@@ -291,9 +290,8 @@ pub fn slot_path(resolution: &Resolution, layers: &[Layer], relative: &str) -> O
 }
 
 fn imports_of(root: &Path) -> BTreeSet<String> {
-    std::fs::read_to_string(root.join(pack::MANIFEST))
+    pack::read_manifest(root)
         .ok()
-        .and_then(|text| pack::parse_manifest(&text).ok())
         .map(|manifest| manifest.imports.into_iter().map(|i| i.name).collect())
         .unwrap_or_default()
 }
@@ -361,23 +359,23 @@ pub fn resolve(layers: &[Layer]) -> Result<Resolution, Vec<Refusal>> {
         if importers.is_empty() {
             continue;
         }
-        match std::fs::read_to_string(layer.root.join(pack::MANIFEST)) {
-            Ok(text) => match pack::parse_manifest(&text) {
-                Ok(manifest) => {
-                    for import in manifest.imports {
-                        refusals.push(Refusal::TransitiveImport {
-                            layer: layer.name.clone(),
-                            import: import.name,
-                            importers: importers.clone(),
-                        });
-                    }
+        match pack::read_manifest(&layer.root) {
+            Ok(manifest) => {
+                for import in manifest.imports {
+                    refusals.push(Refusal::TransitiveImport {
+                        layer: layer.name.clone(),
+                        import: import.name,
+                        importers: importers.clone(),
+                    });
                 }
-                Err(defects) => refusals.extend(defects.into_iter().map(|d| Refusal::Manifest {
+            }
+            Err(pack::ManifestRead::Defects(defects)) => {
+                refusals.extend(defects.into_iter().map(|d| Refusal::Manifest {
                     layer: layer.name.clone(),
                     defect: d.to_string(),
-                })),
-            },
-            Err(e) => refusals.push(Refusal::Manifest {
+                }))
+            }
+            Err(pack::ManifestRead::Unreadable(e)) => refusals.push(Refusal::Manifest {
                 layer: layer.name.clone(),
                 defect: e.to_string(),
             }),

@@ -139,6 +139,7 @@ pub mod process;
 pub mod registry;
 pub mod remove;
 pub mod resolve;
+pub mod runtime;
 pub mod schema;
 pub mod seat;
 pub mod settings;

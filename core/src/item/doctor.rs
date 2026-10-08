@@ -26,9 +26,9 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::item::brief::Packs;
-use crate::item::run::manifest_of;
 use crate::pack::Runtime;
 use crate::resolve::Layer;
+use crate::runtime::manifest_of;
 
 /// The slot a check lives under.
 pub const SLOT: &str = "doctor";

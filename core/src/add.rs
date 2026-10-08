@@ -392,10 +392,7 @@ pub fn missing_imports(layers: &[resolve::Layer], lock_path: &Path) -> Vec<Missi
         layers.iter().map(|layer| layer.name.as_str()).collect();
     let mut missing = Vec::new();
     for layer in layers.iter().filter(|layer| !layer.defaults) {
-        let Some(manifest) = std::fs::read_to_string(layer.root.join(pack::MANIFEST))
-            .ok()
-            .and_then(|text| pack::parse_manifest(&text).ok())
-        else {
+        let Some(manifest) = pack::read_manifest(&layer.root).ok() else {
             continue;
         };
         let at = pinned

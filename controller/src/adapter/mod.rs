@@ -263,12 +263,12 @@ fn by_name(opening: &Opening, name: &str) -> Result<Opened, String> {
     let manifest = pack::adapter_manifest(&dir)
         .map_err(|defect| unopened(opening.source, Unopened::Defect(name, defect)))?;
     let entry = dir.join(&manifest.entry);
-    let runtimes = fleet_core::item::run::runtimes_of(carrier, &packs.layers)
-        .map_err(|stop| unopened(opening.source, Unopened::Unrun(name, stop.message)))?;
-    let path = runtimes.iter().fold(
-        crate::platform::child_path(opening.home),
-        |base, runtime| fleet_core::item::run::child_path_for(runtime, &base),
-    );
+    let path = fleet_core::runtime::adapter_path(
+        carrier,
+        &packs.layers,
+        &crate::platform::child_path(opening.home),
+    )
+    .map_err(|stop| unopened(opening.source, Unopened::Unrun(name, stop.message)))?;
     Ok(gated(
         name.to_string(),
         AgentExec::at(&entry, opening.root)

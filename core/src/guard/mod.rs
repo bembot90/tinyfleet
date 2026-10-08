@@ -111,15 +111,13 @@ pub const CORE: [Class; 2] = [Class::ShellTrap, Class::Record];
 pub fn declared(layers: &[Layer]) -> Result<Vec<Class>, String> {
     let mut on: Vec<Class> = CORE.to_vec();
     for layer in layers.iter().filter(|layer| !layer.defaults) {
-        let manifest = std::fs::read_to_string(layer.root.join(pack::MANIFEST))
-            .map_err(|e| e.to_string())
-            .and_then(|text| {
-                pack::parse_manifest(&text).map_err(|defects| {
-                    defects
-                        .first()
-                        .map(|d| d.to_string())
-                        .unwrap_or_else(|| "the manifest refused and said nothing".to_string())
-                })
+        let manifest = pack::read_manifest(&layer.root)
+            .map_err(|read| match read {
+                pack::ManifestRead::Unreadable(e) => e.to_string(),
+                pack::ManifestRead::Defects(defects) => defects
+                    .first()
+                    .map(|d| d.to_string())
+                    .unwrap_or_else(|| "the manifest refused and said nothing".to_string()),
             })
             .map_err(|why| {
                 format!(

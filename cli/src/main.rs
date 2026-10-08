@@ -1503,9 +1503,8 @@ fn read_text(path: &Path) -> String {
 // directory otherwise: a refusal that names neither is one a reader cannot act
 // on.
 fn pack_name_of(dir: &std::path::Path) -> String {
-    std::fs::read_to_string(dir.join(pack::MANIFEST))
+    pack::read_manifest(dir)
         .ok()
-        .and_then(|text| pack::parse_manifest(&text).ok())
         .map(|manifest| manifest.name)
         .unwrap_or_else(|| {
             dir.file_name()

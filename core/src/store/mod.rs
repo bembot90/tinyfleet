@@ -314,7 +314,7 @@ pub struct Opening<'a> {
     /// (lessons claude-code D1) — so an entry that execs its runtime, and the
     /// store's own binary, would find neither. The directory of the runtime the
     /// adapter's pack runs under goes in front where this misses it, as a run
-    /// line's does ([`child_path_for`](crate::item::run::child_path_for)).
+    /// line's does ([`child_path_for`](crate::runtime::child_path_for)).
     ///
     /// EMPTY is a caller with no controller behind it, and the adapter then
     /// carries this process's own `PATH`, as a run line's children do.
@@ -450,13 +450,8 @@ fn by_name(at: &Opening, name: &str) -> Result<Box<dyn Store>, StoreError> {
     if at.search_path.is_empty() {
         return Ok(Box::new(store));
     }
-    let runtimes = crate::item::run::runtimes_of(carrier, &packs.layers)
+    let path = crate::runtime::adapter_path(carrier, &packs.layers, at.search_path)
         .map_err(|stop| unopened(at.source, Unopened::Unrun(name, stop.message)))?;
-    let path = runtimes
-        .iter()
-        .fold(at.search_path.to_string(), |base, runtime| {
-            crate::item::run::child_path_for(runtime, &base)
-        });
     Ok(Box::new(store.on_path(path)))
 }
 
