@@ -63,7 +63,7 @@ pub fn command() -> Exit {
         return Exit::Done;
     };
 
-    let policy = crate::read_text(&fleet_toml);
+    let policy = crate::guard::read_text(&fleet_toml);
     let (packs_dir, defaults_dir) = defaults::pack_dirs(&machine_dir, None);
     let layering = layers(&packs_dir, &defaults_dir);
     println!(

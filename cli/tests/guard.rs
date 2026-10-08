@@ -1367,7 +1367,10 @@ fn core_states_no_decision_value() {
         .to_path_buf();
     let allowing = format!("\"{}\"", "allow");
 
-    let mut core_sources = vec![workspace.join("cli/src/main.rs")];
+    let mut core_sources = vec![
+        workspace.join("cli/src/main.rs"),
+        workspace.join("cli/src/guard.rs"),
+    ];
     let dir = workspace.join("core/src/guard");
     for entry in std::fs::read_dir(&dir).expect("the guard module is a directory") {
         let path = entry.expect("an entry is readable").path();

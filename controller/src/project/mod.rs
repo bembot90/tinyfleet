@@ -246,7 +246,7 @@ pub fn resolve_from(
     // `fleet.toml` is not committed carries neither file above it, and the
     // machine directory still names the fleet — the same fallback `fleet prime`
     // takes (`fleet-cli's prime::command`) and the guards take
-    // (`fleet-cli's resolve_policy`), so every reader answers about one fleet.
+    // (`fleet-cli's guard::resolve_policy`), so every reader answers about one fleet.
     //
     // THE ROOT IS THE CALLER'S OWN CHECKOUT, and the fallback is owed only to a
     // caller that has one. This root is where every verb's git runs and where
