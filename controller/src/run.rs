@@ -43,6 +43,26 @@ struct Pending {
     rest_seq: Option<u64>,
 }
 
+/// What one poll reads for itself and hands from phase to phase of
+/// [`Observer::tick`]. A local of the tick and never a field: see
+/// [`Observer`] for where that line is drawn.
+struct Poll {
+    now_ms: u64,
+    startup: bool,
+    recorded_dirs: BTreeMap<SeatId, String>,
+    agent_name: Option<String>,
+    agent_version: Option<String>,
+    pending: BTreeMap<SeatId, Pending>,
+    read_to: Option<u64>,
+    observations: Vec<(usize, SeatObservation, Option<u64>)>,
+    rows: Vec<SeatRow>,
+    verdicts: Vec<Verdict>,
+    table_moved: bool,
+    observed: Vec<SeatObservation>,
+    logged_out: Vec<(SeatView, String, Option<String>)>,
+    expected: Option<String>,
+}
+
 /// The loop with the RUN seam handed in beside the gate.
 ///
 /// The seam exists so the loop can be driven without a project: the three acts
@@ -460,7 +480,6 @@ impl<'a> Observer<'a> {
 
         let mut events_log = EventLog::open(&events::path_in(&machine_dir));
         let controller = events::controller(&machine_dir);
-        let announced_move: Option<(Option<String>, Option<String>)> = None;
 
         if let Some(why) = &seams.effects_off {
             eprintln!("fleet observe: effects are off — {why}");
@@ -500,27 +519,6 @@ impl<'a> Observer<'a> {
         for line in table.unknown_postures() {
             eprintln!("fleet observe: {line}");
         }
-        // Every session the table names that the roster still holds live is claimed
-        // on the FIRST poll and never again — a restart re-hosts nothing.
-        let adopted = false;
-        // Once per transition into the fleet shape: an observation, not a
-        // decision, and a line per poll would drown the one a person came to
-        // read.
-        let fleet_shape: Option<FleetShape> = None;
-        // For a rest whose stop failed: the retry is silent and the first
-        // failure is loud.
-        let rest_failed_said: BTreeSet<String> = BTreeSet::new();
-        // And for a routines state that will not read: once per cause, never once
-        // per poll.
-        let routines_state_said: BTreeSet<String> = BTreeSet::new();
-
-        // The gate's state lives across polls: a probe that outran its bound is read
-        // again rather than started again. It is built by the caller, BEFORE the
-        // first poll, so the dialog it raises is answered in the minute the service
-        // loads (lessons claude-code D4).
-        //
-        // Once per transition into pending, never once per poll.
-        let grant_said: Option<String> = None;
 
         if seams.stop_handler == StopHandler::Armed {
             platform::install_stop_handler();
@@ -541,21 +539,35 @@ impl<'a> Observer<'a> {
             seams,
             capabilities,
             runs,
+            // The gate's state lives across polls: a probe that outran its bound is read
+            // again rather than started again. It is built by the caller, BEFORE the
+            // first poll, so the dialog it raises is answered in the minute the service
+            // loads (lessons claude-code D4).
             grant,
             machine_dir,
             table_path,
             inputs,
             events_log,
             controller,
-            announced_move,
+            announced_move: None,
             table_base: table.clone(),
             table_said: None,
             table,
-            adopted,
-            fleet_shape,
-            rest_failed_said,
-            routines_state_said,
-            grant_said,
+            // Every session the table names that the roster still holds live is claimed
+            // on the FIRST poll and never again — a restart re-hosts nothing.
+            adopted: false,
+            // Once per transition into the fleet shape: an observation, not a
+            // decision, and a line per poll would drown the one a person came to
+            // read.
+            fleet_shape: None,
+            // For a rest whose stop failed: the retry is silent and the first
+            // failure is loud.
+            rest_failed_said: BTreeSet::new(),
+            // And for a routines state that will not read: once per cause, never once
+            // per poll.
+            routines_state_said: BTreeSet::new(),
+            // Once per transition into pending, never once per poll.
+            grant_said: None,
         })
     }
 
@@ -566,9 +578,34 @@ impl<'a> Observer<'a> {
     /// calls. Nothing here waits on the clock — the interval between ticks is
     /// [`Observer::nap`]'s.
     pub fn tick(&mut self) {
-        let agent = self.seams.agent;
         self.inputs.refresh(&self.capabilities);
+        let mut poll = self.read_fleet();
+        self.adopt(&mut poll);
+        self.fold_requests(&mut poll);
+        self.observe_rows(&mut poll);
+        self.report_rows(&poll);
+        self.decide_all(&mut poll);
+        let (mut document, acting) = self.gate_and_document(&mut poll);
+        let (registry, mut routines_state, routines_now) = self.load_routines(&mut document);
+        let hold_at = self.act_all(&mut poll, &mut document, acting);
+        self.publish(&mut poll, hold_at, &document);
+        self.pass_routines(
+            &poll,
+            &registry,
+            &mut routines_state,
+            routines_now,
+            acting,
+            &document,
+        );
+        self.pass_runs();
+        self.announce_substrate(&poll);
+    }
 
+    /// The poll's reads of the fleet: each seat's recorded directory, the one
+    /// host listing, the agent's version, the time, and the agent's reading of
+    /// every seat.
+    fn read_fleet(&self) -> Poll {
+        let agent = self.seams.agent;
         // THE DIRECTORY EACH SEAT'S SESSION CAME UP UNDER, which every question
         // put to the agent about that seat carries: a session started under its
         // own directory is known to the agent under that directory and no
@@ -602,12 +639,11 @@ impl<'a> Observer<'a> {
         // Through the clock seam, so the windows a rig drives the loop across
         // age with the fake time its naps spend.
         let now_ms = self.seams.clock.now_ms();
-        let mut table_moved = false;
         // ONE READ OF THE AGENT about every seat whose pane is alive, each
         // asked about by the session the table last sighted for it and by its
         // pane (fleet-14p8.2), under its own directory.
         let table = &self.table;
-        let mut observed = observe::observe_fleet(
+        let observed = observe::observe_fleet(
             agent,
             &host_read,
             &self.inputs.config.seats,
@@ -619,7 +655,28 @@ impl<'a> Observer<'a> {
             },
             now_ms,
         );
+        // What the later phases fill starts empty here.
+        Poll {
+            now_ms,
+            startup: false,
+            recorded_dirs,
+            agent_name: agent_read.map(|version| version.name),
+            agent_version,
+            pending: BTreeMap::new(),
+            read_to: None,
+            observations: Vec::new(),
+            rows: Vec::new(),
+            verdicts: Vec::new(),
+            table_moved: false,
+            observed,
+            logged_out: Vec::new(),
+            expected: None,
+        }
+    }
 
+    /// Adoption of the sessions the table names, on this controller's first
+    /// poll.
+    fn adopt(&mut self, poll: &mut Poll) {
         // Adoption, on the first poll and against the reading this poll took.
         // Not gated on effects: it issues none, and a controller that could not
         // exec the agent still knows which sessions it owns.
@@ -630,19 +687,20 @@ impl<'a> Observer<'a> {
         // This controller's FIRST poll, read before adoption marks it taken: a
         // dead pane it meets here died before this process was looking, so its
         // end is dated by the agent's last write rather than by this poll.
-        let startup = !self.adopted;
+        poll.startup = !self.adopted;
         if !self.adopted {
             self.adopted = true;
             // EVERY session the agent named for a live pane, whatever
             // directory it was read under: a controller that restarted has to
             // be able to claim a spawned seat's session like any other.
-            let live: Vec<String> = observed
+            let live: Vec<String> = poll
+                .observed
                 .iter()
                 .filter_map(|observation| observation.session_id.clone())
                 .collect();
-            let claimed = effect::adopt(&live, &mut self.table, &mut self.events_log, now_ms);
+            let claimed = effect::adopt(&live, &mut self.table, &mut self.events_log, poll.now_ms);
             if !claimed.is_empty() {
-                table_moved = true;
+                poll.table_moved = true;
                 eprintln!(
                     "fleet observe: adopted {} session(s) the table names: {}",
                     claimed.len(),
@@ -650,6 +708,11 @@ impl<'a> Observer<'a> {
                 );
             }
         }
+    }
+
+    /// The stream after the cursor, folded into what each seat's events ask
+    /// for.
+    fn fold_requests(&self, poll: &mut Poll) {
         // The stream, from the line after the cursor. Read BEFORE deciding, so
         // what a seat asked for between polls is in hand when its verdict is
         // reached.
@@ -664,16 +727,27 @@ impl<'a> Observer<'a> {
             .collect();
         let stream =
             events::read_after(&events::path_in(&self.machine_dir), self.table.consumed_seq);
-        let read_to = stream.iter().map(|record| record.seq).max();
-        let pending = fold(&stream, &known, &transient);
+        poll.read_to = stream.iter().map(|record| record.seq).max();
+        poll.pending = fold(&stream, &known, &transient);
+    }
 
+    /// Each seat's row for the projection, from the poll's reading of it, the
+    /// table's record and the agent's context.
+    fn observe_rows(&mut self, poll: &mut Poll) {
+        let agent = self.seams.agent;
         // A dead pane's session is the one this controller started there, and
         // the agent names nothing for it once its process is gone
         // (the claude-code pack's lessons B10) — so the session, and where it
         // stood, are the table's, which recorded both when it was sighted. The
         // context read below, and the discriminator's revive, need the id;
         // nothing else on this poll can supply it.
-        for (seat, observation) in self.inputs.config.seats.iter().zip(observed.iter_mut()) {
+        for (seat, observation) in self
+            .inputs
+            .config
+            .seats
+            .iter()
+            .zip(poll.observed.iter_mut())
+        {
             if observation.state != RosterState::Stopped {
                 continue;
             }
@@ -700,14 +774,14 @@ impl<'a> Observer<'a> {
             .config
             .seats
             .iter()
-            .zip(observed.iter())
+            .zip(poll.observed.iter())
             .filter(|(_, observation)| observation.state.has_context_reading())
             .filter_map(|(seat, observation)| {
                 Some(SeatRef {
                     seat: seat.id,
                     session_id: Some(observation.session_id.clone()?),
                     pid: None,
-                    config_dir: recorded_dirs.get(&seat.id).cloned(),
+                    config_dir: poll.recorded_dirs.get(&seat.id).cloned(),
                     worktree: dir_key(observation.worktree.as_deref()?).to_string(),
                     screen: None,
                 })
@@ -716,9 +790,8 @@ impl<'a> Observer<'a> {
         let contexts: BTreeMap<SeatId, SeatContext> =
             agent::contexts(agent, self.capabilities.context, &asked);
 
-        let mut observations: Vec<(usize, SeatObservation, Option<u64>)> = Vec::new();
-        let mut seats = Vec::with_capacity(self.inputs.config.seats.len());
-        let mut logged_out: Vec<(SeatView, String, Option<String>)> = Vec::new();
+        poll.rows = Vec::with_capacity(self.inputs.config.seats.len());
+        let observed = std::mem::take(&mut poll.observed);
         for (index, (seat, observation)) in
             self.inputs.config.seats.iter().zip(observed).enumerate()
         {
@@ -727,7 +800,7 @@ impl<'a> Observer<'a> {
             let key = seat.id.to_string();
             let context = contexts.get(&seat.id);
             if observation.state == RosterState::Stopped {
-                table_moved |= ended(
+                poll.table_moved |= ended(
                     &mut self.table,
                     &mut self.events_log,
                     &key,
@@ -736,8 +809,8 @@ impl<'a> Observer<'a> {
                         .and_then(|context| context.last_write.as_ref())
                         .and_then(|stamp| clock::secs_of_stamp(stamp.as_str()))
                         .map(|secs| secs * 1000),
-                    startup,
-                    now_ms,
+                    poll.startup,
+                    poll.now_ms,
                 );
             }
             let context_tokens = context.and_then(|context| context.tokens);
@@ -759,7 +832,7 @@ impl<'a> Observer<'a> {
                 sighted,
                 observation.blocked_on,
             ) {
-                logged_out.push((
+                poll.logged_out.push((
                     SeatView::from(&seat.as_ref()),
                     machine_name.clone(),
                     self.table.newest_for(&key).and_then(|row| row.item.clone()),
@@ -777,9 +850,9 @@ impl<'a> Observer<'a> {
                 if let (Some(session_id), Some(worktree)) =
                     (&observation.session_id, &observation.worktree)
                 {
-                    table_moved |= self
-                        .table
-                        .sight(&key, dir_key(worktree), session_id, now_ms);
+                    poll.table_moved |=
+                        self.table
+                            .sight(&key, dir_key(worktree), session_id, poll.now_ms);
                 }
             }
             // The row names the seat as its object: the id, the seat's own name
@@ -795,14 +868,19 @@ impl<'a> Observer<'a> {
                     .and_then(|ended| ended.at)
                     .map(|at| clock::stamp_secs(at / 1000));
             }
-            seats.push(row);
-            observations.push((index, observation, context_tokens));
+            poll.rows.push(row);
+            poll.observations.push((index, observation, context_tokens));
         }
+    }
+
+    /// The lines the rows owe this poll: each logged-out dispatch's, and the
+    /// fleet shape's.
+    fn report_rows(&mut self, poll: &Poll) {
         // The logged-out dispatches, one line each. WRITTEN AND NOTHING
         // ELSE: holding the item and retiring the seat are a workflow's, and a
         // controller that acted here would be deciding a run's business from
         // inside the poll.
-        for (seat, machine_name, item) in &logged_out {
+        for (seat, machine_name, item) in &poll.logged_out {
             self.events_log.append_or_say(
                 events::DISPATCH_FAILED,
                 &ActorRef::seat(&seat.id),
@@ -828,7 +906,8 @@ impl<'a> Observer<'a> {
         // once per transition into it. Reported like an observation and not
         // like a decision, and threaded into no seat's verdict.
         let shape = decide::fleet_shape(
-            &observations
+            &poll
+                .observations
                 .iter()
                 .map(|(_, observation, _)| observation.state)
                 .collect::<Vec<_>>(),
@@ -839,12 +918,16 @@ impl<'a> Observer<'a> {
             }
             self.fleet_shape = shape;
         }
+    }
 
+    /// The clear-halt requests, then one verdict per seat written into its row.
+    fn decide_all(&mut self, poll: &mut Poll) {
         // The clear-halt requests, consumed BEFORE the verdicts, so a halt
         // a person cleared does not survive one more poll and dispatch nothing
         // for another interval.
         for seat in &self.inputs.config.seats {
-            if !pending
+            if !poll
+                .pending
                 .get(&seat.id)
                 .map(|asked| asked.clear_halt)
                 .unwrap_or(false)
@@ -858,7 +941,7 @@ impl<'a> Observer<'a> {
                 continue;
             }
             self.table.set_seat_state(&key, SeatState::default());
-            table_moved = true;
+            poll.table_moved = true;
             eprintln!(
                 "fleet observe: {machine_name}'s blind counter reset from {} and its halt lifted \
                  by request",
@@ -866,11 +949,11 @@ impl<'a> Observer<'a> {
             );
         }
 
-        let mut verdicts: Vec<Verdict> = Vec::with_capacity(observations.len());
-        for (index, observation, context_tokens) in &observations {
+        poll.verdicts = Vec::with_capacity(poll.observations.len());
+        for (index, observation, context_tokens) in &poll.observations {
             let seat = &self.inputs.config.seats[*index];
             let key = seat.id.to_string();
-            let asked = pending.get(&seat.id).cloned().unwrap_or_default();
+            let asked = poll.pending.get(&seat.id).cloned().unwrap_or_default();
             let newest = self.table.newest_for(&key);
             let carried = self.table.seat_state(&key);
             let input = SeatInput {
@@ -885,19 +968,23 @@ impl<'a> Observer<'a> {
                     .as_deref()
                     .map(|id| self.table.is_nudged(&key, id))
                     .unwrap_or(false),
-                dispatch_age_ms: newest.map(|row| now_ms.saturating_sub(row.dispatched_at)),
+                dispatch_age_ms: newest.map(|row| poll.now_ms.saturating_sub(row.dispatched_at)),
                 sighted: newest.map(|row| row.session_id.is_some()).unwrap_or(false),
                 arrival_window_ms: self.inputs.policy.arrival_window_seconds * 1000,
                 halted: carried.halted,
                 blind: carried.blind,
             };
             let verdict = decide::decide(&input);
-            seats[*index].decision = verdict.as_str().to_string();
-            seats[*index].blind = carried.blind;
-            seats[*index].halted = carried.halted;
-            verdicts.push(verdict);
+            poll.rows[*index].decision = verdict.as_str().to_string();
+            poll.rows[*index].blind = carried.blind;
+            poll.rows[*index].halted = carried.halted;
+            poll.verdicts.push(verdict);
         }
+    }
 
+    /// The grant's poll and the projection document this poll publishes, with
+    /// whether effects are issued.
+    fn gate_and_document(&mut self, poll: &mut Poll) -> (Projection, bool) {
         // The gate, read every poll while it is pending. Every configured
         // worktree of every seat, in one listing each.
         let probed: Vec<PathBuf> = self
@@ -928,9 +1015,11 @@ impl<'a> Observer<'a> {
 
         // The expectation is the adapter's own (ruling 8): the releases it
         // declares it was measured against, which the live one is held to.
-        let expected =
-            projection::expected_version(&self.capabilities.measured, agent_version.as_deref());
-        let mut document = Projection {
+        poll.expected = projection::expected_version(
+            &self.capabilities.measured,
+            poll.agent_version.as_deref(),
+        );
+        let document = Projection {
             version: projection::VERSION,
             generated_at: clock::now_stamp(),
             controller_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -940,13 +1029,13 @@ impl<'a> Observer<'a> {
             // are its mirrors.
             agent: projection::AgentView {
                 adapter: self.seams.adapter.to_string(),
-                name: agent_read.map(|version| version.name),
-                version: agent_version.clone(),
-                expected: expected.clone(),
+                name: poll.agent_name.clone(),
+                version: poll.agent_version.clone(),
+                expected: poll.expected.clone(),
                 postures: self.capabilities.postures.clone(),
             },
-            agent_version: agent_version.clone(),
-            agent_version_expected: expected.clone(),
+            agent_version: poll.agent_version.clone(),
+            agent_version_expected: poll.expected.clone(),
             fleet: PolicyView {
                 path: self.inputs.policy_path.display().to_string(),
                 mtime: self.inputs.policy_mtime.and_then(clock::stamp_of),
@@ -957,10 +1046,18 @@ impl<'a> Observer<'a> {
             effects: effects.view,
             grant: grant_read.state.to_string(),
             grant_detail: grant_read.detail.clone(),
-            seats,
+            seats: std::mem::take(&mut poll.rows),
             orders: Vec::new(),
         };
+        (document, acting)
+    }
 
+    /// The routines' registry and state, re-read, and the document's orders
+    /// from them.
+    fn load_routines(
+        &mut self,
+        document: &mut Projection,
+    ) -> (routines::load::Registry, routines::state::State, u64) {
         // The routines, re-read every tick: a directory listing and a parse each,
         // so a file dropped into a routines directory is live on the next
         // evaluation with no restart.
@@ -983,14 +1080,20 @@ impl<'a> Observer<'a> {
             ),
             None => routines::load::Registry::default(),
         };
-        let (mut routines_state, routines_state_error) = routines::state::read(&self.machine_dir);
+        let (routines_state, routines_state_error) = routines::state::read(&self.machine_dir);
         if let Some(why) = routines_state_error {
             if self.routines_state_said.insert(why.clone()) {
                 eprintln!("fleet observe: the routines state stands empty; {why}");
             }
         }
         document.orders = routines::rows(&registry, &routines_state, routines_now);
+        (registry, routines_state, routines_now)
+    }
 
+    /// Each seat's verdict acted on where effects are issued, and the line the
+    /// cursor may not pass this tick.
+    fn act_all(&mut self, poll: &mut Poll, document: &mut Projection, acting: bool) -> Option<u64> {
+        let agent = self.seams.agent;
         // The line the cursor may not pass this tick: the oldest `seat.resting`
         // whose collection did not happen. A rest that was asked for and not
         // collected is the alarm, and an alarm the cursor walked past
@@ -998,7 +1101,7 @@ impl<'a> Observer<'a> {
         let mut hold_at: Option<u64> = None;
         if acting {
             for ((index, observation, context_tokens), verdict) in
-                observations.iter().zip(verdicts.iter())
+                poll.observations.iter().zip(poll.verdicts.iter())
             {
                 let seat = &self.inputs.config.seats[*index];
                 let outcome = act(
@@ -1010,15 +1113,15 @@ impl<'a> Observer<'a> {
                     observation,
                     *context_tokens,
                     *verdict,
-                    &mut document,
+                    document,
                     &self.machine_dir,
                     &mut self.events_log,
                     &mut self.table,
-                    now_ms,
+                    poll.now_ms,
                     &mut self.rest_failed_said,
                 );
                 if outcome != Outcome::None {
-                    table_moved = true;
+                    poll.table_moved = true;
                 }
                 document.seats[*index].outcome = outcome.as_str().to_string();
                 // The counter, moved once per poll on the state this poll SAW
@@ -1046,13 +1149,14 @@ impl<'a> Observer<'a> {
                     self.table.set_seat_state(&key, SeatState { blind, halted });
                     document.seats[*index].blind = blind;
                     document.seats[*index].halted = halted;
-                    table_moved = true;
+                    poll.table_moved = true;
                 }
                 // A rest is consumed by the collection that answered it, or by
                 // the successor a stopped row got instead. Anything else leaves
                 // it standing for the next tick.
                 let collected = matches!(outcome, Outcome::Rested | Outcome::Spawned);
-                if let Some(seq) = pending
+                if let Some(seq) = poll
+                    .pending
                     .get(&seat.id)
                     .filter(|_| !collected)
                     .and_then(|asked| asked.rest_seq)
@@ -1063,57 +1167,79 @@ impl<'a> Observer<'a> {
         } else {
             // No effect was issued, so nothing was collected and every rest read
             // this tick is still standing.
-            hold_at = pending.values().filter_map(|asked| asked.rest_seq).min();
+            hold_at = poll
+                .pending
+                .values()
+                .filter_map(|asked| asked.rest_seq)
+                .min();
         }
+        hold_at
+    }
 
+    /// The cursor advanced, the session table put back and the projection
+    /// written.
+    fn publish(&mut self, poll: &mut Poll, hold_at: Option<u64>, document: &Projection) {
         // The cursor moves once the tick's verdicts are computed and its effects
         // are taken, so a controller that dies mid-tick re-reads the same events
         // and acts once against a roster that has already moved.
-        if let Some(seq) = read_to {
+        if let Some(seq) = poll.read_to {
             let advanced = match hold_at {
                 Some(held) => seq.min(held.saturating_sub(1)),
                 None => seq,
             };
             if advanced > self.table.consumed_seq {
                 self.table.consumed_seq = advanced;
-                table_moved = true;
+                poll.table_moved = true;
             }
         }
-        self.commit_table(table_moved);
-        write_projection(&self.machine_dir, &document);
+        self.commit_table(poll.table_moved);
+        write_projection(&self.machine_dir, document);
+    }
 
+    /// The routines' own pass.
+    fn pass_routines(
+        &mut self,
+        poll: &Poll,
+        registry: &routines::load::Registry,
+        routines_state: &mut routines::state::State,
+        routines_now: u64,
+        acting: bool,
+        document: &Projection,
+    ) {
+        let agent = self.seams.agent;
         // The routines' own pass, after the document this tick publishes and
         // before the substrate read. The array above carries the state as it
         // stood at the top of this tick, so a firing here is published by the
         // next one — the document says what was OBSERVED and never what is
         // happening inside it.
-        {
-            let mut pass = routines::Pass {
-                machine: routines::action::Machine {
-                    machine_dir: &self.machine_dir,
-                    child_path: self.seams.child_path,
-                    policy: &self.inputs.policy,
-                    seats: &seat_views(
-                        &self.inputs.config.seats,
-                        &observations,
-                        &recorded_dirs,
-                        &self.table,
-                    ),
-                    // THE SAME GATE the per-seat effects take. A routine's ring
-                    // is an effect — it types a turn into a seat's session —
-                    // and a pending grant means no effect is issued, so a pass
-                    // that read only the binary would fire one while the
-                    // projection said effects were off with the grant as cause.
-                    agent: acting.then_some(agent),
-                    host: self.seams.host,
-                    effects_off: document.effects.cause.clone(),
-                },
-                events: &mut self.events_log,
-                state: &mut routines_state,
-            };
-            routines::tick(&registry, &mut pass, routines_now);
-        }
+        let mut pass = routines::Pass {
+            machine: routines::action::Machine {
+                machine_dir: &self.machine_dir,
+                child_path: self.seams.child_path,
+                policy: &self.inputs.policy,
+                seats: &seat_views(
+                    &self.inputs.config.seats,
+                    &poll.observations,
+                    &poll.recorded_dirs,
+                    &self.table,
+                ),
+                // THE SAME GATE the per-seat effects take. A routine's ring
+                // is an effect — it types a turn into a seat's session —
+                // and a pending grant means no effect is issued, so a pass
+                // that read only the binary would fire one while the
+                // projection said effects were off with the grant as cause.
+                agent: acting.then_some(agent),
+                host: self.seams.host,
+                effects_off: document.effects.cause.clone(),
+            },
+            events: &mut self.events_log,
+            state: routines_state,
+        };
+        routines::tick(registry, &mut pass, routines_now);
+    }
 
+    /// The runs' own pass.
+    fn pass_runs(&mut self) {
         // The runs' own pass, after the routines'. The DECISION is this crate's
         // — a fold of the stream this loop already owns — and only the three
         // acts a run's advance needs are the seam's, so the pass is a call here
@@ -1132,7 +1258,11 @@ impl<'a> Observer<'a> {
                 eprintln!("{}: {why}", crate::runs::REFUSED);
             }
         }
+    }
 
+    /// The live agent version held against the adapter's expectation, and the
+    /// event a move between them owes.
+    fn announce_substrate(&mut self, poll: &Poll) {
         // A live version outside the releases the agent's adapter was measured
         // against (ruling 8) is a flag to re-measure, never a failure — and one
         // event per move, not one per poll.
@@ -1141,7 +1271,7 @@ impl<'a> Observer<'a> {
         // announcement. A poll whose version read failed knows nothing about the
         // spread, and clearing on it re-announces the same move on the next
         // healthy poll.
-        let pair = (agent_version.clone(), expected);
+        let pair = (poll.agent_version.clone(), poll.expected.clone());
         match (&pair.0, &pair.1) {
             (Some(live), Some(pinned)) if live != pinned => {
                 if self.announced_move.as_ref() != Some(&pair) {
