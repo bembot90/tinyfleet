@@ -62,7 +62,7 @@ pub fn machine_of<'a>(
 /// exit it carries; a seat list nobody could read is could-not-tell, never a
 /// fleet with no seats.
 pub fn seat_named(machine_dir: &Path, arg: &str) -> Result<config::Seat, Stop> {
-    let path = machine_dir.join("config.json");
+    let path = config::path_in(machine_dir);
     let machine = config::read(&path).map_err(|why| {
         Stop::could_not_tell(format!(
             "the seat list could not be read, so no seat can be named: {why}"
@@ -154,7 +154,7 @@ pub fn policy_of(here: &Here) -> Result<Policy, Stop> {
 
 /// The file the machine's seat list names: the fleet's own.
 fn fleet_toml_of(here: &Here) -> Result<PathBuf, Stop> {
-    config::read(&here.machine_dir.join("config.json"))
+    config::read(&config::path_in(&here.machine_dir))
         .map(|machine| machine.fleet_toml)
         .map_err(|cause| Stop::could_not_tell(format!("the seat list: {cause}")))
 }

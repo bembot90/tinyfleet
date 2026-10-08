@@ -322,14 +322,15 @@ impl Setting {
 
     /// The same over a table the caller already holds.
     pub fn of(policy: toml::Table, fleet_toml: &Path, machine_dir: &Path) -> Setting {
+        let (packs_dir, defaults_dir) = crate::defaults::pack_dirs(machine_dir, None);
         Setting {
             policy,
             root: fleet_toml
                 .parent()
                 .map(Path::to_path_buf)
                 .unwrap_or_default(),
-            packs_dir: machine_dir.join("packs"),
-            defaults_dir: machine_dir.join(crate::defaults::DIR),
+            packs_dir,
+            defaults_dir,
         }
     }
 

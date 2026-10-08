@@ -34,9 +34,6 @@ use fleet_controller::{clock, platform};
 
 use crate::exit::Exit;
 
-/// The stream the `--write` line goes to, under the machine directory.
-const STREAM: &str = "events.jsonl";
-
 /// What `seat attach` takes.
 #[derive(clap::Args)]
 pub struct AttachArgs {
@@ -148,7 +145,7 @@ fn ended(state: PaneState) -> Option<String> {
 /// The `seat.attached` line a `--write` owes: about the seat, by its id, with
 /// the seat's `{id, name?, kind}` object, the mode and the instant.
 fn record_write(machine_dir: &Path, row: &config::Seat) -> Result<(), String> {
-    let stream = machine_dir.join(STREAM);
+    let stream = events::path_in(machine_dir);
     EventLog::open(&stream)
         .append(
             events::SEAT_ATTACHED,

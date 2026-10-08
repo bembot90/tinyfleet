@@ -92,7 +92,7 @@ pub fn record(args: &StepArgs) -> Exit {
             }
         },
     };
-    let stream = platform::machine_dir().join(STREAM);
+    let stream = events::path_in(&platform::machine_dir());
     let mut log = EventLog::open(&stream);
     if let Err(e) = log.append(kind, &actor, payload) {
         eprintln!(
@@ -127,8 +127,6 @@ pub fn record(args: &StepArgs) -> Exit {
         }
     }
 }
-
-const STREAM: &str = "events.jsonl";
 
 /// The payload, or the usage error: `--result` must parse as one JSON value,
 /// because a close whose result the replay cannot read is a step it cannot

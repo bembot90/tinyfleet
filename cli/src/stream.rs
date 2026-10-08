@@ -27,9 +27,6 @@ use fleet_core::seat::actor::Actor;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// The stream, under the machine directory the writer verbs resolve.
-const STREAM: &str = "events.jsonl";
-
 /// How many lines a tail prints when the caller names no `--since`.
 const TAIL_DEFAULT: usize = 50;
 
@@ -250,7 +247,7 @@ fn matches<T: PartialEq + ?Sized>(wanted: Option<&T>, stored: Option<&T>) -> boo
 /// The one seat `--seat` names, as the actor a line about it carries.
 fn seat_named(arg: &str) -> Result<ActorRef, (Exit, String)> {
     let machine_dir = platform::machine_dir();
-    let rows = config::read(&machine_dir.join("config.json"))
+    let rows = config::read(&config::path_in(&machine_dir))
         .map(|machine| machine.seats)
         .unwrap_or_default();
     let policy = load::fleet_root(None, &machine_dir)
@@ -310,7 +307,7 @@ pub fn show(id: &str, json: bool) -> Exit {
 }
 
 fn machine_stream() -> PathBuf {
-    platform::machine_dir().join(STREAM)
+    events::path_in(&platform::machine_dir())
 }
 
 /// The event readers' stream refusal: exit 5, with the path a caller would have

@@ -129,10 +129,10 @@ fn resolve() -> Result<Fleet, String> {
     let Some(fleet_root) = load::fleet_root(None, &machine_dir) else {
         return Err(format!(
             "no `fleet.toml` above this directory and none named by {}",
-            machine_dir.join("config.json").display()
+            config::path_in(&machine_dir).display()
         ));
     };
-    let seats = config::read(&machine_dir.join("config.json"))
+    let seats = config::read(&config::path_in(&machine_dir))
         .map(|machine| machine.seats)
         .unwrap_or_default();
     // A nudge names a row this machine runs; an item's assignee names any seat
@@ -464,8 +464,7 @@ fn run(name: &str, force: bool, dry_run: bool) -> Exit {
                     Exit::Refused
                 }
                 Due::CouldNotTell(why) => {
-                    let mut events =
-                        events::EventLog::open(&fleet.machine_dir.join("events.jsonl"));
+                    let mut events = events::EventLog::open(&events::path_in(&fleet.machine_dir));
                     let mut pass = routines::Pass {
                         machine: machine_of(&fleet, &seats, carrier, None),
                         events: &mut events,
@@ -477,8 +476,7 @@ fn run(name: &str, force: bool, dry_run: bool) -> Exit {
                     exit_of(outcome.exit_code())
                 }
                 Due::Due(reason) => {
-                    let mut events =
-                        events::EventLog::open(&fleet.machine_dir.join("events.jsonl"));
+                    let mut events = events::EventLog::open(&events::path_in(&fleet.machine_dir));
                     let mut pass = routines::Pass {
                         machine,
                         events: &mut events,
@@ -516,7 +514,7 @@ fn print_last_row(machine_dir: &std::path::Path, name: &str) {
 
 fn history(name: Option<&str>, since: u64, count: usize) -> Exit {
     let machine_dir = platform::machine_dir();
-    let stream = machine_dir.join("events.jsonl");
+    let stream = events::path_in(&machine_dir);
     if !stream.is_file() {
         eprintln!(
             "fleet routine history: no event stream at {}, so no routine has a history yet",
@@ -534,7 +532,7 @@ fn history(name: Option<&str>, since: u64, count: usize) -> Exit {
 
 /// Every routine event on the stream, in file order, as the line a person reads.
 fn routine_rows(machine_dir: &std::path::Path, name: Option<&str>, since: u64) -> Vec<String> {
-    events::read_after(&machine_dir.join("events.jsonl"), since)
+    events::read_after(&events::path_in(machine_dir), since)
         .into_iter()
         .filter(|record| events::ROUTINE_TYPES.contains(&record.kind.as_str()))
         .filter(|record| {

@@ -360,6 +360,7 @@ fn file_item(routine: &Routine, item: &Item, machine: &Machine) -> Done {
         Ok(policy) => policy,
         Err(why) => return Done::plain(Outcome::CouldNotTell, why.to_string()),
     };
+    let (packs_dir, defaults_dir) = fleet_core::defaults::pack_dirs(machine.machine_dir, None);
     let opened = store::open(&Opening {
         root: &routine.project_root,
         policy: &policy,
@@ -367,8 +368,8 @@ fn file_item(routine: &Routine, item: &Item, machine: &Machine) -> Done {
         search_path: &path_for_children(machine.child_path),
         timeout: Duration::from_secs(routine.timeout),
         packs: Some(PackDirs {
-            packs_dir: &machine.machine_dir.join("packs"),
-            defaults_dir: &machine.machine_dir.join(fleet_core::defaults::DIR),
+            packs_dir: &packs_dir,
+            defaults_dir: &defaults_dir,
         }),
     });
     let store = match opened {

@@ -22,7 +22,7 @@ use fleet_controller::{clock, config, events, platform, policy as controller};
 use fleet_core::item::Stop;
 use fleet_core::pack::AdapterKind;
 use fleet_core::seat::identity;
-use fleet_core::store::{self, AdapterSource, Opening, PackDirs, STORE_TIMEOUT};
+use fleet_core::store::{self, PackDirs, STORE_TIMEOUT};
 use fleet_core::{add, defaults, lock, supported};
 
 use crate::exit::Exit;
@@ -315,17 +315,16 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
             // The file is not written yet, so the policy read here names no
             // adapter, which opens the default store — the first of STORES,
             // and the only store this verb installs.
-            let prefix = store::open(&Opening {
-                root: &root,
-                policy: &store::project_policy(&root)?,
-                source: AdapterSource::Setting,
-                search_path: &platform::child_path(&platform::home_dir()),
-                timeout: STORE_TIMEOUT,
-                packs: Some(PackDirs {
-                    packs_dir: &machine_dir.join("packs"),
-                    defaults_dir: &machine_dir.join(defaults::DIR),
-                }),
-            })
+            let (packs_dir, defaults_dir) = defaults::pack_dirs(&machine_dir, None);
+            let prefix = fleet_controller::project::open_store_at(
+                &root,
+                &store::project_policy(&root)?,
+                PackDirs {
+                    packs_dir: &packs_dir,
+                    defaults_dir: &defaults_dir,
+                },
+                STORE_TIMEOUT,
+            )
             .ok()
             .and_then(|opened| opened.capabilities().ok())
             .and_then(|capabilities| capabilities.item_prefix);
@@ -360,7 +359,7 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
             // side of it. The rows stay `start`'s: this writes `children`
             // empty, exactly as a first run does, and the next start renders
             // what is registered.
-            let seats = machine_dir.join("config.json");
+            let seats = config::path_in(&machine_dir);
             let fleet_file = match registered_fleet(&machine_dir, named_fleet.as_deref())? {
                 MachineFleet::Registered(fleet_file) => fleet_file,
                 MachineFleet::Named(fleet_file) => {
@@ -573,7 +572,7 @@ fn install(
     source: &str,
     name: &str,
 ) -> Result<Pack, Vec<add::Refusal>> {
-    let packs_dir = machine_dir.join("packs");
+    let (packs_dir, defaults_dir) = defaults::pack_dirs(machine_dir, None);
     let lock_path = machine_dir.join(lock::LOCK);
     let root = packs_dir.join(name);
     if root.exists() {
@@ -589,7 +588,7 @@ fn install(
     let wait = ui.spinner(&format!("fetching {source} at {version}"));
     let added = add::add(
         &packs_dir,
-        &machine_dir.join(defaults::DIR),
+        &defaults_dir,
         &lock_path,
         source,
         version,
@@ -821,7 +820,7 @@ impl MachineFleet {
 /// caller's, so the two refusal checks this verb makes before its questions
 /// move nothing.
 fn registered_fleet(machine_dir: &Path, named: Option<&Path>) -> Result<MachineFleet, Stop> {
-    let seats = machine_dir.join("config.json");
+    let seats = config::path_in(machine_dir);
     match config::read(&seats) {
         Ok(machine) if machine.fleet_toml.is_file() => {
             Ok(MachineFleet::Registered(machine.fleet_toml))
@@ -872,7 +871,7 @@ fn registered_fleet(machine_dir: &Path, named: Option<&Path>) -> Result<MachineF
 /// refresh it, leave it, or refuse it — is [`fleet_core::defaults`]'s.
 fn defaults_into(machine_dir: &Path) -> Result<defaults::Installed, Stop> {
     defaults::install(
-        &machine_dir.join(defaults::DIR),
+        &defaults::pack_dirs(machine_dir, None).1,
         &machine_dir.join(fleet_core::lock::LOCK),
         env!("CARGO_PKG_VERSION"),
         &clock::now_stamp(),
@@ -1161,7 +1160,7 @@ impl Fleet {
             .filter(|path| path.is_file());
         let fleet_toml = match embedded {
             Some(path) => path,
-            None => match config::read(&machine_dir.join("config.json")) {
+            None => match config::read(&config::path_in(&machine_dir)) {
                 Ok(machine) if machine.fleet_toml.is_file() => machine.fleet_toml,
                 _ => return Err(no_fleet(&machine_dir)),
             },
@@ -1223,7 +1222,7 @@ fn no_fleet(machine_dir: &Path) -> Stop {
     Stop::refused(format!(
         "no {} above this directory and no fleet named by {} — `fleet create` writes one",
         lifecycle::FLEET_TOML,
-        machine_dir.join("config.json").display()
+        config::path_in(machine_dir).display()
     ))
 }
 

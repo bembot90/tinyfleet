@@ -57,7 +57,7 @@ pub fn record(
     seat: &SeatId,
     reason: Option<&str>,
 ) -> Result<String, (u8, String)> {
-    let row = config::read(&machine_dir.join("config.json"))
+    let row = config::read(&config::path_in(machine_dir))
         .ok()
         .and_then(|config| config.by_id(seat).cloned());
     let key = seat.to_string();
@@ -85,7 +85,7 @@ pub fn record(
         }
         _ => serde_json::json!({}),
     };
-    let stream = machine_dir.join("events.jsonl");
+    let stream = events::path_in(machine_dir);
     let mut log = EventLog::open(&stream);
     let actor = ActorRef::seat(&key);
     if let Err(e) = log.append(kind, &actor, payload) {
@@ -202,7 +202,7 @@ fn clear_halt_is_answerable(machine_dir: &Path, named: &Named) -> Result<(), (u8
 
 /// The published document, refused unless a collector is plainly consuming.
 fn fresh_projection(machine_dir: &Path) -> Result<serde_json::Value, (u8, String)> {
-    let path = machine_dir.join("projection.json");
+    let path = crate::projection::path_in(machine_dir);
     let refuse = |why: String| Err((EXIT_NO_COLLECTOR, why));
     let Ok(body) = std::fs::read_to_string(&path) else {
         return refuse(format!(

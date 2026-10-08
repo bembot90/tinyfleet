@@ -12,6 +12,13 @@ use std::fmt;
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+/// The machine's event stream, under the machine directory.
+pub const FILE: &str = "events.jsonl";
+
+pub fn path_in(machine_dir: &Path) -> PathBuf {
+    machine_dir.join(FILE)
+}
+
 #[derive(Serialize)]
 pub struct Event<'a> {
     pub id: String,

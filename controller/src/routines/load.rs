@@ -27,9 +27,6 @@ pub struct Root {
 /// The directory a routine file sits in, under a root that carries one.
 pub const ORDERS_DIR: &str = "orders";
 
-/// Where every installed pack lives under the machine directory.
-pub const PACKS_DIR: &str = "packs";
-
 #[derive(Debug, Default)]
 pub struct Registry {
     pub routines: Vec<Routine>,
@@ -56,7 +53,7 @@ pub fn roots(fleet_root: &Path, machine_dir: &Path, projects: &[(String, PathBuf
         dir: fleet_root.join(ORDERS_DIR),
         project_root: fleet_root.to_path_buf(),
     }];
-    let packs = machine_dir.join(PACKS_DIR);
+    let packs = fleet_core::defaults::pack_dirs(machine_dir, None).0;
     if let Ok(entries) = std::fs::read_dir(&packs) {
         let mut installed: Vec<PathBuf> = entries
             .filter_map(|entry| entry.ok())
@@ -198,6 +195,6 @@ pub fn fleet_root(start: Option<&Path>, machine_dir: &Path) -> Option<PathBuf> {
     {
         return file.parent().map(Path::to_path_buf);
     }
-    let config = crate::config::read(&machine_dir.join("config.json")).ok()?;
+    let config = crate::config::read(&crate::config::path_in(machine_dir)).ok()?;
     config.fleet_toml.parent().map(Path::to_path_buf)
 }

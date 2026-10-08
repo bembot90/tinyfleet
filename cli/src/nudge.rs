@@ -20,18 +20,13 @@ use fleet_controller::effect::Typed;
 use fleet_controller::events::{self, ActorRef, EventLog};
 use fleet_controller::observe::RosterState;
 use fleet_controller::project::stream::stream_actor;
+use fleet_controller::projection;
 use fleet_controller::seat::COLLECTOR_STALE_POLLS;
 use fleet_controller::{clock, policy as controller};
 
 use crate::exit::Exit;
 use crate::item::{acting, SeatRing};
 use crate::ui::{Stream, Tone, Ui};
-
-/// The published document this verb refuses without.
-const PROJECTION: &str = "projection.json";
-
-/// The stream the event goes to, under the machine directory.
-const STREAM: &str = "events.jsonl";
 
 /// What the verb writes into the event's `source`, which is what tells a reader
 /// this line is the courier's and not a threshold's.
@@ -107,7 +102,7 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
     };
     let outcome = rung.typed.recorded();
 
-    let stream = here.machine_dir.join(STREAM);
+    let stream = events::path_in(&here.machine_dir);
     let mut log = EventLog::open(&stream);
     // The line is ABOUT the seat, as every `session.*` line is: its actor is the
     // seat nudged, and who sent it is the payload's `by`.
@@ -149,7 +144,7 @@ pub fn nudge_command(ui: &Ui, args: &NudgeArgs) -> Exit {
 /// reader whether the collector stopped a moment ago or yesterday, and the two
 /// have different answers.
 fn fresh_projection(machine_dir: &Path) -> Result<serde_json::Value, String> {
-    let path = machine_dir.join(PROJECTION);
+    let path = projection::path_in(machine_dir);
     let Ok(body) = std::fs::read_to_string(&path) else {
         return Err(format!(
             "no collector is consuming — there is no projection at {}; run `fleet start`",

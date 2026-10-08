@@ -29,17 +29,6 @@ use fleet_core::policy as core_policy;
 
 use crate::exit::Exit;
 
-/// The published document, under the machine directory.
-const PROJECTION: &str = "projection.json";
-
-/// The machine's own file, whose `[controller]` object overrides the policy
-/// file's keys — read here so the threshold this page measures against is the
-/// one the controller fires `suggest-rest` at.
-const CONFIG: &str = "config.json";
-
-/// The stream the runs section is read off, under the machine directory.
-const STREAM: &str = "events.jsonl";
-
 /// How far back the runs section lists a failed run, in hours.
 ///
 /// A WINDOW AND NOT A LAST-READ MARK. "Failed since you last looked" needs a
@@ -75,7 +64,7 @@ pub fn status_command(args: &StatusArgs) -> Exit {
 
 fn run(args: &StatusArgs, out: &mut dyn Write) -> Result<Exit, Stop> {
     let machine_dir = platform::machine_dir();
-    let path = machine_dir.join(PROJECTION);
+    let path = projection::path_in(&machine_dir);
     let body = read_projection(&path)?;
 
     // --json is the document and not a rendering of it, so the bytes go out
@@ -168,7 +157,7 @@ impl Read {
             stale,
             policy: effective_policy(&policy_file, machine_dir),
             rules: read_rules(&policy_file),
-            runs: read_runs(&machine_dir.join(STREAM), machine_dir),
+            runs: read_runs(&events::path_in(machine_dir), machine_dir),
         }
     }
 
@@ -206,7 +195,7 @@ fn effective_policy(policy_file: &Path, machine_dir: &Path) -> Result<Policy, St
             policy_file.display()
         )
     })?;
-    let Ok(machine) = config::read(&machine_dir.join(CONFIG)) else {
+    let Ok(machine) = config::read(&config::path_in(machine_dir)) else {
         return Ok(file);
     };
     let over = controller_policy::overrides_in(machine.controller.as_ref());
@@ -717,7 +706,7 @@ fn one_seat(
     read: &Read,
     seat: &str,
 ) -> Result<(), Stop> {
-    let machine = config::read(&machine_dir.join(CONFIG)).map_err(|why| {
+    let machine = config::read(&config::path_in(machine_dir)).map_err(|why| {
         Stop::could_not_tell(format!(
             "the seat list could not be read, so no seat can be named: {why}"
         ))

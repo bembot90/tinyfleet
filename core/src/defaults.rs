@@ -38,6 +38,20 @@ pub const COMMIT: &str = "embedded";
 /// The directory the set is written to, under the machine directory.
 pub const DIR: &str = "defaults";
 
+/// The packs directory under `machine_dir`, or the one a caller chose, and
+/// the defaults beside whichever was resolved. A caller that named its own
+/// packs directory named a machine layout of its own, and the defaults it
+/// resolves through are that layout's, never this box's.
+pub fn pack_dirs(machine_dir: &Path, chosen: Option<&Path>) -> (PathBuf, PathBuf) {
+    match chosen {
+        Some(packs) => (
+            packs.to_path_buf(),
+            packs.parent().unwrap_or(machine_dir).join(DIR),
+        ),
+        None => (machine_dir.join("packs"), machine_dir.join(DIR)),
+    }
+}
+
 /// The name the resolver's bottom layer carries, which a refusal calls it by.
 pub const LAYER: &str = "defaults";
 

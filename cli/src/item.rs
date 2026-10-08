@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use fleet_controller::effect::{TurnTarget, Typed};
+use fleet_controller::events;
 use fleet_controller::project::stream::StreamEvents;
 use fleet_controller::project::{open_store, resolve_at, Here};
 use fleet_controller::{clock, config, effect, platform, policy as controller, sessions};
@@ -39,8 +40,6 @@ use crate::ui::{Ui, Wait};
 
 /// Where a rendered brief is written, under the machine directory.
 const BRIEFS: &str = "briefs";
-/// The fleet's event stream, under the machine directory.
-pub(crate) const EVENTS: &str = "events.jsonl";
 
 /// What `dispatch` takes. An order names who gave it, so `--by` is here and
 /// not on `brief`.
@@ -244,7 +243,7 @@ pub fn cancel_command(args: &CancelArgs) -> Exit {
     let cancelled = resolve_at(args.packs_dir.clone()).and_then(|here| {
         let by = acting("cancel", args.by.as_deref(), &here)?;
         let store = open_store(&here)?;
-        let events = StreamEvents::at(here.machine_dir.join(EVENTS));
+        let events = StreamEvents::at(events::path_in(&here.machine_dir));
         workflow_run::cancel(
             &mut std::io::stdout(),
             &workflow_run::Cancel {
@@ -311,7 +310,7 @@ fn run_the_workflow(parsed: &RunArgs, out: &mut dyn Write) -> Result<workflow_ru
     let by = acting("run", parsed.by.as_deref(), &here)?;
     let store = open_store(&here)?;
     let packs = Packs::under(&here.packs_dir, &here.defaults_dir)?;
-    let events = StreamEvents::at(here.machine_dir.join(EVENTS));
+    let events = StreamEvents::at(events::path_in(&here.machine_dir));
     let fleet_bin = std::env::current_exe().map_err(|e| {
         Stop::could_not_tell(format!("this process cannot name its own binary: {e}"))
     })?;
@@ -374,7 +373,7 @@ fn run_land(
     // known before the first check is read and does not change with what they
     // say.
     let progress = Bar::over(ui, land::CRITERIA.len() as u64, "landing");
-    let events = StreamEvents::at(here.machine_dir.join(EVENTS));
+    let events = StreamEvents::at(events::path_in(&here.machine_dir));
     let load = BoxLoad::of(&here);
     let stamp = clock::now_stamp();
     // The one constructed search path, the same function the controller's own
@@ -466,7 +465,7 @@ fn run_hold(parsed: &HoldArgs, out: &mut dyn Write) -> Result<hold::Held, Stop> 
     let git = RealGit {
         root: here.project.root.clone(),
     };
-    let events = StreamEvents::at(here.machine_dir.join(EVENTS));
+    let events = StreamEvents::at(events::path_in(&here.machine_dir));
 
     let stamp = clock::now_stamp();
     hold::hold(
@@ -493,7 +492,7 @@ fn run_clear(parsed: &ClearArgs, out: &mut dyn Write) -> Result<hold::Cleared, S
     let git = RealGit {
         root: here.project.root.clone(),
     };
-    let events = StreamEvents::at(here.machine_dir.join(EVENTS));
+    let events = StreamEvents::at(events::path_in(&here.machine_dir));
 
     hold::clear(
         out,
@@ -556,7 +555,7 @@ fn run_deliver(
     let ring = SeatRing {
         machine_dir: here.machine_dir.clone(),
     };
-    let events = StreamEvents::at(here.machine_dir.join(EVENTS));
+    let events = StreamEvents::at(events::path_in(&here.machine_dir));
 
     let stamp = clock::now_stamp();
     deliver::deliver(
@@ -595,7 +594,7 @@ fn run_review(
     let ring = SeatRing {
         machine_dir: here.machine_dir.clone(),
     };
-    let events = StreamEvents::at(here.machine_dir.join(EVENTS));
+    let events = StreamEvents::at(events::path_in(&here.machine_dir));
 
     // --show is the default, so the two writing modes are what a call opts
     // into and nothing here has to tell "asked for --show" from "asked for
@@ -735,7 +734,7 @@ fn run_dispatch(
         here: &here,
         home: platform::home_dir(),
     };
-    let events = StreamEvents::at(here.machine_dir.join(EVENTS));
+    let events = StreamEvents::at(events::path_in(&here.machine_dir));
 
     let stamp = clock::now_stamp();
     dispatch::dispatch(
@@ -912,7 +911,7 @@ impl SeatRing {
     ///
     /// `timeout` stands in for the policy's bound on this call alone.
     pub(crate) fn ring_with(&self, seat: &str, text: &str, timeout: Option<Duration>) -> Rung {
-        let machine = match config::read(&self.machine_dir.join("config.json")) {
+        let machine = match config::read(&config::path_in(&self.machine_dir)) {
             Ok(machine) => machine,
             Err(cause) => return rang_nobody(cause),
         };

@@ -14,6 +14,14 @@ use crate::config;
 use crate::observe::SeatObservation;
 use fleet_core::seat::identity::{Kind, SeatId, SeatRef};
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+/// The published document, under the machine directory.
+pub const FILE: &str = "projection.json";
+
+pub fn path_in(machine_dir: &Path) -> PathBuf {
+    machine_dir.join(FILE)
+}
 
 /// Bumped by any breaking change to the shape below. A reader that meets a
 /// version it does not know refuses the document whole rather than half-reading

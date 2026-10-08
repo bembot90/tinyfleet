@@ -20,7 +20,7 @@ use fleet_core::lock;
 use fleet_core::resolve::{self, Layer};
 use fleet_core::seat::identity::SeatId;
 use fleet_core::store::types::Version;
-use fleet_core::store::{self, AdapterSource, Filter, Opening, PackDirs, Status};
+use fleet_core::store::{self, Filter, PackDirs, Status};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -41,7 +41,7 @@ pub fn command() -> Exit {
     let version = env!("CARGO_PKG_VERSION");
     let cwd = std::env::current_dir().unwrap_or_default();
     let machine_dir = platform::machine_dir();
-    let machine = config::read(&machine_dir.join("config.json")).ok();
+    let machine = config::read(&config::path_in(&machine_dir)).ok();
 
     // The order `fleet guard` resolves its policy in, so the two verbs answer
     // about one file: an embedded fleet's own, and — for a declared project,
@@ -64,7 +64,8 @@ pub fn command() -> Exit {
     };
 
     let policy = crate::read_text(&fleet_toml);
-    let layering = layers(&machine_dir.join("packs"), &machine_dir.join(defaults::DIR));
+    let (packs_dir, defaults_dir) = defaults::pack_dirs(&machine_dir, None);
+    let layering = layers(&packs_dir, &defaults_dir);
     println!(
         "fleet {version} — packs: {}; guards: {}",
         packs_of(&layering, &machine_dir.join(lock::LOCK)),
@@ -252,18 +253,16 @@ fn store_line(project_root: Option<&Path>) -> String {
 /// line's answer.
 fn store_version(root: &Path) -> Result<(Version, String), String> {
     let policy = store::project_policy(root).map_err(|why| why.to_string())?;
-    let machine_dir = platform::machine_dir();
-    let store = store::open(&Opening {
+    let (packs_dir, defaults_dir) = defaults::pack_dirs(&platform::machine_dir(), None);
+    let store = fleet_controller::project::open_store_at(
         root,
-        policy: &policy,
-        source: AdapterSource::Setting,
-        search_path: &platform::child_path(&platform::home_dir()),
-        timeout: VERSION_TIMEOUT,
-        packs: Some(PackDirs {
-            packs_dir: &machine_dir.join("packs"),
-            defaults_dir: &machine_dir.join(defaults::DIR),
-        }),
-    })
+        &policy,
+        PackDirs {
+            packs_dir: &packs_dir,
+            defaults_dir: &defaults_dir,
+        },
+        VERSION_TIMEOUT,
+    )
     .map_err(|why| why.to_string())?;
     let version = store.version().map_err(|why| why.to_string())?;
     Ok((version, store::adapter_name(&policy)))
@@ -320,18 +319,16 @@ fn print_items(project_root: &Path, seat: &SeatId) {
 /// this line's third answer.
 fn items(project_root: &Path, seat: &SeatId) -> Result<Vec<(String, String)>, String> {
     let policy = store::project_policy(project_root).map_err(|why| why.to_string())?;
-    let machine_dir = platform::machine_dir();
-    let store = store::open(&Opening {
-        root: project_root,
-        policy: &policy,
-        source: AdapterSource::Setting,
-        search_path: &platform::child_path(&platform::home_dir()),
-        timeout: ITEMS_TIMEOUT,
-        packs: Some(PackDirs {
-            packs_dir: &machine_dir.join("packs"),
-            defaults_dir: &machine_dir.join(defaults::DIR),
-        }),
-    })
+    let (packs_dir, defaults_dir) = defaults::pack_dirs(&platform::machine_dir(), None);
+    let store = fleet_controller::project::open_store_at(
+        project_root,
+        &policy,
+        PackDirs {
+            packs_dir: &packs_dir,
+            defaults_dir: &defaults_dir,
+        },
+        ITEMS_TIMEOUT,
+    )
     .map_err(|why| why.to_string())?;
     Ok(store
         .list(&Filter::Assignee(*seat))

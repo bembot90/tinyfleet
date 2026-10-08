@@ -81,11 +81,11 @@ pub struct Machine<'a> {
 
 impl Machine<'_> {
     fn config_path(&self) -> PathBuf {
-        self.machine_dir.join("config.json")
+        config::path_in(self.machine_dir)
     }
 
     fn stream_path(&self) -> PathBuf {
-        self.machine_dir.join("events.jsonl")
+        events::path_in(self.machine_dir)
     }
 
     fn table_path(&self) -> PathBuf {

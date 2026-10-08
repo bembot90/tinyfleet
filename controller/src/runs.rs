@@ -695,7 +695,7 @@ pub fn registered_roots(machine_dir: &Path) -> Vec<PathBuf> {
         .into_iter()
         .map(|project| PathBuf::from(project.root))
         .collect();
-    if let Ok(machine) = config::read(&machine_dir.join("config.json")) {
+    if let Ok(machine) = config::read(&config::path_in(machine_dir)) {
         if let Some(root) = machine.fleet_toml.parent() {
             if root != machine_dir && !roots.iter().any(|held| held == root) {
                 roots.push(root.to_path_buf());
@@ -716,7 +716,7 @@ impl Runs for Engine {
         let store = open_store(&here).map_err(|stop| stop.message)?;
         let packs =
             Packs::under(&here.packs_dir, &here.defaults_dir).map_err(|stop| stop.message)?;
-        let events = StreamEvents::at(self.machine_dir.join("events.jsonl"));
+        let events = StreamEvents::at(events::path_in(&self.machine_dir));
         let fleet_bin = std::env::current_exe()
             .map_err(|e| format!("this process cannot name its own binary: {e}"))?;
         let at = clock::now_stamp();

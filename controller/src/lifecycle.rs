@@ -355,7 +355,7 @@ pub fn register(machine_dir: &Path, root: &Path, name: &str) -> Result<bool, Str
 
 /// Write the `project.registered` line the registry owes the stream.
 pub fn registered_event(machine_dir: &Path, root: &Path, name: &str) -> Result<(), String> {
-    EventLog::open(&machine_dir.join("events.jsonl"))
+    EventLog::open(&events::path_in(machine_dir))
         .append(
             events::PROJECT_REGISTERED,
             &events::controller(machine_dir),
@@ -413,7 +413,7 @@ pub fn first_run(run: &FirstRun) -> Result<FirstRunReport, String> {
         .map_err(|e| format!("{}: {e}", run.machine_dir.display()))?;
     lines.push(format!("machine directory: {}", run.machine_dir.display()));
 
-    let config_path = run.machine_dir.join("config.json");
+    let config_path = config::path_in(run.machine_dir);
     if write_seat_list(&config_path, run.fleet_toml)? {
         changed = true;
         lines.push(format!("seat list: written at {}", config_path.display()));
@@ -723,7 +723,7 @@ impl NotConfirmed {
 /// Read BEFORE the load, because an old `controller.started` from a previous
 /// run is exactly what a confirmation must not accept.
 pub fn stream_head(machine_dir: &Path) -> u64 {
-    EventLog::open(&machine_dir.join("events.jsonl")).seq()
+    EventLog::open(&events::path_in(machine_dir)).seq()
 }
 
 /// Wait for one fresh event of `kind` above `above`.
@@ -736,7 +736,7 @@ pub fn confirm(
     above: u64,
     timeout: Duration,
 ) -> Result<u64, NotConfirmed> {
-    let stream = machine_dir.join("events.jsonl");
+    let stream = events::path_in(machine_dir);
     let deadline = Instant::now() + timeout;
     loop {
         if let Some(seq) = events::read_after(&stream, above)
@@ -761,7 +761,7 @@ pub fn confirm(
 /// person can point to. Read FROM THE FILE and never from the process table: a
 /// pid is not a tick.
 pub fn last_tick(machine_dir: &Path) -> Option<String> {
-    let body = std::fs::read_to_string(machine_dir.join("projection.json")).ok()?;
+    let body = std::fs::read_to_string(crate::projection::path_in(machine_dir)).ok()?;
     let document: serde_json::Value = serde_json::from_str(&body).ok()?;
     document
         .get("generated_at")

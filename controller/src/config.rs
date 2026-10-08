@@ -15,6 +15,13 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// The machine's seat list, under the machine directory.
+pub const FILE: &str = "config.json";
+
+pub fn path_in(machine_dir: &Path) -> PathBuf {
+    machine_dir.join(FILE)
+}
+
 #[derive(Clone, Debug)]
 pub struct Seat {
     /// The seat, and the key every row is found by.

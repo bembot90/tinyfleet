@@ -870,10 +870,10 @@ fn pack_add(
     lock_path: Option<&Path>,
 ) -> Result<Exit> {
     // The machine directory is the platform layer's answer and core never asks
-    // for it: the two paths are resolved here and handed down.
+    // for it: it is resolved here, and the two paths core derives from it are
+    // handed down.
     let machine = platform::machine_dir();
-    let packs_dir = packs_dir.map_or_else(|| machine.join("packs"), Path::to_path_buf);
-    let defaults_dir = packs_dir.parent().unwrap_or(&machine).join(defaults::DIR);
+    let (packs_dir, defaults_dir) = defaults::pack_dirs(&machine, packs_dir);
     let lock_path = lock_path.map_or_else(|| machine.join(lock::LOCK), Path::to_path_buf);
 
     // The clone and the checkout are the unbounded wait in this verb, and the
@@ -959,7 +959,7 @@ fn pack_remove(
     lock_path: Option<&Path>,
 ) -> Result<Exit> {
     let machine = platform::machine_dir();
-    let packs_dir = packs_dir.map_or_else(|| machine.join("packs"), Path::to_path_buf);
+    let packs_dir = defaults::pack_dirs(&machine, packs_dir).0;
     let lock_path = lock_path.map_or_else(|| machine.join(lock::LOCK), Path::to_path_buf);
 
     match remove::remove(&packs_dir, &lock_path, source) {
@@ -1147,12 +1147,9 @@ fn guard_command(
 /// installed pack's `guard_classes`. A layering that does not resolve is an
 /// `Err`, one line — which classes are in force is exactly what it cannot say.
 fn declared_classes() -> Result<Vec<Class>, String> {
-    let machine_dir = platform::machine_dir();
-    let packs = fleet_core::item::brief::Packs::under(
-        &machine_dir.join("packs"),
-        &machine_dir.join(defaults::DIR),
-    )
-    .map_err(|stop| format!("the declared guard classes: {}", stop.message))?;
+    let (packs_dir, defaults_dir) = defaults::pack_dirs(&platform::machine_dir(), None);
+    let packs = fleet_core::item::brief::Packs::under(&packs_dir, &defaults_dir)
+        .map_err(|stop| format!("the declared guard classes: {}", stop.message))?;
     guard::declared(&packs.layers)
 }
 
@@ -1168,17 +1165,15 @@ fn hook_map(adapter: &str) -> Result<HookMap, String> {
     let dir = match adapter {
         path if path.starts_with('/') => PathBuf::from(path),
         name if !name.is_empty() && !name.contains('/') => {
-            let machine_dir = platform::machine_dir();
-            let packs = fleet_core::item::brief::Packs::under(
-                &machine_dir.join("packs"),
-                &machine_dir.join(defaults::DIR),
-            )
-            .map_err(|stop| {
-                format!(
-                    "the agent adapter `{name}` is looked up in the installed packs: {}",
-                    stop.message
-                )
-            })?;
+            let (packs_dir, defaults_dir) = defaults::pack_dirs(&platform::machine_dir(), None);
+            let packs = fleet_core::item::brief::Packs::under(&packs_dir, &defaults_dir).map_err(
+                |stop| {
+                    format!(
+                        "the agent adapter `{name}` is looked up in the installed packs: {}",
+                        stop.message
+                    )
+                },
+            )?;
             match pack::adapter_dir(&packs, pack::AdapterKind::Agent, name) {
                 Some((_, dir)) => dir,
                 None => {
@@ -1308,7 +1303,7 @@ fn resolve_policy(class: Class, cwd: Option<&Path>) -> Policy {
     // the machine's file as much as for the project's, so an absent machine
     // config below leaves the class on rather than switching it off.
     let machine_policy = || {
-        config::read(&platform::machine_dir().join("config.json"))
+        config::read(&config::path_in(&platform::machine_dir()))
             .map(|machine| guard::enabled_in(class, &read_text(&machine.fleet_toml)))
             .unwrap_or(true)
     };
@@ -1448,18 +1443,16 @@ fn store_cli(cwd: Option<&Path>) -> Option<Option<String>> {
         .or_else(|| std::env::current_dir().ok())?;
     let root = walk_up_config(&start)?.root()?.to_path_buf();
     let policy = fleet_core::store::project_policy(&root).ok()?;
-    let machine_dir = platform::machine_dir();
-    let store = fleet_core::store::open(&fleet_core::store::Opening {
-        root: &root,
-        policy: &policy,
-        source: fleet_core::store::AdapterSource::Setting,
-        search_path: &platform::child_path(&platform::home_dir()),
-        timeout: STORE_CLI_TIMEOUT,
-        packs: Some(fleet_core::store::PackDirs {
-            packs_dir: &machine_dir.join("packs"),
-            defaults_dir: &machine_dir.join(defaults::DIR),
-        }),
-    })
+    let (packs_dir, defaults_dir) = defaults::pack_dirs(&platform::machine_dir(), None);
+    let store = fleet_controller::project::open_store_at(
+        &root,
+        &policy,
+        fleet_core::store::PackDirs {
+            packs_dir: &packs_dir,
+            defaults_dir: &defaults_dir,
+        },
+        STORE_CLI_TIMEOUT,
+    )
     .ok()?;
     Some(store.capabilities().ok()?.cli)
 }

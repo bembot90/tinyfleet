@@ -89,7 +89,7 @@ impl Wiring {
         let home = platform::home_dir();
         let child_path = platform::child_path(&home);
         let machine_dir = platform::machine_dir();
-        let fleet_toml = config::read(&machine_dir.join("config.json"))
+        let fleet_toml = config::read(&config::path_in(&machine_dir))
             .ok()
             .map(|machine| machine.fleet_toml);
         // `[agent] adapter` out of the file the seat list names, resolved
@@ -307,7 +307,7 @@ impl<'a> Observer<'a> {
         seams: Seams<'a>,
     ) -> Result<Observer<'a>, u8> {
         let machine_dir = platform::machine_dir();
-        let config_path = machine_dir.join("config.json");
+        let config_path = config::path_in(&machine_dir);
         // Stat BEFORE the read, both here and in the loop: an edit that lands in
         // the window between them is recorded as already seen and never re-read.
         let config_seen = config::mtime(&config_path);
@@ -351,7 +351,7 @@ impl<'a> Observer<'a> {
         let policy_seen = policy_mtime;
         let policy_error: Option<String> = None;
 
-        let mut events_log = EventLog::open(&machine_dir.join("events.jsonl"));
+        let mut events_log = EventLog::open(&events::path_in(&machine_dir));
         let controller = events::controller(&machine_dir);
         let announced_move: Option<(Option<String>, Option<String>)> = None;
 
@@ -376,7 +376,7 @@ impl<'a> Observer<'a> {
         let table = match on_disk {
             Some(table) => table,
             None => {
-                let rebuilt = sessions::rebuild(&machine_dir.join("events.jsonl"));
+                let rebuilt = sessions::rebuild(&events::path_in(&machine_dir));
                 eprintln!(
                     "fleet observe: the session table was rebuilt from the event stream — \
                      {} row(s), cursor {}; {}",
@@ -626,10 +626,8 @@ impl<'a> Observer<'a> {
             .filter(|s| s.transient)
             .map(|s| s.id)
             .collect();
-        let stream = events::read_after(
-            &self.machine_dir.join("events.jsonl"),
-            self.table.consumed_seq,
-        );
+        let stream =
+            events::read_after(&events::path_in(&self.machine_dir), self.table.consumed_seq);
         let read_to = stream.iter().map(|record| record.seq).max();
         let pending = fold(&stream, &known, &transient);
 
@@ -1083,7 +1081,7 @@ impl<'a> Observer<'a> {
         // and the seam is what it acts through. A refusal is logged and the
         // loop goes on: the poll's other work is what every seat depends on.
         if let Some(runs) = self.runs {
-            let stream = self.machine_dir.join("events.jsonl");
+            let stream = events::path_in(&self.machine_dir);
             let mut pass = crate::runs::Pass {
                 runs,
                 events: &mut self.events_log,
@@ -1652,7 +1650,7 @@ fn nap(clock: &dyn Clock, total: Duration) -> bool {
 }
 
 fn write_projection(machine_dir: &Path, document: &Projection) {
-    let path: PathBuf = machine_dir.join("projection.json");
+    let path: PathBuf = projection::path_in(machine_dir);
     match projection::render(document) {
         Ok(body) => {
             if let Err(e) = fleet_core::fs::write_atomic(&path, body.as_bytes()) {

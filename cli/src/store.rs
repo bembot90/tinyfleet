@@ -109,7 +109,7 @@ fn check(adapter: Option<&str>) -> Exit {
     let machine_dir = platform::machine_dir();
     let (packs_dir, defaults_dir) = match &here {
         Some(here) => (here.packs_dir.clone(), here.defaults_dir.clone()),
-        None => (machine_dir.join("packs"), machine_dir.join(defaults::DIR)),
+        None => defaults::pack_dirs(&machine_dir, None),
     };
     let packs = Some(PackDirs {
         packs_dir: &packs_dir,

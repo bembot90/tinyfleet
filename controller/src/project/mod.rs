@@ -6,10 +6,11 @@
 //! loop answer about one project.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use fleet_core::item::{project_name, table_at, Project, Stop};
 use fleet_core::seat::identity::Directory;
-use fleet_core::store::{self, AdapterSource, Opening, PackDirs, Store, STORE_TIMEOUT};
+use fleet_core::store::{self, AdapterSource, Opening, PackDirs, Store, StoreError, STORE_TIMEOUT};
 
 use crate::lifecycle::{FLEET_TOML, PROJECT_TOML};
 use crate::{config, platform};
@@ -124,17 +125,35 @@ pub fn derived_worktrees_dir(root: &Path) -> PathBuf {
 /// (lessons claude-code D1). A store that cannot be opened at all is could not
 /// tell.
 pub fn open_store(here: &Here) -> Result<Box<dyn Store>, Stop> {
-    Ok(store::open(&Opening {
-        root: &here.project.root,
-        policy: &here.project.policy,
-        source: AdapterSource::Setting,
-        search_path: &platform::child_path(&platform::home_dir()),
-        timeout: STORE_TIMEOUT,
-        packs: Some(PackDirs {
+    Ok(open_store_at(
+        &here.project.root,
+        &here.project.policy,
+        PackDirs {
             packs_dir: &here.packs_dir,
             defaults_dir: &here.defaults_dir,
-        }),
-    })?)
+        },
+        STORE_TIMEOUT,
+    )?)
+}
+
+/// A project's store, opened as every verb opens one: `[store] adapter` out
+/// of the project's own file (`policy`), its adapter resolved through the
+/// machine's packs and run on the constructed child PATH — never this
+/// process's own (lessons claude-code D1) — each call bounded by `timeout`.
+pub fn open_store_at(
+    root: &Path,
+    policy: &toml::Table,
+    packs: PackDirs<'_>,
+    timeout: Duration,
+) -> Result<Box<dyn Store>, StoreError> {
+    store::open(&Opening {
+        root,
+        policy,
+        source: AdapterSource::Setting,
+        search_path: &platform::child_path(&platform::home_dir()),
+        timeout,
+        packs: Some(packs),
+    })
 }
 
 /// What the nearest directory above the caller that says anything says it is.
@@ -209,7 +228,7 @@ pub fn resolve_from(
     chosen_packs_dir: Option<PathBuf>,
 ) -> Result<Here, Stop> {
     let cwd = cwd.to_path_buf();
-    let machine = config::read(&machine_dir.join("config.json"));
+    let machine = config::read(&config::path_in(&machine_dir));
 
     if let Some(found) = walk_up_config(&cwd) {
         if let Some(dir) = found.root() {
@@ -276,6 +295,8 @@ fn declared_at(
         .ok()
         .map(|machine| machine.fleet_toml.clone())
         .unwrap_or_else(|| machine_dir.join(FLEET_TOML));
+    let (packs_dir, defaults_dir) =
+        fleet_core::defaults::pack_dirs(machine_dir, chosen_packs_dir.as_deref());
     let project = Project {
         root: dir.to_path_buf(),
         name: project_name(&policy).unwrap_or_else(|| basename(dir)),
@@ -285,8 +306,8 @@ fn declared_at(
     Here {
         seats: seats_of(machine, &project, machine_dir),
         project,
-        packs_dir: packs_dir(chosen_packs_dir, machine_dir),
-        defaults_dir: defaults_dir(chosen_packs_dir, machine_dir),
+        packs_dir,
+        defaults_dir,
         machine_dir: machine_dir.to_path_buf(),
         policy_file,
     }
@@ -304,6 +325,8 @@ fn embedded_at(
     chosen_packs_dir: &Option<PathBuf>,
 ) -> Here {
     let policy = table_at(policy_file);
+    let (packs_dir, defaults_dir) =
+        fleet_core::defaults::pack_dirs(machine_dir, chosen_packs_dir.as_deref());
     let project = Project {
         root: dir.to_path_buf(),
         name: basename(dir),
@@ -313,8 +336,8 @@ fn embedded_at(
     Here {
         seats: seats_of(machine, &project, machine_dir),
         project,
-        packs_dir: packs_dir(chosen_packs_dir, machine_dir),
-        defaults_dir: defaults_dir(chosen_packs_dir, machine_dir),
+        packs_dir,
+        defaults_dir,
         machine_dir: machine_dir.to_path_buf(),
         policy_file: policy_file.to_path_buf(),
     }
@@ -335,23 +358,6 @@ fn checkout_above(start: &Path) -> Option<PathBuf> {
         here = dir.parent();
     }
     None
-}
-
-fn packs_dir(chosen: &Option<PathBuf>, machine_dir: &Path) -> PathBuf {
-    chosen.clone().unwrap_or_else(|| machine_dir.join("packs"))
-}
-
-/// The defaults beside whichever packs directory was resolved. A caller that
-/// named its own packs directory named a machine layout of its own, and the
-/// defaults it resolves through are that layout's, never this box's.
-fn defaults_dir(chosen: &Option<PathBuf>, machine_dir: &Path) -> PathBuf {
-    match chosen {
-        Some(packs) => packs
-            .parent()
-            .unwrap_or(machine_dir)
-            .join(fleet_core::defaults::DIR),
-        None => machine_dir.join(fleet_core::defaults::DIR),
-    }
 }
 
 /// The seat directory over the machine's rows and the fleet's own policy —
