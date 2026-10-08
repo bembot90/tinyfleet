@@ -16,17 +16,14 @@ const WINDOW_MS: u64 = 45_000;
 /// A seat nothing is asking for and nothing has dispatched to: every term at the
 /// reading that decides nothing, so an arm that moves ONE of them is measuring
 /// that one.
-fn quiet(state: RosterState) -> SeatInput<'static> {
+fn quiet(state: RosterState) -> SeatInput {
     SeatInput {
-        seat_dir: "s1",
         state,
-        unknown_cause: None,
         transient: false,
         pending_rest: false,
         pending_deliberate_end: false,
         context_tokens: Some(1_000),
         rest_threshold_tokens: THRESHOLD,
-        session_id: Some("a-session"),
         already_nudged: false,
         dispatch_age_ms: None,
         sighted: false,
@@ -73,7 +70,6 @@ fn every_verdict_has_a_case_that_produces_it() {
 #[test]
 fn unknown_is_leave_alone_and_the_same_input_absent_is_a_spawn() {
     let mut unknown = quiet(RosterState::Unknown);
-    unknown.unknown_cause = Some("the listing answered with zero bytes");
     assert_eq!(decide(&unknown), Verdict::LeaveAlone);
 
     let mut absent = unknown.clone();
@@ -298,7 +294,6 @@ fn a_session_already_nudged_is_never_nudged_again() {
     assert_eq!(decide(&again), Verdict::LeaveAlone);
 
     let mut successor = again.clone();
-    successor.session_id = Some("another-session");
     successor.already_nudged = false;
     assert_eq!(
         decide(&successor),

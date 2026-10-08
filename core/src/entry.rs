@@ -831,29 +831,6 @@ impl<'a> Timeline<'a> {
         self.last(delivery).map(|(_, entry, body)| (entry, body))
     }
 
-    fn standing(&self) -> Option<(usize, &'a Entry, &'a Delivered)> {
-        let (at, entry, delivered) = self.last(delivery)?;
-        let returned = self.after(
-            at,
-            |body| matches!(body, Body::Reviewed(review) if review.verdict == Verdict::Returned),
-        );
-        (!returned).then_some((at, entry, delivered))
-    }
-
-    /// The last delivery no return came after. A landing does not clear it
-    /// (fleet-45m): what was landed still stood when it was.
-    pub fn standing_delivery(&self) -> Option<(&'a Entry, &'a Delivered)> {
-        self.standing().map(|(_, entry, body)| (entry, body))
-    }
-
-    /// The standing delivery, where no landing came after it: the work the
-    /// item still carries.
-    pub fn carried_delivery(&self) -> Option<(&'a Entry, &'a Delivered)> {
-        let (at, entry, delivered) = self.standing()?;
-        let landed = self.after(at, |body| matches!(body, Body::Landed(_)));
-        (!landed).then_some((entry, delivered))
-    }
-
     pub fn last_review(&self) -> Option<(&'a Entry, &'a Reviewed)> {
         self.last(|body| match body {
             Body::Reviewed(review) => Some(review),
@@ -907,14 +884,14 @@ impl<'a> Timeline<'a> {
             })
     }
 
-    /// The last hold whose `about` names `item`.
-    pub fn holds_about(&self, item: &str) -> Option<(&'a Entry, &'a Held)> {
+    /// The last hold whose `about` names `item`, at `commit` where it names one.
+    pub fn holds_about(&self, item: &str, commit: &str) -> Option<(&'a Entry, &'a Held)> {
         self.last(|body| match body {
             Body::Held(held)
-                if held
-                    .about
-                    .as_ref()
-                    .is_some_and(|about| about.items.iter().any(|named| named == item)) =>
+                if held.about.as_ref().is_some_and(|about| {
+                    about.items.iter().any(|named| named == item)
+                        && about.commit.as_deref().is_none_or(|named| named == commit)
+                }) =>
             {
                 Some(held)
             }

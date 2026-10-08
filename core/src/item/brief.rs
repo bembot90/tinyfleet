@@ -75,26 +75,6 @@ impl Packs {
             ))
         })
     }
-
-    /// Every resolved file under one directory, as `(path relative to that
-    /// directory, content)`, in path order.
-    ///
-    /// An EMPTY ANSWER is a directory no installed pack carries, which is a
-    /// legitimate state and not a refusal: the caller asking is one that has
-    /// somewhere to put whatever is there and nothing to put when there is
-    /// nothing.
-    pub fn read_under(&self, prefix: &str) -> Result<Vec<(String, String)>, Stop> {
-        let prefix = prefix.trim_end_matches('/');
-        let under = format!("{prefix}/");
-        let mut found = Vec::new();
-        for relative in self.resolution.files.keys() {
-            let Some(tail) = relative.strip_prefix(&under) else {
-                continue;
-            };
-            found.push((tail.to_string(), self.read(relative)?));
-        }
-        Ok(found)
-    }
 }
 
 fn refusals(found: Vec<resolve::Refusal>) -> Stop {

@@ -1,6 +1,6 @@
 //! The file-access gate AS THE LOOP READS IT (lessons claude-code D4).
 //!
-//! A test binary of its own, because these arms drive `run::observe_with` and
+//! A test binary of its own, because these arms drive `run::observe_runs` and
 //! that reads the PROCESS's environment for the machine directory and the
 //! host's binary: an arm setting those beside arms that do not would be setting
 //! them for every thread in the binary. Inside this one they are serialized on
@@ -257,7 +257,7 @@ fn a_worktree_the_person_has_not_made_yet_leaves_the_grant_ok_and_the_effects_on
     assert!(read.is_ok(), "an absent directory is not pending: {read:?}");
     assert_eq!(read.detail, None);
 
-    assert_eq!(run::observe_with(&Options { once: true }, gate), 0);
+    assert_eq!(run::observe_runs(&Options { once: true }, gate, None), 0);
     let document = projection(&rig.machine);
     assert_eq!(document["grant"], platform::GRANT_OK, "{document}");
     assert!(document.get("grant_detail").is_none(), "{document}");
@@ -306,7 +306,7 @@ fn a_pending_grant_holds_every_effect_and_an_answered_one_releases_them() {
         // and the loop below is then the control's half alone.
         assert!(read.is_ok());
         blocked.store(false, Ordering::SeqCst);
-        assert_eq!(run::observe_with(&Options { once: true }, gate), 0);
+        assert_eq!(run::observe_runs(&Options { once: true }, gate, None), 0);
         let document = projection(&rig.machine);
         assert_eq!(document["grant"], platform::GRANT_OK);
         assert_eq!(document["effects"]["state"], "on");
@@ -318,7 +318,7 @@ fn a_pending_grant_holds_every_effect_and_an_answered_one_releases_them() {
     }
     assert_eq!(read.state, platform::GRANT_PENDING);
 
-    assert_eq!(run::observe_with(&Options { once: true }, gate), 0);
+    assert_eq!(run::observe_runs(&Options { once: true }, gate, None), 0);
 
     let document = projection(&rig.machine);
     assert_eq!(document["grant"], platform::GRANT_PENDING);
@@ -381,7 +381,7 @@ fn a_pending_grant_holds_every_effect_and_an_answered_one_releases_them() {
     blocked.store(false, Ordering::SeqCst);
     let mut gate = Grant::new(listing, Duration::from_secs(5));
     assert!(gate.poll(&[rig.worktree.clone(), rig.live.clone()]).is_ok());
-    assert_eq!(run::observe_with(&Options { once: true }, gate), 0);
+    assert_eq!(run::observe_runs(&Options { once: true }, gate, None), 0);
 
     let document = projection(&rig.machine);
     assert_eq!(document["grant"], platform::GRANT_OK);

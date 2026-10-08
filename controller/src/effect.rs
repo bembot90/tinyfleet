@@ -17,7 +17,7 @@ use crate::policy::Policy;
 use crate::sessions::{SessionRow, Table};
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// What an effect DID, for the projection's row. Never a liveness claim: a
@@ -36,11 +36,6 @@ pub enum Outcome {
     /// The seat is held down by the blind guard, and this poll did nothing
     /// about it on purpose.
     Halted,
-    /// The verdict was reached and deliberately not carried out, because its
-    /// effect belongs to a later slice. Distinct from `None`, which is a policy
-    /// that chose to do nothing: a reader has to be able to tell a quiet fleet
-    /// from one nobody is acting on.
-    Deferred,
     Failed,
 }
 
@@ -53,7 +48,6 @@ impl Outcome {
             Outcome::Nudged => "nudged",
             Outcome::Revived => "revived",
             Outcome::Halted => "halted",
-            Outcome::Deferred => "deferred",
             Outcome::Failed => "failed",
         }
     }
@@ -212,27 +206,6 @@ pub fn crashed_payload(
     serde_json::json!({ "phase": phase, "cause": cause, "output": output, "status": status })
 }
 
-/// Names the event types an EFFECT writes, so a reader of the stream and a
-/// reader of this file agree on the vocabulary.
-///
-/// `session.stopped` is on the list and is written by `crate::transient`, which
-/// is the other caller of this module's `spawn_woken`: a retire is an effect
-/// carried out the same way, and a list that named only this file's own appends
-/// would leave the one end-of-life line a reader could not find here.
-/// `session.retired` is on it for the same reason, one writer over: it is the
-/// priced retire's own line and the cost half of the same act.
-pub const WRITES: [&str; 9] = [
-    events::SESSION_SPAWNED,
-    events::SESSION_RESTED,
-    events::SESSION_NUDGED,
-    events::SESSION_CRASHED,
-    events::SESSION_REVIVED,
-    events::SESSION_HALTED,
-    events::SESSION_STOPPED,
-    events::SESSION_RETIRED,
-    events::DISPATCH_BLIND,
-];
-
 /// Where a start's capture goes, under the machine directory: the pane's text
 /// as it stood when the start was given up on, which is the only account of
 /// why a session that never listed did not.
@@ -245,26 +218,6 @@ pub const STARTS_DIR: &str = "starts";
 /// quarter second believes a start within one read of its row and costs a
 /// handful of reads.
 pub const WATCH_TICK: Duration = Duration::from_millis(250);
-
-/// Where one call's words go under the machine directory: named by the
-/// session and the moment, so two calls for one seat never write over each
-/// other and an operator reading the directory can tell which is which.
-pub fn log_path(machine_dir: &Path, dir: &str, session_name: &str) -> PathBuf {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let safe: String = session_name
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    machine_dir.join(dir).join(format!("{safe}-{stamp}.log"))
-}
-
-/// Where a start's capture is kept: `<machine>/starts/<name>-<ms>.log`.
-pub fn start_capture_path(machine_dir: &Path, session_name: &str) -> PathBuf {
-    log_path(machine_dir, STARTS_DIR, session_name)
-}
 
 /// What a start's watch saw.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -560,7 +513,21 @@ fn cleared(host: &dyn Host, session: &str) -> Result<(), String> {
 /// or `None` where it could not be kept — the start has failed either way, and
 /// a capture that could not be written is not a second failure.
 fn keep_capture(machine_dir: &Path, session_name: &str, screen: &str) -> Option<String> {
-    let path = start_capture_path(machine_dir, session_name);
+    // Where a start's capture is kept: `<machine>/starts/<name>-<ms>.log`,
+    // named by the session and the moment, so two calls for one seat never
+    // write over each other and an operator reading the directory can tell
+    // which is which.
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let safe: String = session_name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let path = machine_dir
+        .join(STARTS_DIR)
+        .join(format!("{safe}-{stamp}.log"));
     std::fs::create_dir_all(path.parent()?).ok()?;
     std::fs::write(&path, screen).ok()?;
     Some(path.display().to_string())

@@ -29,8 +29,6 @@ pub struct Options {
 /// What one seat's events this tick asked for.
 #[derive(Default, Clone)]
 struct Pending {
-    /// An unconsumed `seat.resting`.
-    rest: bool,
     /// An unconsumed `seat.resting` or `seat.exited` — the deliberate end the
     /// roster cannot report (lessons claude-code A3).
     deliberate_end: bool,
@@ -44,24 +42,6 @@ struct Pending {
     rest_seq: Option<u64>,
 }
 
-pub fn observe(options: &Options) -> u8 {
-    observe_with(
-        options,
-        platform::Grant::new(platform::directory_listing(), platform::GRANT_PROBE_TIMEOUT),
-    )
-}
-
-/// The loop with the file-access gate handed in and no run seam.
-///
-/// The gate's seam exists because the thing it guards cannot be raised from
-/// inside a suite: the dialog needs the service loaded in a desktop session and
-/// a reset aimed at the identifier of the service currently running this fleet
-/// (lessons claude-code D4). Above it is [`observe`], which hands in the
-/// platform's own listing and the D4 band.
-pub fn observe_with(options: &Options, grant: platform::Grant) -> u8 {
-    observe_runs(options, grant, None)
-}
-
 /// The loop with the RUN seam handed in beside the gate.
 ///
 /// The seam exists because this crate takes nothing from core but its bounded
@@ -69,35 +49,20 @@ pub fn observe_with(options: &Options, grant: platform::Grant) -> u8 {
 /// and the three acts a run's advance needs are wired in the binary. `None` is
 /// a loop that knows nothing of runs and polls exactly as it did before they
 /// existed.
+///
+/// It resolves [`Wiring`] — one resolution, taken before the first tick — and
+/// hands its seams to [`observe_seamed`].
 pub fn observe_runs(
     options: &Options,
     grant: platform::Grant,
     runs: Option<&dyn crate::runs::Runs>,
-) -> u8 {
-    observe_clocked(options, grant, runs, &SystemClock)
-}
-
-/// The loop with the clock it spends its POLL INTERVAL against handed in too.
-///
-/// The clock reaches exactly one site — [`nap`], the wait between ticks — which
-/// is the only wait on this path whose subject is a DURATION. Every other wait
-/// the tick can reach bounds an external fact: a child's exit, a pipe's drain, a
-/// permission dialog's answer. No clock hurries one of those.
-///
-/// It resolves [`Wiring`] — one resolution, taken before the first tick — and
-/// hands its seams to [`observe_seamed`].
-pub fn observe_clocked(
-    options: &Options,
-    grant: platform::Grant,
-    runs: Option<&dyn crate::runs::Runs>,
-    clock: &dyn Clock,
 ) -> u8 {
     let wiring = Wiring::resolve();
     observe_seamed(
         options,
         grant,
         runs,
-        wiring.seams(clock, StopHandler::Armed),
+        wiring.seams(&SystemClock, StopHandler::Armed),
     )
 }
 
@@ -623,10 +588,9 @@ impl<'a> Observer<'a> {
         // Not gated on effects: it issues none, and a controller that could not
         // exec the agent still knows which sessions it owns.
         //
-        // ONCE PER PROCESS is the WRITE and never the reading: the claim goes on
-        // the row, and the verdicts below ask the table for it every poll. A
-        // term filled from what this call claimed would be false on every poll
-        // after the first, which is the whole of the defect it exists to close.
+        // ONCE PER PROCESS is the WRITE: the claim goes on the row
+        // (`SessionRow::adopted`), which outlives this process because the table is
+        // what a restart reads back.
         // This controller's FIRST poll, read before adoption marks it taken: a
         // dead pane it meets here died before this process was looking, so its
         // end is dated by the agent's last write rather than by this poll.
@@ -866,21 +830,17 @@ impl<'a> Observer<'a> {
         let mut verdicts: Vec<Verdict> = Vec::with_capacity(observations.len());
         for (index, observation, context_tokens) in &observations {
             let seat = &self.config.seats[*index];
-            let machine_name = seat.machine_name();
             let key = seat.id.to_string();
             let asked = pending.get(&seat.id).cloned().unwrap_or_default();
             let newest = self.table.newest_for(&key);
             let carried = self.table.seat_state(&key);
             let input = SeatInput {
-                seat_dir: &machine_name,
                 state: observation.state,
-                unknown_cause: observation.unknown_cause.as_deref(),
                 transient: seat.transient,
-                pending_rest: asked.rest,
+                pending_rest: asked.rest_seq.is_some(),
                 pending_deliberate_end: asked.deliberate_end,
                 context_tokens: *context_tokens,
                 rest_threshold_tokens: self.policy.rest_threshold_tokens,
-                session_id: observation.session_id.as_deref(),
                 already_nudged: observation
                     .session_id
                     .as_deref()
@@ -1056,7 +1016,7 @@ impl<'a> Observer<'a> {
                 let collected = matches!(outcome, Outcome::Rested | Outcome::Spawned);
                 if let Some(seq) = pending
                     .get(&seat.id)
-                    .filter(|asked| asked.rest && !collected)
+                    .filter(|_| !collected)
                     .and_then(|asked| asked.rest_seq)
                 {
                     hold_at = Some(hold_at.unwrap_or(seq).min(seq));
@@ -1585,7 +1545,6 @@ fn fold(
         }
         let entry = pending.entry(id).or_default();
         if record.kind == events::SEAT_RESTING {
-            entry.rest = true;
             entry.rest_seq = Some(entry.rest_seq.unwrap_or(record.seq).min(record.seq));
         }
         if events::is_deliberate_end(&record.kind) {
@@ -1599,7 +1558,6 @@ fn fold(
         // and acting on the older event now would stop a session that just
         // started.
         if record.kind == events::SEAT_WOKE {
-            entry.rest = false;
             entry.deliberate_end = false;
             entry.rest_seq = None;
         }

@@ -133,11 +133,6 @@ impl TmuxHost {
         &self.bin
     }
 
-    /// The socket every call names.
-    pub fn socket(&self) -> &str {
-        &self.socket
-    }
-
     /// End this host's whole server, and remove the socket it listened on:
     /// what a caller does with a scratch server of its own when it is done,
     /// and refused for [`super::SOCKET`], which is fleet's.
@@ -701,7 +696,7 @@ mod tests {
         let named = TmuxHost::resolve_from(Some("/bin/sh"), true, "")
             .expect("an absolute executable is taken, hermetic or not");
         assert_eq!(named.bin(), Path::new("/bin/sh"));
-        assert_eq!(named.socket(), crate::host::SOCKET);
+        assert_eq!(named.socket, crate::host::SOCKET);
 
         let relative = TmuxHost::resolve_from(Some("bin/tmux"), false, "/bin")
             .expect_err("a relative seam is refused");

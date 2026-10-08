@@ -230,15 +230,12 @@ mod lessons {
         // And the decision keys on the value it is HANDED: one seat, one
         // reading, two thresholds, two verdicts.
         let mut seat = SeatInput {
-            seat_dir: "s1",
             state: RosterState::Present,
-            unknown_cause: None,
             transient: false,
             pending_rest: false,
             pending_deliberate_end: false,
             context_tokens: Some(500_000),
             rest_threshold_tokens: from_file.rest_threshold_tokens,
-            session_id: Some("a-session"),
             already_nudged: false,
             dispatch_age_ms: None,
             sighted: false,

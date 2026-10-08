@@ -194,17 +194,6 @@ fn holds(item: &Item, by: &Actor, wiring: &Wiring) -> Result<(), Stop> {
 
 // ---- the size line -----------------------------------------------------------
 
-/// The measurement, from the base the delivery was cut from to the delivery
-/// commit, counted from their merge-base, for a caller that has a git and a
-/// root and no [`Wiring`] — the flight rendering a reviewer's brief, which must
-/// show the line `review` will print and not a second one measured its own way.
-/// The base is always a whole sha: the delivered entry cannot be written with
-/// anything else.
-pub fn size_of(commit: &str, base: &str, git: &dyn Git, root: &Path) -> Result<String, Stop> {
-    let changes = git.numstat(base, commit).map_err(Stop::could_not_tell)?;
-    Ok(rendered_size(&changes, root))
-}
-
 /// The size line a person reads. It names no base: the line is printed beside
 /// the delivery that says where it was cut from.
 pub fn rendered_size(changes: &[Change], root: &Path) -> String {

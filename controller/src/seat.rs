@@ -200,21 +200,6 @@ fn clear_halt_is_answerable(machine_dir: &Path, named: &Named) -> Result<(), (u8
     }
 }
 
-/// Whether a collector is plainly consuming this machine's fleet.
-///
-/// THE COLLECTOR'S OWN RULE and not a second one beside it: it answers off the
-/// same [`fresh_projection`] a rest is refused by, so a caller asking whether a
-/// controller is up and `fleet event rest` deciding whether anybody would read
-/// it cannot disagree.
-///
-/// A projection that is absent, unparsable, undatable or older than
-/// [`COLLECTOR_STALE_POLLS`] intervals all answer `false` — none of them may be
-/// rounded into "a controller is running", because each of them is a fleet
-/// nobody is polling.
-pub fn collector_is_consuming(machine_dir: &Path) -> bool {
-    fresh_projection(machine_dir).is_ok()
-}
-
 /// The published document, refused unless a collector is plainly consuming.
 fn fresh_projection(machine_dir: &Path) -> Result<serde_json::Value, (u8, String)> {
     let path = machine_dir.join("projection.json");

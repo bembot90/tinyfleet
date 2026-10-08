@@ -1156,12 +1156,6 @@ pub struct Reclaimed {
 /// the next spawn to take with somebody else's order still on it.
 pub type Withdrawal<'a> = &'a dyn Fn(&str) -> Result<Vec<String>, Refusal>;
 
-/// The caller that withdraws nothing, which is what every retire did before the
-/// seam existed: a controller with no work graph in reach passes it.
-pub fn withdraws_nothing(_seat: &str) -> Result<Vec<String>, Refusal> {
-    Ok(Vec::new())
-}
-
 /// End a transient seat and verify from OUTSIDE that nothing of it holds RAM or
 /// disk.
 ///
@@ -1170,11 +1164,8 @@ pub fn withdraws_nothing(_seat: &str) -> Result<Vec<String>, Refusal> {
 /// not an absence. The session is stopped on the host by the seat's own name,
 /// the worktree is fleet's own to remove, and every probe at the end is its own
 /// reading and none of them is this verb's own earlier report.
-pub fn retire(machine: &Machine, seat: &str, dead: bool) -> Result<Reclaimed, Refusal> {
-    retire_with(machine, seat, dead, &withdraws_nothing)
-}
-
-/// The same retire, with the record's half of it filled (see [`Withdrawal`]).
+///
+/// The record's half of the retire is filled by `withdrawal` (see [`Withdrawal`]).
 pub fn retire_with(
     machine: &Machine,
     seat: &str,
@@ -1480,12 +1471,8 @@ pub struct Priced {
 /// gone exactly as `--dead` would and stops one that is still up. A flight
 /// retiring a crashed seat and a flight retiring a delivered one therefore take
 /// the same call.
-pub fn priced(machine: &Machine, seat: &str, item: &str, now_ms: u64) -> Result<Priced, Refusal> {
-    priced_with(machine, seat, item, now_ms, &withdraws_nothing)
-}
-
-/// The same priced retire, with the record's half of it filled (see
-/// [`Withdrawal`]).
+///
+/// The record's half of it is filled by `withdrawal` (see [`Withdrawal`]).
 ///
 /// THE SEAM IS THE ONE THE HAND VERB RUNS. A run's cleanup retires a seat whose
 /// item can still be open — parked, or never delivered — and the name it frees

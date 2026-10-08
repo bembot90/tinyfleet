@@ -56,7 +56,7 @@ SPAWNERS = ("Command::new", "pty_command")
 BINARY = 'env!("CARGO_BIN_EXE_fleet")'
 
 # The loop driven in this process, which reads the process's own environment.
-IN_PROCESS_ANCHORS = ("run::observe_seamed", "run::Observer::start", "run::observe_with")
+IN_PROCESS_ANCHORS = ("run::observe_seamed", "run::Observer::start", "run::observe_runs")
 
 # The block applied. Three shapes and no more: on a command with the rig's own
 # roots, on a command with the empty root an arm that owns no scratch takes, and

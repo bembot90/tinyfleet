@@ -200,29 +200,6 @@ pub const ROUTINE_TYPES: [&str; 4] = [
     ROUTINE_COULD_NOT_TELL,
 ];
 
-pub const CONTROLLER_TYPES: [&str; 20] = [
-    CONTROLLER_STARTED,
-    CONTROLLER_STOPPED,
-    SUBSTRATE_MOVED,
-    SESSION_SPAWNED,
-    SESSION_RESTED,
-    SESSION_NUDGED,
-    SESSION_CRASHED,
-    SESSION_ENDED,
-    SESSION_REVIVED,
-    SESSION_ADOPTED,
-    SESSION_HALTED,
-    SESSION_STOPPED,
-    SESSION_RETIRED,
-    PROJECT_REGISTERED,
-    DISPATCH_BLIND,
-    DISPATCH_FAILED,
-    ROUTINE_FIRED,
-    ROUTINE_COMPLETED,
-    ROUTINE_FAILED,
-    ROUTINE_COULD_NOT_TELL,
-];
-
 /// What a [`DISPATCH_FAILED`] line carries: the seat that came up logged out, as
 /// its `{id, name?, kind}` object, the item the order index named, and the
 /// provider's own cause.
@@ -587,6 +564,29 @@ fn last_seq(path: &Path) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const CONTROLLER_TYPES: [&str; 20] = [
+        CONTROLLER_STARTED,
+        CONTROLLER_STOPPED,
+        SUBSTRATE_MOVED,
+        SESSION_SPAWNED,
+        SESSION_RESTED,
+        SESSION_NUDGED,
+        SESSION_CRASHED,
+        SESSION_ENDED,
+        SESSION_REVIVED,
+        SESSION_ADOPTED,
+        SESSION_HALTED,
+        SESSION_STOPPED,
+        SESSION_RETIRED,
+        PROJECT_REGISTERED,
+        DISPATCH_BLIND,
+        DISPATCH_FAILED,
+        ROUTINE_FIRED,
+        ROUTINE_COMPLETED,
+        ROUTINE_FAILED,
+        ROUTINE_COULD_NOT_TELL,
+    ];
 
     fn seat(id: &str) -> ActorRef {
         ActorRef::seat(id)

@@ -3,7 +3,7 @@
 //! `capabilities` answer carries as `measured`. No fleet file pins one.
 //!
 //! A test binary of its own, for the reason `grant.rs` is one: these arms drive
-//! `run::observe_with`, which reads the PROCESS's environment for the machine
+//! `run::observe_runs`, which reads the PROCESS's environment for the machine
 //! directory, so the rigs are serialized on the lock below.
 //!
 //! What it measures is the thing the projection's own unit arms cannot: that
@@ -94,7 +94,7 @@ impl Rig {
     /// One poll, the way `fleet observe --once` takes it.
     fn poll(&self) {
         let gate = Grant::new(platform::directory_listing(), Duration::from_secs(5));
-        assert_eq!(run::observe_with(&Options { once: true }, gate), 0);
+        assert_eq!(run::observe_runs(&Options { once: true }, gate, None), 0);
     }
 
     fn projection(&self) -> serde_json::Value {

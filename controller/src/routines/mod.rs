@@ -355,14 +355,3 @@ fn add_by(payload: &mut serde_json::Value, by: Option<&str>) {
         object.insert("by".to_string(), by.into());
     }
 }
-
-/// The state a routine carries into an evaluation, as epoch seconds.
-pub fn stamps_of(entry: &RoutineState) -> (Option<u64>, Option<u64>) {
-    (
-        entry.last_fired.as_deref().and_then(clock::secs_of_stamp),
-        entry
-            .last_evaluated
-            .as_deref()
-            .and_then(clock::secs_of_stamp),
-    )
-}

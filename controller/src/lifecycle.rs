@@ -13,7 +13,7 @@
 
 use crate::events::{self, EventLog};
 use crate::policy::Policy;
-use crate::{clock, config, platform};
+use crate::{config, platform};
 use fleet_core::seat::identity::{roster_in, Kind, SeatRef};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -794,11 +794,6 @@ pub fn last_tick(machine_dir: &Path) -> Option<String> {
         .get("generated_at")
         .and_then(|v| v.as_str())
         .map(str::to_string)
-}
-
-/// The stamp a lock entry and an event carry.
-pub fn stamp() -> String {
-    clock::now_stamp()
 }
 
 #[cfg(test)]

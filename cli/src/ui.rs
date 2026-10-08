@@ -13,7 +13,7 @@
 //!   [`THRESHOLD`]. A spinner on a verb that takes a second is noise; a bar on
 //!   a three-minute wait is information. `land` takes the bounded one, one step
 //!   per check row, its message carrying the suite log's line count as it grows.
-//! * **prompts** — select, confirm and input through `dialoguer`, refused with
+//! * **prompts** — select through `dialoguer`, refused with
 //!   the usage status and a sentence naming the flag that answers the question
 //!   whenever stdin is not a terminal, or answered by its default where the
 //!   question has one: a prompt never blocks a script.
@@ -26,9 +26,9 @@
 //! `create` calls [`Ui::select`] twice — embedded-or-standalone, then the agent
 //! — with `--embedded`, `--standalone` and `--agent` as the non-terminal
 //! answers, and [`Ui::select_or`] once, for the store, whose default a call
-//! with no terminal and no `--store` takes. [`Ui::confirm`], [`Ui::input`] and [`Wait::is_showing`] are still
-//! held by this module's own arms and by no verb: each carries an
-//! `#[allow(dead_code)]` until the frame that calls it lands.
+//! with no terminal and no `--store` takes. [`Wait::is_showing`] is still held
+//! by this module's own arms and by no verb: it carries an `#[allow(dead_code)]`
+//! until the frame that calls it lands.
 
 use crate::exit::Exit;
 use console::Style;
@@ -205,26 +205,6 @@ impl Ui {
         self.stdin_is_terminal
     }
 
-    /// Yes or no.
-    #[allow(dead_code)]
-    pub fn confirm(&self, question: &str, flag: &str) -> Result<bool, Prompt> {
-        self.askable(question, flag)?;
-        dialoguer::Confirm::new()
-            .with_prompt(question)
-            .interact()
-            .map_err(|e| Prompt::Failed(e.to_string()))
-    }
-
-    /// A line of text.
-    #[allow(dead_code)]
-    pub fn input(&self, question: &str, flag: &str) -> Result<String, Prompt> {
-        self.askable(question, flag)?;
-        dialoguer::Input::<String>::new()
-            .with_prompt(question)
-            .interact_text()
-            .map_err(|e| Prompt::Failed(e.to_string()))
-    }
-
     /// The check every prompt passes first: a question put to a pipe is a usage
     /// error naming the flag, never a wait for an answer that cannot come.
     fn askable(&self, question: &str, flag: &str) -> Result<(), Prompt> {
@@ -247,7 +227,6 @@ pub enum Prompt {
     Failed(String),
 }
 
-#[allow(dead_code)]
 impl Prompt {
     /// A refused question is the caller's usage error; a failed interaction is
     /// an instrument that could not be read.
@@ -417,24 +396,19 @@ mod tests {
         assert!(!plain.contains('\u{1b}'), "plain: {plain:?}");
     }
 
-    /// Each of the three prompt surfaces refuses a pipe with the usage status
+    /// The prompt surface with no default refuses a pipe with the usage status
     /// and a sentence naming its own flag.
     #[test]
     fn every_prompt_refuses_a_pipe_and_names_the_flag_that_answers_it() {
         let ui = plain();
-        let refusals = [
-            ui.select(
+        let refusals = [ui
+            .select(
                 "embedded or standalone?",
                 &["embedded", "standalone"],
                 "--embedded",
             )
-            .expect_err("stdin is not a terminal"),
-            ui.confirm("overwrite it?", "--force")
-                .expect_err("stdin is not a terminal"),
-            ui.input("which agent?", "--agent")
-                .expect_err("stdin is not a terminal"),
-        ];
-        for (refusal, flag) in refusals.iter().zip(["--embedded", "--force", "--agent"]) {
+            .expect_err("stdin is not a terminal")];
+        for (refusal, flag) in refusals.iter().zip(["--embedded"]) {
             assert_eq!(refusal.exit(), Exit::Usage, "{refusal:?}");
             assert_eq!(refusal.exit().code(), 2, "{refusal:?}");
             assert!(

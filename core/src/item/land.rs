@@ -241,7 +241,7 @@ pub trait LandGit: Git {
 /// The progress surface, which `fly` draws on too: one trait for both, so a
 /// caller implements it once. Named here as well because every reader of this
 /// verb reaches for `land::Progress`.
-pub use crate::item::{Progress, Silent};
+pub use crate::item::Progress;
 
 // ---- the arguments -----------------------------------------------------------
 
@@ -1829,17 +1829,9 @@ fn licensed(
     seats: &Directory,
 ) -> Result<(), Stop> {
     let wanted = seats.label(&reviewer);
-    let about_this = timeline.0.iter().rev().find_map(|entry| match &entry.body {
-        Body::Held(held) => held
-            .about
-            .as_ref()
-            .filter(|about| {
-                about.items.iter().any(|named| named == item)
-                    && about.commit.as_deref().is_none_or(|named| named == commit)
-            })
-            .map(|about| (&held.hold, about)),
-        _ => None,
-    });
+    let about_this = timeline
+        .holds_about(item, commit)
+        .and_then(|(_, held)| held.about.as_ref().map(|about| (&held.hold, about)));
     let Some((hold, about)) = about_this else {
         return Err(Stop::refused(format!(
             "run {run} raised no hold about {item} — a run lands what {wanted} cleared, and \

@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use fleet_controller::adapter;
 use fleet_controller::lifecycle::{self, FirstRun, Mode, ProjectAt};
 
-use fleet_controller::{config, events, platform, policy as controller};
+use fleet_controller::{clock, config, events, platform, policy as controller};
 use fleet_core::item::Stop;
 use fleet_core::seat::identity;
 use fleet_core::store::{self, AdapterSource, Opening, PackDirs, STORE_TIMEOUT};
@@ -593,7 +593,7 @@ fn install(
         &lock_path,
         source,
         version,
-        &lifecycle::stamp(),
+        &clock::now_stamp(),
     );
     wait.done();
     added.map(Pack::Added)
@@ -863,7 +863,7 @@ fn defaults_into(machine_dir: &Path) -> Result<defaults::Installed, Stop> {
         &machine_dir.join("packs"),
         &machine_dir.join(fleet_core::lock::LOCK),
         env!("CARGO_PKG_VERSION"),
-        &lifecycle::stamp(),
+        &clock::now_stamp(),
     )
     .map_err(|refusal| Stop::refused(refusal.to_string()))
 }

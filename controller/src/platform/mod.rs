@@ -439,10 +439,6 @@ impl Service {
         &self.file.path
     }
 
-    pub fn text(&self) -> &str {
-        &self.file.text
-    }
-
     /// Write the file, and answer whether it CHANGED. A second run writes
     /// nothing and says so, which is what makes the first-run work idempotent
     /// rather than merely repeatable.

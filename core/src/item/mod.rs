@@ -240,10 +240,6 @@ pub fn payload_keys(kind: &str) -> Option<&'static [&'static str]> {
 pub const STEP_STARTED: &str = "step.started";
 pub const STEP_CLOSED: &str = "step.closed";
 
-/// The payload keys the events table names for the two above. `outcome` and
-/// `attempt` ride `step.closed`; the first four ride both.
-pub const STEP_PAYLOAD: [&str; 6] = ["item", "flight", "step", "run", "outcome", "attempt"];
-
 /// Where a typed event goes. Core never opens the stream file: the cli wires
 /// this to the controller's writer, the same way `dispatch` reaches its spawn.
 ///
@@ -272,16 +268,6 @@ pub trait Progress {
 
     /// Nothing more is coming.
     fn finish(&self);
-}
-
-/// A progress surface that draws nothing, for a caller that has no terminal to
-/// draw on.
-pub struct Silent;
-
-impl Progress for Silent {
-    fn row(&self) {}
-    fn message(&self, _text: &str) {}
-    fn finish(&self) {}
 }
 
 /// The trunk, as the local ref names it. `deliver` records the base it read

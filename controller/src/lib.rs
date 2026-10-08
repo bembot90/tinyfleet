@@ -66,7 +66,7 @@
 //! controller only reports it — what a workflow does about a held item is the
 //! workflow's.
 //!
-//! **The retire's cost** ([`transient::priced`]) is the retire above with five
+//! **The retire's cost** ([`transient::priced_with`]) is the retire above with five
 //! readings taken first — the main-chain context tokens, the turns, the wall
 //! time since the dispatch, and the branch and commit the seat's worktree held.
 //! It appends `session.retired` carrying all five beside the reclaim

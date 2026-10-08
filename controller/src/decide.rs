@@ -55,12 +55,8 @@ impl Verdict {
 
 /// What one poll knows about one seat. Every field is this poll's own reading.
 #[derive(Clone, Debug)]
-pub struct SeatInput<'a> {
-    pub seat_dir: &'a str,
+pub struct SeatInput {
     pub state: RosterState,
-    /// Set exactly when `state` is `Unknown`, and carried so the caller can log
-    /// what it could not see rather than a bare verdict.
-    pub unknown_cause: Option<&'a str>,
     /// A spawned seat: never revived, never rested, never succeeded.
     pub transient: bool,
     /// An unconsumed `seat.resting` stands for this seat.
@@ -72,8 +68,6 @@ pub struct SeatInput<'a> {
     /// `None` is a reading nobody took, which is not a reading of zero.
     pub context_tokens: Option<u64>,
     pub rest_threshold_tokens: u64,
-    /// The session the seat is standing on, when there is one.
-    pub session_id: Option<&'a str>,
     /// Whether this seat's session id is already in the nudged map.
     pub already_nudged: bool,
     /// How long ago the newest dispatch for this seat went out, in milliseconds.

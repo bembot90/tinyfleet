@@ -840,6 +840,12 @@ fn a_policy() -> Policy {
     .expect("the policy parses")
 }
 
+/// The caller that withdraws nothing, which is what every retire did before the
+/// seam existed: a controller with no work graph in reach passes it.
+fn withdraws_nothing(_seat: &str) -> Result<Vec<String>, Refusal> {
+    Ok(Vec::new())
+}
+
 /// A load reading and a cpu count no arm here is judged against by accident.
 const CALM: Readings = Readings {
     load: Some(0.1),
@@ -1775,7 +1781,8 @@ fn a_retire_stops_removes_prunes_drops_both_rows_and_prints_the_reclaim() {
         rig.table().newest_for(&id).is_some(),
         "the row stands before"
     );
-    let reclaimed = transient::retire(&machine, &seat, false).expect("the retire lands");
+    let reclaimed = transient::retire_with(&machine, &seat, false, &withdraws_nothing)
+        .expect("the retire lands");
 
     assert_eq!(reclaimed.pid, Some(pid));
     assert!(
@@ -1851,7 +1858,7 @@ fn a_spawn_after_a_retire_mints_a_seat_the_retired_one_never_was() {
 
     let agent = rig.agent();
     let machine = machine_of(&rig, &agent, &policy);
-    transient::retire(&machine, &first, false).expect("the retire lands");
+    transient::retire_with(&machine, &first, false, &withdraws_nothing).expect("the retire lands");
 
     let second = spawned(&rig, &policy, 0.1, 8, "another turn").expect("the second spawn lands");
     assert_ne!(
@@ -1925,7 +1932,8 @@ fn a_retire_reads_and_acts_under_the_rows_own_configuration_directory() {
 
     let agent = rig.agent();
     let machine = machine_of(&rig, &agent, &policy);
-    let reclaimed = transient::retire(&machine, &seat, false).expect("the retire lands");
+    let reclaimed = transient::retire_with(&machine, &seat, false, &withdraws_nothing)
+        .expect("the retire lands");
 
     // The pid is the host's pane, and the session was stopped there.
     assert_eq!(reclaimed.pid, Some(pid), "the pid is the seat's pane's");
@@ -2011,7 +2019,7 @@ fn retire_refuses_a_named_seat_an_unreadable_host_or_roster_and_a_session_the_ki
     )
     .expect("the seat list is written");
 
-    let named = transient::retire(&machine, "a-named-seat", false)
+    let named = transient::retire_with(&machine, "a-named-seat", false, &withdraws_nothing)
         .expect_err("a named seat rests, it does not retire");
     assert_eq!(named.code, 6, "{}", named.message);
 
@@ -2020,7 +2028,8 @@ fn retire_refuses_a_named_seat_an_unreadable_host_or_roster_and_a_session_the_ki
     rig.host
         .fake
         .fail(FakeHost::LIST, Some("the arm blinded the host"));
-    let blind = transient::retire(&machine, &seat, false).expect_err("an unreadable host");
+    let blind = transient::retire_with(&machine, &seat, false, &withdraws_nothing)
+        .expect_err("an unreadable host");
     assert_eq!(blind.code, 3, "{}", blind.message);
     assert!(
         blind.message.contains("the arm blinded the host"),
@@ -2030,8 +2039,8 @@ fn retire_refuses_a_named_seat_an_unreadable_host_or_roster_and_a_session_the_ki
     rig.host.fake.fail(FakeHost::LIST, None);
 
     rig.seam(&rig.roster_fails, "");
-    let unreadable =
-        transient::retire(&machine, &seat, false).expect_err("an unreadable roster is a question");
+    let unreadable = transient::retire_with(&machine, &seat, false, &withdraws_nothing)
+        .expect_err("an unreadable roster is a question");
     assert_eq!(unreadable.code, 3, "{}", unreadable.message);
     let _ = std::fs::remove_file(&rig.roster_fails);
     assert!(
@@ -2047,7 +2056,7 @@ fn retire_refuses_a_named_seat_an_unreadable_host_or_roster_and_a_session_the_ki
     let config_before = rig.config_bytes();
     let table_before = rig.table_bytes();
     rig.host.fake.keep_kills(true);
-    let stuck = transient::retire(&machine, &seat, false)
+    let stuck = transient::retire_with(&machine, &seat, false, &withdraws_nothing)
         .expect_err("a session the kill does not clear is a refusal");
     assert_eq!(stuck.code, 1, "{}", stuck.message);
     assert!(
@@ -2106,7 +2115,8 @@ fn a_session_back_on_the_host_after_the_stop_fails_the_host_probe() {
 
     // The control: the same retire with nothing racing it verifies.
     let (other, _) = a_spawned_seat(&rig, &policy, "idle");
-    transient::retire(&machine, &other, false).expect("a host that holds nothing verifies");
+    transient::retire_with(&machine, &other, false, &withdraws_nothing)
+        .expect("a host that holds nothing verifies");
 }
 
 /// The withdrawal seam, on both sides: the record's half of a retire is the
@@ -2180,7 +2190,8 @@ fn a_pid_the_platform_cannot_read_refuses_at_could_not_tell_and_never_clean() {
     let agent = rig.agent();
     let machine = machine_of(&rig, &agent, &policy);
 
-    let refusal = transient::retire(&machine, &seat, false).expect_err("a probe nobody could take");
+    let refusal = transient::retire_with(&machine, &seat, false, &withdraws_nothing)
+        .expect_err("a probe nobody could take");
     assert_eq!(refusal.code, 3, "{}", refusal.message);
     assert!(
         refusal.message.contains("pid 0") && refusal.message.contains("not verified"),
@@ -2191,7 +2202,8 @@ fn a_pid_the_platform_cannot_read_refuses_at_could_not_tell_and_never_clean() {
     // The control, one field down: the same sequence with a pid the platform CAN
     // read answers 0 — so the 3 above is the probe's and not this fixture's.
     let (other, _) = a_spawned_seat(&rig, &policy, "idle");
-    transient::retire(&machine, &other, false).expect("a readable pid verifies");
+    transient::retire_with(&machine, &other, false, &withdraws_nothing)
+        .expect("a readable pid verifies");
 }
 
 /// `--dead` licenses the retire by a COMPLETED host read that holds no live
@@ -2206,7 +2218,7 @@ fn dead_retires_a_dead_pane_and_refuses_over_a_live_one() {
     let agent = rig.agent();
     let machine = machine_of(&rig, &agent, &policy);
 
-    let live = transient::retire(&machine, &seat, true)
+    let live = transient::retire_with(&machine, &seat, true, &withdraws_nothing)
         .expect_err("--dead over a host holding the session live");
     assert_eq!(live.code, 1, "{}", live.message);
     assert!(
@@ -2222,7 +2234,8 @@ fn dead_retires_a_dead_pane_and_refuses_over_a_live_one() {
     );
 
     rig.host.fake.end(&id, Some(0));
-    let reclaimed = transient::retire(&machine, &seat, true).expect("--dead over a dead pane");
+    let reclaimed = transient::retire_with(&machine, &seat, true, &withdraws_nothing)
+        .expect("--dead over a dead pane");
     assert!(
         reclaimed.dead,
         "the reclaim records that --dead licensed it"
@@ -2271,7 +2284,8 @@ fn a_session_table_that_will_not_parse_refuses_on_every_verb_and_writes_nothing(
     );
     assert_eq!(rig.table_bytes(), planted, "the table is byte-identical");
 
-    let retired = transient::retire(&machine, &seat, false).expect_err("an unreadable table");
+    let retired = transient::retire_with(&machine, &seat, false, &withdraws_nothing)
+        .expect_err("an unreadable table");
     assert_eq!(retired.code, 3, "{}", retired.message);
     assert_eq!(rig.table_bytes(), planted, "the table is byte-identical");
     assert!(
@@ -2568,7 +2582,7 @@ fn a_retire_in_its_stop_does_not_block_a_feed() {
         let retiring = scope.spawn(move || {
             let agent = rig.agent();
             let machine = machine_of(rig, &agent, policy);
-            let out = transient::retire(&machine, &going, false);
+            let out = transient::retire_with(&machine, &going, false, &withdraws_nothing);
             retiring_done.store(true, Ordering::SeqCst);
             out
         });
@@ -2709,8 +2723,8 @@ fn a_worktree_a_forced_removal_cannot_delete_is_a_refusal_naming_it() {
     let agent = rig.agent();
     let machine = machine_of(&rig, &agent, &policy);
 
-    let refusal =
-        transient::retire(&machine, &seat, false).expect_err("a worktree git will not remove");
+    let refusal = transient::retire_with(&machine, &seat, false, &withdraws_nothing)
+        .expect_err("a worktree git will not remove");
     assert_eq!(refusal.code, 1, "{}", refusal.message);
     // NAMED BY THE REFUSAL ITSELF, which is why this reads the FIRST characters
     // and not `contains`: git's own stderr for this failure echoes the path
@@ -2766,7 +2780,8 @@ fn a_refusal_after_the_rows_are_dropped_says_they_are_gone_and_what_stands() {
     let agent = rig.agent();
     let machine = machine_of(&rig, &agent, &policy);
 
-    let refusal = transient::retire(&machine, &seat, false).expect_err("the probe cannot answer");
+    let refusal = transient::retire_with(&machine, &seat, false, &withdraws_nothing)
+        .expect_err("the probe cannot answer");
     assert_eq!(refusal.code, 3, "{}", refusal.message);
     assert!(
         refusal
@@ -2784,7 +2799,8 @@ fn a_refusal_after_the_rows_are_dropped_says_they_are_gone_and_what_stands() {
 
     // The reading that makes it worth saying: the rows really are gone, so a
     // re-run meets the seat list rather than the probe.
-    let again = transient::retire(&machine, &seat, false).expect_err("the row is gone");
+    let again = transient::retire_with(&machine, &seat, false, &withdraws_nothing)
+        .expect_err("the row is gone");
     assert_eq!(again.code, 1, "{}", again.message);
     assert!(again.message.contains("names no seat"), "{}", again.message);
 }
@@ -2822,8 +2838,8 @@ fn a_journal_line_that_cannot_land_is_a_refusal_naming_the_event() {
         "the marker moved, and the ledger is what could not be written"
     );
 
-    let retired =
-        transient::retire(&machine, &seat, false).expect_err("a retire whose journal cannot land");
+    let retired = transient::retire_with(&machine, &seat, false, &withdraws_nothing)
+        .expect_err("a retire whose journal cannot land");
     assert_eq!(retired.code, 3, "{}", retired.message);
     assert!(
         retired.message.contains(events::SESSION_STOPPED),
@@ -2917,7 +2933,8 @@ fn a_priced_retire_reads_the_cost_the_branch_and_the_commit_before_it_reclaims()
     let agent = rig.agent();
     let machine = machine_of(&rig, &agent, &policy);
     let id = rig.id_of(&seat);
-    let priced = transient::priced(&machine, &seat, "an-item", now).expect("the retire lands");
+    let priced = transient::priced_with(&machine, &seat, "an-item", now, &withdraws_nothing)
+        .expect("the retire lands");
 
     assert_eq!(
         priced.cost.context_tokens,
@@ -2996,8 +3013,14 @@ fn a_transcript_that_cannot_be_read_leaves_the_cost_null_and_reclaims_anyway() {
     let dispatched_at = rig.dispatched_at(&seat);
     let agent = rig.agent();
     let machine = machine_of(&rig, &agent, &policy);
-    let priced = transient::priced(&machine, &seat, "an-item", dispatched_at + 1_000)
-        .expect("the retire lands whether or not the seat could be priced");
+    let priced = transient::priced_with(
+        &machine,
+        &seat,
+        "an-item",
+        dispatched_at + 1_000,
+        &withdraws_nothing,
+    )
+    .expect("the retire lands whether or not the seat could be priced");
 
     assert_eq!(priced.cost.context_tokens, None);
     assert_eq!(priced.cost.turns, None);

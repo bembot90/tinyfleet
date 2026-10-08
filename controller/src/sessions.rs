@@ -386,19 +386,6 @@ pub fn merge(base: &Table, mine: &Table, fresh: Table) -> Table {
 }
 
 impl Table {
-    /// Whether this fleet has CLAIMED this session — the adoption's own write on
-    /// the row, which outlives the poll that made it and the process that made
-    /// it, because this file is what a restart reads back.
-    ///
-    /// Adoption runs once per process and this answers every poll, which is why
-    /// a caller asks the table rather than the set a poll just claimed: a
-    /// session claimed on the first poll is still this fleet's on the fiftieth.
-    pub fn is_adopted(&self, session_id: &str) -> bool {
-        self.sessions
-            .iter()
-            .any(|row| row.adopted.as_deref() == Some(session_id))
-    }
-
     /// The newest row this controller opened for a seat, sighted or not. `seat`
     /// is the seat's id, as every key here is.
     pub fn newest_for(&self, seat: &str) -> Option<&SessionRow> {
@@ -416,15 +403,6 @@ impl Table {
             .iter_mut()
             .filter(|row| row.seat == seat)
             .max_by_key(|row| row.dispatched_at)
-    }
-
-    /// The newest row for a seat that a sighting has put on a session: the
-    /// newest one carrying a session id.
-    pub fn newest_sighted_for(&self, seat: &str) -> Option<&SessionRow> {
-        self.sessions
-            .iter()
-            .filter(|row| row.seat == seat && row.session_id.is_some())
-            .max_by_key(|row| row.first_seen_at.unwrap_or(row.dispatched_at))
     }
 
     /// The name this seat's live session answers to: the one its newest row
@@ -858,10 +836,9 @@ mod tests {
         assert!(!table.sight("s2", "/wt/s1", "another", 500));
     }
 
-    /// The two lookups the loop and the collection use, and the forget that ends
-    /// a row.
+    /// The lookup the loop uses, and the forget that ends a row.
     #[test]
-    fn the_newest_row_the_newest_sighted_one_and_the_forget_that_ends_it() {
+    fn the_newest_row_and_the_forget_that_ends_it() {
         let mut table = Table::default();
         assert!(table.newest_for("s1").is_none());
         table.push(a_row("s1", "/wt/s1", 100));
@@ -870,21 +847,10 @@ mod tests {
 
         assert_eq!(table.newest_for("s1").map(|r| r.dispatched_at), Some(300));
         assert_eq!(table.newest_for("s2").map(|r| r.dispatched_at), Some(200));
-        assert!(
-            table.newest_sighted_for("s1").is_none(),
-            "a row nothing has sighted is not one a stop can be aimed at"
-        );
 
         table.sight("s1", "/wt/s1", "the-session", 400);
-        assert_eq!(
-            table
-                .newest_sighted_for("s1")
-                .and_then(|r| r.session_id.clone()),
-            Some("the-session".to_string())
-        );
 
         assert!(table.forget("the-session"));
-        assert!(table.newest_sighted_for("s1").is_none());
         assert!(
             !table.forget("the-session"),
             "forgetting what is not there changes nothing and says so"

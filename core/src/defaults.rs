@@ -790,7 +790,7 @@ mod tests {
         install(&root, &packs, &lock_path, VERSION, "2026-09-12").expect("it lands");
 
         for sub in ["", "assets/", "doctor/"] {
-            for name in crate::pack::OS_LITTER {
+            for name in crate::os_litter::OS_LITTER {
                 std::fs::write(
                     root.join(format!("{sub}{name}")),
                     b"\x00\x00\x00\x01Bud1\x00\x00\x10\x00\xff\xfe",

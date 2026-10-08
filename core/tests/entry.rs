@@ -466,8 +466,6 @@ fn commit_of(found: Option<(&Entry, &Delivered)>) -> Option<String> {
 fn a_redelivery_after_a_return_stands_and_a_landing_carries_it_away() {
     let entries = timeline(vec![delivered(C1), returned(C1), delivered(C2), landed()]);
     let fold = Timeline(&entries);
-    assert_eq!(commit_of(fold.standing_delivery()), Some(words(C2)));
-    assert_eq!(commit_of(fold.carried_delivery()), None);
     assert_eq!(commit_of(fold.last_delivery()), Some(words(C2)));
     assert_eq!(
         fold.last_landing().map(|(entry, _)| entry.id.as_str()),
@@ -477,22 +475,6 @@ fn a_redelivery_after_a_return_stands_and_a_landing_carries_it_away() {
         fold.last_review().map(|(entry, _)| entry.id.as_str()),
         Some("c2")
     );
-}
-
-#[test]
-fn a_returned_delivery_does_not_stand() {
-    let entries = timeline(vec![delivered(C1), returned(C1)]);
-    let fold = Timeline(&entries);
-    assert_eq!(commit_of(fold.standing_delivery()), None);
-    assert_eq!(commit_of(fold.carried_delivery()), None);
-    assert_eq!(commit_of(fold.last_delivery()), Some(words(C1)));
-}
-
-#[test]
-fn a_delivery_with_no_landing_after_it_is_carried() {
-    let entries = timeline(vec![landed(), delivered(C1)]);
-    let fold = Timeline(&entries);
-    assert_eq!(commit_of(fold.carried_delivery()), Some(words(C1)));
 }
 
 #[test]
@@ -563,9 +545,26 @@ fn a_hold_about_an_item_is_found_by_that_item() {
         }),
     ))]);
     let fold = Timeline(&entries);
-    let (_, hold) = fold.holds_about("fleet-7").expect("h1 is about fleet-7");
+    let (_, hold) = fold
+        .holds_about("fleet-7", "any-commit")
+        .expect("h1 is about fleet-7");
     assert_eq!(hold.hold, "h1");
-    assert!(fold.holds_about("fleet-8").is_none());
+    assert!(fold.holds_about("fleet-8", "any-commit").is_none());
+}
+
+#[test]
+fn a_hold_about_an_item_at_a_commit_is_found_only_at_that_commit() {
+    let entries = timeline(vec![Body::Held(held_body(
+        "h1",
+        Some(About {
+            items: vec![words("fleet-7")],
+            commit: Some(words("c1")),
+            licenses: words("A"),
+        }),
+    ))]);
+    let fold = Timeline(&entries);
+    assert!(fold.holds_about("fleet-7", "c1").is_some());
+    assert!(fold.holds_about("fleet-7", "c2").is_none());
 }
 
 // ---- 7. the reader's JSON -------------------------------------------------------
