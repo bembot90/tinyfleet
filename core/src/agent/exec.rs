@@ -11,7 +11,7 @@
 //!
 //! THE CALL ITSELF IS EVERY ADAPTER'S: the spawn, the bound and its group
 //! kill, the row an exit is and the line the adapter said last are
-//! [`fleet_core::adapter::exec`]'s, which the store's caller shares. What is
+//! [`crate::adapter::exec`]'s, which the store's caller shares. What is
 //! the agent's here is what the words carry: the contract they name, and exit 1
 //! as the agent's own refusal, read by its reason.
 //!
@@ -26,8 +26,8 @@
 use std::path::Path;
 use std::time::Duration;
 
-use fleet_core::adapter::exec::{self, Caller, Ran, Row, Unrun};
-use fleet_core::agent::types::{self, Activities, Contexts, Seats, AGENT_TIMEOUT, TIMEOUT_VAR};
+use crate::adapter::exec::{self, Caller, Ran, Row, Unrun};
+use crate::agent::types::{self, Activities, Contexts, Seats, AGENT_TIMEOUT, TIMEOUT_VAR};
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
@@ -206,8 +206,8 @@ pub(crate) mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
 
-    use fleet_core::agent::types::{Activity, Evidence, Permissions, Posture, RefusalReason};
-    use fleet_core::seat::identity::SeatId;
+    use crate::agent::types::{Activity, Evidence, Permissions, Posture, RefusalReason};
+    use crate::seat::identity::SeatId;
     use serde_json::json;
 
     use super::*;

@@ -7,7 +7,9 @@
 //! IN THE LIBRARY AND NOT IN A SUITE, as the store's is
 //! (`fleet_core::store::conformance`): `fleet agent check` runs [`run`] against
 //! an adapter where it is installed, and this crate's suites run it against the
-//! stub. In the controller and not in core because the trait is (E10).
+//! stub. In the controller and not in core because its live steps start a
+//! session on the host ([`crate::host`]) and wait by the effect layer's own
+//! bounds (`crate::effect::STOP_GRACE`, `crate::effect::WATCH_TICK`).
 //!
 //! EACH CHECK ANSWERS AND NONE PANICS. A check passes, fails with a text naming
 //! what the adapter answered, or is skipped with why. [`run`] asks every check
