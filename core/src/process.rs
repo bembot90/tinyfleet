@@ -52,8 +52,14 @@ pub fn kill_process_group(leader: u32) {
 /// by: every caller today passes a spawned child's pid, which is never 0, so
 /// pinning the guard by exercising `kill_process_group` would mean killing the
 /// process that runs the assertion.
+///
+/// An id past `i32::MAX` is refused too: `kill_process_group` casts it to
+/// `killpg`'s `i32`, where it turns negative, and a negative id names no group
+/// `own_process_group` made (`killpg(-1, 0)` on macOS answers EPERM, not
+/// EINVAL, so the call would not refuse it as invalid). No real pid reaches
+/// `i32::MAX`, so no caller passes one today.
 pub fn is_killable_group(leader: u32) -> bool {
-    leader != 0
+    leader != 0 && leader <= i32::MAX as u32
 }
 
 // ---- the bounded runner -----------------------------------------------------
@@ -331,15 +337,17 @@ fn drained_by(
 mod tests {
     use super::*;
 
-    /// The group id the kill refuses. 0 is the caller's own group in `killpg`,
+    /// The group ids the kill refuses. 0 is the caller's own group in `killpg`,
     /// so the refusal is what keeps a future caller from SIGKILLing this
-    /// controller; a spawned child's pid, which is what every caller passes
-    /// today, is killable.
+    /// controller; an id past `i32::MAX` turns negative under the cast to
+    /// `killpg`'s `i32`; a spawned child's pid, which is what every caller
+    /// passes today, is killable.
     #[test]
     fn the_kill_refuses_the_callers_own_group_and_no_other() {
         assert!(!is_killable_group(0), "0 is killpg's own-group id");
         assert!(is_killable_group(1));
-        assert!(is_killable_group(u32::MAX));
+        assert!(is_killable_group(i32::MAX as u32));
+        assert!(!is_killable_group(i32::MAX as u32 + 1));
 
         let mut child = std::process::Command::new("/bin/sh")
             .args(["-c", "exit 0"])
