@@ -254,24 +254,8 @@ pub struct Observer<'a> {
     /// outran its bound is read again rather than started again.
     grant: platform::Grant,
     machine_dir: PathBuf,
-    config_path: PathBuf,
     table_path: PathBuf,
-    /// The seat list's mtime as of the last read of it, and the document that
-    /// read produced.
-    config_seen: Option<std::time::SystemTime>,
-    raw_config: MachineConfig,
-    /// The policy file in force and its mtime: the path moves when the seat
-    /// list re-points it, and an mtime is comparable only against the same path.
-    policy_path: PathBuf,
-    policy_mtime: Option<std::time::SystemTime>,
-    file_policy: Policy,
-    unknown_override_said: BTreeSet<String>,
-    policy: Policy,
-    config: MachineConfig,
-    /// The mtime the "did the policy file move?" test compares against, and the
-    /// last-good policy's parse error while one stands.
-    policy_seen: Option<std::time::SystemTime>,
-    policy_error: Option<String>,
+    inputs: Inputs,
     events_log: EventLog,
     /// Who the controller's own lines are by: this machine's identity, read
     /// once at startup.
@@ -294,20 +278,38 @@ pub struct Observer<'a> {
     grant_said: Option<String>,
 }
 
-impl<'a> Observer<'a> {
-    /// Read what the loop needs before its first poll, or refuse and name the
-    /// path.
-    ///
-    /// `Err` carries the exit status the caller returns; there is no last-good
-    /// before the first read, so a startup that cannot read is not a tick that
-    /// went quiet.
-    pub fn start(
-        grant: platform::Grant,
-        runs: Option<&'a dyn crate::runs::Runs>,
-        seams: Seams<'a>,
-    ) -> Result<Observer<'a>, u8> {
-        let machine_dir = platform::machine_dir();
-        let config_path = config::path_in(&machine_dir);
+/// The seat list and the policy file, and what each last read to, held across
+/// polls: each is re-read on its own mtime, and a read that fails leaves the
+/// last good one standing.
+struct Inputs {
+    config_path: PathBuf,
+    /// The seat list's mtime as of the last read of it, and the document that
+    /// read produced.
+    config_seen: Option<std::time::SystemTime>,
+    raw_config: MachineConfig,
+    /// The policy file in force and its mtime: the path moves when the seat
+    /// list re-points it, and an mtime is comparable only against the same path.
+    policy_path: PathBuf,
+    policy_mtime: Option<std::time::SystemTime>,
+    file_policy: Policy,
+    /// The policy file as a table, from the same read [`Inputs::file_policy`]
+    /// came from: the roster the routines' seat directory is built on.
+    /// Last-good with it, never ahead of it.
+    file_table: toml::Table,
+    unknown_override_said: BTreeSet<String>,
+    policy: Policy,
+    config: MachineConfig,
+    /// The mtime the "did the policy file move?" test compares against, and the
+    /// last-good policy's parse error while one stands.
+    policy_seen: Option<std::time::SystemTime>,
+    policy_error: Option<String>,
+}
+
+impl Inputs {
+    /// The first read of both files, and of what the agent declares, or the
+    /// exit status a start that cannot read them refuses with.
+    fn read(machine_dir: &Path, agent: &dyn Agent) -> Result<(Inputs, Capabilities), u8> {
+        let config_path = config::path_in(machine_dir);
         // Stat BEFORE the read, both here and in the loop: an edit that lands in
         // the window between them is recorded as already seen and never re-read.
         let config_seen = config::mtime(&config_path);
@@ -324,8 +326,8 @@ impl<'a> Observer<'a> {
         // local and beats policy per key, so the overlay is recomputed
         // wherever either document is re-read, and the file's own value is what the
         // "did policy move?" test compares.
-        let file_policy = match policy::load(&policy_path) {
-            Ok(policy) => policy,
+        let (file_policy, file_table) = match policy::read(&policy_path) {
+            Ok(read) => read,
             Err(why) => {
                 eprintln!("fleet observe: cannot read policy at {why}");
                 return Err(EXIT_NO_POLICY);
@@ -335,7 +337,7 @@ impl<'a> Observer<'a> {
         // gate a policy that names none falls to, and the release it expects.
         // A declaration that does not read is no fleet to run: every start's
         // model would be a guess.
-        let capabilities = match seams.agent.capabilities() {
+        let capabilities = match agent.capabilities() {
             Ok(capabilities) => capabilities,
             Err(why) => {
                 eprintln!("fleet observe: the agent's capabilities could not be read: {why}");
@@ -350,6 +352,111 @@ impl<'a> Observer<'a> {
 
         let policy_seen = policy_mtime;
         let policy_error: Option<String> = None;
+
+        Ok((
+            Inputs {
+                config_path,
+                config_seen,
+                raw_config,
+                policy_path,
+                policy_mtime,
+                file_policy,
+                file_table,
+                unknown_override_said,
+                policy,
+                config,
+                policy_seen,
+                policy_error,
+            },
+            capabilities,
+        ))
+    }
+
+    /// Re-read whichever of the two files moved since the last poll, and
+    /// re-gate the seat list against the policy when either landed.
+    fn refresh(&mut self, capabilities: &Capabilities) {
+        // config.json is re-read whenever its mtime moves. A re-read that cannot
+        // parse leaves the seat list standing: the empty fleet a broken file
+        // parses to is a configuration nobody asked for.
+        let config_mtime = config::mtime(&self.config_path);
+        let mut re_gate = false;
+        // Set when the seat list re-points `fleet_toml`, and read by the policy
+        // block below: the new file is read whatever its mtime happens to be,
+        // since an mtime is only comparable against the same path. PER POLL and
+        // not a field, because the block that reads it is entered on every path
+        // that sets it, so no tick ever starts with it true.
+        let mut policy_repointed = false;
+        if config_mtime != self.config_seen {
+            self.config_seen = config_mtime;
+            match config::read(&self.config_path) {
+                Ok(fresh) => {
+                    if fresh.fleet_toml != self.policy_path {
+                        eprintln!(
+                            "fleet observe: the seat list re-points policy to {}",
+                            fresh.fleet_toml.display()
+                        );
+                        self.policy_path = fresh.fleet_toml.clone();
+                        policy_repointed = true;
+                    }
+                    self.raw_config = fresh;
+                    re_gate = true;
+                }
+                Err(why) => eprintln!("fleet observe: the seat list stands; {why}"),
+            }
+        }
+
+        let file_mtime = config::mtime(&self.policy_path);
+        if policy_repointed || file_mtime != self.policy_seen {
+            self.policy_seen = file_mtime;
+            match policy::read(&self.policy_path) {
+                Ok((fresh, table)) => {
+                    if fresh != self.file_policy {
+                        eprintln!(
+                            "fleet observe: policy re-read from {}",
+                            self.policy_path.display()
+                        );
+                    }
+                    self.file_policy = fresh;
+                    self.file_table = table;
+                    self.policy_mtime = file_mtime;
+                    self.policy_error = None;
+                    // The gate is the policy's list against the row's model, so
+                    // a policy that moved re-decides which rows stand.
+                    re_gate = true;
+                }
+                Err(why) => {
+                    // Once per change, never once per poll.
+                    eprintln!("fleet observe: running on last-good policy; {why}");
+                    self.policy_error = Some(why);
+                }
+            }
+        }
+        if re_gate {
+            self.policy = overlaid(
+                &self.file_policy,
+                &self.raw_config,
+                &mut self.unknown_override_said,
+            );
+            self.config = admitted(&self.raw_config, &self.policy, capabilities);
+            report_skipped(&self.config);
+        }
+    }
+}
+
+impl<'a> Observer<'a> {
+    /// Read what the loop needs before its first poll, or refuse and name the
+    /// path.
+    ///
+    /// `Err` carries the exit status the caller returns; there is no last-good
+    /// before the first read, so a startup that cannot read is not a tick that
+    /// went quiet.
+    pub fn start(
+        grant: platform::Grant,
+        runs: Option<&'a dyn crate::runs::Runs>,
+        seams: Seams<'a>,
+    ) -> Result<Observer<'a>, u8> {
+        let machine_dir = platform::machine_dir();
+        let (inputs, capabilities) = Inputs::read(&machine_dir, seams.agent)?;
 
         let mut events_log = EventLog::open(&events::path_in(&machine_dir));
         let controller = events::controller(&machine_dir);
@@ -425,8 +532,8 @@ impl<'a> Observer<'a> {
             serde_json::json!({
                 "controller_version": env!("CARGO_PKG_VERSION"),
                 "machine_dir": machine_dir.display().to_string(),
-                "policy": policy_path.display().to_string(),
-                "seats": config.seats.len(),
+                "policy": inputs.policy_path.display().to_string(),
+                "seats": inputs.config.seats.len(),
                 "effects": seams.effects_off.is_none(),
             }),
         );
@@ -436,18 +543,8 @@ impl<'a> Observer<'a> {
             runs,
             grant,
             machine_dir,
-            config_path,
             table_path,
-            config_seen,
-            raw_config,
-            policy_path,
-            policy_mtime,
-            file_policy,
-            unknown_override_said,
-            policy,
-            config,
-            policy_seen,
-            policy_error,
+            inputs,
             events_log,
             controller,
             announced_move,
@@ -470,70 +567,7 @@ impl<'a> Observer<'a> {
     /// [`Observer::nap`]'s.
     pub fn tick(&mut self) {
         let agent = self.seams.agent;
-        // config.json is re-read whenever its mtime moves. A re-read that cannot
-        // parse leaves the seat list standing: the empty fleet a broken file
-        // parses to is a configuration nobody asked for.
-        let config_mtime = config::mtime(&self.config_path);
-        let mut re_gate = false;
-        // Set when the seat list re-points `fleet_toml`, and read by the policy
-        // block below: the new file is read whatever its mtime happens to be,
-        // since an mtime is only comparable against the same path. PER POLL and
-        // not a field, because the block that reads it is entered on every path
-        // that sets it, so no tick ever starts with it true.
-        let mut policy_repointed = false;
-        if config_mtime != self.config_seen {
-            self.config_seen = config_mtime;
-            match config::read(&self.config_path) {
-                Ok(fresh) => {
-                    if fresh.fleet_toml != self.policy_path {
-                        eprintln!(
-                            "fleet observe: the seat list re-points policy to {}",
-                            fresh.fleet_toml.display()
-                        );
-                        self.policy_path = fresh.fleet_toml.clone();
-                        policy_repointed = true;
-                    }
-                    self.raw_config = fresh;
-                    re_gate = true;
-                }
-                Err(why) => eprintln!("fleet observe: the seat list stands; {why}"),
-            }
-        }
-
-        let file_mtime = config::mtime(&self.policy_path);
-        if policy_repointed || file_mtime != self.policy_seen {
-            self.policy_seen = file_mtime;
-            match policy::load(&self.policy_path) {
-                Ok(fresh) => {
-                    if fresh != self.file_policy {
-                        eprintln!(
-                            "fleet observe: policy re-read from {}",
-                            self.policy_path.display()
-                        );
-                    }
-                    self.file_policy = fresh;
-                    self.policy_mtime = file_mtime;
-                    self.policy_error = None;
-                    // The gate is the policy's list against the row's model, so
-                    // a policy that moved re-decides which rows stand.
-                    re_gate = true;
-                }
-                Err(why) => {
-                    // Once per change, never once per poll.
-                    eprintln!("fleet observe: running on last-good policy; {why}");
-                    self.policy_error = Some(why);
-                }
-            }
-        }
-        if re_gate {
-            self.policy = overlaid(
-                &self.file_policy,
-                &self.raw_config,
-                &mut self.unknown_override_said,
-            );
-            self.config = admitted(&self.raw_config, &self.policy, &self.capabilities);
-            report_skipped(&self.config);
-        }
+        self.inputs.refresh(&self.capabilities);
 
         // THE DIRECTORY EACH SEAT'S SESSION CAME UP UNDER, which every question
         // put to the agent about that seat carries: a session started under its
@@ -545,6 +579,7 @@ impl<'a> Observer<'a> {
         // such field, and a directory derived from the seat's name here would be
         // a second spelling that a spawn could already have decided otherwise.
         let recorded_dirs: BTreeMap<SeatId, String> = self
+            .inputs
             .config
             .seats
             .iter()
@@ -575,7 +610,7 @@ impl<'a> Observer<'a> {
         let mut observed = observe::observe_fleet(
             agent,
             &host_read,
-            &self.config.seats,
+            &self.inputs.config.seats,
             &|seat: &SeatId| observe::Held {
                 session_id: table
                     .newest_for(&seat.to_string())
@@ -618,8 +653,9 @@ impl<'a> Observer<'a> {
         // The stream, from the line after the cursor. Read BEFORE deciding, so
         // what a seat asked for between polls is in hand when its verdict is
         // reached.
-        let known: BTreeSet<SeatId> = self.config.seats.iter().map(|s| s.id).collect();
+        let known: BTreeSet<SeatId> = self.inputs.config.seats.iter().map(|s| s.id).collect();
         let transient: BTreeSet<SeatId> = self
+            .inputs
             .config
             .seats
             .iter()
@@ -637,7 +673,7 @@ impl<'a> Observer<'a> {
         // stood, are the table's, which recorded both when it was sighted. The
         // context read below, and the discriminator's revive, need the id;
         // nothing else on this poll can supply it.
-        for (seat, observation) in self.config.seats.iter().zip(observed.iter_mut()) {
+        for (seat, observation) in self.inputs.config.seats.iter().zip(observed.iter_mut()) {
             if observation.state != RosterState::Stopped {
                 continue;
             }
@@ -660,6 +696,7 @@ impl<'a> Observer<'a> {
         // comparison uses: the agent keys its own records on the directory
         // itself, and a configured trailing separator is one it never wrote.
         let asked: Vec<SeatRef> = self
+            .inputs
             .config
             .seats
             .iter()
@@ -680,9 +717,11 @@ impl<'a> Observer<'a> {
             agent::contexts(agent, self.capabilities.context, &asked);
 
         let mut observations: Vec<(usize, SeatObservation, Option<u64>)> = Vec::new();
-        let mut seats = Vec::with_capacity(self.config.seats.len());
+        let mut seats = Vec::with_capacity(self.inputs.config.seats.len());
         let mut logged_out: Vec<(SeatView, String, Option<String>)> = Vec::new();
-        for (index, (seat, observation)) in self.config.seats.iter().zip(observed).enumerate() {
+        for (index, (seat, observation)) in
+            self.inputs.config.seats.iter().zip(observed).enumerate()
+        {
             let machine_name = seat.machine_name();
             // What the session table and the projection key this seat on.
             let key = seat.id.to_string();
@@ -804,7 +843,7 @@ impl<'a> Observer<'a> {
         // The clear-halt requests, consumed BEFORE the verdicts, so a halt
         // a person cleared does not survive one more poll and dispatch nothing
         // for another interval.
-        for seat in &self.config.seats {
+        for seat in &self.inputs.config.seats {
             if !pending
                 .get(&seat.id)
                 .map(|asked| asked.clear_halt)
@@ -829,7 +868,7 @@ impl<'a> Observer<'a> {
 
         let mut verdicts: Vec<Verdict> = Vec::with_capacity(observations.len());
         for (index, observation, context_tokens) in &observations {
-            let seat = &self.config.seats[*index];
+            let seat = &self.inputs.config.seats[*index];
             let key = seat.id.to_string();
             let asked = pending.get(&seat.id).cloned().unwrap_or_default();
             let newest = self.table.newest_for(&key);
@@ -840,7 +879,7 @@ impl<'a> Observer<'a> {
                 pending_rest: asked.rest_seq.is_some(),
                 pending_deliberate_end: asked.deliberate_end,
                 context_tokens: *context_tokens,
-                rest_threshold_tokens: self.policy.rest_threshold_tokens,
+                rest_threshold_tokens: self.inputs.policy.rest_threshold_tokens,
                 already_nudged: observation
                     .session_id
                     .as_deref()
@@ -848,7 +887,7 @@ impl<'a> Observer<'a> {
                     .unwrap_or(false),
                 dispatch_age_ms: newest.map(|row| now_ms.saturating_sub(row.dispatched_at)),
                 sighted: newest.map(|row| row.session_id.is_some()).unwrap_or(false),
-                arrival_window_ms: self.policy.arrival_window_seconds * 1000,
+                arrival_window_ms: self.inputs.policy.arrival_window_seconds * 1000,
                 halted: carried.halted,
                 blind: carried.blind,
             };
@@ -862,6 +901,7 @@ impl<'a> Observer<'a> {
         // The gate, read every poll while it is pending. Every configured
         // worktree of every seat, in one listing each.
         let probed: Vec<PathBuf> = self
+            .inputs
             .config
             .seats
             .iter()
@@ -908,11 +948,11 @@ impl<'a> Observer<'a> {
             agent_version: agent_version.clone(),
             agent_version_expected: expected.clone(),
             fleet: PolicyView {
-                path: self.policy_path.display().to_string(),
-                mtime: self.policy_mtime.and_then(clock::stamp_of),
-                poll_seconds: self.policy.poll_seconds,
+                path: self.inputs.policy_path.display().to_string(),
+                mtime: self.inputs.policy_mtime.and_then(clock::stamp_of),
+                poll_seconds: self.inputs.policy.poll_seconds,
             },
-            fleet_parse_error: self.policy_error.clone(),
+            fleet_parse_error: self.inputs.policy_error.clone(),
             in_flight: None,
             effects: effects.view,
             grant: grant_read.state.to_string(),
@@ -929,16 +969,17 @@ impl<'a> Observer<'a> {
         // machine's fleet root. A service's own working directory is the
         // service manager's and names nothing, so the walk-up the CLI does is
         // not a reading here.
-        let routines_root = self.policy_path.parent().map(Path::to_path_buf);
+        let routines_root = self.inputs.policy_path.parent().map(Path::to_path_buf);
         // The seats a routine may name: the rows this machine runs for a
         // nudge, and every seat the policy lists besides for an item's
-        // assignee — read off the policy file as it stands this tick.
+        // assignee — read off the policy file that last parsed, from the
+        // same read as the policy in force.
         let registry = match &routines_root {
             Some(root) => routines::load::registry_for(
                 root,
                 &self.machine_dir,
-                &self.config.seats,
-                &fleet_core::item::table_at(&self.policy_path),
+                &self.inputs.config.seats,
+                &self.inputs.file_table,
             ),
             None => routines::load::Registry::default(),
         };
@@ -959,11 +1000,11 @@ impl<'a> Observer<'a> {
             for ((index, observation, context_tokens), verdict) in
                 observations.iter().zip(verdicts.iter())
             {
-                let seat = &self.config.seats[*index];
+                let seat = &self.inputs.config.seats[*index];
                 let outcome = act(
                     agent,
                     self.seams.host,
-                    &self.policy,
+                    &self.inputs.policy,
                     &self.capabilities,
                     seat,
                     observation,
@@ -1051,9 +1092,9 @@ impl<'a> Observer<'a> {
                 machine: routines::action::Machine {
                     machine_dir: &self.machine_dir,
                     child_path: self.seams.child_path,
-                    policy: &self.policy,
+                    policy: &self.inputs.policy,
                     seats: &seat_views(
-                        &self.config.seats,
+                        &self.inputs.config.seats,
                         &observations,
                         &recorded_dirs,
                         &self.table,
@@ -1085,7 +1126,7 @@ impl<'a> Observer<'a> {
                 events: &mut self.events_log,
                 controller: &self.controller,
                 stream: &stream,
-                max_crashes: self.policy.run_max_crashes,
+                max_crashes: self.inputs.policy.run_max_crashes,
             };
             if let Err(why) = crate::runs::tick(&mut pass) {
                 eprintln!("{}: {why}", crate::runs::REFUSED);
@@ -1198,7 +1239,7 @@ impl<'a> Observer<'a> {
     fn nap(&self) -> bool {
         nap(
             self.seams.clock,
-            Duration::from_secs(self.policy.poll_seconds),
+            Duration::from_secs(self.inputs.policy.poll_seconds),
         )
     }
 

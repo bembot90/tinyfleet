@@ -363,6 +363,123 @@ mod routines {
         assert_eq!(listed["items"], serde_json::json!([]), "nothing filed");
     }
 
+    /// The policy every arm about the roster's last-good starts from: Pell is
+    /// a seat `fleet.toml` lists and no row of the seat list runs.
+    fn a_policy_listing_pell() -> String {
+        format!(
+            "[controller]\npoll_seconds = 1\n{}",
+            common::seat_table_of("Pell")
+        )
+    }
+
+    /// A routine whose assignee resolves only through `fleet.toml`'s roster,
+    /// on a schedule that never matches `BASE`: nothing fires, so no store is
+    /// needed, and the row stands in the projection's orders while it loads.
+    const TO_PELL: &str = "[order]\ndescription = \"hand it on\"\ntrigger = \"cron\"\n\
+                           schedule = \"0 0 1 1 *\"\n[action.item]\ntitle = \"for Pell\"\n\
+                           assignee = \"Pell\"\n";
+
+    /// Whether the projection's orders carry a row by this name.
+    fn orders_carry(rig: &Rig, name: &str) -> bool {
+        rig.projection()["orders"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["name"] == name))
+    }
+
+    /// Whether the projection carries a parse error for the policy file.
+    fn parse_error_set(rig: &Rig) -> bool {
+        rig.projection()
+            .get("fleet_parse_error")
+            .is_some_and(|why| !why.is_null())
+    }
+
+    /// A BROKEN EDIT KEEPS THE SEAT DIRECTORY LAST-GOOD WITH THE POLICY: the
+    /// loop reads `fleet.toml` once per change, and a read that does not parse
+    /// leaves both the policy and the roster a routine's assignee resolves
+    /// through standing, so the routine still loads.
+    #[test]
+    fn a_broken_policy_edit_keeps_the_seat_directory_a_routine_names() {
+        let rig = Rig::new("routines-broken-roster");
+        rig.write_roster("[]");
+        rig.write_policy(&a_policy_listing_pell());
+        rig.write_routine("to-pell", TO_PELL);
+        rig.set_clock(BASE);
+
+        rig.driving(|ticks| {
+            ticks.tick();
+            assert!(
+                orders_carry(&rig, "to-pell"),
+                "the routine loads against the policy's roster: {}",
+                rig.projection_body()
+            );
+
+            rig.write_policy("[controller\npoll_seconds = 1\n");
+            ticks.tick();
+            assert!(
+                parse_error_set(&rig),
+                "the broken edit is published: {}",
+                rig.projection_body()
+            );
+            assert!(
+                orders_carry(&rig, "to-pell"),
+                "the roster stays last-good with the policy: {}",
+                rig.projection_body()
+            );
+        });
+        assert_eq!(
+            rig.stderr_lines_with("assignee is Pell"),
+            0,
+            "the routine never loaded as a defect"
+        );
+    }
+
+    /// A REFUSED EDIT DOES NOT HALF-APPLY: valid TOML with no roster that the
+    /// policy parse refuses keeps the roster it had, and the directory follows
+    /// the next policy that parses.
+    #[test]
+    fn a_refused_policy_edit_keeps_the_roster_it_had() {
+        let rig = Rig::new("routines-refused-roster");
+        rig.write_roster("[]");
+        rig.write_policy(&a_policy_listing_pell());
+        rig.write_routine("to-pell", TO_PELL);
+        rig.set_clock(BASE);
+
+        rig.driving(|ticks| {
+            ticks.tick();
+            assert!(
+                orders_carry(&rig, "to-pell"),
+                "the routine loads against the policy's roster: {}",
+                rig.projection_body()
+            );
+
+            rig.write_policy("[controller]\nposture = \"yolo\"\n");
+            ticks.tick();
+            assert!(
+                parse_error_set(&rig),
+                "the refused edit is published: {}",
+                rig.projection_body()
+            );
+            assert!(
+                orders_carry(&rig, "to-pell"),
+                "the refused edit's empty roster is not taken: {}",
+                rig.projection_body()
+            );
+
+            rig.write_policy("[controller]\npoll_seconds = 1\n");
+            ticks.tick();
+            assert!(
+                !parse_error_set(&rig),
+                "the policy parses again: {}",
+                rig.projection_body()
+            );
+            assert!(
+                !orders_carry(&rig, "to-pell"),
+                "the directory follows a policy that parses: {}",
+                rig.projection_body()
+            );
+        });
+    }
+
     /// A DEDUPE PAST FIFTY OPEN ITEMS STILL DEDUPES, naming every one: the
     /// store's label listing is asked for all of its rows, and every row it
     /// answers is named. A store that caps its own listing is that adapter's

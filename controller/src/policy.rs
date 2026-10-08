@@ -200,8 +200,19 @@ fn models(configured: Option<Vec<String>>) -> Option<Vec<String>> {
 }
 
 pub fn load(path: &Path) -> Result<Policy, String> {
+    read(path).map(|(policy, _)| policy)
+}
+
+/// One read of the policy file: the policy it parses to and the whole file as
+/// a table, both from the same bytes, so a reader holding one never holds the
+/// other from a different moment.
+pub fn read(path: &Path) -> Result<(Policy, toml::Table), String> {
     let body = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    parse(&body).map_err(|e| format!("{}: {e}", path.display()))
+    let policy = parse(&body).map_err(|e| format!("{}: {e}", path.display()))?;
+    let table = body
+        .parse::<toml::Table>()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok((policy, table))
 }
 
 pub fn parse(body: &str) -> Result<Policy, String> {
@@ -726,6 +737,35 @@ mod tests {
             refused.contains("`ask`, `auto` or `unattended`"),
             "{refused}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One read answers the policy `parse` answers and the whole file as a
+    /// table from the same bytes; a file that will not parse answers the very
+    /// text `load` answers.
+    #[test]
+    fn one_read_answers_the_policy_and_the_table_from_the_same_bytes() {
+        let dir = std::env::temp_dir().join(format!("fleet-policy-read-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the fixture directory is made");
+        let file = dir.join("fleet.toml");
+
+        let body =
+            "[controller]\npoll_seconds = 7\n\n[seats.pell]\nkind = \"agent\"\nname = \"Pell\"\n";
+        std::fs::write(&file, body).expect("the file is written");
+        let (policy, table) = read(&file).expect("the file reads");
+        assert_eq!(policy, parse(body).expect("the body parses"));
+        assert_eq!(policy.poll_seconds, 7);
+        let seats = table
+            .get("seats")
+            .and_then(toml::Value::as_table)
+            .expect("the table carries the seats");
+        assert!(seats.contains_key("pell"), "{seats:?}");
+
+        std::fs::write(&file, "[controller\n").expect("the file is written");
+        let refused = read(&file).expect_err("a broken file does not read");
+        assert_eq!(refused, load(&file).expect_err("nor does it load"));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
