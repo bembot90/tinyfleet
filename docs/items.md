@@ -312,9 +312,6 @@ $ fleet deliver --delivery <bad-file>
 fleet deliver: the delivery at <bad-file> is not the shape assets/delivery.schema.json gives: missing field `checks` at line 1 column 13 — the brief shows that schema
 ```
 
-`--note` is refused with exit 2 whatever it names:
-`--note is gone: a delivery is a JSON file — fleet deliver --delivery <file>; its shape is assets/delivery.schema.json, which the brief shows`.
-
 ### A held commit
 
 A worktree resumed after `fleet hold` holds its work in the held commit and
@@ -398,8 +395,6 @@ its order.
 
 It refuses the trunk branch, a seat holding no ordered item, and a question
 file that does not read or is not its shape, all before it commits.
-`--note` is refused with exit 2:
-`--note is gone: a question is a JSON file — fleet hold --question <file>; its shape is assets/question.schema.json, which the brief shows`.
 
 ## Clearing a hold
 
@@ -622,10 +617,6 @@ deadline:
 waiting on the lane: <other-item> since <time>
 ```
 
-Where `lanes/<project>` exists in that directory and `lanes/lane-<project>`
-does not, a landing moves the first to the second, lock and all, before it
-takes the lane; one holding a `.git` is moved with `git worktree move`.
-
 ### The suite
 
 `--test <command>` is the only suite a landing runs; the project's policy
@@ -830,7 +821,6 @@ Exits follow the table every command shares; see
 | `deliver` on `main` | 1 | `` the worktree is on `main` — a delivery is a handoff of a work branch … `` | Work on a work branch |
 | `deliver` with a file outside the staged set | 1 | `` `<path>` is changed in the working tree and not staged — … `` | Stage it or put it back |
 | `deliver` with nothing staged at the base | 1 | `nothing is staged in <worktree> and HEAD is origin/main at <sha> — there is no commit to deliver. …` | Stage the work |
-| `deliver --note` or `hold --note` | 2 | `--note is gone: a delivery is a JSON file — fleet deliver --delivery <file>; …` (or `a question is a JSON file — fleet hold --question <file>; …`) | Write the JSON file the brief shows |
 | `deliver`, `hold` or `review --return` with a file that cannot be read | 2 | `the <delivery, question or findings> at <file> could not be read: …` | Fix the path |
 | `deliver`, `hold` or `review --return` with a file that is not its shape | 2 | `the <delivery, question or findings> at <file> is not the shape assets/<name>.schema.json gives: <what> — the brief shows that schema` | Match the schema |
 | `deliver` or `hold` by a seat holding no ordered item | 1 | `` `seat:<seat>` holds no open ordered item — … `` | Check `--by` or `FLEET_ACTOR` |

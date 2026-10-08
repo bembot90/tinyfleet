@@ -136,7 +136,7 @@ carry.
   `suggest-rest` and `halt`, or `pending` on a row the controller publishes
   before it reaches a decision.
 - The outcome is one of `none`, `spawned`, `rested`, `nudged`, `revived`,
-  `halted`, `deferred` and `failed`.
+  `halted` and `failed`.
 - A seat the controller is holding ends with `HALTED` and its count of blind
   dispatches.
 
@@ -372,7 +372,8 @@ $ fleet event tail --since <event-stamp>
 
 A stamp later than every line resolves to `none` and prints no lines. A
 `--since` value that is neither a number nor a stamp of that form is refused
-with exit 2.
+with exit 2, and so is a stamp of that form naming a date the calendar does
+not hold, such as `2026-02-31T00:00:00Z`.
 
 ### Following
 
@@ -444,7 +445,7 @@ line, with `"verb":"event show"`, and refusals take the same form.
 | `fleet event tail --actor` is not `<kind>:<id>` | 2 | `fleet event tail: --actor <value> is not kind:id`, or ``--actor `<value>` is a typed actor with a bad id — …`` | Give a typed actor, such as `seat:<id>`. |
 | `--seat` and `--json` given together | 2 | `error: the argument '--seat <NAME>' cannot be used with '--json'` and the usage line | Give one of the two. |
 | `fleet event tail` or `fleet event show` finds no stream | 5 | `fleet event tail: no event stream at <machine>/events.jsonl` (or `fleet event show:`) | Nothing has written to this machine's stream yet; start the controller. |
-| `--since` is neither a sequence nor a stamp | 2 | `fleet event tail: --since <value> is neither a sequence nor a stamp of the shape YYYY-MM-DDTHH:MM:SSZ` | Give a sequence number or a stamp of that shape. |
+| `--since` is neither a sequence nor a stamp, or names a date the calendar does not hold | 2 | `fleet event tail: --since <value> is neither a sequence nor a stamp of the shape YYYY-MM-DDTHH:MM:SSZ` | Give a sequence number, or a stamp of that shape naming a real date. |
 | `fleet event show` finds no line with that id | 1 | `fleet event show: no event <id>` | Copy the whole id from `fleet event tail`. |
 | Two lines of the stream carry the same id | 2 | `fleet event show: <id> is on more than one line — sequences <seq-a>, <seq-b>` | The stream is damaged; read both lines with `fleet event tail --since`. |
 

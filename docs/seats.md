@@ -628,16 +628,6 @@ A line for a seat whose row has since left the seat list is dropped by the
 controller, which prints ``dropping a seat.exited whose actor `<id>` names no
 seat row``.
 
-These verbs live under `fleet event` and not `fleet seat`. Typing
-`fleet seat rest` (or `woke`, `handed-off`, `exited`) exits 2 with the
-rewrite:
-
-```sh
-$ fleet seat rest orla
-fleet seat rest: the seat noun is what is done to a seat — say fleet event rest
-Usage: fleet [COMMAND]
-```
-
 ## Asking for a rest
 
 A named seat whose context is heavy asks for a fresh session:
@@ -939,7 +929,6 @@ branch.
 | `fleet event rest` for a transient seat | 6 | ``... only named seats rest — use `fleet seat retire <seat>` instead`` | `fleet seat retire` |
 | `fleet event clear-halt` for a seat not halted | 1 | `fleet event clear-halt: <seat> is not halted — ...` | check the seat's name |
 | `fleet event woke`, `handed-off` or `exited` with `--reason` | 2 | `error: unexpected argument '--reason' found` | drop `--reason` |
-| a lifecycle word under `fleet seat` | 2 | `fleet seat <word>: the seat noun is what is done to a seat — say fleet event <word>` | `fleet event <word>` |
 | `fleet seat nudge` for a seat not `present` | 4 | ``fleet seat nudge: `<seat>` has no live session — its row reads <state> and not present`` | wait for the seat, or answer its prompt |
 | `fleet seat nudge` for a seat stopped at a question | 1 | `not nudged <seat> — <session> — refused: blocked on <cause>` | answer the seat's question, then nudge again |
 | `fleet seat nudge` the session did not take | 1 | `not nudged <seat> — <session> — failed: typed and not taken: still <status> after <n>s` | look at it with `fleet seat attach <seat>`, or nudge again |

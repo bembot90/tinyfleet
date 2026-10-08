@@ -143,28 +143,6 @@ It exits 2. A prompt never waits on a script. One question has a default
 instead of a refusal: `fleet create`'s store question, which takes `bd`, the
 bd pack's store, when there is no terminal and no `--store`.
 
-A verb under the wrong noun. `fleet seat woke`, `fleet seat rest`, `fleet seat
-handed-off` and `fleet seat exited` name the spelling that works, whatever
-follows them:
-
-```sh
-$ fleet seat rest orla --reason done
-fleet seat rest: the seat noun is what is done to a seat — say fleet event rest
-Usage: fleet [COMMAND]
-```
-
-It exits 2.
-
-`fleet order`, with anything after it, does the same and names `fleet
-routine`:
-
-```sh
-$ fleet order list
-fleet order: the family is `fleet routine` now — use `fleet routine list | check | run | history`
-```
-
-It exits 2.
-
 An empty actor. `fleet dispatch`, `deliver`, `hold`, `clear`, `review`,
 `land`, `run`, `cancel` and `fleet seat retire` each name who acted,
 `fleet review --show` included. Inside a fleet, an empty `--by` refuses with
@@ -329,8 +307,6 @@ suffix, and how to run a command past it, are in [Guards](guards.md).
 | A required argument is missing, or an argument or flag is unknown | 2 | `error:` and the usage line | Run the verb with `--help` and add what it names. |
 | No command given | 2 | the help page, on standard error | Name a command. |
 | A verb asks a question and standard input is not a terminal | 2 | `fleet <verb>: fleet: <question> — stdin is not a terminal; answer it with <flag>` | Pass the flag it names. |
-| A lifecycle word typed under `fleet seat` | 2 | `fleet seat <word>: the seat noun is what is done to a seat — say fleet event <word>` | Run `fleet event <word>`. |
-| `fleet order` typed | 2 | ``fleet order: the family is `fleet routine` now — …`` | Run `fleet routine`. |
 | An empty `--by` on a verb that names its actor | 2 | `fleet <verb>: --by names no seat — the argument is empty` | Name a seat, or leave `--by` out. |
 | A seat argument that names no seat | 1 | `fleet <verb>: <arg> names no seat — the seats are <machine-name> (<id>), …` | Pick a seat from the list. |
 | A seat argument that more than one seat answers to | 1 | `fleet <verb>: <arg> names <n> seats — <machine-name> (<id>), … — say more of the id` | Give more of the id. |
