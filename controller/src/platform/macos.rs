@@ -40,7 +40,6 @@ pub fn child_path_dirs(home: &Path) -> Vec<PathBuf> {
 
 extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
-    fn __error() -> *mut i32;
     fn getloadavg(loadavg: *mut f64, nelem: i32) -> i32;
     fn getuid() -> u32;
 }
@@ -222,8 +221,8 @@ pub fn process_alive(pid: u32) -> Option<bool> {
     if unsafe { kill(pid as i32, 0) } == 0 {
         return Some(true);
     }
-    match unsafe { *__error() } {
-        ESRCH => Some(false),
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(ESRCH) => Some(false),
         _ => None,
     }
 }

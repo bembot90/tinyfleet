@@ -6,35 +6,22 @@
 //! core depends on no other member of the workspace. No other module passes
 //! them on: the controller's callers import these names from here.
 
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
 
-// `setpgid` and `killpg` are POSIX and identical on both targets, so they are
-// declared once here and no platform carries a half of its own.
+// `killpg` is POSIX and identical on both targets, so it is declared once here
+// and no platform carries a copy of its own.
 extern "C" {
-    fn setpgid(pid: i32, pgid: i32) -> i32;
     fn killpg(pgrp: i32, sig: i32) -> i32;
 }
 
 const SIGKILL: i32 = 9;
 
-/// Put the calling process into a process group of its own, led by itself.
-///
-/// Called between fork and exec, where only async-signal-safe calls are legal:
-/// `setpgid` is one and nothing else may join it here.
-pub fn own_process_group() -> io::Result<()> {
-    if unsafe { setpgid(0, 0) } == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
 /// Kill a whole process group, named by the pid of the leader that
-/// `own_process_group` made. What a listing forked outlives the listing
+/// `spawn_in_group` made. What a listing forked outlives the listing
 /// otherwise, and a descendant holding the inherited pipe is a drain no
 /// deadline reaches.
 pub fn kill_process_group(leader: u32) {
@@ -55,7 +42,7 @@ pub fn kill_process_group(leader: u32) {
 ///
 /// An id past `i32::MAX` is refused too: `kill_process_group` casts it to
 /// `killpg`'s `i32`, where it turns negative, and a negative id names no group
-/// `own_process_group` made (`killpg(-1, 0)` on macOS answers EPERM, not
+/// `spawn_in_group` made (`killpg(-1, 0)` on macOS answers EPERM, not
 /// EINVAL, so the call would not refuse it as invalid). No real pid reaches
 /// `i32::MAX`, so no caller passes one today.
 pub fn is_killable_group(leader: u32) -> bool {
@@ -115,10 +102,10 @@ const WAIT_SLICE: Duration = Duration::from_millis(20);
 /// a pipe where a request is.
 fn spawn_in_group(cmd: &mut Command, stdin: Stdio) -> Result<Child, String> {
     cmd.stdin(stdin);
-    // Between fork and exec, where only async-signal-safe calls are legal.
-    unsafe {
-        cmd.pre_exec(own_process_group);
-    }
+    // A group of its own, led by the child: std sets it between fork and exec,
+    // or as posix_spawn's own attribute, so no code of this process runs in the
+    // child before exec.
+    cmd.process_group(0);
     // The binary and the OS's own reason, both: a spawn fails for a missing
     // path, a file that is not executable and a directory alike, and a cause
     // naming none of them reaches the operator as a seat that is Unknown for no

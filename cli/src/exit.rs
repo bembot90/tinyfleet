@@ -9,34 +9,27 @@ use anyhow::{bail, Result};
 
 /// The exit table, one variant per row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Exit {
     /// done, and the write (if any) read back
-    Done,
+    Done = 0,
     /// refused on the record: the thing named is absent, held, or already so
-    Refused,
+    Refused = 1,
     /// usage: a missing or unknown argument, with the usage line printed
-    Usage,
+    Usage = 2,
     /// could not tell: an instrument the answer needs was unreadable
-    CouldNotTell,
+    CouldNotTell = 3,
     /// the seat has no live session
-    NoSession,
+    NoSession = 4,
     /// no collector is consuming the stream
-    NoCollector,
+    NoCollector = 5,
     /// the row is transient where a named seat was required
-    Transient,
+    Transient = 6,
 }
 
 impl Exit {
     pub fn code(self) -> u8 {
-        match self {
-            Exit::Done => 0,
-            Exit::Refused => 1,
-            Exit::Usage => 2,
-            Exit::CouldNotTell => 3,
-            Exit::NoSession => 4,
-            Exit::NoCollector => 5,
-            Exit::Transient => 6,
-        }
+        self as u8
     }
 
     /// The row's own name, in snake case: the `code` the JSON envelope's

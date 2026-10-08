@@ -705,9 +705,8 @@ mod tests {
     use std::time::Instant;
 
     // Declared here for the reason `fleet_core::process` gives for its
-    // `setpgid`/`killpg` pair: POSIX, identical on both targets, and no crate
-    // is added to ask a one-word question. Only the arm whose denial uid 0
-    // ignores reads it.
+    // `killpg`: POSIX, identical on both targets, and no crate is added to ask
+    // a one-word question. Only the arm whose denial uid 0 ignores reads it.
     extern "C" {
         fn geteuid() -> u32;
     }

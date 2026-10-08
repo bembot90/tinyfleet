@@ -219,44 +219,12 @@ impl Stamp {
     /// The text as a stamp, when it is exactly the 20-character form with a
     /// month, day, hour, minute and second each in its range.
     pub fn parse(text: &str) -> Option<Stamp> {
-        let bytes = text.as_bytes();
-        if bytes.len() != 20 {
-            return None;
-        }
-        for (at, separator) in [
-            (4, b'-'),
-            (7, b'-'),
-            (10, b'T'),
-            (13, b':'),
-            (16, b':'),
-            (19, b'Z'),
-        ] {
-            if bytes[at] != separator {
-                return None;
-            }
-        }
+        static FORM: std::sync::OnceLock<regex_lite::Regex> = std::sync::OnceLock::new();
+        let form = FORM
+            .get_or_init(|| regex_lite::Regex::new(STAMP_PATTERN).expect("STAMP_PATTERN compiles"));
         // Each field is its digits and nothing else — a sign or a space is not
         // one — and a year is any four of them.
-        let field = |from: usize, to: usize| -> Option<u32> {
-            let digits = &bytes[from..to];
-            if !digits.iter().all(u8::is_ascii_digit) {
-                return None;
-            }
-            Some(digits.iter().fold(0, |n, d| n * 10 + u32::from(d - b'0')))
-        };
-        field(0, 4)?;
-        let in_range = [
-            (field(5, 7)?, 1..=12),
-            (field(8, 10)?, 1..=31),
-            (field(11, 13)?, 0..=23),
-            (field(14, 16)?, 0..=59),
-            (field(17, 19)?, 0..=59),
-        ];
-        if in_range.iter().all(|(value, range)| range.contains(value)) {
-            Some(Stamp(text.to_string()))
-        } else {
-            None
-        }
+        form.is_match(text).then(|| Stamp(text.to_string()))
     }
 
     pub fn as_str(&self) -> &str {
