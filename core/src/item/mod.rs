@@ -165,13 +165,13 @@ pub trait Git {
     /// [`TRUNK`] as the local ref holds it. No fetch.
     fn trunk_tip(&self) -> Result<String, String>;
 
-    /// The paths `git diff --cached --name-only` prints.
+    /// The paths `git diff --cached --name-only -z` prints, raw.
     fn staged(&self) -> Result<Vec<String>, String>;
 
-    /// `git status --porcelain`, one line per entry, classified by the caller:
-    /// the two status columns are the index's and the working tree's, and only
-    /// the second says whether a path was left unstaged.
-    fn status(&self) -> Result<Vec<String>, String>;
+    /// `git status --porcelain -z`, one typed entry per path, classified by the
+    /// caller: the two status columns are the index's and the working tree's,
+    /// and only the second says whether a path was left unstaged.
+    fn status(&self) -> Result<Vec<StatusLine>, String>;
 
     /// Everything the working tree holds put in the index: tracked changes,
     /// unstaged modifications and untracked files alike.
@@ -208,6 +208,61 @@ pub fn numstat_line(line: &str) -> Option<Change> {
         deleted: count(deleted),
         path: path.to_string(),
     })
+}
+
+/// One entry of `git status --porcelain -z`: the index's column, the working
+/// tree's column, and the path, raw — the `-z` form quotes nothing, so the path
+/// is the bytes a person types. A rename or copy also names where it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusLine {
+    pub index: char,
+    pub worktree: char,
+    pub path: String,
+    pub from: Option<String>,
+}
+
+/// The v1 porcelain line, minus git's quoting: `XY from -> path` for a rename
+/// or copy, `XY path` otherwise.
+impl std::fmt::Display for StatusLine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.from {
+            Some(from) => write!(f, "{}{} {from} -> {}", self.index, self.worktree, self.path),
+            None => write!(f, "{}{} {}", self.index, self.worktree, self.path),
+        }
+    }
+}
+
+/// Every `git status --porcelain -z` entry. Each is `XY <path>` ended by a NUL,
+/// and a rename or copy (`R` or `C` in either column) is followed by its origin
+/// as a field of its own — the new name first. An entry of any other shape is
+/// refused rather than read as a path, because a path misread here is one a
+/// delivery would carry or leave behind without a word.
+pub fn status_entries(z: &str) -> Result<Vec<StatusLine>, String> {
+    let malformed = |field: &str| {
+        format!("`git status --porcelain -z` answered an entry that is not `XY <path>`: {field:?}")
+    };
+    let mut fields = z.split('\0').filter(|field| !field.is_empty());
+    let mut entries = Vec::new();
+    while let Some(field) = fields.next() {
+        let bytes = field.as_bytes();
+        if bytes.len() < 4 || !bytes[0].is_ascii() || !bytes[1].is_ascii() || bytes[2] != b' ' {
+            return Err(malformed(field));
+        }
+        let index = char::from(bytes[0]);
+        let worktree = char::from(bytes[1]);
+        let from = if [index, worktree].iter().any(|c| matches!(c, 'R' | 'C')) {
+            Some(fields.next().ok_or_else(|| malformed(field))?.to_string())
+        } else {
+            None
+        };
+        entries.push(StatusLine {
+            index,
+            worktree,
+            path: field[3..].to_string(),
+            from,
+        });
+    }
+    Ok(entries)
 }
 
 /// What the controller answered when asked for a seat to give this item to.

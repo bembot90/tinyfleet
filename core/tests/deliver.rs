@@ -14,14 +14,17 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use common::{fleet_of, full, keys_agree, seat_actor, seat_id, signal, Graph, Rooted, StubEvents};
+use common::{
+    fleet_of, full, keys_agree, seat_actor, seat_id, signal, st, Graph, Rooted, StubEvents,
+};
 use fleet_core::entry::{Body, Entry, Timeline};
 use fleet_core::input::{DeliveryInput, DELIVERY_SCHEMA};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::deliver::{self, Delivered, Delivery, Wiring};
 use fleet_core::item::review::{self, Mode, Verdict};
 use fleet_core::item::{
-    control_token, run, Change, Git, Project, Ring, RingOutcome, Stop, ITEM_ENTRY, TRUNK,
+    control_token, run, status_entries, Change, Git, Project, Ring, RingOutcome, StatusLine, Stop,
+    ITEM_ENTRY, TRUNK,
 };
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::store::{Item, ReadProof, Store, StoreError};
@@ -38,7 +41,7 @@ const POLICY: &str = "[core]\nreviewer = \"a-reviewer\"\n";
 struct StubGit {
     branch: String,
     staged: Vec<String>,
-    status: Vec<String>,
+    status: Vec<StatusLine>,
     commit: String,
     calls: Mutex<Vec<String>>,
 }
@@ -50,7 +53,7 @@ impl StubGit {
         StubGit {
             branch: BRANCH.to_string(),
             staged: vec!["a/file.rs".to_string()],
-            status: vec!["M  a/file.rs".to_string()],
+            status: vec![st("M ", "a/file.rs")],
             commit: SHA.to_string(),
             calls: Mutex::new(Vec::new()),
         }
@@ -89,7 +92,7 @@ impl Git for StubGit {
         Ok(self.staged.clone())
     }
 
-    fn status(&self) -> Result<Vec<String>, String> {
+    fn status(&self) -> Result<Vec<StatusLine>, String> {
         self.record("status");
         Ok(self.status.clone())
     }
@@ -625,9 +628,9 @@ fn a_file_outside_the_staged_set_is_refused_by_name() {
     let before = scratch.json(&item);
     let git = StubGit {
         status: vec![
-            "M  a/file.rs".to_string(),
-            " M b/forgotten.rs".to_string(),
-            "?? c/untracked.rs".to_string(),
+            st("M ", "a/file.rs"),
+            st(" M", "b/forgotten.rs"),
+            st("??", "c/untracked.rs"),
         ],
         ..StubGit::clean()
     };
@@ -666,7 +669,7 @@ fn a_file_outside_the_staged_set_is_refused_by_name() {
 #[test]
 fn a_staged_file_with_more_work_on_it_is_the_delivery() {
     let git = StubGit {
-        status: vec!["MM a/file.rs".to_string(), " M b/also.rs".to_string()],
+        status: vec![st("MM", "a/file.rs"), st(" M", "b/also.rs")],
         staged: vec!["a/file.rs".to_string(), "b/also.rs".to_string()],
         ..StubGit::clean()
     };
@@ -680,6 +683,56 @@ fn a_staged_file_with_more_work_on_it_is_the_delivery() {
         Some("b/also.rs".to_string()),
         "and the same reading finds the one that is not"
     );
+}
+
+/// The `-z` porcelain read into typed entries: two columns, a space, the path
+/// raw, NUL-ended — and an untracked directory is still one entry.
+#[test]
+fn status_entries_reads_each_entry_with_its_two_columns_and_its_path_raw() {
+    assert_eq!(
+        status_entries(" M a/file.rs\0?? new dir/\0"),
+        Ok(vec![st(" M", "a/file.rs"), st("??", "new dir/")])
+    );
+    assert_eq!(
+        status_entries("MM café menu.md\0"),
+        Ok(vec![st("MM", "café menu.md")]),
+        "a path git would quote is its own bytes"
+    );
+    assert_eq!(
+        status_entries(""),
+        Ok(Vec::new()),
+        "a clean tree is no entry"
+    );
+}
+
+/// A rename names the NEW path first and its origin as a field of its own, and
+/// the entry prints as the v1 porcelain line did, minus the quoting.
+#[test]
+fn status_entries_reads_a_rename_with_its_origin() {
+    let entries = status_entries("RM re named.txt\0ren amed.txt\0").expect("one rename");
+    assert_eq!(
+        entries,
+        vec![StatusLine {
+            index: 'R',
+            worktree: 'M',
+            path: "re named.txt".to_string(),
+            from: Some("ren amed.txt".to_string()),
+        }]
+    );
+    assert_eq!(entries[0].to_string(), "RM ren amed.txt -> re named.txt");
+}
+
+/// An entry that is not `XY <path>`, and a rename missing its origin, are
+/// refused rather than read as a path.
+#[test]
+fn status_entries_refuses_an_entry_of_any_other_shape() {
+    for z in ["M\0", "R  only-one\0"] {
+        let refused = status_entries(z).expect_err("not an entry");
+        assert!(
+            refused.contains("answered an entry that is not `XY <path>`"),
+            "{z:?}: {refused}"
+        );
+    }
 }
 
 /// THE FIRST HALF OF THE PAIR, and worth nothing without the second below: a

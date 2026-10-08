@@ -27,7 +27,9 @@ use fleet_core::entry::{
 use fleet_core::item::brief::Packs;
 use fleet_core::item::review::{self, Mode, Verdict, Wiring};
 use fleet_core::item::show::entry_lines;
-use fleet_core::item::{control_token, Change, Git, Project, Ring, RingOutcome, ITEM_ENTRY};
+use fleet_core::item::{
+    control_token, Change, Git, Project, Ring, RingOutcome, StatusLine, ITEM_ENTRY,
+};
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::store::{Item, ItemId, OrderState, ReadProof, Store, StoreError};
 use fleet_core::test_support::Board;
@@ -164,7 +166,7 @@ impl Git for StubGit {
         Err(String::from("review reads no index"))
     }
 
-    fn status(&self) -> Result<Vec<String>, String> {
+    fn status(&self) -> Result<Vec<StatusLine>, String> {
         Err(String::from("review reads no status"))
     }
 

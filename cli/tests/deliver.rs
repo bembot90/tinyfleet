@@ -549,6 +549,50 @@ fn the_trunk_and_an_unclean_tree_are_refused_by_the_shipped_binary() {
     );
 }
 
+/// A staged path holding a SPACE, edited again after it was staged (`AM`), is
+/// the delivery: the status read and the staged read both name it raw, so the
+/// one finds it in the other.
+#[test]
+fn a_staged_path_with_a_space_and_more_work_on_it_is_the_delivery() {
+    let rig = Rig::new("spaced");
+    let item = rig.an_ordered_item();
+    let notes = rig.project.join("the notes.md");
+    std::fs::write(&notes, "the notes\n").expect("the notes are written");
+    rig.git(&["add", "--", "the notes.md"]);
+    std::fs::write(&notes, "the notes\nand one more line\n").expect("the notes are edited");
+
+    let out = rig.run(&["deliver", "--delivery", &rig.delivery.display().to_string()]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let committed = rig.git(&["show", "--name-only", "-z", "--format=", "HEAD"]);
+    let committed: Vec<&str> = committed.split('\0').filter(|p| !p.is_empty()).collect();
+    assert!(
+        committed.contains(&"the notes.md") && committed.contains(&"the-work.txt"),
+        "the commit holds both staged files: {committed:?}"
+    );
+    assert!(
+        rig.delivered(&item)["commit"].is_string(),
+        "and the delivery is on the record"
+    );
+}
+
+/// A loose path git would quote — a space and a non-ASCII character — is named
+/// in the refusal as its own bytes, which is the name a seat types to stage it.
+#[test]
+fn a_loose_path_with_a_space_and_a_non_ascii_char_is_named_raw() {
+    let rig = Rig::new("exotic");
+    rig.an_ordered_item();
+    std::fs::write(rig.project.join("café menu.md"), "not in the delivery\n")
+        .expect("the loose file is written");
+
+    let out = rig.run(&["deliver", "--delivery", &rig.delivery.display().to_string()]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("`café menu.md` is changed in the working tree and not staged"),
+        "the loose path, raw: {}",
+        stderr(&out)
+    );
+}
+
 /// `review --show` through the same binary, over the delivery the verb above
 /// wrote: the two verbs meet on the record and nowhere else.
 #[test]

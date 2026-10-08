@@ -786,6 +786,20 @@ pub fn signal(item: &str, entry: &str, kind: &str) -> serde_json::Value {
     serde_json::json!({ "item": item, "entry": entry, "kind": kind })
 }
 
+// ---- git ----------------------------------------------------------------------
+
+/// One `git status --porcelain -z` entry a stub git answers: the two status
+/// columns as `xy`, then the path, raw. No rename origin.
+pub fn st(xy: &str, path: &str) -> fleet_core::item::StatusLine {
+    let mut columns = xy.chars();
+    fleet_core::item::StatusLine {
+        index: columns.next().expect("two status columns"),
+        worktree: columns.next().expect("two status columns"),
+        path: path.to_string(),
+        from: None,
+    }
+}
+
 // ---- seats --------------------------------------------------------------------
 
 /// The id an arm's seat is keyed by, derived from its name alone: FNV-1a over

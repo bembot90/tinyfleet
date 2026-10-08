@@ -20,7 +20,7 @@ use fleet_core::entry::{self, Body, Choice, Entry, HoldReason, Timeline};
 use fleet_core::input::{Checked, QuestionInput, QUESTION_SCHEMA};
 use fleet_core::item::hold::{self, Clearance, Question, Wiring};
 use fleet_core::item::run;
-use fleet_core::item::{Change, Git, Project, Stop, ITEM_ENTRY};
+use fleet_core::item::{Change, Git, Project, StatusLine, Stop, ITEM_ENTRY};
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::store::types::Capabilities;
 use fleet_core::store::{
@@ -112,7 +112,7 @@ impl Git for StubGit {
         Ok(self.staged.clone())
     }
 
-    fn status(&self) -> Result<Vec<String>, String> {
+    fn status(&self) -> Result<Vec<StatusLine>, String> {
         self.record("status");
         Ok(Vec::new())
     }

@@ -34,8 +34,8 @@ use crate::input::{self, DeliveryInput, DELIVERY_SCHEMA};
 use crate::item::brief::Packs;
 use crate::item::dispatch::EPIC;
 use crate::item::{
-    assignee_reads_back, recorded, signal, Events, Git, Project, Ring, RingOutcome, Stop,
-    Unrecorded, ITEM_ENTRY, TRUNK, TRUNK_BRANCH,
+    assignee_reads_back, recorded, signal, Events, Git, Project, Ring, RingOutcome, StatusLine,
+    Stop, Unrecorded, ITEM_ENTRY, TRUNK, TRUNK_BRANCH,
 };
 use crate::policy;
 use crate::seat::actor::{Actor, ActorKind};
@@ -468,33 +468,19 @@ fn no_reviewer() -> Stop {
 /// second column is a space is an index-only change and is part of the
 /// delivery, and a path already staged is the delivery whatever else was done
 /// to it.
-pub fn outside(status: &[String], staged: &[String]) -> Option<String> {
+pub fn outside(status: &[StatusLine], staged: &[String]) -> Option<String> {
     status.iter().find_map(|line| {
-        let mut columns = line.chars();
-        let index = columns.next()?;
-        let worktree = columns.next()?;
-        if worktree == ' ' {
+        if line.worktree == ' ' {
             return None;
         }
-        let path = porcelain_path(line);
-        if staged.contains(&path) {
+        if staged.contains(&line.path) {
             return None;
         }
         // An untracked entry carries `??` and no index status at all; it is
         // still a file the seat has not put in the delivery.
-        let _ = index;
-        Some(path)
+        let _ = line.index;
+        Some(line.path.clone())
     })
-}
-
-/// The path a porcelain line names. A rename prints `old -> new`, and the new
-/// name is the one the delivery would carry.
-fn porcelain_path(line: &str) -> String {
-    let rest = line.get(3..).unwrap_or_default().trim();
-    match rest.rsplit_once(" -> ") {
-        Some((_, new)) => new.to_string(),
-        None => rest.to_string(),
-    }
 }
 
 // ---- the read-back -----------------------------------------------------------

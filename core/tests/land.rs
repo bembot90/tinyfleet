@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use common::{
-    agent, full, keys_agree, seat_actor, seat_id, shared_store, signal, signals, Rooted, Scratch,
-    StubEvents,
+    agent, full, keys_agree, seat_actor, seat_id, shared_store, signal, signals, st, Rooted,
+    Scratch, StubEvents,
 };
 use fleet_core::entry::Landed as LandedEntry;
 use fleet_core::entry::{
@@ -36,7 +36,8 @@ use fleet_core::item::land::{
 use fleet_core::item::lane;
 use fleet_core::item::show::entry_lines;
 use fleet_core::item::{
-    control_token, Change, Git, Project, Stop, CHECK_READ, ITEM_ENTRY, TRUNK, TRUNK_BRANCH,
+    control_token, Change, Git, Project, StatusLine, Stop, CHECK_READ, ITEM_ENTRY, TRUNK,
+    TRUNK_BRANCH,
 };
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::seat::identity::{Directory, Kind, SeatId, SeatRef};
@@ -86,8 +87,8 @@ struct StubGit {
     /// different moments — the tree gate, the store's own changes after the
     /// export, and the tree after the push — and an arm that answered the same
     /// thing to all three could not tell the three apart.
-    statuses: Mutex<std::collections::VecDeque<Vec<String>>>,
-    status: Vec<String>,
+    statuses: Mutex<std::collections::VecDeque<Vec<StatusLine>>>,
+    status: Vec<StatusLine>,
     staged: Vec<String>,
     delivered: Vec<String>,
     squash: Mutex<Option<Squashed>>,
@@ -138,7 +139,7 @@ impl StubGit {
             linked: true,
             // The tree gate sees a clean tree; the read after the export sees
             // the one file the export rewrote, in a project that versions it.
-            statuses: Mutex::new([Vec::new(), vec![format!(" M {file}")]].into()),
+            statuses: Mutex::new([Vec::new(), vec![st(" M", file)]].into()),
             status: Vec::new(),
             staged: vec![file.to_string(), FILE.to_string()],
             delivered: vec![FILE.to_string()],
@@ -220,7 +221,7 @@ impl Git for StubGit {
         Ok(self.staged.clone())
     }
 
-    fn status(&self) -> Result<Vec<String>, String> {
+    fn status(&self) -> Result<Vec<StatusLine>, String> {
         self.record("status");
         Ok(self
             .statuses
@@ -1819,8 +1820,8 @@ fn a_dirty_board_does_not_wedge_the_gate_or_the_re_run() {
     // The export is already modified when the landing starts, which is what a
     // re-run after any refusal at (e) or later looks like.
     *git.statuses.lock().expect("not poisoned") = [
-        vec![" M .store/export.jsonl".to_string()],
-        vec![" M .store/export.jsonl".to_string()],
+        vec![st(" M", ".store/export.jsonl")],
+        vec![st(" M", ".store/export.jsonl")],
     ]
     .into();
 
@@ -1835,7 +1836,7 @@ fn a_dirty_board_does_not_wedge_the_gate_or_the_re_run() {
         Some(("ACCEPTED", SHA)),
     );
     let git = StubGit::clean();
-    *git.statuses.lock().expect("not poisoned") = [vec![" M a/loose.rs".to_string()]].into();
+    *git.statuses.lock().expect("not poisoned") = [vec![st(" M", "a/loose.rs")]].into();
     let ran = run(scratch, graph, &git, &other, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert!(ran.why().contains("a/loose.rs"), "{}", ran.why());
@@ -1865,7 +1866,7 @@ fn the_tree_gate_exempts_the_export_alone_and_refuses_the_rest_of_the_store() {
         Some(("ACCEPTED", SHA)),
     );
     let git = StubGit::clean();
-    *git.statuses.lock().expect("not poisoned") = [vec![" M .store/hooks/x".to_string()]].into();
+    *git.statuses.lock().expect("not poisoned") = [vec![st(" M", ".store/hooks/x")]].into();
 
     let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}\n{}", ran.why(), ran.out);
@@ -1893,7 +1894,7 @@ fn the_tree_gate_exempts_the_export_alone_and_refuses_the_rest_of_the_store() {
     // TOO NARROW, admitted: the export in both spellings the porcelain uses —
     // by name where the store is tracked, and as the whole directory where it
     // is untracked but unignored.
-    for spelling in [" M .store/export.jsonl", "?? .store/"] {
+    for spelling in [st(" M", ".store/export.jsonl"), st("??", ".store/")] {
         let item = an_item(
             graph,
             &format!("an item landed over `{spelling}`"),
@@ -1901,8 +1902,8 @@ fn the_tree_gate_exempts_the_export_alone_and_refuses_the_rest_of_the_store() {
         );
         let git = StubGit::clean();
         *git.statuses.lock().expect("not poisoned") = [
-            vec![spelling.to_string()],
-            vec![" M .store/export.jsonl".to_string()],
+            vec![spelling.clone()],
+            vec![st(" M", ".store/export.jsonl")],
         ]
         .into();
         let ran = run(scratch, graph, &git, &item, SHA);
@@ -1936,7 +1937,7 @@ fn the_store_directory_the_adapter_names_is_the_one_the_gates_exempt() {
         Some(("ACCEPTED", SHA)),
     );
     let git = StubGit::clean();
-    *git.statuses.lock().expect("not poisoned") = [vec![" M .tracker/x".to_string()]].into();
+    *git.statuses.lock().expect("not poisoned") = [vec![st(" M", ".tracker/x")]].into();
     let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}\n{}", ran.why(), ran.out);
     assert!(
@@ -1955,7 +1956,7 @@ fn the_store_directory_the_adapter_names_is_the_one_the_gates_exempt() {
         Some(("ACCEPTED", SHA)),
     );
     let git = StubGit::clean();
-    *git.statuses.lock().expect("not poisoned") = [vec!["?? .tracker/".to_string()]].into();
+    *git.statuses.lock().expect("not poisoned") = [vec![st("??", ".tracker/")]].into();
     let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}\n{}", ran.why(), ran.out);
     assert!(
@@ -1994,11 +1995,8 @@ fn the_store_directory_the_adapter_names_is_the_one_the_gates_exempt() {
         Some(("ACCEPTED", SHA)),
     );
     let git = StubGit::clean();
-    *git.statuses.lock().expect("not poisoned") = [
-        vec![format!(" M {EXPORT_FILE}")],
-        vec![format!(" M {EXPORT_FILE}")],
-    ]
-    .into();
+    *git.statuses.lock().expect("not poisoned") =
+        [vec![st(" M", EXPORT_FILE)], vec![st(" M", EXPORT_FILE)]].into();
     let ran = run(scratch, graph, &git, &item, SHA);
     assert!(
         ran.landed.is_ok(),
@@ -2013,22 +2011,26 @@ fn the_store_directory_the_adapter_names_is_the_one_the_gates_exempt() {
     );
 }
 
-/// A path git printed QUOTED reads back to the name a reviewer types, octal and
-/// all: under the default `core.quotePath` a non-ASCII byte reaches the
-/// porcelain only as `\303\251`, so a decoder that undoes the backslash form
-/// alone hands back a name no `--also` value can ever equal.
+/// A path git would QUOTE in the plain porcelain — a space, a non-ASCII byte —
+/// is named raw and admitted by the very value the refusal names: the `-z`
+/// read quotes nothing, so the name a reviewer reads is the name `--also`
+/// equals.
 #[test]
-fn a_quoted_octal_path_decodes_to_the_name_also_admits() {
+fn an_exotic_path_is_named_raw_and_admitted_by_the_same_value() {
     let scratch = &store();
     let graph = &scratch.store;
-    let quoted = " M \"a/caf\\303\\251.rs\"";
-    let plain = "a/café.rs";
+    let exotic = st(" M", "a/café menu.rs");
+    let plain = "a/café menu.rs";
 
-    // Refused, and the refusal names the DECODED path: a reviewer reads this
+    // Refused, and the refusal names the path RAW: a reviewer reads this
     // line and types what it says into `--also`.
-    let item = an_item(graph, "an item over a quoted path", Some(("ACCEPTED", SHA)));
+    let item = an_item(
+        graph,
+        "an item over an exotic path",
+        Some(("ACCEPTED", SHA)),
+    );
     let git = StubGit::clean();
-    *git.statuses.lock().expect("not poisoned") = [vec![quoted.to_string()]].into();
+    *git.statuses.lock().expect("not poisoned") = [vec![exotic.clone()]].into();
     let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert!(
@@ -2037,10 +2039,10 @@ fn a_quoted_octal_path_decodes_to_the_name_also_admits() {
         ran.why()
     );
 
-    // And admitted by exactly that value, which is the half the decoding is for.
+    // And admitted by exactly that value, which is the half a raw read is for.
     let item = an_item(
         graph,
-        "an item admitting a quoted path",
+        "an item admitting an exotic path",
         Some(("ACCEPTED", SHA)),
     );
     std::fs::create_dir_all(scratch.root().join("a")).expect("the directory is made");
@@ -2052,11 +2054,8 @@ fn a_quoted_octal_path_decodes_to_the_name_also_admits() {
         FILE.to_string(),
         plain.to_string(),
     ];
-    *git.statuses.lock().expect("not poisoned") = [
-        vec![quoted.to_string()],
-        vec![" M .store/export.jsonl".to_string()],
-    ]
-    .into();
+    *git.statuses.lock().expect("not poisoned") =
+        [vec![exotic], vec![st(" M", ".store/export.jsonl")]].into();
     let ran = run_with(scratch, graph, &git, &item, SHA, &[plain.to_string()], None);
     assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
 }
@@ -2264,8 +2263,7 @@ fn an_untracked_store_stages_its_export_and_not_the_database() {
     let git = StubGit::clean();
     // An untracked store answers with the DIRECTORY, which is the shape that
     // would have swept the database in.
-    *git.statuses.lock().expect("not poisoned") =
-        [Vec::new(), vec!["?? .store/".to_string()]].into();
+    *git.statuses.lock().expect("not poisoned") = [Vec::new(), vec![st("??", ".store/")]].into();
 
     let ran = run(scratch, graph, &git, &item, SHA);
     assert!(ran.landed.is_ok(), "{}\n{}", ran.why(), ran.out);
@@ -2717,7 +2715,7 @@ fn every_refusal_before_the_push_leaves_the_item_untouched() {
 
     // A working-tree change nothing admitted, seen by the FIRST status read.
     let git = StubGit::clean();
-    *git.statuses.lock().expect("not poisoned") = [vec!["?? forgotten.txt".to_string()]].into();
+    *git.statuses.lock().expect("not poisoned") = [vec![st("??", "forgotten.txt")]].into();
     let ran = run(scratch, graph, &git, &item, SHA);
     assert_eq!(ran.code(), Some(1), "{}", ran.why());
     assert!(ran.why().contains("forgotten.txt"), "{}", ran.why());

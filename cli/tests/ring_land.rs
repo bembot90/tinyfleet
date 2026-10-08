@@ -1159,6 +1159,70 @@ fn an_also_path_rides_the_landing_and_the_branch_is_still_deleted() {
     );
 }
 
+/// A path git would QUOTE in the plain porcelain — a space and a non-ASCII
+/// character — is refused by its own name and admitted by that same name: the
+/// tree gate, the staged set and `--also` all read it raw, so the value a
+/// reviewer types from the refusal is the value every later check compares.
+#[test]
+fn an_exotic_also_path_rides_the_landing() {
+    let rig = Rig::new("exotic");
+    rig.accepted();
+    write(
+        &rig.reviewer.join("café menu.md"),
+        "the reviewer's own line\n",
+    );
+
+    let out = rig.land();
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("`café menu.md` is changed in the working tree"),
+        "the loose path, raw: {}",
+        stderr(&out)
+    );
+
+    let out = rig.run(&[
+        "land",
+        &rig.item,
+        &rig.commit,
+        "--test",
+        SUITE,
+        "--also",
+        "café menu.md",
+        "--reason",
+        "the gate is the owner's",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}\n{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(
+        stdout(&out).contains("6. work branch      SAFE"),
+        "an admitted path is not unlanded work:\n{}",
+        stdout(&out)
+    );
+    let landed = rig.in_bare(&["show", "--name-only", "-z", "--format=", "main"]);
+    assert!(
+        landed.split('\0').any(|path| path == "café menu.md"),
+        "the admitted path rode the landing commit: {landed:?}"
+    );
+    let entry = rig
+        .landing(&rig.item)
+        .expect("the item carries a landed entry");
+    assert!(
+        entry["checks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|row| row["evidence"]
+                .as_str()
+                .is_some_and(|evidence| evidence.contains("plus --also café menu.md"))),
+        "the staged-set row names what was admitted: {entry}"
+    );
+}
+
 // ---- the refusals ------------------------------------------------------------
 
 /// A red suite is exit 1 with the row and the log's path printed, and the bare

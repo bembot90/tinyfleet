@@ -5,9 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::branch::{classify, Classification};
 use super::licence::{accepted, licensed, neither};
-use super::porcelain::{
-    fingerprint, full, is_store_export, outside_also, outside_store, porcelain_path, range,
-};
+use super::porcelain::{fingerprint, full, is_store_export, outside_also, outside_store, range};
 use super::rows::Rows;
 use super::suite::{announce, stdin_command, suite_check, Reading, FIRST_READING, NO_READING};
 use super::tree::Tree;
@@ -302,7 +300,7 @@ pub(super) fn the_export(
             let touched = wiring.git.status().map_err(Stop::could_not_tell)?;
             let store_paths: Vec<String> = touched
                 .iter()
-                .map(|line| porcelain_path(line))
+                .map(|line| line.path.clone())
                 .filter(|path| path.starts_with(&spec.dir))
                 .collect();
             // THE EXPORT BY NAME, and never the directory: an
@@ -643,7 +641,14 @@ pub(super) fn the_end_state(
         if after.is_empty() {
             format!("git status is empty in {}", wiring.project.root.display())
         } else {
-            format!("git status: {}", after.join("; "))
+            format!(
+                "git status: {}",
+                after
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )
         },
     );
     Ok(classification)

@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use super::Wiring;
-use crate::item::{Stop, TRUNK_BRANCH};
+use crate::item::{StatusLine, Stop, TRUNK_BRANCH};
 use crate::store::types::ExportSpec;
 
 // ---- the readings -------------------------------------------------------------
@@ -57,14 +57,15 @@ fn is_hex(text: &str) -> bool {
 /// word. A tracked edit to any other file under the store's directory — a hook,
 /// its config — is a seat's work and refuses here like any other.
 pub(super) fn outside_also(
-    status: &[String],
+    status: &[StatusLine],
     also: &[String],
     export: Option<&ExportSpec>,
 ) -> Option<String> {
     status
         .iter()
-        .map(|line| porcelain_path(line))
-        .find(|path| !also.contains(path) && !is_store_export(path, export))
+        .map(|line| &line.path)
+        .find(|&path| !also.contains(path) && !is_store_export(path, export))
+        .cloned()
 }
 
 /// The store paths a landing rewrites itself, in both spellings the porcelain
@@ -73,84 +74,6 @@ pub(super) fn outside_also(
 /// export has neither.
 pub(super) fn is_store_export(path: &str, export: Option<&ExportSpec>) -> bool {
     export.is_some_and(|e| path == e.file || path == e.dir)
-}
-
-/// The path a porcelain line names. A rename prints `old -> new`, and a path
-/// holding a space, a quote or a backslash is printed QUOTED — so a quoted one
-/// is read back to the bytes it names, or a reviewer could never admit it with
-/// `--also` and every landing in that tree would refuse.
-pub(super) fn porcelain_path(line: &str) -> String {
-    let rest = line.get(3..).unwrap_or_default().trim();
-    let named = match rest.rsplit_once(" -> ") {
-        Some((_, new)) => new,
-        None => rest,
-    };
-    unquoted(named)
-}
-
-/// git's own C-style quoting, undone: the surrounding quotes, the named escapes
-/// it writes inside them, and the three-digit OCTAL it writes for every byte
-/// outside printable ASCII. A value that is not quoted is its own answer.
-///
-/// The octal is the half a reviewer needs: under the default `core.quotePath`,
-/// a path holding one non-ASCII character reaches the porcelain as `\303\251`
-/// and nothing else, so a decoder that only undoes `\\x` hands back a name no
-/// `--also` value can ever equal.
-fn unquoted(name: &str) -> String {
-    let Some(inner) = name
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-    else {
-        return name.to_string();
-    };
-    // BYTES AND NOT CHARS: an octal run spells one byte of a multi-byte
-    // character, and only the whole run is text again.
-    let mut out: Vec<u8> = Vec::with_capacity(inner.len());
-    let mut rest = inner.as_bytes();
-    while let Some((&byte, tail)) = rest.split_first() {
-        if byte != b'\\' {
-            out.push(byte);
-            rest = tail;
-            continue;
-        }
-        let Some((&escaped, after)) = tail.split_first() else {
-            rest = tail;
-            continue;
-        };
-        rest = after;
-        match escaped {
-            b'a' => out.push(0x07),
-            b'b' => out.push(0x08),
-            b'f' => out.push(0x0c),
-            b'n' => out.push(b'\n'),
-            b'r' => out.push(b'\r'),
-            b't' => out.push(b'\t'),
-            b'v' => out.push(0x0b),
-            b'0'..=b'7' => match octal(tail) {
-                Some(byte) => {
-                    out.push(byte);
-                    rest = &tail[3..];
-                }
-                None => out.push(escaped),
-            },
-            other => out.push(other),
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// The byte a three-digit octal run spells, or `None` where the run is short,
-/// not octal, or names a value no byte holds.
-fn octal(digits: &[u8]) -> Option<u8> {
-    let run = digits.get(..3)?;
-    if !run.iter().all(|d| (b'0'..=b'7').contains(d)) {
-        return None;
-    }
-    u8::try_from(
-        run.iter()
-            .fold(0u32, |acc, d| acc * 8 + u32::from(d - b'0')),
-    )
-    .ok()
 }
 
 /// A path set with the store's own directory taken out, sorted and deduplicated

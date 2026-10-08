@@ -29,7 +29,8 @@ use fleet_core::item::hold;
 use fleet_core::item::land::{self, LandGit, Landed, Landing, Progress, Pushed, Squashed};
 use fleet_core::item::run as workflow_run;
 use fleet_core::item::{
-    deliver, numstat_line, review, Change, Git, Ring, RingOutcome, Stop, TRUNK,
+    deliver, numstat_line, review, status_entries, Change, Git, Ring, RingOutcome, StatusLine,
+    Stop, TRUNK,
 };
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::{identity_or_mint, roster, IDENTITY};
@@ -1015,6 +1016,16 @@ impl RealGit {
             .map(str::to_string)
             .collect())
     }
+
+    /// One `-z` read: every NUL-ended path, as git holds it.
+    fn names(&self, step: &str, args: &[&str]) -> Result<Vec<String>, String> {
+        Ok(self
+            .run(step, args)?
+            .split('\0')
+            .filter(|field| !field.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
 }
 
 impl Git for RealGit {
@@ -1050,14 +1061,14 @@ impl Git for RealGit {
     }
 
     fn staged(&self) -> Result<Vec<String>, String> {
-        self.lines(
+        self.names(
             "diff --cached --name-only",
-            &["diff", "--cached", "--name-only"],
+            &["diff", "--cached", "--name-only", "-z"],
         )
     }
 
-    fn status(&self) -> Result<Vec<String>, String> {
-        self.lines("status --porcelain", &["status", "--porcelain"])
+    fn status(&self) -> Result<Vec<StatusLine>, String> {
+        status_entries(&self.run("status --porcelain", &["status", "--porcelain", "-z"])?)
     }
 
     /// `git add -A`, which is the one spelling that takes the untracked file
@@ -1128,9 +1139,9 @@ impl LandGit for RealGit {
         if merged.status.success() {
             return Ok(Squashed::Done);
         }
-        let conflicted = self.lines(
+        let conflicted = self.names(
             "diff --diff-filter=U",
-            &["diff", "--name-only", "--diff-filter=U"],
+            &["diff", "--name-only", "-z", "--diff-filter=U"],
         )?;
         let _ = self.attempt(&["merge", "--abort"]);
         let _ = self.attempt(&["reset", "--quiet", "--hard", "HEAD"]);
@@ -1144,9 +1155,9 @@ impl LandGit for RealGit {
     }
 
     fn changed_since_merge_base(&self, base: &str, commit: &str) -> Result<Vec<String>, String> {
-        self.lines(
+        self.names(
             "diff --name-only <base>...<commit>",
-            &["diff", "--name-only", &format!("{base}...{commit}")],
+            &["diff", "--name-only", "-z", &format!("{base}...{commit}")],
         )
     }
 
@@ -1157,9 +1168,9 @@ impl LandGit for RealGit {
         if paths.is_empty() {
             return Ok(Vec::new());
         }
-        let mut args = vec!["diff", "--name-only", from, to, "--"];
+        let mut args = vec!["diff", "--name-only", "-z", from, to, "--"];
         args.extend(paths.iter().map(String::as_str));
-        self.lines("diff --name-only <from> <to> -- <paths>", &args)
+        self.names("diff --name-only <from> <to> -- <paths>", &args)
     }
 
     fn commit_message_file(&self, message: &Path) -> Result<String, String> {
