@@ -579,12 +579,3 @@ fn tail_of(record: &events::Record) -> String {
         None => field("reason").unwrap_or_default(),
     }
 }
-
-// ---- the retired spelling --------------------------------------------------
-
-/// `fleet order …`: the family's name for one release before this one. Usage,
-/// with the one rewrite that helps, and nothing read off the words after it.
-pub fn old_name() -> Exit {
-    eprintln!("fleet order: the family is `fleet routine` now — use `fleet routine list | check | run | history`");
-    Exit::Usage
-}

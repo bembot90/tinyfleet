@@ -153,12 +153,6 @@ woke, rest, handed-off and exited are said under `fleet event`.")]
         verb: agent::Verb,
     },
 
-    // THE OLD SPELLING OF THE FAMILY, kept for one release and refused: a
-    // script still typing `fleet order` reads exit 2 and the one rewrite that
-    // helps, never a sentence about the flag. The words are never read.
-    #[command(hide = true, disable_help_flag = true)]
-    Order(OldWords),
-
     // The item verbs are TOP-LEVEL and take no noun: they are what a person
     // and a seat type most, so they are the shortest to type. Each is still one
     // arm here and one function in the family's own module.
@@ -219,14 +213,6 @@ where the options did not carry it, and is what makes a letter outside them an
 answer rather than a typo. The item is ready again and nothing is dispatched:
 the next flight that lists it is what resumes the work.")]
     Clear(item::ClearArgs),
-
-    // THE OLD SPELLINGS OF THE PAIR, refused: a seat or a script still typing
-    // `fleet ask` or `fleet answer` reads exit 2 and the one rewrite that
-    // helps, never a sentence about a flag. The words are never read.
-    #[command(hide = true, disable_help_flag = true)]
-    Ask(OldWords),
-    #[command(hide = true, disable_help_flag = true)]
-    Answer(OldWords),
 
     /// read a delivery and write the verdict
     #[command(long_about = "\
@@ -394,13 +380,7 @@ its own line and the next part still prints.")]
 }
 
 /// The verbs done TO a seat — the add that lists one, three to a transient one,
-/// the courier to any and the attach that opens any one's session — plus the
-/// four lifecycle words kept as hidden arms.
-///
-/// The four are HIDDEN and not absent: they are what a seat's ritual types, and
-/// a bare "unrecognized subcommand" would leave the person to guess the `event`
-/// spelling. Hidden keeps them off this family's help page, where listing them
-/// would advertise verbs this noun does not answer.
+/// the courier to any and the attach that opens any one's session.
 #[derive(Subcommand)]
 enum SeatVerb {
     /// add a seat to this fleet: a fresh id, its kind, a name if given
@@ -465,45 +445,6 @@ still opened, under a line naming its exit status, because its last screen is
 what says why it ended. --write writes one seat.attached line to the stream
 first, so a keyboard taken over a seat is on the record.")]
     Attach(attach::AttachArgs),
-
-    // THE HELP FLAG IS DISABLED ON ALL FOUR, and the words are taken as a
-    // trailing var-arg: a lifecycle verb is typed with whatever the ritual typed
-    // it with — `--reason x`, or `--help` by a person looking for the page — and
-    // a parser that claimed either for itself would answer with a sentence about
-    // the flag instead of with the one rewrite that helps.
-    #[command(hide = true, disable_help_flag = true)]
-    Woke(SeatWord),
-    #[command(hide = true, disable_help_flag = true)]
-    Rest(SeatWord),
-    #[command(hide = true, disable_help_flag = true, name = "handed-off")]
-    HandedOff(SeatWord),
-    #[command(hide = true, disable_help_flag = true)]
-    Exited(SeatWord),
-}
-
-// Whatever a lifecycle word was given. It is never read: the arm's whole answer
-// is the rewrite that names the `event` spelling. A `///` here would become the
-// struct's about text, which the help-width arm renders even for a hidden verb.
-#[derive(clap::Args)]
-struct SeatWord {
-    #[arg(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        value_name = "WORDS"
-    )]
-    words: Vec<String>,
-}
-
-// Whatever followed the retired family name. Never read, for the same reason:
-// the arm's whole answer is the rewrite that names `routine`.
-#[derive(clap::Args)]
-struct OldWords {
-    #[arg(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        value_name = "WORDS"
-    )]
-    words: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -693,22 +634,11 @@ fn dispatch() -> Result<Exit> {
         Family::Item { verb } => Ok(item_show::command(&verb)),
         Family::Store { verb } => Ok(store::command(&verb)),
         Family::Agent { verb } => Ok(agent::command(&verb)),
-        Family::Order(_) => Ok(routines::old_name()),
         Family::Dispatch(args) => Ok(item::dispatch_command(&args)),
         Family::Brief(args) => Ok(item::brief_command(&args)),
         Family::Deliver(args) => Ok(item::deliver_command(&args)),
         Family::Hold(args) => Ok(item::hold_command(&args)),
         Family::Clear(args) => Ok(item::clear_command(&args)),
-        Family::Ask(_) => Ok(old_verb(
-            "ask",
-            "a question is a hold now",
-            "fleet hold --question <file>",
-        )),
-        Family::Answer(_) => Ok(old_verb(
-            "answer",
-            "an answer is a hold's clearance now",
-            "fleet clear <item> <letter> [--text <text>]",
-        )),
         Family::Review(args) => Ok(item::review_command(&args)),
         Family::Land(args) => Ok(item::land_command(&ui, &args)),
         Family::Run(args) => Ok(item::run_command(&args)),
@@ -802,8 +732,7 @@ fn event_command(verb: &EventVerb) -> Result<Exit> {
     }
 }
 
-// The verbs done to a seat, and the four lifecycle words that are not done to
-// one.
+// The verbs done to a seat.
 fn seat_command(ui: &Ui, verb: &SeatVerb) -> Exit {
     match verb {
         SeatVerb::Add(args) => seat_add::command(args),
@@ -812,38 +741,7 @@ fn seat_command(ui: &Ui, verb: &SeatVerb) -> Exit {
         SeatVerb::Retire(args) => transient::retire_command(args),
         SeatVerb::Nudge(args) => nudge::nudge_command(ui, args),
         SeatVerb::Attach(args) => attach::attach_command(args),
-        SeatVerb::Woke(_) => seat_usage_error("woke"),
-        SeatVerb::Rest(_) => seat_usage_error("rest"),
-        SeatVerb::HandedOff(_) => seat_usage_error("handed-off"),
-        SeatVerb::Exited(_) => seat_usage_error("exited"),
     }
-}
-
-// `seat` is what is done TO a seat and `event` is what a seat SAYS, so the four
-// lifecycle writers answer under `event` alone. The four verbs are named back
-// with their rewrite rather than met by a bare unknown subcommand, because they
-// are the four a seat's ritual types.
-fn seat_usage_error(verb: &str) -> Exit {
-    eprintln!(
-        "fleet seat {verb}: the seat noun is what is done to a seat — say fleet event {verb}"
-    );
-    // The root's usage line and not this family's help: the refusal above is
-    // the whole answer, and the rewrite is the only text a reader of it needs.
-    // `fleet seat --help` is where the family's own page lives.
-    eprint!("{}", Cli::command().render_usage());
-    eprintln!();
-    Exit::Usage
-}
-
-// `ask` and `answer` are `hold` and `clear` now (fleet-6gr, V1). Named back with
-// their rewrite, as the lifecycle words under `seat` are, rather than met by a
-// bare unknown subcommand: they are the two a seat's rules and a person's habit
-// type.
-fn old_verb(verb: &str, why: &str, rewrite: &str) -> Exit {
-    eprintln!("fleet {verb}: {why} — say {rewrite}");
-    eprint!("{}", Cli::command().render_usage());
-    eprintln!();
-    Exit::Usage
 }
 
 // 0 is a valid pack, 1 is a pack with defects or a layering that refuses, and 2

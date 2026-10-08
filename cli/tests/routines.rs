@@ -431,53 +431,6 @@ fn check_takes_the_instant_and_the_last_firing_from_the_caller() {
     assert!(err(&bad).contains("is not a UTC stamp"));
 }
 
-/// The family's old name, for one release: usage, with the rewrite on stderr
-/// as one line, whatever followed it — a script that still types `fleet order`
-/// reads exit 2 and the one line that helps.
-#[test]
-fn the_old_family_name_is_refused_with_the_pointer_to_routine() {
-    let rig = Rig::new("old-name");
-    rig.routine("beat", &ticking("beat.txt"));
-    for args in [
-        vec!["order"],
-        vec!["order", "list"],
-        vec!["order", "run", "beat", "--force"],
-        vec!["order", "--help"],
-    ] {
-        let refused = rig.fleet(&args);
-        assert_eq!(
-            refused.status.code(),
-            Some(2),
-            "{args:?} read {}",
-            err(&refused)
-        );
-        assert_eq!(
-            err(&refused).lines().count(),
-            1,
-            "one line: {}",
-            err(&refused)
-        );
-        assert!(
-            err(&refused).contains("use `fleet routine list | check | run | history`"),
-            "{args:?}: {}",
-            err(&refused)
-        );
-        assert!(out(&refused).is_empty(), "{args:?} printed a row");
-    }
-    assert!(
-        !rig.fleet_root().join("beat.txt").exists(),
-        "the old name never fired anything"
-    );
-    // The control: the same words under the new name are the verb.
-    let listed = rig.fleet(&["routine", "list"]);
-    assert_eq!(listed.status.code(), Some(0), "{}", err(&listed));
-    assert!(
-        out(&listed).starts_with("beat  fleet  cooldown"),
-        "{}",
-        out(&listed)
-    );
-}
-
 // ---- the run action, through the shipped binary ------------------------------
 
 fn executable(path: &Path) {

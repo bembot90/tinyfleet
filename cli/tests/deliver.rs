@@ -575,39 +575,6 @@ fn review_show_reads_the_delivery_the_binary_wrote() {
     assert!(said.contains("D1 the delivery is the seat's"), "{said}");
 }
 
-/// The flag the note went in under is gone, and says where the delivery goes
-/// now: exit 2 naming `--delivery` and the schema, whatever the file holds and
-/// before the project is read, so nothing is committed.
-#[test]
-fn the_old_note_flag_is_usage_naming_the_delivery_flag() {
-    let rig = Rig::new("old-note");
-    let item = rig.an_ordered_item();
-    let note = rig.root.join("n.md");
-    std::fs::write(&note, "DELIVERED <sha> — <seat>\ncommit:  <pending>\n")
-        .expect("the note is written");
-
-    let out = rig.run(&["deliver", "--note", &note.display().to_string()]);
-    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
-    assert!(
-        stderr(&out).contains(
-            "--note is gone: a delivery is a JSON file — fleet deliver --delivery <file>; its \
-             shape is assets/delivery.schema.json, which the brief shows"
-        ),
-        "{}",
-        stderr(&out)
-    );
-    assert_eq!(
-        rig.git(&["rev-parse", "HEAD"]),
-        rig.git(&["rev-parse", "refs/remotes/origin/main"]),
-        "nothing was committed"
-    );
-    assert_eq!(
-        rig.item_json(&item)["assignee"],
-        serde_json::json!(rig.seat_id()),
-        "and the item is still the seat's"
-    );
-}
-
 /// `review --land` through the same binary: the accept on the record, as the
 /// reviewed entry `fleet item show` reads and `--json` names by its id, and the
 /// one signal on the stream naming it.

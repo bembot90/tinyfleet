@@ -16,7 +16,6 @@ use std::time::Duration;
 use fleet_controller::adapter;
 use fleet_controller::effect::{TurnTarget, Typed};
 use fleet_controller::{clock, config, effect, platform, policy as controller, sessions};
-use fleet_core::input::{DELIVERY_SCHEMA, QUESTION_SCHEMA};
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
 use fleet_core::item::dispatch::{self, Order, Wiring};
 use fleet_core::item::hold;
@@ -91,15 +90,9 @@ pub struct DeliverArgs {
     #[arg(
         long,
         value_name = "FILE",
-        required_unless_present = "note",
         help = "the delivery, a JSON file of the shape\nassets/delivery.schema.json"
     )]
-    pub delivery: Option<PathBuf>,
-    /// The flag a prose note went in under, kept only to be refused naming
-    /// `--delivery`: a seat still typing it reads the rewrite, not clap's
-    /// sentence about an unknown argument.
-    #[arg(long, value_name = "FILE", hide = true)]
-    pub note: Option<PathBuf>,
+    pub delivery: PathBuf,
     /// the item, where the seat holds more than one
     #[arg(long, value_name = "ID")]
     pub item: Option<String>,
@@ -122,14 +115,9 @@ pub struct HoldArgs {
     #[arg(
         long,
         value_name = "FILE",
-        required_unless_present = "note",
         help = "the question, a JSON file of the shape\nassets/question.schema.json"
     )]
-    pub question: Option<PathBuf>,
-    /// The flag a prose question went in under, kept only to be refused
-    /// naming `--question`, as `deliver`'s is.
-    #[arg(long, value_name = "FILE", hide = true)]
-    pub note: Option<PathBuf>,
+    pub question: PathBuf,
     /// the item, where the seat holds more than one
     #[arg(long, value_name = "ID")]
     pub item: Option<String>,
@@ -478,14 +466,6 @@ pub fn clear_command(args: &ClearArgs) -> Exit {
 }
 
 fn run_hold(parsed: &HoldArgs, out: &mut dyn Write) -> Result<hold::Held, Stop> {
-    // THE OLD FLAG FIRST, before the project is read, as `deliver` refuses its
-    // own: whatever the file holds, the rewrite is the answer.
-    let (None, Some(question)) = (&parsed.note, &parsed.question) else {
-        return Err(Stop::usage(format!(
-            "--note is gone: a question is a JSON file — fleet hold --question <file>; its \
-             shape is {QUESTION_SCHEMA}, which the brief shows"
-        )));
-    };
     let here = resolve_at(parsed.packs_dir.clone())?;
     let by = acting("hold", parsed.by.as_deref(), &here)?;
     let store = open_store(&here)?;
@@ -502,7 +482,7 @@ fn run_hold(parsed: &HoldArgs, out: &mut dyn Write) -> Result<hold::Held, Stop> 
         &hold::Question {
             item: parsed.item.as_deref(),
             by: &by,
-            question,
+            question: &parsed.question,
             at: &stamp,
         },
         &hold::Wiring {
@@ -576,14 +556,6 @@ fn run_deliver(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<deliver::Delivered, Stop> {
-    // THE OLD FLAG FIRST, before the project is read: whatever the file holds
-    // and wherever this runs, the rewrite is the answer.
-    let (None, Some(delivery)) = (&parsed.note, &parsed.delivery) else {
-        return Err(Stop::usage(format!(
-            "--note is gone: a delivery is a JSON file — fleet deliver --delivery <file>; its \
-             shape is {DELIVERY_SCHEMA}, which the brief shows"
-        )));
-    };
     let here = resolve_at(parsed.packs_dir.clone())?;
     let by = acting("deliver", parsed.by.as_deref(), &here)?;
     let store = open_store(&here)?;
@@ -605,7 +577,7 @@ fn run_deliver(
         &deliver::Delivery {
             item: parsed.item.as_deref(),
             by: &by,
-            delivery,
+            delivery: &parsed.delivery,
             at: &stamp,
         },
         &deliver::Wiring {

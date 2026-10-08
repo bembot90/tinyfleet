@@ -1093,28 +1093,12 @@ fn a_declaration_beside_a_fleet_toml_resolves_standalone() {
     );
 }
 
-/// The four lifecycle words under `seat` still answer with the `event`
-/// spelling, at the usage status.
+/// `seat --help` lists exactly the verbs the noun answers, and
+/// `seat spawn --help` is a page.
 #[test]
-fn the_four_lifecycle_words_under_seat_still_name_the_event_spelling() {
+fn the_seat_family_lists_exactly_the_verbs_it_answers() {
     let rig = Rig::new("lifecycle", true);
-    for verb in ["woke", "rest", "handed-off", "exited"] {
-        let out = rig.run(&["seat", verb, "a-seat"]);
-        assert_eq!(
-            out.status.code(),
-            Some(2),
-            "`seat {verb}`: {}",
-            stderr(&out)
-        );
-        assert!(
-            stderr(&out).contains(&format!("say fleet event {verb}")),
-            "`seat {verb}` names the rewrite: {}",
-            stderr(&out)
-        );
-    }
-
-    // The control: the verbs this noun DOES answer are not met by that line —
-    // `seat spawn --help` is a page, not a rewrite.
+    // The verbs this noun answers are pages: `seat spawn --help` is one.
     let out = rig.run(&["seat", "spawn", "--help"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert!(stdout(&out).contains("--first-turn"), "{}", stdout(&out));
@@ -1141,7 +1125,7 @@ fn the_four_lifecycle_words_under_seat_still_name_the_event_spelling() {
             "nudge".to_string(),
             "attach".to_string()
         ],
-        "`seat --help` lists the verbs it answers and the four rewrites stay hidden: {page}"
+        "`seat --help` lists the verbs it answers: {page}"
     );
 }
 
