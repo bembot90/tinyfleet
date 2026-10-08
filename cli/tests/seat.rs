@@ -1781,6 +1781,104 @@ fn a_retire_keeps_a_branch_whose_item_carries_no_landing() {
     assert!(listed.contains(WORK), "and the branch stands: {listed}");
 }
 
+// ---- the order a verb is wired in -------------------------------------------
+
+/// The tmux binary as a RELATIVE path: a value the host refuses to resolve,
+/// whatever directory the verb runs in.
+const RELATIVE_TMUX: &str = "tmux";
+
+/// The spawn checks its host SECOND, right after the agent opens and before
+/// anything is claimed: a host that does not resolve refuses the spawn with
+/// the host's own sentence, exit 3, and leaves no worktree and no seat-list
+/// row behind.
+#[test]
+fn a_spawn_whose_host_does_not_resolve_refuses_before_anything_is_claimed() {
+    let rig = Rig::new("spawn-relative-tmux", true);
+
+    let out = rig.run_at(
+        &[
+            "seat",
+            "spawn",
+            "--first-turn",
+            &rig.turn.display().to_string(),
+        ],
+        &[
+            CALM[0],
+            CALM[1],
+            (common::hermetic::TMUX_BIN, RELATIVE_TMUX),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        format!(
+            "fleet seat spawn: {} names `{RELATIVE_TMUX}`, which is not an absolute path\n",
+            common::hermetic::TMUX_BIN
+        ),
+        "the host's own refusal, and nothing before it"
+    );
+    assert_eq!(
+        rig.worktree_entries(),
+        Vec::<String>::new(),
+        "no worktree was made"
+    );
+    assert_eq!(
+        rig.seats()["children"].as_array().map(Vec::len),
+        Some(0),
+        "and no seat-list row was claimed"
+    );
+}
+
+/// The twin: a feed's host never refuses — a host that does not resolve is
+/// one that refuses every call with its cause — so the same variable carries
+/// a feed past the wiring to the feed's own answer, which names the seat.
+#[test]
+fn a_feed_whose_host_does_not_resolve_reaches_the_feeds_own_answer() {
+    let rig = Rig::new("feed-relative-tmux", true);
+    let spawned = rig.run(&[
+        "seat",
+        "spawn",
+        "--first-turn",
+        &rig.turn.display().to_string(),
+    ]);
+    assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
+    let seat = the_seat(&spawned);
+    rig.live(&seat, "idle");
+
+    let next = rig.root.join("the-next-turn.md");
+    std::fs::write(&next, "the next turn\n").expect("the turn is written");
+    let fed = rig.run_at(
+        &[
+            "seat",
+            "feed",
+            &seat,
+            "--first-turn",
+            &next.display().to_string(),
+        ],
+        &[
+            CALM[0],
+            CALM[1],
+            (common::hermetic::TMUX_BIN, RELATIVE_TMUX),
+        ],
+    );
+    assert_eq!(fed.status.code(), Some(3), "{}", stderr(&fed));
+    let said = stderr(&fed);
+    assert!(
+        !said.starts_with(&format!("fleet seat feed: {}", common::hermetic::TMUX_BIN)),
+        "the wiring let the feed through: {said}"
+    );
+    assert!(
+        said.starts_with(&format!(
+            "fleet seat feed: no session can be named for `{seat}`"
+        )),
+        "the feed's own answer, naming the seat: {said}"
+    );
+    assert!(
+        said.contains("which is not an absolute path"),
+        "carrying the host's cause: {said}"
+    );
+}
+
 // ---- the order a retire withdraws -------------------------------------------
 
 /// The record's half of the retire, through the shipped binary and the store
@@ -1885,6 +1983,48 @@ fn a_retire_withdraws_an_item_the_seat_marked_in_progress() {
     assert!(
         ready.iter().any(|row| row.id.as_str() == item),
         "and the store calls it ready: {ready:?}"
+    );
+}
+
+/// The hand retire's leniency: a seat whose own session row names no item was
+/// dispatched nothing here, so a store that will not answer is said on stderr
+/// and the retire goes on — exit 0, and the seat is gone.
+#[test]
+fn a_retire_over_a_board_that_will_not_answer_says_so_and_goes_on() {
+    let rig = Rig::new("retire-unread", true);
+    rig.init_store();
+    let spawned = rig.run(&[
+        "seat",
+        "spawn",
+        "--first-turn",
+        &rig.turn.display().to_string(),
+    ]);
+    assert_eq!(spawned.status.code(), Some(0), "{}", stderr(&spawned));
+    let seat = the_seat(&spawned);
+    rig.live(&seat, "idle");
+
+    // The store stops answering: every read it is asked refuses.
+    let state = rig.project.join(fleet_core::test_support::stub::STATE_FILE);
+    let mut kept: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&state).expect("the store stub's state reads"),
+    )
+    .expect("the store stub's state parses");
+    kept["unreadable"] = serde_json::json!("the store is not on this path");
+    std::fs::write(&state, kept.to_string()).expect("the store stub's state is written");
+
+    let retired = rig.run(&["seat", "retire", &seat]);
+    assert_eq!(retired.status.code(), Some(0), "{}", stderr(&retired));
+    assert!(
+        stderr(&retired).contains(&format!(
+            "the board was not read, so no order was withdrawn from {seat}: "
+        )),
+        "the line says the board went unread: {}",
+        stderr(&retired)
+    );
+    assert_eq!(
+        rig.seats()["children"].as_array().map(Vec::len),
+        Some(0),
+        "and the seat-list row is dropped"
     );
 }
 

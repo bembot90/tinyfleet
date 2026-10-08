@@ -33,15 +33,14 @@ use fleet_core::entry::{Body, HoldReason};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::hold;
 use fleet_core::item::run as workflow_run;
-use fleet_core::seat;
 use fleet_core::seat::actor::{Actor, ActorKind};
-use fleet_core::seat::identity::{identity_or_mint, SeatId};
-use fleet_core::store::{ItemId, Store};
+use fleet_core::seat::identity::identity_or_mint;
+use fleet_core::store::ItemId;
 
 use crate::project::stream::StreamEvents;
-use crate::project::wiring::{effect_agent, machine_of, policy_of, verb_host, Where};
+use crate::project::wiring::{verb_host, Wired};
 use crate::project::{open_store, resolve_from, Here};
-use crate::transient::{self, Refusal};
+use crate::transient::{self, withdrawn_from, Refusal};
 use crate::{clock, config, platform};
 
 /// The environment variable a run's child carries, and every child of that
@@ -795,11 +794,9 @@ impl Runs for Engine {
     fn retire(&self, seat: &str, run: &str) -> Result<(), String> {
         let here = self.project_holding(run)?;
         let by = self.controller()?;
-        let agent = effect_agent(&here, &self.home).map_err(|stop| stop.message)?;
-        let host = verb_host(&self.home);
-        let policy = policy_of(&here).map_err(|stop| stop.message)?;
-        let at = Where::of(&here).map_err(|stop| stop.message)?;
-        let machine = machine_of(&here, &at, agent.as_ref(), host.as_ref(), &policy);
+        let wired = Wired::of(&here, &self.home, |home| Ok(verb_host(home)))
+            .map_err(|stop| stop.message)?;
+        let machine = wired.machine(&here);
         // THE RECORD'S HALF, which the controller reaches no work graph to do
         // for itself. A cleanup retires seats whose items were delivered and
         // seats whose items are still open — a park leaves the order standing —
@@ -816,7 +813,13 @@ impl Runs for Engine {
                     code: unresolved.code(),
                     message: unresolved.to_string(),
                 })?;
-            withdrawn_from(store.as_ref(), &row.id, &here.seats.label(&row.id), &by)
+            withdrawn_from(
+                store.as_ref(),
+                &row.id,
+                &here.seats.label(&row.id),
+                &by,
+                None,
+            )
         };
         // THE PRICED RETIRE and not the bare one: a seat a run spawned costs
         // what any spawned seat costs, and the run is the item it was working
@@ -828,41 +831,18 @@ impl Runs for Engine {
     }
 }
 
-/// Every open ordered item this seat still holds, released, answered by id.
-///
-/// AN UNREADABLE BOARD STOPS THE RETIRE HERE, where the hand verb lets one
-/// through for a seat its session row names no item for. The difference is what
-/// the caller already knows: this pass resolved the run's project BY ASKING
-/// THIS STORE for the run's own record, so a store that will not answer the
-/// question below has stopped answering since — a question, and never a seat
-/// that was given nothing.
-///
-/// `seat` is the seat's id, which is what the order was assigned to, and
-/// `label` how the withdrawal note names it.
-fn withdrawn_from(
-    store: &dyn Store,
-    seat: &SeatId,
-    label: &str,
-    by: &Actor,
-) -> Result<Vec<String>, Refusal> {
-    let held = seat::retire::held(store, seat)?;
-    if held.is_empty() {
-        return Ok(Vec::new());
-    }
-    seat::retire::withdraw(store, &held, seat, label, by)?;
-    Ok(held.into_iter().map(|row| row.id.to_string()).collect())
-}
-
 /// The run seam's own half of the retire, which no end-to-end arm reaches:
-/// [`withdrawn_from`] is private, so a `cfg(test)` module here is the one route
-/// to it from an arm, and the machine, worktree and session table an [`Engine`]
-/// resolves around it are the controller suite's.
+/// [`transient::withdrawn_from`] is called here with no unread name, as the
+/// [`Engine`] calls it, so a `cfg(test)` module here is where its strict path is
+/// pinned, and the machine, worktree and session table an [`Engine`] resolves
+/// around it are the controller suite's.
 #[cfg(test)]
 mod tests {
     use super::*;
     use fleet_core::entry::{Body, OrderWithdrawn, Withdrawal};
     use fleet_core::item::COULD_NOT_TELL;
-    use fleet_core::store::{Item, Order, OrderKind, OrderState, Stamp, Status};
+    use fleet_core::seat::identity::SeatId;
+    use fleet_core::store::{Item, Order, OrderKind, OrderState, Stamp, Status, Store};
     use fleet_core::test_support::FakeStore;
 
     /// The seat's full id, which the order was assigned to and the withdrawal
@@ -912,7 +892,7 @@ mod tests {
     fn the_cleanups_withdrawal_releases_the_parked_item_the_seat_holds() {
         let store = a_parked_item();
 
-        let withdrawn = withdrawn_from(&store, &seat(), LABEL, &controller())
+        let withdrawn = withdrawn_from(&store, &seat(), LABEL, &controller(), None)
             .expect("the board answers and the withdrawal lands");
         assert_eq!(withdrawn, vec![PARKED.to_string()]);
 
@@ -969,7 +949,7 @@ mod tests {
         let store = FakeStore::default();
 
         let withdrawn =
-            withdrawn_from(&store, &seat(), LABEL, &controller()).expect("the board answers");
+            withdrawn_from(&store, &seat(), LABEL, &controller(), None).expect("the board answers");
 
         assert!(withdrawn.is_empty(), "{withdrawn:?}");
         assert!(
@@ -988,7 +968,7 @@ mod tests {
             ..FakeStore::default()
         };
 
-        let refused = withdrawn_from(&store, &seat(), LABEL, &controller())
+        let refused = withdrawn_from(&store, &seat(), LABEL, &controller(), None)
             .expect_err("an unreadable board is a question");
 
         assert_eq!(refused.code, COULD_NOT_TELL);

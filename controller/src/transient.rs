@@ -4,7 +4,8 @@
 //! as three functions over the machine directory, the adapter, the policy, the
 //! seat list and the session table. They are the primitives a pack's `dispatch`
 //! calls: the order note, the brief's content and the assignment belong to the
-//! caller, and NOTHING HERE TOUCHES THE WORK GRAPH.
+//! caller, and NOTHING HERE TOUCHES THE WORK GRAPH but [`withdrawn_from`], the
+//! record's half of a retire, which a caller hands in as its [`Withdrawal`].
 //!
 //! Everything a verb cannot work out for itself is gathered by the caller into
 //! [`Machine`], the way `effect.rs` gathers a seat into its `Target`: the
@@ -20,7 +21,7 @@
 //! the way the drive suite forces the tmux binary with `FLEET_TMUX_BIN` —
 //! because an arm that read the real load average is one whose answer changes
 //! with whatever else the machine is running.
-//! [`crate::project::wiring::machine_of`] is what calls `taken`, for a binary's
+//! [`crate::project::wiring::Wired::machine`] is what calls `taken`, for a binary's
 //! verbs and for the run seam's [`crate::runs::Engine`]: a suite that calls the
 //! primitives in process hands the two numbers in on [`Machine`] instead,
 //! because setting a variable in a process that is forking children races the
@@ -37,7 +38,9 @@ use crate::projection::SeatView;
 use crate::sessions::{self, Table};
 use fleet_core::agent::{self, Activity, Agent, Permissions};
 use fleet_core::process::git;
+use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::{resolve, SeatId, SeatRef};
+use fleet_core::store::Store;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -72,7 +75,7 @@ pub struct Machine<'a> {
     pub worktrees_dir: &'a Path,
     /// The belt's two machine readings, TAKEN BY THE CALLER like everything
     /// else here. [`Readings::taken`] is what
-    /// [`crate::project::wiring::machine_of`] passes; an in-process caller
+    /// [`crate::project::wiring::Wired::machine`] passes; an in-process caller
     /// hands the numbers in, which is what keeps the two overrides —
     /// the process's own environment, shared by every thread — out of a suite
     /// that runs arms in parallel and forks children while they run.
@@ -290,7 +293,7 @@ pub struct Readings {
 
 impl Readings {
     /// The two overrides first, then the platform. This is the ONE function in
-    /// this crate that reads them, and [`crate::project::wiring::machine_of`]
+    /// this crate that reads them, and [`crate::project::wiring::Wired::machine`]
     /// is its only caller: an in-process caller of the primitives builds a
     /// `Readings` instead, because setting a variable in a process that is
     /// forking children races the fork.
@@ -1132,6 +1135,53 @@ pub struct Reclaimed {
 /// withdrawal that cannot be written leaves the name held rather than freed for
 /// the next spawn to take with somebody else's order still on it.
 pub type Withdrawal<'a> = &'a dyn Fn(&str) -> Result<Vec<String>, Refusal>;
+
+/// Every open ordered item this seat still holds, released, answered by id.
+///
+/// AN UNREADABLE BOARD STOPS THE RUN PASS'S RETIRE HERE, where the hand verb
+/// lets one through for a seat its session row names no item for. The
+/// difference is what the caller already knows: this pass resolved the run's
+/// project BY ASKING THIS STORE for the run's own record, so a store that will
+/// not answer the question below has stopped answering since — a question, and
+/// never a seat that was given nothing.
+///
+/// `seat` is the seat's id, which is what the order was assigned to, and
+/// `label` how the withdrawal note names it. `unread_names` is the hand verb's
+/// leniency, kept at its call: `Some(name)` says on stderr that the board went
+/// unread for `name` and goes on with nothing held; `None` is the run pass's
+/// refusal.
+pub fn withdrawn_from(
+    store: &dyn Store,
+    seat: &SeatId,
+    label: &str,
+    by: &Actor,
+    unread_names: Option<&str>,
+) -> Result<Vec<String>, Refusal> {
+    let held = match fleet_core::seat::retire::held(store, seat) {
+        Ok(held) => held,
+        Err(stop) => match unread_names {
+            // A BOARD THAT WILL NOT ANSWER IS A QUESTION wherever this fleet
+            // gave this seat something, and the retire stops on it rather than
+            // freeing the name over silence. A seat whose own session row names
+            // no item was dispatched nothing HERE: a project with no work graph
+            // at all spawns, feeds and retires its seats exactly as it did
+            // before this, and the line says the board went unread.
+            Some(name) => {
+                eprintln!(
+                    "the board was not read, so no order was withdrawn from {name}: {}",
+                    stop.message
+                );
+                Vec::new()
+            }
+            None => return Err(stop),
+        },
+    };
+    if held.is_empty() {
+        return Ok(Vec::new());
+    }
+    fleet_core::seat::retire::withdraw(store, &held, seat, label, by)?;
+    Ok(held.into_iter().map(|row| row.id.to_string()).collect())
+}
 
 /// End a transient seat and verify from OUTSIDE that nothing of it holds RAM or
 /// disk.

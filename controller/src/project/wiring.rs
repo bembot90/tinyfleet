@@ -29,26 +29,50 @@ impl Where {
     }
 }
 
-pub fn machine_of<'a>(
-    here: &'a Here,
-    at: &'a Where,
-    agent: &'a dyn Agent,
-    host: &'a dyn Host,
-    policy: &'a Policy,
-) -> Machine<'a> {
-    Machine {
-        machine_dir: &here.machine_dir,
-        agent,
-        host,
-        policy,
-        project: &here.project.name,
-        primary: &at.primary,
-        worktrees_dir: &at.worktrees,
-        // This is where the two overrides and the platform are read, for a
-        // binary's verbs and the run seam's Engine, which is what keeps a
-        // variable out of a process that forks children while its own threads
-        // are running.
-        readings: transient::Readings::taken(),
+/// What a transient verb acts with, resolved in the one order every caller
+/// checks it in — the agent, then the host, then the policy, then the two
+/// directories — and owned here, so the borrow `Machine` is handed down as
+/// has an owner in the caller's frame.
+pub struct Wired {
+    pub agent: Box<dyn Agent>,
+    pub host: Box<dyn Host>,
+    pub policy: Policy,
+    pub at: Where,
+}
+
+impl Wired {
+    pub fn of(
+        here: &Here,
+        home: &Path,
+        host: impl FnOnce(&Path) -> Result<Box<dyn Host>, Stop>,
+    ) -> Result<Wired, Stop> {
+        let agent = effect_agent(here, home)?;
+        let host = host(home)?;
+        let policy = policy_of(here)?;
+        let at = Where::of(here)?;
+        Ok(Wired {
+            agent,
+            host,
+            policy,
+            at,
+        })
+    }
+
+    pub fn machine<'a>(&'a self, here: &'a Here) -> Machine<'a> {
+        Machine {
+            machine_dir: &here.machine_dir,
+            agent: self.agent.as_ref(),
+            host: self.host.as_ref(),
+            policy: &self.policy,
+            project: &here.project.name,
+            primary: &self.at.primary,
+            worktrees_dir: &self.at.worktrees,
+            // This is where the two overrides and the platform are read, for a
+            // binary's verbs and the run seam's Engine, which is what keeps a
+            // variable out of a process that forks children while its own threads
+            // are running.
+            readings: transient::Readings::taken(),
+        }
     }
 }
 

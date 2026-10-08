@@ -10,11 +10,10 @@
 
 use std::path::{Path, PathBuf};
 
-use fleet_controller::project::wiring::{
-    effect_agent, machine_of, permissions_of, policy_of, seat_named, spawn_host, verb_host, Where,
-};
+use fleet_controller::host::Host;
+use fleet_controller::project::wiring::{permissions_of, seat_named, spawn_host, verb_host, Wired};
 use fleet_controller::project::{open_store, resolve_at, Here};
-use fleet_controller::transient::{self, Machine, Refusal};
+use fleet_controller::transient::{self, withdrawn_from, Machine};
 use fleet_controller::{clock, platform, sessions};
 use fleet_core::entry::Entry;
 
@@ -102,29 +101,19 @@ pub fn spawn_command(args: &SpawnArgs) -> Exit {
         Err(stop) => return refuse_stop(SPAWN, &stop, args.json),
     };
     let home = platform::home_dir();
-    let agent = match effect_agent(&here, &home) {
-        Ok(agent) => agent,
-        Err(stop) => return refuse_stop(SPAWN, &stop, args.json),
-    };
     // A spawn IS a session started on the host, so a host that does not
     // resolve refuses here, before a name is claimed or a worktree made.
-    let host = match spawn_host(&home) {
-        Ok(host) => host,
-        Err(stop) => return refuse_stop(SPAWN, &stop, args.json),
-    };
-    let policy = match policy_of(&here) {
-        Ok(policy) => policy,
-        Err(stop) => return refuse_stop(SPAWN, &stop, args.json),
-    };
-    let at = match Where::of(&here) {
-        Ok(at) => at,
+    let wired = match Wired::of(&here, &home, |home| {
+        spawn_host(home).map(|host| Box::new(host) as Box<dyn Host>)
+    }) {
+        Ok(wired) => wired,
         Err(stop) => return refuse_stop(SPAWN, &stop, args.json),
     };
     let permissions = match permissions_of(&here, args.touched.as_deref()) {
         Ok(permissions) => permissions,
         Err(stop) => return refuse_stop(SPAWN, &stop, args.json),
     };
-    let machine = machine_of(&here, &at, agent.as_ref(), &host, &policy);
+    let machine = wired.machine(&here);
 
     match transient::spawn(
         &machine,
@@ -192,20 +181,11 @@ pub fn feed_command(args: &FeedArgs) -> Exit {
         Err(stop) => return refuse_stop(FEED, &stop, args.json),
     };
     let home = platform::home_dir();
-    let agent = match effect_agent(&here, &home) {
-        Ok(agent) => agent,
+    let wired = match Wired::of(&here, &home, |home| Ok(verb_host(home))) {
+        Ok(wired) => wired,
         Err(stop) => return refuse_stop(FEED, &stop, args.json),
     };
-    let policy = match policy_of(&here) {
-        Ok(policy) => policy,
-        Err(stop) => return refuse_stop(FEED, &stop, args.json),
-    };
-    let at = match Where::of(&here) {
-        Ok(at) => at,
-        Err(stop) => return refuse_stop(FEED, &stop, args.json),
-    };
-    let host = verb_host(&home);
-    let machine = machine_of(&here, &at, agent.as_ref(), host.as_ref(), &policy);
+    let machine = wired.machine(&here);
 
     match transient::feed(&machine, &seat, &first_turn) {
         Ok(fed) => {
@@ -251,20 +231,11 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
     };
     let seat = row.machine_name();
     let home = platform::home_dir();
-    let agent = match effect_agent(&here, &home) {
-        Ok(agent) => agent,
+    let wired = match Wired::of(&here, &home, |home| Ok(verb_host(home))) {
+        Ok(wired) => wired,
         Err(stop) => return refuse_stop(RETIRE, &stop, args.json),
     };
-    let policy = match policy_of(&here) {
-        Ok(policy) => policy,
-        Err(stop) => return refuse_stop(RETIRE, &stop, args.json),
-    };
-    let at = match Where::of(&here) {
-        Ok(at) => at,
-        Err(stop) => return refuse_stop(RETIRE, &stop, args.json),
-    };
-    let host = verb_host(&home);
-    let machine = machine_of(&here, &at, agent.as_ref(), host.as_ref(), &policy);
+    let machine = wired.machine(&here);
 
     // THE ITEM THIS SEAT WAS DISPATCHED, and the timeline that answers for it,
     // read BEFORE the retire drops the row that names it. Neither is a reading
@@ -287,35 +258,14 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
     // THE ROW'S ID, which is what the order was assigned to; the note and the
     // sentences name the seat by its machine name. The retire hands its
     // withdrawal the name it resolved, which is this same row.
-    let withdrawal = |seat: &str| -> Result<Vec<String>, Refusal> {
-        let held = match seat::retire::held(store.as_ref(), &row.id) {
-            Ok(held) => held,
-            // A BOARD THAT WILL NOT ANSWER IS A QUESTION wherever this fleet
-            // gave this seat something, and the retire stops on it rather than
-            // freeing the name over silence. A seat whose own session row names
-            // no item was dispatched nothing HERE: a project with no work graph
-            // at all spawns, feeds and retires its seats exactly as it did
-            // before this, and the line says the board went unread.
-            Err(stop) if dispatched.is_none() => {
-                eprintln!(
-                    "the board was not read, so no order was withdrawn from {seat}: {}",
-                    stop.message
-                );
-                Vec::new()
-            }
-            Err(stop) => return Err(stop),
-        };
-        if held.is_empty() {
-            return Ok(Vec::new());
-        }
-        seat::retire::withdraw(
+    let withdrawal = |seat: &str| {
+        withdrawn_from(
             store.as_ref(),
-            &held,
             &row.id,
             &here.seats.label(&row.id),
             &by,
-        )?;
-        Ok(held.into_iter().map(|row| row.id.to_string()).collect())
+            dispatched.is_none().then_some(seat),
+        )
     };
 
     match transient::retire_with(&machine, &seat, args.dead, &withdrawal) {
@@ -465,27 +415,17 @@ impl Spawner for TransientSpawner<'_> {
             Ok(text) => text,
             Err(stop) => return outcome_of(stop.code, stop.message),
         };
-        let agent = match effect_agent(self.here, &self.home) {
-            Ok(agent) => agent,
-            Err(stop) => return outcome_of(stop.code, stop.message),
-        };
-        let host = match spawn_host(&self.home) {
-            Ok(host) => host,
-            Err(stop) => return outcome_of(stop.code, stop.message),
-        };
-        let policy = match policy_of(self.here) {
-            Ok(policy) => policy,
-            Err(stop) => return outcome_of(stop.code, stop.message),
-        };
-        let at = match Where::of(self.here) {
-            Ok(at) => at,
+        let wired = match Wired::of(self.here, &self.home, |home| {
+            spawn_host(home).map(|host| Box::new(host) as Box<dyn Host>)
+        }) {
+            Ok(wired) => wired,
             Err(stop) => return outcome_of(stop.code, stop.message),
         };
         let permissions = match permissions_of(self.here, ask.touched) {
             Ok(permissions) => permissions,
             Err(stop) => return outcome_of(stop.code, stop.message),
         };
-        let machine = machine_of(self.here, &at, agent.as_ref(), &host, &policy);
+        let machine = wired.machine(self.here);
         match transient::spawn(
             &machine,
             &transient::Spawn {
