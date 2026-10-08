@@ -46,6 +46,11 @@ schemars = { version = "=1.2.2", default-features = false, features = ["derive",
 # regex-lite is the schema validator's, for a schema's `pattern`: one crate
 # with no dependencies of its own.
 regex-lite = "0.1"
+# sha2 is exact-pinned and default-features off: the digest it writes goes
+# onto packs.lock and a flight's record item and is read back weeks later,
+# and the published vectors in core/src/digest.rs are what hold this release
+# of it to the algorithm. `alloc` and `oid` are its defaults; neither is read.
+sha2 = { version = "=0.11.0", default-features = false }
 # float_roundtrip: the step writer parses a workflow's `--result` and stores the
 # value re-serialized, and the default parser can land a decimal literal on the
 # neighbouring double — so a replayed number would differ from the one the
