@@ -380,7 +380,7 @@ pub struct FirstRun<'a> {
     pub policy: &'a Policy,
     /// What the agent declares: the model a rendered seat whose table names
     /// none, under a policy that names none, is written with.
-    pub agent: &'a crate::adapter::Capabilities,
+    pub agent: &'a fleet_core::agent::Capabilities,
     pub service: &'a platform::Service,
 }
 
@@ -772,8 +772,8 @@ pub fn last_tick(machine_dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapter::DEFAULT_AGENT_ADAPTER as AGENT;
     use crate::policy;
+    use fleet_core::agent::DEFAULT_AGENT_ADAPTER as AGENT;
 
     /// The model the example seat row carries in these arms: any adapter's
     /// answer, so none of the vendor's own.

@@ -27,7 +27,7 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 /// The agent `fleet create` installs a pack for by default, and the name the
 /// file it writes gives `[agent] adapter`: fleet-packs'
 /// `adapters/agent/<this>`, carried here by the rig's own checkout.
-const AGENT: &str = fleet_controller::adapter::DEFAULT_AGENT_ADAPTER;
+const AGENT: &str = fleet_core::agent::DEFAULT_AGENT_ADAPTER;
 
 /// The store pack `fleet create` installs by default, and the name the file
 /// it writes gives `[store] adapter`: fleet-packs' `adapters/store/<this>`.

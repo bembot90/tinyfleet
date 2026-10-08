@@ -17,9 +17,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use fleet_controller::adapter;
 use fleet_controller::effect::{TurnTarget, Typed};
 use fleet_controller::{clock, config, effect, platform, policy as controller, sessions};
+use fleet_core::agent;
 use fleet_core::item::brief::{self, Packs, TRANSIENT};
 use fleet_core::item::dispatch::{self, Order, Wiring};
 use fleet_core::item::hold;
@@ -1278,12 +1278,12 @@ impl SeatRing {
         // The agent opened the one way every caller opens it. A ring reads
         // and types and starts nothing, so it is asked whatever the effects
         // gate says: the typed turn is the host's act.
-        let setting = match adapter::Setting::read(&machine.fleet_toml, &self.machine_dir) {
+        let setting = match agent::Setting::read(&machine.fleet_toml, &self.machine_dir) {
             Ok(setting) => setting,
             Err(cause) => return rang_nobody(cause),
         };
         let search_path = platform::child_path(&home);
-        let agent = match adapter::open(&setting.opening(&search_path)) {
+        let agent = match agent::open(&setting.opening(&search_path)) {
             Ok(opened) => opened.agent,
             Err(cause) => return rang_nobody(cause),
         };

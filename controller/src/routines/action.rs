@@ -9,11 +9,11 @@
 
 use super::file::{Item, Routine, Run, When};
 use super::{Outcome, SeatView};
-use crate::adapter::Agent;
 use crate::effect::{self, TurnTarget, Typed};
 use crate::host::{self, Host};
 use crate::observe::RosterState;
 use crate::policy::Policy;
+use fleet_core::agent::Agent;
 use fleet_core::process::{resolve_on_path, run_bounded, run_bounded_to_file};
 use fleet_core::seat::actor::{Actor, ActorKind};
 use fleet_core::store::{self, AdapterSource, Filter, NewItem, Opening, PackDirs, Update};

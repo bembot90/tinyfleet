@@ -41,17 +41,17 @@ use std::time::{Duration, Instant, SystemTime};
 pub use fleet_core::adapter::check::Passed;
 use fleet_core::adapter::check::{self, ensure, Answer};
 use fleet_core::adapter::exec::{self, Exited, Ran, Unrun};
-use fleet_core::agent::types::{self, CONTRACT_VERSION};
+use fleet_core::agent::{
+    types::{self, CONTRACT_VERSION},
+    Activity, Agent, AgentError, AgentExec, Argv, Capabilities, Launch, Permissions, Posture,
+    RefusalReason, Resume, SeatActivity, SeatRef,
+};
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
 use fleet_core::store::types::Stamp;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use super::{
-    Activity, Agent, AgentError, AgentExec, Argv, Capabilities, Launch, Permissions, Posture,
-    RefusalReason, Resume, SeatActivity, SeatRef,
-};
 use crate::host::{self, Host, HostRead, PaneState};
 
 /// What the checks are run against.
@@ -347,7 +347,7 @@ fn a_launch(
         model,
         posture,
         config_dir: Some(config_dir.display().to_string()),
-        env: super::seat_environment(&Actor::seat(seat).to_string()),
+        env: crate::effect::seat_environment(&Actor::seat(seat).to_string()),
         permissions: Permissions::default(),
     }
 }
@@ -991,7 +991,7 @@ fn live_up(ctx: &Ctx) -> Answer {
             &live.session_name(),
             &launched.worktree,
             &argv.argv,
-            &super::pane_environment(&fleets, &argv),
+            &crate::effect::pane_environment(&fleets, &argv),
         )
         .map_err(|cause| format!("the host did not start the session: {cause}"))?;
     live.session.borrow_mut().launched = Some(launched.clone());
@@ -1179,7 +1179,7 @@ fn live_resumed(ctx: &Ctx) -> Answer {
     let argv = answered("resume", ctx.agent.resume(&asked))?;
     conforms("resume", &argv)?;
     runs_something("resume", &argv)?;
-    let fleets = super::seat_environment(&Actor::seat(live.seat).to_string());
+    let fleets = crate::effect::seat_environment(&Actor::seat(live.seat).to_string());
     let name = live.session_name();
     let _ = live.host.kill(&name);
     live.host
@@ -1187,7 +1187,7 @@ fn live_resumed(ctx: &Ctx) -> Answer {
             &name,
             &launched.worktree,
             &argv.argv,
-            &super::pane_environment(&fleets, &argv),
+            &crate::effect::pane_environment(&fleets, &argv),
         )
         .map_err(|cause| format!("the host did not start the resumed session: {cause}"))?;
     let back = watch(ctx, live, &launched, Some(&session_id), UP_WITHIN, |row| {
@@ -1216,8 +1216,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
-    use crate::adapter::Refusal;
     use crate::test_support::{Answers, Declined, StubAgent};
+    use fleet_core::agent::Refusal;
 
     /// A scratch dir of the arm's own, removed when it ends.
     struct Scratch(PathBuf);
@@ -1266,7 +1266,7 @@ mod tests {
         fn capabilities(&self) -> Result<Capabilities, AgentError> {
             self.inner.capabilities()
         }
-        fn version(&self) -> Result<super::super::Version, AgentError> {
+        fn version(&self) -> Result<fleet_core::agent::Version, AgentError> {
             self.inner.version()
         }
         fn launch(&self, launch: &Launch) -> Result<Argv, AgentError> {
@@ -1284,7 +1284,10 @@ mod tests {
                 None => self.inner.read(seats),
             }
         }
-        fn context(&self, seats: &[SeatRef]) -> Result<Vec<super::super::SeatContext>, AgentError> {
+        fn context(
+            &self,
+            seats: &[SeatRef],
+        ) -> Result<Vec<fleet_core::agent::SeatContext>, AgentError> {
             self.inner.context(seats)
         }
     }
@@ -1489,7 +1492,7 @@ mod tests {
             seat: SeatId::mint(),
             activity: Activity::Idle,
             blocked_on: None,
-            evidence: super::super::Evidence::Typed,
+            evidence: fleet_core::agent::Evidence::Typed,
             session_id: None,
             cause: None,
         }]);

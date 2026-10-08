@@ -17,10 +17,6 @@
 //! adapter's own, kept for the stub when fleet-x93d.2 deleted it), so the arms
 //! decide real readings against a host that is not real.
 
-use fleet_controller::adapter::{
-    dir_key, Activity, Agent, AgentError, Argv, BlockedOn, Capabilities, Evidence, Launch, Posture,
-    Resume, SeatActivity, SeatContext, SeatRef, Version,
-};
 use fleet_controller::config::Seat;
 use fleet_controller::events;
 use fleet_controller::host::{session_for, Host, HostRead, Pane, PaneState};
@@ -29,12 +25,16 @@ use fleet_controller::observe::{
 };
 use fleet_controller::platform::{self, Grant, Listing, GRANT_OK, GRANT_PENDING};
 use fleet_controller::projection::{
-    render, AgentView, EffectsView, PolicyView, Projection, SeatRow, SeatView, VERSION,
+    dir_key, render, AgentView, EffectsView, PolicyView, Projection, SeatRow, SeatView, VERSION,
 };
 use fleet_controller::run::{self, Options, Seams, StopHandler};
 use fleet_controller::test_support::reading::readings_from;
 use fleet_controller::test_support::{
     self, Answers, FakeClock, FakeHost, StubAgent, FIRST_PANE_PID,
+};
+use fleet_core::agent::{
+    Activity, Agent, AgentError, Argv, BlockedOn, Capabilities, Evidence, Launch, Posture, Resume,
+    SeatActivity, SeatContext, SeatRef, Version,
 };
 use fleet_core::seat::identity::SeatId;
 use std::cell::RefCell;

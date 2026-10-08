@@ -9,9 +9,10 @@
 //! the two disagree the seat is Unknown with both pieces of evidence rather
 //! than whichever one a rule happened to read first.
 
-use crate::adapter::{self, dir_key, Activity, Agent, BlockedOn, SeatActivity, SeatRef};
 use crate::config::Seat;
 use crate::host::{self, HostRead, Pane, PaneState};
+use crate::projection::dir_key;
+use fleet_core::agent::{self, Activity, Agent, BlockedOn, SeatActivity, SeatRef};
 use fleet_core::seat::identity::SeatId;
 use std::collections::BTreeMap;
 
@@ -75,8 +76,8 @@ pub struct SeatObservation {
     /// answered.
     pub unknown_cause: Option<String>,
     /// What a seat stopped in front of a human waits on, as a person reads it
-    /// ([`adapter::waiting_on`]): the agent's own sentence, carried verbatim
-    /// and never matched on.
+    /// ([`fleet_core::agent::waiting_on`]): the agent's own sentence, carried
+    /// verbatim and never matched on.
     pub waiting_for: Option<String>,
     /// What the seat waits on, typed, where the agent could name it — the one
     /// the logged-out line keys on ([`logged_out_dispatch`]).
@@ -139,7 +140,7 @@ pub fn observe_fleet(
             })
         })
         .collect();
-    let read: BTreeMap<SeatId, SeatActivity> = adapter::readings(agent, &asked)
+    let read: BTreeMap<SeatId, SeatActivity> = agent::readings(agent, &asked)
         .into_iter()
         .map(|reading| (reading.seat, reading))
         .collect();
@@ -255,7 +256,7 @@ fn hosted(
         return SeatObservation {
             state,
             unknown_cause: None,
-            waiting_for: adapter::waiting_on(reading),
+            waiting_for: agent::waiting_on(reading),
             blocked_on: reading.blocked_on,
             activity: Some(reading.activity),
             session_id: reading.session_id.clone(),

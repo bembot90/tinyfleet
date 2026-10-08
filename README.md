@@ -92,7 +92,7 @@ cap; off, nothing opens (`brain/fleet-layers.md` § tiny). The three verbs
 ## The plugin
 
 This directory is not a plugin root, and the binary spells its default
-agent's name once, `adapter::DEFAULT_AGENT_ADAPTER`; `cli/tests/workspace.rs`
+agent's name once, `agent::DEFAULT_AGENT_ADAPTER`; `cli/tests/workspace.rs`
 refuses any other mention of that agent in core, cli, controller and docs
 but prose naming the claude-code pack. The plugin a seat's session loads is its agent pack's: the claude-code pack,
 in the fleet-packs repository, carries fleet's Claude Code plugin — a
@@ -156,7 +156,7 @@ installs its pack from `supported::PINNED_PACKS_SOURCE` at
 `--store none` installs no store pack and prints that line, and
 `--packs-from <dir>` installs from a checkout of fleet-packs instead. It
 installs the agent's pack the same way, `adapters/agent/claude-code` (the
-one agent, `adapter::DEFAULT_AGENT_ADAPTER`), and writes `[agent] adapter`.
+one agent, `agent::DEFAULT_AGENT_ADAPTER`), and writes `[agent] adapter`.
 The bd and claude-code packs import ts, as tiny does, and all three install
 beside the one ts: packs layer in two tiers, every pack nothing imports
 above every pack one of them imports, and only an imported pack is refused

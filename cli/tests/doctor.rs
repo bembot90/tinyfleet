@@ -1028,7 +1028,7 @@ fn a_store_adapter_no_pack_carries_could_not_tell_and_the_scripted_checks_still_
 #[test]
 fn an_agent_adapter_no_pack_carries_could_not_tell_and_the_scripted_checks_still_run() {
     let rig = Rig::new("agent-nowhere", CONFIGURED);
-    let name = fleet_controller::adapter::DEFAULT_AGENT_ADAPTER;
+    let name = fleet_core::agent::DEFAULT_AGENT_ADAPTER;
     rig.set_adapter("agent", &format!("{name:?}"));
 
     let out = rig.doctor(&[]);

@@ -2,10 +2,11 @@
 //!
 //! It observes, decides, acts and publishes: it reads policy and the seat list,
 //! reads each seat's presence off its host and asks the agent adapter — opened
-//! through `adapter::open`, and spoken to in the agent contract's six verbs —
-//! what each live seat is doing and how full its context is, folds the seat
-//! events it finds in its own stream, produces one verdict per seat, carries
-//! them out, and writes the projection, the session table and the event stream.
+//! through `fleet_core::agent::open`, and spoken to in the agent contract's six
+//! verbs — what each live seat is doing and how full its context is, folds the
+//! seat events it finds in its own stream, produces one verdict per seat,
+//! carries them out, and writes the projection, the session table and the event
+//! stream.
 //!
 //! Beside the loop it holds the three TRANSIENT-SEAT PRIMITIVES a pack's
 //! `dispatch` calls, each a one-shot entry to the same machinery and none of

@@ -1,6 +1,7 @@
 //! `fleet-agent-stub`, the fake agent kept in a file answering the agent
 //! contract one process per call, driven the way fleet drives any agent
-//! adapter: through `adapter::exec` and `AgentExec`, never by reading its file.
+//! adapter: through `fleet_core::adapter::exec` and `AgentExec`, never by
+//! reading its file.
 //!
 //! What it measures: that every answer the stub prints reads through the
 //! contract's own reader and passes the contract's schema (`fleet agent
@@ -14,14 +15,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use fleet_controller::adapter::{
-    Agent, AgentError, AgentExec, BlockedOn, Launch, Permissions, Posture, Refusal, RefusalReason,
-    Resume, SeatRef,
-};
 use fleet_controller::test_support::agent_stub::{self, DEAF, SESSION, SLOW, STATE_FILE};
 use fleet_controller::test_support::{self, Answers, Declined, StubAgent};
 use fleet_core::adapter::exec::{self, Exited};
-use fleet_core::agent::types::{self, Activity, CONTRACT_VERSION};
+use fleet_core::agent::{
+    types::{self, Activity, CONTRACT_VERSION},
+    Agent, AgentError, AgentExec, BlockedOn, Launch, Permissions, Posture, Refusal, RefusalReason,
+    Resume, SeatRef,
+};
 use fleet_core::seat::identity::SeatId;
 use serde_json::{json, Value};
 
@@ -613,7 +614,7 @@ struct Session {
 }
 
 impl Session {
-    fn start(argv: &fleet_controller::adapter::Argv, worktree: &Path) -> Session {
+    fn start(argv: &fleet_core::agent::Argv, worktree: &Path) -> Session {
         let child = Command::new(&argv.argv[0])
             .args(&argv.argv[1..])
             .env_clear()
@@ -635,7 +636,7 @@ impl Session {
         Session { child, seat }
     }
 
-    fn read(&self, agent: &AgentExec) -> fleet_controller::adapter::SeatActivity {
+    fn read(&self, agent: &AgentExec) -> fleet_core::agent::SeatActivity {
         agent
             .read(std::slice::from_ref(&self.seat))
             .expect("a read")

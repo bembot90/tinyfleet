@@ -9,14 +9,15 @@
 //! stdout: a caller piping this verb wants the row it produced, and a note
 //! about a lock it took over is not that row.
 
-use fleet_controller::adapter::{self, dir_key, Agent};
 use fleet_controller::policy::Policy;
+use fleet_controller::projection::dir_key;
 use fleet_controller::routines::action::Machine;
 use fleet_controller::routines::file::Routine;
 use fleet_controller::routines::load::Registry;
 use fleet_controller::routines::trigger::Due;
 use fleet_controller::routines::{self, action, load, state, trigger, Outcome, SeatView};
 use fleet_controller::{clock, config, events, observe, platform, policy, sessions};
+use fleet_core::agent::{self, Agent};
 use fleet_core::seat::identity::SeatId;
 use std::path::PathBuf;
 
@@ -115,7 +116,7 @@ struct Fleet {
     policy: Policy,
     /// `[agent] adapter` out of the fleet's own file, and this machine's
     /// packs to resolve it through.
-    setting: adapter::Setting,
+    setting: agent::Setting,
     seats: Vec<config::Seat>,
     registry: Registry,
 }
@@ -154,7 +155,7 @@ fn resolve() -> Result<Fleet, String> {
     // A file that will not read names no adapter, as it names no policy
     // above: the agent's default opens.
     let fleet_toml = fleet_root.join("fleet.toml");
-    let setting = adapter::Setting::of(
+    let setting = agent::Setting::of(
         fleet_core::item::table_at(&fleet_toml),
         &fleet_toml,
         &machine_dir,
@@ -204,7 +205,7 @@ fn seat_views(fleet: &Fleet, needs_roster: bool) -> Vec<SeatView> {
         // seat whose pane is alive, each under its own directory — the same
         // read the loop makes, so a spawned seat is not rung as nobody.
         let host = crate::transient::verb_host(&home).list();
-        match adapter::open(&fleet.setting.opening(&fleet.child_path)) {
+        match agent::open(&fleet.setting.opening(&fleet.child_path)) {
             Ok(opened) => observe::observe_fleet(
                 &opened.agent,
                 &host,
@@ -414,7 +415,7 @@ fn run(name: &str, force: bool, dry_run: bool) -> Exit {
 
     let needs_roster = routine.action.nudge.is_some();
     let seats = seat_views(&fleet, needs_roster);
-    let opened = adapter::open(&fleet.setting.opening(&fleet.child_path));
+    let opened = agent::open(&fleet.setting.opening(&fleet.child_path));
     let effects_off = match &opened {
         Ok(opened) => opened.effects_off.clone(),
         Err(why) => Some(why.clone()),

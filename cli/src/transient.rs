@@ -9,10 +9,10 @@
 
 use std::path::{Path, PathBuf};
 
-use fleet_controller::adapter::{self, Agent, Permissions};
 use fleet_controller::host::{Host, TmuxHost};
 use fleet_controller::transient::{self, Machine, Refusal};
 use fleet_controller::{clock, config, platform, policy as controller, sessions};
+use fleet_core::agent::{self, Agent, Permissions};
 use fleet_core::entry::Entry;
 
 use fleet_core::item::land::{self, Release};
@@ -692,10 +692,10 @@ fn fleet_toml_of(here: &Here) -> Result<PathBuf, Stop> {
 /// The agent, opened the one way every caller opens it — an agent that
 /// cannot issue effects is a refusal here, naming why its own answers say so.
 pub(crate) fn effect_agent(here: &Here, home: &Path) -> Result<Box<dyn Agent>, Stop> {
-    let setting = adapter::Setting::read(&fleet_toml_of(here)?, &here.machine_dir)
+    let setting = agent::Setting::read(&fleet_toml_of(here)?, &here.machine_dir)
         .map_err(Stop::could_not_tell)?;
     let search_path = platform::child_path(home);
-    let opened = adapter::open(&setting.opening(&search_path)).map_err(Stop::could_not_tell)?;
+    let opened = agent::open(&setting.opening(&search_path)).map_err(Stop::could_not_tell)?;
     match opened.effects_off {
         Some(why) => Err(Stop::could_not_tell(why)),
         None => Ok(Box::new(opened.agent)),

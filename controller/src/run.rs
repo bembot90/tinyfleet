@@ -1,6 +1,5 @@
 //! `fleet observe`: the poll loop. It observes, decides, acts and publishes.
 
-use crate::adapter::{self, dir_key, Agent, Capabilities, SeatContext, SeatRef};
 use crate::clock::{self, Clock, SystemClock};
 use crate::config::{self, MachineConfig, Seat};
 use crate::decide::{self, FleetShape, SeatInput, Verdict};
@@ -9,9 +8,11 @@ use crate::events::{self, ActorRef, EventLog};
 use crate::observe::{self, RosterState, SeatObservation};
 use crate::platform;
 use crate::policy::{self, Policy};
+use crate::projection::dir_key;
 use crate::projection::{self, InFlight, PolicyView, Projection, SeatRow, SeatView};
 use crate::routines;
 use crate::sessions::{self, Ended, SeatState, Table};
+use fleet_core::agent::{self, Agent, Capabilities, SeatContext, SeatRef};
 use fleet_core::seat::identity::SeatId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -81,7 +82,8 @@ pub struct Wiring {
 
 impl Wiring {
     /// The agent this fleet runs, opened the one way every caller opens it
-    /// ([`adapter::open`]), with its effects gate read off its own answers.
+    /// ([`fleet_core::agent::open`]), with its effects gate read off its own
+    /// answers.
     pub fn resolve() -> Wiring {
         let home = platform::home_dir();
         let child_path = platform::child_path(&home);
@@ -93,7 +95,7 @@ impl Wiring {
         // through this machine's packs. A file that will not read names no
         // adapter, so the default's is resolved — the start refuses over that
         // file on its own.
-        let setting = adapter::Setting::of(
+        let setting = agent::Setting::of(
             fleet_toml
                 .as_deref()
                 .map(fleet_core::item::table_at)
@@ -117,11 +119,11 @@ impl Wiring {
         // it prints keeps its place in the order a reader meets the startup's
         // lines in.
         let (adapter, agent, agent_off): (String, Box<dyn Agent>, Option<String>) =
-            match adapter::open(&setting.opening(&child_path)) {
+            match agent::open(&setting.opening(&child_path)) {
                 Ok(opened) => (opened.name, Box::new(opened.agent), opened.effects_off),
                 Err(cause) => (
-                    adapter::named(&setting.policy),
-                    Box::new(adapter::Unanswered::new(cause.clone())),
+                    agent::named(&setting.policy),
+                    Box::new(agent::Unanswered::new(cause.clone())),
                     Some(cause),
                 ),
             };
@@ -676,7 +678,7 @@ impl<'a> Observer<'a> {
             })
             .collect();
         let contexts: BTreeMap<SeatId, SeatContext> =
-            adapter::contexts(agent, self.capabilities.context, &asked);
+            agent::contexts(agent, self.capabilities.context, &asked);
 
         let mut observations: Vec<(usize, SeatObservation, Option<u64>)> = Vec::new();
         let mut seats = Vec::with_capacity(self.config.seats.len());
@@ -1458,7 +1460,7 @@ fn target_for<'a>(
         item: recorded.item,
         // The loop's own starts name no command: a named seat's worktree is a
         // person's, and nothing renders rules into it.
-        permissions: adapter::Permissions::default(),
+        permissions: agent::Permissions::default(),
         // The loop's own starts run no load belt: they wake seats the config
         // already carries rather than creating any, so a reading here would be
         // one this call never took.
@@ -1677,8 +1679,8 @@ fn report_skipped(config: &MachineConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapter::Posture;
     use crate::test_support::FakeClock;
+    use fleet_core::agent::Posture;
     use std::time::Instant;
 
     /// The whole point of the seam, measured: the poll interval driven against a

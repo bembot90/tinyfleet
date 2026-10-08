@@ -14,8 +14,8 @@
 
 use std::path::{Path, PathBuf};
 
-use fleet_controller::adapter::{self, Agent};
 use fleet_controller::lifecycle::{self, FirstRun, Mode, ProjectAt};
+use fleet_core::agent::{self, Agent};
 
 use fleet_controller::{clock, config, events, platform, policy as controller};
 use fleet_core::item::Stop;
@@ -74,7 +74,7 @@ const STORE_ROWS: [&str; 2] = [
 /// The name is the one `[agent] adapter` takes, and the pack is fleet-packs'
 /// `adapters/agent/<name>`. There is no answer that installs none (E12): a
 /// fleet whose seats run on nothing is not one a script meant.
-const AGENTS: [&str; 1] = [adapter::DEFAULT_AGENT_ADAPTER];
+const AGENTS: [&str; 1] = [agent::DEFAULT_AGENT_ADAPTER];
 
 /// The question's row for the agent `name`: its pack's name, and where it
 /// comes from.
@@ -486,7 +486,7 @@ fn the_fleets_agent(fleet_file: &Path, named: Option<&str>) -> Result<(), Stop> 
     let fleets = match fleet_core::policy::read("agent", "adapter", &policy)
         .map_err(|unlisted| Stop::could_not_tell(unlisted.to_string()))?
     {
-        None => adapter::DEFAULT_AGENT_ADAPTER.to_string(),
+        None => agent::DEFAULT_AGENT_ADAPTER.to_string(),
         Some(value) => value
             .as_str()
             .map(str::to_string)
@@ -649,10 +649,10 @@ fn install_agent(ui: &Ui, machine_dir: &Path, repo: &str, name: &str) -> Result<
 /// not answer names none, and the example row goes without one rather than
 /// with a guess.
 fn default_model(machine_dir: &Path, fleet_toml: &Path, name: &str) -> Option<String> {
-    let setting = adapter::Setting::naming(name, fleet_toml, machine_dir);
+    let setting = agent::Setting::naming(name, fleet_toml, machine_dir);
     let home = platform::home_dir();
     let search_path = platform::child_path(&home);
-    let opened = adapter::open(&setting.opening(&search_path)).ok()?;
+    let opened = agent::open(&setting.opening(&search_path)).ok()?;
     let model = opened.agent.capabilities().ok()?.default_model;
     (!model.trim().is_empty()).then_some(model)
 }
@@ -937,9 +937,9 @@ fn start(ui: &Ui, args: &StartArgs) -> Result<Exit, Stop> {
     // The agent, opened the one way the controller will open it: an agent that
     // can issue no effect is a controller that would start no seat, so it is
     // refused here, before anything is loaded.
-    let setting = adapter::Setting::read(&fleet.fleet_toml, &fleet.machine_dir)
+    let setting = agent::Setting::read(&fleet.fleet_toml, &fleet.machine_dir)
         .map_err(|why| Stop::could_not_tell(format!("{why} — nothing was loaded")))?;
-    let opened = adapter::open(&setting.opening(&child_path))
+    let opened = agent::open(&setting.opening(&child_path))
         .map_err(|why| Stop::could_not_tell(format!("{why} — nothing was loaded")))?;
     if let Some(why) = &opened.effects_off {
         return Err(Stop::could_not_tell(format!(

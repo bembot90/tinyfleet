@@ -3,11 +3,11 @@
 //! which a dependent's DEV-dependency turns on: under resolver 2 that keeps it
 //! out of the binary a release build produces.
 
-use crate::adapter::{
+use crate::clock::Clock;
+use fleet_core::agent::{
     Agent, AgentError, Argv, Capabilities, Launch, Refusal, Resume, SeatActivity, SeatContext,
     SeatRef, Version,
 };
-use crate::clock::Clock;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -22,16 +22,16 @@ pub mod reading;
 pub fn capabilities() -> Capabilities {
     Capabilities {
         postures: vec![
-            crate::adapter::Posture::Ask,
-            crate::adapter::Posture::Auto,
-            crate::adapter::Posture::Unattended,
+            fleet_core::agent::Posture::Ask,
+            fleet_core::agent::Posture::Auto,
+            fleet_core::agent::Posture::Unattended,
         ],
         default_model: StubAgent::MODEL.to_string(),
         first_turn: StubAgent::FIRST_TURN.to_string(),
         context: true,
         measured: vec![StubAgent::VERSION.to_string()],
         posture_models: std::collections::BTreeMap::from([(
-            crate::adapter::Posture::Auto,
+            fleet_core::agent::Posture::Auto,
             vec![StubAgent::AUTO_CAPABLE.to_string()],
         )]),
     }

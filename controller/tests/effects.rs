@@ -13,7 +13,6 @@
 //! ([`test_support::with_arrivals`]), so every start here is believed unless an
 //! arm says otherwise.
 
-use fleet_controller::adapter::{self as agent_seam, Agent, Launch, Permissions, Posture};
 use fleet_controller::decide::{self, decide, SeatInput, Verdict};
 use fleet_controller::effect::{self, Target};
 use fleet_controller::events::{self, EventLog};
@@ -23,6 +22,7 @@ use fleet_controller::platform;
 use fleet_controller::policy::{self, Policy};
 use fleet_controller::sessions::{self, SessionRow, Table};
 use fleet_controller::test_support::{self, Answers, FakeHost, Sent, StubAgent};
+use fleet_core::agent::{Agent, Launch, Permissions, Posture};
 use fleet_core::seat::identity::SeatId;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -201,7 +201,7 @@ fn a_spec(worktree: &str) -> Launch {
         posture: Posture::Auto,
         first_turn: "/wake s1".to_string(),
         config_dir: None,
-        env: agent_seam::seat_environment(&format!("seat:{S1}")),
+        env: fleet_controller::effect::seat_environment(&format!("seat:{S1}")),
         permissions: Permissions::default(),
     }
 }

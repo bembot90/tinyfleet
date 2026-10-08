@@ -470,7 +470,7 @@ fn table_row(
         worktree: worktree.display().to_string(),
         name: name.to_string(),
         model: "a-model".to_string(),
-        posture: fleet_controller::adapter::Posture::Auto.into(),
+        posture: fleet_core::agent::Posture::Auto.into(),
         first_turn: "/wake".to_string(),
         transient: false,
         config_dir: Some(worktree.join("config").display().to_string()),

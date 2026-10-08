@@ -31,10 +31,9 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use fleet_controller::adapter::conformance::{self, Ctx, Live};
-use fleet_controller::adapter::{self, AdapterSource, Agent, Version};
 use fleet_controller::host::TmuxHost;
 use fleet_controller::platform;
-use fleet_core::agent::schema;
+use fleet_core::agent::{self, schema, AdapterSource, Agent, Version};
 use fleet_core::pack::AdapterKind;
 use fleet_core::policy::Value;
 
@@ -194,15 +193,15 @@ fn check(
     // setting, which is the default name.
     let machine_dir = platform::machine_dir();
     let mut setting = match item::resolve_at(None) {
-        Ok(here) => match adapter::Setting::read(&here.policy_file, &here.machine_dir) {
-            Ok(setting) => adapter::Setting {
+        Ok(here) => match agent::Setting::read(&here.policy_file, &here.machine_dir) {
+            Ok(setting) => agent::Setting {
                 packs_dir: here.packs_dir.clone(),
                 defaults_dir: here.defaults_dir.clone(),
                 ..setting
             },
             Err(why) => return said(Exit::CouldNotTell, why),
         },
-        Err(_) => adapter::Setting::of(
+        Err(_) => agent::Setting::of(
             Default::default(),
             &scratch.dir.join("fleet.toml"),
             &machine_dir,
@@ -223,7 +222,7 @@ fn check(
     let search_path = platform::child_path(&home);
     let mut opening = setting.opening(&search_path);
     opening.source = source;
-    let opened = match adapter::open(&opening) {
+    let opened = match agent::open(&opening) {
         Ok(opened) => opened,
         Err(why) => return said(Exit::CouldNotTell, why),
     };

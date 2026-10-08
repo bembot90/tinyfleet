@@ -24,15 +24,16 @@
 //! because setting a variable in a process that is forking children races the
 //! fork.
 
-use crate::adapter::{self, dir_key, Activity, Agent, Permissions};
 use crate::config::{self, Seat};
 use crate::effect::{self, Outcome, Target, Typed};
 use crate::events::{self, ActorRef, EventLog};
 use crate::host::{self, HostRead, PaneState};
 use crate::platform;
 use crate::policy::Policy;
+use crate::projection::dir_key;
 use crate::projection::SeatView;
 use crate::sessions::{self, Table};
+use fleet_core::agent::{self, Activity, Agent, Permissions};
 use fleet_core::process::git;
 use fleet_core::seat::identity::{resolve, SeatId, SeatRef};
 use std::path::{Path, PathBuf};
@@ -356,7 +357,7 @@ impl Belt {
                 (0, Some(format!("the host could not be read: {cause}")))
             }
             HostRead::Readable(panes) => {
-                let asked: Vec<adapter::SeatRef> = seats
+                let asked: Vec<agent::SeatRef> = seats
                     .iter()
                     .filter(|seat| seat.transient)
                     .filter_map(|seat| {
@@ -367,7 +368,7 @@ impl Belt {
                         let row = recorded
                             .as_ref()
                             .and_then(|table| table.newest_for(&seat.id.to_string()));
-                        Some(adapter::SeatRef {
+                        Some(agent::SeatRef {
                             seat: seat.id,
                             session_id: row.and_then(|row| row.session_id.clone()),
                             pid: pane.pid,
@@ -377,7 +378,7 @@ impl Belt {
                         })
                     })
                     .collect();
-                let read = adapter::readings(machine.agent, &asked);
+                let read = agent::readings(machine.agent, &asked);
                 let unreadable = read
                     .iter()
                     .find(|reading| {
@@ -988,7 +989,7 @@ pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refu
             Activity::Busy.word()
         )));
     }
-    if let Some(cause) = adapter::waiting_on(&live.reading) {
+    if let Some(cause) = agent::waiting_on(&live.reading) {
         return Err(Refusal::refused(format!(
             "`{seat}` is stopped in front of a person — blocked on {cause} — and nothing is \
              typed at a dialog"
@@ -1196,9 +1197,9 @@ pub fn retire_with(
     let listed = match live.zip(pid) {
         None => None,
         Some((pane, pid)) => {
-            let reading = adapter::readings(
+            let reading = agent::readings(
                 machine.agent,
-                &[adapter::SeatRef {
+                &[agent::SeatRef {
                     seat: row.id,
                     session_id: None,
                     pid: Some(pid),
@@ -1490,10 +1491,10 @@ pub fn priced_with(
         .capabilities()
         .is_ok_and(|capabilities| capabilities.context);
     let context = session_id.as_ref().and_then(|session| {
-        adapter::contexts(
+        agent::contexts(
             machine.agent,
             declared,
-            &[adapter::SeatRef {
+            &[agent::SeatRef {
                 seat: row.id,
                 session_id: Some(session.clone()),
                 pid: None,

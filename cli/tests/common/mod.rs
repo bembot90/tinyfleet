@@ -115,7 +115,7 @@ pub fn stub_agent(fleet_root: &Path) -> PathBuf {
 /// - the store pack `adapters/store/<store::DEFAULT_ADAPTER>`, whose adapter is
 ///   a shell stub that answers `capabilities` with the prefix `zz` and nothing
 ///   else;
-/// - the agent pack `adapters/agent/<adapter::DEFAULT_AGENT_ADAPTER>`, whose
+/// - the agent pack `adapters/agent/<agent::DEFAULT_AGENT_ADAPTER>`, whose
 ///   entry is a SYMLINK to this crate's example `fleet-agent-stub`, for the
 ///   reason [`stub_tmux`]'s is: a script written a moment ago can wait on this
 ///   platform's first-exec assessment past the agent's own bound. It answers
@@ -129,7 +129,7 @@ pub fn packs_checkout(root: &Path) -> String {
         return repo.display().to_string();
     }
     let store_name = fleet_core::store::DEFAULT_ADAPTER;
-    let agent_name = fleet_controller::adapter::DEFAULT_AGENT_ADAPTER;
+    let agent_name = fleet_core::agent::DEFAULT_AGENT_ADAPTER;
     let store = format!("adapters/store/{store_name}");
     let agent = format!("adapters/agent/{agent_name}");
     let store_entry = repo.join(format!("{store}/adapters/store/{store_name}/main.sh"));

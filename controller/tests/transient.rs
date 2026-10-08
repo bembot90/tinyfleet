@@ -22,10 +22,6 @@
 //! states the two readings it is judged against. The overrides' own wiring is
 //! measured in `cli/tests/seat.rs`, which sets them on the CHILD it drives.
 
-use fleet_controller::adapter::{
-    Activity, Agent, AgentError, Argv, Capabilities, Launch, Permissions, Posture, Resume,
-    SeatActivity, SeatContext, SeatRef, Version,
-};
 use fleet_controller::config;
 use fleet_controller::events;
 use fleet_controller::host::{Host, HostRead};
@@ -34,6 +30,10 @@ use fleet_controller::policy::{self, Policy};
 use fleet_controller::sessions;
 use fleet_controller::test_support::{self, reading, FakeHost, StubAgent};
 use fleet_controller::transient::{self, Machine, Readings, Refusal, Spawn};
+use fleet_core::agent::{
+    Activity, Agent, AgentError, Argv, Capabilities, Launch, Permissions, Posture, Resume,
+    SeatActivity, SeatContext, SeatRef, Version,
+};
 use fleet_core::seat::identity::SeatId;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};

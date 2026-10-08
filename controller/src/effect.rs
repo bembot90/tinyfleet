@@ -8,16 +8,17 @@
 //! is to dispatch nothing: it is published as its own outcome, and its line and
 //! its event are written once, at the transition into the hold.
 
-use crate::adapter::{
-    self, Activity, Agent, Launch, Permissions, Posture, Resume, SeatActivity, SeatRef,
-};
 use crate::events::{self, ActorRef, EventLog};
 use crate::host::{self, Host, HostRead, PaneState};
 use crate::policy::Policy;
 use crate::sessions::{SessionRow, Table};
+use fleet_core::agent::{
+    self, Activity, Agent, Argv, Launch, Permissions, Posture, Resume, SeatActivity, SeatRef,
+};
 use fleet_core::seat::actor::Actor;
 use fleet_core::seat::identity::SeatId;
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// What an effect DID, for the projection's row. Never a liveness claim: a
@@ -317,7 +318,7 @@ pub fn watch_start(agent: &dyn Agent, host: &dyn Host, watch: &Watch) -> Watched
                                 worktree: watch.worktree.to_string(),
                                 screen: None,
                             };
-                            let reading = adapter::readings(agent, &[asked]).remove(0);
+                            let reading = agent::readings(agent, &[asked]).remove(0);
                             let up = matches!(
                                 reading.activity,
                                 Activity::Idle | Activity::Busy | Activity::Blocked
@@ -405,6 +406,68 @@ pub fn start_once(
     }
 }
 
+// ---- what fleet sets for a seat's session -----------------------------------
+
+/// The variable the plugin's shim runs its binary from, which every seat's
+/// session is handed. Spelled here and not taken from the item layer's own
+/// constant, because this crate names nothing of the project around it.
+pub const FLEET_BIN_VAR: &str = "FLEET_BIN";
+
+/// The variable a started session's verbs read their actor from, set to the
+/// seat's own `seat:<id>`.
+pub const FLEET_ACTOR_VAR: &str = "FLEET_ACTOR";
+
+/// This process's own executable, as the absolute path the shim requires.
+///
+/// Whatever the operating system answers, and nothing when it answers nothing
+/// or something relative: the shim refuses a relative seam, so handing one over
+/// would block every Bash command of the session it reached rather than let the
+/// shim look under its own root.
+pub fn own_executable() -> Option<PathBuf> {
+    std::env::current_exe().ok().filter(|exe| exe.is_absolute())
+}
+
+/// The variables fleet sets for a seat's session, whatever agent runs in it
+/// (D1, D7): the constructed `PATH`, the four a shell needs
+/// ([`crate::platform::PASSED_THROUGH`]), this process's own
+/// executable as `FLEET_BIN`, and WHO THE SESSION ACTS AS — `actor`, so its own
+/// bare verbs are the seat's.
+///
+/// NOTHING IS INHERITED (lessons claude-code D1). A service-launched process
+/// carries a minimal `PATH`, and a session that inherits it hands the collapsed
+/// search path to every tool call it makes, long after the start that caused
+/// it; so the `PATH` is the platform's, built off the home, and the process's
+/// own contributes nothing. What an agent's adapter adds for its own agent it
+/// answers in its [`Argv`]'s environment, and core sets both, exactly.
+pub fn seat_environment(actor: &str) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    env.insert(
+        "PATH".to_string(),
+        crate::platform::child_path(&crate::platform::home_dir()),
+    );
+    for pass in crate::platform::PASSED_THROUGH {
+        if let Ok(value) = std::env::var(pass) {
+            env.insert(pass.to_string(), value);
+        }
+    }
+    if let Some(bin) = own_executable() {
+        env.insert(FLEET_BIN_VAR.to_string(), bin.display().to_string());
+    }
+    env.insert(FLEET_ACTOR_VAR.to_string(), actor.to_string());
+    env
+}
+
+/// The environment a session's pane runs with: fleet's own for the seat, with
+/// the adapter's answered variables over it — the pairs the host is handed,
+/// and nothing of its own.
+pub fn pane_environment(fleet: &BTreeMap<String, String>, argv: &Argv) -> Vec<(String, String)> {
+    let mut env = fleet.clone();
+    for (key, value) in &argv.env {
+        env.insert(key.clone(), value.clone());
+    }
+    env.into_iter().collect()
+}
+
 /// Bring one session up for the seat on the host, and watch it: a fresh start
 /// from [`Agent::launch`], or — where `resumes` names the session a revive
 /// takes back — the resume of that session from [`Agent::resume`].
@@ -412,7 +475,7 @@ pub fn start_once(
 /// Both go the one way. The seat's name is cleared on the host and the adapter
 /// answers what to run, the host runs it as the seat's own session under
 /// fleet's environment for the seat with the adapter's over it
-/// ([`adapter::pane_environment`]), and [`watch_start`] decides whether it came
+/// ([`pane_environment`]), and [`watch_start`] decides whether it came
 /// up — as that session, for a resume.
 fn bring_up(
     agent: &dyn Agent,
@@ -429,7 +492,7 @@ fn bring_up(
     };
     // WHO THE SESSION ACTS AS [ASSUMES D7], among the variables fleet sets for
     // every seat's session: its own bare verbs are the seat's.
-    let fleets = adapter::seat_environment(&Actor::seat(target.seat).to_string());
+    let fleets = seat_environment(&Actor::seat(target.seat).to_string());
     // A start clears the name before the launch writes its seed, so a live
     // session refuses it before anything is written. A resume writes nothing,
     // and is asked for FIRST: one the adapter will not build leaves the dead
@@ -467,7 +530,7 @@ fn bring_up(
             &session,
             Path::new(target.worktree),
             &argv.argv,
-            &adapter::pane_environment(&fleets, &argv),
+            &pane_environment(&fleets, &argv),
         )
         .map_err(|cause| format!("the host did not start the session: {cause}"))
     }) {
@@ -975,7 +1038,7 @@ pub fn seat_row(agent: &dyn Agent, host: &dyn Host, target: &TurnTarget) -> Resu
         worktree: path,
         screen: None,
     };
-    let reading = adapter::readings(agent, std::slice::from_ref(&asked)).remove(0);
+    let reading = agent::readings(agent, std::slice::from_ref(&asked)).remove(0);
     match (&reading.session_id, reading.activity) {
         (Some(_), _) => Ok(Live {
             pid,
@@ -1023,7 +1086,7 @@ pub fn type_turn(
         Ok(live) => live,
         Err(typed) => return typed,
     };
-    if let Some(cause) = adapter::waiting_on(&live.reading) {
+    if let Some(cause) = agent::waiting_on(&live.reading) {
         return Typed::Blocked(cause);
     }
     if let Err(cause) = host.send(&host::session_for(target.seat), text) {
@@ -1040,7 +1103,7 @@ pub fn type_turn(
     let deadline = Instant::now() + bound;
     let mut last = activity_word(&live.reading);
     loop {
-        let reading = adapter::readings(agent, std::slice::from_ref(&asked)).remove(0);
+        let reading = agent::readings(agent, std::slice::from_ref(&asked)).remove(0);
         // A reading that could not be made concludes nothing: the turn may have
         // been taken and the read not, and the bound is what ends the wait.
         if reading.session_id.is_some() || reading.activity != Activity::Unknown {

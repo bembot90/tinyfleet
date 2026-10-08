@@ -60,7 +60,7 @@ impl Rig {
             "create",
             "--embedded",
             "--agent",
-            fleet_controller::adapter::DEFAULT_AGENT_ADAPTER,
+            fleet_core::agent::DEFAULT_AGENT_ADAPTER,
             "--store",
             "none",
             "--packs-from",

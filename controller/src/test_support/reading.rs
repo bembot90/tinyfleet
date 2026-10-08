@@ -15,7 +15,8 @@ use std::time::SystemTime;
 use fleet_core::store::types::Stamp;
 use serde::Deserialize;
 
-use crate::adapter::{dir_key, Activity, BlockedOn, Evidence, SeatActivity, SeatContext, SeatRef};
+use crate::projection::dir_key;
+use fleet_core::agent::{Activity, BlockedOn, Evidence, SeatActivity, SeatContext, SeatRef};
 
 /// One session as a scripted listing reports it. Every field a suite writes
 /// that this does not name is read past.

@@ -10,7 +10,6 @@
 //! a writer that can emit a document its own reader refuses is a shape that
 //! parts in one release.
 
-use crate::adapter::dir_key;
 use crate::config;
 use crate::observe::SeatObservation;
 use fleet_core::seat::identity::{Kind, SeatId, SeatRef};
@@ -79,7 +78,7 @@ pub struct AgentView {
     pub name: Option<String>,
     pub version: Option<String>,
     pub expected: Option<String>,
-    pub postures: Vec<crate::adapter::Posture>,
+    pub postures: Vec<fleet_core::agent::Posture>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -287,6 +286,19 @@ impl SeatRow {
     }
 }
 
+/// A directory path with any trailing separator removed — the one form both
+/// sides of a comparison are put in, so a configured path and a reported one
+/// that differ only there are the same directory. The root is left alone,
+/// because trimming it away leaves nothing to compare.
+pub fn dir_key(path: &str) -> &str {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        path
+    } else {
+        trimmed
+    }
+}
+
 /// The `decision` a row carries before one has been reached.
 pub const UNDECIDED: &str = "pending";
 
@@ -339,7 +351,7 @@ mod tests {
                     unknown_cause: None,
                     waiting_for: None,
                     blocked_on: None,
-                    activity: Some(crate::adapter::Activity::Idle),
+                    activity: Some(fleet_core::agent::Activity::Idle),
                     session_id: Some("a-session".to_string()),
                     project: Some("demo".to_string()),
                     worktree: Some("/wt/builder-1".to_string()),

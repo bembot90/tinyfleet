@@ -36,8 +36,8 @@ use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use fleet_controller::adapter::{self, Agent};
 use fleet_controller::platform;
+use fleet_core::agent::{self, Agent};
 use fleet_core::item::brief::Packs;
 use fleet_core::item::doctor::{self, Checked, Entry, Invocation, Verdict, RUNTIME_VERSION};
 use fleet_core::item::run::{ENV_BIN, ENV_PROJECT};
@@ -220,8 +220,8 @@ fn store_adapter(here: &Here) -> Checked {
 /// a flag to re-measure, and a finding would gate whatever consults the
 /// doctor.
 fn agent_adapter(here: &Here) -> Checked {
-    let setting = match adapter::Setting::read(&here.policy_file, &here.machine_dir) {
-        Ok(setting) => adapter::Setting {
+    let setting = match agent::Setting::read(&here.policy_file, &here.machine_dir) {
+        Ok(setting) => agent::Setting {
             packs_dir: here.packs_dir.clone(),
             defaults_dir: here.defaults_dir.clone(),
             ..setting
@@ -230,7 +230,7 @@ fn agent_adapter(here: &Here) -> Checked {
     };
     let home = platform::home_dir();
     let search_path = platform::child_path(&home);
-    let opened = adapter::open(&setting.opening(&search_path));
+    let opened = agent::open(&setting.opening(&search_path));
     let answers = opened.and_then(|opened| {
         let version = opened.agent.version().map_err(|why| why.to_string())?;
         let declared = opened.agent.declared().map_err(|why| why.to_string())?;

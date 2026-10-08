@@ -280,7 +280,7 @@ impl Rig {
     }
 
     /// Every launch the agent stub was asked for, its whole request.
-    fn launches(&self) -> Vec<fleet_controller::adapter::Launch> {
+    fn launches(&self) -> Vec<fleet_core::agent::Launch> {
         agent_stub::starts(&self.project)
     }
 

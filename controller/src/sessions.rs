@@ -13,8 +13,8 @@
 //! the nudge ledger and the latches. A name is a person's and free to change,
 //! and a table keyed by one forgets a halt the day the seat is renamed.
 
-use crate::adapter::Posture;
 use crate::platform;
+use fleet_core::agent::Posture;
 use fleet_core::seat::identity::SeatRef;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};

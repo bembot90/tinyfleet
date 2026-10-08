@@ -4,7 +4,7 @@
 //! read. A running loop that meets a file it cannot parse keeps last-good and
 //! says so once per change, never once per poll.
 
-use crate::adapter::{Capabilities, Posture};
+use fleet_core::agent::{Capabilities, Posture};
 use serde::Deserialize;
 use std::path::Path;
 

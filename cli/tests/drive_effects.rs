@@ -740,8 +740,8 @@ mod effects {
     /// from the agent stub's exit 1.
     #[test]
     fn a_launch_the_agent_refuses_is_one_crash_naming_the_agents_message() {
-        use fleet_controller::adapter::{Refusal, RefusalReason};
         use fleet_controller::test_support::Declined;
+        use fleet_core::agent::{Refusal, RefusalReason};
 
         let rig = Rig::new("effect-launch-refused");
         rig.write_roster("[]");

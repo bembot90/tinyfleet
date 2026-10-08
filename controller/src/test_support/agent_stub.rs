@@ -1,8 +1,8 @@
 //! The agent contract answered by an executable over [`StubAgent`]:
 //! `fleet-agent-stub <verb>`, the request on stdin and the answer on stdout,
-//! one process per call as [`crate::adapter::AgentExec`] runs one — so every
-//! agent path a suite drives goes through the Exec with no agent installed on
-//! the box and no shell stub standing in for one.
+//! one process per call as [`fleet_core::agent::AgentExec`] runs one — so
+//! every agent path a suite drives goes through the Exec with no agent
+//! installed on the box and no shell stub standing in for one.
 //!
 //! THE FAKE LIVES IN A FILE, [`STATE_FILE`] under the request's root: each call
 //! loads the [`State`] from it, answers the verb from `impl Agent for
@@ -48,12 +48,14 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use fleet_core::agent::types::{Seats, CONTRACT_VERSION};
+use fleet_core::agent::{
+    types::{Seats, CONTRACT_VERSION},
+    Agent, AgentError, Launch, Resume,
+};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Map, Value};
 
 use super::{Answers, Call, StubAgent};
-use crate::adapter::{Agent, AgentError, Launch, Resume};
 
 /// Where a root's fake is kept, relative to it.
 pub const STATE_FILE: &str = ".agent-stub/state.json";
@@ -392,7 +394,11 @@ fn body(response: impl serde::Serialize) -> Value {
 /// [`ROOT_VAR`] in the environment, naming the state the session writes into.
 /// A resume's request names no seat, and its argv none: the session id is its
 /// flag.
-fn own(mut argv: crate::adapter::Argv, seat: Option<&str>, root: &Path) -> crate::adapter::Argv {
+fn own(
+    mut argv: fleet_core::agent::Argv,
+    seat: Option<&str>,
+    root: &Path,
+) -> fleet_core::agent::Argv {
     let program = std::env::current_exe()
         .map(|exe| exe.display().to_string())
         .unwrap_or_else(|_| String::from("fleet-agent-stub"));
