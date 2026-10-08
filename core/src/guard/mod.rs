@@ -189,22 +189,8 @@ pub struct Policy {
     /// The target the bare-id check needs. A check whose target is not
     /// configured refuses nothing.
     pub item_prefix: Option<String>,
-    /// The glob the push-target check matches a push's destination against.
-    pub release_ref_glob: Option<String>,
-    /// The three lists the production-write class reads, one per check. THE LIST
-    /// IS THE WHOLE TARGET SET: this module evidences nothing from a tree and
-    /// derives nothing from a name, so an empty one refuses nothing.
-    pub prod_buckets: Vec<String>,
-    pub prod_projects: Vec<String>,
-    pub prod_apps: Vec<String>,
-    /// The three lists that name a PRODUCT's own production surfaces rather
-    /// than a cloud target: the build-tool goals that deploy, the module
-    /// functions declared as production writes, and the workflow-and-ref pairs
-    /// written `<workflow>:<ref glob>`. Same rule as the three above — the list
-    /// is the whole target set, and an empty one refuses nothing.
-    pub prod_make_goals: Vec<String>,
-    pub prod_dagger_functions: Vec<String>,
-    pub prod_workflow_refs: Vec<String>,
+    /// The project's own `[guards.targets]`, as [`targets`] reads them.
+    pub targets: Targets,
     /// The two readings this module cannot make for itself, because it touches
     /// no filesystem and runs no process: the application the configuration file
     /// beside the command names, and the project the machine is currently
@@ -236,13 +222,7 @@ impl Default for Policy {
             enabled: true,
             cli: Some(crate::store::DEFAULT_ADAPTER.to_string()),
             item_prefix: None,
-            release_ref_glob: None,
-            prod_buckets: Vec::new(),
-            prod_projects: Vec::new(),
-            prod_apps: Vec::new(),
-            prod_make_goals: Vec::new(),
-            prod_dagger_functions: Vec::new(),
-            prod_workflow_refs: Vec::new(),
+            targets: Targets::default(),
             cwd_app: None,
             active_project: None,
         }
@@ -368,10 +348,19 @@ pub fn item_prefix(config: &toml::Table) -> Option<String> {
 /// reads can be read out of this source without running it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Targets {
+    /// The glob the push-target check matches a push's destination against.
     pub release_ref_glob: Option<String>,
+    /// The three lists the production-write class reads, one per check. THE LIST
+    /// IS THE WHOLE TARGET SET: this module evidences nothing from a tree and
+    /// derives nothing from a name, so an empty one refuses nothing.
     pub prod_buckets: Vec<String>,
     pub prod_projects: Vec<String>,
     pub prod_apps: Vec<String>,
+    /// The three lists that name a PRODUCT's own production surfaces rather
+    /// than a cloud target: the build-tool goals that deploy, the module
+    /// functions declared as production writes, and the workflow-and-ref pairs
+    /// written `<workflow>:<ref glob>`. Same rule as the three above — the list
+    /// is the whole target set, and an empty one refuses nothing.
     pub prod_make_goals: Vec<String>,
     pub prod_dagger_functions: Vec<String>,
     pub prod_workflow_refs: Vec<String>,
@@ -394,6 +383,20 @@ pub fn targets(config: &toml::Table) -> Targets {
             "prod_workflow_refs",
             config,
         )),
+    }
+}
+
+/// `[guards].<class>.enabled`, `[project] item_prefix` and `[guards.targets]`
+/// over ONE parse of a file's text; every other field is the default. An
+/// unreadable or unparsable file reads as an empty table, as for
+/// [`enabled_in`].
+pub fn policy_in(class: Class, text: &str) -> Policy {
+    let table = text.parse::<toml::Table>().unwrap_or_default();
+    Policy {
+        enabled: enabled(class, &table),
+        item_prefix: item_prefix(&table),
+        targets: targets(&table),
+        ..Policy::default()
     }
 }
 
@@ -430,13 +433,13 @@ pub fn configured(class: Class, check: &str, policy: &Policy) -> bool {
     match class.target_of(check) {
         None => true,
         Some(ITEM_PREFIX_KEY) => policy.item_prefix.is_some(),
-        Some(RELEASE_REF_GLOB_KEY) => policy.release_ref_glob.is_some(),
-        Some(PROD_BUCKETS_KEY) => !policy.prod_buckets.is_empty(),
-        Some(PROD_PROJECTS_KEY) => !policy.prod_projects.is_empty(),
-        Some(PROD_APPS_KEY) => !policy.prod_apps.is_empty(),
-        Some(PROD_MAKE_GOALS_KEY) => !policy.prod_make_goals.is_empty(),
-        Some(PROD_DAGGER_FUNCTIONS_KEY) => !policy.prod_dagger_functions.is_empty(),
-        Some(PROD_WORKFLOW_REFS_KEY) => !policy.prod_workflow_refs.is_empty(),
+        Some(RELEASE_REF_GLOB_KEY) => policy.targets.release_ref_glob.is_some(),
+        Some(PROD_BUCKETS_KEY) => !policy.targets.prod_buckets.is_empty(),
+        Some(PROD_PROJECTS_KEY) => !policy.targets.prod_projects.is_empty(),
+        Some(PROD_APPS_KEY) => !policy.targets.prod_apps.is_empty(),
+        Some(PROD_MAKE_GOALS_KEY) => !policy.targets.prod_make_goals.is_empty(),
+        Some(PROD_DAGGER_FUNCTIONS_KEY) => !policy.targets.prod_dagger_functions.is_empty(),
+        Some(PROD_WORKFLOW_REFS_KEY) => !policy.targets.prod_workflow_refs.is_empty(),
         Some(_) => false,
     }
 }
@@ -446,14 +449,6 @@ pub fn configured(class: Class, check: &str, policy: &Policy) -> bool {
 /// table: opt-out, never opt-in, and nothing printed.
 pub fn enabled_in(class: Class, text: &str) -> bool {
     enabled(class, &text.parse::<toml::Table>().unwrap_or_default())
-}
-
-pub fn item_prefix_in(text: &str) -> Option<String> {
-    item_prefix(&text.parse::<toml::Table>().unwrap_or_default())
-}
-
-pub fn targets_in(text: &str) -> Targets {
-    targets(&text.parse::<toml::Table>().unwrap_or_default())
 }
 
 /// The application a deployment configuration file names, read off that file's

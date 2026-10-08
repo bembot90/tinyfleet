@@ -11,7 +11,7 @@
 //! one it routes around, so every reason is held to naming the fragment it is
 //! about, the rewrite, and the one variable that licenses that act.
 
-use fleet_core::guard::{self, Class, Policy, Verdict};
+use fleet_core::guard::{self, Class, Policy, Targets, Verdict};
 
 /// (label, command, refused?)
 type Case = (&'static str, &'static str, bool);
@@ -40,13 +40,15 @@ fn policy() -> Policy {
     Policy {
         enabled: true,
         item_prefix: Some(PREFIX.to_string()),
-        release_ref_glob: Some(RELEASE_GLOB.to_string()),
-        prod_buckets: vec![BUCKET.to_string()],
-        prod_projects: vec![PROJECT.to_string()],
-        prod_apps: vec![APP.to_string()],
-        prod_make_goals: vec![MAKE_GOAL.to_string()],
-        prod_dagger_functions: vec![DAGGER_FUNCTION.to_string()],
-        prod_workflow_refs: vec![WORKFLOW_REF.to_string()],
+        targets: Targets {
+            release_ref_glob: Some(RELEASE_GLOB.to_string()),
+            prod_buckets: vec![BUCKET.to_string()],
+            prod_projects: vec![PROJECT.to_string()],
+            prod_apps: vec![APP.to_string()],
+            prod_make_goals: vec![MAKE_GOAL.to_string()],
+            prod_dagger_functions: vec![DAGGER_FUNCTION.to_string()],
+            prod_workflow_refs: vec![WORKFLOW_REF.to_string()],
+        },
         // The two readings only a caller can make are left out of the shared
         // policy on purpose: every table below then measures the flag-named
         // path alone, and the pair gets its own arm with both answers.
@@ -1143,10 +1145,13 @@ fn the_two_readings_the_caller_hands_in_refuse_only_when_what_they_name_is_liste
 #[test]
 fn an_unconfigured_target_refuses_nothing_and_the_reader_says_so() {
     let empty = Policy {
-        release_ref_glob: None,
-        prod_buckets: Vec::new(),
-        prod_projects: Vec::new(),
-        prod_apps: Vec::new(),
+        targets: Targets {
+            release_ref_glob: None,
+            prod_buckets: Vec::new(),
+            prod_projects: Vec::new(),
+            prod_apps: Vec::new(),
+            ..policy().targets
+        },
         ..policy()
     };
     for command in [
@@ -1170,7 +1175,10 @@ fn an_unconfigured_target_refuses_nothing_and_the_reader_says_so() {
     // A glob written and left blank is a key nobody filled in, not a pattern
     // that matches the empty ref.
     let blank = Policy {
-        release_ref_glob: Some(String::new()),
+        targets: Targets {
+            release_ref_glob: Some(String::new()),
+            ..policy().targets
+        },
         ..policy()
     };
     assert_eq!(
@@ -1202,7 +1210,7 @@ fn an_unconfigured_target_refuses_nothing_and_the_reader_says_so() {
     // The targets, off a file's text, through the census.
     let text =
         "[guards.targets]\nrelease_ref_glob = \"refs/heads/*\"\nprod_buckets = [\"a\", \"b\"]\n";
-    let targets = guard::targets_in(text);
+    let targets = guard::policy_in(Class::ProductionWrite, text).targets;
     assert_eq!(targets.release_ref_glob.as_deref(), Some("refs/heads/*"));
     assert_eq!(targets.prod_buckets, vec!["a".to_string(), "b".to_string()]);
     assert!(
@@ -1210,7 +1218,12 @@ fn an_unconfigured_target_refuses_nothing_and_the_reader_says_so() {
         "a key the file omits reads as the empty list"
     );
     assert_eq!(
-        guard::targets_in("[guards.targets]\nprod_apps = \"one\"\n").prod_apps,
+        guard::policy_in(
+            Class::ProductionWrite,
+            "[guards.targets]\nprod_apps = \"one\"\n"
+        )
+        .targets
+        .prod_apps,
         Vec::<String>::new(),
         "a value of the wrong type reads as no target rather than as one"
     );
@@ -1219,6 +1232,52 @@ fn an_unconfigured_target_refuses_nothing_and_the_reader_says_so() {
         Some("the-frontdoor"),
         "the caller's own file is parsed here and opened there"
     );
+}
+
+/// The policy a project's file carries, off ONE parse of its text: the class's
+/// switch, the item prefix and every target, each field written out here as the
+/// value the file says, and the rest the default. A file that does not parse
+/// reads as an empty table, which is the default policy whole.
+#[test]
+fn a_files_policy_is_read_off_one_parse_and_an_unparsable_file_is_the_default() {
+    let text = "[project]\nitem_prefix = \"acme\"\n\n\
+                [guards]\nproduction-write.enabled = false\n\n\
+                [guards.targets]\n\
+                release_ref_glob = \"refs/heads/*release/*\"\n\
+                prod_buckets = [\"live.example.test\"]\n\
+                prod_projects = [\"example-production\"]\n\
+                prod_apps = [\"example-frontdoor\"]\n\
+                prod_make_goals = [\"ship-it\"]\n\
+                prod_dagger_functions = [\"deployExecute\"]\n\
+                prod_workflow_refs = [\"pipeline.yml:backend/release/*\"]\n";
+    assert_eq!(
+        guard::policy_in(Class::ProductionWrite, text),
+        Policy {
+            enabled: false,
+            item_prefix: Some("acme".to_string()),
+            targets: Targets {
+                release_ref_glob: Some("refs/heads/*release/*".to_string()),
+                prod_buckets: vec!["live.example.test".to_string()],
+                prod_projects: vec!["example-production".to_string()],
+                prod_apps: vec!["example-frontdoor".to_string()],
+                prod_make_goals: vec!["ship-it".to_string()],
+                prod_dagger_functions: vec!["deployExecute".to_string()],
+                prod_workflow_refs: vec!["pipeline.yml:backend/release/*".to_string()],
+            },
+            cwd_app: None,
+            active_project: None,
+            cli: Some("bd".to_string()),
+        },
+        "every field the file names, read off the one table"
+    );
+    for class in guard::CLASSES {
+        assert_eq!(
+            guard::policy_in(class, "this is not toml at all ["),
+            Policy::default(),
+            "an unparsable file is the default policy — {}",
+            class.name()
+        );
+    }
 }
 
 // ---- the two halves of the refusal ------------------------------------------
@@ -1498,10 +1557,13 @@ fn the_bare_id_check_refuses_nothing_until_its_target_is_configured() {
         "a check with no target is always configured"
     );
     assert_eq!(
-        guard::item_prefix_in("[project]\nitem_prefix = \"acme\"\n"),
+        guard::policy_in(Class::Record, "[project]\nitem_prefix = \"acme\"\n").item_prefix,
         Some("acme".to_string())
     );
-    assert_eq!(guard::item_prefix_in("[project]\nname = \"x\"\n"), None);
+    assert_eq!(
+        guard::policy_in(Class::Record, "[project]\nname = \"x\"\n").item_prefix,
+        None
+    );
 
     assert_eq!(
         Class::Record.target_of("bare-id"),
@@ -1838,14 +1900,16 @@ type ListCase = (&'static str, &'static str, fn(&mut Policy));
 #[test]
 fn an_undeclared_product_list_disables_its_own_check_and_no_other() {
     let cases: [ListCase; 3] = [
-        ("make-goal", "make ship-it", |p| p.prod_make_goals.clear()),
+        ("make-goal", "make ship-it", |p| {
+            p.targets.prod_make_goals.clear()
+        }),
         ("module-function", "dagger call deployExecute", |p| {
-            p.prod_dagger_functions.clear()
+            p.targets.prod_dagger_functions.clear()
         }),
         (
             "workflow-ref",
             "gh workflow run pipeline.yml --ref backend/release/2.7",
-            |p| p.prod_workflow_refs.clear(),
+            |p| p.targets.prod_workflow_refs.clear(),
         ),
     ];
     for (check, command, clear) in cases {

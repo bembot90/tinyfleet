@@ -283,7 +283,7 @@ fn listed_bucket(arguments: &[String], policy: &Policy) -> Option<String> {
             continue;
         };
         let host = path.split('/').next().unwrap_or(path);
-        if policy.prod_buckets.iter().any(|b| b == host) {
+        if policy.targets.prod_buckets.iter().any(|b| b == host) {
             return Some(argument.clone());
         }
     }
@@ -325,7 +325,7 @@ fn cloud_tool(rest: &[String], policy: &Policy) -> Option<Denial> {
     if group == "config" && positionals.get(1).map(String::as_str) == Some("set") {
         let key = positionals.get(2)?;
         let value = positionals.get(3)?;
-        if key == "project" && policy.prod_projects.iter().any(|p| p == value) {
+        if key == "project" && policy.targets.prod_projects.iter().any(|p| p == value) {
             return Some(project_refusal("config set project", value));
         }
         return None;
@@ -390,17 +390,23 @@ fn project_denial(
 ) -> Option<Denial> {
     match flag_value(words, flags) {
         Some(value) => policy
+            .targets
             .prod_projects
             .contains(&value)
             .then(|| project_refusal(named, &format!("--project {value}"))),
         None => {
             let active = policy.active_project.as_deref()?;
-            policy.prod_projects.iter().any(|p| p == active).then(|| {
-                project_refusal(
-                    named,
-                    &format!("no --project, and the configured project is {active}"),
-                )
-            })
+            policy
+                .targets
+                .prod_projects
+                .iter()
+                .any(|p| p == active)
+                .then(|| {
+                    project_refusal(
+                        named,
+                        &format!("no --project, and the configured project is {active}"),
+                    )
+                })
         }
     }
 }
@@ -447,12 +453,13 @@ fn app_tool(rest: &[String], policy: &Policy) -> Option<Denial> {
 
     match flag_value(rest, &APP_FLAGS) {
         Some(name) => policy
+            .targets
             .prod_apps
             .contains(&name)
             .then(|| app_refusal(&named, &format!("--app {name}"))),
         None => {
             let here = policy.cwd_app.as_deref()?;
-            policy.prod_apps.iter().any(|a| a == here).then(|| {
+            policy.targets.prod_apps.iter().any(|a| a == here).then(|| {
                 app_refusal(
                     &named,
                     &format!("no --app, and the directory's own file names {here}"),
@@ -530,7 +537,7 @@ const MAKE_DRY: &str = "dry=1";
 fn make_tool(rest: &[String], policy: &Policy) -> Option<Denial> {
     let goal = rest
         .iter()
-        .find(|word| policy.prod_make_goals.iter().any(|g| g == *word))?;
+        .find(|word| policy.targets.prod_make_goals.iter().any(|g| g == *word))?;
     let dry = rest
         .iter()
         .filter(|word| is_dry_assignment(word))
@@ -591,13 +598,23 @@ fn dagger_tool(rest: &[String], policy: &Policy) -> Option<Denial> {
     let in_script = scripts
         .iter()
         .flat_map(|script| script.split([' ', '\t', '\n', '|', ';', '&', '(', ')']))
-        .find(|word| policy.prod_dagger_functions.iter().any(|f| f == word))
+        .find(|word| {
+            policy
+                .targets
+                .prod_dagger_functions
+                .iter()
+                .any(|f| f == word)
+        })
         .map(str::to_string);
     let named = match &in_script {
         Some(word) => word,
-        None => rest[start..]
-            .iter()
-            .find(|word| policy.prod_dagger_functions.iter().any(|f| f == *word))?,
+        None => rest[start..].iter().find(|word| {
+            policy
+                .targets
+                .prod_dagger_functions
+                .iter()
+                .any(|f| f == *word)
+        })?,
     };
     Some(Denial {
         class: "production-write",
@@ -702,7 +719,7 @@ fn gh_tool(rest: &[String], policy: &Policy) -> Option<Denial> {
     // pair — and that is the direction the reference allows in too.
     let workflow = basename(&positionals.get(2)?.replace('\\', "/")).to_string();
     let reference = flag_value(rest, &GH_REF_FLAGS)?;
-    let entry = policy.prod_workflow_refs.iter().find(|entry| {
+    let entry = policy.targets.prod_workflow_refs.iter().find(|entry| {
         entry
             .split_once(':')
             .is_some_and(|(name, glob)| name == workflow && matches_glob(glob, &reference))
@@ -752,9 +769,9 @@ fn raw_listed_target(command: &str, policy: &Policy) -> Option<Denial> {
             for argument in &words[index + 1..] {
                 let argument = unquote(argument);
                 for (check, list) in [
-                    (CHECKS[0], &policy.prod_buckets),
-                    (CHECKS[1], &policy.prod_projects),
-                    (CHECKS[2], &policy.prod_apps),
+                    (CHECKS[0], &policy.targets.prod_buckets),
+                    (CHECKS[1], &policy.targets.prod_projects),
+                    (CHECKS[2], &policy.targets.prod_apps),
                 ] {
                     let hit = list
                         .iter()

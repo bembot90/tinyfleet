@@ -46,7 +46,7 @@ const REF_VALUE_FLAGS: [&str; 4] = [
 ];
 
 pub fn judge(command: &str, policy: &Policy) -> Option<Denial> {
-    let glob = policy.release_ref_glob.as_deref()?;
+    let glob = policy.targets.release_ref_glob.as_deref()?;
     if glob.is_empty() {
         return None;
     }

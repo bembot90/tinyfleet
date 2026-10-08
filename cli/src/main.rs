@@ -1311,44 +1311,19 @@ fn resolve_policy(class: Class, cwd: Option<&Path>) -> Policy {
     match found {
         Some(Found::Embedded(path)) => {
             let text = read_text(&path);
-            with_targets(
-                Policy {
-                    enabled: guard::enabled_in(class, &text),
-                    item_prefix: guard::item_prefix_in(&text),
-                    ..Policy::default()
-                },
-                guard::targets_in(&text),
-            )
+            guard::policy_in(class, &text)
         }
         Some(Found::Declared(path)) => {
             let text = read_text(&path);
-            with_targets(
-                Policy {
-                    enabled: machine_policy(),
-                    item_prefix: guard::item_prefix_in(&text),
-                    ..Policy::default()
-                },
-                guard::targets_in(&text),
-            )
+            Policy {
+                enabled: machine_policy(),
+                ..guard::policy_in(class, &text)
+            }
         }
         None => Policy {
             enabled: machine_policy(),
             ..Policy::default()
         },
-    }
-}
-
-/// The project's own `[guards.targets]`, onto the policy the walk built.
-fn with_targets(policy: Policy, targets: guard::Targets) -> Policy {
-    Policy {
-        release_ref_glob: targets.release_ref_glob,
-        prod_buckets: targets.prod_buckets,
-        prod_projects: targets.prod_projects,
-        prod_apps: targets.prod_apps,
-        prod_make_goals: targets.prod_make_goals,
-        prod_dagger_functions: targets.prod_dagger_functions,
-        prod_workflow_refs: targets.prod_workflow_refs,
-        ..policy
     }
 }
 
@@ -1385,7 +1360,7 @@ fn caller_readings(class: Class, command: &str, cwd: Option<&Path>, policy: &mut
     if let Some(dir) = cwd {
         policy.cwd_app = guard::app_in(&read_text(&dir.join(FLY_CONFIG)));
     }
-    if !policy.prod_projects.is_empty() && command.contains(CLOUD_TOOL) {
+    if !policy.targets.prod_projects.is_empty() && command.contains(CLOUD_TOOL) {
         policy.active_project = configured_project();
     }
 }

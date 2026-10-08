@@ -1302,8 +1302,11 @@ fn the_classes_are_callable_through_fleet_core_with_no_payload_at_all() {
         ..Default::default()
     };
     let with_targets = fleet_core::guard::Policy {
-        release_ref_glob: Some("refs/heads/*release/*".to_string()),
-        prod_buckets: vec!["live.example.test".to_string()],
+        targets: fleet_core::guard::Targets {
+            release_ref_glob: Some("refs/heads/*release/*".to_string()),
+            prod_buckets: vec!["live.example.test".to_string()],
+            ..Default::default()
+        },
         ..policy.clone()
     };
     for (class, command, check, policy) in [
