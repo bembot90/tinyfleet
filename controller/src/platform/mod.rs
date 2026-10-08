@@ -213,12 +213,26 @@ pub fn belt_sample(filled: &[f64]) -> Option<f64> {
     filled.get(LOAD_SAMPLE).copied()
 }
 
+extern "C" {
+    fn getloadavg(loadavg: *mut f64, nelem: i32) -> i32;
+}
+
 /// The five-minute load average, or `None` when this platform would not answer.
 ///
 /// `None` is a leg of the load belt that cannot be judged, never a machine under
 /// no load: a reading nobody took must not read as room to start on.
+///
+/// The C library's `getloadavg` on both platforms. On Linux it is the C call
+/// rather than `/proc/loadavg`, unlike that platform's process read: both libc
+/// implementations it ships read that file themselves, so parsing it here would
+/// be a second parser for the same bytes. Which of the three samples is the
+/// belt's is [`LOAD_SAMPLE`]'s to say, so the two platforms cannot read
+/// different minutes.
 pub fn load_average_5m() -> Option<f64> {
-    sys::load_average_5m()
+    let mut samples = [0.0f64; 3];
+    // SAFETY: the pointer is to an array of three, and 3 is the count passed.
+    let filled = unsafe { getloadavg(samples.as_mut_ptr(), 3) };
+    belt_sample(&samples[..filled.clamp(0, 3) as usize])
 }
 
 /// How many processors the load average is read against. `None` when the
@@ -294,6 +308,11 @@ pub const SERVICE_BIN_ENV: &str = "FLEET_SERVICE_BIN";
 /// the platform's own manager, so a minute is a deadline nothing healthy meets.
 const SERVICE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How long the after-write reading is given. It is a local call to the
+/// platform's own tool — a file linter on one, the login manager on the other —
+/// so a deadline it ever meets is a tool that is not answering.
+const ASIDE_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Where the service file goes and what it says.
 ///
 /// PURE: every input is an argument, so the text each platform writes is read
@@ -304,22 +323,8 @@ pub struct ServiceFile {
     pub text: String,
 }
 
-/// The service file for this platform, from the home, the label, the executable
-/// the service runs, the machine directory its logs go under, and the fleet
-/// directory to carry into the service's environment when the caller has one.
-pub fn service_file(
-    home: &Path,
-    label: &str,
-    exe: &Path,
-    machine_dir: &Path,
-    fleet_dir: Option<&Path>,
-) -> ServiceFile {
-    sys::service_file(home, label, exe, machine_dir, fleet_dir)
-}
-
 /// The manager for this machine's user service.
 pub struct Service {
-    label: String,
     file: ServiceFile,
     bin: PathBuf,
     child_path: String,
@@ -361,15 +366,14 @@ impl Service {
             })?,
         };
         Ok(Service {
-            label: SERVICE_LABEL.to_string(),
-            file: service_file(home, SERVICE_LABEL, exe, machine_dir, fleet_dir),
+            file: sys::service_file(home, SERVICE_LABEL, exe, machine_dir, fleet_dir),
             bin,
             child_path,
         })
     }
 
     pub fn label(&self) -> &str {
-        &self.label
+        SERVICE_LABEL
     }
 
     /// Where a person reads what the service itself printed. A path on one
@@ -399,27 +403,27 @@ impl Service {
     /// What this platform read about the file it was just handed, in words a
     /// caller prints without knowing which platform wrote them.
     pub fn after_write(&self) -> Vec<String> {
-        sys::after_write(&self.child_path, &self.label, &self.file.path)
+        sys::after_write(&self.child_path, &self.file.path)
     }
 
     /// Load the service. NOTHING ELSE HERE STARTS IT: the write above is the
     /// install and this is the second deliberate act.
     pub fn load(&self) -> Result<(), String> {
-        for argv in sys::load_argv(&self.label, &self.file.path) {
+        for argv in sys::load_argv(SERVICE_LABEL, &self.file.path) {
             self.run(&argv)?;
         }
         Ok(())
     }
 
     pub fn unload(&self) -> Result<(), String> {
-        self.run(&sys::unload_argv(&self.label))
+        self.run(&sys::unload_argv(SERVICE_LABEL))
     }
 
     /// The pid the manager reports for the label, or `None` when it reports
     /// none — which is a service that is not loaded rather than one this layer
     /// could not read. An `Err` is the third answer.
     pub fn running(&self) -> Result<Option<u32>, String> {
-        let argv = sys::running_argv(&self.label);
+        let argv = sys::running_argv(SERVICE_LABEL);
         let mut command = Command::new(&self.bin);
         command.args(&argv).env("PATH", &self.child_path);
         match run_bounded(command, SERVICE_TIMEOUT) {
@@ -584,21 +588,11 @@ impl Grant {
             Some(Probe::Answered) => return None,
             Some(Probe::Parked(rx)) => {
                 match rx.try_recv() {
-                    Ok(Ok(())) => {
-                        self.probes.insert(path.to_path_buf(), Probe::Answered);
-                        return None;
-                    }
-                    Ok(Err(why)) => {
-                        self.probes.insert(path.to_path_buf(), Probe::Refused);
-                        return Some(refused_detail(path, &why));
-                    }
+                    Ok(answer) => return self.settle(path, Some(answer)),
                     // Still outstanding: the dialog has not been answered, and a
                     // second probe would be one more parked thread.
                     Err(TryRecvError::Empty) => return Some(timed_out_detail(path, self.timeout)),
-                    Err(TryRecvError::Disconnected) => {
-                        self.probes.insert(path.to_path_buf(), Probe::Refused);
-                        return Some(refused_detail(path, PROBE_VANISHED));
-                    }
+                    Err(TryRecvError::Disconnected) => return self.settle(path, None),
                 }
             }
             // A refusal answered, so it is probed again; a path nobody has
@@ -612,19 +606,29 @@ impl Grant {
             let _ = tx.send(listing(&probed));
         });
         match rx.recv_timeout(self.timeout) {
-            Ok(Ok(())) => {
-                self.probes.insert(path.to_path_buf(), Probe::Answered);
-                None
-            }
-            Ok(Err(why)) => {
-                self.probes.insert(path.to_path_buf(), Probe::Refused);
-                Some(refused_detail(path, &why))
-            }
+            Ok(answer) => self.settle(path, Some(answer)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 self.probes.insert(path.to_path_buf(), Probe::Parked(rx));
                 Some(timed_out_detail(path, self.timeout))
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => self.settle(path, None),
+        }
+    }
+
+    /// Record a probe that has settled and answer its detail: `None` for an
+    /// answer, the refusal for an error, and [`PROBE_VANISHED`] when the sender
+    /// is gone (`answer` is `None`).
+    fn settle(&mut self, path: &Path, answer: Option<Result<(), String>>) -> Option<String> {
+        match answer {
+            Some(Ok(())) => {
+                self.probes.insert(path.to_path_buf(), Probe::Answered);
+                None
+            }
+            Some(Err(why)) => {
+                self.probes.insert(path.to_path_buf(), Probe::Refused);
+                Some(refused_detail(path, &why))
+            }
+            None => {
                 self.probes.insert(path.to_path_buf(), Probe::Refused);
                 Some(refused_detail(path, PROBE_VANISHED))
             }

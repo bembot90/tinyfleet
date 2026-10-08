@@ -10,7 +10,7 @@
 //! terms: a command word a table has never heard of allows.
 
 use super::lex::{basename, command_words, head_pair, lex, statements, Token};
-use super::{Denial, ESCAPE_TRAP};
+use super::{leading_escape, Denial, ESCAPE_TRAP};
 
 /// First hit wins, in this order — ordered by what the trap corrupts: the
 /// stored record first, then an argument, then a verdict.
@@ -87,6 +87,9 @@ fn reads_status(body: &str) -> bool {
 
 /// `cli` is the store's command word, [`super::Policy::cli`].
 pub fn judge(command: &str, cli: Option<&str>) -> Option<Denial> {
+    if leading_escape(command, ESCAPE_TRAP) {
+        return None;
+    }
     // Unreadable text allows: this class has no raw-text fallback, and prose
     // about these traps quotes every one of them by construction.
     let tokens = lex(command).ok()?;

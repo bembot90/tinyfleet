@@ -1280,6 +1280,17 @@ fn a_files_policy_is_read_off_one_parse_and_an_unparsable_file_is_the_default() 
     }
 }
 
+/// A class reads back from the name it spells and from nothing else: the
+/// underscore spelling and the empty name are not classes.
+#[test]
+fn a_class_parses_from_its_own_name_alone() {
+    for class in guard::CLASSES {
+        assert_eq!(Class::parse(class.name()), Some(class), "{}", class.name());
+    }
+    assert_eq!(Class::parse("shell_trap"), None);
+    assert_eq!(Class::parse(""), None);
+}
+
 // ---- the two halves of the refusal ------------------------------------------
 
 /// One specimen per check, which the tables above have already proved refused.

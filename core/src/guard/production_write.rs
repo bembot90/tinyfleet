@@ -35,7 +35,7 @@
 //! matches what the project wrote down and derives nothing from a spelling, so
 //! it reaches no target a parsed judgment could not have named.
 
-use super::lex::{basename, command_words, is_assignment, lex, statements, unquote};
+use super::lex::{basename, command_words, lex, raw_invocations, statements, unquote};
 use super::release_ref::matches_glob;
 use super::{leading_escape, Denial, Policy, ESCAPE_PROD_WRITE};
 
@@ -749,36 +749,26 @@ fn gh_tool(rest: &[String], policy: &Policy) -> Option<Denial> {
 /// parsed verb here, so a READ of a listed target refuses too; that is the
 /// over-refusal this direction buys, and the escape is what bounds it.
 fn raw_listed_target(command: &str, policy: &Policy) -> Option<Denial> {
-    for line in command.lines() {
-        for chunk in line.split(['(', ')', ';', '&', '|']) {
-            let words: Vec<&str> = chunk.split_whitespace().collect();
-            let mut index = 0;
-            while index < words.len() && is_assignment(words[index]) {
-                index += 1;
-            }
-            let Some(head) = words.get(index) else {
-                continue;
-            };
-            let tool = basename(unquote(head));
-            if !GUARDED_TOOLS.contains(&tool) {
-                continue;
-            }
-            // The quoting is what could not be read, so each argument is
-            // compared with its quotes off: the target of an unterminated word
-            // arrives carrying the quote that never closed.
-            for argument in &words[index + 1..] {
-                let argument = unquote(argument);
-                for (check, list) in [
-                    (CHECKS[0], &policy.targets.prod_buckets),
-                    (CHECKS[1], &policy.targets.prod_projects),
-                    (CHECKS[2], &policy.targets.prod_apps),
-                ] {
-                    let hit = list
-                        .iter()
-                        .find(|entry| !entry.is_empty() && argument.contains(entry.as_str()));
-                    if let Some(entry) = hit {
-                        return Some(raw_refusal(check, tool, entry));
-                    }
+    for (head, words) in raw_invocations(command) {
+        let tool = basename(unquote(head));
+        if !GUARDED_TOOLS.contains(&tool) {
+            continue;
+        }
+        // The quoting is what could not be read, so each argument is
+        // compared with its quotes off: the target of an unterminated word
+        // arrives carrying the quote that never closed.
+        for argument in &words {
+            let argument = unquote(argument);
+            for (check, list) in [
+                (CHECKS[0], &policy.targets.prod_buckets),
+                (CHECKS[1], &policy.targets.prod_projects),
+                (CHECKS[2], &policy.targets.prod_apps),
+            ] {
+                let hit = list
+                    .iter()
+                    .find(|entry| !entry.is_empty() && argument.contains(entry.as_str()));
+                if let Some(entry) = hit {
+                    return Some(raw_refusal(check, tool, entry));
                 }
             }
         }

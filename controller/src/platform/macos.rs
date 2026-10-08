@@ -4,7 +4,6 @@ use super::ServiceFile;
 use fleet_core::process::{resolve_on_path, run_bounded};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 /// macOS has no XDG state directory, so the second argument is not a shape this
 /// platform reads.
@@ -40,7 +39,6 @@ pub fn child_path_dirs(home: &Path) -> Vec<PathBuf> {
 
 extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
-    fn getloadavg(loadavg: *mut f64, nelem: i32) -> i32;
     fn getuid() -> u32;
 }
 
@@ -52,10 +50,6 @@ pub const SERVICE_BIN: &str = "launchctl";
 /// This platform puts a file-access dialog in front of a directory read, so the
 /// gate probes (lessons claude-code D4).
 pub const GRANT_IS_GATED: bool = true;
-
-/// How long the after-write reading is given. It is a local call to a file
-/// tool, so a deadline it ever meets is a tool that is not answering.
-const ASIDE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The per-user domain the label is loaded into.
 fn domain() -> String {
@@ -170,7 +164,7 @@ pub fn pid_in(stdout: &str) -> Option<u32> {
 /// The file is checked by this platform's own parser where that tool resolves,
 /// because a service file that does not parse loads as nothing and says so
 /// nowhere a person reads.
-pub fn after_write(child_path: &str, _label: &str, file: &Path) -> Vec<String> {
+pub fn after_write(child_path: &str, file: &Path) -> Vec<String> {
     let Some(linter) = resolve_on_path(child_path, "plutil") else {
         return vec![format!(
             "the service file was not checked: `plutil` is not on the constructed search path \
@@ -179,7 +173,7 @@ pub fn after_write(child_path: &str, _label: &str, file: &Path) -> Vec<String> {
     };
     let mut command = Command::new(&linter);
     command.args(["-lint", &file.display().to_string()]);
-    match run_bounded(command, ASIDE_TIMEOUT) {
+    match run_bounded(command, super::ASIDE_TIMEOUT) {
         Ok(run) if run.status.success() => {
             vec![format!("the service file parses: {}", file.display())]
         }
@@ -193,18 +187,6 @@ pub fn after_write(child_path: &str, _label: &str, file: &Path) -> Vec<String> {
         )],
         Err(why) => vec![format!("the service file could not be checked: {why}")],
     }
-}
-
-/// The five-minute load average, or `None` when the C library would not answer —
-/// which is a reading nobody has and never a machine under no load.
-///
-/// Which of the three samples is the belt's is `super::LOAD_SAMPLE`'s to say,
-/// so the two platforms cannot read different minutes.
-pub fn load_average_5m() -> Option<f64> {
-    let mut samples = [0.0f64; 3];
-    // SAFETY: the pointer is to an array of three, and 3 is the count passed.
-    let filled = unsafe { getloadavg(samples.as_mut_ptr(), 3) };
-    super::belt_sample(&samples[..filled.clamp(0, 3) as usize])
 }
 
 /// "No such process". Any other failure is a question this layer cannot answer,

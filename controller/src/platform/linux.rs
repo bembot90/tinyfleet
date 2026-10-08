@@ -4,7 +4,6 @@ use super::ServiceFile;
 use fleet_core::process::{resolve_on_path, run_bounded};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 pub fn machine_dir_under(home: &Path, xdg_state: Option<&Path>) -> PathBuf {
     match xdg_state {
@@ -30,25 +29,6 @@ pub fn child_path_dirs(home: &Path) -> Vec<PathBuf> {
     ]
 }
 
-extern "C" {
-    fn getloadavg(loadavg: *mut f64, nelem: i32) -> i32;
-}
-
-/// The five-minute load average, or `None` when the C library would not answer —
-/// which is a reading nobody has and never a machine under no load.
-///
-/// The C call rather than `/proc/loadavg`, unlike the process read below: both
-/// libc implementations this target ships read that file themselves, so parsing
-/// it here would be a second parser for the same bytes. Which of the three
-/// samples is the belt's is `super::LOAD_SAMPLE`'s to say, so the two platforms
-/// cannot read different minutes.
-pub fn load_average_5m() -> Option<f64> {
-    let mut samples = [0.0f64; 3];
-    // SAFETY: the pointer is to an array of three, and 3 is the count passed.
-    let filled = unsafe { getloadavg(samples.as_mut_ptr(), 3) };
-    super::belt_sample(&samples[..filled.clamp(0, 3) as usize])
-}
-
 /// The process table is `/proc`, not `/bin/ps`. A `/proc` that is not mounted
 /// answers `None`: without it this layer cannot tell a gone process from a
 /// filesystem it cannot see.
@@ -67,9 +47,6 @@ pub const SERVICE_BIN: &str = "systemctl";
 /// This platform puts no file-access dialog in front of a directory read, so
 /// the gate reads `ok` without probing (lessons claude-code D4).
 pub const GRANT_IS_GATED: bool = false;
-
-/// How long the after-write reading is given.
-const ASIDE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The unit file under the user's own unit directory.
 ///
@@ -172,7 +149,7 @@ pub fn pid_in(stdout: &str) -> Option<u32> {
 /// of that user ends unless lingering is enabled, and enabling it is a change to
 /// the machine's own login policy — so the command is printed for the person and
 /// this layer runs nothing.
-pub fn after_write(child_path: &str, _label: &str, _file: &Path) -> Vec<String> {
+pub fn after_write(child_path: &str, _file: &Path) -> Vec<String> {
     let Some(bin) = resolve_on_path(child_path, "loginctl") else {
         return vec![format!(
             "lingering was not read: `loginctl` is not on the constructed search path {child_path}"
@@ -180,7 +157,7 @@ pub fn after_write(child_path: &str, _label: &str, _file: &Path) -> Vec<String> 
     };
     let mut command = Command::new(&bin);
     command.args(["show-user", "--property=Linger"]);
-    match run_bounded(command, ASIDE_TIMEOUT) {
+    match run_bounded(command, super::ASIDE_TIMEOUT) {
         Ok(run)
             if run.status.success()
                 && String::from_utf8_lossy(&run.stdout).contains("Linger=yes") =>

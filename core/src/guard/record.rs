@@ -12,7 +12,7 @@
 //! record rather than its survival, and over-refusing there would block every
 //! note in the fleet.
 
-use super::lex::{basename, command_words, is_assignment, lex, statements, unquote, Token};
+use super::lex::{basename, command_words, lex, raw_invocations, statements, unquote, Token};
 use super::{
     leading_escape, subcommand_of, text_arguments, Denial, Policy, ESCAPE_BARE_ID,
     ESCAPE_ENTRY_FORGE, ESCAPE_NOTES_REPLACE, ESCAPE_SQL_WRITE,
@@ -437,33 +437,23 @@ fn bare_denial(hits: &[String], prefix: &str) -> Denial {
 /// read. It is INVOCATION-SHAPED — a chunk whose own command word is the
 /// store's `cli` — so prose that merely names the rule is not refused.
 fn raw_invocation(command: &str, cli: &str, subcommand: &str, needles: &[&str]) -> bool {
-    for line in command.lines() {
-        for chunk in line.split(['(', ')', ';', '&', '|']) {
-            let words: Vec<&str> = chunk.split_whitespace().collect();
-            let mut index = 0;
-            while index < words.len() && is_assignment(words[index]) {
-                index += 1;
-            }
-            let Some(head) = words.get(index) else {
-                continue;
-            };
-            if basename(head) != cli {
-                continue;
-            }
-            // The quoting is what could not be read, so a word is compared with
-            // its quotes off: the write keyword of an unterminated statement
-            // arrives carrying the quote that never closed.
-            let rest: Vec<&str> = words[index + 1..].iter().map(|w| unquote(w)).collect();
-            if !rest.contains(&subcommand) {
-                continue;
-            }
-            if rest.iter().any(|w| {
-                needles
-                    .iter()
-                    .any(|n| w.eq_ignore_ascii_case(n) || w.starts_with(&format!("{n}=")))
-            }) {
-                return true;
-            }
+    for (head, words) in raw_invocations(command) {
+        if basename(head) != cli {
+            continue;
+        }
+        // The quoting is what could not be read, so a word is compared with
+        // its quotes off: the write keyword of an unterminated statement
+        // arrives carrying the quote that never closed.
+        let rest: Vec<&str> = words.iter().map(|w| unquote(w)).collect();
+        if !rest.contains(&subcommand) {
+            continue;
+        }
+        if rest.iter().any(|w| {
+            needles
+                .iter()
+                .any(|n| w.eq_ignore_ascii_case(n) || w.starts_with(&format!("{n}=")))
+        }) {
+            return true;
         }
     }
     false

@@ -135,13 +135,7 @@ pub fn declared(layers: &[Layer]) -> Result<Vec<Class>, String> {
 
 impl Class {
     pub fn parse(name: &str) -> Option<Class> {
-        match name {
-            "shell-trap" => Some(Class::ShellTrap),
-            "record" => Some(Class::Record),
-            "release-ref" => Some(Class::ReleaseRef),
-            "production-write" => Some(Class::ProductionWrite),
-            _ => None,
-        }
+        CLASSES.into_iter().find(|class| class.name() == name)
     }
 
     pub fn name(self) -> &'static str {
@@ -276,13 +270,7 @@ pub fn judge(class: Class, command: &str, policy: &Policy) -> Verdict {
         return Verdict::Silent;
     }
     let found = match class {
-        Class::ShellTrap => {
-            if leading_escape(command, ESCAPE_TRAP) {
-                None
-            } else {
-                shell_trap::judge(command, policy.cli.as_deref())
-            }
-        }
+        Class::ShellTrap => shell_trap::judge(command, policy.cli.as_deref()),
         Class::Record => record::judge(command, policy),
         Class::ReleaseRef => release_ref::judge(command, policy),
         // Its own escape is read inside the class, beside the checks it

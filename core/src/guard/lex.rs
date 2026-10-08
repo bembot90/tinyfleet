@@ -658,3 +658,20 @@ pub fn unquote(word: &str) -> &str {
 pub fn basename(text: &str) -> &str {
     text.rsplit('/').next().unwrap_or(text)
 }
+
+/// The invocation-shaped chunks of a text the lexer could not read: each line
+/// split at `(`, `)`, `;`, `&` and `|`, its leading assignments skipped, and its
+/// command word answered with the words after it, quotes and all. The caller
+/// unquotes what it compares.
+pub fn raw_invocations(command: &str) -> impl Iterator<Item = (&str, Vec<&str>)> + '_ {
+    command
+        .lines()
+        .flat_map(|line| line.split(['(', ')', ';', '&', '|']))
+        .filter_map(|chunk| {
+            let mut words = chunk
+                .split_whitespace()
+                .skip_while(|word| is_assignment(word));
+            let head = words.next()?;
+            Some((head, words.collect()))
+        })
+}
