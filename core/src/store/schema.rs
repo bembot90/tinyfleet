@@ -34,7 +34,7 @@ use super::types::{
 };
 use super::{Filter, HoldId, ItemId, NewItem, Order, RunRecord};
 use crate::entry::{self, Entry};
-use crate::schema::{self, describe, fields, generated, refer, strip};
+use crate::schema::{self, describe, fields, generated, refer};
 use crate::seat::actor::Actor;
 
 /// What an update's `assignee` says by being there, and by being `null`.
@@ -178,38 +178,7 @@ pub fn document() -> Value {
         ),
     ];
 
-    let version = json!({"const": CONTRACT_VERSION});
-    let mut verbs = Map::new();
-    for (verb, request, response) in each {
-        let request = fields(
-            request,
-            [("schema_version", version.clone()), ("root", text.clone())],
-        );
-        let response = fields(response, [("schema_version", version.clone())]);
-        verbs.insert(
-            String::from(verb),
-            json!({"request": request, "response": response}),
-        );
-    }
-    let refusal = fields(
-        none(),
-        [
-            ("schema_version", version.clone()),
-            ("refused", refer::<Refusal>(g)),
-        ],
-    );
-    let error = fields(none(), [("schema_version", version), ("error", text)]);
-
-    let mut definitions = g.take_definitions(true);
-    definitions.values_mut().for_each(strip);
-    json!({
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "schema_version": CONTRACT_VERSION,
-        "verbs": verbs,
-        "refusal": refusal,
-        "error": error,
-        "$defs": definitions,
-    })
+    schema::document::<Refusal>(g, CONTRACT_VERSION, each)
 }
 
 /// The document as the committed file spells it: two-space indented, keys in

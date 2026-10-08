@@ -61,10 +61,7 @@ impl fmt::Display for AgentError {
             AgentError::Refused(refusal) => write!(
                 f,
                 "the agent refused ({}): {}",
-                match refusal.reason {
-                    RefusalReason::Unsupported => "unsupported",
-                    RefusalReason::Missing => "missing",
-                },
+                refusal.reason.word(),
                 refusal.message
             ),
             AgentError::Unreadable(cause) => f.write_str(cause),
@@ -484,27 +481,6 @@ pub fn contexts(
     }
 }
 
-/// An activity's own word, as the contract spells it.
-pub fn word(activity: Activity) -> &'static str {
-    match activity {
-        Activity::Starting => "starting",
-        Activity::Busy => "busy",
-        Activity::Idle => "idle",
-        Activity::Blocked => "blocked",
-        Activity::Unknown => "unknown",
-    }
-}
-
-/// A blocked reason's own word, as the contract spells it.
-pub fn blocked_word(on: BlockedOn) -> &'static str {
-    match on {
-        BlockedOn::Permission => "permission",
-        BlockedOn::Question => "question",
-        BlockedOn::LoggedOut => "logged_out",
-        BlockedOn::UsageLimit => "usage_limit",
-    }
-}
-
 /// What a BLOCKED reading waits on, as a person reads it: the adapter's own
 /// sentence where it gave one, else the reason's word, else the bare word
 /// `blocked` — read for the activity's PRESENCE and never by matching what it
@@ -515,8 +491,8 @@ pub fn waiting_on(reading: &SeatActivity) -> Option<String> {
         reading
             .cause
             .clone()
-            .or_else(|| reading.blocked_on.map(|on| blocked_word(on).to_string()))
-            .unwrap_or_else(|| word(Activity::Blocked).to_string())
+            .or_else(|| reading.blocked_on.map(|on| on.word().to_string()))
+            .unwrap_or_else(|| Activity::Blocked.word().to_string())
     })
 }
 

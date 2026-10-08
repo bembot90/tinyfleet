@@ -985,7 +985,7 @@ pub fn feed(machine: &Machine, seat: &str, first_turn: &str) -> Result<Fed, Refu
     if live.reading.activity == Activity::Busy {
         return Err(Refusal::refused(format!(
             "`{seat}` is still holding a turn — the agent reports its session {}",
-            adapter::word(Activity::Busy)
+            Activity::Busy.word()
         )));
     }
     if let Some(cause) = adapter::waiting_on(&live.reading) {

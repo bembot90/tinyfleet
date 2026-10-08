@@ -15,7 +15,7 @@
 //! that makes it a whole one for a document ([`unknown_keywords`]).
 
 use schemars::{JsonSchema, SchemaGenerator};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 /// `document` as a committed file spells it: two-space indented, keys in
 /// order, one newline at the end.
@@ -29,6 +29,52 @@ pub(crate) fn text(document: &Value) -> String {
 /// The `$ref` to `T`'s schema, which puts that schema in the definitions.
 pub(crate) fn refer<T: JsonSchema>(g: &mut SchemaGenerator) -> Value {
     g.subschema_for::<T>().to_value()
+}
+
+/// A contract's whole document from its verbs: each verb's request with the
+/// envelope's `schema_version` and `root`, its response with
+/// `schema_version`, the refusal over `R`, the error, and the definitions they
+/// share.
+pub(crate) fn document<R: JsonSchema>(
+    g: &mut SchemaGenerator,
+    version: u64,
+    each: impl IntoIterator<Item = (&'static str, Map<String, Value>, Map<String, Value>)>,
+) -> Value {
+    let text = json!({"type": "string"});
+    let none = Map::new;
+    let schema_version = version;
+    let version = json!({"const": schema_version});
+    let mut verbs = Map::new();
+    for (verb, request, response) in each {
+        let request = fields(
+            request,
+            [("schema_version", version.clone()), ("root", text.clone())],
+        );
+        let response = fields(response, [("schema_version", version.clone())]);
+        verbs.insert(
+            String::from(verb),
+            json!({"request": request, "response": response}),
+        );
+    }
+    let refusal = fields(
+        none(),
+        [
+            ("schema_version", version.clone()),
+            ("refused", refer::<R>(g)),
+        ],
+    );
+    let error = fields(none(), [("schema_version", version), ("error", text)]);
+
+    let mut definitions = g.take_definitions(true);
+    definitions.values_mut().for_each(strip);
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "schema_version": schema_version,
+        "verbs": verbs,
+        "refusal": refusal,
+        "error": error,
+        "$defs": definitions,
+    })
 }
 
 /// `T`'s own schema, written out rather than referred to, and stripped.

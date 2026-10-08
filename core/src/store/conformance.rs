@@ -32,19 +32,13 @@ use super::{
     Filter, Item, ItemId, ItemSummary, NewItem, Order, OrderKind, OrderState, RunRecord, Stamp,
     Status, Store, StoreError, Update, WithdrawFence,
 };
+pub use crate::adapter::check::Passed;
+use crate::adapter::check::{self, ensure, Answer};
 use crate::entry::{
     Body, Delivered, NotProven, OrderWithdrawn, Ordered, Ran, SuiteRun, Withdrawal,
 };
 use crate::seat::actor::{Actor, ActorKind};
 use crate::seat::identity::SeatId;
-
-/// A check that did not fail: it passed, or it was not asked of this store,
-/// and why.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Passed {
-    Pass,
-    Skip(String),
-}
 
 /// What a check is run against.
 ///
@@ -124,10 +118,8 @@ pub const CHECKS: &[(&str, Check)] = &[
 pub fn run<'c>(
     ctx: &'c Ctx<'c>,
 ) -> impl Iterator<Item = (&'static str, Result<Passed, String>)> + 'c {
-    CHECKS.iter().map(move |(name, check)| (*name, check(ctx)))
+    check::run(CHECKS, ctx)
 }
-
-type Answer = Result<Passed, String>;
 
 /// The label every item a check files carries.
 const LABEL: &str = "fleet-conformance";
@@ -197,15 +189,6 @@ fn moved(call: &str, answer: Result<(), StoreError>, names: &[&str]) -> Result<(
             "{call} answered {}, and a fenced write that does not hold is Moved",
             outcome(&answer)
         )),
-    }
-}
-
-/// The contract's word on a reading, or `why` as the failure.
-fn ensure(held: bool, why: impl FnOnce() -> String) -> Result<(), String> {
-    if held {
-        Ok(())
-    } else {
-        Err(why())
     }
 }
 

@@ -13,8 +13,9 @@
 //! record's refusal, 2 a request the adapter does not speak, 3 could not tell,
 //! and any other code or a signal is a row of its own that the caller reads as
 //! could not tell too. [`run`] answers the row as an [`Exited`] and words
-//! nothing: the sentence a row becomes names its contract ("the store
-//! contract", "the agent contract"), so it is the caller's.
+//! nothing; [`row`] words every row but the answer and the refusal, naming the
+//! contract its caller passes, so the store's and the agent's sentences for
+//! one row are one sentence.
 //!
 //! BOUNDED: the process leads a group of its own, and a call that outruns its
 //! bound has the whole group killed and is [`Unrun::Deadline`]. The runner is
@@ -25,11 +26,12 @@
 //! for the person reading the refusal, and [`carrying`] puts it beside
 //! whatever the caller refuses with.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::process::{deadline_cause, run_bounded_fed};
@@ -141,6 +143,137 @@ pub fn run_with(
         said,
         stderr_blank,
     })
+}
+
+/// One adapter executable as every contract's caller holds it: the program,
+/// the root every request carries, the bound, and the PATH it runs under
+/// (None: this process's own).
+#[derive(Clone, Debug)]
+pub struct Caller {
+    adapter: PathBuf,
+    root: PathBuf,
+    timeout: Duration,
+    path: Option<String>,
+}
+
+impl Caller {
+    /// The executable at `adapter`, every request carrying `root`, bounded by
+    /// `timeout`, on this process's own `PATH`.
+    pub fn at(adapter: &Path, root: &Path, timeout: Duration) -> Caller {
+        Caller {
+            adapter: adapter.to_path_buf(),
+            root: root.to_path_buf(),
+            timeout,
+            path: None,
+        }
+    }
+
+    /// The same executable under another bound.
+    pub fn with_timeout(self, timeout: Duration) -> Caller {
+        Caller { timeout, ..self }
+    }
+
+    /// The same executable with every call run under `path` as its `PATH`, in
+    /// place of this process's own: the search path an entry resolves its
+    /// runtime and the binary it wraps on, which under a service is the
+    /// constructed one and never the manager's.
+    pub fn on_path(self, path: String) -> Caller {
+        Caller {
+            path: Some(path),
+            ..self
+        }
+    }
+
+    /// The executable every call runs.
+    pub fn adapter(&self) -> &Path {
+        &self.adapter
+    }
+
+    /// The root every request carries.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// One call ([`run`]) under this caller's bound and `PATH`.
+    pub fn call(&self, verb: &str, request: &Value) -> Result<Ran, Unrun> {
+        run(
+            &self.adapter,
+            verb,
+            request,
+            self.timeout,
+            self.path.as_deref(),
+        )
+    }
+
+    /// One call with `env` set on it alone ([`run_with`]), under this caller's
+    /// bound and `PATH`.
+    pub fn call_with(
+        &self,
+        verb: &str,
+        request: &Value,
+        env: &[(String, String)],
+    ) -> Result<Ran, Unrun> {
+        run_with(
+            &self.adapter,
+            verb,
+            request,
+            self.timeout,
+            self.path.as_deref(),
+            env,
+        )
+    }
+}
+
+/// A row of the exit table as its contract's caller reads it: the answer and
+/// the refusal as the whole of stdout, for the caller to read into its own
+/// types, and every other row already worded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Row<'r> {
+    /// 0: the whole of stdout.
+    Answered(&'r str),
+    /// 1: the whole of stdout.
+    Refused(&'r str),
+    /// Every other row, as could not tell, in its one sentence.
+    Unreadable(String),
+}
+
+/// The row `ran` exited on, as `named` — `<adapter> <verb>` — answered it,
+/// with every row but the answer and the refusal worded once here and naming
+/// `contract`'s contract ("store", "agent"). The text is the caller's to carry
+/// what the adapter said last beside ([`carrying`]).
+pub fn row<'r>(ran: &'r Ran, named: &str, contract: &str) -> Row<'r> {
+    let said = &ran.said;
+    match &ran.exited {
+        Exited::Answered(stdout) => Row::Answered(stdout),
+        Exited::Refused(stdout) => Row::Refused(stdout),
+        Exited::Usage => Row::Unreadable(format!(
+            "{named} refused the request as usage (exit 2) — this fleet and the adapter do not \
+             speak the same {contract} contract: {said}"
+        )),
+        Exited::CouldNotTell(error) => Row::Unreadable(format!(
+            "{named} could not tell: {}",
+            error.as_deref().unwrap_or(said)
+        )),
+        Exited::OffTable(code) => Row::Unreadable(format!(
+            "{named} exited {code}, which is not a row of the {contract} contract's exit table: \
+             {said}"
+        )),
+        Exited::Signalled => Row::Unreadable(format!("{named} was ended by a signal: {said}")),
+    }
+}
+
+/// Exit 1's answer: the refusal, under its one key.
+#[derive(Deserialize)]
+pub struct Refused<R> {
+    pub refused: R,
+}
+
+/// A request type's own fields, as the verb's fields of a request.
+pub fn fields_of(request: &impl Serialize) -> Map<String, Value> {
+    match serde_json::to_value(request) {
+        Ok(Value::Object(fields)) => fields,
+        _ => Map::new(),
+    }
 }
 
 /// `text` with what the adapter said last on stderr beside it, where it said
@@ -388,6 +521,68 @@ pub(crate) mod tests {
         ] {
             let ran = stub.run(verb, &json!({})).expect("the stub ran");
             assert_eq!(ran.exited, row, "{verb}");
+        }
+    }
+
+    /// Each row but the answer and the refusal is worded once, naming the
+    /// contract its caller passes, in the very sentence each contract's
+    /// caller words it in; the answer and the refusal are the whole of
+    /// stdout, unread.
+    #[test]
+    fn each_row_is_worded_naming_the_contract_passed() {
+        let ran = |exited: Exited| Ran {
+            exited,
+            said: String::from("boom"),
+            stderr_blank: false,
+        };
+        let named = "/bin/adapter show";
+        for contract in ["store", "agent"] {
+            for (exited, text) in [
+                (
+                    Exited::Usage,
+                    format!(
+                        "{named} refused the request as usage (exit 2) — this fleet and the \
+                         adapter do not speak the same {contract} contract: boom"
+                    ),
+                ),
+                (
+                    Exited::CouldNotTell(Some(String::from("e"))),
+                    format!("{named} could not tell: e"),
+                ),
+                (
+                    Exited::CouldNotTell(None),
+                    format!("{named} could not tell: boom"),
+                ),
+                (
+                    Exited::OffTable(7),
+                    format!(
+                        "{named} exited 7, which is not a row of the {contract} contract's exit \
+                         table: boom"
+                    ),
+                ),
+                (
+                    Exited::Signalled,
+                    format!("{named} was ended by a signal: boom"),
+                ),
+            ] {
+                let ran = ran(exited);
+                assert_eq!(
+                    row(&ran, named, contract),
+                    Row::Unreadable(text),
+                    "{contract}: {:?}",
+                    ran.exited
+                );
+            }
+            let answered = ran(Exited::Answered(String::from("{\"a\":1}\n")));
+            assert_eq!(
+                row(&answered, named, contract),
+                Row::Answered("{\"a\":1}\n")
+            );
+            let refused = ran(Exited::Refused(String::from("{\"refused\":{}}\n")));
+            assert_eq!(
+                row(&refused, named, contract),
+                Row::Refused("{\"refused\":{}}\n")
+            );
         }
     }
 

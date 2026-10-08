@@ -12,8 +12,8 @@
 //! THE CALL ITSELF IS EVERY ADAPTER'S: the spawn, the bound and its group
 //! kill, the row an exit is and the line the adapter said last are
 //! [`fleet_core::adapter::exec`]'s, which the store's caller shares. What is
-//! the agent's here is the words: each row becomes a refusal naming the agent
-//! contract, and exit 1 is the agent's own refusal, read by its reason.
+//! the agent's here is what the words carry: the contract they name, and exit 1
+//! as the agent's own refusal, read by its reason.
 //!
 //! BOUNDED like every agent call: [`AGENT_TIMEOUT`], or what
 //! [`TIMEOUT_VAR`] sets, and then the adapter's whole process group is killed
@@ -23,13 +23,12 @@
 //! name an installed pack carries, which [`super::open`] reads out of the
 //! fleet's own file.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
-use fleet_core::adapter::exec::{self, Exited, Ran, Unrun};
+use fleet_core::adapter::exec::{self, Caller, Ran, Row, Unrun};
 use fleet_core::agent::types::{self, Activities, Contexts, Seats, AGENT_TIMEOUT, TIMEOUT_VAR};
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::{
@@ -40,17 +39,7 @@ use super::{
 /// The agent as an adapter executable, its requests carrying one root.
 #[derive(Clone, Debug)]
 pub struct AgentExec {
-    adapter: PathBuf,
-    root: PathBuf,
-    timeout: Duration,
-    /// The `PATH` every call runs under, or `None` for this process's own.
-    path: Option<String>,
-}
-
-/// Exit 1's answer: the refusal, under its one key.
-#[derive(Deserialize)]
-struct Refused {
-    refused: Refusal,
+    caller: Caller,
 }
 
 impl AgentExec {
@@ -58,16 +47,15 @@ impl AgentExec {
     /// carrying `root`, bounded by [`AGENT_TIMEOUT`].
     pub fn at(adapter: &Path, root: &Path) -> AgentExec {
         AgentExec {
-            adapter: adapter.to_path_buf(),
-            root: root.to_path_buf(),
-            timeout: AGENT_TIMEOUT,
-            path: None,
+            caller: Caller::at(adapter, root, AGENT_TIMEOUT),
         }
     }
 
     /// The same agent under another bound.
     pub fn with_timeout(self, timeout: Duration) -> AgentExec {
-        AgentExec { timeout, ..self }
+        AgentExec {
+            caller: self.caller.with_timeout(timeout),
+        }
     }
 
     /// The same agent with every call run under `path` as its `PATH`, in place
@@ -76,20 +64,19 @@ impl AgentExec {
     /// and never the manager's.
     pub fn on_path(self, path: String) -> AgentExec {
         AgentExec {
-            path: Some(path),
-            ..self
+            caller: self.caller.on_path(path),
         }
     }
 
     /// The executable every call runs.
     #[cfg(test)]
     pub fn entry(&self) -> &Path {
-        &self.adapter
+        self.caller.adapter()
     }
 
     /// The root every request carries.
     pub fn root(&self) -> &Path {
-        &self.root
+        self.caller.root()
     }
 
     /// One call as the adapter answers it, past the verbs' own types: the
@@ -98,37 +85,23 @@ impl AgentExec {
     /// asks where a check is about the exit itself or replays a recorded
     /// case. Every call a fleet makes goes through [`Agent`]'s verbs instead.
     pub fn ran(&self, verb: &str, request: &Value, env: &[(String, String)]) -> Result<Ran, Unrun> {
-        exec::run_with(
-            &self.adapter,
-            verb,
-            request,
-            self.timeout,
-            self.path.as_deref(),
-            env,
-        )
+        self.caller.call_with(verb, request, env)
     }
 
     /// One call: the verb's response body.
     ///
     /// Every row of the exit table but the answer and the adapter's own
-    /// refusal is could not tell, worded once here and naming the agent
-    /// contract; each carries what the adapter said last on stderr.
+    /// refusal is could not tell, worded once in [`exec::row`] and naming the
+    /// agent contract; each carries what the adapter said last on stderr.
     fn call<T: DeserializeOwned>(
         &self,
         verb: &str,
         fields: Map<String, Value>,
     ) -> Result<T, AgentError> {
-        let adapter = self.adapter.display();
+        let adapter = self.caller.adapter().display();
         let named = format!("{adapter} {verb}");
-        let request = types::request(fields, &self.root);
-        let ran = exec::run(
-            &self.adapter,
-            verb,
-            &request,
-            self.timeout,
-            self.path.as_deref(),
-        )
-        .map_err(|unrun| {
+        let request = types::request(fields, self.caller.root());
+        let ran = self.caller.call(verb, &request).map_err(|unrun| {
             AgentError::Unreadable(match unrun {
                 Unrun::CouldNotRun(why) => format!("{adapter} could not be run ({why})"),
                 // The variable is named because the bound is the one thing a
@@ -137,32 +110,18 @@ impl AgentExec {
                 Unrun::Deadline(why) => format!("{named} {why} ({TIMEOUT_VAR} sets the bound)"),
             })
         })?;
-        let said = &ran.said;
-        let read = match &ran.exited {
-            Exited::Answered(stdout) => types::answer::<T>(stdout).map_err(|why| {
+        let read = match exec::row(&ran, &named, "agent") {
+            Row::Answered(stdout) => types::answer::<T>(stdout).map_err(|why| {
                 AgentError::Unreadable(format!("{named} answered no readable response: {why}"))
             }),
-            Exited::Refused(stdout) => Err(match types::answer::<Refused>(stdout) {
-                Ok(Refused { refused }) => AgentError::Refused(refused),
+            Row::Refused(stdout) => Err(match types::answer::<exec::Refused<Refusal>>(stdout) {
+                Ok(exec::Refused { refused }) => AgentError::Refused(refused),
                 Err(_) => AgentError::Unreadable(format!(
-                    "{named} refused with no readable refusal: {said}"
+                    "{named} refused with no readable refusal: {}",
+                    ran.said
                 )),
             }),
-            Exited::Usage => Err(AgentError::Unreadable(format!(
-                "{named} refused the request as usage (exit 2) — this fleet and the adapter do \
-                 not speak the same agent contract: {said}"
-            ))),
-            Exited::CouldNotTell(error) => Err(AgentError::Unreadable(format!(
-                "{named} could not tell: {}",
-                error.as_deref().unwrap_or(said)
-            ))),
-            Exited::OffTable(code) => Err(AgentError::Unreadable(format!(
-                "{named} exited {code}, which is not a row of the agent contract's exit table: \
-                 {said}"
-            ))),
-            Exited::Signalled => Err(AgentError::Unreadable(format!(
-                "{named} was ended by a signal: {said}"
-            ))),
+            Row::Unreadable(text) => Err(AgentError::Unreadable(text)),
         };
         read.map_err(|refused| carrying_stderr(refused, &ran))
     }
@@ -181,14 +140,6 @@ fn carrying_stderr(refused: AgentError, ran: &Ran) -> AgentError {
     }
 }
 
-/// A request type's own fields, as the verb's fields of a request.
-fn fields_of(request: &impl Serialize) -> Map<String, Value> {
-    match serde_json::to_value(request) {
-        Ok(Value::Object(fields)) => fields,
-        _ => Map::new(),
-    }
-}
-
 impl Agent for AgentExec {
     /// What the adapter declares is held to the contract's rules for it
     /// before anything uses it, because a launch is built from its default
@@ -199,7 +150,7 @@ impl Agent for AgentExec {
         declared.validate().map_err(|why| {
             AgentError::Unreadable(format!(
                 "{} capabilities answered no readable response: {why}",
-                self.adapter.display()
+                self.caller.adapter().display()
             ))
         })?;
         Ok(declared)
@@ -214,11 +165,11 @@ impl Agent for AgentExec {
     }
 
     fn launch(&self, launch: &Launch) -> Result<Argv, AgentError> {
-        self.call("launch", fields_of(launch))
+        self.call("launch", exec::fields_of(launch))
     }
 
     fn resume(&self, resume: &Resume) -> Result<Argv, AgentError> {
-        self.call("resume", fields_of(resume))
+        self.call("resume", exec::fields_of(resume))
     }
 
     /// Every seat in one call.
@@ -226,7 +177,7 @@ impl Agent for AgentExec {
         let asked = Seats {
             seats: seats.to_vec(),
         };
-        self.call::<Activities>("read", fields_of(&asked))
+        self.call::<Activities>("read", exec::fields_of(&asked))
             .map(|answered| answered.seats)
     }
 
@@ -241,7 +192,7 @@ impl Agent for AgentExec {
         let asked = Seats {
             seats: seats.to_vec(),
         };
-        self.call::<Contexts>("context", fields_of(&asked))
+        self.call::<Contexts>("context", exec::fields_of(&asked))
             .map(|answered| answered.seats)
     }
 }
@@ -250,6 +201,7 @@ impl Agent for AgentExec {
 /// (`super::tests`): an adapter written as a `#!/bin/sh` stub.
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::path::PathBuf;
     use std::process::Command;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;

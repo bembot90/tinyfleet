@@ -8,6 +8,7 @@
 //! published document and the policy, never the process table, and it writes
 //! nothing at all.
 
+mod adapter_check;
 mod agent;
 mod attach;
 mod doctor;

@@ -27,18 +27,18 @@
 //! no adapter.
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-use fleet_controller::adapter::conformance::{self, Ctx, Live, Passed};
+use fleet_controller::adapter::conformance::{self, Ctx, Live};
 use fleet_controller::adapter::{self, AdapterSource, Agent, Version};
 use fleet_controller::host::TmuxHost;
 use fleet_controller::platform;
 use fleet_core::agent::schema;
+use fleet_core::pack::AdapterKind;
 use fleet_core::policy::Value;
 
+use crate::adapter_check;
 use crate::exit::Exit;
 use crate::item;
 
@@ -115,9 +115,6 @@ pub fn command(verb: &Verb) -> Exit {
     }
 }
 
-/// Which dir this process makes next, beside its pid.
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-
 /// The temp dir the checks run in, and the scratch tmux server `--live` runs
 /// its session on: the server ended and the dir removed whole when this is
 /// dropped — on every return after it is made, and on a panic's unwind.
@@ -152,18 +149,8 @@ fn check(
     live: bool,
     model: Option<String>,
 ) -> Exit {
-    // Either form `[agent] adapter` takes, and nothing else: a path that is
-    // not absolute is a separator in a name, which no pack's adapter carries.
-    if let Some(given) =
-        adapter.filter(|given| !given.starts_with('/') && (given.is_empty() || given.contains('/')))
-    {
-        return said(
-            Exit::Usage,
-            format!(
-                "--adapter takes an absolute path to an executable or the name of an agent \
-                 adapter an installed pack carries, and `{given}` is neither"
-            ),
-        );
+    if let Some(why) = adapter_check::neither_form(adapter, AdapterKind::Agent) {
+        return said(Exit::Usage, why);
     }
     // A relative --fixtures is the caller's directory's, and made absolute
     // here: `{fixture}` is filled with a case's absolute path.
@@ -186,9 +173,7 @@ fn check(
         }
     };
 
-    let n = NEXT.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("fleet-agent-check-{}-{n}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = adapter_check::scratch_dir("agent");
     let mut scratch = Scratch { dir, host: None };
     if let Err(e) = std::fs::create_dir_all(&scratch.dir) {
         return said(
@@ -279,26 +264,7 @@ fn check(
         model: model.as_deref(),
         live: live.as_ref(),
     };
-    let (mut passed, mut failed, mut skipped) = (0, 0, 0);
-    for (name, answer) in conformance::run(&ctx) {
-        match answer {
-            Ok(Passed::Pass) => {
-                passed += 1;
-                println!("PASS  {name}");
-            }
-            Ok(Passed::Skip(why)) => {
-                skipped += 1;
-                println!("SKIP  {name}: {why}");
-            }
-            Err(why) => {
-                failed += 1;
-                println!("FAIL  {name}: {why}");
-            }
-        }
-        // Each line is owed to a pipe as it lands, before the next check is
-        // asked, whatever buffering std picks for a stdout that is no terminal.
-        let _ = std::io::stdout().flush();
-    }
+    let tally = adapter_check::tally(conformance::run(&ctx));
     // The agent by the name its version answers, else the adapter's; under
     // --live with the version too, because the live steps rest on what that
     // version of the agent was measured to do (E14).
@@ -320,12 +286,8 @@ fn check(
         (Some(_), Some(_)) => format!("{name}, with no version installed"),
         (Some(_), None) => format!("{name}, whose version did not answer"),
     };
-    println!("agent check: {named} — {passed} passed, {failed} failed, {skipped} skipped");
-    if failed == 0 {
-        Exit::Done
-    } else {
-        Exit::Refused
-    }
+    println!("agent check: {named} — {}", tally.counts());
+    tally.exit()
 }
 
 #[cfg(test)]

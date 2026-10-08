@@ -17,9 +17,9 @@
 //! THE CALL ITSELF IS EVERY ADAPTER'S: the spawn, the bound and its group
 //! kill, the row an exit is and the line the adapter said last are
 //! [`crate::adapter::exec`]'s, which the agent contract's caller shares. What
-//! is the store's here is the words: each row becomes a refusal naming the
-//! store contract, a refusal on the record is read by its reason, and a write
-//! that outran its bound says its effect cannot be told.
+//! is the store's here is what the words carry: the contract they name, a
+//! refusal on the record read by its reason, and a write that outran its bound
+//! saying its effect cannot be told.
 //!
 //! BOUNDED like every store call: [`STORE_TIMEOUT`], then the adapter's whole
 //! process group is killed and the call is could not tell — and for a write,
@@ -48,7 +48,7 @@ use super::{
     validated, validated_new, writable, Filter, HoldId, Item, ItemId, ItemSummary, NewItem, Order,
     ReadProof, RunRecord, Store, StoreError, Update, Version, WithdrawFence, STORE_TIMEOUT,
 };
-use crate::adapter::exec::{self, Exited, Ran, Unrun};
+use crate::adapter::exec::{self, Caller, Ran, Row, Unrun};
 use crate::entry::{self, Body, Entry};
 use crate::seat::actor::Actor;
 
@@ -73,17 +73,7 @@ const UNTOLD: &str = " — the write's effect cannot be told, so the item must b
 
 /// The store as an adapter executable, scoped to one project.
 pub struct Exec {
-    adapter: PathBuf,
-    root: PathBuf,
-    timeout: Duration,
-    /// The `PATH` every call runs under, or `None` for this process's own.
-    path: Option<String>,
-}
-
-/// Exit 1's answer: the refusal, under its one key.
-#[derive(Deserialize)]
-struct Refused {
-    refused: Refusal,
+    caller: Caller,
 }
 
 /// `timeline`'s answer, each entry held as the value it came as until it is
@@ -98,16 +88,15 @@ impl Exec {
     /// bounded by [`STORE_TIMEOUT`].
     pub fn at(adapter: &Path, root: &Path) -> Exec {
         Exec {
-            adapter: adapter.to_path_buf(),
-            root: root.to_path_buf(),
-            timeout: STORE_TIMEOUT,
-            path: None,
+            caller: Caller::at(adapter, root, STORE_TIMEOUT),
         }
     }
 
     /// The same store under another bound.
     pub fn with_timeout(self, timeout: Duration) -> Exec {
-        Exec { timeout, ..self }
+        Exec {
+            caller: self.caller.with_timeout(timeout),
+        }
     }
 
     /// The same store with every call run under `path` as its `PATH`, in
@@ -116,8 +105,7 @@ impl Exec {
     /// constructed one and never the manager's.
     pub fn on_path(self, path: String) -> Exec {
         Exec {
-            path: Some(path),
-            ..self
+            caller: self.caller.on_path(path),
         }
     }
 
@@ -131,61 +119,43 @@ impl Exec {
         verb: &str,
         fields: Map<String, Value>,
     ) -> Result<(T, String), StoreError> {
-        let adapter = self.adapter.display();
+        let adapter = self.caller.adapter().display();
         let named = format!("{adapter} {verb}");
         let subject = fields
             .get("id")
             .or_else(|| fields.get("hold"))
             .and_then(Value::as_str)
             .map(str::to_string);
-        let request = types::request(fields, &self.root);
-        let ran = exec::run(
-            &self.adapter,
-            verb,
-            &request,
-            self.timeout,
-            self.path.as_deref(),
-        )
-        .map_err(|unrun| match unrun {
-            Unrun::CouldNotRun(why) => StoreError::Unreadable(format!(
-                "{adapter} could not be run ({why}) — nothing was written"
-            )),
-            Unrun::Deadline(why) => {
-                let mut refusal = format!("{named} {why}");
-                if WRITES.contains(&verb) {
-                    refusal.push_str(UNTOLD);
+        let request = types::request(fields, self.caller.root());
+        let ran = self
+            .caller
+            .call(verb, &request)
+            .map_err(|unrun| match unrun {
+                Unrun::CouldNotRun(why) => StoreError::Unreadable(format!(
+                    "{adapter} could not be run ({why}) — nothing was written"
+                )),
+                Unrun::Deadline(why) => {
+                    let mut refusal = format!("{named} {why}");
+                    if WRITES.contains(&verb) {
+                        refusal.push_str(UNTOLD);
+                    }
+                    StoreError::Unreadable(refusal)
                 }
-                StoreError::Unreadable(refusal)
-            }
-        })?;
-        let said = &ran.said;
-        let read = match &ran.exited {
-            Exited::Answered(stdout) => types::answer::<T>(stdout)
-                .map(|body| (body, stdout.clone()))
+            })?;
+        let read = match exec::row(&ran, &named, "store") {
+            Row::Answered(stdout) => types::answer::<T>(stdout)
+                .map(|body| (body, stdout.to_string()))
                 .map_err(|why| {
                     StoreError::Unreadable(format!("{named} answered no readable response: {why}"))
                 }),
-            Exited::Refused(stdout) => Err(match types::answer::<Refused>(stdout) {
-                Ok(Refused { refused }) => on_the_record(refused, subject),
+            Row::Refused(stdout) => Err(match types::answer::<exec::Refused<Refusal>>(stdout) {
+                Ok(exec::Refused { refused }) => on_the_record(refused, subject),
                 Err(_) => StoreError::Unreadable(format!(
-                    "{named} refused with no readable refusal: {said}"
+                    "{named} refused with no readable refusal: {}",
+                    ran.said
                 )),
             }),
-            Exited::Usage => Err(StoreError::Unreadable(format!(
-                "{named} refused the request as usage (exit 2) — this fleet and the adapter do \
-                 not speak the same store contract: {said}"
-            ))),
-            Exited::CouldNotTell(error) => Err(StoreError::Unreadable(format!(
-                "{named} could not tell: {}",
-                error.as_deref().unwrap_or(said)
-            ))),
-            Exited::OffTable(code) => Err(StoreError::Unreadable(format!(
-                "{named} exited {code}, which is not a row of the store contract's exit table: \
-                 {said}"
-            ))),
-            Exited::Signalled => Err(StoreError::Unreadable(format!(
-                "{named} was ended by a signal: {said}"
-            ))),
+            Row::Unreadable(text) => Err(StoreError::Unreadable(text)),
         };
         read.map_err(|refused| carrying_stderr(refused, &ran))
     }
@@ -236,17 +206,10 @@ fn carrying_stderr(refused: StoreError, ran: &Ran) -> StoreError {
     }
 }
 
-/// A `json!` object as the fields of a request.
-fn fields(value: Value) -> Map<String, Value> {
-    match value {
-        Value::Object(fields) => fields,
-        _ => Map::new(),
-    }
-}
-
 impl Store for Exec {
     fn show(&self, item: &str) -> Result<Item, StoreError> {
-        let (Shown { item: read }, raw) = self.call("show", fields(json!({ "id": item })))?;
+        let (Shown { item: read }, raw) =
+            self.call("show", exec::fields_of(&json!({ "id": item })))?;
         Ok(Item {
             proof: ReadProof::of(raw),
             ..read
@@ -254,18 +217,22 @@ impl Store for Exec {
     }
 
     fn resolve(&self, id: &str) -> Result<ItemId, StoreError> {
-        let (Resolved { id }, _) = self.call("resolve", fields(json!({ "id": id })))?;
+        let (Resolved { id }, _) = self.call("resolve", exec::fields_of(&json!({ "id": id })))?;
         Ok(id)
     }
 
     fn list(&self, filter: &Filter) -> Result<Vec<ItemSummary>, StoreError> {
-        let (Listed { items }, _) = self.call("list", fields(json!({ "filter": filter })))?;
+        let (Listed { items }, _) =
+            self.call("list", exec::fields_of(&json!({ "filter": filter })))?;
         Ok(items)
     }
 
     fn create(&self, item: &NewItem, by: &Actor) -> Result<ItemId, StoreError> {
         validated_new(item)?;
-        let (Created { id }, _) = self.call("create", fields(json!({ "item": item, "by": by })))?;
+        let (Created { id }, _) = self.call(
+            "create",
+            exec::fields_of(&json!({ "item": item, "by": by })),
+        )?;
         Ok(id)
     }
 
@@ -273,15 +240,15 @@ impl Store for Exec {
     /// a status other than `open` is usage on this side of the call too.
     fn update(&self, id: &ItemId, change: &Update, by: &Actor) -> Result<(), StoreError> {
         writable(change)?;
-        let mut request = fields(json!({ "id": id, "by": by }));
-        request.extend(fields(json!(change)));
+        let mut request = exec::fields_of(&json!({ "id": id, "by": by }));
+        request.extend(exec::fields_of(&json!(change)));
         self.call::<Answered>("update", request).map(|_| ())
     }
 
     fn order_set(&self, id: &ItemId, order: &Order, by: &Actor) -> Result<(), StoreError> {
         self.call::<Answered>(
             "order.set",
-            fields(json!({ "id": id, "by": by, "order": order })),
+            exec::fields_of(&json!({ "id": id, "by": by, "order": order })),
         )
         .map(|_| ())
     }
@@ -294,27 +261,33 @@ impl Store for Exec {
         fence: &WithdrawFence,
         by: &Actor,
     ) -> Result<(), StoreError> {
-        let mut request = fields(json!({ "id": id, "by": by }));
-        request.extend(fields(json!(fence)));
+        let mut request = exec::fields_of(&json!({ "id": id, "by": by }));
+        request.extend(exec::fields_of(&json!(fence)));
         self.call::<Answered>("order.withdraw", request).map(|_| ())
     }
 
     fn run_set(&self, id: &ItemId, run: &RunRecord, by: &Actor) -> Result<(), StoreError> {
-        self.call::<Answered>("run.set", fields(json!({ "id": id, "by": by, "run": run })))
-            .map(|_| ())
+        self.call::<Answered>(
+            "run.set",
+            exec::fields_of(&json!({ "id": id, "by": by, "run": run })),
+        )
+        .map(|_| ())
     }
 
     fn hold_raise(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<HoldId, StoreError> {
         let (Raised { hold }, _) = self.call(
             "hold.raise",
-            fields(json!({ "id": id, "by": by, "reason": reason })),
+            exec::fields_of(&json!({ "id": id, "by": by, "reason": reason })),
         )?;
         Ok(hold)
     }
 
     fn hold_clear(&self, hold: &HoldId, by: &Actor) -> Result<(), StoreError> {
-        self.call::<Answered>("hold.clear", fields(json!({ "hold": hold, "by": by })))
-            .map(|_| ())
+        self.call::<Answered>(
+            "hold.clear",
+            exec::fields_of(&json!({ "hold": hold, "by": by })),
+        )
+        .map(|_| ())
     }
 
     fn holds_open(&self) -> Result<Vec<HoldId>, StoreError> {
@@ -325,7 +298,7 @@ impl Store for Exec {
     fn close(&self, id: &ItemId, reason: &str, by: &Actor) -> Result<(), StoreError> {
         self.call::<Answered>(
             "close",
-            fields(json!({ "id": id, "by": by, "reason": reason })),
+            exec::fields_of(&json!({ "id": id, "by": by, "reason": reason })),
         )
         .map(|_| ())
     }
@@ -340,7 +313,7 @@ impl Store for Exec {
         })?;
         let (Appended { entry }, _) = self.call(
             "append",
-            fields(json!({ "id": item, "by": by, "entry": entry })),
+            exec::fields_of(&json!({ "id": item, "by": by, "entry": entry })),
         )?;
         Ok(entry)
     }
@@ -352,7 +325,8 @@ impl Store for Exec {
     /// not read — an actor in any other shape among them — refuses the whole
     /// timeline, naming it.
     fn timeline(&self, item: &ItemId) -> Result<Vec<Entry>, StoreError> {
-        let (Entries { entries }, _) = self.call("timeline", fields(json!({ "id": item })))?;
+        let (Entries { entries }, _) =
+            self.call("timeline", exec::fields_of(&json!({ "id": item })))?;
         entries
             .into_iter()
             .enumerate()
@@ -361,7 +335,7 @@ impl Store for Exec {
                     StoreError::Unreadable(format!(
                         "{} timeline answered an entry for {item}, row {at}, that does not \
                          read: {why}",
-                        self.adapter.display()
+                        self.caller.adapter().display()
                     ))
                 })
             })
@@ -376,7 +350,7 @@ impl Store for Exec {
         declared.validate().map_err(|why| {
             StoreError::Unreadable(format!(
                 "{} capabilities answered no readable response: {why}",
-                self.adapter.display()
+                self.caller.adapter().display()
             ))
         })?;
         Ok(declared)
@@ -403,7 +377,7 @@ impl Store for Exec {
         let into = std::path::absolute(into).unwrap_or_else(|_| into.to_path_buf());
         let (Exported { file }, _) = self.call(
             "export",
-            fields(json!({ "into": into.display().to_string() })),
+            exec::fields_of(&json!({ "into": into.display().to_string() })),
         )?;
         Ok(PathBuf::from(file))
     }
@@ -419,7 +393,7 @@ impl Store for Exec {
         let into = std::path::absolute(into).unwrap_or_else(|_| into.to_path_buf());
         let (Scratched { root }, _) = self.call(
             "scratch",
-            fields(json!({ "into": into.display().to_string() })),
+            exec::fields_of(&json!({ "into": into.display().to_string() })),
         )?;
         Ok(PathBuf::from(root))
     }

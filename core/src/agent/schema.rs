@@ -24,13 +24,13 @@
 //! the doc comments the derive carries.
 
 use schemars::generate::SchemaSettings;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 
 use super::types::{
     Activities, Argv, Capabilities, Contexts, Launch, Refusal, Resume, Seats, Version,
     CONTRACT_VERSION,
 };
-use crate::schema::{self, fields, generated, refer, strip};
+use crate::schema::{self, generated};
 
 /// The document: every verb's request and response, the refusal, the error,
 /// and the definitions they share.
@@ -38,7 +38,6 @@ pub fn document() -> Value {
     let mut generator = SchemaSettings::draft2020_12().into_generator();
     let g = &mut generator;
 
-    let text = json!({"type": "string"});
     let none = Map::new;
     let argv = generated::<Argv>(g);
     let seats = generated::<Seats>(g);
@@ -54,38 +53,7 @@ pub fn document() -> Value {
         ("context", seats, generated::<Contexts>(g)),
     ];
 
-    let version = json!({"const": CONTRACT_VERSION});
-    let mut verbs = Map::new();
-    for (verb, request, response) in each {
-        let request = fields(
-            request,
-            [("schema_version", version.clone()), ("root", text.clone())],
-        );
-        let response = fields(response, [("schema_version", version.clone())]);
-        verbs.insert(
-            String::from(verb),
-            json!({"request": request, "response": response}),
-        );
-    }
-    let refusal = fields(
-        none(),
-        [
-            ("schema_version", version.clone()),
-            ("refused", refer::<Refusal>(g)),
-        ],
-    );
-    let error = fields(none(), [("schema_version", version), ("error", text)]);
-
-    let mut definitions = g.take_definitions(true);
-    definitions.values_mut().for_each(strip);
-    json!({
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "schema_version": CONTRACT_VERSION,
-        "verbs": verbs,
-        "refusal": refusal,
-        "error": error,
-        "$defs": definitions,
-    })
+    schema::document::<Refusal>(g, CONTRACT_VERSION, each)
 }
 
 /// The document as the committed file spells it: two-space indented, keys in
@@ -96,6 +64,8 @@ pub fn text() -> String {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     use crate::schema::{check, unknown_keywords};
 

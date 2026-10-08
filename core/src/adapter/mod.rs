@@ -19,9 +19,10 @@
 //! THIS MODULE KNOWS NO CONTRACT. It never depends on `store`, and what it
 //! words names the kind its caller passes: [`open::resolve`] words every
 //! refusal of an adapter setting once, naming the adapter's kind, and
-//! [`exec::run`] answers a typed row of the exit table, which each contract's
-//! own caller turns into its own sentence, naming its own contract.
+//! [`exec::run`] answers a typed row of the exit table, which [`exec::row`]
+//! words naming the contract its caller passes.
 
+pub mod check;
 pub mod exec;
 pub mod open;
 

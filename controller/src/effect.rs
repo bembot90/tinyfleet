@@ -1064,7 +1064,7 @@ pub fn type_turn(
 /// agent read, or why there is none to name.
 fn activity_word(reading: &SeatActivity) -> String {
     match reading.session_id {
-        Some(_) => adapter::word(reading.activity).to_string(),
+        Some(_) => reading.activity.word().to_string(),
         None => "unlisted".to_string(),
     }
 }

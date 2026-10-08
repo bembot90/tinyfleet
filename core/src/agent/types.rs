@@ -314,6 +314,19 @@ pub enum Activity {
     Unknown,
 }
 
+impl Activity {
+    /// The activity's own word, as the contract spells it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Activity::Starting => "starting",
+            Activity::Busy => "busy",
+            Activity::Idle => "idle",
+            Activity::Blocked => "blocked",
+            Activity::Unknown => "unknown",
+        }
+    }
+}
+
 /// What a blocked seat waits on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -322,6 +335,18 @@ pub enum BlockedOn {
     Question,
     LoggedOut,
     UsageLimit,
+}
+
+impl BlockedOn {
+    /// The blocked reason's own word, as the contract spells it.
+    pub fn word(self) -> &'static str {
+        match self {
+            BlockedOn::Permission => "permission",
+            BlockedOn::Question => "question",
+            BlockedOn::LoggedOut => "logged_out",
+            BlockedOn::UsageLimit => "usage_limit",
+        }
+    }
 }
 
 /// Where a reading came from: the agent's own typed state, or rules the
@@ -400,6 +425,16 @@ pub enum RefusalReason {
     Missing,
 }
 
+impl RefusalReason {
+    /// The refusal reason's own word, as the contract spells it.
+    pub fn word(self) -> &'static str {
+        match self {
+            RefusalReason::Unsupported => "unsupported",
+            RefusalReason::Missing => "missing",
+        }
+    }
+}
+
 // ---- the envelope ---------------------------------------------------------------
 
 /// A verb's fields as one request: `schema_version` at [`CONTRACT_VERSION`]
@@ -442,6 +477,35 @@ mod tests {
         assert_eq!(timeout_from(None), Duration::from_secs(20));
         assert_eq!(AGENT_TIMEOUT, Duration::from_secs(20));
         assert_eq!(TIMEOUT_VAR, "FLEET_AGENT_TIMEOUT_MS");
+    }
+
+    /// Each word is the variant's serde string, for every variant of the
+    /// three: the word a person reads is the word the contract carries.
+    #[test]
+    fn each_word_is_the_variants_serde_string() {
+        fn serde(value: impl Serialize) -> serde_json::Value {
+            serde_json::to_value(value).expect("a word serializes")
+        }
+        for activity in [
+            Activity::Starting,
+            Activity::Busy,
+            Activity::Idle,
+            Activity::Blocked,
+            Activity::Unknown,
+        ] {
+            assert_eq!(serde(activity), activity.word(), "{activity:?}");
+        }
+        for on in [
+            BlockedOn::Permission,
+            BlockedOn::Question,
+            BlockedOn::LoggedOut,
+            BlockedOn::UsageLimit,
+        ] {
+            assert_eq!(serde(on), on.word(), "{on:?}");
+        }
+        for reason in [RefusalReason::Unsupported, RefusalReason::Missing] {
+            assert_eq!(serde(reason), reason.word(), "{reason:?}");
+        }
     }
 
     /// The setting, in milliseconds: the value this reader returns for it, and

@@ -36,6 +36,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
 
+pub use fleet_core::adapter::check::Passed;
+use fleet_core::adapter::check::{self, ensure, Answer};
 use fleet_core::adapter::exec::{self, Exited, Ran, Unrun};
 use fleet_core::agent::types::{self, CONTRACT_VERSION};
 use fleet_core::seat::actor::Actor;
@@ -45,18 +47,10 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use super::{
-    Activity, Agent, AgentError, AgentExec, Argv, BlockedOn, Capabilities, Launch, Permissions,
-    Posture, RefusalReason, Resume, SeatActivity, SeatRef,
+    Activity, Agent, AgentError, AgentExec, Argv, Capabilities, Launch, Permissions, Posture,
+    RefusalReason, Resume, SeatActivity, SeatRef,
 };
 use crate::host::{self, Host, HostRead, PaneState};
-
-/// A check that did not fail: it passed, or it was not asked of this adapter,
-/// and why.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Passed {
-    Pass,
-    Skip(String),
-}
 
 /// What the checks are run against.
 ///
@@ -170,10 +164,8 @@ pub const CHECKS: &[(&str, Check)] = &[
 pub fn run<'c>(
     ctx: &'c Ctx<'c>,
 ) -> impl Iterator<Item = (&'static str, Result<Passed, String>)> + 'c {
-    CHECKS.iter().map(move |(name, check)| (*name, check(ctx)))
+    check::run(CHECKS, ctx)
 }
-
-type Answer = Result<Passed, String>;
 
 /// The session id no resume check's agent has: well-formed, so an adapter
 /// that holds ids to a shape reads it, and one no agent mints.
@@ -214,24 +206,10 @@ fn answered<T>(call: &str, answer: Result<T, AgentError>) -> Result<T, String> {
 /// A refusal, by its kind and its text.
 fn refusal(e: &AgentError) -> String {
     match e {
-        AgentError::Refused(refused) => format!(
-            "Refused {} ({})",
-            match refused.reason {
-                RefusalReason::Unsupported => "unsupported",
-                RefusalReason::Missing => "missing",
-            },
-            refused.message
-        ),
+        AgentError::Refused(refused) => {
+            format!("Refused {} ({})", refused.reason.word(), refused.message)
+        }
         AgentError::Unreadable(why) => format!("Unreadable ({why})"),
-    }
-}
-
-/// The contract's word on a reading, or `why` as the failure.
-fn ensure(held: bool, why: impl FnOnce() -> String) -> Result<(), String> {
-    if held {
-        Ok(())
-    } else {
-        Err(why())
     }
 }
 
@@ -885,7 +863,7 @@ fn watch(
         let last = match look(ctx, live, launched, session_id) {
             Looked::Read(row) if wanted(&row) => return Ok(row),
             Looked::Read(row) => {
-                let word = word(row.activity);
+                let word = row.activity.word();
                 if trail.last() != Some(&word) {
                     trail.push(word);
                 }
@@ -893,7 +871,7 @@ fn watch(
                     return Err(format!(
                         "read answered blocked{}{}",
                         row.blocked_on
-                            .map(|on| format!(" on {}", blocked_word(on)))
+                            .map(|on| format!(" on {}", on.word()))
                             .unwrap_or_default(),
                         row.cause
                             .map(|cause| format!(" ({cause})"))
@@ -925,25 +903,6 @@ fn watch(
             ));
         }
         std::thread::sleep(crate::effect::WATCH_TICK.min(deadline - now));
-    }
-}
-
-fn word(activity: Activity) -> &'static str {
-    match activity {
-        Activity::Starting => "starting",
-        Activity::Busy => "busy",
-        Activity::Idle => "idle",
-        Activity::Blocked => "blocked",
-        Activity::Unknown => "unknown",
-    }
-}
-
-fn blocked_word(on: BlockedOn) -> &'static str {
-    match on {
-        BlockedOn::Permission => "permission",
-        BlockedOn::Question => "question",
-        BlockedOn::LoggedOut => "logged_out",
-        BlockedOn::UsageLimit => "usage_limit",
     }
 }
 
