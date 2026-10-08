@@ -221,7 +221,7 @@ fn nowhere(name: &str) -> String {
     format!(
         "fleet store check: no store adapter named `{name}` in the installed packs — `{}` \
          installs the one fleet-packs carries\n",
-        fleet_core::store::pack_line(
+        fleet_core::pack::AdapterKind::Store.pack_line(
             fleet_core::supported::PINNED_PACKS_SOURCE,
             name,
             fleet_core::supported::PINNED_PACKS

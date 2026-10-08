@@ -2404,7 +2404,7 @@ fn start_refuses_a_fleet_whose_agent_pack_is_removed_naming_the_pack_add_line() 
             said.contains(&format!(
                 "no agent adapter named `{AGENT}` in the installed packs — `{}` installs the one \
                  fleet-packs carries — nothing was loaded",
-                fleet_controller::adapter::pack_line(
+                fleet_core::pack::AdapterKind::Agent.pack_line(
                     fleet_core::supported::PINNED_PACKS_SOURCE,
                     AGENT,
                     fleet_core::supported::PINNED_PACKS

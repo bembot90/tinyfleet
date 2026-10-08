@@ -36,9 +36,9 @@ pub use fleet_core::agent::types::{
     RefusalReason, Resume, SeatActivity, SeatContext, SeatRef, Version,
 };
 
+use fleet_core::adapter::open::{resolve, Wanted};
 use fleet_core::agent::types::TIMEOUT_VAR;
-use fleet_core::item::brief::Packs;
-use fleet_core::pack;
+use fleet_core::pack::AdapterKind;
 pub use fleet_core::store::{AdapterSource, PackDirs};
 
 pub mod conformance;
@@ -135,8 +135,8 @@ pub trait Agent {
 // ---- opening the agent ------------------------------------------------------
 
 /// What a caller knows when it opens the agent: the fleet's own file, which
-/// names the adapter, where a name is resolved, and where this machine keeps
-/// its state.
+/// names the adapter, where a name is resolved, and the search path a pack's
+/// adapter runs on.
 pub struct Opening<'a> {
     /// The fleet's OWN file, which `[agent] adapter` is read out of: the key is
     /// the fleet's and fleet-wide, never a project's (ruling 11).
@@ -154,8 +154,10 @@ pub struct Opening<'a> {
     /// The bound on each call of an adapter executable opened: what
     /// [`TIMEOUT_VAR`] sets, else [`fleet_core::agent::types::AGENT_TIMEOUT`].
     pub timeout: std::time::Duration,
-    /// The home the constructed `PATH` a pack's adapter runs on is built off.
-    pub home: &'a Path,
+    /// The PATH a pack's agent adapter runs on: the caller's constructed child
+    /// PATH ([`crate::platform::child_path`]), as the store's
+    /// [`Opening::search_path`](fleet_core::store::Opening::search_path) is.
+    pub search_path: &'a str,
 }
 
 /// The agent a caller opened, and why it may issue no effect where it may
@@ -163,15 +165,14 @@ pub struct Opening<'a> {
 pub struct Opened {
     /// The name `[agent] adapter` will call this adapter by.
     pub name: String,
-    pub agent: Box<dyn Agent>,
+    /// The same agent as the executable it is: what `fleet agent check` speaks
+    /// to past the verbs' own types, for a check about an exit or a recorded
+    /// case.
+    pub agent: AgentExec,
     /// Why no effect may be issued through this agent — nothing it could launch
     /// resolved — or `None` for an agent that can. Reads are answered either
     /// way: a loop that cannot start a session still observes and publishes.
     pub effects_off: Option<String>,
-    /// The same agent as the executable it is: what `fleet agent check` speaks
-    /// to past the verbs' own types, for a check about an exit or a recorded
-    /// case.
-    pub exec: AgentExec,
     /// The directory holding the adapter's own `adapter.toml`, where it has
     /// one: a pack's adapter, or an executable named by path that sits beside
     /// one. What the adapter ships beside it — its `fixtures/` — is read from
@@ -207,75 +208,20 @@ pub const DEFAULT_AGENT_ADAPTER: &str = "claude-code";
 /// carries why where its capabilities or its version do not answer, or its
 /// version says no agent is installed. A loop still observes through it.
 pub fn open(opening: &Opening) -> Result<Opened, String> {
-    let named = fleet_core::policy::read("agent", "adapter", opening.policy)
-        .map_err(|unlisted| unlisted.to_string())?;
-    match named {
-        None => by_name(opening, DEFAULT_AGENT_ADAPTER),
-        Some(toml::Value::String(path)) if path.starts_with('/') => {
-            let adapter = Path::new(path);
-            if !fleet_core::process::is_executable_file(adapter) {
-                return Err(unopened(opening.source, Unopened::NotExecutable(path)));
-            }
-            let dir = adapter
-                .parent()
-                .filter(|dir| dir.join(pack::ADAPTER_MANIFEST).is_file())
-                .map(Path::to_path_buf);
-            Ok(gated(
-                path.clone(),
-                AgentExec::at(adapter, opening.root).with_timeout(opening.timeout),
-                dir,
-            ))
-        }
-        Some(toml::Value::String(name)) if !name.is_empty() && !name.contains('/') => {
-            by_name(opening, name)
-        }
-        Some(toml::Value::String(other)) => Err(unopened(
-            opening.source,
-            Unopened::NeitherForm(other.clone()),
-        )),
-        Some(other) => Err(unopened(
-            opening.source,
-            Unopened::NeitherForm(other.to_string()),
-        )),
-    }
-}
-
-/// The agent adapter the installed packs carry under `name`: the highest layer
-/// holding `adapters/agent/<name>/adapter.toml` carries the adapter WHOLE, so
-/// its entry is the file beside that one and never another layer's.
-///
-/// It runs on the constructed child `PATH` built off [`Opening::home`], with
-/// the directory of each runtime that layer runs under put in front where the
-/// path misses it, as a store adapter's does.
-fn by_name(opening: &Opening, name: &str) -> Result<Opened, String> {
-    let Some(installed) = opening.packs else {
-        return Err(unopened(opening.source, Unopened::NoPacks(name)));
+    let resolved = resolve(&Wanted {
+        kind: AdapterKind::Agent,
+        policy: opening.policy,
+        source: opening.source,
+        search_path: opening.search_path,
+        packs: opening.packs,
+        default: DEFAULT_AGENT_ADAPTER,
+    })?;
+    let agent = AgentExec::at(&resolved.entry, opening.root).with_timeout(opening.timeout);
+    let agent = match resolved.path {
+        Some(path) => agent.on_path(path),
+        None => agent,
     };
-    // A layering that REFUSES is refused, the default's name included — which
-    // adapter the fleet runs is then exactly what cannot be told.
-    let packs = Packs::under(installed.packs_dir, installed.defaults_dir)
-        .map_err(|stop| unopened(opening.source, Unopened::Layers(name, stop.message)))?;
-    let Some((carrier, dir)) = pack::adapter_dir(&packs, pack::AdapterKind::Agent, name) else {
-        return Err(unopened(opening.source, Unopened::Nowhere(name)));
-    };
-    // The manifest is held to the format here, its entry's executable bit
-    // included, so an adapter `fleet pack check` refuses is never run.
-    let manifest = pack::adapter_manifest(&dir)
-        .map_err(|defect| unopened(opening.source, Unopened::Defect(name, defect)))?;
-    let entry = dir.join(&manifest.entry);
-    let path = fleet_core::runtime::adapter_path(
-        carrier,
-        &packs.layers,
-        &crate::platform::child_path(opening.home),
-    )
-    .map_err(|stop| unopened(opening.source, Unopened::Unrun(name, stop.message)))?;
-    Ok(gated(
-        name.to_string(),
-        AgentExec::at(&entry, opening.root)
-            .with_timeout(opening.timeout)
-            .on_path(path),
-        Some(dir),
-    ))
+    Ok(gated(resolved.named, agent, resolved.dir))
 }
 
 /// An adapter executable opened, and its effects gate read off its own
@@ -297,8 +243,7 @@ fn gated(name: String, agent: AgentExec, dir: Option<PathBuf>) -> Opened {
     };
     Opened {
         name,
-        exec: agent.clone(),
-        agent: Box::new(agent),
+        agent,
         effects_off,
         dir,
     }
@@ -358,77 +303,6 @@ impl Agent for Unanswered {
     }
 }
 
-/// Where the pack carrying the agent adapter `name` sits in a repository laid
-/// out as fleet-packs is: the source `fleet create` installs it from.
-pub fn pack_source(repo: &str, name: &str) -> String {
-    format!(
-        "{repo}//{}/{}/{name}",
-        pack::ADAPTERS,
-        pack::AdapterKind::Agent.as_str()
-    )
-}
-
-/// The line that installs the agent adapter `name` out of `repo` at
-/// `version`: what a refusal of a name no installed pack carries names, and
-/// what `fleet create` names where it could not install that pack.
-pub fn pack_line(repo: &str, name: &str, version: &str) -> String {
-    format!(
-        "fleet pack add {} --version {version}",
-        pack_source(repo, name)
-    )
-}
-
-/// Why the adapter `[agent] adapter` names is not opened, wherever the setting
-/// was written.
-enum Unopened<'s> {
-    NotExecutable(&'s str),
-    NeitherForm(String),
-    NoPacks(&'s str),
-    Layers(&'s str, String),
-    Nowhere(&'s str),
-    Defect(&'s str, pack::Defect),
-    Unrun(&'s str, String),
-}
-
-/// EVERY REFUSAL OF THE SETTING IS WORDED HERE, and nowhere else, so what a
-/// refusal says about where the setting came from is said once.
-fn unopened(source: AdapterSource, why: Unopened) -> String {
-    let written = match source {
-        AdapterSource::Setting => "[agent] adapter",
-        AdapterSource::Flag => "--adapter",
-    };
-    match why {
-        Unopened::NotExecutable(path) => {
-            format!("{written} names `{path}`, which is not an executable file")
-        }
-        Unopened::NeitherForm(said) => format!(
-            "{written} is `{said}` — it is the name of an agent adapter an installed pack \
-             carries, or an absolute path to an adapter executable"
-        ),
-        Unopened::NoPacks(name) => format!(
-            "no agent adapter named `{name}` resolves: no packs are installed here to carry one"
-        ),
-        Unopened::Layers(name, why) => {
-            format!("no agent adapter named `{name}` resolves: {why}")
-        }
-        Unopened::Nowhere(name) => format!(
-            "no agent adapter named `{name}` in the installed packs — `{}` installs the one \
-             fleet-packs carries",
-            pack_line(
-                fleet_core::supported::PINNED_PACKS_SOURCE,
-                name,
-                fleet_core::supported::PINNED_PACKS
-            )
-        ),
-        Unopened::Defect(name, defect) => {
-            format!("the agent adapter `{name}` cannot be opened: {defect}")
-        }
-        Unopened::Unrun(name, why) => {
-            format!("the agent adapter `{name}` cannot be opened: {why}")
-        }
-    }
-}
-
 /// What an [`Opening`] borrows about the fleet, owned, for a caller that holds
 /// only where the fleet's file and the machine directory are: the file as a
 /// table, the directory it is in, and the machine's packs over the binary's
@@ -479,7 +353,7 @@ impl Setting {
 
     /// The opening over this fleet, as `[agent] adapter` in its own file
     /// names the adapter.
-    pub fn opening<'a>(&'a self, home: &'a Path) -> Opening<'a> {
+    pub fn opening<'a>(&'a self, search_path: &'a str) -> Opening<'a> {
         Opening {
             policy: &self.policy,
             source: AdapterSource::Setting,
@@ -491,7 +365,7 @@ impl Setting {
             timeout: fleet_core::agent::types::timeout_from(
                 std::env::var(TIMEOUT_VAR).ok().as_deref(),
             ),
-            home,
+            search_path,
         }
     }
 }
@@ -770,7 +644,7 @@ mod tests {
             root,
             packs,
             timeout: Duration::from_secs(60),
-            home: root,
+            search_path: &crate::platform::child_path(root),
         })
     }
 
@@ -878,7 +752,7 @@ mod tests {
                 format!(
                     "no agent adapter named `{DEFAULT_AGENT_ADAPTER}` in the installed packs — \
                      `{}` installs the one fleet-packs carries",
-                    pack_line(
+                    AdapterKind::Agent.pack_line(
                         fleet_core::supported::PINNED_PACKS_SOURCE,
                         DEFAULT_AGENT_ADAPTER,
                         fleet_core::supported::PINNED_PACKS
@@ -910,7 +784,7 @@ mod tests {
             )
             .expect("the pack's adapter opens");
             assert_eq!(opened.name, DEFAULT_AGENT_ADAPTER);
-            assert_eq!(opened.exec.entry(), dir.join("main"));
+            assert_eq!(opened.agent.entry(), dir.join("main"));
             assert_eq!(verbs_in(&dir), ["capabilities", "version"]);
         }
     }

@@ -82,6 +82,7 @@ impl AgentExec {
     }
 
     /// The executable every call runs.
+    #[cfg(test)]
     pub fn entry(&self) -> &Path {
         &self.adapter
     }

@@ -554,7 +554,7 @@ fn a_project_whose_board_cannot_be_read_could_not_tell() {
         "fleet item list: no store adapter named `{}` in the installed packs — `{}` installs the \
          one fleet-packs carries",
         fleet_core::store::DEFAULT_ADAPTER,
-        fleet_core::store::pack_line(
+        fleet_core::pack::AdapterKind::Store.pack_line(
             fleet_core::supported::PINNED_PACKS_SOURCE,
             fleet_core::store::DEFAULT_ADAPTER,
             fleet_core::supported::PINNED_PACKS

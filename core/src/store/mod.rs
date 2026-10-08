@@ -13,7 +13,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::adapter::open::{resolve, Wanted};
 use crate::entry::{Body, Entry};
+use crate::pack::AdapterKind;
 use crate::seat::actor::Actor;
 use types::Capabilities;
 
@@ -327,38 +329,7 @@ pub struct Opening<'a> {
     pub packs: Option<PackDirs<'a>>,
 }
 
-/// Where the `[store] adapter` an [`Opening`] opens by was written — or the
-/// agent's `[agent] adapter`, whose opener takes the same answer — so a
-/// refusal names the thing a person wrote and not a key they never did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdapterSource {
-    /// `[store] adapter` in the project's own file.
-    Setting,
-    /// `fleet store check --adapter`, carried into the policy as the setting.
-    Flag,
-}
-
-impl AdapterSource {
-    /// What the person wrote, as a refusal quotes it.
-    fn written(self) -> &'static str {
-        match self {
-            AdapterSource::Setting => "[store] adapter",
-            AdapterSource::Flag => "--adapter",
-        }
-    }
-}
-
-/// The installed packs and the binary's defaults beneath them, as
-/// [`Packs::under`](crate::item::brief::Packs::under) reads them.
-///
-/// DIRECTORIES AND NOT A RESOLUTION: the layers are resolved only when the
-/// setting is a name, so an adapter's path opens whatever the packs hold, a
-/// layering that refuses included.
-#[derive(Debug, Clone, Copy)]
-pub struct PackDirs<'a> {
-    pub packs_dir: &'a Path,
-    pub defaults_dir: &'a Path,
-}
+pub use crate::adapter::{AdapterSource, PackDirs};
 
 /// The store adapter a project's file that names none opens, by name through
 /// the installed packs like any other: the one the bd pack carries, which
@@ -381,30 +352,20 @@ pub const DEFAULT_ADAPTER: &str = "bd";
 /// person's own shell does. A named adapter runs on the search path
 /// ([`Opening::search_path`]).
 pub fn open(at: &Opening) -> Result<Box<dyn Store>, StoreError> {
-    let named = crate::policy::read("store", "adapter", at.policy)
-        .map_err(|unlisted| StoreError::Unreadable(unlisted.to_string()))?;
-    match named {
-        None => by_name(at, DEFAULT_ADAPTER),
-        Some(toml::Value::String(path)) if path.starts_with('/') => {
-            let adapter = Path::new(path);
-            if !crate::process::is_executable_file(adapter) {
-                return Err(unopened(at.source, Unopened::NotExecutable(path)));
-            }
-            Ok(Box::new(
-                exec::Exec::at(adapter, at.root).with_timeout(at.timeout),
-            ))
-        }
-        Some(toml::Value::String(name)) if !name.is_empty() && !name.contains('/') => {
-            by_name(at, name)
-        }
-        Some(toml::Value::String(other)) => {
-            Err(unopened(at.source, Unopened::NeitherForm(other.clone())))
-        }
-        Some(other) => Err(unopened(
-            at.source,
-            Unopened::NeitherForm(other.to_string()),
-        )),
-    }
+    let resolved = resolve(&Wanted {
+        kind: AdapterKind::Store,
+        policy: at.policy,
+        source: at.source,
+        search_path: at.search_path,
+        packs: at.packs,
+        default: DEFAULT_ADAPTER,
+    })
+    .map_err(StoreError::Unreadable)?;
+    let store = exec::Exec::at(&resolved.entry, at.root).with_timeout(at.timeout);
+    Ok(match resolved.path {
+        Some(path) => Box::new(store.on_path(path)),
+        None => Box::new(store),
+    })
 }
 
 /// The adapter `[store] adapter` names, as a line names it to a person:
@@ -421,107 +382,6 @@ pub fn adapter_name(policy: &toml::Table) -> String {
             .unwrap_or_else(|| named.clone()),
         _ => String::from(DEFAULT_ADAPTER),
     }
-}
-
-/// The store adapter the installed packs carry under `name`: the highest
-/// layer holding `adapters/store/<name>/adapter.toml` carries the adapter
-/// WHOLE, so its entry is the file beside that one and never another layer's.
-///
-/// It runs on [`Opening::search_path`], with the directory of each runtime
-/// that layer runs under — its own `[runtime]`, else the ones the packs it
-/// imports declare — put in front where the path misses it.
-fn by_name(at: &Opening, name: &str) -> Result<Box<dyn Store>, StoreError> {
-    let Some(installed) = at.packs else {
-        return Err(unopened(at.source, Unopened::NoPacks(name)));
-    };
-    let packs = crate::item::brief::Packs::under(installed.packs_dir, installed.defaults_dir)
-        .map_err(|stop| unopened(at.source, Unopened::Layers(name, stop.message)))?;
-    let Some((carrier, dir)) =
-        crate::pack::adapter_dir(&packs, crate::pack::AdapterKind::Store, name)
-    else {
-        return Err(unopened(at.source, Unopened::Nowhere(name)));
-    };
-    // The manifest is held to the format here, its entry's executable bit
-    // included, so an adapter `fleet pack check` refuses is never run.
-    let manifest = crate::pack::adapter_manifest(&dir)
-        .map_err(|defect| unopened(at.source, Unopened::Defect(name, defect)))?;
-    let entry = dir.join(&manifest.entry);
-    let store = exec::Exec::at(&entry, at.root).with_timeout(at.timeout);
-    if at.search_path.is_empty() {
-        return Ok(Box::new(store));
-    }
-    let path = crate::runtime::adapter_path(carrier, &packs.layers, at.search_path)
-        .map_err(|stop| unopened(at.source, Unopened::Unrun(name, stop.message)))?;
-    Ok(Box::new(store.on_path(path)))
-}
-
-/// Where the pack carrying the store adapter `name` sits in a repository laid
-/// out as fleet-packs is: its own directory, `adapters/store/<name>`, at the
-/// repository's top — the source `fleet pack add` takes for it.
-pub fn pack_source(repo: &str, name: &str) -> String {
-    format!(
-        "{repo}//{}/{}/{name}",
-        crate::pack::ADAPTERS,
-        crate::pack::AdapterKind::Store.as_str()
-    )
-}
-
-/// The line that installs the store adapter `name` out of `repo` at `version`:
-/// what `fleet create` prints where it installs no store, and what a refusal
-/// of a name no installed pack carries names.
-pub fn pack_line(repo: &str, name: &str, version: &str) -> String {
-    format!(
-        "fleet pack add {} --version {version}",
-        pack_source(repo, name)
-    )
-}
-
-/// Why the adapter `[store] adapter` names is not opened, wherever the setting
-/// was written.
-enum Unopened<'s> {
-    NotExecutable(&'s str),
-    NeitherForm(String),
-    NoPacks(&'s str),
-    Layers(&'s str, String),
-    Nowhere(&'s str),
-    Defect(&'s str, crate::pack::Defect),
-    Unrun(&'s str, String),
-}
-
-/// EVERY REFUSAL OF THE SETTING IS WORDED HERE, and nowhere else, so what a
-/// refusal says about where the setting came from is said once.
-fn unopened(source: AdapterSource, why: Unopened) -> StoreError {
-    let written = source.written();
-    StoreError::Unreadable(match why {
-        Unopened::NotExecutable(path) => {
-            format!("{written} names `{path}`, which is not an executable file")
-        }
-        Unopened::NeitherForm(said) => format!(
-            "{written} is `{said}` — it is the name of a store adapter an installed pack \
-             carries, or an absolute path to an adapter executable"
-        ),
-        Unopened::NoPacks(name) => format!(
-            "no store adapter named `{name}` resolves: no packs are installed here to carry one"
-        ),
-        Unopened::Layers(name, why) => {
-            format!("no store adapter named `{name}` resolves: {why}")
-        }
-        Unopened::Nowhere(name) => format!(
-            "no store adapter named `{name}` in the installed packs — `{}` installs the one \
-             fleet-packs carries",
-            pack_line(
-                crate::supported::PINNED_PACKS_SOURCE,
-                name,
-                crate::supported::PINNED_PACKS
-            )
-        ),
-        Unopened::Defect(name, defect) => {
-            format!("the store adapter `{name}` cannot be opened: {defect}")
-        }
-        Unopened::Unrun(name, why) => {
-            format!("the store adapter `{name}` cannot be opened: {why}")
-        }
-    })
 }
 
 /// The project's own file as a table, for a caller that has resolved no

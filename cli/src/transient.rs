@@ -694,10 +694,11 @@ fn fleet_toml_of(here: &Here) -> Result<PathBuf, Stop> {
 pub(crate) fn effect_agent(here: &Here, home: &Path) -> Result<Box<dyn Agent>, Stop> {
     let setting = adapter::Setting::read(&fleet_toml_of(here)?, &here.machine_dir)
         .map_err(Stop::could_not_tell)?;
-    let opened = adapter::open(&setting.opening(home)).map_err(Stop::could_not_tell)?;
+    let search_path = platform::child_path(home);
+    let opened = adapter::open(&setting.opening(&search_path)).map_err(Stop::could_not_tell)?;
     match opened.effects_off {
         Some(why) => Err(Stop::could_not_tell(why)),
-        None => Ok(opened.agent),
+        None => Ok(Box::new(opened.agent)),
     }
 }
 /// The host a spawn starts its session on, resolved ONCE on the constructed

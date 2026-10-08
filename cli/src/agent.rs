@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fleet_controller::adapter::conformance::{self, Ctx, Live, Passed};
-use fleet_controller::adapter::{self, AdapterSource, Version};
+use fleet_controller::adapter::{self, AdapterSource, Agent, Version};
 use fleet_controller::host::TmuxHost;
 use fleet_controller::platform;
 use fleet_core::agent::schema;
@@ -235,7 +235,8 @@ fn check(
         source = AdapterSource::Flag;
     }
     let home = platform::home_dir();
-    let mut opening = setting.opening(&home);
+    let search_path = platform::child_path(&home);
+    let mut opening = setting.opening(&search_path);
     opening.source = source;
     let opened = match adapter::open(&opening) {
         Ok(opened) => opened,
@@ -252,7 +253,7 @@ fn check(
     });
 
     let host = if live {
-        match TmuxHost::resolve(&platform::child_path(&home)) {
+        match TmuxHost::resolve(&search_path) {
             Ok(host) => {
                 let host = host.on_socket(&format!("fleet-check-{}", std::process::id()));
                 scratch.host = Some(host.clone());
@@ -271,8 +272,8 @@ fn check(
     let live = host.as_ref().map(|host| Live::on(host));
 
     let ctx = Ctx {
-        agent: opened.agent.as_ref(),
-        exec: Some(&opened.exec),
+        agent: &opened.agent,
+        exec: &opened.agent,
         fixtures: fixtures.as_deref(),
         scratch: &scratch.dir,
         model: model.as_deref(),

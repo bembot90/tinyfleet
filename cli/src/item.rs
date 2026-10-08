@@ -1282,11 +1282,12 @@ impl SeatRing {
             Ok(setting) => setting,
             Err(cause) => return rang_nobody(cause),
         };
-        let agent = match adapter::open(&setting.opening(&home)) {
+        let search_path = platform::child_path(&home);
+        let agent = match adapter::open(&setting.opening(&search_path)) {
             Ok(opened) => opened.agent,
             Err(cause) => return rang_nobody(cause),
         };
-        let host = fleet_controller::host::resolve(&platform::child_path(&home));
+        let host = fleet_controller::host::resolve(&search_path);
         // A spawned seat's session runs under the configuration directory
         // that seat alone starts with, and is named by no other listing, so
         // the ring reads under the directory that seat's own session row
@@ -1302,7 +1303,7 @@ impl SeatRing {
         };
         // The session the courier's event names, off the row carrying the
         // seat's pane's pid; the turn itself reads both again, fresh.
-        let session = match effect::seat_row(agent.as_ref(), host.as_ref(), &target) {
+        let session = match effect::seat_row(&agent, host.as_ref(), &target) {
             Ok(live) => live.reading.session_id,
             Err(typed) => {
                 return Rung {
@@ -1312,7 +1313,7 @@ impl SeatRing {
             }
         };
         let typed = effect::type_turn(
-            agent.as_ref(),
+            &agent,
             host.as_ref(),
             &target,
             text,

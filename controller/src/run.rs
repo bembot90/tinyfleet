@@ -84,6 +84,7 @@ impl Wiring {
     /// ([`adapter::open`]), with its effects gate read off its own answers.
     pub fn resolve() -> Wiring {
         let home = platform::home_dir();
+        let child_path = platform::child_path(&home);
         let machine_dir = platform::machine_dir();
         let fleet_toml = config::read(&machine_dir.join("config.json"))
             .ok()
@@ -116,8 +117,8 @@ impl Wiring {
         // it prints keeps its place in the order a reader meets the startup's
         // lines in.
         let (adapter, agent, agent_off): (String, Box<dyn Agent>, Option<String>) =
-            match adapter::open(&setting.opening(&home)) {
-                Ok(opened) => (opened.name, opened.agent, opened.effects_off),
+            match adapter::open(&setting.opening(&child_path)) {
+                Ok(opened) => (opened.name, Box::new(opened.agent), opened.effects_off),
                 Err(cause) => (
                     adapter::named(&setting.policy),
                     Box::new(adapter::Unanswered::new(cause.clone())),
@@ -130,7 +131,6 @@ impl Wiring {
         // a loop without one publishes why rather than failing each start in
         // turn. The agent's cause is named first where both fail — it is the
         // older gate, and the one an operator already knows to read.
-        let child_path = platform::child_path(&home);
         let host = crate::host::TmuxHost::resolve(&child_path);
         let effects_off = match (&agent_off, &host) {
             (Some(cause), _) => Some(cause.clone()),

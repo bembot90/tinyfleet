@@ -14,11 +14,12 @@
 
 use std::path::{Path, PathBuf};
 
-use fleet_controller::adapter;
+use fleet_controller::adapter::{self, Agent};
 use fleet_controller::lifecycle::{self, FirstRun, Mode, ProjectAt};
 
 use fleet_controller::{clock, config, events, platform, policy as controller};
 use fleet_core::item::Stop;
+use fleet_core::pack::AdapterKind;
 use fleet_core::seat::identity;
 use fleet_core::store::{self, AdapterSource, Opening, PackDirs, STORE_TIMEOUT};
 use fleet_core::{add, defaults, lock, supported};
@@ -259,7 +260,7 @@ fn create(ui: &Ui, args: &CreateArgs) -> Result<Exit, Stop> {
             "store:",
             &format!(
                 "none installed — `{}` installs one",
-                store::pack_line(&packs_repo, STORES[0], supported::PINNED_PACKS)
+                AdapterKind::Store.pack_line(&packs_repo, STORES[0], supported::PINNED_PACKS)
             ),
             None,
         ),
@@ -607,7 +608,13 @@ fn refusals(refused: &[add::Refusal]) -> String {
 /// The store `name`'s pack, `<repo>//adapters/store/<name>`, or the refusal
 /// naming `--store none` as the way to create the fleet without it.
 fn install_store(ui: &Ui, machine_dir: &Path, repo: &str, name: &str) -> Result<Pack, Stop> {
-    install(ui, machine_dir, &store::pack_source(repo, name), name).map_err(|refused| {
+    install(
+        ui,
+        machine_dir,
+        &AdapterKind::Store.pack_source(repo, name),
+        name,
+    )
+    .map_err(|refused| {
         Stop::refused(format!(
             "the store's pack was not installed, so no fleet file was written: {} — `fleet create \
              --store {NO_STORE}` creates the fleet without one",
@@ -620,12 +627,18 @@ fn install_store(ui: &Ui, machine_dir: &Path, repo: &str, name: &str) -> Result<
 /// naming the `fleet pack add` line that installs it. There is no `none` to
 /// name instead (E12).
 fn install_agent(ui: &Ui, machine_dir: &Path, repo: &str, name: &str) -> Result<Pack, Stop> {
-    install(ui, machine_dir, &adapter::pack_source(repo, name), name).map_err(|refused| {
+    install(
+        ui,
+        machine_dir,
+        &AdapterKind::Agent.pack_source(repo, name),
+        name,
+    )
+    .map_err(|refused| {
         Stop::refused(format!(
             "the agent's pack was not installed, so no fleet file was written: {} — `{}` \
              installs it",
             refusals(&refused),
-            adapter::pack_line(repo, name, supported::PINNED_PACKS)
+            AdapterKind::Agent.pack_line(repo, name, supported::PINNED_PACKS)
         ))
     })
 }
@@ -638,7 +651,8 @@ fn install_agent(ui: &Ui, machine_dir: &Path, repo: &str, name: &str) -> Result<
 fn default_model(machine_dir: &Path, fleet_toml: &Path, name: &str) -> Option<String> {
     let setting = adapter::Setting::naming(name, fleet_toml, machine_dir);
     let home = platform::home_dir();
-    let opened = adapter::open(&setting.opening(&home)).ok()?;
+    let search_path = platform::child_path(&home);
+    let opened = adapter::open(&setting.opening(&search_path)).ok()?;
     let model = opened.agent.capabilities().ok()?.default_model;
     (!model.trim().is_empty()).then_some(model)
 }
@@ -925,7 +939,7 @@ fn start(ui: &Ui, args: &StartArgs) -> Result<Exit, Stop> {
     // refused here, before anything is loaded.
     let setting = adapter::Setting::read(&fleet.fleet_toml, &fleet.machine_dir)
         .map_err(|why| Stop::could_not_tell(format!("{why} — nothing was loaded")))?;
-    let opened = adapter::open(&setting.opening(&home))
+    let opened = adapter::open(&setting.opening(&child_path))
         .map_err(|why| Stop::could_not_tell(format!("{why} — nothing was loaded")))?;
     if let Some(why) = &opened.effects_off {
         return Err(Stop::could_not_tell(format!(

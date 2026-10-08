@@ -36,7 +36,8 @@ use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use fleet_controller::{adapter, platform};
+use fleet_controller::adapter::{self, Agent};
+use fleet_controller::platform;
 use fleet_core::item::brief::Packs;
 use fleet_core::item::doctor::{self, Checked, Entry, Invocation, Verdict, RUNTIME_VERSION};
 use fleet_core::item::run::{ENV_BIN, ENV_PROJECT};
@@ -228,7 +229,8 @@ fn agent_adapter(here: &Here) -> Checked {
         Err(why) => return answered(Verdict::CouldNotTell, why),
     };
     let home = platform::home_dir();
-    let opened = adapter::open(&setting.opening(&home));
+    let search_path = platform::child_path(&home);
+    let opened = adapter::open(&setting.opening(&search_path));
     let answers = opened.and_then(|opened| {
         let version = opened.agent.version().map_err(|why| why.to_string())?;
         let declared = opened.agent.declared().map_err(|why| why.to_string())?;

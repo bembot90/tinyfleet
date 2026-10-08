@@ -23,8 +23,7 @@
 //! SOME CHECKS SPEAK PAST THE TRAIT. An exit, a request exactly as recorded and
 //! a variable set for one call are not things a verb of [`Agent`] can carry,
 //! so those checks run on the adapter as the executable it is
-//! ([`AgentExec::ran`]), and are skipped for an agent answered inside this
-//! process — a suite's stub — which has no process to exit.
+//! ([`AgentExec::ran`]), which every run is handed.
 //!
 //! EVERYTHING A CHECK MAKES IS UNDER [`Ctx::scratch`], which the caller owns
 //! and removes: each launch's configuration directory and worktree, the live
@@ -61,9 +60,9 @@ pub enum Passed {
 
 /// What the checks are run against.
 ///
-/// `exec` is the same adapter as `agent` where it is an executable, for the
-/// checks that speak past the trait, and `None` for one answered inside this
-/// process.
+/// `exec` is the adapter as the executable it is, for the checks that speak
+/// past the trait; `agent` is the same adapter through the trait, which a
+/// suite's arm may answer in-process.
 /// `fixtures` is the directory of recorded cases, `<verb>/<case>/`, where
 /// there is one. `scratch` is a directory the caller made and removes, which
 /// every launch writes under — and which the adapter's requests should carry
@@ -73,7 +72,7 @@ pub enum Passed {
 /// where they are not run.
 pub struct Ctx<'a> {
     pub agent: &'a dyn Agent,
-    pub exec: Option<&'a AgentExec>,
+    pub exec: &'a AgentExec,
     pub fixtures: Option<&'a Path>,
     pub scratch: &'a Path,
     pub model: Option<&'a str>,
@@ -200,11 +199,6 @@ const TURN: &str = "hello";
 
 /// The fixtures' placeholder for the case's own directory.
 const FIXTURE: &str = "{fixture}";
-
-/// Why the checks that speak past the trait skip an agent answered inside this
-/// process.
-const IN_PROCESS: &str =
-    "the agent answers inside this process, and this is asked of an adapter executable";
 
 /// Why a live step skips a run without `--live`.
 const NOT_LIVE: &str = "--live was not given: the live steps start the agent and cost a model turn";
@@ -581,11 +575,7 @@ fn replayed(ctx: &Ctx, verb: &str) -> Answer {
              --fixtures names none",
         )));
     };
-    let Some(exec) = ctx.exec else {
-        return Ok(Passed::Skip(format!(
-            "{IN_PROCESS}: a case is replayed under the variables it names for one call"
-        )));
-    };
+    let exec = ctx.exec;
     let dir = fixtures.join(verb);
     let mut cases: Vec<PathBuf> = std::fs::read_dir(&dir)
         .map(|entries| {
@@ -768,18 +758,14 @@ fn difference(got: &Value, wanted: &Value, at: &str) -> Option<String> {
 
 /// A verb the contract does not name exits 2.
 fn unknown_verb(ctx: &Ctx) -> Answer {
-    let Some(exec) = ctx.exec else {
-        return Ok(Passed::Skip(IN_PROCESS.to_string()));
-    };
+    let exec = ctx.exec;
     let request = types::request(Map::new(), exec.root());
     usage(exec, NO_VERB, &request, &format!("`{NO_VERB}`"))
 }
 
 /// A request at a `schema_version` the adapter does not speak exits 2.
 fn later_version(ctx: &Ctx) -> Answer {
-    let Some(exec) = ctx.exec else {
-        return Ok(Passed::Skip(IN_PROCESS.to_string()));
-    };
+    let exec = ctx.exec;
     let request = exec::envelope(Map::new(), exec.root(), CONTRACT_VERSION + 1);
     usage(
         exec,
@@ -1342,11 +1328,24 @@ mod tests {
         }
     }
 
+    /// An adapter executable at `<scratch>/exits-two` that exits 2 on every
+    /// call: what the checks that speak past the trait are handed beside the
+    /// in-process stub.
+    fn exits_two(scratch: &Scratch) -> AgentExec {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = scratch.0.join("exits-two");
+        std::fs::write(&bin, "#!/bin/sh\nexit 2\n").expect("the executable is written");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+            .expect("the executable is made executable");
+        AgentExec::at(&bin, &scratch.0)
+    }
+
     /// One check, by name, against `agent`, run in `scratch`.
     fn asked(agent: &dyn Agent, scratch: &Scratch, name: &str) -> Answer {
+        let exec = exits_two(scratch);
         let ctx = Ctx {
             agent,
-            exec: None,
+            exec: &exec,
             fixtures: None,
             scratch: &scratch.0,
             model: None,
@@ -1364,15 +1363,17 @@ mod tests {
         answer.expect_err("the check failed")
     }
 
-    /// The whole table on the in-process stub: nothing fails; the checks asked
-    /// of an executable, and the live steps, are skipped, saying why.
+    /// The whole table on the in-process stub: nothing fails; the live steps
+    /// are skipped, saying why, and the two exit checks pass on an executable
+    /// that exits 2.
     #[test]
     fn the_in_process_stub_passes_every_check_it_is_asked() {
         let scratch = Scratch::new("stub");
         let agent = StubAgent::new();
+        let exec = exits_two(&scratch);
         let ctx = Ctx {
             agent: &agent,
-            exec: None,
+            exec: &exec,
             fixtures: None,
             scratch: &scratch.0,
             model: None,
@@ -1386,8 +1387,7 @@ mod tests {
                 Ok(Passed::Skip(why)) => assert!(
                     name.starts_with("live: ")
                         || name == "an undeclared posture is refused unsupported"
-                        || why.starts_with("no fixtures")
-                        || why.contains("inside this process"),
+                        || why.starts_with("no fixtures"),
                     "`{name}` is skipped only where it cannot be asked: {why}"
                 ),
                 Err(why) => panic!("`{name}` failed: {why}"),

@@ -69,6 +69,34 @@ impl AdapterKind {
             .into_iter()
             .find(|kind| kind.as_str() == text)
     }
+
+    /// The kind's adapter as a sentence names one: `a store adapter`, `an
+    /// agent adapter`.
+    pub fn indefinite(self) -> &'static str {
+        match self {
+            AdapterKind::Store => "a store adapter",
+            AdapterKind::Agent => "an agent adapter",
+        }
+    }
+
+    /// Where the pack carrying the adapter `name` of this kind sits in a
+    /// repository laid out as fleet-packs is: its own directory,
+    /// `adapters/<kind>/<name>`, at the repository's top — the source `fleet
+    /// pack add` takes for it.
+    pub fn pack_source(self, repo: &str, name: &str) -> String {
+        format!("{repo}//{ADAPTERS}/{}/{name}", self.as_str())
+    }
+
+    /// The line that installs the adapter `name` of this kind out of `repo` at
+    /// `version`: what `fleet create` prints where it installs no store, and
+    /// names where it could not install the agent's pack, and what a refusal of
+    /// a name no installed pack carries names.
+    pub fn pack_line(self, repo: &str, name: &str, version: &str) -> String {
+        format!(
+            "fleet pack add {} --version {version}",
+            self.pack_source(repo, name)
+        )
+    }
 }
 
 /// One adapter's `adapter.toml`, read and held to the directory it sits in.

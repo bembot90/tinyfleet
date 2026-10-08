@@ -999,7 +999,7 @@ fn a_store_adapter_no_pack_carries_could_not_tell_and_the_scripted_checks_still_
     let out = rig.doctor(&[]);
     let said = stdout(&out);
     assert_eq!(out.status.code(), Some(3), "{said}{}", stderr(&out));
-    let line = fleet_core::store::pack_line(
+    let line = fleet_core::pack::AdapterKind::Store.pack_line(
         fleet_core::supported::PINNED_PACKS_SOURCE,
         "nowhere",
         fleet_core::supported::PINNED_PACKS,
@@ -1034,7 +1034,7 @@ fn an_agent_adapter_no_pack_carries_could_not_tell_and_the_scripted_checks_still
     let out = rig.doctor(&[]);
     let said = stdout(&out);
     assert_eq!(out.status.code(), Some(3), "{said}{}", stderr(&out));
-    let line = fleet_controller::adapter::pack_line(
+    let line = fleet_core::pack::AdapterKind::Agent.pack_line(
         fleet_core::supported::PINNED_PACKS_SOURCE,
         name,
         fleet_core::supported::PINNED_PACKS,
