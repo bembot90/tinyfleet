@@ -323,7 +323,7 @@ MUTATIONS = [
 
     ("wiring: a lost table is rebuilt from the stream",
      "controller/src/run.rs",
-     "            let rebuilt = sessions::rebuild(&machine_dir.join(\"events.jsonl\"));",
+     "            let rebuilt = sessions::rebuild(&events::path_in(&machine_dir));",
      "            let rebuilt = Table::default();",
      ["-p", "fleet-cli", "--test", "drive"],
      "effects::a_rebuilt_table_carries_a_standing_halt_and_no_daemon_pid"),
