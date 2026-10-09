@@ -12,23 +12,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-// `killpg` is POSIX and identical on both targets, so it is declared once here
-// and no platform carries a copy of its own.
-extern "C" {
-    fn killpg(pgrp: i32, sig: i32) -> i32;
-}
-
-const SIGKILL: i32 = 9;
-
 /// Kill a whole process group, named by the pid of the leader that
 /// `spawn_in_group` made. What a listing forked outlives the listing
 /// otherwise, and a descendant holding the inherited pipe is a drain no
 /// deadline reaches.
-pub fn kill_process_group(leader: u32) {
+fn kill_process_group(leader: u32) {
     if !is_killable_group(leader) {
         return;
     }
-    unsafe { killpg(leader as i32, SIGKILL) };
+    unsafe { libc::killpg(leader as libc::pid_t, libc::SIGKILL) };
 }
 
 /// Whether a group id names a group other than the caller's own.
@@ -45,7 +37,7 @@ pub fn kill_process_group(leader: u32) {
 /// `spawn_in_group` made (`killpg(-1, 0)` on macOS answers EPERM, not
 /// EINVAL, so the call would not refuse it as invalid). No real pid reaches
 /// `i32::MAX`, so no caller passes one today.
-pub fn is_killable_group(leader: u32) -> bool {
+fn is_killable_group(leader: u32) -> bool {
     leader != 0 && leader <= i32::MAX as u32
 }
 
@@ -681,7 +673,7 @@ mod tests {
             group as i32,
             "the leader is reaped behind Child's back"
         );
-        let group_lives = || unsafe { killpg(group as i32, 0) } == 0;
+        let group_lives = || unsafe { libc::killpg(group as libc::pid_t, 0) } == 0;
         assert!(group_lives(), "the leader's sleep still holds the group");
 
         let answer = wait_or_kill(&mut child, group, Instant::now() + Duration::from_secs(30));

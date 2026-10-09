@@ -656,9 +656,9 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
-    // Declared here for the reason `fleet_core::process` gives for its
-    // `killpg`: POSIX, identical on both targets, and no crate is added to ask
-    // a one-word question. Only the arm whose denial uid 0 ignores reads it.
+    // Declared here because it is POSIX, identical on both targets, and no
+    // crate is added to ask a one-word question. Only the arm whose denial uid
+    // 0 ignores reads it.
     extern "C" {
         fn geteuid() -> u32;
     }
