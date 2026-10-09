@@ -748,7 +748,7 @@ fn run_brief(parsed: &BriefArgs, out: &mut dyn Write, err: &mut dyn Write) -> Re
 
 /// The variable a verb reads its actor from where `--by` did not carry one.
 /// The controller sets it to `seat:<id>` on every session it starts.
-pub(crate) const FLEET_ACTOR: &str = "FLEET_ACTOR";
+pub(crate) use fleet_core::item::run::ENV_ACTOR as FLEET_ACTOR;
 
 /// `FLEET_ACTOR`, trimmed, where it holds anything at all.
 pub(crate) fn fleet_actor() -> Option<String> {

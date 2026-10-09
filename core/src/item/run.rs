@@ -171,6 +171,10 @@ pub const ENV_PROJECT: &str = "FLEET_PROJECT";
 pub const ENV_DIR: &str = "FLEET_DIR";
 pub const ENV_PASSED_THROUGH: [&str; 4] = ["HOME", "USER", "TMPDIR", "LANG"];
 
+/// The variable a verb reads its actor from where `--by` did not carry one.
+/// The controller sets it to `seat:<id>` on every session it starts.
+pub const ENV_ACTOR: &str = "FLEET_ACTOR";
+
 /// Where the stream is and how far it has got.
 ///
 /// A seam of its own rather than two more methods on [`Events`]: appending is

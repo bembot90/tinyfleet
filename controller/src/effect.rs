@@ -409,13 +409,12 @@ pub fn start_once(
 // ---- what fleet sets for a seat's session -----------------------------------
 
 /// The variable the plugin's shim runs its binary from, which every seat's
-/// session is handed. Spelled here and not taken from the item layer's own
-/// constant, because this crate names nothing of the project around it.
-pub const FLEET_BIN_VAR: &str = "FLEET_BIN";
+/// session is handed.
+pub use fleet_core::item::run::ENV_BIN as FLEET_BIN_VAR;
 
 /// The variable a started session's verbs read their actor from, set to the
 /// seat's own `seat:<id>`.
-pub const FLEET_ACTOR_VAR: &str = "FLEET_ACTOR";
+pub use fleet_core::item::run::ENV_ACTOR as FLEET_ACTOR_VAR;
 
 /// This process's own executable, as the absolute path the shim requires.
 ///
