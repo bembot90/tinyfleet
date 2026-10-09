@@ -212,17 +212,31 @@ fn projects_of(fleet_root: &Path) -> Vec<(String, PathBuf)> {
 /// own directory's fleet; a declared project's fleet, and the answer where the
 /// walk finds nothing, is the directory of the `fleet.toml` the machine
 /// directory's seat list names.
-/// `None` is a machine with no fleet root at all, which is exit 3 rather than
-/// a guess.
-pub fn fleet_root(start: Option<&Path>, machine_dir: &Path) -> Option<PathBuf> {
+/// `Err` is a machine with no fleet root at all, which is exit 3 rather than
+/// a guess, and says which way the walk ended ([`NoFleet`]).
+pub fn fleet_root(start: Option<&Path>, machine_dir: &Path) -> Result<PathBuf, NoFleet> {
     let from = start
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok());
-    if let Some(crate::project::Found::Embedded(file)) =
-        from.as_deref().and_then(crate::project::walk_up_config)
-    {
-        return file.parent().map(Path::to_path_buf);
-    }
-    let config = crate::config::read(&crate::config::path_in(machine_dir)).ok()?;
-    config.fleet_toml.parent().map(Path::to_path_buf)
+    let unnamed = match from.as_deref().and_then(crate::project::walk_up_config) {
+        Some(crate::project::Found::Embedded(file)) => {
+            return file.parent().map(Path::to_path_buf).ok_or(NoFleet::Nothing);
+        }
+        Some(crate::project::Found::Declared(_)) => NoFleet::Declared,
+        None => NoFleet::Nothing,
+    };
+    let config = crate::config::read(&crate::config::path_in(machine_dir)).map_err(|_| unnamed)?;
+    config
+        .fleet_toml
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or(unnamed)
+}
+
+/// Why [`fleet_root`] found no fleet: the walk up found nothing, or it found a
+/// declared project, whose fleet is the machine's — and the machine named none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoFleet {
+    Nothing,
+    Declared,
 }

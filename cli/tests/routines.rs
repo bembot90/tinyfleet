@@ -184,6 +184,47 @@ fn a_routine_run_from_a_declared_project_reads_the_fleet_the_machine_names() {
     );
 }
 
+/// I5's refusal, by the way the walk ended: a machine that names no fleet is
+/// exit 3 either way, and the line says why. Inside a declared project the
+/// declaration wins over the `fleet.toml` beside it, so the line says the fleet
+/// is the machine's; where the walk found nothing, it says so.
+#[test]
+fn a_fleet_nobody_names_is_exit_3_and_the_refusal_says_whether_a_project_was_declared() {
+    let rig = Rig::new("unnamed");
+    let config = rig.machine().join("config.json");
+    std::fs::remove_file(&config).unwrap();
+    let project = rig.root.join("project");
+    write(
+        &project.join(".fleet").join("project.toml"),
+        "[project]\nname = \"demo\"\n",
+    );
+    write(&project.join("fleet.toml"), "[tool]\nname = \"other\"\n");
+
+    let declared = rig.fleet_in(&project, &["routine", "list"]);
+    assert_eq!(declared.status.code(), Some(3), "{}", err(&declared));
+    assert_eq!(
+        err(&declared),
+        format!(
+            "fleet routine list: this project is declared, so its fleet is the machine's, \
+             and none is named by {}\n",
+            config.display()
+        )
+    );
+    assert!(out(&declared).is_empty(), "{}", out(&declared));
+
+    let nowhere = rig.root.join("nowhere");
+    std::fs::create_dir_all(&nowhere).unwrap();
+    let nothing = rig.fleet_in(&nowhere, &["routine", "list"]);
+    assert_eq!(nothing.status.code(), Some(3), "{}", err(&nothing));
+    assert_eq!(
+        err(&nothing),
+        format!(
+            "fleet routine list: no `fleet.toml` above this directory and none named by {}\n",
+            config.display()
+        )
+    );
+}
+
 #[test]
 fn check_answers_due_not_due_and_could_not_tell_with_its_own_exit() {
     let rig = Rig::new("check");

@@ -119,11 +119,20 @@ struct Fleet {
 /// registry.
 fn resolve() -> Result<Fleet, String> {
     let machine_dir = platform::machine_dir();
-    let Some(fleet_root) = load::fleet_root(None, &machine_dir) else {
-        return Err(format!(
-            "no `fleet.toml` above this directory and none named by {}",
-            config::path_in(&machine_dir).display()
-        ));
+    let fleet_root = match load::fleet_root(None, &machine_dir) {
+        Ok(root) => root,
+        Err(load::NoFleet::Nothing) => {
+            return Err(format!(
+                "no `fleet.toml` above this directory and none named by {}",
+                config::path_in(&machine_dir).display()
+            ))
+        }
+        Err(load::NoFleet::Declared) => {
+            return Err(format!(
+                "this project is declared, so its fleet is the machine's, and none is named by {}",
+                config::path_in(&machine_dir).display()
+            ))
+        }
     };
     let seats = config::read(&config::path_in(&machine_dir))
         .map(|machine| machine.seats)

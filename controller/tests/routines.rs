@@ -1171,7 +1171,7 @@ fn a_fleet_root_inside_an_embedded_fleet_is_that_directory() {
 
     assert_eq!(
         load::fleet_root(Some(&embedded.join("orders")), &machine),
-        Some(embedded)
+        Ok(embedded)
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1192,7 +1192,7 @@ fn a_fleet_root_inside_a_declared_project_is_the_fleet_the_machine_names() {
 
     assert_eq!(
         load::fleet_root(Some(&project.join("orders")), &machine),
-        Some(fleet)
+        Ok(fleet)
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1205,7 +1205,7 @@ fn a_fleet_root_with_nothing_above_it_is_the_fleet_the_machine_names() {
     let nowhere = dir.join("nowhere");
     std::fs::create_dir_all(&nowhere).unwrap();
 
-    assert_eq!(load::fleet_root(Some(&nowhere), &machine), Some(fleet));
+    assert_eq!(load::fleet_root(Some(&nowhere), &machine), Ok(fleet));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
