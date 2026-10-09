@@ -278,7 +278,7 @@ pub fn write(path: &Path, table: &Table) -> Result<(), String> {
 /// The table under the lock that guards a read-modify-write of it, with the
 /// lock held for as long as the returned handle lives.
 ///
-/// [`write`] renames a whole document over the path, so two writers that each
+/// [`write()`] renames a whole document over the path, so two writers that each
 /// read this table and then rename their own version over it leave one of the
 /// two edits. The lock is [`platform::lock_beside`] on the table's own path,
 /// which is what the transient verbs take (`transient::Machine::table_under_lock`),

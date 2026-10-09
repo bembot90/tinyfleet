@@ -5,7 +5,7 @@
 //! session this controller starts, on a server of its own. Everything the
 //! controller asks of that server — start a session, type into it, read its
 //! screen, end it, list what is there — goes through one trait, [`Host`], so
-//! the in-process suites drive a fake ([`crate::test_support::FakeHost`]) and
+//! the in-process suites drive a fake (`test_support::FakeHost`) and
 //! the one real implementation is [`tmux::TmuxHost`]. That module is the only
 //! code in the workspace that spells the multiplexer's name outside prose: an
 //! adapter never touches the host (ruling 2), and nothing above this seam
