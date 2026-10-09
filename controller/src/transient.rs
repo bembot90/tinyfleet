@@ -1126,8 +1126,8 @@ pub struct Reclaimed {
 
 /// The record's half of a retire, filled by the caller.
 ///
-/// A SEAM AND NOT A CALL, because this crate reaches no work graph: the store
-/// is core's, and the cli is the one crate holding both. It is handed the seat
+/// A SEAM AND NOT A CALL, because each caller chooses what a board that will
+/// not answer means (see [`withdrawn_from`]). It is handed the seat
 /// going and answers what it released, or the refusal the retire stops on.
 ///
 /// The retire runs it at the LAST moment it can still stop — after the session

@@ -247,8 +247,7 @@ pub fn retire_command(args: &RetireArgs) -> Exit {
         .and_then(|item| timeline_of(&here, item))
         .unwrap_or_default();
 
-    // THE RECORD'S HALF OF THE RETIRE, which the controller reaches no work
-    // graph to do for itself. It runs inside the retire, at the last moment the
+    // THE RECORD'S HALF OF THE RETIRE. It runs inside the retire, at the last moment the
     // verb can still stop: the name this frees is the one the next spawn takes,
     // and an order left standing against it is one that seat would inherit.
     let store = match open_store(&here) {

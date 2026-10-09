@@ -19,8 +19,9 @@ runs the other way: the controller depends on core, for the bounded runner
 missing agent pack names (`fleet_core::supported`), a seat's identity (`fleet_core::seat::identity`:
 the id, the fleet.toml roster and the resolver), the typed actor
 (`fleet_core::seat::actor::Actor`, `<kind>:<id>`) and the policy-file reader
-(`fleet_core::item::table_at`), and nothing else, and the cli crate is where
-both meet.
+(`fleet_core::item::table_at`), and also for the atomic write, the store, the
+agent contract and its opener, and the item layer's run vocabulary; the cli
+crate depends on both.
 
 The root manifest lists its members explicitly and never by glob, so a crate
 under this directory cannot be absorbed by a manifest that did not name it. That

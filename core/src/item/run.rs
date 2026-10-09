@@ -205,7 +205,7 @@ pub struct Wiring<'a> {
     pub store: &'a dyn Store,
     pub project: &'a Project,
     pub packs: &'a Packs,
-    /// The policy file in force, copied byte for byte: the cli resolves which
+    /// The policy file in force, copied byte for byte: the caller resolves which
     /// file that is.
     pub policy_file: &'a Path,
     pub events: &'a dyn Events,

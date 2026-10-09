@@ -16,6 +16,9 @@
 //! the setting read, a path or a name resolved through the installed packs,
 //! and the PATH a pack's adapter runs on.
 //!
+//! So is what every contract's conformance suite answers with and runs by
+//! ([`check`]).
+//!
 //! THIS MODULE KNOWS NO CONTRACT. It never depends on `store`, and what it
 //! words names the kind its caller passes: [`open::resolve`] words every
 //! refusal of an adapter setting once, naming the adapter's kind, and

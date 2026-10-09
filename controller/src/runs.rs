@@ -10,8 +10,7 @@
 //! resolution is wired by [`Engine`] below, and the acts stay a seam so a poll
 //! can be driven against a file and a stub. The DECISION is different: it is
 //! a fold of the machine's own stream against one cap, and the stream is this
-//! crate's own file — so it lives here, where a poll can be driven against a
-//! file and a stub.
+//! crate's own file — so it lives here.
 //!
 //! THE STREAM IS THE STATE, BUT FOR THE PARK. Nothing is held between passes:
 //! which runs are waiting, how many times each has been executed, which seats a
@@ -797,8 +796,7 @@ impl Runs for Engine {
         let wired = Wired::of(&here, &self.home, |home| Ok(verb_host(home)))
             .map_err(|stop| stop.message)?;
         let machine = wired.machine(&here);
-        // THE RECORD'S HALF, which the controller reaches no work graph to do
-        // for itself. A cleanup retires seats whose items were delivered and
+        // THE RECORD'S HALF. A cleanup retires seats whose items were delivered and
         // seats whose items are still open — a park leaves the order standing —
         // and the name this frees is the one the next spawn takes.
         let store = open_store(&here).map_err(|stop| stop.message)?;

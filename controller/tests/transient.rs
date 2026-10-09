@@ -2125,8 +2125,8 @@ fn a_session_back_on_the_host_after_the_stop_fails_the_host_probe() {
 /// the seat-list row — and the name — exactly where it was.
 ///
 /// The seam is driven with closures rather than a store, because what is under
-/// test here is the ORDER of two acts: this crate reaches no work graph, and
-/// what the withdrawal itself writes is the core suite's.
+/// test here is the ORDER of two acts: what the withdrawal itself writes is the
+/// core suite's.
 #[test]
 fn a_retire_whose_withdrawal_refuses_never_frees_the_name() {
     let rig = Rig::new("retire-withdrawal");
@@ -3050,9 +3050,9 @@ fn a_transcript_that_cannot_be_read_leaves_the_cost_null_and_reclaims_anyway() {
 /// that left a parked item carrying an order naming a seat that no longer
 /// exists.
 ///
-/// The seam is driven with a closure rather than a store, because this crate
-/// reaches no work graph: what the withdrawal itself writes onto an item is the
-/// core suite's, what the cleanup hands in is the cli's, and what is under test
+/// The seam is driven with a closure rather than a store, because what the
+/// withdrawal itself writes onto an item is the core suite's, what the cleanup
+/// hands in is the run engine's (`runs.rs`), and what is under test
 /// here is that the priced path RUNS what it was handed. The mutant is the
 /// defect itself — the priced path handing `withdraws_nothing` — and it reds
 /// the recorded call and the answer below it.

@@ -135,8 +135,8 @@ pub fn payload_keys(kind: &str) -> Option<&'static [&'static str]> {
 pub const STEP_STARTED: &str = "step.started";
 pub const STEP_CLOSED: &str = "step.closed";
 
-/// Where a typed event goes. Core never opens the stream file: the cli wires
-/// this to the controller's writer, the same way `dispatch` reaches its spawn.
+/// Where a typed event goes. Core never opens the stream file: the controller
+/// wires this to its own writer, the same way `dispatch` reaches its spawn.
 ///
 /// The actor is handed over typed, and the writer stores it as the stream's
 /// `{kind, id}` object.

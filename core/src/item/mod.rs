@@ -7,7 +7,7 @@
 //!
 //! Nothing in here reads the process table or the environment. What only a
 //! process knows — the project root, the machine directory, the clock, the
-//! dispatcher's name — is resolved by the cli and handed in.
+//! dispatcher's name — is resolved by the caller and handed in.
 
 pub mod brief;
 pub mod deliver;
@@ -211,8 +211,10 @@ pub fn numstat_line(line: &str) -> Option<Change> {
 }
 
 /// One entry of `git status --porcelain -z`: the index's column, the working
-/// tree's column, and the path, raw — the `-z` form quotes nothing, so the path
-/// is the bytes a person types. A rename or copy also names where it came from.
+/// tree's column, and the path, unquoted — the `-z` form quotes nothing, so the
+/// path is the one a person types, decoded as UTF-8 lossily
+/// ([`git`](crate::process::git) reads every answer so). A rename or copy also
+/// names where it came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusLine {
     pub index: char,
@@ -317,7 +319,7 @@ pub trait Spawner {
     fn spawn(&self, spawn: &Spawn) -> SpawnOutcome;
 }
 
-/// The project a verb acts inside, as the cli resolved it.
+/// The project a verb acts inside, as its caller resolved it.
 ///
 /// `policy` and `guards` are two tables and not one because a standalone fleet
 /// keeps them in two files: the project declares its own policy, and the fleet

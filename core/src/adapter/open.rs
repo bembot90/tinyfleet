@@ -14,9 +14,11 @@ use crate::pack::{self, AdapterKind};
 /// never did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdapterSource {
-    /// `[store] adapter` in the project's own file.
+    /// `[store] adapter` in the project's own file, or `[agent] adapter` in
+    /// the fleet's.
     Setting,
-    /// `fleet store check --adapter`, carried into the policy as the setting.
+    /// `fleet store check --adapter` or `fleet agent check --adapter`, carried
+    /// into the policy as the setting.
     Flag,
 }
 

@@ -84,15 +84,15 @@ impl fmt::Display for AgentError {
 /// leaves an adapter (reviewer call 2026-09-25, E6).
 ///
 /// A turn for a live seat is none of them: it is typed into the seat's pane by
-/// core (`fleet_controller::effect::type_turn`), and `read` is what says
+/// the controller (`fleet_controller::effect::type_turn`), and `read` is what says
 /// whether it was taken. Whether a session is THERE is not a verb here at all:
 /// presence is the host's reading (`fleet_controller::host`, ruling 3). Nor is
 /// ending one: a session is stopped on the host, by its seat
 /// (`fleet_controller::effect::stop_session`).
 ///
 /// A START IS TWO HALVES AND ONLY ONE OF THEM IS HERE (ruling 2). The adapter
-/// answers WHAT to run — the argv and the environment, an [`Argv`] — and core
-/// runs it, as a session on the host, and believes it only when `read` finds
+/// answers WHAT to run — the argv and the environment, an [`Argv`] — and the
+/// controller runs it, as a session on the host, and believes it only when `read` finds
 /// the pane's own process (`fleet_controller::effect::start_once`). No adapter
 /// touches the host.
 ///
@@ -182,7 +182,8 @@ pub struct Opening<'a> {
     pub timeout: std::time::Duration,
     /// The PATH a pack's agent adapter runs on: the caller's constructed child
     /// PATH (`fleet_controller::platform::child_path`), as the store's
-    /// [`Opening::search_path`](crate::store::Opening::search_path) is.
+    /// [`Opening::search_path`](crate::store::Opening::search_path) is. EMPTY
+    /// skips the runtimes, and the adapter carries this process's own `PATH`.
     pub search_path: &'a str,
 }
 

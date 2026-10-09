@@ -90,7 +90,8 @@
 //! so, all three read back — before its row goes. The reason is the work: an
 //! item still ordered to a seat that no longer exists is one nobody will
 //! deliver and nothing will dispatch again. The session, the worktree and the
-//! row are the controller's, and the cli is where the two halves meet.
+//! row are the controller's, and the controller and the cli are where the two
+//! halves meet.
 //!
 //! `guard` is the four classes a pre-tool hook judges through, and it is the one
 //! module here that no verb calls: `shell-trap` and `record` are core's, because
@@ -104,8 +105,8 @@
 //! `adapter` is the one call every adapter executable is spoken to through —
 //! the verb, the envelope, the bound and its group kill, the exit table and
 //! the last line the adapter said — and it knows no contract: it answers the
-//! row an exit is, and the store's `Exec` words that row as the store
-//! contract's refusal, as the agent's caller will word it as its own.
+//! row an exit is, and words that row, and every refusal of an adapter
+//! setting, naming the contract its caller passes.
 //!
 //! `agent` is the agent contract written down as types: the six verbs fleet
 //! asks the program a seat runs through its adapter — what it is, which

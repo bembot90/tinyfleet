@@ -69,9 +69,11 @@ required-features = ["test-support"]
 # trait's six verbs take and answer. So is what opens an agent adapter that is an executable:
 # the one adapter call (`fleet_core::adapter::exec`), the census `[agent]
 # adapter` is read through, and the pack resolution a name goes through, the
-# store opener's own. The controller takes the bounded runner, the packs pin, a
-# seat's identity, the agent contract and the adapter's opening from core, and
-# nothing else.
+# store opener's own. The controller takes from core its process runner, git
+# and PATH resolver, the atomic write, a seat's identity, actor and retire, the
+# agent contract with its trait and opener, the store, the item layer, the
+# policy reader, the entry kinds, the pack directories and the schema check;
+# core takes nothing from the controller.
 [dependencies]
 fleet-core = { path = "../core" }
 jiff = { version = "=0.2.35", default-features = false, features = [
